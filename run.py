@@ -17,6 +17,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from bridge.auth import password_record
+from bridge.agents.base import Registry
+from bridge.agents.codex import CodexAdapter
 from bridge.httpd import GatewayServer
 from bridge.lifecycle import GatewayControl
 from bridge.service import Bridge
@@ -93,7 +95,11 @@ def main(connections=None, connection_secrets=None):
     parser.add_argument("--set-password", action="store_true", help="交互式设置登录密码，不启动服务")
     parser.add_argument("--no-auth", action="store_true", help="本次运行明确关闭账号密码验证")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
+    parser.add_argument("--agents", default="codex", help="启用的 Agent 类型（逗号分隔，目前仅支持 codex）")
     args = parser.parse_args()
+    kinds = [k.strip() for k in args.agents.split(',') if k.strip()]
+    if not kinds or any(k != 'codex' for k in kinds):
+        parser.error("--agents 目前仅支持 codex")
     if not 1 <= args.port <= 65535:
         parser.error("端口必须为 1–65535")
     if args.ssh_target:
@@ -139,12 +145,15 @@ def main(connections=None, connection_secrets=None):
     hosts = (addresses() if selected is None else ['127.0.0.1', 'localhost'] + selected) if args.lan else ['127.0.0.1', 'localhost']
     config["origins"] = sorted(set(origins + [f"http://{host}:{args.port}" for host in hosts]))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    bridge = Bridge(args.codex_home, args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin)
+    adapter = CodexAdapter(args.codex_home, data_dir=args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin)
+    bridge = Bridge(args.codex_home, args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin, adapter=adapter)
+    registry = Registry()
+    registry.register('codex', bridge)
     servers = []
     try:
         for address in network.bindings(preferences):
             servers.append(GatewayServer((address, args.port), bridge, config, ROOT / 'web', args.config.parent,
-                                         **({'shared': servers[0]} if servers else {})))
+                                         **({'shared': servers[0]} if servers else {'registry': registry})))
     except OSError:
         for listener in servers:
             listener.server_close()

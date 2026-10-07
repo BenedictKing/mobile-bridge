@@ -51,24 +51,25 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
           "/icon.png": ("icon.png", "image/png")}
-THREAD_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|poll|timeline|changes|detail|notifications|uploads|message-action|rename))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|poll|timeline|changes|detail|notifications|uploads|message-action|rename))?$")
 FONT_ROUTE = re.compile(r"^/vendor/katex/fonts/(KaTeX_[A-Za-z0-9_-]+\.(woff2|woff|ttf))$")
-UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/preview$")
-UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/uploads/([0-9a-f-]{36})/thumb$")
-DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/desktop-images/([0-9a-f]{64})$")
-GOAL_CANCEL_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/goal/cancel$")
-GOAL_EDIT_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/goal/edit$")
-GOAL_STATUS_ROUTE = re.compile(r"^/api/sessions/([0-9a-f-]{36})/goal/status$")
+UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/preview$")
+UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/thumb$")
+DESKTOP_IMAGE_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/desktop-images/([0-9a-f]{64})$")
+GOAL_CANCEL_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/cancel$")
+GOAL_EDIT_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/edit$")
+GOAL_STATUS_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/status$")
 
 
 class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None):
+    def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None, registry=None):
         self.local_access = config.get('localAccess', True)
         if shared is None:
             self.bridge = bridge
+            self.registry = registry
             self.notifications = None
             self.instance_id = secrets.token_hex(16)
             self.auth = Auth(config["auth"], data_dir)
@@ -81,7 +82,7 @@ class GatewayServer(ThreadingHTTPServer):
         else:
             # Listeners serve one gateway: shared sessions, pairing, limits and
             # mutable tunnel origins, with a single notification manager.
-            for name in ('bridge', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots'):
+            for name in ('bridge', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'registry'):
                 setattr(self, name, getattr(shared, name))
         super().__init__(address, Handler)
 
@@ -352,8 +353,11 @@ class Handler(BaseHTTPRequestHandler):
                         config = save_notification_settings(manager.data_dir, body)
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
+            agent = query.get("agent", [None])[0]
+            if agent is not None and agent != 'codex':
+                raise ValueError('未知的 Agent 类型')
             bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
-            file_match = re.fullmatch(r"/api/sessions/([0-9a-f-]{36})/files/([a-f0-9]{64})", path)
+            file_match = re.fullmatch(r"/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})", path)
             if not write and file_match:
                 return self.download(bridge, *file_match.groups())
             preview_match = UPLOAD_PREVIEW_ROUTE.fullmatch(path)

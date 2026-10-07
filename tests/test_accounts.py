@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from bridge.account import Account
 from bridge.accounts import Accounts, ManagedRPC, operation, private_bytes, private_json
+from bridge.agents.codex import CodexAdapter
 from bridge.desktop_app import DesktopApp
 from bridge.service import Bridge
 
@@ -32,6 +33,10 @@ class AccountsTests(unittest.TestCase):
             account=Account(self.home,self.root,executable=self.root/'runtime'), ipc=Mock(), _disconnected=Mock())
         self.manager = Accounts(self.bridge)
         self.bridge.accounts = self.manager
+        self.bridge.adapter = CodexAdapter(self.home, data_dir=self.root, ipc_path=str(self.root/'ipc.sock'))
+        self.bridge.adapter.accounts = self.manager
+        self.bridge.adapter.ipc = self.bridge.ipc
+        self.bridge.adapter.bind(self.bridge)
         self.bridge._check_provider = lambda session: Bridge._check_provider(self.bridge, session)
         self.manager.index['desktopExecutable'] = '/fixture/Desktop'
         self.app = Mock()

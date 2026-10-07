@@ -177,7 +177,9 @@ class IntegrationTests(unittest.TestCase):
             raise StoreUnavailable('Database temporarily unavailable')
         self.bridge.store.list = unavailable
         remote = SimpleNamespace(host='remote:test', lock=threading.RLock(), live={}, listed=set(),
-                                 store=SimpleNamespace(list=lambda **kw: [{'id': THREAD, 'title': 'Remote chat', 'cwd': '/remote', 'updated_at': 1}]))
+                                 adapter=SimpleNamespace(list_sessions=lambda label, **kw: [
+                                     {'id': THREAD, 'title': 'Remote chat', 'cwd': '/remote', 'updated_at': 1,
+                                      'host': 'remote:test', 'recency': 1000}]))
         self.bridge.hosts.hosts = lambda: {'remote:test': {'alias': 'test'}}
         self.bridge.for_host = lambda host: remote
         rows = self.bridge.list()
@@ -526,13 +528,14 @@ class IntegrationTests(unittest.TestCase):
         remote.host = 'remote'
         remote.lock = threading.RLock()
         remote.live = {}
-        remote.store.list.return_value = [{'id': 'remote-thread', 'cwd': '/work', 'updated_at': 50}]
+        remote.adapter.list_sessions.return_value = [{'id': 'remote-thread', 'cwd': '/work', 'updated_at': 50,
+                                                      'host': 'remote', 'recency': 50000}]
         self.bridge.hosts.hosts = lambda: {'remote': {'alias': 'server'}}
         self.bridge.for_host = lambda host: remote
         rows = self.bridge.list(limit=1)
         self.assertEqual(rows[0]['id'], 'remote-thread')
         self.assertEqual(self.bridge.list(limit=1, offset=1)[0]['id'], THREAD)
-        remote.store.list.side_effect = RemoteUnavailable('offline')
+        remote.adapter.list_sessions.side_effect = RemoteUnavailable('offline')
         self.assertEqual(self.bridge.list()[0]['id'], THREAD)
         self.assertEqual(self.bridge.host_errors[0]['host'], 'remote')
 
