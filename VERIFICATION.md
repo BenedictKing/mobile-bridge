@@ -1,3 +1,12 @@
+## 跨 Agent 会话迁移（2026-10-08，未发布）
+
+- 接口：`POST /api/sessions/<sid>/migrate`，body `{agent, project?, id, uiLocale?}`；返回 `{id, host, agent, project, status, sent, warning?}`。源会话只读；允许迁到同 Agent（带上下文 fork 语义）；未启用/未知 Agent 报 400「未知的 Agent 类型」，无同目录项目报 400 引导。
+- 转录策略：规范化 view 摊平为角色条目，user/assistant 保留全文，activity 压缩为「标题+首行」一行（输出丢弃），error 保留一行；上限最近 20 条 + 总量 30k 字符（单条 4k 截断），超出从头部丢弃并注明已截断；注入消息按 `uiLocale` 出中英文模板（沿用 goal activation 的 locale 模式）。
+- 幂等：新会话经目标 `create_chat`（请求 id 幂等），注入消息的 submission id 由请求 id 经 uuid5 派生，同一请求重试不重复创建、不重复发送。注入失败返回 `status:'created', sent:false, warning` 而非报错，避免"看似失败实则已建会话"。
+- 前端：聊天详情弹层新增迁移入口（`web/migrate.js` MigrateControl），按 GET view 注入的 `agents`（kind+label）列出当前以外的已启用 Agent；确认后 POST，成功 toast 并打开新会话。
+- 测试：Python 新增 `tests/test_migrate.py` 8 项（转录截断/locale、ACP→ACP 幂等、显式 project 与错误分支、send 失败 warning、codex 源经 DesktopFixture 只读验证）+ `test_acp_adapter.py` HTTP 端到端 2 项；`tests/fake_acp.py` 的 `session/new` 现在把新会话追加进 list_rows（贴近真实 agent 行为）。前端新增 `tests/migrate-ui.test.cjs` 4 项（已纳入 test:desktop）。
+- 未做真机验证：kimi/mcode/codex 之间的真实迁移未跑真机冒烟；codex 作为迁移目标依赖桌面 App 及时加载新会话，未实测。
+
 ## 多 Agent 增强：断续跑恢复与打包启用（2026-10-08，未发布）
 
 - 断续跑恢复：网关启动时 `Notifications.resume_watched`（`bridge/notifications.py`）后台遍历 watched 列表，仅对 Registry 路由到非 codex bridge 的会话做 `session(background=True)` 重连并置 watched；单个会话失败只记日志不阻塞其余，codex 会话跳过（桌面 App 自持）。进行中的 turn 不恢复，属预期语义。

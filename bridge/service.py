@@ -13,6 +13,7 @@ import unicodedata
 from pathlib import Path
 
 from .ipc import DesktopIPC, IPCError
+from .agents.acp import AcpError
 from .transport import ipc_endpoint
 from .model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
 from .store import SessionStore, StoreUnavailable
@@ -28,6 +29,83 @@ from .uploads import Uploads, image_type
 from .remote import upload_file
 from .agents.base import Capability
 from .agents.codex import CodexAdapter
+
+
+MIGRATION_MAX_MESSAGES = 20
+MIGRATION_MAX_CHARS = 30000
+MIGRATION_ENTRY_CHARS = 4000
+
+MIGRATION_TEXTS = {
+    "zh-CN": {
+        "header": "【从 {label} 迁移的会话】",
+        "title": "标题：",
+        "directory": "目录：",
+        "truncated": "（转录过长，仅保留最近部分，已截断）",
+        "roles": {"user": "用户", "assistant": "助手", "activity": "操作", "error": "错误"},
+        "sep": "：",
+        "continue": "以上是从 {label} 迁移过来的会话转录，请在此基础上继续。",
+    },
+    "en-US": {
+        "header": "[Session migrated from {label}]",
+        "title": "Title: ",
+        "directory": "Directory: ",
+        "truncated": "(Transcript truncated to the most recent messages.)",
+        "roles": {"user": "User", "assistant": "Assistant", "activity": "Activity", "error": "Error"},
+        "sep": ": ",
+        "continue": "The transcript above was migrated from {label}. Please continue from this context.",
+    },
+}
+
+
+def migration_transcript(view, max_messages=MIGRATION_MAX_MESSAGES, max_chars=MIGRATION_MAX_CHARS):
+    """Flatten a normalized view into (role, text) entries, biased to the tail.
+
+    User/assistant turns keep their full text; activities collapse to a
+    one-line summary (title plus the first text line), outputs are dropped.
+    """
+    entries = []
+    for turn in view.get('turns') or []:
+        for message in turn.get('messages') or []:
+            role = message.get('role')
+            text = str(message.get('text') or '').strip()
+            if role in ('user', 'assistant'):
+                if text:
+                    entries.append((role, text))
+            elif role in ('activity', 'error'):
+                title = str(message.get('title') or message.get('kind') or '').strip()
+                first = text.split('\n', 1)[0][:120]
+                summary = title + (('：' + first) if first else '') if title else first
+                if summary:
+                    entries.append((role, summary))
+    capped = [(role, text if len(text) <= MIGRATION_ENTRY_CHARS else text[:MIGRATION_ENTRY_CHARS] + '…')
+              for role, text in entries]
+    dropped = len(capped) - min(len(capped), max_messages)
+    kept, total = [], 0
+    for entry in reversed(capped[-max_messages:]):
+        size = len(entry[1]) + 8
+        if kept and total + size > max_chars:
+            break
+        kept.append(entry)
+        total += size
+    kept.reverse()
+    dropped += len(capped[-max_messages:]) - len(kept)
+    return kept, dropped > 0
+
+
+def migration_message(source_label, view, ui_locale=None):
+    texts = MIGRATION_TEXTS[normalize_ui_locale(ui_locale)]
+    entries, truncated = migration_transcript(view)
+    lines = [texts['header'].format(label=source_label),
+             texts['title'] + str(view.get('title') or ''),
+             texts['directory'] + str(view.get('cwd') or '')]
+    if truncated:
+        lines.append(texts['truncated'])
+    lines.append('')
+    roles, sep = texts['roles'], texts['sep']
+    lines.extend(roles.get(role, role) + sep + text for role, text in entries)
+    lines.append('')
+    lines.append(texts['continue'].format(label=source_label))
+    return '\n'.join(lines)
 
 
 class LiveSession:
@@ -428,6 +506,45 @@ class Bridge:
             opened = self.adapter.open_created(entry['id'], entry['host'])
             return {'id': entry['id'], 'host': entry['host'], 'opened': opened,
                     'message': '已创建，正在连接桌面 App' if opened else '聊天已创建，请在电脑 App 打开后重新连接'}
+
+    @operation
+    def migrate(self, thread_id, target, project_key=None, request_id='', ui_locale=None):
+        """Copy this chat's context into a new session on another (or the same) agent.
+
+        The source chat is read-only. The new chat is created through the
+        target's create_chat (idempotent by request_id) and the transcript is
+        injected as its first message with a request-id-derived submission id,
+        so a retry of the same migration never duplicates either step.
+        """
+        if not isinstance(request_id, str):
+            raise ValueError('迁移请求标识无效')
+        uuid.UUID(request_id)
+        view = self.view(thread_id)
+        projects = target.adapter.projects()
+        if project_key:
+            project = next((p for p in projects if p['key'] == project_key), None)
+            if project is None:
+                raise ValueError('请选择目标 Agent 中已保存的项目')
+        elif view.get('cwd'):
+            project = next((p for p in projects if p.get('cwd') == view['cwd']), None)
+            if project is None:
+                raise ValueError('目标 Agent 没有与源会话相同目录的项目，请先在目标 Agent 添加该项目')
+        else:
+            raise ValueError('源会话缺少目录信息，无法匹配目标项目')
+        title = (view.get('title') or '').strip()[:120] or '未命名聊天'
+        created = target.create_chat(project['key'], title, request_id)
+        new_id = created['id']
+        result = {'id': new_id, 'host': created.get('host', 'local'), 'agent': target.adapter.kind,
+                  'project': project['key'], 'status': 'created', 'sent': False}
+        submission_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'mobile-bridge:migrate:' + request_id))
+        try:
+            target.send(new_id, migration_message(self.adapter.label, view, ui_locale), submission_id,
+                        'send', [], ui_locale=ui_locale)
+        except (IPCError, AcpError, ValueError) as exc:
+            result['warning'] = str(exc)
+            return result
+        result.update(status='sent', sent=True)
+        return result
 
     def _save_actions(self):
         target = self.actions_path.with_suffix('.tmp')

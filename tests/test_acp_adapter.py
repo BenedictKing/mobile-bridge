@@ -417,6 +417,31 @@ class AcpHttpTests(unittest.TestCase):
         self.assertEqual(view['agent'], 'kimi')
         self.assertIn(self.SID_K, self.bridge_k.listed)
 
+    def test_view_lists_enabled_agents(self):
+        status, view = self.request('GET', '/api/sessions/' + self.SID_K)
+        self.assertEqual(status, 200)
+        self.assertEqual(view['agents'], [{'kind': 'codex', 'label': 'ACP Agent'},
+                                          {'kind': 'kimi', 'label': 'Kimi'}])
+
+    def test_migrate_creates_target_session_and_injects_transcript(self):
+        self.fake_k.list_rows.append({'sessionId': 'session_kimi_alpha', 'cwd': '/alpha',
+                                      'title': 'A', 'updatedAt': UPDATED})
+        status, body = self.request('POST', '/api/sessions/' + self.SID_A + '/migrate',
+                                    {'agent': 'kimi', 'id': str(uuid.uuid4())})
+        self.assertEqual(status, 200)
+        self.assertEqual(body['agent'], 'kimi')
+        self.assertEqual(body['status'], 'sent')
+        self.assertTrue(body['sent'])
+        prompts = [r for r in self.fake_k.requests if r['method'] == 'session/prompt']
+        self.assertEqual(len(prompts), 1)
+        text = prompts[0]['params']['prompt'][0]['text']
+        self.assertIn('【从 ACP Agent 迁移的会话】', text)
+        self.assertIn('目录：/alpha', text)
+        status, body = self.request('POST', '/api/sessions/' + self.SID_A + '/migrate',
+                                    {'agent': 'bogus', 'id': str(uuid.uuid4())})
+        self.assertEqual(status, 400)
+        self.assertEqual(body['error'], '未知的 Agent 类型')
+
 
 class RegistryProbeTests(unittest.TestCase):
     """bridge_for probes agent-native stores when the listed sets are cold."""

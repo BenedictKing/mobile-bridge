@@ -38,6 +38,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/activity.js": ("activity.js", "text/javascript; charset=utf-8"),
           "/fast-mode.js": ("fast-mode.js", "text/javascript; charset=utf-8"),
           "/accounts.js": ("accounts.js", "text/javascript; charset=utf-8"),
+          "/migrate.js": ("migrate.js", "text/javascript; charset=utf-8"),
           "/account.js": ("account.js", "text/javascript; charset=utf-8"),
           "/account.css": ("account.css", "text/css; charset=utf-8"),
           "/presentation.js": ("presentation.js", "text/javascript; charset=utf-8"),
@@ -52,7 +53,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
           "/icon.png": ("icon.png", "image/png")}
-THREAD_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|poll|timeline|changes|detail|notifications|uploads|message-action|rename))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate))?$")
 FONT_ROUTE = re.compile(r"^/vendor/katex/fonts/(KaTeX_[A-Za-z0-9_-]+\.(woff2|woff|ttf))$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/thumb$")
@@ -482,7 +483,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.changes(bridge, thread_id, int(query.get('after', ['-1'])[0]),
                                         query.get('epoch', [''])[0], query.get('start', [''])[0])
                 if action is None:
-                    return self.output(200, bridge.view(thread_id, background=True))
+                    result = bridge.view(thread_id, background=True)
+                    registry = self.server.registry
+                    if registry is not None:
+                        result['agents'] = [{'kind': kind, 'label': registry.for_agent(kind).adapter.label}
+                                            for kind in registry.kinds()]
+                    return self.output(200, result)
                 if action == "catalog":
                     kind = query.get("kind", [None])[0]
                     try:
@@ -511,6 +517,19 @@ class Handler(BaseHTTPRequestHandler):
                                      attachments=body.get('attachments'), ui_locale=body.get("uiLocale"))
             elif action == "rename":
                 result = bridge.rename(thread_id, body.get("title"))
+            elif action == "migrate":
+                registry = self.server.registry
+                target_kind = body.get('agent')
+                if registry is None:
+                    if target_kind not in (None, 'codex'):
+                        raise ValueError('未知的 Agent 类型')
+                    target = self.server.bridge
+                else:
+                    try:
+                        target = registry.for_agent(target_kind)
+                    except KeyError:
+                        raise ValueError('未知的 Agent 类型') from None
+                result = bridge.migrate(thread_id, target, body.get('project'), body.get('id', ''), body.get('uiLocale'))
             elif action == "settings":
                 if 'fastMode' in body and not isinstance(body['fastMode'], bool):
                     raise ValueError('Fast 模式开关无效')

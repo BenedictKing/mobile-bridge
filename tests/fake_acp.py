@@ -208,8 +208,12 @@ class FakeAcpAgent:
 
     def _method_session_new(self, state, ident, params):
         self.session_count += 1
+        session_id = f'fake-{self.session_count}'
+        # A real agent lists a session right after session/new.
+        self.list_rows.append({'sessionId': session_id, 'cwd': params.get('cwd') or '',
+                               'title': '', 'updatedAt': '2026-01-02T03:04:05Z'})
         self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {
-            'sessionId': f'fake-{self.session_count}',
+            'sessionId': session_id,
             'configOptions': self.config_options,
             'modes': self.modes,
         }})

@@ -145,6 +145,10 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 多 Agent 也可用环境变量启用：`--agents` 未显式给出时读 `MOBILE_BRIDGE_AGENTS`（逗号分隔），未设置默认 codex。桌面打包 App 因此无需改动即可注入多 Agent（macOS 可用 `launchctl setenv` 后启动 App）；PyInstaller 静态分析跟随函数内的条件 import，`bridge/agents/` 全部模块随包打进。
 
+### 会话迁移
+
+`POST /api/sessions/<sid>/migrate`（body `{agent, project?, id, uiLocale?}`）把当前会话的上下文搬到另一个（或同一个）Agent 的新会话。源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 把 turns 摊平成角色标注的转录——user/assistant 保留全文，activity 压缩成"标题+首行"一行，输出丢弃；上限为最近 20 条且总量 30k 字符（单条 4k 截断），超出从头部丢弃并注明。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`，匹配不到返回错误由前端提示；也可显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。前端入口在聊天详情弹层，按 view 注入的 `agents` 列表列出当前以外的已启用 Agent。
+
 ### 能力矩阵
 
 | 能力 | Codex | Kimi | MiniMax |
