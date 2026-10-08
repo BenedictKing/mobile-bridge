@@ -1,3 +1,10 @@
+## 多 Agent 增强：断续跑恢复与打包启用（2026-10-08，未发布）
+
+- 断续跑恢复：网关启动时 `Notifications.resume_watched`（`bridge/notifications.py`）后台遍历 watched 列表，仅对 Registry 路由到非 codex bridge 的会话做 `session(background=True)` 重连并置 watched；单个会话失败只记日志不阻塞其余，codex 会话跳过（桌面 App 自持）。进行中的 turn 不恢复，属预期语义。
+- 打包多 Agent：`run.py --agents` 默认值改为读 `MOBILE_BRIDGE_AGENTS` 环境变量（沿用 `CODEX_HOME` 的既有 env 默认模式），未设置仍为 codex；`desktop.argv()` 与打包结构不变，PyInstaller 静态跟随函数内条件 import，agent 模块本就在包内。解析/校验抽到 `run.agent_kinds`。
+- 自动检查：Python 全量套件 520 项通过、10 项平台条件跳过（新增 resume 2 项与 agents 解析 2 项）；Desktop/Web Node 146 项通过。
+- 未做真机验证：重启后 watched 会话重连未跑真机冒烟；打包 App 注入环境变量未在签名包上实测。
+
 ## 多 Agent 适配验证（2026-10-08，未发布）
 
 - 范围：`--agents codex,kimi,mcode` 多后端接入（Kimi Code CLI 与 MiniMax mcode 走 ACP，Codex 走桌面 IPC），含适配层、HTTP 路由、前端 capability 门控、ACP 审批卡片与通知链路。
@@ -7,9 +14,9 @@
 - 路由修复：重启或直接深链打开未列表过的 ACP 会话时，`Registry.bridge_for` 探测各 ACP adapter 的 `session_meta` 并缓存命中，不再落入 codex 的 UUID 校验误报 400；`create_chat` 新建会话后立即标记 `listed`。
 - 通知链路：watch/policy 接受非 UUID 会话标识（字符集 `[A-Za-z0-9._-]`，排除策略键分隔符 `|`），经 Registry 路由到对应 bridge；推送标题按 adapter `label` 显示 Agent 名称（如「Kimi 需要你的确认」）；ACP 会话依赖显式关注，SQLite 全局候选发现保持 codex-only。
 - 前端门控：view.capabilities 驱动 steer/goal/Skill 显隐，fork/edit/Fast/完整历史随既有 per-row 与目录标志天然正确；审批卡片按 agent 返回的 options 动态渲染；状态文案与时间线标题按 agent 显示名称。
-- 桌面打包结构未改：PyInstaller 静态跟随条件 import，`bridge/agents/` 全部模块随包打进；桌面 App 固定只接入 codex，多 Agent 需源码运行。
+- 桌面打包结构未改：PyInstaller 静态跟随条件 import，`bridge/agents/` 全部模块随包打进；桌面 App 默认只接入 codex，多 Agent 可经 `MOBILE_BRIDGE_AGENTS` 环境变量启用（见上方增强记录）。
 - 自动检查：Python 全量套件 516 项通过、10 项平台条件跳过；Desktop/Web Node 146 项通过；`tests/markdown.test.js` 与 `tests/math.test.js` 因依赖浏览器 DOM 在无 DOM 环境下失败，为上游既有问题，与本次改动无关。
-- 未做：ACP 会话任务存续依赖网关进程的限制仅文档明示，未实现断续跑；Claude/ZCode 等其他 ACP Agent 未接入；未构建或签名任何平台安装包，未推送远端。
+- 未做：Claude/ZCode 等其他 ACP Agent 未接入；未构建或签名任何平台安装包，未推送远端。
 
 ## v1.4.0 发布候选检查（2026-10-06）
 

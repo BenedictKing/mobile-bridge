@@ -141,7 +141,9 @@ view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门�
 
 ### 生命周期限制
 
-ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断；重启后历史可经 `session/load` 回放恢复阅读，但未完成运行不会续跑。codex 会话不受此限（任务由桌面 App 持有）。
+ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）。
+
+多 Agent 也可用环境变量启用：`--agents` 未显式给出时读 `MOBILE_BRIDGE_AGENTS`（逗号分隔），未设置默认 codex。桌面打包 App 因此无需改动即可注入多 Agent（macOS 可用 `launchctl setenv` 后启动 App）；PyInstaller 静态分析跟随函数内的条件 import，`bridge/agents/` 全部模块随包打进。
 
 ### 能力矩阵
 

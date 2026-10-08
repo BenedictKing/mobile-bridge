@@ -310,7 +310,9 @@ python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode
 
 The corresponding CLI (`kimi` / `mcode`) must be installed on PATH and signed in. The gateway spawns these agents as child processes; the phone chat list groups sessions by agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`.
 
-Note: Kimi/MiniMax runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns (history is preserved). Codex runs are owned by the desktop App and survive gateway restarts. The packaged desktop App always serves Codex only; multiple agents require running from source.
+Note: Kimi/MiniMax runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns for good (history is preserved). After a gateway restart, sessions with notification watches re-attach automatically in the background; unwatched sessions reconnect when you open the chat. Codex runs are owned by the desktop App and survive gateway restarts.
+
+The packaged desktop App still serves Codex only by default. To enable multiple agents there, inject the environment variable before launching it (same value syntax as `--agents`): on macOS run `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` and then open the App, or start it from a terminal with `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`. An explicit `--agents` argument takes precedence.
 
 ## Temporary HTTPS and existing proxies
 

@@ -74,6 +74,13 @@ def save_config(path, config):
     temp.replace(path)
 
 
+def agent_kinds(value):
+    kinds = [k.strip() for k in value.split(',') if k.strip()]
+    if not kinds or any(k not in ('codex', 'kimi', 'mcode') for k in kinds):
+        raise ValueError("--agents 目前仅支持 codex、kimi 与 mcode")
+    return kinds
+
+
 def main(connections=None, connection_secrets=None):
     connection_secrets = connection_secrets or {}
     # Redirected Windows streams may use a codec that cannot encode Chinese.
@@ -95,11 +102,12 @@ def main(connections=None, connection_secrets=None):
     parser.add_argument("--set-password", action="store_true", help="交互式设置登录密码，不启动服务")
     parser.add_argument("--no-auth", action="store_true", help="本次运行明确关闭账号密码验证")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
-    parser.add_argument("--agents", default="codex", help="启用的 Agent 类型（逗号分隔，支持 codex、kimi 与 mcode）")
+    parser.add_argument("--agents", default=os.environ.get("MOBILE_BRIDGE_AGENTS", "codex"), help="启用的 Agent 类型（逗号分隔，支持 codex、kimi 与 mcode；默认读 MOBILE_BRIDGE_AGENTS 环境变量）")
     args = parser.parse_args()
-    kinds = [k.strip() for k in args.agents.split(',') if k.strip()]
-    if not kinds or any(k not in ('codex', 'kimi', 'mcode') for k in kinds):
-        parser.error("--agents 目前仅支持 codex、kimi 与 mcode")
+    try:
+        kinds = agent_kinds(args.agents)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not 1 <= args.port <= 65535:
         parser.error("端口必须为 1–65535")
     if args.ssh_target:
@@ -261,6 +269,9 @@ def main(connections=None, connection_secrets=None):
             tunnel_thread = threading.Thread(target=connect_tunnel, daemon=True)
             tunnel_thread.start()
         notifications.start()
+        # Watched ACP sessions respawn their agents in the background; Codex
+        # chats stay with the desktop App and are skipped by the registry.
+        threading.Thread(target=notifications.resume_watched, daemon=True).start()
         address_notifications.start()
         control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control)
         for listener in servers[1:]:

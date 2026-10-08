@@ -308,6 +308,22 @@ class AcpAdapterTests(unittest.TestCase):
                 run.main()
         self.assertEqual(ctx.exception.code, 2)
 
+    def test_agent_kinds_parsing(self):
+        import run
+        self.assertEqual(run.agent_kinds('codex,kimi'), ['codex', 'kimi'])
+        self.assertEqual(run.agent_kinds(' kimi , mcode ,,'), ['kimi', 'mcode'])
+        for bad in ('', ',,', 'bogus', 'codex,claude'):
+            with self.assertRaises(ValueError):
+                run.agent_kinds(bad)
+
+    def test_agents_default_reads_environment(self):
+        import run
+        with patch.dict('os.environ', {'MOBILE_BRIDGE_AGENTS': 'bogus'}):
+            with patch('sys.argv', ['run.py']):
+                with self.assertRaises(SystemExit) as ctx:
+                    run.main()
+        self.assertEqual(ctx.exception.code, 2)
+
 
 class AcpHttpTests(unittest.TestCase):
     """Registry routing across two ACP bridges served by one GatewayServer."""
@@ -464,9 +480,9 @@ class AcpNotificationTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         save_settings(root / 'n', {'enabled': True, 'topic': 'test', 'token': 'secret-token'})
-        fake = FakeAcpAgent(list_rows=[{'sessionId': SID, 'cwd': '/work',
-                                        'title': 'Old', 'updatedAt': UPDATED}])
-        adapter = KimiAdapter('fake-acp', data_dir=root / 'k', spawn=fake.spawn_factory())
+        self.fake = FakeAcpAgent(list_rows=[{'sessionId': SID, 'cwd': '/work',
+                                            'title': 'Old', 'updatedAt': UPDATED}])
+        adapter = KimiAdapter('fake-acp', data_dir=root / 'k', spawn=self.fake.spawn_factory())
         self.bridge_k = Bridge(root, root / 'k', adapter=adapter)
         self.addCleanup(self.bridge_k.close)
 
@@ -479,12 +495,22 @@ class AcpNotificationTests(unittest.TestCase):
                                                     'session_meta': staticmethod(session_meta)})()
             def for_host(self, host):
                 return self
+            def session(self, thread, **kwargs):
+                raise AssertionError('codex sessions must not be resumed')
         self.codex = CodexSource()
         registry = Registry()
         registry.register('codex', self.codex)
         registry.register('kimi', self.bridge_k)
         self.manager = Notifications(self.codex, root / 'n', registry=registry)
         self.addCleanup(self.manager.close)
+
+    def wait_for(self, predicate, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
 
     def test_watch_and_policy_accept_acp_session_ids(self):
         row = self.manager.watch(SID, 'local', True)
@@ -506,6 +532,35 @@ class AcpNotificationTests(unittest.TestCase):
     def test_notification_heading_uses_agent_label(self):
         self.assertEqual(self.manager._label_for(SID, 'local'), 'Kimi')
         self.assertEqual(self.manager._label_for(str(uuid.uuid4()), 'local'), 'Codex')
+
+    def test_resume_watched_reattaches_acp_sessions_and_skips_codex(self):
+        from bridge.notifications import write_json
+        sid2 = 'session_second_001'
+        self.fake.list_rows.append({'sessionId': sid2, 'cwd': '/work',
+                                    'title': 'Second', 'updatedAt': UPDATED})
+        self.manager.data_dir.mkdir(parents=True, exist_ok=True)
+        write_json(self.manager.data_dir/'notification-watches.json', [
+            {'id': SID, 'host': 'local'},
+            {'id': str(uuid.uuid4()), 'host': 'local'},       # Codex: skipped.
+            {'id': sid2, 'host': 'bogus-host'},               # Fails, must not block.
+            {'id': sid2, 'host': 'local'},
+        ])
+        with self.assertLogs('bridge.notifications', level='ERROR'):
+            self.manager.resume_watched()
+        for sid in (SID, sid2):
+            session = self.bridge_k.live.get(sid)
+            self.assertIsNotNone(session)
+            self.assertTrue(session.watched)
+            self.assertIs(self.manager.attached[('local', sid)], session)
+            self.assertTrue(self.wait_for(lambda: session.connected))
+        self.assertNotIn(('bogus-host', sid2), self.manager.attached)
+
+    def test_resume_watched_without_registry_is_a_noop(self):
+        from bridge.notifications import Notifications
+        manager = Notifications(self.codex, self.manager.data_dir)
+        self.addCleanup(manager.close)
+        manager.resume_watched()  # Single-agent installs have nothing to resume.
+        self.assertEqual(manager.attached, {})
 
 
 if __name__ == '__main__':

@@ -2,6 +2,7 @@
 import hashlib
 from .validation import FieldError, at_field
 import json
+import logging
 import re
 import threading
 import time
@@ -212,6 +213,32 @@ class Notifications:
     def start(self):
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
+
+    def resume_watched(self):
+        """Re-attach watched ACP sessions after a gateway restart.
+
+        Codex chats are owned by the desktop App and need no resume; only
+        sessions the registry routes to another bridge are re-attached.
+        A failing session is logged and must not block the rest. Attach spawns
+        the agent process, so callers should run this off the startup path.
+        """
+        if self.registry is None or self.bridge is None:
+            return
+        for row in self.watches():
+            if self.closed.is_set():
+                return
+            thread_id, host = row.get('id'), row.get('host', 'local')
+            if not thread_id:
+                continue
+            found = self.registry.bridge_for(thread_id)
+            if found is None or found is self.bridge:
+                continue
+            try:
+                session = found.for_host(host).session(thread_id, background=True)
+                session.watched = True
+                self.attached[(host, thread_id)] = session
+            except Exception:
+                logging.getLogger(__name__).exception('Watched agent session resume failed: %s', thread_id)
 
     def close(self):
         self.closed.set()
