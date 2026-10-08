@@ -4,6 +4,7 @@ import os
 import queue
 import subprocess
 import threading
+import time
 
 
 class FakeChildProcess:
@@ -51,7 +52,7 @@ class FakeAcpAgent:
     """Scriptable ACP peer running in a daemon thread."""
 
     def __init__(self, *, capabilities=None, agent_info=None, auth_methods=None,
-                 config_options=None, modes=None, list_rows=None):
+                 config_options=None, modes=None, list_rows=None, extensions=None):
         self.capabilities = capabilities if capabilities is not None else {
             'loadSession': True,
             'sessionCapabilities': {'list': {}, 'resume': {}, 'close': {}},
@@ -59,6 +60,7 @@ class FakeAcpAgent:
         }
         self.agent_info = agent_info if agent_info is not None else {'name': 'fake-acp', 'version': '0.0.1'}
         self.auth_methods = auth_methods if auth_methods is not None else []
+        self.extensions = extensions  # e.g. ['mcode/session/steer', 'mcode/session/goal/get']
         self.config_options = config_options if config_options is not None else [
             {'id': 'model', 'name': 'Model', 'type': 'select', 'options': []},
         ]
@@ -74,12 +76,16 @@ class FakeAcpAgent:
         self.cancelled = False
         self.permission_outcome = None
         self.session_count = 0
+        self.config_echo_all = True
         self.requests = []
         self.children = []
         self.spawned_argv = None
         self.closed_sessions = []
         self.config_values = {}
         self.mode_values = []
+        self.steer_texts = []
+        self.goal = None
+        self.queue_items = []
         self._write_lock = threading.Lock()
         self._responses_lock = threading.Lock()
         self._client_responses = {}
@@ -190,12 +196,15 @@ class FakeAcpAgent:
         handler(state, ident, params)
 
     def _method_initialize(self, state, ident, params):
-        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {
+        result = {
             'protocolVersion': 1,
             'agentCapabilities': self.capabilities,
             'agentInfo': self.agent_info,
             'authMethods': self.auth_methods,
-        }})
+        }
+        if self.extensions is not None:
+            result['_meta'] = {'minimax-code/extensions': {'version': 1, 'methods': self.extensions}}
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': result})
 
     def _method_session_new(self, state, ident, params):
         self.session_count += 1
@@ -225,8 +234,11 @@ class FakeAcpAgent:
         for option in self.config_options:
             if isinstance(option, dict) and option.get('id') == params.get('configId'):
                 option['currentValue'] = params.get('value')
+        options = self.config_options
+        if not self.config_echo_all:
+            options = [o for o in options if isinstance(o, dict) and o.get('id') == params.get('configId')]
         self._reply(state, {'jsonrpc': '2.0', 'id': ident,
-                            'result': {'configOptions': self.config_options}})
+                            'result': {'configOptions': options}})
 
     def _method_session_set_mode(self, state, ident, params):
         self.mode_values.append(params.get('modeId'))
@@ -258,6 +270,40 @@ class FakeAcpAgent:
         self._cancel_turn.set()
         if ident is not None:
             self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {}})
+
+    def _method_mcode_session_steer(self, state, ident, params):
+        self.steer_texts.append(params.get('text'))
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident,
+                            'result': {'turnId': 'fake-turn', 'mode': 'steered'}})
+
+    def _method_mcode_session_goal_get(self, state, ident, params):
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {'goal': self.goal}})
+
+    def _method_mcode_session_goal_create(self, state, ident, params):
+        now = int(time.time() * 1000)
+        self.goal = {'goalId': 'tg_fake', 'sessionId': params.get('sessionId'),
+                     'objective': params.get('objective'), 'status': 'active',
+                     'createdAt': now, 'updatedAt': now, 'tokenBudget': None}
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {'goal': self.goal}})
+
+    def _method_mcode_session_goal_patch(self, state, ident, params):
+        if self.goal is None:
+            self._reply(state, {'jsonrpc': '2.0', 'id': ident,
+                                'error': {'code': -32002, 'message': 'Resource not found'}})
+            return
+        for key in ('objective', 'status', 'tokenBudget'):
+            if key in params:
+                self.goal[key] = params[key]
+        self.goal['updatedAt'] = int(time.time() * 1000)
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {'goal': self.goal}})
+
+    def _method_mcode_session_goal_clear(self, state, ident, params):
+        self.goal = None
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {'cleared': True}})
+
+    def _method_mcode_session_queue_list(self, state, ident, params):
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident,
+                            'result': {'items': list(self.queue_items)}})
 
     def _ask_permission(self, state, session_id, params):
         with self._responses_lock:

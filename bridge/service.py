@@ -1228,7 +1228,7 @@ class Bridge:
                 objective=objective, status=status, ui_locale=ui_locale, expected=expected)
             if response.get('confirmed') and action in ('pause', 'cancel', 'edit'):
                 self._cancel_goal_activation_queues(thread_id)
-            if action == 'resume':
+            if action == 'resume' and self.adapter.goal_needs_activation:
                 response['activation'] = self._send_goal_activation(session, response, action)
             with session.condition:
                 session.changed()
@@ -1315,8 +1315,9 @@ class Bridge:
                 result = {"status": "unknown" if response.get("status") == "unknown" else "accepted",
                           "confirmed": bool(response.get("confirmed")), "duplicate": bool(response.get("duplicate")),
                           "id": submission_id, "result": response.get("result")}
-                result["activation"] = self._send_goal_activation(
-                    session, response, "create", ui_locale or activation.get("uiLocale") if activation else ui_locale)
+                if self.adapter.goal_needs_activation:
+                    result["activation"] = self._send_goal_activation(
+                        session, response, "create", ui_locale or activation.get("uiLocale") if activation else ui_locale)
                 return result
         session = self._target(thread_id)
         selected = self._resolve_skills(session, [] if skills is None else skills)

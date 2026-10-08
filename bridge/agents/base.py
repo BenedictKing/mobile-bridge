@@ -30,6 +30,8 @@ class AgentAdapter:
     kind = 'base'
     label = 'Agent'
     capabilities = frozenset()
+    # Whether a confirmed goal create/resume needs a bridge-sent activation turn.
+    goal_needs_activation = True
 
     def __init__(self):
         self.bridge = None

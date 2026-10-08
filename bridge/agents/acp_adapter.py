@@ -545,6 +545,8 @@ class AcpAdapter(AgentAdapter):
                                          'value': value}, timeout=30) or {}
         updated = [o for o in result.get('configOptions') or [] if isinstance(o, dict)]
         if updated:
+            # The response is authoritative: mcode 0.5.5 drops thought_level for
+            # models without reasoning-effort support, and that must propagate.
             handle.config_options = updated
         else:
             for option in handle.config_options:

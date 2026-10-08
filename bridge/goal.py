@@ -184,7 +184,12 @@ def goal_activation(thread_id, goal, action, ui_locale=DEFAULT_UI_LOCALE, transi
     if not identity:
         created = goal.get("createdAtMs") or goal.get("created_at_ms") or goal.get("createdAt")
         identity = f"created:{created}" if created else f"objective:{goal.get('objective', '')}"
-    command_id = str(uuid.uuid5(uuid.UUID(str(thread_id)), f"goal-activation:v1:{action}:{transition_id or identity}"))
+    try:
+        namespace = uuid.UUID(str(thread_id))
+    except ValueError:
+        # ACP agents use non-UUID session ids; keep their namespace separate.
+        namespace = uuid.uuid5(uuid.NAMESPACE_URL, "mobile-bridge:agent:" + str(thread_id))
+    command_id = str(uuid.uuid5(namespace, f"goal-activation:v1:{action}:{transition_id or identity}"))
     return command_id, GOAL_ACTIVATION_TEXTS[normalize_ui_locale(ui_locale)][action]
 
 
