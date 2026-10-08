@@ -198,7 +198,7 @@ def main(connections=None, connection_secrets=None):
                 external[entry['id']] = status
         return entry_urls(preferences, hosts, ready_url(tunnel, args.port, server.instance_id), external)
     address_notifications = AddressNotifications(args.config.parent, notification_urls, server.instance_id)
-    notifications = Notifications(bridge, args.config.parent, lambda: server.origins, lambda: config.get('publicUrl', ''))
+    notifications = Notifications(bridge, args.config.parent, lambda: server.origins, lambda: config.get('publicUrl', ''), registry=registry)
     for listener in servers:
         listener.notifications = notifications
     def stop_signal(signum, frame):

@@ -178,8 +178,9 @@ def channels(config):
 
 
 class Notifications:
-    def __init__(self, bridge, data_dir, origins=lambda: [], public_url=lambda: ''):
+    def __init__(self, bridge, data_dir, origins=lambda: [], public_url=lambda: '', registry=None):
         self.bridge, self.data_dir, self.origins = bridge, Path(data_dir), origins
+        self.registry = registry
         self.public_url = public_url
         self.lock = threading.RLock()
         self.closed = threading.Event()
@@ -223,6 +224,27 @@ class Notifications:
     def watches(self):
         return read_json(self.data_dir/'notification-watches.json', [])
 
+    @staticmethod
+    def _valid_thread_id(thread_id):
+        # Codex ids are UUIDs; ACP agent ids carry prefixes like session_/mvs_.
+        # The charset must exclude '|' to keep the host|id policy key intact.
+        if not isinstance(thread_id, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,128}', thread_id):
+            raise ValueError('会话标识无效')
+
+    def _bridge_for(self, thread_id, host='local'):
+        """Route one watched chat to its agent bridge; Codex stays the default."""
+        if self.registry is not None:
+            found = self.registry.bridge_for(thread_id)
+            if found is not None:
+                return found.for_host(host)
+        return self.bridge.for_host(host)
+
+    def _label_for(self, thread_id, host='local'):
+        try:
+            return self._bridge_for(thread_id, host).adapter.label
+        except Exception:
+            return 'Codex'
+
     def policies(self):
         return read_json(self.data_dir/'notification-policies.json',
                          {'requests': True, 'completion': False, 'chats': {}})
@@ -251,14 +273,14 @@ class Notifications:
         return {**row, 'notifyOnRequest': enabled['requests'], 'notifyOnCompletion': enabled['completion'], 'choices': choices}
 
     def policy(self, thread_id, host, value=None):
-        uuid.UUID(thread_id)
+        self._valid_thread_id(thread_id)
         with self.lock:
             policies = self.policies()
             if value is not None:
                 if not isinstance(value, dict) or set(value) != {'requests', 'completion'} or any(v not in ('inherit', 'on', 'off') for v in value.values()):
                     raise ValueError('聊天通知设置格式不正确')
                 if self.bridge is not None:
-                    self.bridge.for_host(host).store.get(thread_id)
+                    self._bridge_for(thread_id, host).adapter.session_meta(thread_id)
                 self.dormant.discard((host, thread_id))
                 self.wakeup.set()
                 policies.setdefault('chats', {})[host + '|' + thread_id] = value
@@ -283,7 +305,7 @@ class Notifications:
         return [row for row in effective if row['notifyOnRequest'] or row['notifyOnCompletion']]
 
     def watch(self, thread_id, host, enabled=None, notify_on_completion=None, *, existing_only=False):
-        uuid.UUID(thread_id)
+        self._valid_thread_id(thread_id)
         for value in (enabled, notify_on_completion):
             if value is not None and not isinstance(value, bool):
                 raise ValueError('提醒开关格式不正确')
@@ -311,7 +333,7 @@ class Notifications:
                         raise ValueError('最多关注 100 个聊天')
                     session = self.attached.get((host, thread_id)) if existing_only else None
                     if not existing_only and self.bridge is not None:
-                        session = self.bridge.for_host(host).session(thread_id, background=True)
+                        session = self._bridge_for(thread_id, host).session(thread_id, background=True)
                     row = {**(prior or {}), 'id': thread_id, 'host': host, 'notifyOnCompletion': completion}
                     if session is not None:
                         with session.condition:
@@ -406,7 +428,7 @@ class Notifications:
             base = next((o for o in origins if urlsplit(o).hostname not in ('127.0.0.1', 'localhost')), '')
         return base.rstrip('/') + '/#' + thread_id + '~' + quote(host, safe='') if base else ''
 
-    def _send_keys(self, config, row, title, channel, target, keys, completed):
+    def _send_keys(self, config, row, title, channel, target, keys, completed, label='Codex'):
         now = time.time()
         pending = [k for k in keys if not self.ledger.get(k, {}).get('delivered') and now >= self.ledger.get(k, {}).get('next', 0)]
         if not pending:
@@ -414,7 +436,7 @@ class Notifications:
         current = self._effective(row)
         if not current['notifyOnCompletion' if completed else 'notifyOnRequest']:
             return False
-        heading = 'Codex 运行已完成' if completed else 'Codex 需要你的确认'
+        heading = f'{label} 运行已完成' if completed else f'{label} 需要你的确认'
         body = f'有 {len(pending)} 次运行已完成，请打开聊天查看。' if completed else f'有 {len(pending)} 项请求等待处理，请打开聊天查看。'
         if config['includeTitle']:
             body = title[:120] + '\n' + body
@@ -464,11 +486,12 @@ class Notifications:
                     continue
                 channel = next(c for c, t in targets.items() if t == target)
                 keys = [self._delivery_key(row, turn, completion=True, target=target) for turn in record['pending']]
-                changed = self._send_keys(config, row, record.get('title') or '聊天', channel, target, keys, True) or changed
+                changed = self._send_keys(config, row, record.get('title') or '聊天', channel, target, keys, True,
+                                          self._label_for(row['id'], row['host'])) or changed
         selected = {(r['host'], r['id']) for r in watches}
         for key in set(self.attached) - selected:
             session = self.attached[key]
-            source = self.bridge.for_host(key[0])
+            source = self._bridge_for(key[1], key[0])
             if hasattr(source, 'release_notification_session'):
                 if not source.release_notification_session(session):
                     continue
@@ -482,7 +505,7 @@ class Notifications:
             if self.closed.is_set():
                 break
             try:
-                source = self.bridge.for_host(row['host'])
+                source = self._bridge_for(row['id'], row['host'])
                 session = source.notification_session(row['id']) if hasattr(source, 'notification_session') else source.session(row['id'], background=True)
                 session.watched = True
                 self.attached[(row['host'], row['id'])] = session
@@ -511,7 +534,8 @@ class Notifications:
                 for channel, target in targets.items():
                     with self.lock:
                         for completed, keys in ((False, [self._delivery_key(row, r['id'], target=target) for r in requests]), (True, completed_keys[channel])):
-                            changed = self._send_keys(config, row, title, channel, target, keys, completed) or changed
+                            changed = self._send_keys(config, row, title, channel, target, keys, completed,
+                                                      self._label_for(row['id'], row['host'])) or changed
                 if hasattr(source, 'release_notification_session'):
                     # Keep only live tasks and approvals attached. Completion retry
                     # records above are independent of the thread subscription.

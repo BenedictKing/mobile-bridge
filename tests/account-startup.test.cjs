@@ -91,6 +91,30 @@ test('computer approval buttons send precisely the selected persistence and reta
  }
 });
 
+test('ACP permission cards render agent-provided options and post optionId or cancel',async()=>{
+ const ui=await fixture(r=>r(official));
+ ui.run("currentId='session_abc';currentHost='local';submittedRequestIds.clear();renderApprovals([{id:0,method:'acp/requestPermission',supported:true,params:{title:'Bash',command:'echo hi',options:[{id:'approve_once',label:'Approve once',kind:'allow_once'},{id:'approve_always',label:'Approve for this session',kind:'allow_always'},{id:'reject',label:'Reject',kind:'reject_once'}]}}])");
+ const all=n=>[n,...n.children.flatMap(all)];
+ let card=ui.nodes.get('approvals');
+ assert.ok(all(card).some(n=>n.textContent==='权限请求'));
+ assert.ok(all(card).some(n=>n.textContent==='Bash'));
+ assert.ok(all(card).some(n=>n.textContent==='echo hi'));
+ const approve=all(card).find(n=>n.textContent==='Approve once');assert.ok(approve);
+ assert.ok(all(card).find(n=>n.textContent==='Approve for this session'));
+ assert.ok(all(card).find(n=>n.textContent==='Reject'));
+ assert.ok(all(card).find(n=>n.textContent==='取消'));
+ await approve.onclick();
+ assert.equal(ui.responses.at(-1).requestId,0);
+ assert.deepEqual(ui.responses.at(-1).response,{optionId:'approve_once'});
+ assert.match(ui.requests.at(-1),/session_abc\/respond/);
+ ui.run("submittedRequestIds.clear();renderApprovals([{id:7,method:'acp/requestPermission',supported:true,params:{title:'Write',command:'',options:[{id:'approve_once',label:'Approve once',kind:'allow_once'}]}}])");
+ card=ui.nodes.get('approvals');
+ const cancel=all(card).find(n=>n.textContent==='取消');assert.ok(cancel);
+ await cancel.onclick();
+ assert.equal(ui.responses.at(-1).requestId,7);
+ assert.deepEqual(ui.responses.at(-1).response,{cancel:true});
+});
+
 test('API chat picker shows upstream Gemini models and requires replacing the unavailable old model explicitly',async()=>{
  const catalog={models:[{id:'gemini-fixture',name:'gemini-fixture',efforts:[]}],skills:[],modelSource:'api',currentModel:'gpt-old',fastMode:{allowed:false}};
  const ui=await fixture(r=>r(official),'api',catalog);

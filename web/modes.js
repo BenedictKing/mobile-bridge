@@ -39,12 +39,14 @@ class WorkModes {
   render(view=this.view,sendMode=this.sendMode,sending=this.sending) {
     this.view=view;this.sendMode=sendMode;this.sending=!!sending;
     const busy=this.busy();
-    const t=BridgeI18n.t,goalSupported=!!view&&view.host==='local'&&view.goalRuntimeAvailable!==false;
-    const goalUnavailableReason=!view||view.host!=='local'?'目标模式暂不支持 SSH 主机':'未找到桌面 App 的 Codex 运行时';
+    const t=BridgeI18n.t,hasGoals=(view?.capabilities||[]).includes('goals');
+    const goalSupported=hasGoals&&!!view&&view.host==='local'&&view.goalRuntimeAvailable!==false;
+    const goalUnavailableReason=!hasGoals?'当前 Agent 不支持目标模式':!view||view.host!=='local'?'目标模式暂不支持 SSH 主机':'未找到桌面 App 的 Codex 运行时';
     this.select.value=this.selection||(view?.collaborationMode==='plan'?'plan':'default');
     if(!goalSupported&&this.select.value==='goal')this.select.value='default';
     this.select.disabled=!view||view.loadingHistory||view.activating||busy||sendMode==='steer';
     const goalOption=this.select.querySelector('[value=goal]');
+    goalOption.hidden=!hasGoals;
     goalOption.disabled=!goalSupported||!!(view?.status==='active'||(view?.goal&&view.goal.status!=='complete')||['pending','unknown'].includes(view?.goalSubmission?.status));
     goalOption.title=t(goalSupported?'':goalUnavailableReason);
     this.hint.textContent=t(sendMode==='steer'?'补充内容沿用当前任务模式':this.select.value==='plan'?'先讨论并制定计划，确认后执行。':this.select.value==='goal'?(goalSupported?'设定目标后持续执行，直到完成、暂停或取消。':goalUnavailableReason):'');

@@ -13,7 +13,7 @@ function fixture(saved=new Map()){
   const text=()=>all(goalRoot).map(n=>n.textContent).join('\n');
   return {panel,select,goalOption,hint,goalRoot,goalToggle,text,saved,statusCalls,find:predicate=>all(goalRoot).find(predicate),language:()=>vm.runInContext("BridgeI18n.setLanguage('en')",ctx)};
 }
-const idle={status:'idle',collaborationMode:'default',connected:true,host:'local'};
+const idle={status:'idle',collaborationMode:'default',connected:true,host:'local',capabilities:['goals','steer']};
 test('mode follows desktop until explicitly chosen and is isolated by host/thread',()=>{
   const ui=fixture();ui.panel.open('local|a');ui.panel.render({...idle,collaborationMode:'plan'},'send',false);
   assert.equal(ui.select.value,'plan');ui.select.value='goal';ui.select.onchange();
@@ -68,11 +68,11 @@ test('a new goal is visible, and hidden preferences do not leak across hosts or 
 
 test('paused and active goals expose resume and pause actions',async()=>{
  const ui=fixture();
- ui.panel.render({status:'idle',connected:true,host:'local',goal:{objective:'Work',status:'paused'}},'send',false);
+ ui.panel.render({status:'idle',connected:true,host:'local',capabilities:['goals'],goal:{objective:'Work',status:'paused'}},'send',false);
  const resume=ui.find(n=>(n.className||'').includes('goal-status'));
  assert.ok(resume);await ui.panel.setStatus('paused');
  assert.match(ui.text(),/offline/);
- ui.panel.render({status:'idle',connected:true,host:'local',goal:{objective:'Work',status:'active'}},'send',false);
+ ui.panel.render({status:'idle',connected:true,host:'local',capabilities:['goals'],goal:{objective:'Work',status:'active'}},'send',false);
  const pause=ui.find(n=>(n.className||'').includes('goal-status'));
  assert.ok(pause);await ui.panel.setStatus('active');
  assert.match(ui.text(),/Goal active|目标进行中/);
@@ -80,10 +80,10 @@ test('paused and active goals expose resume and pause actions',async()=>{
 
 test('limited goals can pause and complete goals can be cleared',()=>{
  const ui=fixture();
- ui.panel.render({status:'idle',connected:true,host:'local',goal:{objective:'Work',status:'usageLimited'}},'send',false);
+ ui.panel.render({status:'idle',connected:true,host:'local',capabilities:['goals'],goal:{objective:'Work',status:'usageLimited'}},'send',false);
  assert.match(ui.text(),/目标已达到用量限制/);assert.match(ui.text(),/关闭目标/);
  assert.ok(ui.find(n=>(n.className||'').includes('goal-status')));
- ui.panel.render({status:'idle',connected:true,host:'local',goal:{objective:'Work',status:'complete'}},'send',false);
+ ui.panel.render({status:'idle',connected:true,host:'local',capabilities:['goals'],goal:{objective:'Work',status:'complete'}},'send',false);
  assert.match(ui.text(),/目标已完成/);assert.ok(ui.find(n=>(n.className||'').includes('goal-cancel')));
 });
 
@@ -125,4 +125,17 @@ test('editing is only available paused and preserves draft across streamed rende
  assert.equal(ui.find(n=>n.className==='goal-editor').value,'Revised');
  let payload;ui.panel.onEdit=p=>{payload=p;};await ui.panel.saveEdit();
  assert.equal(payload.objective,'Revised');assert.equal(payload.expected.status,'paused');assert.equal(ui.panel.editing,false);
+});
+test('goal option is hidden when the agent lacks the goals capability',()=>{
+ const ui=fixture();ui.panel.open('local|a');
+ const noGoals={status:'idle',collaborationMode:'default',connected:true,host:'local',capabilities:['steer']};
+ ui.panel.render(noGoals,'send',false);
+ assert.equal(ui.goalOption.hidden,true);assert.equal(ui.goalOption.disabled,true);
+ assert.match(ui.goalOption.title,/当前 Agent 不支持目标模式/);
+ ui.select.value='goal';ui.select.onchange();ui.panel.render(noGoals,'send',false);
+ assert.equal(ui.select.value,'default');
+ ui.language();ui.panel.render(noGoals,'send',false);
+ assert.match(ui.goalOption.title,/does not support goal mode/);
+ ui.panel.render({...idle,goalRuntimeAvailable:true},'send',false);
+ assert.equal(ui.goalOption.hidden,false);assert.equal(ui.goalOption.disabled,false);
 });

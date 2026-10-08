@@ -24,6 +24,12 @@ class NotificationTests(unittest.TestCase):
             {'id': 'approval', 'method': 'item/commandExecution/requestApproval', 'params': {'command': 'secret command'}}]}
         session = self.session
         class Source:
+            def __init__(self):
+                outer = self
+                class Adapter:
+                    def session_meta(self_, identifier):
+                        return outer.store.get(identifier)
+                self.adapter = Adapter()
             def for_host(self, host):
                 if host not in ('local', 'remote'): raise KeyError(host)
                 return self

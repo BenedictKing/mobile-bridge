@@ -1,3 +1,16 @@
+## 多 Agent 适配验证（2026-10-08，未发布）
+
+- 范围：`--agents codex,kimi,mcode` 多后端接入（Kimi Code CLI 与 MiniMax mcode 走 ACP，Codex 走桌面 IPC），含适配层、HTTP 路由、前端 capability 门控、ACP 审批卡片与通知链路。
+- Kimi 真机冒烟（M2）：列表、历史回放、新建会话、发送、重复提交去重、排队、中断全部通过；会话标识为 `session_*` 非 UUID。
+- MiniMax 真机冒烟（M3）：33 项全部通过，含 steer 与 goal 生命周期扩展 RPC；`session/cancel` 必须以 notification 发送（带 id 的 request 形式不被接受）；configOptions/thought_level 按所选模型动态增删；Flash-Preview 的 plain 思考变体上游不可选，属 CLI 侧限制。冒烟产生的 mcode 一次性会话（`mvs_*` 约 10 个）需在 mcode 客户端手工删除。
+- 审批实测（M4，kimi 会话触发 shell 审批）：`view.requests` 项为 `{id: 0（数字）, method: 'acp/requestPermission', supported: true, params: {title, command, options: [{id: 'approve_once', kind: 'allow_once', …}, {id: 'approve_always', kind: 'allow_always', …}, {id: 'reject', kind: 'reject_once'}]}}`；kimi 的 rawInput 无 command 时 command 为空串。响应 POST `{requestId, response: {optionId}}` 返回 200，取消用 `{response: {cancel: true}}`；响应后请求消失、turn 完成、命令真实执行。
+- 路由修复：重启或直接深链打开未列表过的 ACP 会话时，`Registry.bridge_for` 探测各 ACP adapter 的 `session_meta` 并缓存命中，不再落入 codex 的 UUID 校验误报 400；`create_chat` 新建会话后立即标记 `listed`。
+- 通知链路：watch/policy 接受非 UUID 会话标识（字符集 `[A-Za-z0-9._-]`，排除策略键分隔符 `|`），经 Registry 路由到对应 bridge；推送标题按 adapter `label` 显示 Agent 名称（如「Kimi 需要你的确认」）；ACP 会话依赖显式关注，SQLite 全局候选发现保持 codex-only。
+- 前端门控：view.capabilities 驱动 steer/goal/Skill 显隐，fork/edit/Fast/完整历史随既有 per-row 与目录标志天然正确；审批卡片按 agent 返回的 options 动态渲染；状态文案与时间线标题按 agent 显示名称。
+- 桌面打包结构未改：PyInstaller 静态跟随条件 import，`bridge/agents/` 全部模块随包打进；桌面 App 固定只接入 codex，多 Agent 需源码运行。
+- 自动检查：Python 全量套件 516 项通过、10 项平台条件跳过；Desktop/Web Node 146 项通过；`tests/markdown.test.js` 与 `tests/math.test.js` 因依赖浏览器 DOM 在无 DOM 环境下失败，为上游既有问题，与本次改动无关。
+- 未做：ACP 会话任务存续依赖网关进程的限制仅文档明示，未实现断续跑；Claude/ZCode 等其他 ACP Agent 未接入；未构建或签名任何平台安装包，未推送远端。
+
 ## v1.4.0 发布候选检查（2026-10-06）
 
 - 用户已验收 Preview 并授权正式发布；保留 PR #11 原始提交历史及 Preview 期间的兼容性修复。

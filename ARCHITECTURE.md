@@ -107,6 +107,7 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 | `bridge/transport.py` | Unix socket / Windows 命名管道字节流 |
 | `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
 | `bridge/service.py` | 会话同步、操作路由、去重和队列 |
+| `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode 方言 |
 | `bridge/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
 | `bridge/model.py` | 历史和请求的规范化 |
 | `bridge/catalog.py` | 模型与 Skill 元数据 |
@@ -117,6 +118,43 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 | `bridge/tunnel.py` | 临时 HTTPS 隧道生命周期 |
 | `web/` | 手机浏览器界面 |
 | `tests/` | 合成数据与模拟 App IPC 回归 |
+
+## 多 Agent 适配
+
+### 控制模型
+
+Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）与 MiniMax（`mcode`）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode` 决定注册哪些后端，默认仅 codex。
+
+### Adapter 接口与路由
+
+`bridge/agents/base.py` 定义 `AgentAdapter` 抽象：会话列表/元数据、历史快照、发送与排队、审批响应、中断、目录（模型/Skill）、能力集合（`Capability`）与 `label`。`bridge/agents/codex.py` 是既有实现；`acp_adapter.py` 是 ACP 通用基类，`kimi.py`/`mcode.py` 只声明命令、能力与方言差异。
+
+每个后端包装为一个 `Bridge`（`bridge/service.py`），`Registry` 维护 kind → bridge 映射。会话路由先查各 bridge 的 `listed` 集合（列表时填充）；未命中时（如重启后直接打开深链）逐个探测非 codex adapter 的 `session_meta`，命中即缓存，避免 `session_*`/`mvs_*` 标识落入 codex 的 UUID 校验而误报 400。HTTP 层按 `?agent=` 或该路由选择 bridge。
+
+### ACP 传输与视图
+
+`bridge/agents/acp.py` 实现 NDJSON JSON-RPC 传输：initialize 能力协商、`session/new`/`list`/`load`/`prompt`/`cancel`、`session/set_config_option` 与 `session/set_mode`，入向 `session/update` 通知与 `session/request_permission` 请求。`acp_view.py` 把 ACP 更新流规范化成与 codex 相同的 view 形状（turns/items/requests/状态），前端因此无需感知传输差异。`session/list` 结果带 15–30 秒缓存与后台刷新，避免每请求 spawn。
+
+### Capability 门控
+
+view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门控：无 `steer` 隐藏"补充当前任务"选项；无 `goals` 隐藏目标模式；无 `skills` 隐藏 Skill 按钮；fork/edit 按钮依赖每行 `forkable`/`editable`（ACP 会话天然为假）；Fast 模式与额度档位随目录 `fastMode.allowed` 隐藏；`fullHistory` 由快照 `historyComplete` 决定。审批卡片对 `acp/requestPermission` 按 agent 返回的 `options` 动态渲染，响应只回传 `optionId`（或 `cancel`）。状态文案与会话行标题按 `BridgeI18n.agentLabel(view.agent)` 显示 Agent 名称。通知路由见 `bridge/notifications.py`：watch/policy 接受非 UUID 会话标识，经 Registry 路由到对应 bridge；推送标题使用 adapter 的 `label`；`notification_candidates` 的 SQLite 全局发现仍是 codex-only，ACP 会话依赖显式关注。
+
+### 生命周期限制
+
+ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断；重启后历史可经 `session/load` 回放恢复阅读，但未完成运行不会续跑。codex 会话不受此限（任务由桌面 App 持有）。
+
+### 能力矩阵
+
+| 能力 | Codex | Kimi | MiniMax |
+| --- | --- | --- | --- |
+| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ |
+| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） |
+| 新建会话 | ✓ | ✓ | ✓ |
+| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） |
+| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） |
+| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） |
+| Skill 选择 | ✓ | ✗ | ✗ |
+| Fast 模式/账号切换 | ✓ | ✗ | ✗ |
 
 ## 固定 HTTPS 入口
 

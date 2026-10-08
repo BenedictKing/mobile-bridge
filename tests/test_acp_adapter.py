@@ -4,6 +4,7 @@ import json
 import tempfile
 import threading
 import time
+import types
 import unittest
 import uuid
 from datetime import datetime, timezone
@@ -389,6 +390,122 @@ class AcpHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         cwds = {project['cwd'] for project in body['projects']}
         self.assertEqual(cwds, {'/alpha', '/kimi'})
+
+    def test_session_route_probes_unlisted_acp_session(self):
+        # No GET /api/sessions first: a direct link after a restart must still
+        # route to the kimi bridge instead of failing Codex UUID validation.
+        self.assertNotIn(self.SID_K, self.bridge_k.listed)
+        status, view = self.request('GET', '/api/sessions/' + self.SID_K)
+        self.assertEqual(status, 200)
+        self.assertEqual(view['id'], self.SID_K)
+        self.assertEqual(view['agent'], 'kimi')
+        self.assertIn(self.SID_K, self.bridge_k.listed)
+
+
+class RegistryProbeTests(unittest.TestCase):
+    """bridge_for probes agent-native stores when the listed sets are cold."""
+
+    def make_registry(self):
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        fake = FakeAcpAgent(list_rows=[{'sessionId': SID, 'cwd': '/work',
+                                        'title': 'Old', 'updatedAt': UPDATED}])
+        adapter = KimiAdapter('fake-acp', data_dir=root / 'data', spawn=fake.spawn_factory())
+        bridge = Bridge(root, root / 'data', adapter=adapter)
+        self.addCleanup(bridge.close)
+        codex = types.SimpleNamespace(listed=set())
+        registry = Registry()
+        registry.register('codex', codex)
+        registry.register('kimi', bridge)
+        return registry, bridge, codex
+
+    def test_probe_finds_unlisted_session_and_caches_it(self):
+        registry, bridge, _ = self.make_registry()
+        self.assertIs(registry.bridge_for(SID), bridge)
+        self.assertIn(SID, bridge.listed)
+
+    def test_probe_misses_return_none_without_touching_codex(self):
+        registry, bridge, codex = self.make_registry()
+        self.assertIsNone(registry.bridge_for('session_missing_0000'))
+        self.assertIsNone(registry.bridge_for(str(uuid.uuid4())))
+        self.assertEqual(bridge.listed, set())
+        self.assertEqual(codex.listed, set())
+
+
+class AcpCreateChatTests(unittest.TestCase):
+    """create_chat must mark new ACP sessions as listed for later routing."""
+
+    def test_create_chat_marks_session_listed_and_stays_idempotent(self):
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        fake = FakeAcpAgent(list_rows=[{'sessionId': SID, 'cwd': '/work',
+                                        'title': 'Old', 'updatedAt': UPDATED}])
+        adapter = KimiAdapter('fake-acp', data_dir=root / 'data', spawn=fake.spawn_factory())
+        bridge = Bridge(root, root / 'data', adapter=adapter)
+        self.addCleanup(bridge.close)
+        project = adapter.projects()[0]
+        request_id = str(uuid.uuid4())
+        result = bridge.create_chat(project['key'], 'New chat', request_id)
+        self.assertEqual(result['id'], 'fake-1')
+        self.assertIn('fake-1', bridge.listed)
+        again = bridge.create_chat(project['key'], 'New chat', request_id)
+        self.assertEqual(again['id'], 'fake-1')
+        self.assertEqual(fake.session_count, 1)
+
+
+class AcpNotificationTests(unittest.TestCase):
+    """Notifications accept non-UUID ACP ids and route them via the registry."""
+
+    def setUp(self):
+        from bridge.notifications import Notifications, save_settings
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        save_settings(root / 'n', {'enabled': True, 'topic': 'test', 'token': 'secret-token'})
+        fake = FakeAcpAgent(list_rows=[{'sessionId': SID, 'cwd': '/work',
+                                        'title': 'Old', 'updatedAt': UPDATED}])
+        adapter = KimiAdapter('fake-acp', data_dir=root / 'k', spawn=fake.spawn_factory())
+        self.bridge_k = Bridge(root, root / 'k', adapter=adapter)
+        self.addCleanup(self.bridge_k.close)
+
+        class CodexSource:
+            listed = set()
+            def __init__(self):
+                def session_meta(tid):
+                    raise KeyError(tid)
+                self.adapter = type('Adapter', (), {'label': 'Codex',
+                                                    'session_meta': staticmethod(session_meta)})()
+            def for_host(self, host):
+                return self
+        self.codex = CodexSource()
+        registry = Registry()
+        registry.register('codex', self.codex)
+        registry.register('kimi', self.bridge_k)
+        self.manager = Notifications(self.codex, root / 'n', registry=registry)
+        self.addCleanup(self.manager.close)
+
+    def test_watch_and_policy_accept_acp_session_ids(self):
+        row = self.manager.watch(SID, 'local', True)
+        self.assertTrue(row['watching'])
+        self.assertEqual([r['id'] for r in self.manager.watches()], [SID])
+        effective = self.manager.policy(SID, 'local', {'requests': 'on', 'completion': 'off'})
+        self.assertEqual(effective['requests'], 'on')
+        self.assertIn(SID, self.bridge_k.listed)
+        with self.assertRaises(KeyError):
+            self.manager.policy('session_missing_0000', 'local', {'requests': 'on', 'completion': 'off'})
+
+    def test_invalid_ids_are_still_rejected(self):
+        for bad in ('bad|id', 'bad id', '', 'x' * 129):
+            with self.assertRaises(ValueError):
+                self.manager.watch(bad, 'local', True)
+            with self.assertRaises(ValueError):
+                self.manager.policy(bad, 'local')
+
+    def test_notification_heading_uses_agent_label(self):
+        self.assertEqual(self.manager._label_for(SID, 'local'), 'Kimi')
+        self.assertEqual(self.manager._label_for(str(uuid.uuid4()), 'local'), 'Codex')
 
 
 if __name__ == '__main__':

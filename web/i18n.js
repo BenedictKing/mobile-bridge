@@ -646,7 +646,6 @@ const en={
   "Codex 手机网关": "Codex Mobile Bridge",
   "Codex 数据目录": "Codex data directory",
   "Codex 数据目录不存在": "The Codex data directory does not exist",
-  "Codex 正在工作…": "Codex is working…",
   "Codex 需要你的回复": "Codex needs your reply",
   "NAS 上游请使用电脑的局域网地址，不能使用回环地址": "Use the computer's LAN address as the NAS upstream, not a loopback address",
   "NAS 可访问的电脑地址": "Computer address reachable from the NAS",
@@ -769,6 +768,13 @@ const en={
   "当前网关版本不支持聊天提醒，请在首页停止后重新启动网关，再刷新手机网页。": "This gateway version does not support reminders. Stop and restart it from the overview, then refresh the phone page.",
   "当前网关版本较旧，重启后启用通知能力。": "This gateway version is older. Restart it to enable notification support.",
   "待确认请求": "Pending confirmation",
+  "权限请求": "Permission request",
+  "当前 Agent 不支持目标模式": "This agent does not support goal mode",
+  "正在加载会话…": "Loading session…",
+  "正在加载会话，请稍候。": "Loading the session…",
+  "正在连接 ": "Connecting to ",
+  " ，可先阅读已保存的历史。": ". Saved history is available.",
+  " 正在工作…": " is working…",
   "待确认请求通知": "Notifications for pending confirmations",
   "手动填写的跳转地址优先；要自动跟随固定域名，请留空。默认不包含聊天标题和内容。临时域名变化后，旧通知的链接可能失效。自建 ntfy 的 iPhone 即时通知需要配置 APNs 上游。": "A manually entered click URL takes priority. Leave it empty to follow a fixed domain automatically. Chat titles and content are excluded by default. Old notifications may have expired temporary links. Self-hosted ntfy needs an APNs upstream for instant iPhone notifications.",
   "手机关闭网页后，已关注聊天仍会继续提醒。": "Watched chats keep sending reminders after the phone page is closed.",
@@ -1172,6 +1178,8 @@ function apply(root=document){
   document.querySelectorAll('[data-language]').forEach(node=>node.value=lang);
 }
 function setLanguage(value){lang=value==='en'?'en':'zh';try{localStorage.setItem('bridge-language',lang);}catch{}}
-return {t,apply,setLanguage,language:()=>lang,locale:()=>lang==='en'?'en-US':'zh-CN',dictionary:en};
+const AGENT_LABELS={codex:'Codex',kimi:'Kimi',mcode:'MiniMax'};
+function agentLabel(kind){return AGENT_LABELS[kind]||AGENT_LABELS.codex;}
+return {t,apply,setLanguage,language:()=>lang,locale:()=>lang==='en'?'en-US':'zh-CN',dictionary:en,agentLabel};
 })();
 if(typeof module!=='undefined')module.exports=BridgeI18n;

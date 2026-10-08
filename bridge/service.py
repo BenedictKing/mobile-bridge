@@ -420,6 +420,8 @@ class Bridge:
                 entry['id'] = thread_id
                 self._save_creations()
             bridge = self.for_host(entry['host'])
+            with bridge.lock:
+                bridge.listed.add(entry['id'])
             if isinstance(bridge.store, RemoteStore):
                 with bridge.store.lock:
                     bridge.store.cache.clear()

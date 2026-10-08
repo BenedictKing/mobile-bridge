@@ -300,6 +300,18 @@ Open the printed LAN URL on a phone on the same network, for example `http://192
 
 Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a system login service. Restarting the gateway requires logging in again. If a chat shows saved history only, open it in the desktop App and reconnect on the phone; the gateway does not create a replacement execution owner for an unloaded chat.
 
+### Multiple agents (source runs)
+
+Only the Codex desktop App is connected by default. To also serve Kimi Code CLI or MiniMax (mcode), declare them with `--agents`, comma-separated:
+
+```sh
+python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode
+```
+
+The corresponding CLI (`kimi` / `mcode`) must be installed on PATH and signed in. The gateway spawns these agents as child processes; the phone chat list groups sessions by agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`.
+
+Note: Kimi/MiniMax runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns (history is preserved). Codex runs are owned by the desktop App and survive gateway restarts. The packaged desktop App always serves Codex only; multiple agents require running from source.
+
 ## Temporary HTTPS and existing proxies
 
 **Desktop App:** add a Temporary HTTPS · Cloudflare connection, save and start. The matching program is bundled. For source runs or repair, expand **Runtime settings → Cloudflare component → Advanced: custom program and repair** to find Download and install. The App downloads the matching official GitHub Release, verifies its SHA-256 digest, installs it in the gateway data directory and checks `--version`. It needs no admin privileges, does not change system PATH and does not start a tunnel during installation.

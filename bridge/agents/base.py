@@ -206,6 +206,19 @@ class Registry:
         for bridge in self._bridges.values():
             if session_id in bridge.listed:
                 return bridge
+        # A restart clears the in-memory listed sets; probe agent-native stores so
+        # a direct link to an ACP session does not fall through to Codex (whose
+        # UUID validation would reject it with a misleading 400).
+        for kind, bridge in self._bridges.items():
+            if kind == 'codex':
+                continue
+            try:
+                bridge.adapter.session_meta(session_id)
+            except Exception:
+                continue
+            with bridge.lock:
+                bridge.listed.add(session_id)
+            return bridge
         return None
 
     def kinds(self):
