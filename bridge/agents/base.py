@@ -1,6 +1,8 @@
 """Agent adapter seam: capability flags, the base adapter, and the registry."""
 import re
 
+from ..ipc import IPCError
+
 
 class Capability:
     """String capability flags advertised in session list rows and views."""
@@ -55,6 +57,28 @@ class AgentAdapter:
 
     def handle_disconnect(self):
         """Invalidate live state after the agent stream drops."""
+
+    def adopt_session(self, session):
+        """Install agent-specific state on one new LiveSession."""
+
+    def detach(self, session):
+        """Release the live owner of one session being evicted or closed."""
+
+    def is_active(self, session):
+        """Whether the session currently runs a turn."""
+        return False
+
+    def require_ready(self, session):
+        """Raise when the session cannot serve an explicit operation."""
+        if not session.connected:
+            raise IPCError(session.error or '会话尚未连接，请重新打开')
+
+    def check_provider(self, session):
+        """Raise when the session's provider conflicts with the active account."""
+
+    def projects(self):
+        """Return saved project rows usable as create_chat targets."""
+        raise NotImplementedError
 
     def attach(self, session, timeout=1.5):
         """Connect the session to its live owner and wait for a snapshot."""
@@ -174,6 +198,13 @@ class Registry:
 
     def for_agent(self, kind):
         return self._bridges[kind]
+
+    def bridge_for(self, session_id):
+        """Return the bridge that listed this session id, if any did."""
+        for bridge in self._bridges.values():
+            if session_id in bridge.listed:
+                return bridge
+        return None
 
     def kinds(self):
         return sorted(self._bridges)

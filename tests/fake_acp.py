@@ -77,6 +77,9 @@ class FakeAcpAgent:
         self.requests = []
         self.children = []
         self.spawned_argv = None
+        self.closed_sessions = []
+        self.config_values = {}
+        self.mode_values = []
         self._write_lock = threading.Lock()
         self._responses_lock = threading.Lock()
         self._client_responses = {}
@@ -210,24 +213,51 @@ class FakeAcpAgent:
         session_id = params.get('sessionId')
         for update in self.load_updates:
             self._notify(state, session_id, update)
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {
+            'configOptions': self.config_options, 'modes': self.modes}})
+
+    def _method_session_close(self, state, ident, params):
+        self.closed_sessions.append(params.get('sessionId'))
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {}})
+
+    def _method_session_set_config_option(self, state, ident, params):
+        self.config_values[params.get('configId')] = params.get('value')
+        for option in self.config_options:
+            if isinstance(option, dict) and option.get('id') == params.get('configId'):
+                option['currentValue'] = params.get('value')
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident,
+                            'result': {'configOptions': self.config_options}})
+
+    def _method_session_set_mode(self, state, ident, params):
+        self.mode_values.append(params.get('modeId'))
+        self.modes['currentModeId'] = params.get('modeId')
         self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {}})
 
     def _method_session_prompt(self, state, ident, params):
         session_id = params.get('sessionId')
         self._cancel_turn.clear()
-        for step in self.prompt_updates:
-            if self._cancel_turn.is_set():
-                break
-            if isinstance(step, tuple) and step[0] == 'permission':
-                self._ask_permission(state, session_id, step[1])
-            else:
-                self._notify(state, session_id, step)
-        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {'stopReason': self.stop_reason}})
+        # The script runs off the worker so ('await_cancel',) cannot deadlock
+        # a session/cancel handled by the same worker.
+        def run():
+            for step in self.prompt_updates:
+                if self._cancel_turn.is_set():
+                    break
+                if isinstance(step, tuple) and step[0] == 'permission':
+                    self._ask_permission(state, session_id, step[1])
+                elif isinstance(step, tuple) and step[0] == 'await_cancel':
+                    self._cancel_turn.wait(10)
+                    break
+                else:
+                    self._notify(state, session_id, step)
+            reason = 'cancelled' if self._cancel_turn.is_set() else self.stop_reason
+            self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {'stopReason': reason}})
+        threading.Thread(target=run, daemon=True).start()
 
     def _method_session_cancel(self, state, ident, params):
         self.cancelled = True
         self._cancel_turn.set()
-        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {}})
+        if ident is not None:
+            self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {}})
 
     def _ask_permission(self, state, session_id, params):
         with self._responses_lock:

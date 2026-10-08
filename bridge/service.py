@@ -26,6 +26,7 @@ from .accounts import Accounts, operation
 from .goal import GoalRPC, GoalError, GoalUnavailable, GoalUnsupported, goal_activation, goal_identity, normalize_goal_result, normalize_ui_locale, goal_command_fingerprint, goal_state_confirms_command, native_goal_absent, normalize_goal, plan_goal_command, read_native_goal
 from .uploads import Uploads, image_type
 from .remote import upload_file
+from .agents.base import Capability
 from .agents.codex import CodexAdapter
 
 
@@ -62,7 +63,7 @@ class LiveSession:
         self.condition.notify_all()
 
     def set_history(self, state):
-        self.saved_view = normalize_state(state, False)
+        self.saved_view = (self.normalizer or normalize_state)(state, False)
         if self.state is None or not self.connected:
             self.state = state
         self.changed()
@@ -130,7 +131,8 @@ class Bridge:
 
         for key, value in self.submissions.items():
             if value.get("status") == "queued":
-                self.live.setdefault(key.split(":")[0], LiveSession(key.split(":")[0]))
+                thread_id = key.split(":")[0]
+                self.adapter.adopt_session(self.live.setdefault(thread_id, LiveSession(thread_id)))
         threading.Thread(target=self._maintain, daemon=True).start()
         threading.Thread(target=self._upload_gc, daemon=True).start()
 
@@ -397,7 +399,7 @@ class Bridge:
         uuid.UUID(request_id)
         if not isinstance(title, str) or not title.strip() or len(title) > 120:
             raise ValueError('请输入 1–120 字的聊天名称')
-        project = next((p for p in self.hosts.projects() if p['key'] == project_key), None)
+        project = next((p for p in self.adapter.projects() if p['key'] == project_key), None)
         if project is None:
             raise ValueError('请选择电脑 App 中已保存的项目')
         title = title.strip()
@@ -409,7 +411,8 @@ class Bridge:
                 if not entry.get('id'):
                     raise CreationError('上次创建结果尚不确定，请先刷新聊天列表并检查电脑 App，避免重复创建')
             else:
-                self.ipc.connect()
+                if self.ipc is not None:
+                    self.ipc.connect()
                 entry = {'project': project_key, 'title': title, 'host': project['host'], 'at': time.time()}
                 self.creations[request_id] = entry
                 self._save_creations()
@@ -471,7 +474,7 @@ class Bridge:
                     if action == 'edit':
                         if session.timeline.meta['latestUserTurnId'] != row['turnId']:
                             raise ValueError('只有最近一条消息可原地编辑，请使用编辑并新建分支')
-                        if session.state.get('threadRuntimeStatus', {}).get('type') == 'active':
+                        if self.adapter.is_active(session):
                             raise ValueError('请先停止当前任务，再编辑或分支')
                     snapshot = copy.deepcopy(session.state)
                     entry = {**identity, 'turnId': row['turnId'], 'sourceTitle': snapshot.get('title') or '未命名聊天',
@@ -525,7 +528,7 @@ class Bridge:
     def for_host(self, host):
         if host == self.host:
             return self
-        available = self.hosts.hosts()
+        available = self.hosts.hosts() if self.hosts is not None else {}
         if self.host != "local" or host not in available:
             raise KeyError("未知 SSH 主机")
         with self.lock:
@@ -537,7 +540,7 @@ class Bridge:
 
     def list(self, query="", limit=100, offset=0, archived=False):
         sources = [(self, "此电脑")]
-        if self.host == 'local':
+        if self.host == 'local' and self.hosts is not None:
             sources.extend((self.for_host(host), info.get('displayName') or info['alias']) for host, info in self.hosts.hosts().items())
         def read(source):
             bridge, label = source
@@ -570,6 +573,7 @@ class Bridge:
                 session = self.live.get(identifier)
                 if session is None:
                     session = self.live[identifier] = LiveSession(identifier)
+                    self.adapter.adopt_session(session)
                     session.activity_only = True
                 session.touched = time.monotonic()
                 sessions.append(session)
@@ -596,17 +600,19 @@ class Bridge:
                 turns = ordered_turns(state)
                 last = next((t for t in reversed(turns) if t.get('turnId')), {})
                 rows.append({'id': session.id, 'host': self.host, 'recency': recencies.get(session.id, 0), 'connected': session.connected,
-                             'status': state.get('threadRuntimeStatus', {}).get('type') if session.connected else 'unknown',
+                             'status': ('active' if self.adapter.is_active(session) else 'idle') if session.connected else 'unknown',
                              'turnId': last.get('turnId'), 'turnStatus': last.get('status')})
         return rows
 
     def notification_candidates(self):
         sources = [self]
-        if self.host == 'local':
+        if self.host == 'local' and self.hosts is not None:
             sources.extend(self.for_host(host) for host in self.hosts.hosts())
         rows = []
         for source in sources:
             source.notification_event = self.notification_event
+            if source.ipc is None:
+                continue
             try:
                 # A new IPC connection needs one fresh discovery, even if the
                 # desktop resumed a task without changing its saved metadata.
@@ -654,11 +660,7 @@ class Bridge:
             with session.condition:
                 if session.viewers or queued or not session.activity_only:
                     return True
-                if session.connected or session.discovering:
-                    try:
-                        self.ipc.follow(session.id, session.owner, False, host=self.host)
-                    except IPCError:
-                        pass
+                self.adapter.detach(session)
                 session.connected = False
                 session.discovering = False
                 session.revision = None
@@ -672,6 +674,7 @@ class Bridge:
             session = self.live.get(thread_id)
             if session is None:
                 session = self.live[thread_id] = LiveSession(thread_id)
+                self.adapter.adopt_session(session)
                 session.activity_only = True
         if not session.watched:
             session.notification_probe_until = time.monotonic() + 10
@@ -702,6 +705,7 @@ class Bridge:
             self.adapter.session_meta(thread_id)
             with self.lock:
                 session = self.live.setdefault(thread_id, LiveSession(thread_id))
+                self.adapter.adopt_session(session)
         session.touched = time.monotonic()
         if background:
             if attach:
@@ -825,18 +829,12 @@ class Bridge:
                         if session.viewers != 0 or session.watched:
                             continue
                         self.live.pop(session.id, None)
-                    if session.connected or session.discovering:
-                        try:
-                            self.ipc.follow(session.id, session.owner, False, host=self.host)
-                        except IPCError:
-                            pass
-            delay = 3 if self.ipc.client_id else min(30, delay * 2)
+                    self.adapter.detach(session)
+            delay = 3 if self.ipc is not None and self.ipc.client_id else min(30, delay * 2)
 
     def _target(self, thread_id):
         session = self.activate(thread_id)
-        with session.condition:
-            if not session.connected or not session.owner:
-                raise IPCError(session.error or "请先在桌面 App 打开此聊天")
+        self.adapter.require_ready(session)
         return session
 
     def _save_ledger(self):
@@ -855,7 +853,7 @@ class Bridge:
         view["goalRuntimeAvailable"] = self._goal_runtime_available()
         view["goalActivationIds"] = sorted(self._goal_activation_ids(thread_id))
         with session.condition:
-            artifacts = artifact_paths(session.state or {}, self.adapter.home) if self.host == "local" else {}
+            artifacts = artifact_paths(session.state or {}, self.adapter.home) if self.host == "local" and self.adapter.home is not None else {}
         view["files"] = [{"id": k, "name": v["name"], "reference": v["reference"], "image": v["image"]} for k, v in artifacts.items()]
         self._overlay_native_goal(session, thread_id, view)
         self._submission_meta(session, view)
@@ -967,7 +965,7 @@ class Bridge:
     def artifact(self, thread_id, artifact_id):
         session = self.session(thread_id, attach=False)
         with session.condition:
-            files = artifact_paths(session.state or {}, self.adapter.home) if self.host == "local" else {}
+            files = artifact_paths(session.state or {}, self.adapter.home) if self.host == "local" and self.adapter.home is not None else {}
         if artifact_id not in files:
             raise KeyError("文件不属于此聊天的工作目录")
         return files[artifact_id]
@@ -1111,7 +1109,7 @@ class Bridge:
             {'items': [{'type': 'agentMessage', 'text': text} for text in texts]},
             {'items': media_items},
         ]}
-        artifacts = artifact_paths(file_state, self.adapter.home) if self.host == 'local' else {}
+        artifacts = artifact_paths(file_state, self.adapter.home) if self.host == 'local' and self.adapter.home is not None else {}
         result['files'] = [{'id': k, 'name': v['name'], 'reference': v['reference'], 'image': v['image']} for k, v in artifacts.items()]
         if mode != 'detail':
             self._submission_meta(session, result['meta'])
@@ -1203,7 +1201,7 @@ class Bridge:
             return None
         activation_id, text = goal_activation(session.id, goal, action, ui_locale, response.get('transitionId'))
         with session.condition:
-            active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
+            active = self.adapter.is_active(session)
         try:
             activation = self.send(session.id, text, activation_id, "queue" if active else "send",
                                    activation={"action": action, "objective": goal["objective"],
@@ -1299,6 +1297,10 @@ class Bridge:
             raise ValueError("补充当前任务时不能切换工作模式")
         if work_mode == "goal" and (mode != "send" or not text.strip() or len(text) > 4000):
             raise ValueError("目标需在当前任务结束后直接发送，且不超过 4000 字")
+        if work_mode == "goal" and Capability.GOALS not in self.adapter.capabilities:
+            raise ValueError("当前 Agent 不支持目标模式")
+        if mode == "steer" and Capability.STEER not in self.adapter.capabilities:
+            raise ValueError("当前 Agent 不支持补充任务，请使用排队发送")
         if work_mode == "goal":
             if self.host != "local" or self.goal is None:
                 raise ValueError("目标模式暂不支持 SSH 主机")
@@ -1330,7 +1332,7 @@ class Bridge:
                     return {"status": prior["status"], "duplicate": True, "id": submission_id}
             self._check_provider(session)
             with session.condition:
-                active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
+                active = self.adapter.is_active(session)
                 if active and mode == "send":
                     raise ValueError("Codex 正在执行。请选择「排队发送」或「补充当前任务」。")
                 if not active and mode == "steer":
@@ -1369,7 +1371,7 @@ class Bridge:
     def _send_queued(self, session, key, entry):
         with session.action_lock:
             with session.condition:
-                if not session.connected or session.state.get("threadRuntimeStatus", {}).get("type") != "idle":
+                if not session.connected or self.adapter.is_active(session):
                     return
             with self.goal_lock:
                 with self.submit_lock:
@@ -1417,9 +1419,14 @@ class Bridge:
 
     def respond(self, thread_id, request_id, response):
         session = self._target(thread_id)
-        plan_id = str(uuid.uuid5(uuid.UUID(thread_id), "plan:" + str(request_id)))
-        with self.submit_lock:
-            prior = copy.deepcopy(self.submissions.get(thread_id + ":" + plan_id))
+        try:
+            plan_id = str(uuid.uuid5(uuid.UUID(thread_id), "plan:" + str(request_id)))
+        except ValueError:
+            plan_id = None  # Non-UUID agent session ids never carry plan requests.
+        prior = None
+        if plan_id is not None:
+            with self.submit_lock:
+                prior = copy.deepcopy(self.submissions.get(thread_id + ":" + plan_id))
         if prior and prior.get("planResponse"):
             if prior["planResponse"] != {"requestId": request_id, **response}:
                 raise ValueError("此计划已经提交了不同操作，请查看会话结果")
@@ -1435,7 +1442,7 @@ class Bridge:
             text = "<send_user_message_question_reply>\n" + json.dumps(replies, ensure_ascii=False, separators=(",", ":")) + "\n</send_user_message_question_reply>"
             submission = str(uuid.uuid5(uuid.UUID(thread_id), request_id + text))
             with session.condition:
-                active = (session.state or {}).get("threadRuntimeStatus", {}).get("type") == "active"
+                active = self.adapter.is_active(session)
             return self.send(thread_id, text, submission, "steer" if active else "send")
         with session.condition:
             pending = next((r for r in session.state.get("requests", []) if str(r.get("id")) == str(request_id)), None)
@@ -1470,11 +1477,7 @@ class Bridge:
         with self.lock:
             sessions = list(self.live.values())
         for session in sessions:
-            try:
-                if session.connected or session.discovering:
-                    self.ipc.follow(session.id, session.owner, False, host=self.host)
-            except IPCError:
-                pass
+            self.adapter.detach(session)
         self.adapter.close()
 
 

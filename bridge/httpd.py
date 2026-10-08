@@ -27,6 +27,7 @@ from .store import StoreUnavailable
 from .remote import RemoteUnavailable
 from .create import CreationError
 from .account import AccountError
+from .agents.acp import AcpError
 
 LOG = logging.getLogger(__name__)
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -312,9 +313,37 @@ class Handler(BaseHTTPRequestHandler):
             if write and path == '/api/account/reset':
                 return self.output(200, self.server.bridge.account.consume(self.read_json()))
             if not write and path == "/api/sessions":
+                registry = self.server.registry
+                if registry is not None and len(registry.kinds()) > 1:
+                    agent = query.get("agent", [None])[0]
+                    if agent is not None:
+                        try:
+                            selected = [registry.for_agent(agent)]
+                        except KeyError:
+                            raise ValueError('未知的 Agent 类型') from None
+                    else:
+                        selected = [registry.for_agent(kind) for kind in registry.kinds()]
+                    offset = max(0, int(query.get("offset", [0])[0]))
+                    archived = query.get("archived", ["false"])[0] == "true"
+                    text = query.get("q", [""])[0][:200]
+                    rows, host_errors = [], []
+                    for item in selected:
+                        rows.extend(item.list(query=text, limit=100 + offset, offset=0, archived=archived))
+                        host_errors.extend(item.host_errors)
+                    rows.sort(key=lambda row: (row['recency'], row['id'], row['host']), reverse=True)
+                    return self.output(200, {"sessions": rows[offset:offset + 100], "unavailableHosts": host_errors})
                 rows = self.server.bridge.list(query=query.get("q", [""])[0][:200], offset=max(0, int(query.get("offset", [0])[0])), archived=query.get("archived", ["false"])[0] == "true")
                 return self.output(200, {"sessions": rows, "unavailableHosts": self.server.bridge.host_errors})
             if not write and path == '/api/projects':
+                registry = self.server.registry
+                if registry is not None and len(registry.kinds()) > 1:
+                    projects, seen = [], set()
+                    for kind in registry.kinds():
+                        for project in registry.for_agent(kind).adapter.projects():
+                            if project['key'] not in seen:
+                                seen.add(project['key'])
+                                projects.append(project)
+                    return self.output(200, {'projects': projects})
                 return self.output(200, {'projects': self.server.bridge.hosts.projects()})
             if write and path == '/api/activity':
                 groups = self.read_json().get('hosts')
@@ -326,7 +355,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, {'sessions': rows})
             if write and path == '/api/sessions':
                 body = self.read_json()
-                return self.output(200, self.server.bridge.create_chat(body.get('project'), body.get('title'), body.get('id')))
+                root = self.server.bridge
+                registry = self.server.registry
+                if registry is not None and len(registry.kinds()) > 1:
+                    agent = body.get('agent')
+                    if agent is not None:
+                        try:
+                            root = registry.for_agent(agent)
+                        except KeyError:
+                            raise ValueError('未知的 Agent 类型') from None
+                    else:
+                        project_key = body.get('project')
+                        root = None
+                        for kind in registry.kinds():
+                            candidate = registry.for_agent(kind)
+                            if any(p['key'] == project_key for p in candidate.adapter.projects()):
+                                root = candidate
+                                break
+                        if root is None:
+                            raise ValueError('请选择电脑 App 中已保存的项目')
+                return self.output(200, root.create_chat(body.get('project'), body.get('title'), body.get('id')))
             if path == '/api/notifications/defaults':
                 if self.server.notifications is None:
                     raise ValueError('当前网关未启用通知服务')
@@ -353,10 +401,23 @@ class Handler(BaseHTTPRequestHandler):
                         config = save_notification_settings(manager.data_dir, body)
                     return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
                                              'hasPushplusToken': bool(config['pushplusToken'])})
-            agent = query.get("agent", [None])[0]
-            if agent is not None and agent != 'codex':
-                raise ValueError('未知的 Agent 类型')
-            bridge = self.server.bridge.for_host(query.get("host", ["local"])[0])
+            root = self.server.bridge
+            registry = self.server.registry
+            if registry is None:
+                agent = query.get("agent", [None])[0]
+                if agent is not None and agent != 'codex':
+                    raise ValueError('未知的 Agent 类型')
+            else:
+                agent = query.get("agent", [None])[0]
+                if agent is not None:
+                    try:
+                        root = registry.for_agent(agent)
+                    except KeyError:
+                        raise ValueError('未知的 Agent 类型') from None
+                else:
+                    session_match = re.match(r"^/api/sessions/([^/]+)", path)
+                    root = (session_match and registry.bridge_for(session_match.group(1))) or registry.default()
+            bridge = root.for_host(query.get("host", ["local"])[0])
             file_match = re.fullmatch(r"/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})", path)
             if not write and file_match:
                 return self.download(bridge, *file_match.groups())
@@ -489,7 +550,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.close_connection = True
             self.output(400, {"error": str(exc)})
-        except (IPCError, GoalError, CatalogError, RemoteUnavailable, CreationError, StoreUnavailable, AccountError) as exc:
+        except (IPCError, GoalError, CatalogError, RemoteUnavailable, CreationError, StoreUnavailable, AccountError, AcpError) as exc:
             self.close_connection = True
             self.output(409, {"error": str(exc), "code": "desktop_unavailable"})
         except (BrokenPipeError, ConnectionResetError, socket.timeout):

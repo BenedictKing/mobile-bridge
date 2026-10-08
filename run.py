@@ -95,11 +95,11 @@ def main(connections=None, connection_secrets=None):
     parser.add_argument("--set-password", action="store_true", help="交互式设置登录密码，不启动服务")
     parser.add_argument("--no-auth", action="store_true", help="本次运行明确关闭账号密码验证")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
-    parser.add_argument("--agents", default="codex", help="启用的 Agent 类型（逗号分隔，目前仅支持 codex）")
+    parser.add_argument("--agents", default="codex", help="启用的 Agent 类型（逗号分隔，支持 codex 与 kimi）")
     args = parser.parse_args()
     kinds = [k.strip() for k in args.agents.split(',') if k.strip()]
-    if not kinds or any(k != 'codex' for k in kinds):
-        parser.error("--agents 目前仅支持 codex")
+    if not kinds or any(k not in ('codex', 'kimi') for k in kinds):
+        parser.error("--agents 目前仅支持 codex 与 kimi")
     if not 1 <= args.port <= 65535:
         parser.error("端口必须为 1–65535")
     if args.ssh_target:
@@ -149,6 +149,16 @@ def main(connections=None, connection_secrets=None):
     bridge = Bridge(args.codex_home, args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin, adapter=adapter)
     registry = Registry()
     registry.register('codex', bridge)
+    kimi_bridge = None
+    if 'kimi' in kinds:
+        from bridge.agents.acp import AcpUnavailable
+        from bridge.agents.kimi import KimiAdapter
+        try:
+            kimi_adapter = KimiAdapter()
+        except AcpUnavailable as exc:
+            parser.error(str(exc))
+        kimi_bridge = Bridge(args.codex_home, args.config.parent / 'agents' / 'kimi', adapter=kimi_adapter)
+        registry.register('kimi', kimi_bridge)
     servers = []
     try:
         for address in network.bindings(preferences):
@@ -263,6 +273,8 @@ def main(connections=None, connection_secrets=None):
         for ssh_tunnel in ssh_tunnels:
             ssh_tunnel.close()
         bridge.close()
+        if kimi_bridge is not None:
+            kimi_bridge.close()
         for listener in servers:
             listener.server_close()
         if pid_file.exists() and pid_file.read_text(encoding='utf-8').strip() == str(os.getpid()):

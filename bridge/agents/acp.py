@@ -81,8 +81,8 @@ class AcpProcess:
         self._reader.start()
         self._drain.start()
 
-    def request(self, method, params, timeout=30):
-        """Send one client request and wait for its result."""
+    def _enqueue(self, method, params):
+        """Register one client request and write it; returns (id, future)."""
         with self._lock:
             if self._closed or self._exited:
                 raise AcpUnavailable('Agent 进程已退出；操作结果未知')
@@ -96,6 +96,15 @@ class AcpProcess:
             with self._lock:
                 self._pending.pop(ident, None)
             raise
+        return ident, future
+
+    def submit(self, method, params):
+        """Send one client request without waiting; the caller awaits the future."""
+        return self._enqueue(method, params)
+
+    def request(self, method, params, timeout=30):
+        """Send one client request and wait for its result."""
+        ident, future = self._enqueue(method, params)
         try:
             return future.result(timeout)
         except FutureTimeout:
@@ -114,6 +123,10 @@ class AcpProcess:
         self.agent_info = result.get('agentInfo') or {}
         self.auth_methods = result.get('authMethods') or []
         return result
+
+    def notify(self, method, params):
+        """Send one client notification (no id, no response expected)."""
+        self._send({'jsonrpc': '2.0', 'method': method, 'params': params})
 
     def respond(self, request_id, result):
         """Answer one reverse request from the agent."""

@@ -139,6 +139,25 @@ class CodexAdapter(AgentAdapter):
             session.error = message
             session.changed()
 
+    def detach(self, session):
+        if session.connected or session.discovering:
+            try:
+                self.ipc.follow(session.id, session.owner, False, host=self.bridge.host)
+            except IPCError:
+                pass
+
+    def is_active(self, session):
+        with session.condition:
+            return (session.state or {}).get('threadRuntimeStatus', {}).get('type') == 'active'
+
+    def require_ready(self, session):
+        with session.condition:
+            if not session.connected or not session.owner:
+                raise IPCError(session.error or "请先在桌面 App 打开此聊天")
+
+    def projects(self):
+        return self.hosts.projects()
+
     def handle_disconnect(self):
         bridge = self.bridge
         bridge.notification_cursor = 0

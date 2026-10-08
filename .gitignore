@@ -9,6 +9,7 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+.serena/
 
 # 本地开发记录，不作为项目文档发布
 /task_plan.md
