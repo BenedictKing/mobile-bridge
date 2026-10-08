@@ -302,15 +302,15 @@ Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a 
 
 ### Multiple agents (source runs)
 
-Only the Codex desktop App is connected by default. To also serve Kimi Code CLI or MiniMax (mcode), declare them with `--agents`, comma-separated:
+Only the Codex desktop App is connected by default. To also serve Kimi Code CLI, MiniMax (mcode) or Claude Code, declare them with `--agents`, comma-separated:
 
 ```sh
-python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode
+python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude
 ```
 
-The corresponding CLI (`kimi` / `mcode`) must be installed on PATH and signed in. The gateway spawns these agents as child processes; the phone chat list groups sessions by agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`.
+The corresponding CLI (`kimi` / `mcode` / `npx`; Claude is reached through the `@agentclientprotocol/claude-agent-acp` wrapper, overridable via the `CLAUDE_ACP_BIN` environment variable) must be installed on PATH and signed in. The gateway spawns these agents as child processes; the phone chat list groups sessions by agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`.
 
-Note: Kimi/MiniMax runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns for good (history is preserved). After a gateway restart, sessions with notification watches re-attach automatically in the background; unwatched sessions reconnect when you open the chat. Codex runs are owned by the desktop App and survive gateway restarts.
+Note: Kimi/MiniMax/Claude runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns for good (history is preserved). After a gateway restart, sessions with notification watches re-attach automatically in the background; unwatched sessions reconnect when you open the chat. Codex runs are owned by the desktop App and survive gateway restarts.
 
 The chat details dialog can migrate the current session to another enabled agent: a new session is created on the same directory, with the title and a transcript of recent messages injected as its first message; the source session stays unchanged. If the target agent has no project for that directory, add it there first.
 

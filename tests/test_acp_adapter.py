@@ -312,7 +312,8 @@ class AcpAdapterTests(unittest.TestCase):
         import run
         self.assertEqual(run.agent_kinds('codex,kimi'), ['codex', 'kimi'])
         self.assertEqual(run.agent_kinds(' kimi , mcode ,,'), ['kimi', 'mcode'])
-        for bad in ('', ',,', 'bogus', 'codex,claude'):
+        self.assertEqual(run.agent_kinds('codex,claude'), ['codex', 'claude'])
+        for bad in ('', ',,', 'bogus', 'codex,zcode'):
             with self.assertRaises(ValueError):
                 run.agent_kinds(bad)
 

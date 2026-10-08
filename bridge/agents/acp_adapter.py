@@ -46,6 +46,12 @@ class AcpAdapter(AgentAdapter):
     label = 'ACP Agent'
     capabilities = frozenset()
     auth_hint = '请先在电脑终端完成 Agent 登录'
+    # npx-wrapped agents download the package on first run; subclasses raise this.
+    INITIALIZE_TIMEOUT = 10
+    # claude-agent-acp persists a transcript only after the first message; until
+    # then no other process can load or prompt the session, so creation keeps
+    # its process alive as the session handle.
+    KEEP_CREATED_PROCESS = False
     MODEL_CATEGORY = 'model'
     THINKING_CATEGORY = 'thought_level'
     EFFORT_MAP = {}
@@ -75,6 +81,9 @@ class AcpAdapter(AgentAdapter):
         self._list_cache = []
         self._list_at = 0
         self._meta_cache = {}
+        # Sessions created here but not yet listed by the agent (claude-agent-acp
+        # only persists a transcript after the first message).
+        self._pending_created = {}
 
     def _argv(self):
         return [self.executable, 'acp']
@@ -106,6 +115,10 @@ class AcpAdapter(AgentAdapter):
                     return
                 self._handles[session.id] = handle
                 threading.Thread(target=self._load, args=(session, handle), daemon=True).start()
+            elif handle.ready.is_set():
+                # A pre-registered handle (kept create process) has no _load
+                # thread to sync this session; do it here.
+                self._sync(session)
             # A timeout only means the replay is still running; the load
             # thread keeps going and syncs the session when it finishes.
             handle.ready.wait(timeout)
@@ -120,7 +133,7 @@ class AcpAdapter(AgentAdapter):
                                 on_exit=lambda code: self._on_exit(handle, code))
         handle.process = process
         try:
-            process.initialize(timeout=10)
+            process.initialize(timeout=self.INITIALIZE_TIMEOUT)
         except AcpAuthRequired:
             process.close()
             raise AcpUnavailable(self.auth_hint) from None
@@ -169,6 +182,10 @@ class AcpAdapter(AgentAdapter):
         handle.deliberate = True
         if self._handles.get(session_id) is handle:
             self._handles.pop(session_id, None)
+        with self._list_lock:
+            # A session that was never listed has no transcript anywhere; once
+            # its process is gone it is unrecoverable, so drop the placeholder.
+            self._pending_created.pop(session_id, None)
         with handle.lock:
             responders = list(handle.responders.values())
             handle.responders.clear()
@@ -414,7 +431,7 @@ class AcpAdapter(AgentAdapter):
                 return self._list_cache
         process = self._process()
         try:
-            process.initialize(timeout=10)
+            process.initialize(timeout=self.INITIALIZE_TIMEOUT)
             rows = self._list_rows_via(process)
         except AcpAuthRequired as exc:
             raise StoreUnavailable(self.auth_hint) from exc
@@ -423,9 +440,21 @@ class AcpAdapter(AgentAdapter):
         finally:
             process.close()
         with self._list_lock:
+            listed = {row.get('sessionId') for row in rows}
+            for known in list(self._pending_created):
+                if known in listed:
+                    self._pending_created.pop(known, None)
             self._list_cache = rows
             self._list_at = time.monotonic()
         return rows
+
+    def _visible_rows(self):
+        rows = self._fetch_rows()
+        listed = {row.get('sessionId') for row in rows}
+        with self._list_lock:
+            extra = [row for row in self._pending_created.values()
+                     if row['sessionId'] not in listed]
+        return rows + extra
 
     @staticmethod
     def _recency_ms(value):
@@ -444,7 +473,7 @@ class AcpAdapter(AgentAdapter):
     def list_sessions(self, label, limit=100, offset=0, query='', archived=False):
         needle = (query or '').strip().casefold()
         rows = []
-        for row in self._fetch_rows():
+        for row in self._visible_rows():
             if not row.get('sessionId'):
                 continue
             title = row.get('title') or '未命名聊天'
@@ -512,9 +541,11 @@ class AcpAdapter(AgentAdapter):
 
     def create_session(self, project, title):
         cwd = project.get('cwd') or str(Path.home())
+        if self.KEEP_CREATED_PROCESS:
+            return self._create_session_live(cwd, title)
         process = self._process(cwd=cwd)
         try:
-            process.initialize(timeout=10)
+            process.initialize(timeout=self.INITIALIZE_TIMEOUT)
             result = process.request('session/new', {'cwd': cwd, 'mcpServers': []},
                                      timeout=60) or {}
         except AcpAuthRequired as exc:
@@ -523,9 +554,51 @@ class AcpAdapter(AgentAdapter):
             process.close()
         thread_id = result.get('sessionId')
         self.validate_id(thread_id)
-        with self._list_lock:
-            self._list_at = 0  # The next list must see the new session.
+        self._remember_created(thread_id, title, cwd)
         return thread_id
+
+    def _create_session_live(self, cwd, title):
+        """Create a session and keep its process as the session handle."""
+        handle = AcpHandle(None, AcpSessionView(None, title=title, cwd=cwd))
+        process = self._process(cwd=cwd,
+                                on_notification=lambda m: self._on_notification(handle, m),
+                                on_request=lambda m, respond: self._on_request(handle, m, respond),
+                                on_exit=lambda code: self._on_exit(handle, code))
+        handle.process = process
+        try:
+            process.initialize(timeout=self.INITIALIZE_TIMEOUT)
+            result = process.request('session/new', {'cwd': cwd, 'mcpServers': []},
+                                     timeout=60) or {}
+        except AcpAuthRequired:
+            process.close()
+            raise AcpUnavailable(self.auth_hint) from None
+        except AcpError:
+            process.close()
+            raise
+        thread_id = result.get('sessionId')
+        try:
+            self.validate_id(thread_id)
+        except ValueError:
+            process.close()
+            raise
+        handle.session_id = thread_id
+        handle.view.session_id = thread_id
+        handle.config_options = [o for o in result.get('configOptions') or []
+                                 if isinstance(o, dict)]
+        handle.modes = result.get('modes')
+        handle.view.apply_config(handle.config_options, handle.modes)
+        handle.ready.set()
+        self._handles[thread_id] = handle
+        self._remember_created(thread_id, title, cwd)
+        return thread_id
+
+    def _remember_created(self, thread_id, title, cwd):
+        with self._list_lock:
+            meta = {'sessionId': thread_id, 'title': title, 'cwd': cwd,
+                    'updatedAt': int(time.time() * 1000)}
+            self._meta_cache[thread_id] = meta
+            self._pending_created[thread_id] = meta
+            self._list_at = 0  # The next list must see the new session.
 
     def open_created(self, thread_id, host):
         return True

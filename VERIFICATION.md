@@ -1,3 +1,15 @@
+## Claude ACP 适配（2026-10-08，未发布）
+
+- 范围：新增 `claude` Agent 类型（`bridge/agents/claude.py`），经 `@agentclientprotocol/claude-agent-acp` 0.87.0 包装层接入 Claude Code；发现顺序为 `CLAUDE_ACP_BIN` 环境变量 → PATH 上的 `claude-agent-acp` → `npx -y` 兜底。`run.py --agents` 白名单与前端 `AGENT_LABELS` 同步加入 claude。
+- 真机 spike 实测（包装层 0.87.0，本机 claude CLI 已有凭据）：握手后 `authMethods` 为空且推送 `authStatus: Not logged in`，但 prompt 实际成功（凭据来自本机 claude 订阅/环境）；`configOptions` 含 `model`（default/opus/fable/sonnet/haiku/claude-opus-4-8[1m]）与 `thought_level`（id 为 `effort`，default/low/medium/high/xhigh/max）两类，另有不接入的 `fast`（model_config 类）与 `agent` 选项；modes 五档（default/acceptEdits/plan/auto/bypassPermissions）。`session/cancel` 只有 notification 形式生效（实测 stopReason=cancelled），request 形式被忽略（与 kimi 行为一致，现有通用路径即发通知）。首次 npx 运行下载包装层实测约 129 秒，`AcpAdapter` 因此新增子类可覆盖的 `INITIALIZE_TIMEOUT`（claude 180 秒）。
+- 关键差异与修复：claude 只在首条消息后才把会话落盘——零消息会话跨进程 `session/load`/`resume`/`prompt` 均报 -32002 Resource not found（spike 5/6 实测）。为此 `AcpAdapter` 新增 `KEEP_CREATED_PROCESS`（claude 开启）：创建会话的进程保活为会话 handle，配置从 `session/new` 响应直接播种、跳过 load/replay，首条消息在创建进程内发出；入列前由 `_pending_created` 占位补进列表与 `session_meta`，agent 列出后撤占位，保活进程被 detach 且未入列时同步撤占位。
+- 视图兼容：`config_option_update` 通知同时接受单数 `configOption`（kimi/mcode 实测形状）与复数 `configOptions` 列表（claude 实测形状）；`tool_call_update` 补填占位 tool_call 的 title 与 rawInput 摘要（claude 先出「Preparing file…」占位再流式补全），命令摘要键增加 `file_path`。
+- 通用校验放宽：`Bridge.settings` 的模型 ID 字符集增加 `[` `]`（claude 的 `claude-opus-4-8[1m]` 为合法当前值）；adapter 侧仍按 configOptions 白名单校验取值。
+- 真机冒烟（`--agents claude`，免密隔离配置，端口 18791）：登录、列表（61 行全部 claude）、项目、新建、view（connected、model/effort/mode 播种正确）、发送短任务（回复 ok，turn completed）、catalog（6 个模型 + current=claude-opus-4-8[1m] + effort=xhigh）、settings（effort→high→还原，applied）、stop（长任务中断，turn interrupted）全部通过。前次冒烟创建的会话在重启后的列表中正常出现。
+- 审批链路：本机 claude 在 auto 与 default(Manual) 模式下执行命令与写文件均未产生 `session/request_permission` 反向请求（疑似本机 Claude 权限规则自动放行），审批卡片对 claude 只经 fake 传输层回归验证；响应路径与 kimi 共用（kimi 已真机实测）。
+- 自动检查：Python 全量套件通过（新增 `tests/test_claude_adapter.py` 16 项：发现逻辑 4 分支、argv 形状、保活创建不 spawn 新进程不发 load、pending 占位与撤销、占位 tool_call 补全、复数 config 通知、cancel 通知回合）；既有 `test_acp_adapter.py` 的 agent_kinds 非法值用例改用 `codex,zcode`。Desktop/Updater/i18n Node 套件通过。
+- 未验证：claude 真实审批弹卡（本机未触发）；桌面打包 App 注入 `MOBILE_BRIDGE_AGENTS=codex,claude` 未在签名包实测；冒烟产生的 claude 一次性会话（UUID 形式，标题 claude smoke 等）需在 Claude 客户端手工清理。
+
 ## 跨 Agent 会话迁移（2026-10-08，未发布）
 
 - 接口：`POST /api/sessions/<sid>/migrate`，body `{agent, project?, id, uiLocale?}`；返回 `{id, host, agent, project, status, sent, warning?}`。源会话只读；允许迁到同 Agent（带上下文 fork 语义）；未启用/未知 Agent 报 400「未知的 Agent 类型」，无同目录项目报 400 引导。

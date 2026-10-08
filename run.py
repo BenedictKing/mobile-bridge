@@ -76,8 +76,8 @@ def save_config(path, config):
 
 def agent_kinds(value):
     kinds = [k.strip() for k in value.split(',') if k.strip()]
-    if not kinds or any(k not in ('codex', 'kimi', 'mcode') for k in kinds):
-        raise ValueError("--agents 目前仅支持 codex、kimi 与 mcode")
+    if not kinds or any(k not in ('codex', 'kimi', 'mcode', 'claude') for k in kinds):
+        raise ValueError("--agents 目前仅支持 codex、kimi、mcode 与 claude")
     return kinds
 
 
@@ -102,7 +102,7 @@ def main(connections=None, connection_secrets=None):
     parser.add_argument("--set-password", action="store_true", help="交互式设置登录密码，不启动服务")
     parser.add_argument("--no-auth", action="store_true", help="本次运行明确关闭账号密码验证")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
-    parser.add_argument("--agents", default=os.environ.get("MOBILE_BRIDGE_AGENTS", "codex"), help="启用的 Agent 类型（逗号分隔，支持 codex、kimi 与 mcode；默认读 MOBILE_BRIDGE_AGENTS 环境变量）")
+    parser.add_argument("--agents", default=os.environ.get("MOBILE_BRIDGE_AGENTS", "codex"), help="启用的 Agent 类型（逗号分隔，支持 codex、kimi、mcode 与 claude；默认读 MOBILE_BRIDGE_AGENTS 环境变量）")
     args = parser.parse_args()
     try:
         kinds = agent_kinds(args.agents)
@@ -177,6 +177,16 @@ def main(connections=None, connection_secrets=None):
             parser.error(str(exc))
         mcode_bridge = Bridge(args.codex_home, args.config.parent / 'agents' / 'mcode', adapter=mcode_adapter)
         registry.register('mcode', mcode_bridge)
+    claude_bridge = None
+    if 'claude' in kinds:
+        from bridge.agents.acp import AcpUnavailable
+        from bridge.agents.claude import ClaudeAdapter
+        try:
+            claude_adapter = ClaudeAdapter()
+        except AcpUnavailable as exc:
+            parser.error(str(exc))
+        claude_bridge = Bridge(args.codex_home, args.config.parent / 'agents' / 'claude', adapter=claude_adapter)
+        registry.register('claude', claude_bridge)
     servers = []
     try:
         for address in network.bindings(preferences):
@@ -298,6 +308,8 @@ def main(connections=None, connection_secrets=None):
             kimi_bridge.close()
         if mcode_bridge is not None:
             mcode_bridge.close()
+        if claude_bridge is not None:
+            claude_bridge.close()
         for listener in servers:
             listener.server_close()
         if pid_file.exists() and pid_file.read_text(encoding='utf-8').strip() == str(os.getpid()):

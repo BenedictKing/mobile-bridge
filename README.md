@@ -336,15 +336,15 @@ python3 -B "$PWD/run.py" --lan
 
 ### 多 Agent（源码运行）
 
-默认只接入 Codex 桌面 App。同时接入 Kimi Code CLI 或 MiniMax（mcode）时，用 `--agents` 声明，多个类型用逗号分隔：
+默认只接入 Codex 桌面 App。同时接入 Kimi Code CLI、MiniMax（mcode）或 Claude Code 时，用 `--agents` 声明，多个类型用逗号分隔：
 
 ```sh
-python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode
+python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude
 ```
 
-前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode`），且已完成各自登录。网关会在进程内启动这些 Agent 的子进程，网页会话列表按 Agent 分组展示；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。
+前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令），且已完成各自登录。网关会在进程内启动这些 Agent 的子进程，网页会话列表按 Agent 分组展示；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。
 
-注意：Kimi/MiniMax 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
+注意：Kimi/MiniMax/Claude 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
 
 聊天详情里可以把当前会话“迁移到”另一个已启用的 Agent：在目标 Agent 上按同目录创建新会话，并把标题与最近消息转录作为首条消息注入，源会话保持不变；目标没有同目录项目时会提示先在目标 Agent 添加。
 

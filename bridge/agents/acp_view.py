@@ -31,7 +31,7 @@ def _command_summary(raw_input):
     """Best-effort one-line summary of a tool call's raw input."""
     if not isinstance(raw_input, dict):
         return ''
-    for key in ('command', 'cmd', 'path'):
+    for key in ('command', 'cmd', 'path', 'file_path'):
         value = raw_input.get(key)
         if isinstance(value, str) and value:
             return value
@@ -173,6 +173,13 @@ class AcpSessionView:
             if message is not None:
                 if update.get('status'):
                     message['status'] = TOOL_STATUS.get(update['status'], update['status'])
+                # claude-agent-acp opens tool calls as placeholders and fills
+                # in title and rawInput through updates.
+                if update.get('title'):
+                    message['title'] = update['title']
+                command = _command_summary(update.get('rawInput'))
+                if command:
+                    message['text'] = command
                 output = _output(update.get('content'))
                 if output:
                     message['output'] = output
@@ -187,9 +194,17 @@ class AcpSessionView:
         elif kind == 'current_mode_update':
             self.mode = update.get('currentModeId') or self.mode
         elif kind == 'config_option_update':
-            option = update.get('configOption')
-            if isinstance(option, dict):
-                self._apply_config_option(option)
+            # kimi/mcode emit a singular configOption; claude-agent-acp sends
+            # the whole updated configOptions list.
+            options = update.get('configOptions')
+            if isinstance(options, list):
+                for option in options:
+                    if isinstance(option, dict):
+                        self._apply_config_option(option)
+            else:
+                option = update.get('configOption')
+                if isinstance(option, dict):
+                    self._apply_config_option(option)
         else:
             LOG.debug('Ignoring unknown ACP update: %s', kind)
 

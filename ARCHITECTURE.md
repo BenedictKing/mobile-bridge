@@ -107,7 +107,7 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 | `bridge/transport.py` | Unix socket / Windows 命名管道字节流 |
 | `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
 | `bridge/service.py` | 会话同步、操作路由、去重和队列 |
-| `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode 方言 |
+| `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode/claude 方言 |
 | `bridge/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
 | `bridge/model.py` | 历史和请求的规范化 |
 | `bridge/catalog.py` | 模型与 Skill 元数据 |
@@ -123,17 +123,19 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 
 ### 控制模型
 
-Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）与 MiniMax（`mcode`）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode` 决定注册哪些后端，默认仅 codex。
+Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）与 Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode,claude` 决定注册哪些后端，默认仅 codex。
 
 ### Adapter 接口与路由
 
-`bridge/agents/base.py` 定义 `AgentAdapter` 抽象：会话列表/元数据、历史快照、发送与排队、审批响应、中断、目录（模型/Skill）、能力集合（`Capability`）与 `label`。`bridge/agents/codex.py` 是既有实现；`acp_adapter.py` 是 ACP 通用基类，`kimi.py`/`mcode.py` 只声明命令、能力与方言差异。
+`bridge/agents/base.py` 定义 `AgentAdapter` 抽象：会话列表/元数据、历史快照、发送与排队、审批响应、中断、目录（模型/Skill）、能力集合（`Capability`）与 `label`。`bridge/agents/codex.py` 是既有实现；`acp_adapter.py` 是 ACP 通用基类，`kimi.py`/`mcode.py`/`claude.py` 只声明启动命令、能力与方言差异。claude 的发现依次读 `CLAUDE_ACP_BIN` 环境变量、PATH 上的 `claude-agent-acp`、`npx -y @agentclientprotocol/claude-agent-acp`；npx 首次运行要下载包装层，握手机超时随子类上调。
 
 每个后端包装为一个 `Bridge`（`bridge/service.py`），`Registry` 维护 kind → bridge 映射。会话路由先查各 bridge 的 `listed` 集合（列表时填充）；未命中时（如重启后直接打开深链）逐个探测非 codex adapter 的 `session_meta`，命中即缓存，避免 `session_*`/`mvs_*` 标识落入 codex 的 UUID 校验而误报 400。HTTP 层按 `?agent=` 或该路由选择 bridge。
 
 ### ACP 传输与视图
 
 `bridge/agents/acp.py` 实现 NDJSON JSON-RPC 传输：initialize 能力协商、`session/new`/`list`/`load`/`prompt`/`cancel`、`session/set_config_option` 与 `session/set_mode`，入向 `session/update` 通知与 `session/request_permission` 请求。`acp_view.py` 把 ACP 更新流规范化成与 codex 相同的 view 形状（turns/items/requests/状态），前端因此无需感知传输差异。`session/list` 结果带 15–30 秒缓存与后台刷新，避免每请求 spawn。
+
+claude-agent-acp 只在首条消息后才把会话落盘：零消息会话跨进程 `session/load`/`resume`/`prompt` 均报 "Resource not found"。因此 `AcpAdapter.create_session` 对 `KEEP_CREATED_PROCESS` 的子类（claude）把创建进程保活为会话 handle（配置在 `session/new` 响应里直接播种，跳过 load/replay），首条消息就在创建进程内发出；会话入列前由 `_pending_created` 占位补进列表与 `session_meta`，agent 一旦列出即撤占位，保活进程被 detach 的未入列会话同时撤占位。
 
 ### Capability 门控
 
@@ -151,16 +153,16 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 ### 能力矩阵
 
-| 能力 | Codex | Kimi | MiniMax |
-| --- | --- | --- | --- |
-| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ |
-| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） |
-| 新建会话 | ✓ | ✓ | ✓ |
-| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） |
-| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） |
-| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） |
-| Skill 选择 | ✓ | ✗ | ✗ |
-| Fast 模式/账号切换 | ✓ | ✗ | ✗ |
+| 能力 | Codex | Kimi | MiniMax | Claude |
+| --- | --- | --- | --- | --- |
+| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ | ✓ |
+| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） |
+| 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） |
+| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） |
+| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） |
+| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ |
+| Skill 选择 | ✓ | ✗ | ✗ | ✗ |
+| Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ |
 
 ## 固定 HTTPS 入口
 
