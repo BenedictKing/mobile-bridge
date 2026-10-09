@@ -138,6 +138,8 @@ $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
 let newChatProjects=[],newChatAgents=[],creatingChat=false,approvalBusy=0;
 function projectLabel(project){const kind=project.agent||(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
 function dirLabel(project){const base=(project.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||project.name;return base+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
+// Codex chats open in the desktop App; ACP agents are spawned by the gateway.
+function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'在电脑 App 的已有项目中创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。':'在已有项目目录中创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 $('new-chat').onclick=async()=>{
@@ -167,12 +169,13 @@ $('new-chat').onclick=async()=>{
     const selected=current?.projectKey;
     if(options.some(p=>p.key===selected))$('new-chat-project').value=selected;
     else if(current?.cwd){const hit=options.find(p=>p.cwd===current.cwd);if(hit)$('new-chat-project').value=hit.key;}
-    $('new-chat-project').onchange();
+    $('new-chat-project').onchange();updateNewChatDesc();
     if(!options.length)$('new-chat-error').textContent=t('请先在对应 Agent 的客户端添加一个项目。');
     $('new-chat-submit').disabled=!options.length;
   }catch(e){$('new-chat-error').textContent=t(e.message);$('new-chat-path').textContent='';}
 };
 $('new-chat-project').onchange=()=>{$('new-chat-path').textContent=newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'';};
+$('new-chat-agent').onchange=updateNewChatDesc;
 $('new-chat-dialog').addEventListener('cancel',event=>{if(creatingChat)event.preventDefault();});
 $('new-chat-form').onsubmit=async event=>{
   event.preventDefault();if(creatingChat)return;
@@ -542,7 +545,8 @@ $('phone-language').onchange=()=>{
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   renderLoginStatus();
   for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','pushplus-error','toast'])$(id).textContent=t($(id).textContent);
-  for(const option of $('new-chat-project').options){const project=newChatProjects.find(p=>p.key===option.value);if(project)option.textContent=projectLabel(project);}
+  for(const option of $('new-chat-project').options){const project=newChatProjects.find(p=>p.key===option.value);if(project)option.textContent=newChatAgents.length>1?dirLabel(project):projectLabel(project);}
+  updateNewChatDesc();
   if($('model-select').querySelector('[value=__custom__]'))$('model-select').querySelector('[value=__custom__]').textContent=t('自定义模型…');
   if(state){approvalStamp='';renderState(state);[...$('approvals').querySelectorAll('input,textarea,select')].forEach((node,i)=>{if(replies[i]){node.value=replies[i].value;node.checked=replies[i].checked;if(node.tagName==='SELECT')node.dispatchEvent(new Event('change'));}});}
   $('notify-button').textContent=t(notificationState.watching?'提醒已开':'提醒');

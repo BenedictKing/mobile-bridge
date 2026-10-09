@@ -721,6 +721,7 @@ const en={
   "在 iPhone 或 Android 安装 ntfy，允许系统通知和锁屏显示。": "Install ntfy on your iPhone or Android phone and allow notifications, including on the lock screen.",
   "在本机运行": "Running on this computer",
   "在电脑 App 的已有项目中创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。": "Create an empty chat in a project saved in the desktop App, then send messages from your phone. The computer will open this chat.",
+  "在已有项目目录中创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。": "Create an empty chat in a known project directory, then send messages from your phone. The gateway starts the agent session directly.",
   "在通知中显示聊天标题": "Include chat titles in notifications",
   "地址不可用": "This address is not available",
   "地址不能包含 IPv6 区域标识": "IPv6 zone identifiers are not supported",
