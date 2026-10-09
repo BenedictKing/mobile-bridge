@@ -1219,7 +1219,7 @@ class Bridge:
                 texts = [projection.details[result['key']]]
             else:
                 result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
-                result['meta'] = dict(result['meta'], host=self.host,
+                result['meta'] = dict(result['meta'], host=self.host, agent=self.adapter.kind,
                                       hostLabel='此电脑' if self.host == 'local' else self.hosts.hosts().get(self.host, {}).get('displayName', self.host))
                 texts = [row['text'] for row in result['rows'] if row['role'] == 'assistant']
             cwd = (session.state or {}).get('cwd')
