@@ -665,9 +665,20 @@ class AcpAdapter(AgentAdapter):
         options = list(handle.config_options) if handle is not None else []
         model_option = self._find_category(options, self.MODEL_CATEGORY) or {}
         thinking = self._find_category(options, self.THINKING_CATEGORY) or {}
-        think_values = {o.get('value') for o in thinking.get('options') or []
-                        if isinstance(o, dict)}
-        efforts = [name for name, mapped in self.EFFORT_MAP.items() if mapped in think_values]
+        # One bridge level per advertised value, in the agent's own order; the
+        # exact name wins so kimi's low/high/max do not expand into the eight
+        # folded EFFORT_MAP levels.
+        efforts = []
+        for option in thinking.get('options') or []:
+            if not isinstance(option, dict):
+                continue
+            value = option.get('value')
+            if not value:
+                continue
+            name = value if value in self.EFFORT_MAP else next(
+                (n for n, m in self.EFFORT_MAP.items() if m == value), None)
+            if name is not None and name not in efforts:
+                efforts.append(name)
         models = [{'id': o.get('value'), 'name': o.get('name') or o.get('value'),
                    'efforts': efforts}
                   for o in model_option.get('options') or []

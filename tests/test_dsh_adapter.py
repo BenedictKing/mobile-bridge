@@ -171,8 +171,7 @@ class DshBridgeTests(unittest.TestCase):
         self.assertIn('deepseek-official::deepseek-flash', values)
         efforts = next(m['efforts'] for m in catalog['models']
                        if m['id'] == 'deepseek-official::deepseek-flash')
-        self.assertIn('none', efforts)
-        self.assertIn('ultra', efforts)
+        self.assertEqual(efforts, ['none', 'low', 'high', 'max'])
         self.assertEqual(catalog['currentModel'], 'deepseek-official::deepseek-v4-pro')
         self.assertEqual(catalog['currentEffort'], 'high')
         self.assertFalse(catalog['fastMode']['allowed'])

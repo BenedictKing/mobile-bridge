@@ -279,7 +279,7 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual([m['id'] for m in models['models']], ['kimi-code/k3-256k', 'kimi-code/k2'])
         self.assertEqual(models['currentModel'], 'kimi-code/k3-256k')
         self.assertEqual(models['currentEffort'], 'high')
-        self.assertIn('high', models['models'][0]['efforts'])
+        self.assertEqual(models['models'][0]['efforts'], ['low', 'high', 'max'])
         self.assertFalse(models['fastMode']['allowed'])
         skills = bridge.catalog(SID, kind='skills')
         self.assertEqual(skills, {'kind': 'skills', 'skills': [], 'errors': []})
