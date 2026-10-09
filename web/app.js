@@ -135,8 +135,9 @@ async function loadList(reset=false){
 }
 $('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).catch(e=>toast(e.message));$('more').onclick=()=>loadList().catch(e=>toast(e.message));
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
-let newChatProjects=[],creatingChat=false,approvalBusy=0;
-function projectLabel(project){const kind=(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
+let newChatProjects=[],newChatAgents=[],creatingChat=false,approvalBusy=0;
+function projectLabel(project){const kind=project.agent||(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
+function dirLabel(project){const base=(project.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||project.name;return base+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 $('new-chat').onclick=async()=>{
@@ -144,24 +145,42 @@ $('new-chat').onclick=async()=>{
   $('new-chat-project').replaceChildren();$('new-chat-path').textContent=t('正在读取电脑项目…');
   $('new-chat-dialog').showModal();
   try{
-    newChatProjects=(await api('/api/projects')).projects;
-    for(const project of newChatProjects)$('new-chat-project').append(new Option(projectLabel(project),project.key));
-    const selected=listRows.find(row=>row.id===currentId&&row.host===currentHost)?.projectKey;
-    if(newChatProjects.some(p=>p.key===selected))$('new-chat-project').value=selected;
+    const data=await api('/api/projects');
+    newChatProjects=data.projects||[];newChatAgents=(data.agents||[]).filter(a=>a&&a.kind);
+    const multi=newChatAgents.length>1;
+    $('new-chat-agent-row').hidden=!multi;
+    const agentSelect=$('new-chat-agent');agentSelect.replaceChildren();
+    if(multi)for(const agent of newChatAgents)agentSelect.append(new Option(agent.label,agent.kind));
+    // 多 Agent 时项目按目录去重：同目录跨 Agent 只显示一条，Agent 由上级选择器表达。
+    const options=[],seen=new Set();
+    for(const project of newChatProjects){
+      if(multi){const cwd=project.cwd||'';if(seen.has(cwd))continue;seen.add(cwd);}
+      options.push(project);
+    }
+    newChatProjects=options;
+    for(const project of options)$('new-chat-project').append(new Option(multi?dirLabel(project):projectLabel(project),project.key));
+    const current=listRows.find(row=>row.id===currentId&&row.host===currentHost);
+    if(multi){
+      if(newChatAgents.some(a=>a.kind===current?.agent))agentSelect.value=current.agent;
+      else if(newChatAgents.some(a=>a.kind==='codex'))agentSelect.value='codex';
+    }
+    const selected=current?.projectKey;
+    if(options.some(p=>p.key===selected))$('new-chat-project').value=selected;
+    else if(current?.cwd){const hit=options.find(p=>p.cwd===current.cwd);if(hit)$('new-chat-project').value=hit.key;}
     $('new-chat-project').onchange();
-    if(!newChatProjects.length)$('new-chat-error').textContent=t('请先在对应 Agent 的客户端添加一个项目。');
-    $('new-chat-submit').disabled=!newChatProjects.length;
+    if(!options.length)$('new-chat-error').textContent=t('请先在对应 Agent 的客户端添加一个项目。');
+    $('new-chat-submit').disabled=!options.length;
   }catch(e){$('new-chat-error').textContent=t(e.message);$('new-chat-path').textContent='';}
 };
 $('new-chat-project').onchange=()=>{$('new-chat-path').textContent=newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'';};
 $('new-chat-dialog').addEventListener('cancel',event=>{if(creatingChat)event.preventDefault();});
 $('new-chat-form').onsubmit=async event=>{
   event.preventDefault();if(creatingChat)return;
-  const project=$('new-chat-project').value,title=$('new-chat-title').value.trim();
+  const project=$('new-chat-project').value,title=$('new-chat-title').value.trim(),agent=newChatAgents.length>1?$('new-chat-agent').value:null;
   if(!project||!title){$('new-chat-error').textContent=t('请选择项目并填写聊天名称。');return;}
   let attempt;
   try{attempt=JSON.parse(sessionStorage.getItem('new-chat-attempt')||'null');}catch{}
-  if(!attempt||attempt.project!==project||attempt.title!==title)attempt={id:uuid(),project,title};
+  if(!attempt||attempt.project!==project||attempt.title!==title||attempt.agent!==agent)attempt={id:uuid(),project,title,...(agent?{agent}:{})};
   sessionStorage.setItem('new-chat-attempt',JSON.stringify(attempt));
   creatingChat=true;setLanguageBusy();$('new-chat-error').textContent='';$('new-chat-submit').textContent=t('正在创建…');
   $('new-chat-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=true);

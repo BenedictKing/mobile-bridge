@@ -337,14 +337,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, {"sessions": rows, "unavailableHosts": self.server.bridge.host_errors})
             if not write and path == '/api/projects':
                 registry = self.server.registry
-                if registry is not None and len(registry.kinds()) > 1:
+                if registry is not None:
                     projects, seen = [], set()
                     for kind in registry.kinds():
                         for project in registry.for_agent(kind).adapter.projects():
                             if project['key'] not in seen:
                                 seen.add(project['key'])
-                                projects.append(project)
-                    return self.output(200, {'projects': projects})
+                                projects.append({**project, 'agent': kind})
+                    return self.output(200, {'projects': projects,
+                                             'agents': [{'kind': kind,
+                                                         'label': registry.for_agent(kind).adapter.label}
+                                                        for kind in registry.kinds()]})
                 return self.output(200, {'projects': self.server.bridge.hosts.projects()})
             if write and path == '/api/activity':
                 groups = self.read_json().get('hosts')
@@ -360,21 +363,31 @@ class Handler(BaseHTTPRequestHandler):
                 registry = self.server.registry
                 if registry is not None and len(registry.kinds()) > 1:
                     agent = body.get('agent')
+                    project = None
                     if agent is not None:
                         try:
                             root = registry.for_agent(agent)
                         except KeyError:
                             raise ValueError('未知的 Agent 类型') from None
-                    else:
-                        project_key = body.get('project')
-                        root = None
+                        # An explicit agent pairs with any known project
+                        # directory; the target's own projects win.
+                        project = next((p for p in root.adapter.projects()
+                                        if p['key'] == body.get('project')), None)
+                    if project is None:
                         for kind in registry.kinds():
                             candidate = registry.for_agent(kind)
-                            if any(p['key'] == project_key for p in candidate.adapter.projects()):
-                                root = candidate
+                            project = next((p for p in candidate.adapter.projects()
+                                            if p['key'] == body.get('project')), None)
+                            if project is not None:
+                                if agent is None:
+                                    root = candidate
+                                elif project['host'] != 'local':
+                                    raise ValueError('跨 Agent 创建仅支持本机项目目录')
                                 break
-                        if root is None:
-                            raise ValueError('请选择电脑 App 中已保存的项目')
+                    if project is None:
+                        raise ValueError('请选择电脑 App 中已保存的项目')
+                    return self.output(200, root.create_chat(project['key'], body.get('title'),
+                                                             body.get('id'), resolved=project))
                 return self.output(200, root.create_chat(body.get('project'), body.get('title'), body.get('id')))
             if path == '/api/notifications/defaults':
                 if self.server.notifications is None:

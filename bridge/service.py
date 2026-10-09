@@ -471,13 +471,16 @@ class Bridge:
         target.replace(self.creations_path)
 
     @operation
-    def create_chat(self, project_key, title, request_id):
+    def create_chat(self, project_key, title, request_id, resolved=None):
         if not isinstance(request_id, str):
             raise ValueError('创建请求标识无效')
         uuid.UUID(request_id)
         if not isinstance(title, str) or not title.strip() or len(title) > 120:
             raise ValueError('请输入 1–120 字的聊天名称')
-        project = next((p for p in self.adapter.projects() if p['key'] == project_key), None)
+        # resolved: a project dict pre-resolved by the router for cross-agent
+        # creation (explicit agent + another agent's project directory).
+        project = resolved if resolved is not None else next(
+            (p for p in self.adapter.projects() if p['key'] == project_key), None)
         if project is None:
             raise ValueError('请选择电脑 App 中已保存的项目')
         title = title.strip()

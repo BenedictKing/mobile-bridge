@@ -1,3 +1,13 @@
+## 新建聊天两级选择（2026-10-09，未发布）
+
+- 范围：新建聊天对话框中 Agent 与项目解耦为两级独立选择，避免多 Agent 下组合爆炸。`/api/projects` 每个项目增加 `agent` 字段（浅拷贝，不污染 adapter 缓存），顶层新增 `agents: [{kind, label}]`；前端新增 Agent 选择器（位于项目选择器之前，仅启用多个 Agent 时显示），项目按目录跨 Agent 去重、以目录名（远程带主机）展示、不再带 Agent 前缀。
+- Codex 目录约束核实结论：`bridge/create.py` 的 `create_empty` 只检查 `Path(cwd).is_dir()`，`thread/start` 接受任意 cwd，Codex 侧没有项目注册白名单；桥接层唯一的白名单在 `Bridge.create_chat` 按 `adapter.projects()` 查 key。因此把 codex 独有的项目目录交给 dsh（或反向）创建会话均可行。
+- 跨 Agent 路由与守卫：`POST /api/sessions` 收到显式 `{agent, project}` 时先在目标 adapter 自己的项目里查 key，未命中再全局按 key 解析其 cwd 后交给目标 Agent 创建（`Bridge.create_chat` 新增 `resolved` 参数跳过白名单查找）；跨 Agent 且源项目 `host != 'local'` 时报 400「跨 Agent 创建仅支持本机项目目录」。幂等沿用请求 id，agent 参与幂等身份。
+- 默认值：打开对话框默认选中当前会话的 Agent 与项目；ACP 会话的 projectKey 形如 `local|<cwd>` 永不等于项目 key，故按 cwd 回退匹配；无当前会话时默认 codex + 第一项。
+- 自动检查：Python 全量 570 过 / 10 跳过（`tests/test_acp_adapter.py` AcpHttpTests 新增 5 项：projects 形状与缓存不污染、跨 Agent 创建与幂等重放、显式 Agent 命中自有项目、远程项目守卫、未知 Agent/项目）；Desktop 150 过、Updater 15 过 1 跳过、i18n 1 过。
+- 浏览器验收（agent-browser session `mb-newchat-check`，调试网关 `--agents codex,dsh`、免密隔离配置、端口 18794，已停止）：`/api/projects` 返回 5 codex + 6 dsh 项目（各带 agent 字段）与 agents [codex, DeepSeek]；对话框项目选项 9 条（LibreCAD/ccx 两目录跨 Agent 去重成功）；真实创建 dsh × codex 独有目录（benedictking-skills）会话成功并出现在列表顶部；从 dsh mobile-bridge 会话与 codex LibreCAD 会话分别重开对话框，Agent 与项目默认值均正确回中（cwd fallback 生效）。截图存于 `.tmp/newchat-twolevel/`。
+- 未验证/边界：冒烟创建的 dsh 侧「未命名聊天 benedictking-skills」会话需在 dsh 客户端手工清理（标题显示"未命名聊天"是 ACP 会话入列后 list 行无 title 覆盖占位的既有行为，非本次范围）；SSH 远程项目的跨 Agent 拒绝只经 fake 传输层回归验证，未连真实 SSH 主机。
+
 ## DeepSeek Harness ACP 适配（2026-10-09，未发布）
 
 - 范围：新增 `dsh` Agent 类型（`bridge/agents/dsh.py`），经 `@openma/deepseek-harness-acp` 0.4.37 包装层接入 DeepSeek Harness；发现顺序为 `DSH_ACP_BIN` 环境变量 → PATH 上的 `dsh-acp` → `npx -y` 兜底。`run.py --agents` 白名单与前端 `AGENT_LABELS` 同步加入 dsh。

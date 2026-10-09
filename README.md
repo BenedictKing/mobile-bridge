@@ -342,7 +342,7 @@ python3 -B "$PWD/run.py" --lan
 python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh
 ```
 
-前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量）。网关会在进程内启动这些 Agent 的子进程，网页会话列表按 Agent 分组展示；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。
+前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量）。网关会在进程内启动这些 Agent 的子进程，网页会话列表按 Agent 分组展示；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
 
 注意：Kimi/MiniMax/Claude/DeepSeek 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
 

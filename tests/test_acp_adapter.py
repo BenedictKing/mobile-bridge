@@ -409,6 +409,69 @@ class AcpHttpTests(unittest.TestCase):
         cwds = {project['cwd'] for project in body['projects']}
         self.assertEqual(cwds, {'/alpha', '/kimi'})
 
+    def test_projects_carry_agent_and_agents_list(self):
+        status, body = self.request('GET', '/api/projects')
+        self.assertEqual(status, 200)
+        by_cwd = {project['cwd']: project['agent'] for project in body['projects']}
+        self.assertEqual(by_cwd, {'/alpha': 'codex', '/kimi': 'kimi'})
+        self.assertEqual(body['agents'], [{'kind': 'codex', 'label': 'ACP Agent'},
+                                          {'kind': 'kimi', 'label': 'Kimi'}])
+        # 响应里的 agent 字段必须来自浅拷贝，不得污染 adapter 缓存的项目行。
+        for bridge in (self.bridge_a, self.bridge_k):
+            for project in bridge.adapter.projects():
+                self.assertNotIn('agent', project)
+
+    def test_create_with_explicit_agent_and_cross_agent_project(self):
+        project_key = self.bridge_a.adapter.projects()[0]['key']  # codex 侧 /alpha
+        request_id = str(uuid.uuid4())
+        status, body = self.request('POST', '/api/sessions',
+                                    {'agent': 'kimi', 'project': project_key,
+                                     'title': 'Cross', 'id': request_id})
+        self.assertEqual(status, 200)
+        created = body['id']
+        news = [r for r in self.fake_k.requests if r['method'] == 'session/new']
+        self.assertEqual(len(news), 1)
+        self.assertEqual(news[0]['params']['cwd'], '/alpha')
+        self.assertEqual([r for r in self.fake_a.requests if r['method'] == 'session/new'], [])
+        # 幂等：同一请求 id 重放返回原会话，不再触发 session/new。
+        status, replay = self.request('POST', '/api/sessions',
+                                      {'agent': 'kimi', 'project': project_key,
+                                       'title': 'Cross', 'id': request_id})
+        self.assertEqual(status, 200)
+        self.assertEqual(replay['id'], created)
+        self.assertEqual(len([r for r in self.fake_k.requests if r['method'] == 'session/new']), 1)
+
+    def test_create_with_explicit_agent_and_own_project(self):
+        project_key = self.bridge_k.adapter.projects()[0]['key']
+        status, body = self.request('POST', '/api/sessions',
+                                    {'agent': 'kimi', 'project': project_key,
+                                     'title': 'Own', 'id': str(uuid.uuid4())})
+        self.assertEqual(status, 200)
+        news = [r for r in self.fake_k.requests if r['method'] == 'session/new']
+        self.assertEqual(news[0]['params']['cwd'], '/kimi')
+
+    def test_create_cross_agent_rejects_remote_project(self):
+        remote = {'key': 'acp:remote', 'host': 'ssh1', 'hostLabel': 'SSH',
+                  'name': 'remote', 'cwd': '/srv/remote'}
+        with patch.object(self.bridge_a.adapter, 'projects', return_value=[remote]):
+            status, body = self.request('POST', '/api/sessions',
+                                        {'agent': 'kimi', 'project': 'acp:remote',
+                                         'title': 'Nope', 'id': str(uuid.uuid4())})
+        self.assertEqual(status, 400)
+        self.assertEqual(body['error'], '跨 Agent 创建仅支持本机项目目录')
+
+    def test_create_with_unknown_agent_or_project_rejected(self):
+        status, body = self.request('POST', '/api/sessions',
+                                    {'agent': 'bogus', 'project': 'acp:x',
+                                     'title': 'Nope', 'id': str(uuid.uuid4())})
+        self.assertEqual(status, 400)
+        self.assertEqual(body['error'], '未知的 Agent 类型')
+        status, body = self.request('POST', '/api/sessions',
+                                    {'agent': 'kimi', 'project': 'acp:missing',
+                                     'title': 'Nope', 'id': str(uuid.uuid4())})
+        self.assertEqual(status, 400)
+        self.assertEqual(body['error'], '请选择电脑 App 中已保存的项目')
+
     def test_session_route_probes_unlisted_acp_session(self):
         # No GET /api/sessions first: a direct link after a restart must still
         # route to the kimi bridge instead of failing Codex UUID validation.

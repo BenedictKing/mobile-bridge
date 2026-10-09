@@ -776,6 +776,8 @@ const en={
   " ，可先阅读已保存的历史。": ". Saved history is available.",
   " 正在工作…": " is working…",
   "未知的 Agent 类型": "Unknown agent kind",
+  "跨 Agent 创建仅支持本机项目目录": "Cross-agent creation only supports project directories on this computer",
+  "Agent": "Agent",
   "迁移到其他 Agent": "Migrate to another agent",
   "迁移到 ": "Migrate to ",
   "将创建指向同一目录的 ": "A new ",
