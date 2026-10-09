@@ -148,7 +148,10 @@ class ChatTimeline {
     more.onclick=load;node.append(body,more);paint();
     if(row.role==='user'||row.role==='assistant'){
       const actions=document.createElement('div');actions.className='message-actions';
-      const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);node.append(actions);
+      if((row.text||'').trim()){
+        const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);
+      }
+      node.append(actions);
     }
     if(row.attachments?.length){
       const attachments=document.createElement('div');attachments.className='timeline-attachments';
