@@ -10,7 +10,8 @@
 - 鉴权边界（无 key 实测）：initialize、`session/list` 不需要凭证；`session/new`、`session/load`、steer、fork 报 -32000 并指引 `dsh-acp login` / dsh Web UI / `DEEPSEEK_API_KEY`。适配器把 AcpAuthRequired 翻成 auth_hint「请先在电脑终端运行 dsh-acp login 完成登录」。注意本机存在 `~/.dsh/.credentials.yaml` 但默认 provider 未命中（仍 -32000）。
 - 自动检查：Python 全量 565 过/10 跳过（新增 `tests/test_dsh_adapter.py` 19 项：发现 4 分支、argv 形状、协作模式只走 collaboration_mode 且不触 set_mode、current_mode_update 忽略、effort 映射 off/max、`::` 模型 ID、steer 注入与 promptRequired 回落、创建后新进程 load、cancel 回合）；`tests/fake_acp.py` 增加 `_session/steering` handler 与 `steer_outcome` 开关；`test_acp_adapter.py` 的 agent_kinds 增加 dsh 正例。Desktop 150 / Updater 15 过 1 跳过 / i18n 1 全过。
 - 真机冒烟（`--agents dsh`，免密隔离配置，端口 18792）：登录、sessions 列表（8 行全部 dsh）、projects（`dsh:` 前缀 5 个）、新建（无 key 报友好 auth 错）、打开既有会话（connectionError 为 auth_hint）、capabilities 含 steer、catalog/settings/send/stop/respond 端点均按预期响应。
-- 未验证：真实 API key 下的 prompt 回合、steer 运行中注入、cancel 真实中断与审批卡片（需有效 key：`DEEPSEEK_API_KEY=<你的key> python3 -B run.py --agents dsh …`，或先 `npx -y @openma/deepseek-harness-acp login`）。冒烟与探针产生的 dsh 一次性会话（标题 smoke/hi 等）需在 dsh 客户端手工清理。
+- prompt 回合已验证（2026-10-09，用户配好 key 后）：AcpProcess 直连 `npx -y @openma/deepseek-harness-acp`，session/new → prompt「只回复两个字：收到」返回 `stopReason: end_turn`（usage 8584 入/2 出），凭据链路与模型路由正常。
+- 未验证：steer 运行中注入、cancel 真实中断与审批卡片（真 key 下）。冒烟与探针产生的 dsh 一次性会话（标题 smoke/hi 等）需在 dsh 客户端手工清理。
 
 ## Claude ACP 适配（2026-10-08，未发布）
 
