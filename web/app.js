@@ -94,9 +94,12 @@ $('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;cur
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 $('list-mode').value=localStorage.getItem('list-mode')||'recent';
 $('list-mode').onchange=()=>{localStorage.setItem('list-mode',$('list-mode').value);renderList();};
+// 最近交互视图按最后对话时间分段折叠；前两天默认展开，更早的默认收起。
+const TIME_BUCKETS=[{days:3,label:'3 天内',open:true},{days:7,label:'一周内',open:true},{days:15,label:'15 天内',open:false},{days:30,label:'一月内',open:false},{days:90,label:'三月内',open:false},{days:Infinity,label:'更早',open:false}];
 function renderList(){
   $('sessions').replaceChildren();
   const grouped=$('list-mode').value==='project', groups=new Map();
+  const now=Date.now();
   for(const chat of listRows){
     let parent=$('sessions');
     if(grouped){
@@ -108,6 +111,18 @@ function renderList(){
         groups.set(chat.projectKey,details);$('sessions').append(details);
       }
       parent=groups.get(chat.projectKey);
+    }else{
+      const days=(now-(chat.recency||0))/864e5;
+      const bucket=TIME_BUCKETS.find(b=>days<=b.days)||TIME_BUCKETS[TIME_BUCKETS.length-1];
+      if(!groups.has(bucket)){
+        const details=el('details','project-group');
+        const stored=localStorage.getItem('tgroup:'+bucket.label);
+        details.open=stored===null?bucket.open:stored==='open';
+        details.append(el('summary','',t(bucket.label)));
+        details.ontoggle=()=>localStorage.setItem('tgroup:'+bucket.label,details.open?'open':'closed');
+        groups.set(bucket,details);$('sessions').append(details);
+      }
+      parent=groups.get(bucket);
     }
     const button=el('button','session'+(chat.id===currentId&&chat.host===currentHost?' selected':''));
     button.dataset.id=chat.id;button.dataset.host=chat.host;
