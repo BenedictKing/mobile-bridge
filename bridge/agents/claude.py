@@ -20,6 +20,17 @@ def discover_argv():
     return None
 
 
+def available():
+    """True when a Claude Code install is detectable locally.
+
+    The npx fallback does not count: any machine with npx would otherwise
+    auto-enable claude and trigger the first-run download.
+    """
+    return (bool(os.environ.get('CLAUDE_ACP_BIN'))
+            or shutil.which('claude-agent-acp') is not None
+            or shutil.which('claude') is not None)
+
+
 class ClaudeAdapter(AcpAdapter):
     kind = 'claude'
     label = 'Claude'

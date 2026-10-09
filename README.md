@@ -336,7 +336,7 @@ python3 -B "$PWD/run.py" --lan
 
 ### 多 Agent（源码运行）
 
-默认只接入 Codex 桌面 App。同时接入 Kimi Code CLI、MiniMax（mcode）、Claude Code 或 DeepSeek Harness（dsh）时，用 `--agents` 声明，多个类型用逗号分隔：
+默认 `auto` 会自动探测本机已安装的 Agent（Codex 始终启用；Kimi Code CLI、MiniMax mcode、Claude Code、DeepSeek Harness dsh 按本机安装情况启用，仅有 npx 兜底下载的不算已安装）。也可以用 `--agents` 显式声明，多个类型用逗号分隔：
 
 ```sh
 python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh

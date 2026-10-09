@@ -5,6 +5,11 @@ from .acp_adapter import AcpAdapter
 from .base import Capability
 
 
+def available():
+    """True when a MiniMax Code install is detectable on this machine."""
+    return discover_executable('MCODE_BIN', '.minimax-code/bin/mcode', 'mcode') is not None
+
+
 class MCodeAdapter(AcpAdapter):
     kind = 'mcode'
     label = 'MiniMax'

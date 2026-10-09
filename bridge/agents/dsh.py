@@ -2,6 +2,7 @@
 import os
 import shlex
 import shutil
+from pathlib import Path
 
 from .acp import AcpUnavailable
 from .acp_adapter import AcpAdapter
@@ -20,6 +21,19 @@ def discover_argv():
     if shutil.which('npx'):
         return ['npx', '-y', '@openma/deepseek-harness-acp']
     return None
+
+
+def available():
+    """True when a DeepSeek Harness install is detectable locally.
+
+    The npx fallback does not count (same reason as claude), but a ~/.dsh
+    directory does: dsh may only ever have run via npx yet still leave its
+    credentials and config there.
+    """
+    return (bool(os.environ.get('DSH_ACP_BIN'))
+            or shutil.which('dsh-acp') is not None
+            or shutil.which('dsh') is not None
+            or (Path.home() / '.dsh').is_dir())
 
 
 class DshSessionView(AcpSessionView):

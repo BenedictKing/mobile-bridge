@@ -74,10 +74,20 @@ def save_config(path, config):
     temp.replace(path)
 
 
+def detect_agent_kinds():
+    """Auto-detect locally installed ACP agents; npx fallbacks do not count."""
+    from bridge.agents import claude, dsh, kimi, mcode
+    probes = (('kimi', kimi.available), ('mcode', mcode.available),
+              ('claude', claude.available), ('dsh', dsh.available))
+    return [kind for kind, probe in probes if probe()]
+
+
 def agent_kinds(value):
     kinds = [k.strip() for k in value.split(',') if k.strip()]
+    if kinds == ['auto']:
+        return ['codex'] + detect_agent_kinds()
     if not kinds or any(k not in ('codex', 'kimi', 'mcode', 'claude', 'dsh') for k in kinds):
-        raise ValueError("--agents 目前仅支持 codex、kimi、mcode、claude 与 dsh")
+        raise ValueError("--agents 支持 codex、kimi、mcode、claude、dsh，或 auto（自动探测本机已安装的）")
     return kinds
 
 
@@ -102,7 +112,7 @@ def main(connections=None, connection_secrets=None):
     parser.add_argument("--set-password", action="store_true", help="交互式设置登录密码，不启动服务")
     parser.add_argument("--no-auth", action="store_true", help="本次运行明确关闭账号密码验证")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
-    parser.add_argument("--agents", default=os.environ.get("MOBILE_BRIDGE_AGENTS", "codex"), help="启用的 Agent 类型（逗号分隔，支持 codex、kimi、mcode、claude 与 dsh；默认读 MOBILE_BRIDGE_AGENTS 环境变量）")
+    parser.add_argument("--agents", default=os.environ.get("MOBILE_BRIDGE_AGENTS", "auto"), help="启用的 Agent 类型（逗号分隔，支持 codex、kimi、mcode、claude 与 dsh；默认 auto 自动探测本机已安装的，可设 MOBILE_BRIDGE_AGENTS 环境变量覆盖）")
     args = parser.parse_args()
     try:
         kinds = agent_kinds(args.agents)
@@ -153,6 +163,7 @@ def main(connections=None, connection_secrets=None):
     hosts = (addresses() if selected is None else ['127.0.0.1', 'localhost'] + selected) if args.lan else ['127.0.0.1', 'localhost']
     config["origins"] = sorted(set(origins + [f"http://{host}:{args.port}" for host in hosts]))
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.info('启用的 Agent：%s', '、'.join(kinds))
     adapter = CodexAdapter(args.codex_home, data_dir=args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin)
     bridge = Bridge(args.codex_home, args.config.parent, ipc_path=args.ipc_path, codex_bin=args.codex_bin, adapter=adapter)
     registry = Registry()

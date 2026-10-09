@@ -3,6 +3,11 @@ from .acp import AcpUnavailable, discover_executable
 from .acp_adapter import AcpAdapter
 
 
+def available():
+    """True when a Kimi Code CLI install is detectable on this machine."""
+    return discover_executable('KIMI_BIN', '.kimi-code/bin/kimi', 'kimi') is not None
+
+
 class KimiAdapter(AcpAdapter):
     kind = 'kimi'
     label = 'Kimi'

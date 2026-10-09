@@ -302,7 +302,7 @@ Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a 
 
 ### Multiple agents (source runs)
 
-Only the Codex desktop App is connected by default. To also serve Kimi Code CLI, MiniMax (mcode), Claude Code or DeepSeek Harness (dsh), declare them with `--agents`, comma-separated:
+The default `auto` probes for locally installed agents (Codex is always enabled; Kimi Code CLI, MiniMax mcode, Claude Code and DeepSeek Harness dsh are enabled when a local install is detected — an npx download fallback alone does not count). You can also declare them explicitly with `--agents`, comma-separated:
 
 ```sh
 python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh

@@ -326,6 +326,49 @@ class AcpAdapterTests(unittest.TestCase):
                     run.main()
         self.assertEqual(ctx.exception.code, 2)
 
+    def test_agent_kinds_auto_detects_installed_agents(self):
+        import run
+        with patch('run.detect_agent_kinds', return_value=['kimi', 'dsh']):
+            self.assertEqual(run.agent_kinds('auto'), ['codex', 'kimi', 'dsh'])
+        with patch('run.detect_agent_kinds', return_value=[]):
+            self.assertEqual(run.agent_kinds('auto'), ['codex'])
+        with self.assertRaises(ValueError):
+            run.agent_kinds('auto,codex')
+
+    def test_detect_agent_kinds_probes_each_module(self):
+        import run
+        with patch('bridge.agents.kimi.available', return_value=True), \
+             patch('bridge.agents.mcode.available', return_value=False), \
+             patch('bridge.agents.claude.available', return_value=True), \
+             patch('bridge.agents.dsh.available', return_value=False):
+            self.assertEqual(run.detect_agent_kinds(), ['kimi', 'claude'])
+
+    def test_adapter_available_probes(self):
+        from bridge.agents import claude, dsh, kimi, mcode
+        with patch.dict('os.environ', {'KIMI_BIN': '/x/kimi'}):
+            self.assertTrue(kimi.available())
+        with patch('bridge.agents.kimi.discover_executable', return_value=None):
+            self.assertFalse(kimi.available())
+        with patch.dict('os.environ', {'MCODE_BIN': '/x/mcode'}):
+            self.assertTrue(mcode.available())
+        with patch('bridge.agents.mcode.discover_executable', return_value=None):
+            self.assertFalse(mcode.available())
+        with patch.dict('os.environ', {'CLAUDE_ACP_BIN': '/x/claude-acp'}):
+            self.assertTrue(claude.available())
+        with patch.dict('os.environ', {}, clear=True), \
+             patch('shutil.which', return_value=None):
+            self.assertFalse(claude.available())
+        with patch.dict('os.environ', {'DSH_ACP_BIN': '/x/dsh-acp'}):
+            self.assertTrue(dsh.available())
+        with patch.dict('os.environ', {}, clear=True), \
+             patch('shutil.which', return_value=None), \
+             patch('pathlib.Path.is_dir', return_value=True):
+            self.assertTrue(dsh.available())
+        with patch.dict('os.environ', {}, clear=True), \
+             patch('shutil.which', return_value=None), \
+             patch('pathlib.Path.is_dir', return_value=False):
+            self.assertFalse(dsh.available())
+
 
 class AcpHttpTests(unittest.TestCase):
     """Registry routing across two ACP bridges served by one GatewayServer."""
