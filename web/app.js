@@ -103,7 +103,8 @@ function renderList(){
       if(!groups.has(chat.projectKey)){
         const details=el('details','project-group');
         details.open=localStorage.getItem('group:'+chat.projectKey)!=='closed';
-        details.append(el('summary','',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+        const groupTag=BridgeI18n.agentTag(chat.agent);
+        details.append(el('summary','',(groupTag?groupTag+' · ':'')+chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
         details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
         groups.set(chat.projectKey,details);$('sessions').append(details);
       }
@@ -112,7 +113,9 @@ function renderList(){
     const button=el('button','session'+(chat.id===currentId&&chat.host===currentHost?' selected':''));
     button.dataset.id=chat.id;button.dataset.host=chat.host;
     button.append(el('strong','',chat.title));
-    const meta=el('small');meta.append(el('span','',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)),el('time','',dateText(chat.recency/1000)));
+    const meta=el('small');const metaText=el('span','',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel));
+    const agentTag=BridgeI18n.agentTag(chat.agent);if(agentTag)metaText.prepend(el('em','agent-badge',agentTag));
+    meta.append(metaText,el('time','',dateText(chat.recency/1000)));
     button.append(meta);button.onclick=()=>openChat(chat.id,chat.host).catch(e=>toast(e.message));parent.append(button);
   }
   if(!listRows.length)$('sessions').append(el('p','muted',t('没有找到聊天。')));renderActivity();
@@ -133,6 +136,7 @@ async function loadList(reset=false){
 $('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).catch(e=>toast(e.message));$('more').onclick=()=>loadList().catch(e=>toast(e.message));
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
 let newChatProjects=[],creatingChat=false,approvalBusy=0;
+function projectLabel(project){const kind=(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 $('new-chat').onclick=async()=>{
@@ -141,11 +145,11 @@ $('new-chat').onclick=async()=>{
   $('new-chat-dialog').showModal();
   try{
     newChatProjects=(await api('/api/projects')).projects;
-    for(const project of newChatProjects)$('new-chat-project').append(new Option(project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel),project.key));
+    for(const project of newChatProjects)$('new-chat-project').append(new Option(projectLabel(project),project.key));
     const selected=listRows.find(row=>row.id===currentId&&row.host===currentHost)?.projectKey;
     if(newChatProjects.some(p=>p.key===selected))$('new-chat-project').value=selected;
     $('new-chat-project').onchange();
-    if(!newChatProjects.length)$('new-chat-error').textContent=t('请先在电脑 Codex App 添加一个项目。');
+    if(!newChatProjects.length)$('new-chat-error').textContent=t('请先在对应 Agent 的客户端添加一个项目。');
     $('new-chat-submit').disabled=!newChatProjects.length;
   }catch(e){$('new-chat-error').textContent=t(e.message);$('new-chat-path').textContent='';}
 };
@@ -519,7 +523,7 @@ $('phone-language').onchange=()=>{
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   renderLoginStatus();
   for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','pushplus-error','toast'])$(id).textContent=t($(id).textContent);
-  for(const option of $('new-chat-project').options){const project=newChatProjects.find(p=>p.key===option.value);if(project)option.textContent=project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
+  for(const option of $('new-chat-project').options){const project=newChatProjects.find(p=>p.key===option.value);if(project)option.textContent=projectLabel(project);}
   if($('model-select').querySelector('[value=__custom__]'))$('model-select').querySelector('[value=__custom__]').textContent=t('自定义模型…');
   if(state){approvalStamp='';renderState(state);[...$('approvals').querySelectorAll('input,textarea,select')].forEach((node,i)=>{if(replies[i]){node.value=replies[i].value;node.checked=replies[i].checked;if(node.tagName==='SELECT')node.dispatchEvent(new Event('change'));}});}
   $('notify-button').textContent=t(notificationState.watching?'提醒已开':'提醒');

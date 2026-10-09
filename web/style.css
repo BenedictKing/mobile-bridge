@@ -48,3 +48,4 @@
 .timeline .attachment-image{min-height:80px;background:#dfe5d9}
 
 .remember-login{display:flex;align-items:center;gap:8px}.remember-login input{width:auto;flex:none}
+.agent-badge{font-style:normal;font-size:9px;letter-spacing:.5px;color:var(--green);background:var(--soft);border-radius:8px;padding:1px 5px;margin-right:5px;vertical-align:1px;text-transform:uppercase}

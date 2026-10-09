@@ -938,7 +938,7 @@ const en={
   "请先停止网关再更改 HTTPS 地址，保存后重新启动": "Stop the gateway before changing HTTPS addresses, then save and restart",
   "请先停止网关再更改网络或运行路径，以免正在使用的地址失效": "Stop the gateway before changing network settings or runtime paths to avoid losing your current connection",
   "请先启动网关，再检测固定入口": "Start the gateway before checking the fixed entry",
-  "请先在电脑 Codex App 添加一个项目。": "Add a project in the desktop Codex App first.",
+  "请先在对应 Agent 的客户端添加一个项目。": "Add a project in the agent's desktop app first.",
   "请先在电脑启动器中配置并开启 ntfy 通知": "Configure and enable ntfy in the desktop launcher first",
   "请先选择 cloudflared 程序，或关闭临时外网入口": "Select the cloudflared executable or turn off temporary external access",
   "请先选择存在的 Codex 数据目录": "Select an existing Codex data directory first",
@@ -1192,6 +1192,8 @@ function apply(root=document){
 function setLanguage(value){lang=value==='en'?'en':'zh';try{localStorage.setItem('bridge-language',lang);}catch{}}
 const AGENT_LABELS={codex:'Codex',kimi:'Kimi',mcode:'MiniMax',claude:'Claude',dsh:'DeepSeek'};
 function agentLabel(kind){return AGENT_LABELS[kind]||AGENT_LABELS.codex;}
-return {t,apply,setLanguage,language:()=>lang,locale:()=>lang==='en'?'en-US':'zh-CN',dictionary:en,agentLabel};
+// Badge text for list/project rows: empty for Codex (the default) and unknown kinds.
+function agentTag(kind){return kind&&AGENT_LABELS[kind]&&kind!=='codex'?AGENT_LABELS[kind]:'';}
+return {t,apply,setLanguage,language:()=>lang,locale:()=>lang==='en'?'en-US':'zh-CN',dictionary:en,agentLabel,agentTag};
 })();
 if(typeof module!=='undefined')module.exports=BridgeI18n;
