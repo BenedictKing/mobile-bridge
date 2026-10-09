@@ -1,3 +1,17 @@
+## DeepSeek Harness ACP 适配（2026-10-09，未发布）
+
+- 范围：新增 `dsh` Agent 类型（`bridge/agents/dsh.py`），经 `@openma/deepseek-harness-acp` 0.4.37 包装层接入 DeepSeek Harness；发现顺序为 `DSH_ACP_BIN` 环境变量 → PATH 上的 `dsh-acp` → `npx -y` 兜底。`run.py --agents` 白名单与前端 `AGENT_LABELS` 同步加入 dsh。
+- spike 实测（包装层 0.4.37）：initialize 返回 `_meta.steering.supported: true`、`loadSession: true`、`sessionCapabilities {list, resume, fork}` 与 `_meta.jetbrains.air.fork {version:1, inclusive:true}`；`authMethods` 恒为 3 项（api-key×2 + browser）——只是可用登录方式声明，不阻塞任何路径（桥接层本就不读 authMethods）。`configOptions` 五类：`mode`（category mode，权限预设 read-only/workspace-write/danger-full-access）、`collaboration_mode`（default/plan）、`model`（`provider::model` 形式，如 `deepseek-official::deepseek-v4-pro`）、`effort`（category thought_level，off/low/high/max）、`agent`（人设，不接入）。首次 npx 缓存约 28 秒，`INITIALIZE_TIMEOUT` 随子类上调至 180。
+- 关键映射：桥接层 plan/default 工作模式映射到 `collaboration_mode` 配置项（dsh 服务端内部执行 `/plan` 命令），绝不调用 `session/set_mode`（那会改权限预设并落盘为默认权限）。为此 `AcpAdapter` 新增 `VIEW_CLASS` seam，`DshSessionView` 忽略 modes、`mode` 配置项与 `current_mode_update`，只把 `collaboration_mode` 映射进 view.mode。
+- steer：`_session/steering` 扩展，参数 `{sessionId, prompt: blocks, _meta: {steering: {idleBehavior: 'promptRequired'}}}`；返回 `{outcome: 'injected'}` 或 `{outcome: 'promptRequired', reason: 'noRunningTurn'}`（正常结果而非错误），后者由适配器回落为普通 prompt。形状经包源码（steeringRequestSchema/extMethod）与 fake 传输层回归验证；真 key 下的运行中注入未实测（伪 key 下 turn 秒败于 provider 鉴权）。
+- fork：`session/fork`（服务端 unstable_forkSession）不带 `_meta` 为整会话 fork，带 `_meta.jetbrains.air.fork {version:1, messageId, messageOccurrence?, messageFingerprint?}` 为指定消息处 inclusive fork，返回 `{sessionId, modes, configOptions}`，需凭证。v1 不开放：ACP turn `actionable: False` 使 forkable 恒为 False，前端本来就没有入口，代价为零。
+- cancel：`session/cancel` notification 形式，与 kimi/claude 相同的通用路径；服务端 cancel handler 对本进程未加载的会话为空操作。
+- 持久化：新会话创建即入 `session/list`；优雅关闭（stdin EOF / `session/close`）释放写句柄，跨进程 load 空会话与有消息会话均成功（spike B2 实测），故 `KEEP_CREATED_PROCESS=False`（同 kimi）。SIGKILL 会留下 "already owned by an active write handle" 残留锁，勿强杀网关进程。
+- 鉴权边界（无 key 实测）：initialize、`session/list` 不需要凭证；`session/new`、`session/load`、steer、fork 报 -32000 并指引 `dsh-acp login` / dsh Web UI / `DEEPSEEK_API_KEY`。适配器把 AcpAuthRequired 翻成 auth_hint「请先在电脑终端运行 dsh-acp login 完成登录」。注意本机存在 `~/.dsh/.credentials.yaml` 但默认 provider 未命中（仍 -32000）。
+- 自动检查：Python 全量 565 过/10 跳过（新增 `tests/test_dsh_adapter.py` 19 项：发现 4 分支、argv 形状、协作模式只走 collaboration_mode 且不触 set_mode、current_mode_update 忽略、effort 映射 off/max、`::` 模型 ID、steer 注入与 promptRequired 回落、创建后新进程 load、cancel 回合）；`tests/fake_acp.py` 增加 `_session/steering` handler 与 `steer_outcome` 开关；`test_acp_adapter.py` 的 agent_kinds 增加 dsh 正例。Desktop 150 / Updater 15 过 1 跳过 / i18n 1 全过。
+- 真机冒烟（`--agents dsh`，免密隔离配置，端口 18792）：登录、sessions 列表（8 行全部 dsh）、projects（`dsh:` 前缀 5 个）、新建（无 key 报友好 auth 错）、打开既有会话（connectionError 为 auth_hint）、capabilities 含 steer、catalog/settings/send/stop/respond 端点均按预期响应。
+- 未验证：真实 API key 下的 prompt 回合、steer 运行中注入、cancel 真实中断与审批卡片（需有效 key：`DEEPSEEK_API_KEY=<你的key> python3 -B run.py --agents dsh …`，或先 `npx -y @openma/deepseek-harness-acp login`）。冒烟与探针产生的 dsh 一次性会话（标题 smoke/hi 等）需在 dsh 客户端手工清理。
+
 ## Claude ACP 适配（2026-10-08，未发布）
 
 - 范围：新增 `claude` Agent 类型（`bridge/agents/claude.py`），经 `@agentclientprotocol/claude-agent-acp` 0.87.0 包装层接入 Claude Code；发现顺序为 `CLAUDE_ACP_BIN` 环境变量 → PATH 上的 `claude-agent-acp` → `npx -y` 兜底。`run.py --agents` 白名单与前端 `AGENT_LABELS` 同步加入 claude。

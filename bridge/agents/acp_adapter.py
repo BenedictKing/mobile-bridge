@@ -55,6 +55,8 @@ class AcpAdapter(AgentAdapter):
     MODEL_CATEGORY = 'model'
     THINKING_CATEGORY = 'thought_level'
     EFFORT_MAP = {}
+    # Subclasses may swap in a specialized AcpSessionView.
+    VIEW_CLASS = AcpSessionView
 
     # Delegated bridge properties that stay inert for ACP sessions.
     accounts = None
@@ -125,8 +127,8 @@ class AcpAdapter(AgentAdapter):
 
     def _spawn_handle(self, session):
         meta = self._meta_cache.get(session.id) or {}
-        handle = AcpHandle(session.id, AcpSessionView(session.id, title=meta.get('title'),
-                                                    cwd=meta.get('cwd')))
+        handle = AcpHandle(session.id, self.VIEW_CLASS(session.id, title=meta.get('title'),
+                                                       cwd=meta.get('cwd')))
         process = self._process(cwd=handle.view.cwd or None,
                                 on_notification=lambda m: self._on_notification(handle, m),
                                 on_request=lambda m, respond: self._on_request(handle, m, respond),
@@ -518,7 +520,7 @@ class AcpAdapter(AgentAdapter):
 
     def saved_history(self, session):
         handle = self._handles.get(session.id)
-        view = handle.view if handle is not None else AcpSessionView(session.id)
+        view = handle.view if handle is not None else self.VIEW_CLASS(session.id)
         return view.snapshot()
 
     def projects(self):
@@ -559,7 +561,7 @@ class AcpAdapter(AgentAdapter):
 
     def _create_session_live(self, cwd, title):
         """Create a session and keep its process as the session handle."""
-        handle = AcpHandle(None, AcpSessionView(None, title=title, cwd=cwd))
+        handle = AcpHandle(None, self.VIEW_CLASS(None, title=title, cwd=cwd))
         process = self._process(cwd=cwd,
                                 on_notification=lambda m: self._on_notification(handle, m),
                                 on_request=lambda m, respond: self._on_request(handle, m, respond),

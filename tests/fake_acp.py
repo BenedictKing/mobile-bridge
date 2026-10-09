@@ -84,6 +84,7 @@ class FakeAcpAgent:
         self.config_values = {}
         self.mode_values = []
         self.steer_texts = []
+        self.steer_outcome = 'injected'  # dsh: 'injected' or 'promptRequired'
         self.goal = None
         self.queue_items = []
         self._write_lock = threading.Lock()
@@ -274,6 +275,17 @@ class FakeAcpAgent:
         self._cancel_turn.set()
         if ident is not None:
             self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': {}})
+
+    def _method__session_steering(self, state, ident, params):
+        # dsh extension: prompt blocks + _meta.steering; outcome injected/promptRequired.
+        blocks = params.get('prompt') or []
+        self.steer_texts.append(''.join(b.get('text') or '' for b in blocks
+                                        if isinstance(b, dict)))
+        if self.steer_outcome == 'injected':
+            result = {'outcome': 'injected'}
+        else:
+            result = {'outcome': 'promptRequired', 'reason': 'noRunningTurn'}
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident, 'result': result})
 
     def _method_mcode_session_steer(self, state, ident, params):
         self.steer_texts.append(params.get('text'))
