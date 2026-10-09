@@ -359,6 +359,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, {'sessions': rows})
             if write and path == '/api/sessions':
                 body = self.read_json()
+                worktree = body.get('worktree')
+                if worktree is not None and (not isinstance(worktree, dict) or set(worktree) != {'base'}
+                                             or worktree['base'] not in ('fresh', 'head')):
+                    raise ValueError('worktree 参数无效')
                 root = self.server.bridge
                 registry = self.server.registry
                 if registry is not None and len(registry.kinds()) > 1:
@@ -386,9 +390,15 @@ class Handler(BaseHTTPRequestHandler):
                                 break
                     if project is None:
                         raise ValueError('请选择电脑 App 中已保存的项目')
+                    if worktree is None:
+                        return self.output(200, root.create_chat(project['key'], body.get('title'),
+                                                                 body.get('id'), resolved=project))
                     return self.output(200, root.create_chat(project['key'], body.get('title'),
-                                                             body.get('id'), resolved=project))
-                return self.output(200, root.create_chat(body.get('project'), body.get('title'), body.get('id')))
+                                                             body.get('id'), resolved=project, worktree=worktree))
+                if worktree is None:
+                    return self.output(200, root.create_chat(body.get('project'), body.get('title'), body.get('id')))
+                return self.output(200, root.create_chat(body.get('project'), body.get('title'), body.get('id'),
+                                                         worktree=worktree))
             if path == '/api/notifications/defaults':
                 if self.server.notifications is None:
                     raise ValueError('当前网关未启用通知服务')

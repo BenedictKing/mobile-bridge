@@ -1,6 +1,7 @@
 """ACP adapter integration: fake agent behind the real Bridge/httpd stack."""
 import http.client
 import json
+import os
 import tempfile
 import threading
 import time
@@ -515,6 +516,16 @@ class AcpHttpTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body['error'], '请选择电脑 App 中已保存的项目')
 
+    def test_create_rejects_invalid_worktree_param(self):
+        project_key = self.bridge_k.adapter.projects()[0]['key']
+        for bad in ({'base': 'bogus'}, {'base': 'head', 'extra': 1}, 'fresh'):
+            status, body = self.request('POST', '/api/sessions',
+                                        {'agent': 'kimi', 'project': project_key,
+                                         'title': 'Nope', 'id': str(uuid.uuid4()), 'worktree': bad})
+            self.assertEqual(status, 400)
+            self.assertEqual(body['error'], 'worktree 参数无效')
+        self.assertEqual([r for r in self.fake_k.requests if r['method'] == 'session/new'], [])
+
     def test_session_route_probes_unlisted_acp_session(self):
         # No GET /api/sessions first: a direct link after a restart must still
         # route to the kimi bridge instead of failing Codex UUID validation.
@@ -602,6 +613,77 @@ class AcpCreateChatTests(unittest.TestCase):
         again = bridge.create_chat(project['key'], 'New chat', request_id)
         self.assertEqual(again['id'], 'fake-1')
         self.assertEqual(fake.session_count, 1)
+
+
+class AcpWorktreeTests(unittest.TestCase):
+    """create_chat 的 worktree 选项：真实 git 仓库 + fake ACP agent。"""
+
+    def make_repo(self, root):
+        from tests.test_worktree import git
+        repo = root / 'repo'
+        git(root, 'init', '-b', 'main', repo)
+        (repo / 'a.txt').write_text('a', encoding='utf-8')
+        git(repo, 'add', '.')
+        git(repo, 'commit', '-m', 'first')
+        return repo
+
+    def make_bridge(self, repo):
+        root = Path(self.tmp.name)
+        self.fake = FakeAcpAgent(list_rows=[{'sessionId': SID, 'cwd': str(repo),
+                                             'title': 'Old', 'updatedAt': UPDATED}])
+        adapter = KimiAdapter('fake-acp', data_dir=root / 'data', spawn=self.fake.spawn_factory())
+        bridge = Bridge(root, root / 'data', adapter=adapter)
+        self.addCleanup(bridge.close)
+        return bridge
+
+    def setUp(self):
+        import shutil
+        if shutil.which('git') is None:
+            self.skipTest('需要 git')
+        self.tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = self.make_repo(Path(self.tmp.name))
+        self.bridge = self.make_bridge(self.repo)
+
+    def test_create_chat_with_worktree_uses_isolated_cwd(self):
+        project = self.bridge.adapter.projects()[0]
+        request_id = str(uuid.uuid4())
+        result = self.bridge.create_chat(project['key'], 'WT', request_id,
+                                         worktree={'base': 'head'})
+        self.assertEqual(result['id'], 'fake-1')
+        news = [r for r in self.fake.requests if r['method'] == 'session/new']
+        self.assertEqual(len(news), 1)
+        cwd = news[0]['params']['cwd']
+        self.assertTrue(cwd.startswith(str(self.repo / '.agents' / 'worktrees') + os.sep))
+        self.assertTrue(Path(cwd).is_dir())
+        # 重放同内容返回原会话；不同 worktree 参数被拒绝
+        again = self.bridge.create_chat(project['key'], 'WT', request_id, worktree={'base': 'head'})
+        self.assertEqual(again['id'], 'fake-1')
+        with self.assertRaises(ValueError):
+            self.bridge.create_chat(project['key'], 'WT', request_id, worktree={'base': 'fresh'})
+
+    def test_create_session_failure_removes_worktree(self):
+        project = self.bridge.adapter.projects()[0]
+        with patch.object(self.bridge.adapter, 'create_session', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                self.bridge.create_chat(project['key'], 'WT', str(uuid.uuid4()),
+                                        worktree={'base': 'head'})
+        worktrees = self.repo / '.agents' / 'worktrees'
+        self.assertFalse(worktrees.exists() and any(worktrees.iterdir()))
+
+    def test_worktree_rejected_for_remote_project(self):
+        remote = {'key': 'kimi:remote', 'host': 'ssh1', 'hostLabel': 'SSH',
+                  'name': 'remote', 'cwd': str(self.repo)}
+        with patch.object(self.bridge.adapter, 'projects', return_value=[remote]):
+            with self.assertRaisesRegex(ValueError, 'worktree 仅支持本机项目'):
+                self.bridge.create_chat('kimi:remote', 'WT', str(uuid.uuid4()),
+                                        worktree={'base': 'head'})
+
+    def test_worktree_rejects_invalid_base(self):
+        project = self.bridge.adapter.projects()[0]
+        with self.assertRaisesRegex(ValueError, 'worktree 参数无效'):
+            self.bridge.create_chat(project['key'], 'WT', str(uuid.uuid4()),
+                                    worktree={'base': 'bogus'})
 
 
 class AcpNotificationTests(unittest.TestCase):

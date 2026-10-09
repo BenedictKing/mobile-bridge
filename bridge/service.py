@@ -20,6 +20,7 @@ from .store import SessionStore, StoreUnavailable
 from .files import artifact_paths, referenced_model_images
 from .catalog import Catalog
 from .remote import AppHosts, RemoteStore, RemoteCatalog, RemoteUnavailable, ssh_read, payload
+from . import worktree as worktree_module
 from .create import rename_thread, create_empty, fork_copy, open_in_desktop, CreationError, ForkUnavailable
 from .timeline import Timeline
 from .account import Account
@@ -471,23 +472,28 @@ class Bridge:
         target.replace(self.creations_path)
 
     @operation
-    def create_chat(self, project_key, title, request_id, resolved=None):
+    def create_chat(self, project_key, title, request_id, resolved=None, worktree=None):
         if not isinstance(request_id, str):
             raise ValueError('创建请求标识无效')
         uuid.UUID(request_id)
         if not isinstance(title, str) or not title.strip() or len(title) > 120:
             raise ValueError('请输入 1–120 字的聊天名称')
+        if worktree is not None and (not isinstance(worktree, dict) or set(worktree) != {'base'}
+                                     or worktree['base'] not in worktree_module.BASES):
+            raise ValueError('worktree 参数无效')
         # resolved: a project dict pre-resolved by the router for cross-agent
         # creation (explicit agent + another agent's project directory).
         project = resolved if resolved is not None else next(
             (p for p in self.adapter.projects() if p['key'] == project_key), None)
         if project is None:
             raise ValueError('请选择电脑 App 中已保存的项目')
+        if worktree is not None and project['host'] != 'local':
+            raise ValueError('worktree 仅支持本机项目')
         title = title.strip()
         with self.create_lock:
             entry = self.creations.get(request_id)
             if entry:
-                if entry['project'] != project_key or entry['title'] != title:
+                if entry['project'] != project_key or entry['title'] != title or entry.get('worktree') != worktree:
                     raise ValueError('同一创建请求不能用于不同内容')
                 if not entry.get('id'):
                     raise CreationError('上次创建结果尚不确定，请先刷新聊天列表并检查电脑 App，避免重复创建')
@@ -495,9 +501,20 @@ class Bridge:
                 if self.ipc is not None:
                     self.ipc.connect()
                 entry = {'project': project_key, 'title': title, 'host': project['host'], 'at': time.time()}
+                if worktree is not None:
+                    entry['worktree'] = worktree
                 self.creations[request_id] = entry
                 self._save_creations()
-                thread_id = self.adapter.create_session(project, title)
+                if worktree is not None:
+                    # worktree 是纯服务端动作：先建隔离工作区，再让 adapter 在其中创建会话
+                    path = worktree_module.create(project['cwd'], title, worktree['base'])
+                    try:
+                        thread_id = self.adapter.create_session({**project, 'cwd': path}, title)
+                    except Exception:
+                        worktree_module.remove(project['cwd'], path)
+                        raise
+                else:
+                    thread_id = self.adapter.create_session(project, title)
                 entry['id'] = thread_id
                 self._save_creations()
             bridge = self.for_host(entry['host'])
