@@ -199,7 +199,7 @@ class AppHosts:
             row.update(host=host, hostLabel=label,
                        projectKey=host + '|' + (project['id'] if project else cwd or 'unassigned'),
                        projectName=project['name'] if project else (raw_cwd.replace('\\', '/') if host == 'local' and os.name == 'nt' else raw_cwd).rstrip('/').rsplit('/', 1)[-1] or '未归类',
-                       recency=row.get('recency_at_ms') or (row.get('recency_at') or 0) * 1000 or row.get('updated_at_ms') or (row.get('updated_at') or 0) * 1000)
+                       recency=row.get('updated_at_ms') or (row.get('updated_at') or 0) * 1000 or row.get('recency_at_ms') or (row.get('recency_at') or 0) * 1000)
         return rows
 
 

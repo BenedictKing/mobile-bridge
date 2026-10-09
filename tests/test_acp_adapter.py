@@ -135,6 +135,8 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(row['capabilities'], [])
         self.assertEqual(bridge.list(query='nomatch'), [])
         self.assertEqual(bridge.list(query='old'), rows)
+        # ACP 会话没有归档概念，归档视图为空。
+        self.assertEqual(bridge.list(archived=True), [])
 
     def test_send_dispatches_prompt_and_folds_chunks(self):
         fake, _, bridge = self.make_bridge()

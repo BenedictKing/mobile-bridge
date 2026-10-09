@@ -77,7 +77,10 @@ class SessionStore:
                 search_fields = [name for name in ("name", "title", "cwd") if name in columns]
                 where.append("(" + " OR ".join(name + " LIKE ?" for name in search_fields) + ")")
                 params += ["%" + query + "%"] * len(search_fields)
-            recency = "COALESCE(recency_at_ms, recency_at * 1000, updated_at * 1000)" if "recency_at_ms" in columns else "COALESCE(recency_at, updated_at)" if "recency_at" in columns else "updated_at"
+            # 列表按最后对话时间排序：updated_at 是内容更新，recency_at 只是桌面端最近点开。
+            clocks = [name + ('' if name.endswith('_ms') else ' * 1000')
+                      for name in ('updated_at_ms', 'updated_at', 'recency_at_ms', 'recency_at') if name in columns]
+            recency = "COALESCE(" + ",".join(clocks) + ")" if len(clocks) > 1 else (clocks[0] if clocks else "updated_at")
             rows = conn.execute("SELECT " + ",".join(fields) + " FROM threads WHERE " + " AND ".join(where) + " ORDER BY " + recency + " DESC, id DESC LIMIT ? OFFSET ?", params + [limit, offset]).fetchall()
             return [dict(row) for row in rows]
 

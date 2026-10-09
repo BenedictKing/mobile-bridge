@@ -9,6 +9,7 @@ import secrets
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -328,8 +329,13 @@ class Handler(BaseHTTPRequestHandler):
                     archived = query.get("archived", ["false"])[0] == "true"
                     text = query.get("q", [""])[0][:200]
                     rows, host_errors = [], []
-                    for item in selected:
-                        rows.extend(item.list(query=text, limit=100 + offset, offset=0, archived=archived))
+                    # 各 Agent 的列表可能涉及进程发现与握手，并行拉取避免串行叠加延迟。
+                    with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+                        groups = list(pool.map(
+                            lambda item: item.list(query=text, limit=100 + offset, offset=0, archived=archived),
+                            selected))
+                    for item, group in zip(selected, groups):
+                        rows.extend(group)
                         host_errors.extend(item.host_errors)
                     rows.sort(key=lambda row: (row['recency'], row['id'], row['host']), reverse=True)
                     return self.output(200, {"sessions": rows[offset:offset + 100], "unavailableHosts": host_errors})

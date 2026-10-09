@@ -515,7 +515,8 @@ class IntegrationTests(unittest.TestCase):
         hosts = AppHosts(self.root)
         hosts.state = lambda: {'remote-projects': [{'id': 'p', 'hostId': 'remote', 'label': 'Work', 'remotePath': '/work'}]}
         rows = hosts.decorate([{'id': THREAD, 'cwd': '/work/sub', 'recency_at': 5, 'updated_at': 20}], 'remote', 'Server')
-        self.assertEqual(rows[0]['recency'], 5000)
+        # 列表以最后对话时间（updated_at）为准，recency_at 只是最近点开时间。
+        self.assertEqual(rows[0]['recency'], 20000)
         self.assertEqual(rows[0]['projectKey'], 'remote|p')
         self.assertEqual(rows[0]['projectName'], 'Work')
         with self.assertRaises(KeyError):

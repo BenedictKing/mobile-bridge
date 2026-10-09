@@ -303,6 +303,17 @@ def main(connections=None, connection_secrets=None):
         # Watched ACP sessions respawn their agents in the background; Codex
         # chats stay with the desktop App and are skipped by the registry.
         threading.Thread(target=notifications.resume_watched, daemon=True).start()
+        # Warm ACP list caches in the background so the first page load does
+        # not spawn every agent process inside the request.
+        def warm_agent_lists():
+            for kind in registry.kinds():
+                if kind == 'codex':
+                    continue
+                try:
+                    registry.for_agent(kind).list()
+                except Exception:
+                    logging.getLogger(__name__).debug('Agent 列表预热失败：%s', kind, exc_info=True)
+        threading.Thread(target=warm_agent_lists, daemon=True).start()
         address_notifications.start()
         control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control)
         for listener in servers[1:]:

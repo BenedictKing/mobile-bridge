@@ -473,6 +473,9 @@ class AcpAdapter(AgentAdapter):
         return 0
 
     def list_sessions(self, label, limit=100, offset=0, query='', archived=False):
+        if archived:
+            # ACP 会话没有归档概念，归档视图只展示 codex 会话。
+            return []
         needle = (query or '').strip().casefold()
         rows = []
         for row in self._visible_rows():
