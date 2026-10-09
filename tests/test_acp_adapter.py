@@ -120,6 +120,24 @@ class AcpAdapterTests(unittest.TestCase):
                          ['userMessage', 'agentThought', 'agentMessage'])
         self.assertEqual(second['messages'][2]['text'], 'done')
 
+    def test_empty_chunks_do_not_create_empty_rows(self):
+        fake = FakeAcpAgent(
+            config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],
+            modes=dict(MODES),
+            list_rows=[{'sessionId': SID, 'cwd': '/work', 'title': 'Old', 'updatedAt': UPDATED}])
+        fake.load_updates = [
+            chunk('user_message_chunk', 'hi'),
+            chunk('agent_thought_chunk', 'thinking'),
+            chunk('agent_message_chunk', ''),
+            chunk('agent_thought_chunk', ''),
+            chunk('agent_message_chunk', 'done'),
+        ]
+        _, _, bridge = self.make_bridge(fake)
+        view = self.view(bridge)
+        kinds = [m['kind'] for m in view['turns'][0]['messages']]
+        self.assertEqual(kinds, ['userMessage', 'agentThought', 'agentMessage'])
+        self.assertEqual(view['turns'][0]['messages'][2]['text'], 'done')
+
     def test_list_decorates_rows_with_agent_and_project(self):
         _, _, bridge = self.make_bridge()
         rows = bridge.list()

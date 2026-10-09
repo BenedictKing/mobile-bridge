@@ -154,11 +154,15 @@ class AcpSessionView:
             turn['messages'].append({'id': self._next_id('user'), 'kind': 'userMessage',
                                      'role': 'user', 'text': _text(update.get('content'))})
         elif kind == 'agent_message_chunk':
-            self._assistant_message(self._assistant_turn(), 'agentMessage',
-                                    {'role': 'assistant', 'phase': 'final'})['text'] += _text(update.get('content'))
+            text = _text(update.get('content'))
+            if text:
+                self._assistant_message(self._assistant_turn(), 'agentMessage',
+                                        {'role': 'assistant', 'phase': 'final'})['text'] += text
         elif kind == 'agent_thought_chunk':
-            self._assistant_message(self._assistant_turn(), 'agentThought',
-                                    {'role': 'activity', 'title': '思考摘要'})['text'] += _text(update.get('content'))
+            text = _text(update.get('content'))
+            if text:
+                self._assistant_message(self._assistant_turn(), 'agentThought',
+                                        {'role': 'activity', 'title': '思考摘要'})['text'] += text
         elif kind == 'tool_call':
             message = {'id': self._next_id('tool'), 'kind': 'toolCall', 'role': 'activity',
                        'title': update.get('title') or update.get('kind') or '工具调用',
