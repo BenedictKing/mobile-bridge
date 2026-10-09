@@ -103,8 +103,7 @@ function renderList(){
       if(!groups.has(chat.projectKey)){
         const details=el('details','project-group');
         details.open=localStorage.getItem('group:'+chat.projectKey)!=='closed';
-        const groupTag=BridgeI18n.agentTag(chat.agent);
-        details.append(el('summary','',(groupTag?groupTag+' · ':'')+chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+        details.append(el('summary','',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
         details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
         groups.set(chat.projectKey,details);$('sessions').append(details);
       }
