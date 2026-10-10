@@ -63,8 +63,8 @@ def entry_urls(preferences, hosts, quick_url='', external_status=None):
 
 
 def address_message(config, urls, first=False, test=False):
-    title = 'Codex Mobile Bridge · ' + ('入口通知测试' if test else '网关已启动' if first else '访问入口已更新')
-    name = config.get('addressName') or 'Codex Mobile Bridge'
+    title = 'Mobile / Bridge · ' + ('入口通知测试' if test else '网关已启动' if first else '访问入口已更新')
+    name = config.get('addressName') or 'Mobile / Bridge'
     body = name + ('已启动。' if first else '的当前访问入口如下。')
     body += '\n访问地址：\n' + '\n'.join(urls) + '\n局域网地址需在同一网络访问；固定域名需已完成部署。\n请使用原网关登录方式访问。'
     return title, body

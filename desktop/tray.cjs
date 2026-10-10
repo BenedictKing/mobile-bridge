@@ -23,7 +23,7 @@ function createTray({Tray,Menu,icon,show,worker,open,copy,quit,onError,t=text=>t
     const running=Boolean(snapshot?.runtime.running);
     const url=running?primaryUrl(snapshot.urls):null;
     const status=!snapshot?'正在读取状态':running?'网关运行中':snapshot.runtime.portOccupied?'端口已占用':'网关未启动';
-    tray.setToolTip(t('Codex 手机网关')+' · '+t(status));
+    tray.setToolTip(t('Mobile / Bridge · 手机网关')+' · '+t(status));
     tray.setContextMenu(Menu.buildFromTemplate([
       {label:'打开控制面板',click:show},
       {label:status,enabled:false},

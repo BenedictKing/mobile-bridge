@@ -321,7 +321,7 @@ class Desktop:
         name = {'bark': 'Bark', 'ntfy': 'ntfy', 'pushplus': 'PushPlus'}[channel]
         sender = {'bark': publish_bark, 'ntfy': publish, 'pushplus': publish_pushplus}[channel]
         try:
-            sender(settings(self.data_dir), 'Codex 手机通知测试', f'收到这条消息表示 {name} 通道已连通。')
+            sender(settings(self.data_dir), 'Mobile / Bridge 通知测试', f'收到这条消息表示 {name} 通道已连通。')
         except Exception:
             raise ValueError(f'{name} 测试失败，请检查服务地址、认证和网络') from None
         return {'message': f'{name} 已接受测试通知，请在手机确认是否收到'}

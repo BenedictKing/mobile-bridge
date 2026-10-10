@@ -39,8 +39,8 @@ class SecurityNotifications:
                     break
                 if channels(current).get(channel) != target:
                     continue
-                title = 'Codex Mobile Bridge · IP 已自动封禁'
-                body = (f"{current.get('addressName') or 'Codex Mobile Bridge'}：IP {event['ip']} 连续输错密码 {event['attempts']} 次，已加入黑名单。"
+                title = 'Mobile / Bridge · IP 已自动封禁'
+                body = (f"{current.get('addressName') or 'Mobile / Bridge'}：IP {event['ip']} 连续输错密码 {event['attempts']} 次，已加入黑名单。"
                         '\n关联登录已撤销。请在电脑网关 App 的“登录设备 → 自动封禁 IP”中查看或解除。')
                 try:
                     {'ntfy': publish, 'bark': publish_bark, 'pushplus': publish_pushplus}[channel](current, title, body)

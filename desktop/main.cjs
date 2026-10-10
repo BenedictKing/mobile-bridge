@@ -113,7 +113,7 @@ function register(){
     if(!['zh-CN','en'].includes(value))throw Error('Unsupported language');
     const directory=app.getPath('userData');fs.mkdirSync(directory,{recursive:true});
     fs.writeFileSync(path.join(directory,'language.json'),JSON.stringify({language:value}));
-    language=value;const title=t('Codex 手机网关');if(window.getTitle()!==title)window.setTitle(title);tray?.relabel();return language;
+    language=value;const title=t('Mobile / Bridge · 手机网关');if(window.getTitle()!==title)window.setTitle(title);tray?.relabel();return language;
   });
   for(const action of ['snapshot','save','start','stop','logs','test-notification','check-entry','devices','account', 'accounts','notification-watches'])ipcMain.handle('bridge:'+action,async(event,payload)=>{
     authorize(event);
@@ -250,7 +250,7 @@ function register(){
   });
 }
 function createWindow(){
-  window=new BrowserWindow({width:1100,height:850,minWidth:820,minHeight:640,title:t('Codex 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+  window=new BrowserWindow({width:1100,height:850,minWidth:820,minHeight:640,title:t('Mobile / Bridge · 手机网关'),icon:path.join(__dirname,'assets/icon.png'),backgroundColor:'#f6f7f9',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   // The native title is owned by the main process, including locale changes.
   window.on('page-title-updated',event=>event.preventDefault());
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));

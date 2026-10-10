@@ -455,7 +455,7 @@ class NotificationTests(unittest.TestCase):
         try:
             publish_bark(config, '待确认', '请查看聊天', 'https://example.com/#thread~remote')
             self.assertEqual(captured[0], ('/bark/push', {'device_key': 'private-key', 'title': '待确认',
-                'body': '请查看聊天', 'group': 'Codex Mobile Bridge', 'url': 'https://example.com/#thread~remote'}))
+                'body': '请查看聊天', 'group': 'Mobile / Bridge', 'url': 'https://example.com/#thread~remote'}))
             for _ in range(6):
                 with self.assertRaises(RuntimeError) as error: publish_bark(config, 'test', 'test')
                 self.assertNotIn('private-key', str(error.exception))

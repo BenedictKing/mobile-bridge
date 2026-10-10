@@ -535,9 +535,9 @@ test('native window title ignores page changes and only updates when locale chan
   }});
   vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../desktop/main.cjs'),'utf8'),context);
   context.createWindow();context.register();
-  assert.equal(instance.title,'Codex 手机网关');
+  assert.equal(instance.title,'Mobile / Bridge · 手机网关');
   let prevented=0;events['page-title-updated']({preventDefault(){prevented++;}},'Different page title');
-  assert.equal(prevented,1);assert.equal(instance.title,'Codex 手机网关');
+  assert.equal(prevented,1);assert.equal(instance.title,'Mobile / Bridge · 手机网关');
   const event={sender:instance.webContents,senderFrame:instance.webContents.mainFrame};
   handlers['bridge:set-language'](event,'zh-CN');assert.equal(changes,0);
   handlers['bridge:set-language'](event,'en');assert.equal(changes,1);

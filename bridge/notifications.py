@@ -121,7 +121,7 @@ def publish_bark(config, title, body, click=''):
     if not config.get('barkKey'):
         raise ValueError('请先配置 Bark 服务和 Device Key')
     server = valid_url(config['barkServer'], allow_path=True)
-    payload = {'device_key': config['barkKey'], 'title': title, 'body': body, 'group': 'Codex Mobile Bridge'}
+    payload = {'device_key': config['barkKey'], 'title': title, 'body': body, 'group': 'Mobile / Bridge'}
     if click:
         payload['url'] = click
     request = Request(server + '/push', data=json.dumps(payload, ensure_ascii=False).encode(),

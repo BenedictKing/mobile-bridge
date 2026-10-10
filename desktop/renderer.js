@@ -224,7 +224,7 @@ document.addEventListener('visibilitychange',()=>{clearInterval(refreshTimer);re
 function applyLanguage(value){
   BridgeI18n.setLanguage(value==='en'?'en':'zh');BridgeI18n.apply();accountPanel.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();
   $('language').value=BridgeI18n.language();
-  document.title=t('Codex 手机网关');
+  document.title=t('Mobile / Bridge · 手机网关');
   if(snapshot){const pending=dirty;dirty=true;render(snapshot);dirty=pending;renderConnections();updateDirty();}
   if(lastFeedback)feedback(...lastFeedback);
   tab(activeTab);
