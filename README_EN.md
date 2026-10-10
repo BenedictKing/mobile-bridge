@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="site/assets/icon.png" alt="Codex Mobile Bridge" width="112" height="112">
+  <img src="site/assets/icon.png" alt="Mobile / Bridge" width="112" height="112">
 </p>
 
-# Codex App Mobile Bridge
+# Mobile / Bridge
 
 [简体中文](README.md) · [English](README_EN.md)
 
-**[Product tour and walkthrough ↗](https://try2love.github.io/codex-mobile-bridge/?lang=en)** · **[Download the desktop App](https://github.com/try2love/codex-mobile-bridge/releases)**
+**[Product tour and walkthrough ↗](https://BenedictKing.github.io/mobile-bridge/?lang=en)** · **[Download the desktop App](https://github.com/BenedictKing/mobile-bridge/releases)**
 
-[![Desktop App: connections and status (demonstration data)](site/assets/desktop-overview.png)](https://try2love.github.io/codex-mobile-bridge/?lang=en)
+[![Desktop App: connections and status (demonstration data)](site/assets/desktop-overview.png)](https://BenedictKing.github.io/mobile-bridge/?lang=en)
 
 Continue **existing chats in the desktop Codex App** from your phone browser, or create an empty chat in a saved project.
 
@@ -42,7 +42,7 @@ Download the desktop App for everyday use. **No deployment Agent, Python, Node.j
 | Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
 | Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
 
-[All releases and release notes](https://github.com/try2love/codex-mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
+[All releases and release notes](https://github.com/BenedictKing/mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
 
 1. Open the original **Codex App** on the computer, then open **Codex Mobile Bridge**.
 2. Keep LAN access enabled under **Network and login**, save, and click **Start gateway**. Preserve the existing port if you already have a configuration.
@@ -269,8 +269,8 @@ Skip this section if you downloaded the desktop App. These commands are for runn
 ### Windows PowerShell
 
 ```powershell
-git clone https://github.com/try2love/codex-mobile-bridge.git
-cd codex-mobile-bridge
+git clone https://github.com/BenedictKing/mobile-bridge.git
+cd mobile-bridge
 py -3 -B .\run.py --lan
 ```
 
@@ -289,8 +289,8 @@ If Windows Firewall prompts, allow only the network scope you need. Files use UT
 ### macOS
 
 ```sh
-git clone https://github.com/try2love/codex-mobile-bridge.git
-cd codex-mobile-bridge
+git clone https://github.com/BenedictKing/mobile-bridge.git
+cd mobile-bridge
 python3 -B "$PWD/run.py" --lan
 ```
 
@@ -389,7 +389,7 @@ The local desktop management interface uses guarded Electron IPC and a private s
 An Agent is optional for everyday App use. For source deployment, custom network setup or troubleshooting, copy this to an Agent on the computer:
 
 ```text
-Deploy and run https://github.com/try2love/codex-mobile-bridge for me. Identify whether this computer runs Windows or macOS and read the repository's deployment Agent instructions. Prefer a published desktop App or reuse an existing installation; configure, start and verify it for my needs. Reuse existing Codex App chats and their model authentication. Keep username/password authentication and LAN access enabled by default, preserving any existing LAN port. For external access, reuse an existing NAS/HTTPS reverse proxy when available; with an owned server and domain, prepare references for SSH forwarding and fixed HTTPS, leaving administrative server operations for me to perform manually; otherwise configure a temporary HTTPS tunnel. Connection methods may run together. Verify chat reading, live updates and the available interaction paths. Keep the service running, then return clickable phone URLs, how to obtain login credentials, App start/stop actions or commands, verified results and any steps I still need to complete.
+Deploy and run https://github.com/BenedictKing/mobile-bridge for me. Identify whether this computer runs Windows or macOS and read the repository's deployment Agent instructions. Prefer a published desktop App or reuse an existing installation; configure, start and verify it for my needs. Reuse existing Codex App chats and their model authentication. Keep username/password authentication and LAN access enabled by default, preserving any existing LAN port. For external access, reuse an existing NAS/HTTPS reverse proxy when available; with an owned server and domain, prepare references for SSH forwarding and fixed HTTPS, leaving administrative server operations for me to perform manually; otherwise configure a temporary HTTPS tunnel. Connection methods may run together. Verify chat reading, live updates and the available interaction paths. Keep the service running, then return clickable phone URLs, how to obtain login credentials, App start/stop actions or commands, verified results and any steps I still need to complete.
 ```
 
 ### 1. Inspect the environment

@@ -22,13 +22,13 @@ app.on('browser-window-created',(_,win)=>{
         await evaluate("tab('network')");
         for(const mode of ['quick','cloudflare','server','nas']){
           await evaluate("$('connection-kind').value='"+mode+"';$('connection-kind').onchange();$('connection-guide').click();addConnection()");
-          assert.equal(openedGuides.at(-1),'https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+language+'#'+mode);
+          assert.equal(openedGuides.at(-1),'https://BenedictKing.github.io/mobile-bridge/setup.html?lang='+language+'#'+mode);
           await evaluate("document.querySelector('.connection-card:last-child .setup-guide').click()");
-          assert.equal(openedGuides.at(-1),'https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+language+'#'+mode);
+          assert.equal(openedGuides.at(-1),'https://BenedictKing.github.io/mobile-bridge/setup.html?lang='+language+'#'+mode);
         }
         assert.equal(await evaluate("[...document.querySelectorAll('.connection-card .setup-guide')].every(a=>a.textContent==='"+(language==='en'?'Online guide':'在线指引')+"')"),true);
         await evaluate("document.querySelector('[data-setup-guide=lan]').click()");
-        assert.equal(openedGuides.at(-1),'https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+language+'#lan');
+        assert.equal(openedGuides.at(-1),'https://BenedictKing.github.io/mobile-bridge/setup.html?lang='+language+'#lan');
         await evaluate("tab('network');document.querySelector('.connection-card').scrollIntoView({block:'start',behavior:'instant'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
         fs.writeFileSync(path.join(data,'connection-guides-'+language+'.png'),(await win.webContents.capturePage()).toPNG());
         await evaluate("connectionDraft=[];connectionSecretDraft.clear();renderConnections();updateDirty()");

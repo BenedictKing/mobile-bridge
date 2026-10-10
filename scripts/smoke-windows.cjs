@@ -43,7 +43,7 @@ async function connect(url){
 
 async function main(){
   assert.equal(process.platform,'win32','This smoke test requires Windows');
-  const executable=path.resolve(process.argv[2]||path.join(root,'dist/desktop/win-unpacked/Codex Mobile Bridge.exe'));
+  const executable=path.resolve(process.argv[2]||path.join(root,'dist/desktop/win-unpacked/Mobile Bridge.exe'));
   const runtime=path.join(path.dirname(executable),'resources/gateway/codex-mobile-gateway.exe');
   await fs.mkdir(path.join(root,'.tmp'),{recursive:true});
   const data=await fs.mkdtemp(path.join(root,'.tmp','Windows App \u4e2d\u6587 '));

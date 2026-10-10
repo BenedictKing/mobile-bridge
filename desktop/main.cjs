@@ -200,7 +200,7 @@ function register(){
     authorize(event);const bundle=await worker('deployment',payload);
     const english=payload?.language==='en';
     const manual=bundle.accessMode==='server';
-    const intro=manual?(english?'Manual setup reference. Review the configuration; administrative commands must be run by the user.':'手动配置参考。请检查以下配置；涉及管理员权限的命令必须由用户自行执行。'):english?'Deploy Codex Mobile Bridge using the configuration below. Check existing services first; do not overwrite existing sites.':'请按以下配置帮我部署 Codex 手机网关的固定入口。先检查已有服务，不要覆盖已有站点。';
+    const intro=manual?(english?'Manual setup reference. Review the configuration; administrative commands must be run by the user.':'手动配置参考。请检查以下配置；涉及管理员权限的命令必须由用户自行执行。'):english?'Deploy Mobile / Bridge using the configuration below. Check existing services first; do not overwrite existing sites.':'请按以下配置帮我部署 Mobile / Bridge 手机网关的固定入口。先检查已有服务，不要覆盖已有站点。';
     const text=intro+'\n\n'+Object.entries(bundle.files).filter(([name])=>name!==(english?'部署说明.md':'DEPLOYMENT_EN.md')).map(([name,content])=>'--- '+name+' ---\n'+content).join('\n');
     clipboard.writeText(text);return {message:manual?(english?'Manual setup reference copied. Administrative steps must be performed by the user.':'手动配置参考已复制；管理员操作请由用户自行完成。'):english?'Deployment instructions and configuration copied. Paste them into your server or NAS Agent.':'部署说明与配置已复制，可粘贴给服务器或 NAS 上的 Agent。'};
   });
@@ -222,14 +222,14 @@ function register(){
   });
   ipcMain.handle('bridge:open',async(event,target)=>{
     authorize(event);
-    if(target==='releases')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/releases');
-    if(target==='project-home')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge');
-    if(target==='project-issues')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/issues');
-    if(target==='project-pulls')return shell.openExternal('https://github.com/try2love/codex-mobile-bridge/pulls');
+    if(target==='releases')return shell.openExternal('https://github.com/BenedictKing/mobile-bridge/releases');
+    if(target==='project-home')return shell.openExternal('https://github.com/BenedictKing/mobile-bridge');
+    if(target==='project-issues')return shell.openExternal('https://github.com/BenedictKing/mobile-bridge/issues');
+    if(target==='project-pulls')return shell.openExternal('https://github.com/BenedictKing/mobile-bridge/pulls');
     if(target==='credentials')return shell.openPath(path.join(dataDir,'首次登录.txt'));
     if(target==='data')return shell.openPath(dataDir);
     if(target==='cloudflare-dashboard')return shell.openExternal('https://one.dash.cloudflare.com/');
-    if(['setup-lan','setup-quick','setup-cloudflare','setup-server','setup-nas'].includes(target))return shell.openExternal('https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+(language==='en'?'en':'zh')+'#'+target.slice(6));
+    if(['setup-lan','setup-quick','setup-cloudflare','setup-server','setup-nas'].includes(target))return shell.openExternal('https://BenedictKing.github.io/mobile-bridge/setup.html?lang='+(language==='en'?'en':'zh')+'#'+target.slice(6));
     if(target==='cloudflare-domain-help')return shell.openExternal('https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/');
     if(target==='server-https-help')return shell.openExternal('https://caddyserver.com/docs/running');
     if(target==='server-ssh-help')return shell.openExternal('https://man.openbsd.org/sshd_config#AllowTcpForwarding');

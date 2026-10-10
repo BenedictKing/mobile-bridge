@@ -1,8 +1,8 @@
 {
-  "name": "codex-mobile-bridge-desktop",
+  "name": "mobile-bridge-desktop",
   "version": "1.4.0",
   "description": "Codex App 手机网关桌面启动器",
-  "author": "try2love",
+  "author": "BenedictKing",
   "license": "MIT",
   "private": true,
   "main": "desktop/main.cjs",
@@ -27,7 +27,7 @@
   },
   "build": {
     "appId": "io.github.try2love.codexmobilebridge",
-    "productName": "Codex Mobile Bridge",
+    "productName": "Mobile Bridge",
     "beforePack": "./scripts/verify-build.cjs",
     "directories": {
       "output": "dist/desktop"
@@ -59,7 +59,7 @@
       "icon": "desktop/assets/icon.png",
       "category": "public.app-category.developer-tools",
       "identity": "-",
-      "artifactName": "Codex-Mobile-Bridge-${version}-macOS-${arch}.${ext}"
+      "artifactName": "Mobile-Bridge-${version}-macOS-${arch}.${ext}"
     },
     "win": {
       "icon": "desktop/assets/icon.ico",
@@ -67,7 +67,7 @@
         "nsis",
         "zip"
       ],
-      "artifactName": "Codex-Mobile-Bridge-${version}-Windows-${arch}.${ext}"
+      "artifactName": "Mobile-Bridge-${version}-Windows-${arch}.${ext}"
     },
     "linux": {
       "target": [
@@ -76,9 +76,9 @@
       ],
       "icon": "desktop/assets/icon.png",
       "category": "Development",
-      "executableName": "codex-mobile-bridge",
-      "artifactName": "Codex-Mobile-Bridge-${version}-Linux-${arch}.${ext}",
-      "maintainer": "try2love <try2love@users.noreply.github.com>"
+      "executableName": "mobile-bridge",
+      "artifactName": "Mobile-Bridge-${version}-Linux-${arch}.${ext}",
+      "maintainer": "BenedictKing <2107330+BenedictKing@users.noreply.github.com>"
     },
     "deb": {
       "depends": [
@@ -97,7 +97,7 @@
       ]
     },
     "nsis": {
-      "artifactName": "Codex-Mobile-Bridge-${version}-Windows-${arch}-Setup.${ext}",
+      "artifactName": "Mobile-Bridge-${version}-Windows-${arch}-Setup.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,

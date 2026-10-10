@@ -60,7 +60,7 @@ npm run build:linux -- --arm64
 ```
 
 The build hook rejects missing or mismatched gateway metadata. Outputs go to
-`dist/desktop/Codex-Mobile-Bridge-<version>-Linux-<arch>.deb` and `.AppImage`.
+`dist/desktop/Mobile-Bridge-<version>-Linux-<arch>.deb` and `.AppImage`.
 For x64, electron-builder uses `amd64` in .deb filenames and `x86_64` in
 AppImage filenames. Both ARM64 package formats use `arm64`.
 The existing release workflow collects both architectures and includes these
@@ -76,8 +76,8 @@ that runs ChatGPT/Codex, never with `sudo`.
 For a .deb, replace the example filename with the actual downloaded package:
 
 ```sh
-sudo apt install ./Codex-Mobile-Bridge-VERSION-Linux-amd64.deb
-codex-mobile-bridge
+sudo apt install ./Mobile-Bridge-VERSION-Linux-amd64.deb
+mobile-bridge
 ```
 
 The .deb declares its desktop libraries, `xdg-utils`, and `iproute2`. For
@@ -150,7 +150,7 @@ artifacts. These jobs passed on the Ubuntu integration branch; each release reru
 For a local installed package, use Node.js 24 in the source checkout:
 
 ```sh
-node scripts/smoke-linux.cjs /usr/bin/codex-mobile-bridge
+node scripts/smoke-linux.cjs /usr/bin/mobile-bridge
 ```
 
 The smoke check uses a private temporary data directory and a nonexistent

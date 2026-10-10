@@ -6,7 +6,7 @@ const {runWorker}=require('../desktop/controller.cjs');
 const root=path.resolve(__dirname,'..'),delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function main(){
   const executable=process.argv[2]||path.join(root,'dist/desktop',process.platform==='darwin'?
-    `${process.arch==='x64'?'mac':'mac-'+process.arch}/Codex Mobile Bridge.app/Contents/Resources/gateway/codex-mobile-gateway`:
+    `${process.arch==='x64'?'mac':'mac-'+process.arch}/Mobile Bridge.app/Contents/Resources/gateway/codex-mobile-gateway`:
     'win-unpacked/resources/gateway/codex-mobile-gateway.exe');
   await fs.mkdir(path.join(root,'.tmp'),{recursive:true});
   const dataDir=await fs.mkdtemp(path.join(root,'.tmp','auth-中文 '));

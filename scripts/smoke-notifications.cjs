@@ -8,7 +8,7 @@ async function main(){
   assert.ok(['darwin','win32','linux'].includes(process.platform));
   if(process.platform==='linux')assert.ok(process.argv[2],'Pass the packaged Linux gateway path');
   const executable=process.argv[2]||path.join(root,'dist/desktop',process.platform==='darwin'?
-    `${process.arch==='x64'?'mac':'mac-'+process.arch}/Codex Mobile Bridge.app/Contents/Resources/gateway/codex-mobile-gateway`:
+    `${process.arch==='x64'?'mac':'mac-'+process.arch}/Mobile Bridge.app/Contents/Resources/gateway/codex-mobile-gateway`:
     'win-unpacked/resources/gateway/codex-mobile-gateway.exe');
   await fs.mkdir(path.join(root,'.tmp'),{recursive:true});
   const dataDir=await fs.mkdtemp(path.join(root,'.tmp','notifications-中文 '));
@@ -34,8 +34,8 @@ async function main(){
     assert.ok((await worker('test-notification',{channel:'bark'})).message.startsWith('Bark'));
     assert.equal(requests.length,1);assert.equal(requests[0].url,'/bark/push');
     assert.equal(requests[0].payload.device_key,'synthetic-bark-key');
-    assert.equal(requests[0].payload.title,'Codex 手机通知测试');
-    assert.equal(requests[0].payload.group,'Codex Mobile Bridge');
+    assert.equal(requests[0].payload.title,'Mobile / Bridge 通知测试');
+    assert.equal(requests[0].payload.group,'Mobile / Bridge');
     Object.assign(state.notifications,{enabled:true,server:base+'/ntfy',topic:'synthetic-topic',token:'synthetic-ntfy-token'});
     state=await worker('save',state); // Blank Bark key must preserve the saved secret.
     assert.equal(state.notifications.token,'');assert.equal(state.notifications.hasToken,true);

@@ -169,7 +169,7 @@ def deployment(preferences):
     ssh_example = shlex.join(['ssh', p['sshTarget']] if p['sshAuth'] == 'config' else ['ssh', '-p', str(p['sshPort']), p['sshUser']+'@'+p['sshHost']])
     url = p['publicUrl']
     upstream = f'http://127.0.0.1:{p["sshRemotePort"]}' if p['accessMode'] == 'server' else p['proxyUpstream']
-    common = f'''# Codex 手机网关 · 固定入口部署
+    common = f'''# Mobile / Bridge 手机网关 · 固定入口部署
 
 手机地址：{url}/
 电脑网关端口：{p['port']}（保持原值）
@@ -276,7 +276,7 @@ docker compose logs --tail=50
 
 ## 给部署 Agent
 
-项目：https://github.com/try2love/codex-mobile-bridge
+项目：https://github.com/BenedictKing/mobile-bridge
 仅使用用户授权的服务器/NAS；执行前确认现有站点、端口和 DNS，禁止覆盖已有服务。部署依赖缺失时先说明。不要复制 Codex 凭据或私钥，不更改电脑网关端口。完成后返回固定 HTTPS 地址、原局域网地址、密码获取方式、部署目录、启停命令、已通过和未通过的验收项。没有权限或真实入口时，说明尚未部署，不声称连通。
 '''
     if p['accessMode'] == 'server':
@@ -294,7 +294,7 @@ docker compose logs --tail=50
 3. To manage an optional HTTP intermediary in Docker, extract this bundle and run `docker compose config`, then `docker compose up -d`. Set the NAS HTTPS proxy's upstream to http://127.0.0.1:18787. The container does not issue certificates: the existing NAS proxy handles HTTPS.
 4. If the outer proxy is also containerized, copy .env.example to .env and set BIND_ADDRESS to the NAS LAN IP. Point the outer proxy there, restrict access to that proxy, and do not expose port 18787 publicly.
 '''
-    files['DEPLOYMENT_EN.md'] = f'''# Codex Mobile Bridge — fixed entry deployment
+    files['DEPLOYMENT_EN.md'] = f'''# Mobile / Bridge — fixed entry deployment
 
 Phone URL: {url}/
 Computer gateway port: {p['port']} (keep unchanged)
@@ -313,7 +313,7 @@ Start/update: `docker compose up -d`. Logs: `docker compose logs --tail=50`. Sto
 
 ## Instructions for deployment Agents
 
-Project: https://github.com/try2love/codex-mobile-bridge
+Project: https://github.com/BenedictKing/mobile-bridge
 Use only authorized servers or NAS devices. Check existing sites, DNS and ports before deploying; do not overwrite existing services. Explain missing dependencies before installing them. Keep the computer gateway port, model authentication and SSH keys unchanged. Return the fixed HTTPS URL, original LAN URL, credential retrieval method, deployment directory, start/stop commands, verified results and remaining checks. If access is unavailable, deliver the prepared configuration and clearly say deployment is pending.
 '''
     if p['accessMode'] == 'server':

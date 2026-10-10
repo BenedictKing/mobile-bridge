@@ -12,7 +12,7 @@ async function readEventually(file){
 async function fixture(t){
   await fs.mkdir(path.join(root,'.tmp'),{recursive:true});
   const work=await fs.mkdtemp(path.join(root,'.tmp/update-handoff-中文 '));
-  const target=path.join(work,'Codex Mobile Bridge'),transaction=path.join(work,'.cmb-update-test'),data=path.join(work,'data');
+  const target=path.join(work,'Mobile Bridge'),transaction=path.join(work,'.cmb-update-test'),data=path.join(work,'data');
   await Promise.all([target,transaction,data].map(p=>fs.mkdir(p)));
   await fs.writeFile(path.join(target,'version'),'old');
   const helper=path.join(transaction,'helper.py'),plan=path.join(transaction,'plan.json');
@@ -63,7 +63,7 @@ const {spawn}=require('node:child_process'),requireMain=require('node:module').c
 const f=${JSON.stringify(f)};
 const app={isPackaged:true,requestSingleInstanceLock:()=>true,whenReady:()=>({then(){}}),on(){},getPath:()=>f.data,quit:()=>process.exit(0)};
 const context=vm.createContext({__dirname:path.dirname(${JSON.stringify(main)}),setTimeout,
-  process:{env:{},platform:'win32',arch:process.arch,pid:process.pid,execPath:path.join(f.target,'Codex Mobile Bridge.exe')},
+  process:{env:{},platform:'win32',arch:process.arch,pid:process.pid,execPath:path.join(f.target,'Mobile Bridge.exe')},
   require(name){
     if(name==='electron')return {app};
     if(name==='./qr.cjs')return {};

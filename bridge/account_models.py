@@ -17,7 +17,7 @@ class NoRedirect(HTTPRedirectHandler):
 def model_ids(base_url, key):
     request = Request(base_url.rstrip('/')+'/models', headers={
         **({'Authorization': 'Bearer '+key} if key else {}), 'Accept': 'application/json',
-        'User-Agent': 'Codex-Mobile-Bridge'})
+        'User-Agent': 'Mobile-Bridge'})
     opener = build_opener(NoRedirect(), HTTPSHandler(context=client_context()))
     try:
         with opener.open(request, timeout=12) as response:

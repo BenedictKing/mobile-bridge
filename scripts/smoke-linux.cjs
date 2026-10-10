@@ -53,7 +53,7 @@ async function cleanupGateway(worker){
 async function main(){
   assert.equal(process.platform,'linux');assert.ok(['x64','arm64'].includes(process.arch));
   assert.notEqual(process.getuid(),0,'Run the app as a regular desktop user');
-  assert.ok(process.argv[2],'Pass the installed or extracted codex-mobile-bridge executable');
+  assert.ok(process.argv[2],'Pass the installed or extracted mobile-bridge executable');
   const executable=await fs.realpath(process.argv[2]),resources=path.join(path.dirname(executable),'resources');
   const runtime=path.join(resources,'gateway/codex-mobile-gateway');
   await checkElf(executable);await checkElf(runtime);

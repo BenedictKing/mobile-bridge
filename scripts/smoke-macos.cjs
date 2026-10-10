@@ -10,7 +10,7 @@ async function main(){
   const data=await fs.mkdtemp(path.join(root,'.tmp','macos-launch-'));
   const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));
-  const executable=path.join(path.resolve(process.argv[2]),'Contents/MacOS/Codex Mobile Bridge');
+  const executable=path.join(path.resolve(process.argv[2]),'Contents/MacOS/Mobile Bridge');
   const env={...process.env,CMB_DATA_DIR:data};
   for(const key of ['CMB_PYTHON','PYTHONPATH','PYTHONHOME','ELECTRON_RUN_AS_NODE'])delete env[key];
   const child=spawn(executable,['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+port],{env,stdio:['ignore','ignore','pipe']});

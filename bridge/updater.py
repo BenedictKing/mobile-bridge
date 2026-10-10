@@ -18,7 +18,7 @@ import tempfile
 import time
 import zipfile
 
-APP = 'Codex Mobile Bridge'
+APP = 'Mobile Bridge'
 APP_ID = 'io.github.try2love.codexmobilebridge'
 RESULT = 'desktop-update-result.json'
 PENDING_TRANSACTION_TIMEOUT = 15*60

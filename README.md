@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="site/assets/icon.png" alt="Codex Mobile Bridge" width="112" height="112">
+  <img src="site/assets/icon.png" alt="Mobile / Bridge" width="112" height="112">
 </p>
 
-# Codex App 手机网关
+# Mobile / Bridge · 手机网关
 
 [简体中文](README.md) · [English](README_EN.md)
 
-**[双语介绍与使用演示 ↗](https://try2love.github.io/codex-mobile-bridge/?lang=zh)** · **[下载桌面 App](https://github.com/try2love/codex-mobile-bridge/releases)**
+**[双语介绍与使用演示 ↗](https://BenedictKing.github.io/mobile-bridge/?lang=zh)** · **[下载桌面 App](https://github.com/BenedictKing/mobile-bridge/releases)**
 
-[![桌面 App：连接与状态（演示数据）](site/assets/desktop-overview.png)](https://try2love.github.io/codex-mobile-bridge/?lang=zh)
+[![桌面 App：连接与状态（演示数据）](site/assets/desktop-overview.png)](https://BenedictKing.github.io/mobile-bridge/?lang=zh)
 
 在手机浏览器里，继续电脑 **Codex App 已有的聊天**，或在已保存项目中新建聊天。
 
@@ -42,7 +42,7 @@ Linux x64 / ARM64 实验性适配、Ubuntu 22.04 构建与 VMware 网络说明�
 | Ubuntu x64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-amd64.deb) | Ubuntu 22.04；安装后以普通用户启动 |
 | Ubuntu ARM64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64；不含 32 位 ARM |
 
-[查看所有版本与更新说明](https://github.com/try2love/codex-mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
+[查看所有版本与更新说明](https://github.com/BenedictKing/mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
 
 1. 在电脑上打开原来的 **Codex App**，再打开 **Codex Mobile Bridge**。
 2. 在“网络与登录”保留局域网访问，保存后点击 **启动网关**。已有配置时沿用原端口。
@@ -289,8 +289,8 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 在 PowerShell 中执行：
 
 ```powershell
-git clone https://github.com/try2love/codex-mobile-bridge.git
-cd codex-mobile-bridge
+git clone https://github.com/BenedictKing/mobile-bridge.git
+cd mobile-bridge
 py -3 -B .\run.py --lan
 ```
 
@@ -313,8 +313,8 @@ Windows 防火墙若弹出提示，仅按需要允许专用网络访问。凭据
 ### macOS
 
 ```sh
-git clone https://github.com/try2love/codex-mobile-bridge.git
-cd codex-mobile-bridge
+git clone https://github.com/BenedictKing/mobile-bridge.git
+cd mobile-bridge
 python3 -B "$PWD/run.py" --lan
 ```
 
@@ -580,7 +580,7 @@ flowchart TD
 桌面 App 的日常使用无需 Agent。需要源码部署、自定义网络入口或协助排错时，可将下面这段话直接复制给电脑上的 Agent：
 
 ```text
-请帮我部署并运行 https://github.com/try2love/codex-mobile-bridge ：先识别当前电脑是 Windows 还是 macOS，阅读仓库 README 中的“给部署 Agent 的执行说明”，优先使用已发布的桌面 App 或复用现有安装，按我的需求完成配置、启动和验收；复用现有 Codex App 会话及模型认证，默认启用账号密码和局域网访问，保持已有局域网端口。若我需要外网访问，优先复用已有 NAS/HTTPS 反向代理，有自有服务器和域名时可准备 SSH 回程与固定 HTTPS 的配置参考，涉及服务器管理员权限的操作由我手动完成，没有现成入口再配置临时 HTTPS 隧道；验证聊天读取、实时同步和可用的操作链路，保持服务运行，最后给我可点击的手机访问地址、登录凭据获取方式、App 启停操作或命令、验证结果及仍需我完成的步骤。
+请帮我部署并运行 https://github.com/BenedictKing/mobile-bridge ：先识别当前电脑是 Windows 还是 macOS，阅读仓库 README 中的“给部署 Agent 的执行说明”，优先使用已发布的桌面 App 或复用现有安装，按我的需求完成配置、启动和验收；复用现有 Codex App 会话及模型认证，默认启用账号密码和局域网访问，保持已有局域网端口。若我需要外网访问，优先复用已有 NAS/HTTPS 反向代理，有自有服务器和域名时可准备 SSH 回程与固定 HTTPS 的配置参考，涉及服务器管理员权限的操作由我手动完成，没有现成入口再配置临时 HTTPS 隧道；验证聊天读取、实时同步和可用的操作链路，保持服务运行，最后给我可点击的手机访问地址、登录凭据获取方式、App 启停操作或命令、验证结果及仍需我完成的步骤。
 ```
 
 本节面向替用户部署本项目的 Agent。交付目标是：**用户拿到可用的手机访问地址和登录方式，打开原 Codex App 的同一条会话，消息仍由原 电脑 或 SSH 服务器执行，并能收到结果与待确认请求。** 用户只要求其中一部分时，按其范围部署；已有选择和授权可以复用。
@@ -769,7 +769,7 @@ python3 -B -m unittest discover -s tests -v
 
 ## 问题反馈
 
-欢迎提交 [Issue](https://github.com/try2love/codex-mobile-bridge/issues) 或 Pull Request。请附上系统、App/运行时版本、连接方式和脱敏后的错误信息。不要提交 API key、网关密码、完整聊天记录或私有配置文件。
+欢迎提交 [Issue](https://github.com/BenedictKing/mobile-bridge/issues) 或 Pull Request。请附上系统、App/运行时版本、连接方式和脱敏后的错误信息。不要提交 API key、网关密码、完整聊天记录或私有配置文件。
 
 ## 致谢
 

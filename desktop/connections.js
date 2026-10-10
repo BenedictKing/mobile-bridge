@@ -5,7 +5,7 @@ const connectionExpanded=new Map();
 function connectionLabel(mode){return t({quick:'临时 HTTPS · Cloudflare',cloudflare:'固定域名 · Cloudflare Tunnel',server:'固定域名 · 自有服务器 + SSH',nas:'固定域名 · NAS / 已有反代 / Docker'}[mode]);}
 function setupGuide(link,mode){
   link.className='setup-guide';link.textContent=t('在线指引');
-  link.href='https://try2love.github.io/codex-mobile-bridge/setup.html?lang='+(BridgeI18n.language()==='en'?'en':'zh')+'#'+mode;
+  link.href='https://BenedictKing.github.io/mobile-bridge/setup.html?lang='+(BridgeI18n.language()==='en'?'en':'zh')+'#'+mode;
   link.onclick=event=>{event.preventDefault();api.open('setup-'+mode).catch(e=>feedback(e.message,true));};
 }
 async function saveConnectionCredentials(id){

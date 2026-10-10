@@ -84,7 +84,7 @@ test('manifest rejects downgrades, wrong architecture, incomplete hashes and fil
 test('network allowlist rejects external destinations, credentials and non-HTTPS URLs',()=>{
   assert.equal(allowedUrl(RELEASES),RELEASES);
   assert.ok(allowedUrl(releaseUrl(next,'bridge-update.json')));
-  for(const url of ['http://github.com/try2love/codex-mobile-bridge/releases/download/v1/x','https://evil.example/update','https://user@github.com/try2love/codex-mobile-bridge/releases/download/v1/x','https://github.com/other/repo/releases/download/v1/x'])assert.throws(()=>allowedUrl(url));
+  for(const url of ['http://github.com/BenedictKing/mobile-bridge/releases/download/v1/x','https://evil.example/update','https://user@github.com/BenedictKing/mobile-bridge/releases/download/v1/x','https://github.com/other/repo/releases/download/v1/x'])assert.throws(()=>allowedUrl(url));
 });
 async function fixture(t,{packageBytes=bytes,releases,key=keys.publicKey,apply=async()=>{}}={}){
   await fs.mkdir(path.join(__dirname,'../.tmp'),{recursive:true});const directory=await fs.mkdtemp(path.join(__dirname,'../.tmp/update-test-'));

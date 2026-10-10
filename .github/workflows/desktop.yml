@@ -48,7 +48,7 @@ jobs:
           python scripts/verify-macos.py dist/desktop/*-macOS-${{ matrix.arch }}.zip --arch ${{ matrix.arch }}
       - name: Launch the signed macOS App
         if: runner.os == 'macOS'
-        run: node scripts/smoke-macos.cjs "dist/desktop/${{ matrix.app-dir }}/Codex Mobile Bridge.app"
+        run: node scripts/smoke-macos.cjs "dist/desktop/${{ matrix.app-dir }}/Mobile Bridge.app"
       - if: runner.os == 'Windows'
         run: npm run build:windows
       - if: runner.os == 'Windows'
@@ -121,7 +121,7 @@ jobs:
           test "$(dpkg-deb -f "${package[0]}" Architecture)" = '${{ matrix.deb-arch }}'
           test "$(dpkg-deb -f "${package[0]}" Version)" = "$(node -p 'require("./package.json").version')"
           sudo apt-get install -y "./${package[0]}"
-          executable="$(readlink -f /usr/bin/codex-mobile-bridge)"
+          executable="$(readlink -f /usr/bin/mobile-bridge)"
           runtime="$(dirname "$executable")/resources/gateway/codex-mobile-gateway"
           dbus-run-session -- xvfb-run -a node scripts/smoke-linux.cjs "$executable"
           node scripts/smoke-notifications.cjs "$runtime"
@@ -137,7 +137,7 @@ jobs:
           cd "$RUNNER_TEMP/bridge-appimage"
           "${image[0]}" --appimage-extract >/dev/null
           cd "$GITHUB_WORKSPACE"
-          dbus-run-session -- xvfb-run -a node scripts/smoke-linux.cjs "$RUNNER_TEMP/bridge-appimage/squashfs-root/codex-mobile-bridge"
+          dbus-run-session -- xvfb-run -a node scripts/smoke-linux.cjs "$RUNNER_TEMP/bridge-appimage/squashfs-root/mobile-bridge"
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-Linux-${{ matrix.arch }}

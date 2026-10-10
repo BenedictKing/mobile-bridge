@@ -13,7 +13,7 @@ async function until(callback,label,ms=45000){
   throw Error(label+' timed out'+(last?': '+last.message:''));
 }
 async function port(){const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const value=server.address().port;await new Promise(resolve=>server.close(resolve));return value;}
-function paths(target){return {app:path.join(target,mac?'Contents/MacOS/Codex Mobile Bridge':'Codex Mobile Bridge.exe'),runtime:path.join(target,mac?'Contents/Resources/gateway/codex-mobile-gateway':'resources/gateway/codex-mobile-gateway.exe')};}
+function paths(target){return {app:path.join(target,mac?'Contents/MacOS/Mobile Bridge':'Mobile Bridge.exe'),runtime:path.join(target,mac?'Contents/Resources/gateway/codex-mobile-gateway':'resources/gateway/codex-mobile-gateway.exe')};}
 function worker(executable,data,action,payload){return new Promise((resolve,reject)=>{
   const child=spawn(executable,[action,'--data-dir',data],{env:{...process.env,PYINSTALLER_RESET_ENVIRONMENT:'1'},windowsHide:true});let output='',errors='';
   const timer=setTimeout(()=>{child.kill();reject(Error(action+' timeout'));},180000);
@@ -35,11 +35,11 @@ async function inspectUI(debugPort,output){
 }
 async function main(){
   assert.ok(['darwin','win32'].includes(process.platform));
-  const build=path.join(root,'dist/desktop'),source=path.join(build,mac?`${process.arch==='x64'?'mac':'mac-'+process.arch}/Codex Mobile Bridge.app`:'win-unpacked');
+  const build=path.join(root,'dist/desktop'),source=path.join(build,mac?`${process.arch==='x64'?'mac':'mac-'+process.arch}/Mobile Bridge.app`:'win-unpacked');
   const name=assetName(version,process.platform,process.arch),archive=path.join(build,name);
   const sha256=createHash('sha256');for await(const chunk of sync.createReadStream(archive))sha256.update(chunk);
   const size=(await fs.stat(archive)).size,digest=sha256.digest('hex');
-  const work=await fs.mkdtemp(path.join(root,'.tmp/update-smoke-中文 ')),target=path.join(work,mac?'Codex Mobile Bridge.app':'app'),data=path.join(work,'data');
+  const work=await fs.mkdtemp(path.join(root,'.tmp/update-smoke-中文 ')),target=path.join(work,mac?'Mobile Bridge.app':'app'),data=path.join(work,'data');
   await fs.cp(source,target,{recursive:true,verbatimSymlinks:true});await fs.mkdir(data);
   const {app,runtime}=paths(target),settings=await worker(runtime,data,'snapshot'),gatewayPort=await port();
   Object.assign(settings.preferences,{port:gatewayPort,lan:false,autoStart:false,tunnel:false,connections:[],codexHome:data});
