@@ -31,20 +31,20 @@ Linux x64 / ARM64 实验性适配、Ubuntu 22.04 构建与 VMware 网络说明�
 
 ## 下载与快速开始（推荐）
 
-日常使用直接下载桌面 App，**无需 Agent 帮忙部署，也无需安装 Python、Node.js 或打开终端**。当前版本为 **v1.4.0 正式版**。
+日常使用直接下载桌面 App，**无需 Agent 帮忙部署，也无需安装 Python、Node.js 或打开终端**。当前版本为 **v0.1.0 正式版**。
 
 | 系统 | 下载 | 打开方式 |
 | --- | --- | --- |
-| Windows x64（推荐安装包） | [下载 Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64-Setup.exe) | 运行安装包，从快捷方式打开 |
-| Windows x64（免安装） | [下载完整 ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64.zip) | 完整解压后运行 `Codex Mobile Bridge.exe`，不要单独移动 exe |
-| macOS Apple Silicon（M 系列） | [下载 arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
-| macOS Intel（英特尔） | [下载 x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-x64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
-| Ubuntu x64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-amd64.deb) | Ubuntu 22.04；安装后以普通用户启动 |
-| Ubuntu ARM64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64；不含 32 位 ARM |
+| Windows x64（推荐安装包） | [下载 Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64-Setup.exe) | 运行安装包，从快捷方式打开 |
+| Windows x64（免安装） | [下载完整 ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64.zip) | 完整解压后运行 `Mobile Bridge.exe`，不要单独移动 exe |
+| macOS Apple Silicon（M 系列） | [下载 arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-arm64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
+| macOS Intel（英特尔） | [下载 x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-x64.dmg) | 打开 DMG，将 App 拖入“应用程序” |
+| Ubuntu x64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-amd64.deb) | Ubuntu 22.04；安装后以普通用户启动 |
+| Ubuntu ARM64（实验性） | [下载 .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64；不含 32 位 ARM |
 
-[查看所有版本与更新说明](https://github.com/BenedictKing/mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
+[查看所有版本与更新说明](https://github.com/BenedictKing/mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
 
-1. 在电脑上打开原来的 **Codex App**，再打开 **Codex Mobile Bridge**。
+1. 在电脑上打开原来的 **Codex App**，再打开 **Mobile Bridge**。
 2. 在“网络与登录”保留局域网访问，保存后点击 **启动网关**。已有配置时沿用原端口。
 3. 手机连接同一局域网，在 App 首页展开对应地址下的 **扫码登录**，用手机相机扫描即可进入，无需输入密码。也可以手动打开地址，使用 App 提供的登录凭据。
 4. 在手机网页选择已有聊天或新建聊天，即可继续交互。使用期间保持电脑唤醒、Codex App 和网关运行。
@@ -99,14 +99,14 @@ v1.3.0 支持在 Bridge 桌面端添加官方账号、自定义 API 或扫描导
 1. 从本仓库的 Release 下载对应芯片的 DMG 或 ZIP，以及 `SHA256SUMS.txt`。计算下载文件的 SHA-256，与校验文件中同名文件的一行比较；不一致时重新下载，不要放行。以下以 1.4.0 的 M 系列 Mac DMG 为例，其他文件请替换文件名：
 
    ```sh
-   shasum -a 256 "$HOME/Downloads/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg"
+   shasum -a 256 "$HOME/Downloads/Mobile-Bridge-0.1.0-macOS-arm64.dmg"
    ```
 
-2. 打开 DMG，将 `Codex Mobile Bridge.app` 拖入“应用程序”，再推出磁盘映像；ZIP 则先解压并移动 App。尝试从“应用程序”打开后，前往 **系统设置 → 隐私与安全性 → 仍要打开**，按系统提示确认。
+2. 打开 DMG，将 `Mobile Bridge.app` 拖入“应用程序”，再推出磁盘映像；ZIP 则先解压并移动 App。尝试从“应用程序”打开后，前往 **系统设置 → 隐私与安全性 → 仍要打开**，按系统提示确认。
 3. 如果没有“仍要打开”，或仍提示“已损坏”，在已核对来源与哈希的前提下，打开终端，仅移除这个 App 的下载隔离标记，然后重新打开：
 
    ```sh
-   xattr -dr com.apple.quarantine "/Applications/Codex Mobile Bridge.app"
+   xattr -dr com.apple.quarantine "/Applications/Mobile Bridge.app"
    ```
 
    如果 App 放在其他目录，请把引号内路径换成实际位置。这不会授予 Apple 信任或公证，也不需要关闭 Gatekeeper、SIP 或全局安全检查。
@@ -136,7 +136,7 @@ Windows 关闭窗口会收起到系统托盘；双击托盘或再次启动 App �
 
 右上角可切换 **简体中文 / English**，与 Mac 新界面位置一致。首次启动按系统语言选择（英文系统使用英文，其他语言回退简体中文），之后记住手动选择，并保留旧 Windows 版已保存的语言偏好。切换立即更新桌面页面、连接配置、状态提示和 Windows 托盘，不重启网关、不丢弃未保存配置。桌面偏好保存在 App 用户目录的 `language.json`。手机网页使用同一翻译表，但语言可独立选择并记忆；原始运行日志和聊天内容不翻译，未知系统错误保留原始诊断信息。
 
-外网访问在“网络与登录 → 其他连接配置”添加并启用连接，可选择临时 HTTPS、自有服务器 SSH 或 NAS 反代。桌面 App 已内置 `cloudflared.exe`，临时和固定 Cloudflare 隧道无需另行安装；复用旧 `.local` 时会查找其 `bin/cloudflared.exe`，旧单入口配置也会自动迁移为连接项。等待入口就绪并检查实际 HTTPS 地址，`127.0.0.1` 不是手机外网入口。默认保留账号密码保护。
+外网访问在“网络与登录 → 其他连接配置”添加并启用连接，可选择临时 HTTPS、自有服务器 SSH 或 NAS 反代。桌面 App 已内置 `cloudflared.exe`，临时和固定 Cloudflare 隧道无需另行安装；复用旧 `.local` 时会查找其 `bin/cloudflared.exe`，旧单入口配置也会自动迁移为连接项。等待入口就绪并检查实际 HTTPS 地址，`127.0.0.1` 不是手机外网入口。默认保留账号密码保护。网关会持续探测 Cloudflare 隧道健康；电脑休眠唤醒或网络切换导致连接僵死时自动重建，临时 HTTPS 重建后获得新网址并补发入口变更通知。
 
 未保存修改会在对应设置页的侧栏入口和底部保存栏显示小红点；切换页面仍保留提示，保存成功或改回原值后清除，保存失败时继续保留。
 

@@ -31,25 +31,25 @@ Experimental Linux x64 / ARM64 integration, Ubuntu 22.04 builds, and VMware netw
 
 ## Download and quick start (recommended)
 
-Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The current release is **v1.4.0 (stable)**.
+Download the desktop App for everyday use. **No deployment Agent, Python, Node.js or terminal is required.** The current release is **v0.1.0 (stable)**.
 
 | Platform | Download | Open |
 | --- | --- | --- |
-| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
-| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Windows-x64.zip) | Extract the entire ZIP and run `Codex Mobile Bridge.exe`; do not move just the exe |
-| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
-| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
-| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
-| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/Codex-Mobile-Bridge-1.4.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
+| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
+| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64.zip) | Extract the entire ZIP and run `Mobile Bridge.exe`; do not move just the exe |
+| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
+| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
+| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
+| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
 
-[All releases and release notes](https://github.com/BenedictKing/mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v1.4.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
+[All releases and release notes](https://github.com/BenedictKing/mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
 
-1. Open the original **Codex App** on the computer, then open **Codex Mobile Bridge**.
+1. Open the original **Codex App** on the computer, then open **Mobile Bridge**.
 2. Keep LAN access enabled under **Network and login**, save, and click **Start gateway**. Preserve the existing port if you already have a configuration.
 3. Connect the phone to the same LAN. Expand **Scan to sign in** below its address in the App and scan with the phone camera to sign in without typing a password. Alternatively, open the address manually and use the login credentials provided by the App.
 4. Select an existing chat or create a new one in the phone browser. Keep the computer awake with Codex App and the gateway running.
 
-For access outside your LAN, add temporary HTTPS, an own-server connection or a NAS connection in the App. Desktop builds bundle `cloudflared`. Server profiles connect over SSH after you manually prepare the server; a fixed Cloudflare tunnel also supports private domains without a server. See [Parallel connections](#parallel-connections). For source deployment, custom networking or help from an Agent, see the optional [Deployment Agent instructions](#deployment-agent-instructions).
+For access outside your LAN, add temporary HTTPS, an own-server connection or a NAS connection in the App. Desktop builds bundle `cloudflared`. Server profiles connect over SSH after you manually prepare the server; a fixed Cloudflare tunnel also supports private domains without a server. See [Parallel connections](#parallel-connections). For source deployment, custom networking or help from an Agent, see the optional [Deployment Agent instructions](#deployment-agent-instructions). The gateway keeps probing Cloudflare tunnel health and rebuilds a connector left half-dead by sleep/wake or a network change; a rebuilt Quick Tunnel gets a new URL and sends an entry-change notification.
 
 ### In-app updates
 
@@ -98,14 +98,14 @@ The Mac build has an **ad-hoc integrity signature**, but **no Apple Developer ID
 1. Download the DMG or ZIP for your Mac's chip and `SHA256SUMS.txt` from this repository's Release. Calculate the downloaded file's hash and compare it with the matching filename in the checksum file. If they differ, download again instead of allowing the app. The example below uses the 1.4.0 Apple Silicon DMG; replace the filename for other downloads.
 
    ```sh
-   shasum -a 256 "$HOME/Downloads/Codex-Mobile-Bridge-1.4.0-macOS-arm64.dmg"
+   shasum -a 256 "$HOME/Downloads/Mobile-Bridge-0.1.0-macOS-arm64.dmg"
    ```
 
-2. Open the DMG, drag `Codex Mobile Bridge.app` to Applications, then eject the disk image. For a ZIP, extract it and move the App instead. Try opening it from Applications, then go to **System Settings → Privacy & Security → Open Anyway** and confirm.
+2. Open the DMG, drag `Mobile Bridge.app` to Applications, then eject the disk image. For a ZIP, extract it and move the App instead. Try opening it from Applications, then go to **System Settings → Privacy & Security → Open Anyway** and confirm.
 3. If Open Anyway is unavailable, or macOS still reports the app as damaged, only after verifying the source and hash, remove the download quarantine attribute from this specific app and open it again:
 
    ```sh
-   xattr -dr com.apple.quarantine "/Applications/Codex Mobile Bridge.app"
+   xattr -dr com.apple.quarantine "/Applications/Mobile Bridge.app"
    ```
 
    Substitute the actual path if installed elsewhere. This does not confer Apple trust or notarization. Do not disable Gatekeeper, SIP or global security checks.
