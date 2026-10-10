@@ -107,7 +107,7 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 | `bridge/transport.py` | Unix socket / Windows 命名管道字节流 |
 | `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
 | `bridge/service.py` | 会话同步、操作路由、去重和队列 |
-| `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode/claude/dsh 方言 |
+| `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode/claude/dsh/zcode 方言 |
 | `bridge/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
 | `bridge/model.py` | 历史和请求的规范化 |
 | `bridge/catalog.py` | 模型与 Skill 元数据 |
@@ -123,11 +123,11 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 
 ### 控制模型
 
-Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）与 DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode,claude,dsh` 决定注册哪些后端，默认仅 codex。
+Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）与 ZCode（`zcode`，经 `zcode-acp-server` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode,claude,dsh,zcode` 决定注册哪些后端，默认仅 codex。
 
 ### Adapter 接口与路由
 
-`bridge/agents/base.py` 定义 `AgentAdapter` 抽象：会话列表/元数据、历史快照、发送与排队、审批响应、中断、目录（模型/Skill）、能力集合（`Capability`）与 `label`。`bridge/agents/codex.py` 是既有实现；`acp_adapter.py` 是 ACP 通用基类，`kimi.py`/`mcode.py`/`claude.py`/`dsh.py` 只声明启动命令、能力与方言差异。claude 的发现依次读 `CLAUDE_ACP_BIN` 环境变量、PATH 上的 `claude-agent-acp`、`npx -y @agentclientprotocol/claude-agent-acp`；dsh 同理（`DSH_ACP_BIN` → `dsh-acp` → `npx -y @openma/deepseek-harness-acp`）；npx 首次运行要下载包装层，握手机超时随子类上调。
+`bridge/agents/base.py` 定义 `AgentAdapter` 抽象：会话列表/元数据、历史快照、发送与排队、审批响应、中断、目录（模型/Skill）、能力集合（`Capability`）与 `label`。`bridge/agents/codex.py` 是既有实现；`acp_adapter.py` 是 ACP 通用基类，`kimi.py`/`mcode.py`/`claude.py`/`dsh.py`/`zcode.py` 只声明启动命令、能力与方言差异。claude 的发现依次读 `CLAUDE_ACP_BIN` 环境变量、PATH 上的 `claude-agent-acp`、`npx -y @agentclientprotocol/claude-agent-acp`；dsh 同理（`DSH_ACP_BIN` → `dsh-acp` → `npx -y @openma/deepseek-harness-acp`）；zcode 同理（`ZCODE_ACP_BIN` → PATH 上的 `zcode-acp-server`/`zcode-acp` → `npx -y zcode-acp-server`，凭据取自 `~/.zcode`，包装层需要 Node.js 22+）；npx 首次运行要下载包装层，握手机超时随子类上调。
 
 每个后端包装为一个 `Bridge`（`bridge/service.py`），`Registry` 维护 kind → bridge 映射。会话路由先查各 bridge 的 `listed` 集合（列表时填充）；未命中时（如重启后直接打开深链）逐个探测非 codex adapter 的 `session_meta`，命中即缓存，避免 `session_*`/`mvs_*` 标识落入 codex 的 UUID 校验而误报 400。HTTP 层按 `?agent=` 或该路由选择 bridge。
 
@@ -138,6 +138,8 @@ Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主
 claude-agent-acp 只在首条消息后才把会话落盘：零消息会话跨进程 `session/load`/`resume`/`prompt` 均报 "Resource not found"。因此 `AcpAdapter.create_session` 对 `KEEP_CREATED_PROCESS` 的子类（claude）把创建进程保活为会话 handle（配置在 `session/new` 响应里直接播种，跳过 load/replay），首条消息就在创建进程内发出；会话入列前由 `_pending_created` 占位补进列表与 `session_meta`，agent 一旦列出即撤占位，保活进程被 detach 的未入列会话同时撤占位。
 
 dsh 的语义与 kimi 相反方向地不同：modes 与 `mode` 配置项是权限预设（read-only/workspace-write/danger-full-access），计划模式在独立的 `collaboration_mode` 配置项（default/plan）里。`DshAdapter._set_mode` 因此把桥接层 plan/default 映射为 `session/set_config_option` 写 `collaboration_mode`（服务端内部执行 `/plan` 命令），绝不调用会改权限预设的 `session/set_mode`；`AcpAdapter.VIEW_CLASS` seam 让 `DshSessionView` 忽略 modes、`mode` 配置项与 `current_mode_update`，只把 `collaboration_mode` 映射进 view.mode。dsh 的 steer 走 `_session/steering` 扩展（`prompt` 块加 `_meta.steering.idleBehavior: promptRequired`），返回 `{outcome: 'injected'}` 或 `{outcome: 'promptRequired'}`——后者说明任务恰在竞态间隙结束，适配器回落为普通 prompt。dsh 创建会话即入列，优雅关闭释放写句柄后跨进程 load 正常，故 `KEEP_CREATED_PROCESS=False`（强杀进程会留下 "already owned by an active write handle" 残留，需避免）。
+
+zcode（经 `zcode-acp-server` 接入 ZCode CLI 的 app-server）的方言：`session/new` 返回惰性占位 id，后端会话在首次 prompt 前不存在，占位因此从不入列——与 claude 同因走 `KEEP_CREATED_PROCESS=True`（创建进程保活为 handle）。ZCode 3.3.0 的会话模式是 plan/build/edit/yolo/auto，没有桥接层的 `default`：`ZcodeAdapter._set_mode` 把 plan 原样透传、default 映射为包装层建会话时硬编码的 `yolo`，统一走标准 `session/set_mode`（zcode 的 `mode` 配置项与 modes 是同一状态，无需 dsh 式的视图隔离）。推理强度词表按模型变化（GLM-5.3 为 low/high/max 恒等映射；GLM-5-Turbo 只有 enabled/off，折叠到桥接层 minimal/none 两档），模型值形如 `providerId\modelId`（服务层模型 ID 校验因此放行反斜杠）。上游 ZCode CLI ≥0.16 删除了 steer/rewind，zcode 不声明 STEER 能力。
 
 ### Capability 门控
 
@@ -155,17 +157,17 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 ### 能力矩阵
 
-| 能力 | Codex | Kimi | MiniMax | Claude | DeepSeek |
-| --- | --- | --- | --- | --- | --- |
-| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） | ✓（configOptions：model + effort，off/low/high/max） |
-| 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ |
-| 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） |
-| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） |
-| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） | ✗（ACP 无接口） |
-| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） |
-| Skill 选择 | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ |
+| 能力 | Codex | Kimi | MiniMax | Claude | DeepSeek | ZCode |
+| --- | --- | --- | --- | --- | --- | --- |
+| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） | ✓（configOptions：model + effort，off/low/high/max） | ✓（configOptions：model + thought，词表按模型变化） |
+| 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ | ✓（创建进程保活至首条消息，惰性占位） |
+| 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） | ✓（default 映射为 yolo） |
+| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） |
+| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） |
+| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） |
+| Skill 选择 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 ## 固定 HTTPS 入口
 

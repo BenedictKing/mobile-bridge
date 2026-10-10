@@ -335,7 +335,8 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(run.agent_kinds(' kimi , mcode ,,'), ['kimi', 'mcode'])
         self.assertEqual(run.agent_kinds('codex,claude'), ['codex', 'claude'])
         self.assertEqual(run.agent_kinds('codex,dsh'), ['codex', 'dsh'])
-        for bad in ('', ',,', 'bogus', 'codex,zcode'):
+        self.assertEqual(run.agent_kinds('codex,zcode'), ['codex', 'zcode'])
+        for bad in ('', ',,', 'bogus', 'codex,bogus'):
             with self.assertRaises(ValueError):
                 run.agent_kinds(bad)
 
@@ -361,11 +362,12 @@ class AcpAdapterTests(unittest.TestCase):
         with patch('bridge.agents.kimi.available', return_value=True), \
              patch('bridge.agents.mcode.available', return_value=False), \
              patch('bridge.agents.claude.available', return_value=True), \
-             patch('bridge.agents.dsh.available', return_value=False):
-            self.assertEqual(run.detect_agent_kinds(), ['kimi', 'claude'])
+             patch('bridge.agents.dsh.available', return_value=False), \
+             patch('bridge.agents.zcode.available', return_value=True):
+            self.assertEqual(run.detect_agent_kinds(), ['kimi', 'claude', 'zcode'])
 
     def test_adapter_available_probes(self):
-        from bridge.agents import claude, dsh, kimi, mcode
+        from bridge.agents import claude, dsh, kimi, mcode, zcode
         with patch.dict('os.environ', {'KIMI_BIN': '/x/kimi'}):
             self.assertTrue(kimi.available())
         with patch('bridge.agents.kimi.discover_executable', return_value=None):
@@ -391,6 +393,18 @@ class AcpAdapterTests(unittest.TestCase):
              patch('pathlib.Path.home', return_value=Path('/tmp/fake-dsh-home')), \
              patch('pathlib.Path.is_dir', return_value=False):
             self.assertFalse(dsh.available())
+        with patch.dict('os.environ', {'ZCODE_ACP_BIN': '/x/zcode-acp-server'}):
+            self.assertTrue(zcode.available())
+        with patch.dict('os.environ', {}, clear=True), \
+             patch('shutil.which', return_value=None), \
+             patch('pathlib.Path.home', return_value=Path('/tmp/fake-zcode-home')), \
+             patch('pathlib.Path.is_dir', return_value=True):
+            self.assertTrue(zcode.available())
+        with patch.dict('os.environ', {}, clear=True), \
+             patch('shutil.which', return_value=None), \
+             patch('pathlib.Path.home', return_value=Path('/tmp/fake-zcode-home')), \
+             patch('pathlib.Path.is_dir', return_value=False):
+            self.assertFalse(zcode.available())
 
 
 class AcpHttpTests(unittest.TestCase):

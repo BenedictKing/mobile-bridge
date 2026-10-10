@@ -1282,7 +1282,7 @@ class Bridge:
 
     @operation
     def settings(self, thread_id, model, effort, *, fast_mode=None):
-        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@+\[\]-]{0,199}", model):
+        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@+\[\]\\-]{0,199}", model):
             raise ValueError("模型 ID 格式不正确")
         if effort not in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             raise ValueError("请选择有效的推理强度")

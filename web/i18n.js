@@ -1180,7 +1180,7 @@ function apply(root=document){
   document.querySelectorAll('[data-language]').forEach(node=>node.value=lang);
 }
 function setLanguage(value){lang=value==='en'?'en':'zh';try{localStorage.setItem('bridge-language',lang);}catch{}}
-const AGENT_LABELS={codex:'Codex',kimi:'Kimi',mcode:'MiniMax',claude:'Claude',dsh:'DeepSeek'};
+const AGENT_LABELS={codex:'Codex',kimi:'Kimi',mcode:'MiniMax',claude:'Claude',dsh:'DeepSeek',zcode:'ZCode'};
 function agentLabel(kind){return AGENT_LABELS[kind]||AGENT_LABELS.codex;}
 // Badge text for list/project rows: shown for every known agent kind.
 function agentTag(kind){return kind&&AGENT_LABELS[kind]?AGENT_LABELS[kind]:'';}

@@ -76,9 +76,10 @@ def save_config(path, config):
 
 def detect_agent_kinds():
     """Auto-detect locally installed ACP agents; npx fallbacks do not count."""
-    from bridge.agents import claude, dsh, kimi, mcode
+    from bridge.agents import claude, dsh, kimi, mcode, zcode
     probes = (('kimi', kimi.available), ('mcode', mcode.available),
-              ('claude', claude.available), ('dsh', dsh.available))
+              ('claude', claude.available), ('dsh', dsh.available),
+              ('zcode', zcode.available))
     return [kind for kind, probe in probes if probe()]
 
 
@@ -86,8 +87,8 @@ def agent_kinds(value):
     kinds = [k.strip() for k in value.split(',') if k.strip()]
     if kinds == ['auto']:
         return ['codex'] + detect_agent_kinds()
-    if not kinds or any(k not in ('codex', 'kimi', 'mcode', 'claude', 'dsh') for k in kinds):
-        raise ValueError("--agents 支持 codex、kimi、mcode、claude、dsh，或 auto（自动探测本机已安装的）")
+    if not kinds or any(k not in ('codex', 'kimi', 'mcode', 'claude', 'dsh', 'zcode') for k in kinds):
+        raise ValueError("--agents 支持 codex、kimi、mcode、claude、dsh、zcode，或 auto（自动探测本机已安装的）")
     return kinds
 
 
@@ -112,7 +113,7 @@ def main(connections=None, connection_secrets=None):
     parser.add_argument("--set-password", action="store_true", help="交互式设置登录密码，不启动服务")
     parser.add_argument("--no-auth", action="store_true", help="本次运行明确关闭账号密码验证")
     parser.add_argument("--codex-home", type=Path, default=Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))))
-    parser.add_argument("--agents", default=os.environ.get("MOBILE_BRIDGE_AGENTS", "auto"), help="启用的 Agent 类型（逗号分隔，支持 codex、kimi、mcode、claude 与 dsh；默认 auto 自动探测本机已安装的，可设 MOBILE_BRIDGE_AGENTS 环境变量覆盖）")
+    parser.add_argument("--agents", default=os.environ.get("MOBILE_BRIDGE_AGENTS", "auto"), help="启用的 Agent 类型（逗号分隔，支持 codex、kimi、mcode、claude、dsh 与 zcode；默认 auto 自动探测本机已安装的，可设 MOBILE_BRIDGE_AGENTS 环境变量覆盖）")
     args = parser.parse_args()
     try:
         kinds = agent_kinds(args.agents)
@@ -208,6 +209,16 @@ def main(connections=None, connection_secrets=None):
             parser.error(str(exc))
         dsh_bridge = Bridge(args.codex_home, args.config.parent / 'agents' / 'dsh', adapter=dsh_adapter)
         registry.register('dsh', dsh_bridge)
+    zcode_bridge = None
+    if 'zcode' in kinds:
+        from bridge.agents.acp import AcpUnavailable
+        from bridge.agents.zcode import ZcodeAdapter
+        try:
+            zcode_adapter = ZcodeAdapter()
+        except AcpUnavailable as exc:
+            parser.error(str(exc))
+        zcode_bridge = Bridge(args.codex_home, args.config.parent / 'agents' / 'zcode', adapter=zcode_adapter)
+        registry.register('zcode', zcode_bridge)
     servers = []
     try:
         for address in network.bindings(preferences):
@@ -344,6 +355,8 @@ def main(connections=None, connection_secrets=None):
             claude_bridge.close()
         if dsh_bridge is not None:
             dsh_bridge.close()
+        if zcode_bridge is not None:
+            zcode_bridge.close()
         for listener in servers:
             listener.server_close()
         if pid_file.exists() and pid_file.read_text(encoding='utf-8').strip() == str(os.getpid()):
