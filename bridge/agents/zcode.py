@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .acp import AcpUnavailable
 from .acp_adapter import AcpAdapter
+from . import zcode_creds
 
 
 def discover_argv():
@@ -63,6 +64,7 @@ class ZcodeAdapter(AcpAdapter):
                   'high': 'high', 'xhigh': 'xhigh', 'max': 'max', 'ultra': 'ultra'}
 
     def __init__(self, argv=None, **kwargs):
+        discovered = argv is None
         argv = argv or discover_argv()
         if not argv:
             raise AcpUnavailable('未找到 zcode-acp-server，请先安装 ZCode CLI（需要 Node.js 22+ 与 npx）')
@@ -70,6 +72,11 @@ class ZcodeAdapter(AcpAdapter):
             argv = [argv]
         super().__init__(argv[0], **kwargs)
         self._full_argv = list(argv)
+        # Real launches (gateway startup) keep the coding-plan key slot in
+        # ~/.zcode/v2/config.json healed; explicit argv (tests) must not touch
+        # the machine's real ZCode state.
+        if discovered:
+            zcode_creds.ensure_and_watch()
 
     def _argv(self):
         # The wrapper speaks ACP directly; there is no 'acp' subcommand.
