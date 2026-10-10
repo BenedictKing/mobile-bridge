@@ -24,6 +24,9 @@ SKILL_CACHE = 'skill-cache.json'
 SKILL_DB = 'skills-v2.sqlite3'
 SKILL_PAGE_LIMIT = 200
 SKILL_MAX_PAGE_LIMIT = 500
+# Official Codex reasoning ladder. Custom API providers only list model ids with
+# no supportedReasoningEfforts metadata; those models still accept these levels.
+CODEX_EFFORT_FALLBACK = ['low', 'medium', 'high', 'xhigh', 'ultra']
 
 
 class CatalogError(RuntimeError):
@@ -569,7 +572,7 @@ class Catalog:
                     return cached[1]
                 raw = self._fetch(cwd, provider, kind)
                 models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName', m.get('model')),
-                           'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
+                           'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])] or CODEX_EFFORT_FALLBACK,
                            'defaultEffort': m.get('defaultReasoningEffort'), 'fastTier': self.fast_tier(m),
                            'defaultServiceTier': m.get('defaultServiceTier')} for m in raw['models'] if not m.get('hidden')]
                 value = {'models': models, 'kind': 'models', 'modelSource': raw.get('modelSource', 'codex'),
@@ -655,7 +658,7 @@ class Catalog:
                 return cached[1]
             raw = self._fetch(cwd, provider)
             models = [{'id': m.get('model', m.get('id')), 'name': m.get('displayName', m.get('model')),
-                       'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])],
+                       'description': m.get('description', ''), 'efforts': [e['reasoningEffort'] for e in m.get('supportedReasoningEfforts', [])] or CODEX_EFFORT_FALLBACK,
                        'defaultEffort': m.get('defaultReasoningEffort'), 'fastTier': self.fast_tier(m),
                        'defaultServiceTier': m.get('defaultServiceTier')} for m in raw['models'] if not m.get('hidden')]
             skills, errors = [], []

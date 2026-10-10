@@ -115,6 +115,15 @@ class ApiCatalogTests(unittest.TestCase):
         self.assertEqual(result['models'][0]['id'],'glm-5.3-flash')
         self.assertEqual(result['models'][0]['efforts'],['ultra'])
 
+    def test_models_without_reported_efforts_fall_back_to_official_codex_ladder(self):
+        raw={'models':[{'model':'gpt-6.1-sol','displayName':'gpt-6.1-sol'}],
+             'skillEntries':[],'skills':[],'modelSource':'api','currentModel':'gpt-6.1-sol'}
+        self.reader._fetch=lambda cwd,provider=None,kind='models',request_timeout=90: raw
+        result=self.reader.get(self.home,provider='custom')
+        self.assertEqual(result['models'][0]['efforts'],['low','medium','high','xhigh','ultra'])
+        listed=self.reader.get_kind('models',self.home,provider='custom',refresh=True)
+        self.assertEqual(listed['models'][0]['efforts'],['low','medium','high','xhigh','ultra'])
+
     def test_legacy_skill_cache_returns_immediately_and_refreshes_in_background(self):
         cached=[{'id':'fixture-skill','name':'fixture-skill','description':'fixture','path':'/tmp/fixture/SKILL.md','scope':'user','displayName':'Fixture'}]
         self.reader.skill_store.legacy=lambda: cached
