@@ -6,7 +6,7 @@ from pathlib import Path
 from .. import create as create_runtime
 from ..account import Account
 from ..accounts import Accounts
-from ..catalog import Catalog
+from ..catalog import Catalog, CatalogError
 from ..create import CreationError, ForkUnavailable
 from ..goal import GoalRPC, GoalUnavailable, read_native_goal, native_goal_absent
 from ..ipc import DesktopIPC, IPCError
@@ -217,8 +217,15 @@ class CodexAdapter(AgentAdapter):
                 effort = current.get("latestReasoningEffort") or (current.get("latestThreadSettings") or {}).get("effort")
             if not model:
                 raise ValueError("尚未取得桌面模型设置，请重新连接后再切换模式")
+            if effort is None:
+                effort = self._config_effort(session)
+            # An explicit null effort would pin the turn to the server default
+            # instead of inheriting the thread's own ladder; omit it entirely.
+            settings = {"model": model, "developer_instructions": None}
+            if effort is not None:
+                settings["reasoning_effort"] = effort
             request["collaborationMode"] = {"mode": "plan" if entry["workMode"] == "plan" else "default",
-                                            "settings": {"model": model, "reasoning_effort": effort, "developer_instructions": None}}
+                                            "settings": settings}
         request["input"].extend({"type": "skill", "name": s["name"], "path": s["path"]} for s in entry.get("skills", []))
         if entry["mode"] != "steer":
             return self.bridge._call(session, "thread-follower-start-turn", {
@@ -227,6 +234,20 @@ class CodexAdapter(AgentAdapter):
             "input": request["input"], "clientUserMessageId": submission_id,
             "restoreMessage": {"request": request, "context": context},
             "attachments": []}, timeout=30)
+
+    def _config_effort(self, session):
+        """Config-level reasoning effort for threads that never recorded one.
+
+        Bridge-created threads start without settings; their first turn would
+        otherwise carry no ladder while the desktop records the server default.
+        """
+        with session.condition:
+            cwd = session.state.get("cwd") or str(self.codex_home)
+            provider = session.view().get('provider')
+        try:
+            return self.catalog_reader.get_kind('models', cwd, provider=provider).get("currentEffort")
+        except (CatalogError, OSError, ValueError):
+            return None
 
     def update_settings(self, session, model, effort, fast_mode=None):
         with session.action_lock:

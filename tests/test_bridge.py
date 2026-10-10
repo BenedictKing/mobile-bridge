@@ -153,6 +153,35 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn('modelProvider', request)
         self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
 
+    def test_work_mode_turn_pins_recorded_effort(self):
+        self.fixture.state['latestReasoningEffort'] = 'ultra'
+        self.bridge.send(THREAD, 'hello', str(uuid.uuid4()), work_mode='default')
+        call = next(r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn')
+        settings = call['params']['turnStart']['request']['collaborationMode']['settings']
+        self.assertEqual(settings['model'], 'same-model')
+        self.assertEqual(settings['reasoning_effort'], 'ultra')
+
+    def test_work_mode_turn_without_recorded_effort_falls_back_to_config(self):
+        from bridge.catalog import CatalogError
+        reader = self.bridge.adapter.catalog_reader
+        reader.get_kind = lambda kind, cwd, **kwargs: {'currentEffort': 'high'}
+        self.bridge.send(THREAD, 'hello', str(uuid.uuid4()), work_mode='default')
+        call = next(r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn')
+        settings = call['params']['turnStart']['request']['collaborationMode']['settings']
+        self.assertEqual(settings['reasoning_effort'], 'high')
+
+        # When even the config default is unavailable, the key must be absent:
+        # an explicit null would pin the turn to the server default ladder.
+        def unavailable(kind, cwd, **kwargs):
+            raise CatalogError('runtime unavailable')
+        reader.get_kind = unavailable
+        self.fixture.requests.clear()
+        self.bridge.send(THREAD, 'again', str(uuid.uuid4()), work_mode='default')
+        call = next(r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn')
+        settings = call['params']['turnStart']['request']['collaborationMode']['settings']
+        self.assertNotIn('reasoning_effort', settings)
+        self.assertEqual(settings['model'], 'same-model')
+
     def test_external_provider_change_does_not_use_stale_managed_account_to_block_send(self):
         from bridge.accounts import Accounts
         manager = Accounts(self.bridge)
