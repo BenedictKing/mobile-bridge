@@ -802,6 +802,7 @@ const en={
   "新密码至少需要 12 个字符": "A new password must contain at least 12 characters",
   "新建聊天": "New chat",
   "在新 worktree 中进行": "Run in a new worktree",
+  "24 小时内": "Last 24 hours",
   "3 天内": "Last 3 days",
   "一周内": "Last week",
   "15 天内": "Last 15 days",

@@ -99,8 +99,8 @@ $('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;cur
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 $('list-mode').value=localStorage.getItem('list-mode')||'recent';
 $('list-mode').onchange=()=>{localStorage.setItem('list-mode',$('list-mode').value);renderList();};
-// 最近交互视图按最后对话时间分段折叠；前两天默认展开，更早的默认收起。
-const TIME_BUCKETS=[{days:3,label:'3 天内',open:true},{days:7,label:'一周内',open:true},{days:15,label:'15 天内',open:false},{days:30,label:'一月内',open:false},{days:90,label:'三月内',open:false},{days:Infinity,label:'更早',open:false}];
+// 最近交互视图按最后对话时间分段折叠；一周内的分段默认展开，更早的默认收起。
+const TIME_BUCKETS=[{days:1,label:'24 小时内',open:true},{days:3,label:'3 天内',open:true},{days:7,label:'一周内',open:true},{days:15,label:'15 天内',open:false},{days:30,label:'一月内',open:false},{days:90,label:'三月内',open:false},{days:Infinity,label:'更早',open:false}];
 function renderList(){
   $('sessions').replaceChildren();
   const grouped=$('list-mode').value==='project', groups=new Map();
