@@ -86,8 +86,8 @@ app.on('browser-window-created',(_,win)=>{
       await save();
       assert.equal(await evaluate("document.querySelector('[data-connection-action=inspect]').disabled"),false);
       assert.equal(await evaluate("document.querySelector('[data-connection-action=connect]').disabled"),true);
-      await evaluate("tab('notifications');$('ntfy-token').value='fixture-ntfy';$('bark-key').value='fixture-bark';$('pushplus-token').value='fixture-push';updateDirty()");await save();
-      assert.equal(await evaluate("$('ntfy-token').value==='fixture-ntfy'&&$('bark-key').value==='fixture-bark'&&$('pushplus-token').value==='fixture-push'"),true);
+      await evaluate("tab('notifications');$('ntfy-token').value='fixture-ntfy';$('bark-key').value='fixture-bark';updateDirty()");await save();
+      assert.equal(await evaluate("$('ntfy-token').value==='fixture-ntfy'&&$('bark-key').value==='fixture-bark'"),true);
       // Showing a saved credential must not submit it again when a destination changes.
       assert.equal(await evaluate("collect().notifications.token===''&&collect().notifications.barkKey===''"),true);
       await evaluate('setTimeout(()=>location.reload(),0)');await until("Boolean(snapshot)&&$('ntfy-token').value==='fixture-ntfy'");

@@ -2,7 +2,7 @@
 import time
 from pathlib import Path
 
-from .notifications import channels, publish, publish_bark, publish_pushplus, read_json, settings, write_json
+from .notifications import channels, publish, publish_bark, read_json, settings, write_json
 
 
 class SecurityNotifications:
@@ -43,7 +43,7 @@ class SecurityNotifications:
                 body = (f"{current.get('addressName') or 'Mobile / Bridge'}：IP {event['ip']} 连续输错密码 {event['attempts']} 次，已加入黑名单。"
                         '\n关联登录已撤销。请在电脑网关 App 的“登录设备 → 自动封禁 IP”中查看或解除。')
                 try:
-                    {'ntfy': publish, 'bark': publish_bark, 'pushplus': publish_pushplus}[channel](current, title, body)
+                    {'ntfy': publish, 'bark': publish_bark}[channel](current, title, body)
                     record[target] = {'delivered': True, 'channel': channel, 'time': time.time()}
                 except Exception:
                     record[target] = {'delivered': False, 'channel': channel, 'next': time.time()+30,

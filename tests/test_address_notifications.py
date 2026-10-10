@@ -58,25 +58,21 @@ class AddressNotificationTests(unittest.TestCase):
             self.assertFalse(self.manager.state['first'])
 
     def test_channels_retry_independently_and_persist_backoff(self):
-        save_settings(self.directory, {'barkEnabled': True, 'barkKey': 'bark-secret',
-                                      'pushplusEnabled': True, 'pushplusToken': 'push-secret'})
+        save_settings(self.directory, {'barkEnabled': True, 'barkKey': 'bark-secret'})
         with patch('bridge.address_notifications.publish', side_effect=RuntimeError('secret')), \
              patch('bridge.address_notifications.publish_bark') as bark, \
-             patch('bridge.address_notifications.publish_pushplus') as push, \
              patch('bridge.address_notifications.time.time', return_value=100):
-            self.manager.scan();bark.assert_called_once();push.assert_called_once()
+            self.manager.scan();bark.assert_called_once()
         self.assertNotIn('secret', self.manager.path.read_text(encoding='utf-8'))
         self.manager = AddressNotifications(self.directory, lambda: [self.url] if self.url else [], 'instance-1')
         with patch('bridge.address_notifications.publish') as ntfy, \
              patch('bridge.address_notifications.publish_bark') as bark, \
-             patch('bridge.address_notifications.publish_pushplus') as push, \
              patch('bridge.address_notifications.time.time', return_value=105):
             self.manager.scan();ntfy.assert_not_called()
         with patch('bridge.address_notifications.publish') as ntfy, \
              patch('bridge.address_notifications.publish_bark') as bark, \
-             patch('bridge.address_notifications.publish_pushplus') as push, \
              patch('bridge.address_notifications.time.time', return_value=111):
-            self.manager.scan();ntfy.assert_called_once();bark.assert_not_called();push.assert_not_called()
+            self.manager.scan();ntfy.assert_called_once();bark.assert_not_called()
 
     def test_latest_address_replaces_retry_and_stop_suppresses_delivery(self):
         with patch('bridge.address_notifications.publish', side_effect=RuntimeError()):self.manager.scan()

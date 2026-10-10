@@ -262,7 +262,7 @@ $('notify-button').onclick=async()=>{
   $('notify-enabled').value=notificationState.requests||'inherit';
   $('notify-completion').value=notificationState.completion||'inherit';
   for(const id of ['notify-enabled','notify-completion','notify-save'])$(id).disabled=false;
-  $('notify-channel-status').textContent=t(notificationState.available?'通知通道已开启':'尚未配置通知通道，可在设置中配置 PushPlus，或在电脑端配置 Bark、ntfy。');
+  $('notify-channel-status').textContent=t(notificationState.available?'通知通道已开启':'尚未配置通知通道，可在电脑端配置 Bark 或 ntfy。');
 };
 $('notify-form').onsubmit=async event=>{
   event.preventDefault();
@@ -571,7 +571,7 @@ $('phone-language').onchange=()=>{
   BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();renderList();
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   renderLoginStatus();
-  for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','pushplus-error','toast'])$(id).textContent=t($(id).textContent);
+  for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','toast'])$(id).textContent=t($(id).textContent);
   for(const option of $('new-chat-project').options){const project=newChatProjects.find(p=>p.key===option.value);if(project)option.textContent=newChatAgents.length>1?dirLabel(project):projectLabel(project);}
   updateNewChatDesc();
   if($('model-select').querySelector('[value=__custom__]'))$('model-select').querySelector('[value=__custom__]').textContent=t('自定义模型…');
@@ -606,34 +606,6 @@ $('rename-form').onsubmit=async event=>{
   }catch(error){$('rename-error').textContent=t(error.message);}
   finally{renameBusy=false;$('rename-save').disabled=false;}
 };
-let pushplusBusy=false;
-function renderPushplus(config){
-  $('pushplus-enabled').checked=!!config.pushplusEnabled;
-  $('pushplus-token').value='';$('pushplus-clear').checked=false;
-  $('pushplus-token').placeholder=t(config.hasPushplusToken?'已保存，留空保留':'填写 PushPlus Token');
-}
-$('pushplus-settings').onclick=async()=>{
-  if(pushplusBusy)return;pushplusBusy=true;$('pushplus-settings').disabled=true;
-  try{renderPushplus(await api('/api/notifications/pushplus'));$('pushplus-error').textContent='';$('pushplus-dialog').showModal();}
-  catch(error){toast(error.message);}
-  finally{pushplusBusy=false;$('pushplus-settings').disabled=false;}
-};
-async function pushplusAction(test){
-  if(pushplusBusy)return;pushplusBusy=true;
-  for(const id of ['pushplus-save','pushplus-test','pushplus-enabled','pushplus-token','pushplus-clear'])$(id).disabled=true;
-  $('pushplus-error').textContent='';
-  try{
-    if(test){
-      await api('/api/notifications/pushplus/test',{});toast('PushPlus 已接受测试通知，请在手机确认是否收到');
-    }else{
-      renderPushplus(await api('/api/notifications/pushplus',{pushplusEnabled:$('pushplus-enabled').checked,pushplusToken:$('pushplus-token').value.trim(),clearPushplusToken:$('pushplus-clear').checked}));
-      toast('PushPlus 配置已保存');if(currentId)await loadNotificationState(currentId,currentHost);
-    }
-  }catch(error){$('pushplus-error').textContent=t(error.message);}
-  finally{pushplusBusy=false;for(const id of ['pushplus-save','pushplus-test','pushplus-enabled','pushplus-token','pushplus-clear'])$(id).disabled=false;}
-}
-$('pushplus-form').onsubmit=event=>{event.preventDefault();return pushplusAction(false);};
-$('pushplus-test').onclick=()=>pushplusAction(true);
 
 const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();};

@@ -24,15 +24,10 @@ async function fixture(){
       if(url==='/api/auth')return response({authenticated:false});
       if(url.includes('/reconnect'))return response({ok:true});
       if(url==='/api/sessions?q=&offset=0&archived=false')return response({sessions:[],unavailableHosts:[]});
-      if(url.startsWith('/api/notifications/pushplus')||url.includes('/rename?')){
-        if(options.method==='POST'){
-          const body=JSON.parse(options.body);writes.push({url,body});
-          if(nextPost){const handle=nextPost;nextPost=null;return handle(body);}
-          if(url.includes('/rename?'))return response({title:body.title});
-          if(url.endsWith('/test'))return response({ok:true});
-          saved.set(url,{pushplusEnabled:body.pushplusEnabled,hasPushplusToken:!!body.pushplusToken||!body.clearPushplusToken&&!!saved.get(url)?.hasPushplusToken});
-        }
-        return response(saved.get(url)||{pushplusEnabled:false,hasPushplusToken:false});
+      if(url.includes('/rename?')){
+        const body=JSON.parse(options.body);writes.push({url,body});
+        if(nextPost){const handle=nextPost;nextPost=null;return handle(body);}
+        return response({title:body.title});
       }
       assert.match(url,/\/notifications\?/);
       if(options.method==='POST'){
@@ -122,23 +117,6 @@ test('notification controls have English translations and language changes prese
 });
 
 
-test('PushPlus saves and tests settings without redisplaying its token',async()=>{
-  const ui=await fixture();await ui.open();
-  await ui.nodes.get('pushplus-settings').onclick();
-  assert.equal(ui.nodes.get('pushplus-dialog').open,true);
-  ui.nodes.get('pushplus-enabled').checked=true;ui.nodes.get('pushplus-token').value='secret';
-  await ui.nodes.get('pushplus-form').onsubmit({preventDefault(){}});
-  assert.deepEqual(ui.writes[0].body,{pushplusEnabled:true,pushplusToken:'secret',clearPushplusToken:false});
-  assert.equal(ui.nodes.get('pushplus-token').value,'');
-  assert.equal(ui.nodes.get('pushplus-token').placeholder,'已保存，留空保留');
-  await ui.nodes.get('pushplus-test').onclick();assert.equal(ui.writes[1].url,'/api/notifications/pushplus/test');
-  ui.nodes.get('pushplus-token').value='retry-token';
-  ui.setPost(()=>ui.response({error:'Network failure'},400));
-  await ui.nodes.get('pushplus-form').onsubmit({preventDefault(){}});
-  assert.equal(ui.nodes.get('pushplus-token').value,'retry-token');
-  assert.equal(ui.nodes.get('pushplus-error').textContent,'Network failure');
-});
-
 test('rename stays scoped to its original host and cannot overwrite a newly opened chat',async()=>{
   const ui=await fixture();await ui.open(undefined,'remote:test');
   ui.nodes.get('chat-title').textContent='Old';ui.nodes.get('rename-chat').onclick();
@@ -171,12 +149,11 @@ test('rename success updates header and detail; failed save retains draft',async
   assert.equal(ui.nodes.get('chat-title').textContent,'A new title');
 });
 
-test('unconfigured channels still open chat policies instead of PushPlus',async()=>{
+test('unconfigured channels still open chat policies',async()=>{
   const ui=await fixture();await ui.open();
   ui.saved.set('/api/sessions/11111111-1111-4111-8111-111111111111/notifications?host=local',{available:false,requests:'inherit',completion:'off'});
   await ui.settings();
   assert.equal(ui.nodes.get('notify-dialog').open,true);
-  assert.equal(ui.nodes.get('pushplus-dialog').open,false);
 });
 
 test('plan feedback blocks execution and submits its text to revision',async()=>{

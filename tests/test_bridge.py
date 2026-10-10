@@ -783,26 +783,6 @@ class HttpTests(unittest.TestCase):
             with self.subTest(method=method, path=path, headers=headers):
                 self.assertEqual(self.request(method, path, headers=headers)[0], 403)
 
-    def test_pushplus_configuration_requires_login_and_csrf_and_hides_token(self):
-        from bridge.notifications import Notifications, settings
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory(dir=ROOT/'.tmp') as directory:
-            self.server.notifications = Notifications(None, directory)
-            path = '/api/notifications/pushplus'
-            self.assertEqual(self.request('GET', path)[0], 401)
-            headers = self.login()
-            body = {'pushplusEnabled': True, 'pushplusToken': 'private-pushplus'}
-            self.assertEqual(self.request('POST', path, body, {'Cookie': headers['Cookie']})[0], 403)
-            status, _, result = self.request('POST', path, body, headers)
-            self.assertEqual(status, 200)
-            self.assertEqual(result, {'pushplusEnabled': True, 'hasPushplusToken': True})
-            self.assertNotIn('private-pushplus', json.dumps(self.request('GET', path, headers=headers)))
-            self.assertEqual(settings(directory)['pushplusToken'], 'private-pushplus')
-            with patch('bridge.httpd.publish_pushplus') as send:
-                self.assertEqual(self.request('POST', path+'/test', {}, headers)[0], 200)
-                send.assert_called_once()
-            self.assertEqual(self.request('POST', path, {'server':'https://other.example'}, headers)[0], 400)
-
     def test_rename_route_requires_csrf_and_routes_to_selected_host(self):
         from unittest.mock import Mock
         headers = self.login()

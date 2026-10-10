@@ -134,7 +134,7 @@
 - 通知汇总已启用的局域网、NAS / 已有反代固定域名、自有服务器（SSH 转发建立后）和已就绪的临时 HTTPS；遵循网卡选择，不包含关闭入口与回环地址。稍晚就绪的入口补发更新。固定域名由用户完成部署，本机健康及转发状态不证明远端 HTTPS 可达。
 - Python 398 项回归：394 通过、4 项平台跳过；桌面/网页 Node 128 项通过。新增验证相同地址重启重发、固定地址与局域网汇总、网卡与入口开关过滤、延迟就绪更新，并保留各通道独立重试、停止/关闭后抑制发送及手动测试覆盖。
 - 新 macOS arm64 测试包通过签名验证；包内运行时结合本机 HTTP 接收器验证 6 次通知：临时入口首次启动、同址重启、地址变化、手动测试，以及固定域名和局域网汇总在两次启动时发送。仅模拟固定域名部署。新测试 App 已启动，真实临时隧道就绪，ntfy 与 Bark 均接受本次启动通知；正式版网关保持运行。
-- 前一版独立 App 的真实 Cloudflare 临时隧道和 ntfy / Bark 通知已由用户确认测试通过；不代表 PushPlus 或个人服务器真实部署已验收。
+- 前一版独立 App 的真实 Cloudflare 临时隧道和 ntfy / Bark 通知已由用户确认测试通过；不代表个人服务器真实部署已验收。
 
 ## v1.3.1 发布准备（2026-10-04）
 
@@ -664,7 +664,7 @@ Windows 不允许当前用户创建符号链接时，仅符号链接逃逸测试
 - 合成 2,000 轮约 40.5 MB 的 rollout：全量读取和 timeline 投影约 128 ms；近期 20 轮约 4.6 ms，缓存读取约 0.9 ms。注入 500 ms 历史等待的 Goal 暂停夹具，从约 512 ms 降至 0.6 ms，且原生状态确认通过。该结果不代表真实网络、SSH 或旧聊天的端到端时延。
 - ego-browser 在 390×844 检查真实网页资源与隔离 HTTP/假桌面 IPC：v1.3 首页分组和归档复选框；三个发送方式和三个工作模式；主页快捷入口隐藏后仍可从设置打开；全局及单会话通知保存；计划意见使执行按钮禁用、修改按钮突出，并按修改路径发送；旧会话立即排到最近列表顶部。手机截图无横向溢出。
 - 临时测试 App 与其 18788 网关已停止；正式 8787 网关保持运行。新 arm64 临时包仅供下一轮验收，不推送、不合并、不替换正式安装。
-- 未向真实模型会话发送任务或向 PushPlus/Bark/ntfy 发送通知。真实 Goal 调度联动、真实旧会话体感、远端 SSH 与手机通知实收仍待用户验收。
+- 未向真实模型会话发送任务或向 Bark/ntfy 发送通知。真实 Goal 调度联动、真实旧会话体感、远端 SSH 与手机通知实收仍待用户验收。
 
 
 ## Local connection setup preview — 2026-10-05
@@ -717,7 +717,7 @@ One-click deployment is implemented, with shell syntax checking and local tests 
 - Five consecutive failed passwords from the same canonical client IP cause a durable automatic block and revoke that IP's sessions. Counts survive restart; successful sign-in resets the count. Concurrent requests cannot hash more than five guesses before blocking. The web UI shows remaining attempts and blocked state; only private desktop device management can unblock/reset. Existing trusted-proxy address handling is retained and tested against direct header spoofing.
 - Security alerts use the existing enabled phone channels, with a default-on independent switch, delivery deduplication and retry. Notification tests use mocked senders; no real phone notification was sent during this verification.
 - Reproduced a saved disabled SSH profile's check button remaining disabled, with no pending edits or busy operation. Removed the enablement requirement for inspection in both renderer and backend, while keeping connection startup disabled. Added a clipboard-only, read-only server inspection prompt, including current non-secret settings and explicit no-sudo/no-mutation instructions.
-- Fixed the missing exact PushPlus English translation and changed dismissible desktop feedback/progress to five seconds. Added the product-page Cloudflare walkthrough link and local deep-link handling; the online site remains unpublished.
-- Tests: 97 targeted Python tests plus 29 existing HTTP/pairing regressions passed; 44 desktop Node tests passed. Real isolated desktop UI checks covered disabled-profile inspection, prompt copying (mocked clipboard), English PushPlus text, dismiss/expiry timing and the website target (mocked external opening).
+- Changed dismissible desktop feedback/progress to five seconds. Added the product-page Cloudflare walkthrough link and local deep-link handling; the online site remains unpublished.
+- Tests: 97 targeted Python tests plus 29 existing HTTP/pairing regressions passed; 44 desktop Node tests passed. Real isolated desktop UI checks covered disabled-profile inspection, prompt copying (mocked clipboard), dismiss/expiry timing and the website target (mocked external opening).
 - Real isolated mobile-page and desktop-window checks passed for remaining counts, blocked reload, desktop unblock, seven-day cookie, restart persistence, unchecked session cookie and narrow-screen overflow. Repeated against the packaged gateway runtime. Screenshots inspected for the blocked phone view and desktop unblock controls. No real Codex chat, remote server, DNS setting or production gateway was changed.
 - Updated the local macOS arm64 preview; no commit, push, Release or website publication.

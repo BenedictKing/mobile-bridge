@@ -17,7 +17,6 @@ from .tls import client_context
 
 DEFAULTS = {'enabled': False, 'server': 'https://ntfy.sh', 'topic': '', 'token': '',
             'barkEnabled': False, 'barkServer': 'https://api.day.app', 'barkKey': '',
-            'pushplusEnabled': False, 'pushplusToken': '',
             'clickBase': '', 'includeTitle': False, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True}
 
 
@@ -53,10 +52,11 @@ def settings(data_dir):
 
 def save_settings(data_dir, value):
     prior = settings(data_dir)
-    result = {**prior, **{k: value[k] for k in DEFAULTS if k in value}}
+    # Drop retired keys so secrets from removed channels do not linger on disk.
+    result = {k: v for k, v in {**prior, **{k: value[k] for k in DEFAULTS if k in value}}.items() if k in DEFAULTS}
     result['server'] = at_field('ntfy-server', valid_url, str(result['server']), allow_path=True)
     result['barkServer'] = at_field('bark-server', valid_url, str(result['barkServer']), allow_path=True)
-    for key in ('enabled', 'barkEnabled', 'pushplusEnabled', 'includeTitle', 'addressEnabled', 'securityEnabled'):
+    for key in ('enabled', 'barkEnabled', 'includeTitle', 'addressEnabled', 'securityEnabled'):
         if not isinstance(result[key], bool):
             raise ValueError('通知开关格式不正确')
     if not isinstance(result['addressName'], str) or len(result['addressName']) > 80 or any(not c.isprintable() for c in result['addressName']):
@@ -82,15 +82,6 @@ def save_settings(data_dir, value):
         result['barkKey'] = '' if value.get('clearBarkKey') or result['barkServer'] != prior['barkServer'] else prior['barkKey']
     if result['barkEnabled'] and not result['barkKey']:
         raise FieldError('开启 Bark 前请填写 Device Key；更换服务地址后需重新填写', 'bark-key')
-    if 'clearPushplusToken' in value and not isinstance(value['clearPushplusToken'], bool):
-        raise ValueError('PushPlus 配置格式不正确')
-    token = result['pushplusToken']
-    if not isinstance(token, str) or len(token) > 2000 or any(not c.isprintable() or c.isspace() for c in token):
-        raise FieldError('PushPlus Token 格式不正确', 'pushplus-token')
-    if not value.get('pushplusToken'):
-        result['pushplusToken'] = '' if value.get('clearPushplusToken') else prior['pushplusToken']
-    if result['pushplusEnabled'] and not result['pushplusToken']:
-        raise FieldError('开启 PushPlus 前请填写 Token', 'pushplus-token')
     write_json(Path(data_dir)/'notifications.json', result)
     return result
 
@@ -142,32 +133,11 @@ def publish_bark(config, title, body, click=''):
         raise RuntimeError('Bark 未接受通知，请检查服务地址、Device Key 和网络') from None
 
 
-def publish_pushplus(config, title, body, click=''):
-    if not config.get('pushplusToken'):
-        raise ValueError('请先配置 PushPlus Token')
-    payload = {'token': config['pushplusToken'], 'title': title,
-               'content': body + ('\n\n' + click if click else ''), 'template': 'txt'}
-    request = Request('https://www.pushplus.plus/send',
-                      data=json.dumps(payload, ensure_ascii=False).encode(),
-                      headers={'Content-Type': 'application/json'})
-    try:
-        with build_opener(NoRedirect(), HTTPSHandler(context=client_context())).open(request, timeout=8) as response:
-            result = json.loads(response.read(65536))
-            if not 200 <= response.status < 300 or not isinstance(result, dict) or result.get('code') != 200:
-                raise ValueError('Rejected')
-    except Exception as error:
-        if isinstance(error, HTTPError):
-            error.close()
-        raise RuntimeError('PushPlus 未接受通知，请检查 Token 和网络') from None
-
-
 def destination(config, channel):
     if channel == 'ntfy':
         values = [config['server'].rstrip('/'), config['topic']]
     elif channel == 'bark':
         values = [config['barkServer'].rstrip('/'), config['barkKey']]
-    elif channel == 'pushplus':
-        values = [config.get('pushplusToken', '')]
     else:
         raise ValueError('未知通知通道')
     return channel + ':' + hashlib.sha256(json.dumps(values).encode()).hexdigest()
@@ -175,7 +145,7 @@ def destination(config, channel):
 
 def channels(config):
     return {name: destination(config, name) for name, enabled in
-            (('ntfy', config['enabled']), ('bark', config['barkEnabled']), ('pushplus', config.get('pushplusEnabled', False))) if enabled}
+            (('ntfy', config['enabled']), ('bark', config['barkEnabled'])) if enabled}
 
 
 class Notifications:
@@ -351,7 +321,7 @@ class Notifications:
                 self.dormant.discard((host, thread_id))
                 self.wakeup.set()
                 if selected and not targets and not existing_only:
-                    raise ValueError('请先配置并开启 PushPlus、Bark 或 ntfy 通知')
+                    raise ValueError('请先配置并开启 Bark 或 ntfy 通知')
                 if not selected and completion:
                     raise ValueError('请先开启此聊天提醒')
                 rows = [r for r in rows if not (r['id'] == thread_id and r['host'] == host)]
@@ -468,7 +438,7 @@ class Notifications:
         if config['includeTitle']:
             body = title[:120] + '\n' + body
         try:
-            sender = {'ntfy': publish, 'bark': publish_bark, 'pushplus': publish_pushplus}[channel]
+            sender = {'ntfy': publish, 'bark': publish_bark}[channel]
             sender(config, heading, body, self.click_url(config, row['id'], row['host']))
             for key in pending:
                 self.ledger[key] = {'delivered': True, 'time': now}

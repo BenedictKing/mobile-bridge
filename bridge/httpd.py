@@ -15,7 +15,6 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .uploads import MAX_FILE
-from .notifications import settings as notification_settings, save_settings as save_notification_settings, publish_pushplus
 from socketserver import TCPServer
 from urllib.parse import parse_qs, urlsplit, quote
 
@@ -409,28 +408,6 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.notifications is None:
                     raise ValueError('当前网关未启用通知服务')
                 return self.output(200, self.server.notifications.defaults(self.read_json() if write else None))
-            if path in ('/api/notifications/pushplus', '/api/notifications/pushplus/test'):
-                manager = self.server.notifications
-                if manager is None:
-                    raise ValueError('当前网关未启用通知服务')
-                with manager.lock:
-                    config = notification_settings(manager.data_dir)
-                    if path.endswith('/test'):
-                        if not write:
-                            return self.output(405, {'error': '需要 POST 请求'})
-                        self.read_json()
-                        try:
-                            publish_pushplus(config, 'Codex 手机通知测试', '收到这条消息表示 PushPlus 通道已连通。')
-                        except Exception:
-                            raise ValueError('PushPlus 测试失败，请检查 Token 和网络') from None
-                        return self.output(200, {'ok': True})
-                    if write:
-                        body = self.read_json()
-                        if set(body) - {'pushplusEnabled', 'pushplusToken', 'clearPushplusToken'}:
-                            raise ValueError('PushPlus 配置格式不正确')
-                        config = save_notification_settings(manager.data_dir, body)
-                    return self.output(200, {'pushplusEnabled': config['pushplusEnabled'],
-                                             'hasPushplusToken': bool(config['pushplusToken'])})
             root = self.server.bridge
             registry = self.server.registry
             if registry is None:

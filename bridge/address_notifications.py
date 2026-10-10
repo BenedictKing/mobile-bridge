@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from .notifications import channels, publish, publish_bark, publish_pushplus, read_json, settings, write_json
+from .notifications import channels, publish, publish_bark, read_json, settings, write_json
 
 
 def gateway_ready(port, instance_id):
@@ -72,7 +72,7 @@ def address_message(config, urls, first=False, test=False):
 
 def send_address(config, channel, urls, first=False, test=False):
     title, body = address_message(config, urls, first, test)
-    {'ntfy': publish, 'bark': publish_bark, 'pushplus': publish_pushplus}[channel](config, title, body, urls[0])
+    {'ntfy': publish, 'bark': publish_bark}[channel](config, title, body, urls[0])
 
 
 class AddressNotifications:

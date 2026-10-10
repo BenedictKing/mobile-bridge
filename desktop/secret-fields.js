@@ -14,7 +14,7 @@ async function loadSavedSecrets(force=false){
   if(!api.readCredentials||!snapshot)return;
   if(credentialDirectory===snapshot.dataDir&&!force)return credentialLoad;
   const directory=snapshot.dataDir;credentialDirectory=directory;
-  const ids={password:'password','ntfy-token':'token','bark-key':'barkKey','pushplus-token':'pushplusToken'};
+  const ids={password:'password','ntfy-token':'token','bark-key':'barkKey'};
   const before=Object.fromEntries(Object.keys(ids).map(id=>[id,savedFields[id]]));
   credentialLoad=(async()=>{
     try{
@@ -33,5 +33,5 @@ async function loadSavedSecrets(force=false){
 }
 function resetSecretFields(){
   savedSecretValues.clear();connectionSecretDraft.clear();connectionSetupState.clear();credentialDirectory='';
-  for(const id of ['password','ntfy-token','bark-key','pushplus-token']){$(id).value='';$(id).type='password';}
+  for(const id of ['password','ntfy-token','bark-key']){$(id).value='';$(id).type='password';}
 }

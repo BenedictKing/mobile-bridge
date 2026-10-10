@@ -70,7 +70,7 @@ class ConnectionSetupTests(unittest.TestCase):
         desktop.status = lambda: {'running': False}
         value = desktop.snapshot()
         value['preferences'].update(codexHome=str(self.directory), connections=[entry()])
-        value['notifications'].update(token='fixture-ntfy', barkKey='fixture-bark', pushplusToken='fixture-push')
+        value['notifications'].update(token='fixture-ntfy', barkKey='fixture-bark')
         desktop.save(value)
         vault = MagicMock()
         vault.get_password.return_value = None

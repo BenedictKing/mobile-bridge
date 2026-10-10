@@ -56,7 +56,7 @@ class DesktopTests(unittest.TestCase):
         value = self.value()
         old_hash = self.desktop.config()['auth']['hash']
         value['notifications'].update(topic='private', token='private-token', enabled=True,
-                                      barkEnabled=True, barkKey='private-bark-key', pushplusEnabled=True, pushplusToken='private-pushplus')
+                                      barkEnabled=True, barkKey='private-bark-key')
         self.desktop.save(value)
         snapshot = self.desktop.snapshot()
         self.assertEqual(snapshot['notifications']['token'], '')
@@ -64,10 +64,7 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(settings(self.directory)['token'], 'private-token')
         self.assertEqual(snapshot['notifications']['barkKey'], '')
         self.assertTrue(snapshot['notifications']['hasBarkKey'])
-        self.assertEqual(snapshot['notifications']['pushplusToken'], '')
-        self.assertTrue(snapshot['notifications']['hasPushplusToken'])
         self.desktop.save(snapshot)
-        self.assertEqual(settings(self.directory)['pushplusToken'], 'private-pushplus')
         self.assertEqual(settings(self.directory)['barkKey'], 'private-bark-key')
         self.assertEqual(self.desktop.config()['auth']['hash'], old_hash)
         value['auth']['password'] = 'a new password for test'

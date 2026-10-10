@@ -236,9 +236,6 @@ function register(){
     if(target==='cloudflare-help')return shell.openExternal('https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/');
     if(target==='ntfy-help')return shell.openExternal('https://docs.ntfy.sh/subscribe/phone/');
     if(target==='bark-help')return shell.openExternal('https://bark.day.app/#/tutorial');
-    if(target==='pushplus-home')return shell.openExternal('https://www.pushplus.plus/uc-profile.html');
-    if(target==='pushplus-verify')return shell.openExternal('https://www.pushplus.plus/center/real-auth?source=push');
-    if(target==='pushplus-limits')return shell.openExternal('https://www.pushplus.plus/doc/guide/use.html');
     const snapshot=await worker('snapshot');
     if(!snapshot.urls.includes(target)||!/^https?:\/\//.test(target))throw Error('地址不可用');
     await shell.openExternal(target);

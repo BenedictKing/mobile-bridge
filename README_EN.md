@@ -82,7 +82,7 @@ View remaining percentages, reset times and available usage resets. Missing info
 
 - Web sign-in defaults to **Remember me (7 days)**. It keeps a login cookie, not the plaintext password. Uncheck it to use a browser-session cookie.
 - Five consecutive password failures automatically block the source IP. The page shows remaining attempts; counts and blocks survive restarts. Successful authentication resets the count. Unblock and reset attempts only under **Login devices → Automatically blocked IPs** in the desktop app.
-- **Phone notifications → Login security notifications** is enabled by default and uses enabled PushPlus, Bark and ntfy channels. Disabling alerts does not disable blocking.
+- **Phone notifications → Login security notifications** is enabled by default and uses enabled Bark and ntfy channels. Disabling alerts does not disable blocking.
 - Set standard login validity under **Network and login → Login validity (hours)** to an integer from 0 to 87600, then restart the gateway. The default is 12 hours; 0 sets no server expiry. A finite deadline starts at login and does not slide with activity.
 - Normal gateway restarts and App updates preserve unexpired logins. Changing the account, password, login mode or validity invalidates earlier logins on restart. Logout, clearing browser cookies or changing hostnames requires signing in again; browsers may also remove long-unused cookies.
 - **Signed-in devices** shows browser login records, IPs, browser identifiers, login/expiry times and last activity (updated at most once a minute). **Revoke login** removes one login; **Block this IP** revokes every login at that IP and prevents new logins.
@@ -226,7 +226,7 @@ An explicitly configured notification click URL takes priority over automatic se
 
 ### Gateway startup and entry notifications
 
-In the desktop App, open **Phone notifications → Gateway startup and entry notifications** and enable sending addresses on every gateway start and entry change. Optionally name the gateway. Enable at least one PushPlus, Bark or ntfy channel, save, start the gateway and send a current-entry test. Confirm receipt on your phone.
+In the desktop App, open **Phone notifications → Gateway startup and entry notifications** and enable sending addresses on every gateway start and entry change. Optionally name the gateway. Enable at least one Bark or ntfy channel, save, start the gateway and send a current-entry test. Confirm receipt on your phone.
 
 New configurations enable address notifications by default; saved opt-outs survive upgrades. Configure at least one notification channel for delivery. Every gateway start sends the enabled addresses, even when unchanged: LAN, NAS / existing reverse-proxy domains, personal servers once SSH forwarding connects, and temporary HTTPS once ready. Later-ready entries and address changes trigger an update. Disabled interfaces, disabled entries and loopback addresses are excluded. LAN links require the same network; fixed domains require completed deployment.
 
@@ -373,7 +373,7 @@ Gateway data stays in its configured directory, normally `.local`. It includes l
 
 Uploaded files are retained in `uploads/` or `hosts/<host hash>/uploads/` inside gateway data, separated by chat. Remote copies are stored under that host's `$CODEX_HOME/mobile-bridge/uploads/` (default `~/.codex/mobile-bridge/uploads/`). Removing a draft attachment does not delete uploaded files, and automatic cleanup is not provided. Manually deleting a file can break historical or queued references to it.
 
-The local desktop management interface uses guarded Electron IPC and a private stdio worker. Gateway start/stop, updates and network configuration are not exposed through the phone HTTP API. Signed-in web clients can change the global PushPlus settings. Public HTTP access remains constrained by authentication, allowed Host/Origin checks and CSRF validation.
+The local desktop management interface uses guarded Electron IPC and a private stdio worker. Gateway start/stop, updates and network configuration are not exposed through the phone HTTP API. Notification settings are managed in the desktop app. Public HTTP access remains constrained by authentication, allowed Host/Origin checks and CSRF validation.
 
 ## Known limits
 
@@ -506,18 +506,7 @@ In the desktop App, open **Network & login**, choose **Selected IPv4 addresses o
 
 The desktop sidebar links to this project's GitHub home, issues, and pull requests for source code, feedback, and contributions.
 
-### PushPlus notifications and chat names
+### Chat notifications and renaming
 
-PushPlus delivers notifications through WeChat and **requires paid real-name verification, starting at CNY 3.90**. Verified users can use the basic allowance without purchasing a membership. This is a verification fee charged by PushPlus, not an unlimited messaging plan. Check the [official verification page](https://www.pushplus.plus/center/real-auth?source=push) for current pricing and the [verification guide](https://www.pushplus.plus/doc/function/verify.html) for requirements.
-
-1. Sign in to [PushPlus](https://www.pushplus.plus/) with WeChat, follow its service account, and complete real-name verification under Personal center → Profile.
-2. Copy the user token from your [profile](https://www.pushplus.plus/uc-profile.html). If you have changed the default channel, select WeChat under Function settings → Default delivery settings.
-3. Save the token and send a test as described below, then enable reminders in each chat. An accepted API request does not guarantee delivery; confirm that the test arrives in WeChat.
-
-**Limits:** the WeChat channel allows ordinary verified users 200 requests per day and 5 per minute; members receive 2,000 per day and 5 per 10 seconds. Both allow up to 3 identical messages per hour. Failed requests count toward the allowance, and exceeding limits may suspend delivery. All chats and other apps using the same account share this allowance. See the official [quota guide](https://www.pushplus.plus/doc/guide/use.html) and [delivery restrictions](https://www.pushplus.plus/doc/help/limit.html).
-
-- Click **PushPlus notifications** below the web chat list, enter the token from [PushPlus](https://www.pushplus.plus/), enable the channel, save, and test the saved settings. The desktop notification panel also supports PushPlus.
-- PushPlus settings are shared across the gateway. Changing the token changes the PushPlus recipient for all watched chats. Every signed-in device can edit these settings; passwordless access also grants this permission to devices that can reach the gateway.
 - Enable reminders in each chat you want to follow, optionally including successful run completion. Notifications continue after closing the page while the gateway remains running.
-- Saved tokens are never returned to the page. Leave the token blank to keep it, or disable the channel and select the clear option to remove it.
 - Click a chat title, choose **Rename chat**, and save a name of up to 120 characters. The name is saved to Codex on the chat's execution host, including SSH hosts, and the web list and heading update.

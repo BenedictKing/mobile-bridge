@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.notifications import Notifications, publish, publish_bark, publish_pushplus, settings, save_settings, write_json, read_json
+from bridge.notifications import Notifications, publish, publish_bark, settings, save_settings, write_json, read_json
 from bridge.service import LiveSession
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,44 +75,17 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(other_manager.policy(self.thread, 'remote')['notifyOnCompletion'])
         other_manager.close()
 
-    def test_pushplus_token_validation_preservation_and_clear(self):
-        with self.assertRaises(ValueError):
-            save_settings(self.directory, {'pushplusEnabled': True})
-        save_settings(self.directory, {'pushplusEnabled': True, 'pushplusToken': 'private-token'})
-        self.assertEqual(save_settings(self.directory, {'pushplusToken': ''})['pushplusToken'], 'private-token')
-        for token in (123, 'x\ny', 'x y'):
-            with self.assertRaises(ValueError):
-                save_settings(self.directory, {'pushplusToken': token})
-        with self.assertRaises(ValueError):
-            save_settings(self.directory, {'clearPushplusToken': True})
-        self.assertEqual(save_settings(self.directory, {'pushplusEnabled': False, 'clearPushplusToken': True})['pushplusToken'], '')
-
-    def test_pushplus_delivery_deduplicates_and_new_recipient_gets_alert(self):
-        save_settings(self.directory, {'enabled': False, 'pushplusEnabled': True, 'pushplusToken': 'first'})
-        with patch('bridge.notifications.publish_pushplus') as send:
+    def test_bark_delivery_deduplicates_and_new_recipient_gets_alert(self):
+        save_settings(self.directory, {'enabled': False, 'barkEnabled': True, 'barkKey': 'first'})
+        with patch('bridge.notifications.publish_bark') as send:
             self.manager.scan(); self.manager.scan()
             self.assertEqual(send.call_count, 1)
-            save_settings(self.directory, {'pushplusToken': 'second'})
+            save_settings(self.directory, {'barkKey': 'second'})
             self.manager.scan()
             self.assertEqual(send.call_count, 2)
         ledger = read_json(self.directory/'notification-delivery.json', {})
-        self.assertTrue(all(k.startswith('pushplus:') for k in ledger))
+        self.assertTrue(all(k.startswith('bark:') for k in ledger))
         self.assertNotIn('second', json.dumps(ledger))
-
-    def test_pushplus_payload_and_application_errors_are_sanitized(self):
-        from unittest.mock import MagicMock
-        config = {**settings(self.directory), 'pushplusToken': 'secret-pushplus'}
-        response = MagicMock(); response.status = 200; response.read.return_value = b'{"code":200}'
-        with patch('bridge.notifications.build_opener') as opener:
-            opener.return_value.open.return_value.__enter__.return_value = response
-            publish_pushplus(config, 'Title', 'Body', 'https://example.com/#chat')
-            request = opener.return_value.open.call_args.args[0]
-            self.assertEqual(request.full_url, 'https://www.pushplus.plus/send')
-            self.assertEqual(json.loads(request.data), {'token': 'secret-pushplus', 'title': 'Title', 'content': 'Body\n\nhttps://example.com/#chat', 'template': 'txt'})
-            response.read.return_value = b'{"code":401,"msg":"secret-pushplus"}'
-            with self.assertRaises(RuntimeError) as error:
-                publish_pushplus(config, 'Title', 'Body')
-            self.assertNotIn('secret-pushplus', str(error.exception))
 
     def tearDown(self):
         self.manager.close()
@@ -308,21 +281,6 @@ class NotificationTests(unittest.TestCase):
         result = self.manager.watch(self.thread, 'remote', True, True)
         self.assertTrue(result['available'])
         with patch('bridge.notifications.publish') as ntfy, patch('bridge.notifications.publish_bark') as bark:
-            self.turns(('current', 'completed'))
-            self.session.state['requests'] = [{'id': 'question', 'method': 'item/tool/requestUserInput', 'params': {}}]
-            self.manager.scan();self.manager.scan()
-            self.assertFalse(ntfy.called)
-            self.assertEqual([c.args[1] for c in bark.call_args_list], ['Codex 需要你的确认', 'Codex 运行已完成'])
-            self.assertNotIn('Private project', bark.call_args.args[2])
-            self.assertTrue(bark.call_args.args[3].endswith('~remote'))
-
-    def test_pushplus_only_subscription_sends_requests_and_opt_in_completion(self):
-        self.manager.watch(self.thread, 'remote', False)
-        save_settings(self.directory, {'enabled': False, 'topic': '', 'pushplusEnabled': True, 'pushplusToken': 'pushplus-token'})
-        self.turns(('current', 'inProgress'))
-        result = self.manager.watch(self.thread, 'remote', True, True)
-        self.assertTrue(result['available'])
-        with patch('bridge.notifications.publish') as ntfy, patch('bridge.notifications.publish_pushplus') as bark:
             self.turns(('current', 'completed'))
             self.session.state['requests'] = [{'id': 'question', 'method': 'item/tool/requestUserInput', 'params': {}}]
             self.manager.scan();self.manager.scan()
