@@ -115,7 +115,7 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 | `deploy/nas/` | NAS HTTPS 反代教程及可选 Docker 入口 |
 | `bridge/auth.py` / `httpd.py` | 登录、同源校验、HTTP、SSE、轮询 |
 | `bridge/files.py` | 引用文件的范围校验与解析 |
-| `bridge/tunnel.py` | 临时 HTTPS 隧道生命周期 |
+| `bridge/tunnel.py` | 临时 HTTPS 隧道生命周期与 cloudflared 共用监控基类（指标探测、休眠时钟跳变检测、terminate/kill 升级重启与封顶退避） |
 | `web/` | 手机浏览器界面 |
 | `tests/` | 合成数据与模拟 App IPC 回归 |
 
