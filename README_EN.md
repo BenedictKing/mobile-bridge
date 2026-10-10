@@ -256,11 +256,11 @@ Large history pages also have a byte budget, so a large reply may require multip
 
 - macOS or Windows 10/11 with the original Codex App running.
 - Release packages include the gateway runtime; no Python or Node.js installation is needed.
-- For command-line deployment: native Python 3.9+. The gateway uses only the Python standard library; no WSL or pip dependencies are needed.
+- For command-line deployment: native Python 3.9+. The gateway uses only the Python standard library; LAN runs need no third-party dependencies. Optional dependencies and packaging are managed with [uv](https://docs.astral.sh/uv/) (`uv sync`, `uv run`).
 - Desktop App development and packaging additionally require Node.js and the build dependencies below.
 - Keep the computer awake, network reachable and gateway running.
 - For SSH chats: the host is configured in the App, the SSH alias works non-interactively, and remote Python 3 is available. Model/Skill discovery also needs the remote Codex runtime. On Windows, OpenSSH `ssh.exe` must be on PATH.
-- Desktop builds include cloudflared. Source runs install it separately; new SSH profiles and native credential storage also require the relevant dependencies from `requirements-desktop.txt`.
+- Desktop builds include cloudflared. Source runs install it separately; new SSH profiles and native credential storage need `uv sync` first (optional desktop dependencies), then start with `uv run python run.py`.
 
 ## Command-line LAN setup (advanced)
 
@@ -294,7 +294,7 @@ cd mobile-bridge
 python3 -B "$PWD/run.py" --lan
 ```
 
-Alternatively, double-click `启动手机网关.command`. Stop with `Ctrl+C`, `python3 -B stop.py`, or `停止手机网关.command`.
+Alternatively, double-click `启动手机网关.command`. Stop with `Ctrl+C`, `python3 -B stop.py`, or `停止手机网关.command`. System Python is enough for LAN-only use; before enabling Cloudflare tunnels or SSH connections, run `uv sync` and start with `uv run python run.py --lan` (optional dependencies such as keyring are required).
 
 Open the printed LAN URL on a phone on the same network, for example `http://192.168.1.10:8787`. The initial username is `admin`; the generated password is in `.local/首次登录.txt`. Select a chat and wait for **Connected** before sending.
 
@@ -463,11 +463,11 @@ npm ci
 npm run desktop
 ```
 
-For packaging, use a project-local Python environment on the target OS:
+For packaging, use the project's uv-managed environment on the target OS:
 
 ```sh
-python -m pip install -r requirements-desktop.txt
-python scripts/build-desktop.py
+uv sync --all-groups
+uv run python scripts/build-desktop.py
 npm run pack:desktop
 ```
 

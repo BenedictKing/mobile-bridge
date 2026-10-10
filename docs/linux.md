@@ -35,16 +35,15 @@ enumeration; the existing hostname fallback remains available if `ip` fails.
 ## Build on the Target Architecture
 
 Use Ubuntu 22.04 or a compatible build environment, Node.js 24, Python 3.9+
-(CI uses 3.13), npm, and the project's pinned desktop requirements. Build the
-Python runtime and Electron app on the same OS and architecture. An ARM64
-Electron shell cannot run an x64 Python runtime.
+(CI uses 3.13), npm, and [uv](https://docs.astral.sh/uv/) with the project's
+pinned dependencies in `uv.lock`. Build the Python runtime and Electron app on
+the same OS and architecture. An ARM64 Electron shell cannot run an x64 Python
+runtime.
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements-desktop.txt
+uv sync --all-groups
 npm ci
-python scripts/build-desktop.py
+uv run python scripts/build-desktop.py
 ```
 
 On an x64 host:

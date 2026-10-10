@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build on the target OS; use a project-local venv with requirements-desktop.txt."""
+"""Build on the target OS; run inside the uv-managed environment (uv sync --all-groups)."""
 import os
 import json
 import platform

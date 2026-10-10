@@ -227,11 +227,11 @@ npm ci
 npm run desktop
 ```
 
-构建步骤（在当前项目的 Python 虚拟环境中执行）：
+构建步骤（在当前项目的 uv 环境中执行）：
 
 ```bash
-python -m pip install -r requirements-desktop.txt
-python scripts/build-desktop.py
+uv sync --all-groups
+uv run python scripts/build-desktop.py
 npm run pack:desktop
 ```
 
@@ -275,10 +275,10 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 
 - macOS 或 Windows 10/11，已安装并运行 Codex App。
 - 使用发布的桌面 App 时无需安装 Python 或 Node.js，网关运行时已内置。
-- 仅从源码或命令行运行时需要 Python 3.9+；网关本身只使用 Python 标准库，无需 `pip install` 或前端构建。Windows 使用原生 CPython，无需 WSL。桌面 App 的开发与打包另需 Node.js 及构建依赖。
+- 仅从源码或命令行运行时需要 Python 3.9+；网关本身只使用 Python 标准库，局域网运行无需第三方依赖或前端构建。Windows 使用原生 CPython，无需 WSL。可选依赖与打包统一由 [uv](https://docs.astral.sh/uv/) 管理（`uv sync`、`uv run`）。桌面 App 的开发与打包另需 Node.js 及构建依赖。
 - 电脑保持唤醒、联网，网关进程保持运行。
 - 使用 SSH 聊天时：App 中已配置该主机，电脑上相应 SSH 别名可非交互连接，远端有 Python 3。Windows 需要 PATH 中可用的 OpenSSH `ssh.exe`。模型/Skill 目录还需要远端可用的 Codex 运行时。
-- 外网隧道：桌面构建内置 `cloudflared`，源码运行可自行安装；二进制在构建时按锁定版本和 SHA-256 获取，不提交到仓库。源码使用新 SSH 配置或系统凭据存储时，需安装 `requirements-desktop.txt` 中相应依赖。
+- 外网隧道：桌面构建内置 `cloudflared`，源码运行可自行安装；二进制在构建时按锁定版本和 SHA-256 获取，不提交到仓库。源码使用新 SSH 配置或系统凭据存储时，先执行 `uv sync` 安装桌面可选依赖，再用 `uv run python run.py` 启动。
 
 ## 命令行启动：局域网（进阶）
 
@@ -318,7 +318,7 @@ cd mobile-bridge
 python3 -B "$PWD/run.py" --lan
 ```
 
-也可以双击 `启动手机网关.command`。
+也可以双击 `启动手机网关.command`。仅用局域网时系统 Python 即可；启用 Cloudflare 隧道或 SSH 连接前先执行 `uv sync`，并用 `uv run python run.py --lan` 启动（需要 keyring 等可选依赖）。
 
 1. 打开电脑上的 Codex App。
 2. 启动网关，在终端找到局域网地址，例如 `http://192.168.1.10:8787`。

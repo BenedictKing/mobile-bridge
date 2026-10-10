@@ -17,7 +17,7 @@ def library():
         import paramiko
         return paramiko
     except ImportError as exc:
-        raise ValueError('缺少服务器连接组件，请使用完整桌面 App 或安装 requirements-desktop.txt。') from exc
+        raise ValueError('缺少服务器连接组件，请使用完整桌面 App 或安装桌面可选依赖（uv sync）。') from exc
 
 
 def endpoint(entry):

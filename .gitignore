@@ -8,8 +8,10 @@
 # Python 和系统文件
 __pycache__/
 *.py[cod]
+.venv/
 .DS_Store
 .serena/
+.zcode/
 
 # 本地开发记录，不作为项目文档发布
 /task_plan.md
