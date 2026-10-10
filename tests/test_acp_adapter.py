@@ -383,10 +383,12 @@ class AcpAdapterTests(unittest.TestCase):
             self.assertTrue(dsh.available())
         with patch.dict('os.environ', {}, clear=True), \
              patch('shutil.which', return_value=None), \
+             patch('pathlib.Path.home', return_value=Path('/tmp/fake-dsh-home')), \
              patch('pathlib.Path.is_dir', return_value=True):
             self.assertTrue(dsh.available())
         with patch.dict('os.environ', {}, clear=True), \
              patch('shutil.which', return_value=None), \
+             patch('pathlib.Path.home', return_value=Path('/tmp/fake-dsh-home')), \
              patch('pathlib.Path.is_dir', return_value=False):
             self.assertFalse(dsh.available())
 

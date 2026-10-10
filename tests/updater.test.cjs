@@ -5,7 +5,7 @@ const {generateKeyPairSync,sign,createHash}=require('node:crypto');
 const {buildManifest}=require('../scripts/sign-update.cjs');
 const {Updater,manifest,compare,assetName,releaseUrl,allowedUrl,allowedMirrorUrl,mirrorUrl,RELEASES,MIRROR,transfer}=require('../desktop/updater.cjs');
 const keys=generateKeyPairSync('ed25519');
-const current='0.2.0-beta.5',next='0.2.0-beta.6',platform='darwin',arch='arm64';
+const current='0.0.2-beta.5',next='0.2.0-beta.6',platform='darwin',arch='arm64';
 function signed(value,key=keys.privateKey){const payload=Buffer.from(JSON.stringify(value));return Buffer.from(JSON.stringify({payload:payload.toString('base64'),signature:sign(null,payload,key).toString('base64')}));}
 const bytes=Buffer.from('fixture zip');
 const info=()=>({schema:1,version:next,notes:'Notes <script> are text',assets:{'darwin-arm64':{name:assetName(next,platform,arch),size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')}}});
