@@ -1,48 +1,16 @@
-## v1.4.0 · 连接更简单，远程使用更顺畅
+## v0.1.0 · Mobile / Bridge 新起点
 
-- **开箱即用的外网连接**：App 内置 cloudflared，临时 HTTPS 无需额外安装；完善固定 Cloudflare 域名、普通用户 SSH 和 NAS / 已有反代方案。
-- **更清晰的配置体验**：每种连接均可折叠并直接打开对应在线指引；地址框自动补入 HTTPS 前缀，错误字段自动展开定位，短期通知显示 5 秒。保存的凭据可遮罩查看，SSH 私钥选择器支持隐藏目录。
-- **更完整的登录保护**：支持记住登录 7 天、密码尝试次数提示、IP 封禁及电脑端解除，可选发送安全通知。
-- **模型和 Skill 更易用**：保留原生 Fast 和自定义 API 模型目录，模型与 Skill 独立加载；Skill 支持缓存、搜索分页和完整描述，兼容正常安装的符号链接。
-- **聊天与更新更稳定**：改善图片预览、临时隧道重试和更新交接；修复过期接入记录误拦发送。App 和网页均可忽略未确认发送提示，不会自动重发消息。
-- **更直观的教程**：临时 HTTPS 标注“推荐”，固定域名、服务器和 NAS 标注“进阶”，提供分步图示及参考命令的适用条件说明。服务器管理员操作由用户自行完成，App 不执行 sudo。
+- **品牌与发布迁移**：项目由 Codex Mobile Bridge 更名为 **Mobile / Bridge**，发布仓库迁移至 [BenedictKing/mobile-bridge](https://github.com/BenedictKing/mobile-bridge)。安装包更名为 `Mobile-Bridge-*`，桌面应用名称为 **Mobile Bridge**，版本号自 0.1.0 重新起步。
+- **功能完整继承 v1.4.0**：内置 cloudflared 的临时/固定 HTTPS、自有服务器 SSH 与 NAS 反代连接；账号密码与登录设备管理；多 Agent 接入与模型、Skill 目录；手机网页实时聊天、附件与通知；应用内签名更新。
+- **更新签名密钥换代**：新版本线使用新的更新签名密钥。旧版（1.x）客户端无法跨仓库自动更新，请手动下载本版安装，数据目录保持兼容。
+- **修复**：Windows 环境下 dsh Agent 可用性探测不再因无法确定用户目录而报错；相关测试断言改为跨平台路径形式。
 
-合并 PR #11，并包含 Preview 测试期间的兼容性与体验修复。
-
-**升级**：在正式版 App 的“应用更新”中检查更新，或先停止网关并退出，再安装对应平台的新包；保留原数据目录。Preview 用户请手动安装正式版并确认使用原数据目录。更新后重新加载手机页面。临时 HTTPS 地址可能因重启变化，请提前开启入口变化通知。
+**升级**：旧版用户请先停止网关并退出 App，再安装对应平台的新包（包名已改为 `Mobile-Bridge-0.1.0-*`），保留原数据目录；安装后重新加载手机页面。临时 HTTPS 地址可能因重启变化，建议开启入口变化通知。
 
 **English**
 
-**v1.4.0 makes remote setup and everyday access easier.** The App bundles cloudflared and provides guided Cloudflare domains, regular-user SSH and NAS/reverse-proxy setups. Connection cards collapse, link directly to online guides, and expand when a field needs attention. Saved credentials remain masked and revealable.
+**v0.1.0 is the first release of Mobile / Bridge.** The project is renamed from Codex Mobile Bridge and now publishes at [BenedictKing/mobile-bridge](https://github.com/BenedictKing/mobile-bridge). Packages are named `Mobile-Bridge-*`, the desktop app is **Mobile Bridge**, and the version line restarts at 0.1.0.
 
-Remember sign-in for seven days, see remaining password attempts, and manage blocked IPs from the desktop. Native Fast and provider-specific model discovery are preserved. Skills load independently with caching, search, pagination, full descriptions and support for installed symlinks. Image previews, tunnel retries and update handoff improve. Stale account records no longer block existing chats; both interfaces can dismiss unconfirmed send records without resending messages.
+All capabilities from v1.4.0 carry over: bundled cloudflared for quick/fixed HTTPS, own-server SSH and NAS reverse-proxy entries, login and device management, multi-agent access with model and skill catalogs, real-time mobile chat with attachments and notifications, and signed in-app updates. The update signing key rotates with the new line: existing 1.x clients must install this release manually (data directories remain compatible); in-app updates then resume from 0.1.0.
 
-Includes PR #11 and fixes validated during Preview testing. Update through the stable App or stop the gateway and install manually, retaining the data directory. Preview users should install the stable App manually and select their existing data directory. Reload the phone page after upgrading. Mac packages are ad-hoc signed and not notarized; Windows packages have no certificate signature. Linux remains experimental.
-
----
-
-## v1.3.3 · 能耗与通知优化
-
-- **按需监控会话**：持续监听运行中和等待处理的会话，结束后解除通知订阅；通过实时事件和每 30 秒的变更元数据检查发现新任务，减少反复读取历史会话。
-- **通知重试更独立**：完成通知发送失败时保留重试记录，不必持续订阅已结束会话。补齐会话再次运行、断线恢复、通知开关变化及完成状态先后到达的处理。
-- **优化能耗**：状态查询复用进程；窗口隐藏时暂停刷新，状态不变时不重绘界面。
-- **稳定窗口标题**：统一管理原生窗口标题，避免页面标题反复覆盖；切换语言时按需更新。
-
-Mac / Windows v1.1.0 及后续版本可在“应用更新”选择“更新并重启”。保留数据目录即可保留登录、网络和通知设置。通过临时 HTTPS 远程升级前，请确认 v1.3.2 引入的“网关启动与入口通知”已开启且手机能够收到。Linux 仍为实验性支持，请停止网关并退出 App 后手动安装新版。
-
-提供 Mac Apple Silicon / Intel 的 DMG、ZIP，Windows x64 的 Setup.exe、ZIP，以及 Ubuntu x64 / ARM64 的 DEB、AppImage。使用 `SHA256SUMS.txt` 校验下载；Mac / Windows 应用内更新使用签名的 `bridge-update.json`。Mac 仍为 ad-hoc 签名、未公证；Windows 无证书签名。
-
----
-
-## English
-
-**v1.3.3 reduces notification monitoring and desktop refresh overhead.**
-
-- Monitor running chats and pending requests, then release notification subscriptions when idle. Live events and a metadata check every 30 seconds discover new activity without repeatedly loading historical chats.
-- Retry failed completion alerts independently of subscriptions. Handle resumed chats, reconnection, notification preference changes, and completion updates arriving in separate steps.
-- Reuse the desktop status worker, pause refreshes while the window is hidden, and skip unchanged UI renders.
-- Keep the native window title stable and update it only when the language changes.
-
-**Upgrade:** Mac / Windows v1.1.0 and later support App updates → Update and restart. Retain the data directory to preserve settings. Before a remote update over temporary HTTPS, enable and test the startup and entry notifications introduced in v1.3.2. Linux remains experimental and requires a manual upgrade after stopping the gateway and quitting the App.
-
-Packages include Mac arm64/x64 DMG and ZIP, Windows x64 installer and ZIP, and Ubuntu x64/ARM64 DEB and AppImage. Verify downloads with `SHA256SUMS.txt`; Mac/Windows in-app updates use the signed manifest. Mac builds are ad-hoc signed, not notarized; Windows builds have no certificate signature.
+Fixes: dsh agent availability probing no longer fails on Windows when the user home directory cannot be resolved, and the related test assertion is now path-separator agnostic. Mac packages are ad-hoc signed and not notarized; Windows packages have no certificate signature. Linux remains experimental.
