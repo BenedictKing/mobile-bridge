@@ -30,10 +30,14 @@ def available():
     directory does: dsh may only ever have run via npx yet still leave its
     credentials and config there.
     """
+    try:
+        dsh_config_dir = (Path.home() / '.dsh').is_dir()
+    except RuntimeError:  # Windows environments without HOME/USERPROFILE
+        dsh_config_dir = False
     return (bool(os.environ.get('DSH_ACP_BIN'))
             or shutil.which('dsh-acp') is not None
             or shutil.which('dsh') is not None
-            or (Path.home() / '.dsh').is_dir())
+            or dsh_config_dir)
 
 
 class DshSessionView(AcpSessionView):

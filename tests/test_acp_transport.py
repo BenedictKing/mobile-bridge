@@ -151,7 +151,7 @@ class AcpTransportTests(unittest.TestCase):
             os.environ.pop('FAKE_AGENT_BIN', None)
             with patch('pathlib.Path.is_file', return_value=True):
                 found = discover_executable('FAKE_AGENT_BIN', '.fake/bin', 'agent')
-            self.assertTrue(found.endswith('/.fake/bin/agent'))
+            self.assertTrue(found.endswith(os.path.join('.fake', 'bin', 'agent')))
             with patch('pathlib.Path.is_file', return_value=False), \
                  patch('shutil.which', return_value=None):
                 self.assertIsNone(discover_executable('FAKE_AGENT_BIN', '.fake/bin', 'agent'))
