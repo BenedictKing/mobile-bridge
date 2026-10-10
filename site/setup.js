@@ -7,7 +7,7 @@ function setLanguage(value,persist=false){
   language=value==='en'?'en':'zh';document.documentElement.lang=language==='en'?'en':'zh-CN';
   translations.forEach(item=>item.node.textContent=item[language]);
   document.querySelectorAll('[data-language]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===language)));
-  document.title=language==='en'?'Connection guide · Codex Mobile Bridge':'连接配置指南 · Codex Mobile Bridge';
+  document.title=language==='en'?'Connection guide · Mobile / Bridge':'连接配置指南 · Mobile / Bridge';
   if(persist){try{localStorage.setItem('cmb-site-language',language);}catch{}const url=new URL(location.href);url.searchParams.set('lang',language);history.replaceState(null,'',url);}
 }
 function showMethod(){

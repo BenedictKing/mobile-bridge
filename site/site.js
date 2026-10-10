@@ -1,5 +1,5 @@
 'use strict';
-const repo='https://github.com/try2love/codex-mobile-bridge';
+const repo='https://github.com/BenedictKing/mobile-bridge';
 const video=document.getElementById('tour');
 const languageButtons=[...document.querySelectorAll('[data-language]')];
 let language='zh',chapters=[];
@@ -24,10 +24,10 @@ function setLanguage(value,persist=false){
   languageButtons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===language)));
   document.querySelectorAll('[data-doc-link]').forEach(link=>link.href=language==='en'?repo+'/blob/main/README_EN.md':repo);
   document.querySelectorAll('[data-setup-link]').forEach(link=>{const url=new URL(link.href);url.searchParams.set('lang',language);link.href=url;});
-  const title=language==='en'?'Codex Mobile Bridge | Your workspace, across screens':'Codex Mobile Bridge｜随身接力你的 Codex 工作台';
+  const title=language==='en'?'Mobile / Bridge | Your workspace, across screens':'Mobile / Bridge｜随身接力你的 Codex 工作台';
   const description=language==='en'?'Explore the v2.0 remote workbench for Web, Android and iOS. Try interactive demos of chat, files, terminal, Git and side chats.':'从手机 Web、Android、iOS 和电脑浏览器继续 Codex 工作。体验 v2.0 文件、终端、Git、侧边聊天与分屏工作台的交互演示。';
   document.title=title;document.querySelector('meta[name=description]').content=description;document.querySelector('meta[property="og:title"]').content=title;document.querySelector('meta[property="og:description"]').content=description;
-  const canonical='https://try2love.github.io/codex-mobile-bridge/'+(language==='en'?'?lang=en':'');
+  const canonical='https://BenedictKing.github.io/mobile-bridge/'+(language==='en'?'?lang=en':'');
   document.querySelector('link[rel=canonical]').href=canonical;document.querySelector('meta[property="og:url"]').content=canonical;
   setTracks();renderChapters();if(window.demoExperienceReady)refreshExperience();if(lightbox.open&&zoomSource)showImage(zoomSource);
   if(persist){try{localStorage.setItem('cmb-site-language',language);}catch{}const url=new URL(location.href);url.searchParams.set('lang',language);history.replaceState(null,'',url);}

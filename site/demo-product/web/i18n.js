@@ -674,7 +674,7 @@ const en={
   "Codex · 手机连接": "Codex · Mobile Bridge",
   "Codex 与外网程序": "Codex and tunnel programs",
   "Codex 可执行文件": "Codex executable",
-  "Codex 手机网关": "Codex Mobile Bridge",
+  "Mobile / Bridge · 手机网关": "Mobile / Bridge",
   "Codex 数据目录": "Codex data directory",
   "Codex 数据目录不存在": "The Codex data directory does not exist",
   "Codex 正在工作…": "Codex is working…",
