@@ -240,7 +240,7 @@ The switch is off by default and independent of chat notifications. Messages use
 | New chats | Create an empty chat in a saved local/SSH project, then hand it to the desktop App; creation itself does not call a model |
 | Markdown and math | Headings, lists, tables, code and LaTeX math; assets and fonts are served locally |
 | Progressive history | Show the latest 20 records first, silently fill to 100, then load 100 more near the top; expand large tool content on demand |
-| Original execution | Send, steer, queue, withdraw queued messages, stop and respond to supported confirmation cards |
+| Original execution | Send, steer, queue; send queued messages now, edit or delete them; stop and respond to supported confirmation cards |
 | Local and SSH | Execute on the chat's original computer or server |
 | Chat navigation | Sort by recent activity or group by expandable projects |
 | Model and Skills | Choose model/reasoning effort, toggle Fast for eligible official accounts, or send installed Skills from the chat's host |
@@ -349,7 +349,7 @@ Preserve the external Host header, Origin, cookies and CSRF header; disable prox
 - **Goal panel:** use × to hide it while the goal keeps running. Select **Goal progress** beside Send to restore it; narrow screens use a target icon. The same goal stays hidden after refreshing the current browser tab, and new goals are shown automatically.
 - **Attachments:** select the paperclip to the left of the send-type selector to add multiple files or images. Up to 10 files per message, 1 byte–20 MiB each and 100 MiB total. Uploads can be removed from the draft or retried individually; drafts stay with their chat and host. Send, queue and steer retain attachments, including after a failed send. Default messages can contain attachments without text. PNG, JPEG, GIF and WebP use native image inputs; other files supply original file paths, subject to model/tool capabilities and chat permissions. Remote chats upload through their configured SSH connection. Uploading does not start a model turn.
 - **Chat indicators:** green means running, blue means completed and unread, amber means failed or stopped. Entering the chat clears its completion marker; a running marker stays. A previously running chat with unavailable live state turns gray. Disable markers under **Display settings → Chat list**. Preferences and read state are stored in this browser. Existing completed history is not marked unread on first use; loaded list entries refresh about every five seconds while the page is visible. Phone push notifications use their separate watch settings.
-- **Send modes:** new message, queue after the active task, or steer the current task. Queued messages can be withdrawn before submission.
+- **Send modes:** new message, queue after the active task, or steer the current task. Queued messages can be sent immediately when idle, edited, or deleted before submission.
 - **Confirmations:** respond to supported command, file, permission and question requests. Unsupported requests should be handled in the desktop App.
 - **Unknown result:** inspect chat history before trying again. The gateway does not automatically replay an uncertain submission.
 

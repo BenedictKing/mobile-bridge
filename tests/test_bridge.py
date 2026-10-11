@@ -584,6 +584,35 @@ class IntegrationTests(unittest.TestCase):
         self.bridge._send_queued(session, key, self.bridge.submissions[key])
         self.assertEqual(self.bridge.submissions[key]['status'], 'accepted')
 
+    def test_queued_message_can_edit_send_now_and_delete(self):
+        self.fixture.state['threadRuntimeStatus'] = {"type": "active"}
+        session = self.bridge.session(THREAD)
+        message_id = str(uuid.uuid4())
+        self.assertEqual(self.bridge.send(THREAD, '原始排队内容', message_id, 'queue')['status'], 'queued')
+        self.assertEqual(self.bridge.queue_action(THREAD, message_id, 'edit', '修改后的排队内容')['text'], '修改后的排队内容')
+        self.assertEqual(self.bridge.submissions[THREAD + ':' + message_id]['text'], '修改后的排队内容')
+        with self.assertRaisesRegex(ValueError, '仍在运行'):
+            self.bridge.queue_action(THREAD, message_id, 'send')
+        with session.condition:
+            session.state['threadRuntimeStatus'] = {"type": "idle"}
+        self.assertEqual(self.bridge.queue_action(THREAD, message_id, 'send')['status'], 'accepted')
+
+        auto_id = str(uuid.uuid4())
+        self.fixture.state['threadRuntimeStatus'] = {"type": "active"}
+        self.bridge.send(THREAD, '自动发送旧内容', auto_id, 'queue')
+        stale = dict(self.bridge.submissions[THREAD + ':' + auto_id])
+        self.bridge.edit_queued(THREAD, auto_id, '自动发送新内容')
+        with session.condition:
+            session.state['threadRuntimeStatus'] = {"type": "idle"}
+        self.bridge._send_queued(session, THREAD + ':' + auto_id, stale)
+        self.assertEqual(self.bridge.submissions[THREAD + ':' + auto_id]['status'], 'accepted')
+        self.assertEqual(self.fixture.requests[-1]['params']['turnStart']['request']['input'][0]['text'], '自动发送新内容')
+
+        delete_id = str(uuid.uuid4())
+        self.bridge.send(THREAD, '待删除', delete_id, 'queue')
+        self.assertEqual(self.bridge.queue_action(THREAD, delete_id, 'delete')['status'], 'cancelled')
+        self.assertEqual(self.bridge.submissions[THREAD + ':' + delete_id]['status'], 'cancelled')
+
     def test_unknown_delivery_not_replayed_even_after_idle_changes(self):
         self.bridge.session(THREAD)
         self.bridge._call = lambda *a, **k: (_ for _ in ()).throw(IPCError('timeout'))

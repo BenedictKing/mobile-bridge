@@ -395,8 +395,36 @@ function renderQueue(rows){
     card.append(el('strong','',row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):row.text));
     if(row.attachments?.length)card.append(el('small','muted',t('附件：')+row.attachments.join('、')));
     if(row.status==='queued'){
-      const cancel=el('button','plain',t('撤回待发送消息'));
-      cancel.onclick=async()=>{try{await api(sessionUrl(target,'queue',host),{id:row.id});toast('已撤回');}catch(e){toast(e.message);}};card.append(cancel);
+      const actions=el('div','queue-actions');
+      const sendNow=el('button','plain',t('立即发送'));
+      sendNow.onclick=async()=>{
+        sendNow.disabled=true;
+        try{
+          const result=await api(sessionUrl(target,'queue',host),{id:row.id,action:'send'});
+          if(currentId===target&&currentHost===host&&state){
+            state.submissions=(state.submissions||[]).filter(item=>item.id!==row.id);
+            if(result.status==='unknown')state.submissions.push({...row,status:'unknown'});
+            renderQueue(state.submissions);
+          }
+          toast(result.status==='unknown'?t('发送结果待确认'):t('已立即发送'));
+        }catch(e){sendNow.disabled=false;toast(e.message);}
+      };
+      actions.append(sendNow);
+      if(row.editable!==false){
+        const edit=el('button','plain',t('修改'));
+        edit.onclick=()=>openQueueEditor(row,target,host);
+        actions.append(edit);
+      }
+      const remove=el('button','plain',t('删除'));
+      remove.onclick=async()=>{
+        remove.disabled=true;
+        try{
+          await api(sessionUrl(target,'queue',host),{id:row.id,action:'delete'});
+          if(currentId===target&&currentHost===host&&state){state.submissions=(state.submissions||[]).filter(item=>item.id!==row.id);renderQueue(state.submissions);}
+          toast(t('已删除排队消息'));
+        }catch(e){remove.disabled=false;toast(e.message);}
+      };
+      actions.append(remove);card.append(actions);
     }else{
       card.append(el('p','muted',t('请检查聊天记录。网关不会自动重发这条消息。')));
       const ignore=el('button','plain',t('忽略'));
@@ -409,6 +437,40 @@ function renderQueue(rows){
     }
     $('queued').append(card);
   }
+}
+function openQueueEditor(row,target,host){
+  let dialog=$('queue-edit-dialog');
+  if(!dialog){
+    dialog=document.createElement('dialog');dialog.id='queue-edit-dialog';dialog.className='picker';
+    dialog.setAttribute('aria-labelledby','queue-edit-heading');
+    dialog.innerHTML='<div class="picker-head"><h2 id="queue-edit-heading"></h2><button class="icon-button" type="button" aria-label="关闭"></button></div><div class="picker-body"><form><textarea rows="8" maxlength="100000" aria-label="排队消息"></textarea><p class="error" role="alert"></p><button class="primary" type="submit"></button></form></div>';
+    document.body.append(dialog);
+    dialog.querySelector('.icon-button').onclick=()=>dialog.close();
+    dialog.querySelector('form').onsubmit=async event=>{
+      event.preventDefault();
+      const targetInfo=dialog.queueTarget;if(!targetInfo)return;
+      const text=dialog.querySelector('textarea').value;
+      if(!text.trim()){dialog.querySelector('.error').textContent=t('请输入消息');return;}
+      const submit=dialog.querySelector('button[type=submit]');submit.disabled=true;dialog.querySelector('.error').textContent='';
+      try{
+        const result=await api(sessionUrl(targetInfo.thread,'queue',targetInfo.host),{id:targetInfo.id,action:'edit',text});
+        if(currentId===targetInfo.thread&&currentHost===targetInfo.host&&state){
+          const item=(state.submissions||[]).find(entry=>entry.id===targetInfo.id);
+          if(item)item.text=result.text;
+          renderQueue(state.submissions||[]);
+        }
+        dialog.close();toast(t('排队消息已修改'));
+      }catch(error){dialog.querySelector('.error').textContent=t(error.message);submit.disabled=false;}
+    };
+  }
+  dialog.queueTarget={id:row.id,thread:target,host};
+  dialog.querySelector('h2').textContent=t('修改排队消息');
+  dialog.querySelector('.icon-button').setAttribute('aria-label',t('关闭'));
+  dialog.querySelector('textarea').setAttribute('aria-label',t('排队消息'));
+  dialog.querySelector('textarea').value=row.text;
+  dialog.querySelector('button[type=submit]').textContent=t('保存');
+  dialog.querySelector('.error').textContent='';dialog.querySelector('button[type=submit]').disabled=false;
+  dialog.showModal();dialog.querySelector('textarea').focus();
 }
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
 $('composer').onsubmit=async event=>{event.preventDefault();if(sending||!currentId)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids();if(!text.trim()&&!attachmentIds.length)return;const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort();const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pending.attachments||[])!==JSON.stringify(attachmentIds))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentIds,uiLocale:BridgeI18n.locale()};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){$('send-error').textContent=t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);$('send').disabled=!state||state.loadingHistory||state.activating||!attachments.ready();}};

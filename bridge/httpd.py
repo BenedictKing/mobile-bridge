@@ -560,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     result = bridge.view(thread_id, background=True, force=True)
             elif action == "queue":
-                result = bridge.cancel_queued(thread_id, body.get("id", ""))
+                result = bridge.queue_action(thread_id, body.get("id", ""), body.get("action", "delete"), body.get("text"))
             else:
                 return self.output(404, {"error": "接口不存在"})
             self.output(200, result)

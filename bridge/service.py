@@ -1107,7 +1107,9 @@ class Bridge:
                 if not old or command_entry['at'] >= old.get('at', 0):
                     merged[command_id] = command_entry
         activation_ids = self._goal_activation_ids(session.id)
-        view["submissions"] = [{"id": k, "text": v["text"], "status": v["status"], **({'attachments': v['attachmentNames']} if v.get('attachmentNames') else {})}
+        view["submissions"] = [{"id": k, "text": v["text"], "status": v["status"],
+                                 "editable": not v.get("planResponse") and not v.get("goalActivation"),
+                                 **({'attachments': v['attachmentNames']} if v.get('attachmentNames') else {})}
                                for k, v in entries if v["status"] in ("queued", "unknown")
                                and k not in activation_ids]
         view["goalSubmission"] = None
@@ -1452,12 +1454,20 @@ class Bridge:
             raise ValueError('请输入 1–4000 字的目标内容')
         return self._goal_control(thread_id, request_id, 'edit', objective=objective, expected=expected)
 
-    def cancel_queued(self, thread_id, submission_id):
+    def _queued_entry(self, thread_id, submission_id):
         uuid.UUID(submission_id)
         session = self.session(thread_id, attach=False)
+        key = thread_id + ":" + submission_id
+        with self.submit_lock:
+            prior = self.submissions.get(key)
+            if not prior or prior["status"] != "queued":
+                raise ValueError("此消息已离开队列，请查看会话")
+            return session, key, prior
+
+    def cancel_queued(self, thread_id, submission_id):
+        session, key, _ = self._queued_entry(thread_id, submission_id)
         with session.action_lock:
             with self.submit_lock:
-                key = thread_id + ":" + submission_id
                 prior = self.submissions.get(key)
                 if not prior or prior["status"] != "queued":
                     raise ValueError("此消息已离开队列，请查看会话")
@@ -1466,6 +1476,54 @@ class Bridge:
             with session.condition:
                 session.changed()
         return {"status": "cancelled"}
+
+    def edit_queued(self, thread_id, submission_id, text):
+        if not isinstance(text, str) or not text.strip() or len(text) > 100000:
+            raise ValueError("请输入 1–100000 字的消息")
+        session, key, _ = self._queued_entry(thread_id, submission_id)
+        with session.action_lock:
+            with self.submit_lock:
+                prior = self.submissions.get(key)
+                if not prior or prior["status"] != "queued":
+                    raise ValueError("此消息已离开队列，请查看会话")
+                if prior.get("planResponse") or prior.get("goalActivation"):
+                    raise ValueError("此类排队消息不能编辑")
+                prior["text"] = text
+                prior["at"] = time.time()
+                self._save_ledger()
+            with session.condition:
+                session.changed()
+        return {"status": "queued", "id": submission_id, "text": text}
+
+    def send_queued_now(self, thread_id, submission_id):
+        session, key, entry = self._queued_entry(thread_id, submission_id)
+        with session.action_lock:
+            with session.condition:
+                if not session.connected:
+                    raise IPCError(session.error or "会话尚未连接，请重新打开")
+                if self.adapter.is_active(session):
+                    raise ValueError("当前任务仍在运行，请等待完成后再立即发送")
+            with self.submit_lock:
+                current = self.submissions.get(key)
+                if not current or current["status"] != "queued":
+                    raise ValueError("此消息已离开队列，请查看会话")
+                current["status"] = "unknown"
+                self._save_ledger()
+            try:
+                result = self._dispatch(session, key, current)
+            finally:
+                with session.condition:
+                    session.changed()
+            return result
+
+    def queue_action(self, thread_id, submission_id, action, text=None):
+        if action == "delete":
+            return self.cancel_queued(thread_id, submission_id)
+        if action == "edit":
+            return self.edit_queued(thread_id, submission_id, text)
+        if action == "send":
+            return self.send_queued_now(thread_id, submission_id)
+        raise ValueError("未知队列操作")
 
     @operation
     def ignore_submission(self, thread_id, submission_id):
@@ -1580,8 +1638,10 @@ class Bridge:
                     return
             with self.goal_lock:
                 with self.submit_lock:
-                    if self.submissions[key]["status"] != "queued":
+                    current = self.submissions.get(key)
+                    if not current or current["status"] != "queued":
                         return
+                    entry = dict(current)
                     activation = entry.get("goalActivation")
                     cancelled = False
                     if activation:
