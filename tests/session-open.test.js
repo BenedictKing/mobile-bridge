@@ -9,6 +9,7 @@ async function runSessionOpenTests(){
   const response=(body,status=200)=>({ok:status===200,status,json:async()=>body});
   window.fetch=async(url,options)=>{
     const path=new URL(url,location.origin),id=path.pathname.split('/')[3];calls.push({path,options});
+    if(path.pathname==='/api/auth')return response({authenticated:true,csrf:'x',transport:'poll'});
     if(path.pathname.endsWith('/reconnect'))return new Promise(resolve=>activations.push({id,resolve,options}));
     if(path.pathname.endsWith('/changes'))return new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError')),{once:true}));
     if(path.pathname.endsWith('/notifications'))return response({available:false});

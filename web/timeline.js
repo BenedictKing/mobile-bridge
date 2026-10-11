@@ -27,7 +27,7 @@ class ChatTimeline {
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
     this.resize.observe(this.container);
   }
-  dispose(){this.abort.abort();clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
+  dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
   capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
@@ -215,19 +215,17 @@ class ChatTimeline {
     }
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }
-  async updates(){
-    while(!this.abort.signal.aborted){
-      try{
-        const generation=this.generation,windowRevision=this.windowRevision;
-        const page=await this.read('changes',{after:this.sequence,epoch:this.epoch,start:this.before||''});
-        if(this.abort.signal.aborted)return;
-        if(generation!==this.generation||windowRevision!==this.windowRevision)continue;
-        // History may have expanded the window while this poll was in flight.
-        // Polls never replace the oldest loaded cursor.
-        this.apply(page,!!page.reset);this.fillRecent();
-        await this.pause(200);
-      }catch(e){if(this.abort.signal.aborted)return;this.status(timelineText('重新连接中'));await this.pause(3000);}
-    }
+  updates(){
+    // Live frames arrive via the shared transport (SSE when the gateway
+    // advertises it, changes long-poll on tunnels). The cursor is re-read
+    // per request so history expansion never strands a delta, and rows
+    // merge by key+version, so no in-flight generation guard is needed.
+    this.subscription=BridgeTransport.subscribe(this.url,{
+      onChanges:page=>{if(this.abort.signal.aborted)return;this.apply(page,false);this.fillRecent();},
+      onReset:page=>{if(this.abort.signal.aborted)return;this.apply(page,true);this.fillRecent();},
+      onStatus:text=>{if(!this.abort.signal.aborted)this.status(text==='reconnecting'?timelineText('重新连接中'):text);},
+      cursor:()=>({after:this.sequence,epoch:this.epoch,start:this.before||''})
+    });
   }
   pause(ms){return new Promise(resolve=>{const done=()=>{clearTimeout(timer);this.abort.signal.removeEventListener('abort',done);resolve();};const timer=setTimeout(done,ms);this.abort.signal.addEventListener('abort',done,{once:true});});}
 }

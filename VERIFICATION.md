@@ -1,3 +1,11 @@
+## 事件同步协议升级：增量 SSE 与统一传输层（2026-10-11，未发布）
+
+- 范围：`docs/event-sync-plan.md`（阶段一/二）落地。服务端 `GET /api/sessions/<id>/events?incremental=1` 新增增量帧协议：`ready` 门控首帧、`changes` 增量行、`reset` 快照页、`logout`，`id:` 为 `<epoch>.<sequence>` 游标，经 `Last-Event-ID`（EventSource 自动重连回传）或 `?since=`（手动重连兜底）续传；游标失效（epoch 轮换、超出 `versions` 16 窗口、增量超 100 行/192 KiB）自动回落 reset——判定完全复用 `timeline.changes()` 的回退分支，`Timeline` 数据结构零改动。不带 `incremental` 参数的字节流与升级前一致（`event: state` 全量 + 12 秒心跳 + logout）；`changes`/`poll`/`/api/auth` 响应格式与 `transport` 字段语义均不变（外部移动端客户端契约保持）。
+- 前端：新增 `web/transport.js`（零构建全局模块，`var` 暴露以便人工检查脚本覆写），按 `/api/auth` 宣告选择 SSE 或 `changes` 长轮询，对 `ChatTimeline` 暴露统一订阅回调（onChanges/onReset/onStatus/cursor）；`timeline.js` 的 `updates()` 自旋长轮询替换为订阅驱动、`dispose()` 补退订；重连退避 1s→32s 封顶左移、ready 帧/一次成功响应清零；401/`authenticated:false`/logout 帧直接登出且零重试，其余错误永远只重连；`app.js` 状态回调区分 `unauthorized`→`showLogin`。轮询侧游标每请求前回读 timeline 的 `(sequence, epoch, before)`，保留「历史窗口扩张竞态不丢增量」语义。
+- 自动检查：Python 全量 639 过/6 跳过（HttpTests 新增 4 项：ready 门控与游标 id、`Last-Event-ID` 与 `?since=` 续传及 stale epoch 回退 reset、登出帧、无参数旧帧格式不变；IntegrationTests 新增 1 项端到端：真实 Bridge+DesktopFixture 下桌面 snapshot 变更以增量 changes 帧到达、id=`epoch.sequence`、只含变更行；脚本清单用例同步 `/transport.js`）。`npm run test:desktop` 158 过（新增 `tests/transport.test.cjs` 7 项：退避公式与封顶、ready 清零、通道选择与 since 游标、轮询 cursor 每请求回读、401 零重试、logout、退订幂等；入列 test:desktop，基线 151）。人工浏览器检查脚本 `timeline.test.js`（stub 传输层，保持渲染聚焦）、`session-open.test.js`/`modes.test.js`（fetch fixture 补 `/api/auth`）同步更新。
+- 冒烟（本机）：隔离免密网关（端口 18795，已停止）验证 `/api/auth`、免密登录换 cookie、未知会话 UUID 校验与 404 路径行为正常；真实会话数据通路由 IntegrationTests 端到端用例覆盖（无桌面 App 环境下直连冒烟无法构造真实会话）。
+- 未验证（计划阶段三第 2 条，待手工验收）：真机弱网续传（断线 30 秒游标续传不重传历史、devtools 3G 节流）、trycloudflare 隧道模式自动回落长轮询、真机登出后的 logout→登录页流转与零重试。验收后应在本文件补记录。
+
 ## 新建聊天两级选择（2026-10-09，未发布）
 
 - 范围：新建聊天对话框中 Agent 与项目解耦为两级独立选择，避免多 Agent 下组合爆炸。`/api/projects` 每个项目增加 `agent` 字段（浅拷贝，不污染 adapter 缓存），顶层新增 `agents: [{kind, label}]`；前端新增 Agent 选择器（位于项目选择器之前，仅启用多个 Agent 时显示），项目按目录跨 Agent 去重、以目录名（远程带主机）展示、不再带 Agent 前缀。

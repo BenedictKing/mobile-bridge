@@ -46,6 +46,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/markdown.js": ("markdown.js", "text/javascript; charset=utf-8"),
           "/message-actions.js": ("message-actions.js", "text/javascript; charset=utf-8"),
           "/timeline.js": ("timeline.js", "text/javascript; charset=utf-8"),
+          "/transport.js": ("transport.js", "text/javascript; charset=utf-8"),
           "/vendor/markdown-it.min.js": ("vendor/markdown-it.min.js", "text/javascript; charset=utf-8"),
           "/vendor/texmath.js": ("vendor/texmath.js", "text/javascript; charset=utf-8"),
           "/vendor/katex/katex.min.js": ("vendor/katex/katex.min.js", "text/javascript; charset=utf-8"),
@@ -512,7 +513,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action == "poll":
                     return self.poll(bridge, thread_id, int(query.get("after", ["-1"])[0]))
                 if action == "events":
-                    return self.stream(bridge, thread_id)
+                    return self.stream(bridge, thread_id, query)
                 return self.output(404, {"error": "接口不存在"})
             body = self.read_json()
             if action == "message-action":
@@ -693,7 +694,23 @@ class Handler(BaseHTTPRequestHandler):
                 session.viewers -= 1
                 session.touched = time.monotonic()
 
-    def stream(self, bridge, thread_id):
+    def sse_frame(self, event, payload, cursor=None):
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        head = f"id: {cursor}\n" if cursor else ""
+        self.wfile.write(f"{head}event: {event}\ndata: {data}\n\n".encode())
+        self.wfile.flush()
+
+    def stream(self, bridge, thread_id, query=None):
+        query = query or {}
+        incremental = query.get('incremental', [''])[0] == '1'
+        epoch, sequence = '', -1
+        if incremental:
+            # EventSource replays the last frame id on its own reconnects;
+            # ?since= covers clients that reconnect manually.
+            since = self.headers.get('Last-Event-ID') or query.get('since', [''])[0]
+            head, _, tail = since.partition('.')
+            if head and tail.isdigit():
+                epoch, sequence = head, int(tail)
         session = bridge.session(thread_id, background=True)
         with session.condition:
             session.viewers += 1
@@ -704,8 +721,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
-        sequence = -1
         try:
+            if incremental:
+                self.stream_incremental(bridge, thread_id, session, epoch, sequence)
+                return
+            sequence = -1
             while not bridge.closed.is_set():
                 if not self.login_session():
                     self.wfile.write(b'event: logout\ndata: {}\n\n')
@@ -733,3 +753,37 @@ class Handler(BaseHTTPRequestHandler):
             with session.condition:
                 session.viewers -= 1
                 session.touched = time.monotonic()
+
+    def stream_incremental(self, bridge, thread_id, session, epoch, sequence):
+        """Snapshot/incremental frames behind an explicit ready gate.
+
+        The timeline versions window is the replay buffer; changes() already
+        falls back to a reset page whenever a cursor is unusable, so this loop
+        only maps that result onto frame types. ready carries no id: a resumed
+        connection must never skip past an unsent snapshot.
+        """
+        with session.condition:
+            welcome = {'epoch': session.timeline.epoch, 'sequence': session.sequence}
+        self.sse_frame('ready', welcome)
+        while not bridge.closed.is_set():
+            if not self.login_session():
+                self.sse_frame('logout', {})
+                return
+            with session.condition:
+                session.condition.wait_for(
+                    lambda: session.sequence != sequence or session.timeline.epoch != epoch or bridge.closed.is_set(),
+                    timeout=12)
+                changed = session.sequence != sequence or session.timeline.epoch != epoch
+            if not self.login_session():
+                self.sse_frame('logout', {})
+                return
+            if changed:
+                payload = self.with_timeline_agents(
+                    bridge.timeline_read(thread_id, 'changes', after=sequence, epoch=epoch, start=''))
+                epoch, sequence = payload['epoch'], payload['sequence']
+                self.sse_frame('reset' if payload.get('reset') else 'changes', payload,
+                               cursor=f"{epoch}.{sequence}")
+            else:
+                self.wfile.write(b": heartbeat\n\n")
+                self.wfile.flush()
+            bridge.closed.wait(0.2)
