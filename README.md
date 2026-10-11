@@ -350,6 +350,8 @@ python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh,zcode
 
 桌面打包 App 默认仍只接入 Codex；如需多 Agent，在启动 App 前注入环境变量（值与 `--agents` 相同）：macOS 执行 `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` 后再打开 App，或从终端 `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`；显式传 `--agents` 优先级更高。
 
+可选：设置 `TYPESAFE_API_KEY`（TypeSafe AI 的 Jev 判断模型）后，手机端的权限确认卡片会获得顾问式预判——风险分级、可撤销性、置信度和建议选项（星标），高风险请求排在待确认列表最前；Jev 只做标注与排序，不会代替你点击允许或拒绝。未配置时保持本地确定性风险标签，行为与之前一致。`TYPESAFE_BASE_URL` 与 `JEV_MODEL` 可覆盖默认端点与模型。
+
 ## 外网访问：临时 HTTPS 隧道
 
 适合没有公网 IP、没有域名，或手机无法接入校园/公司 VPN 的情况。电脑主动向隧道服务建立出站连接，手机访问生成的 HTTPS 地址。

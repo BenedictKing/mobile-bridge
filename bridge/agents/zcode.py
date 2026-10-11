@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .acp import AcpUnavailable
 from .acp_adapter import AcpAdapter
+from .native_subagents import ZcodeSubagentStore
 from . import zcode_creds
 
 
@@ -81,6 +82,28 @@ class ZcodeAdapter(AcpAdapter):
     def _argv(self):
         # The wrapper speaks ACP directly; there is no 'acp' subcommand.
         return list(self._full_argv)
+
+    _subagent_store = None
+
+    def _native_subagents(self):
+        # The ACP wrapper never replays spawned children; zcode archives them
+        # under ~/.zcode/cli/agents with parent metadata per directory.
+        if self._subagent_store is None:
+            try:
+                self._subagent_store = ZcodeSubagentStore(Path.home() / '.zcode')
+            except RuntimeError:  # Windows environments without HOME/USERPROFILE
+                return None
+        return self._subagent_store
+
+    def subagent_threads(self, thread_id):
+        store = self._native_subagents()
+        return store.children(thread_id) if store else []
+
+    def subagent_history(self, thread_id):
+        store = self._native_subagents()
+        if store is None:
+            raise KeyError('此会话没有可读取的子 Agent 记录')
+        return store.history(thread_id)
 
     def _set_mode(self, handle, session, mode_id):
         super()._set_mode(handle, session, self.MODE_MAP.get(mode_id, mode_id))

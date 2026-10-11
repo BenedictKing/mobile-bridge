@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### Added
+
+- Optional Jev (TypeSafe AI) advisory triage for manual permission confirmations: with `TYPESAFE_API_KEY` set, each approval card gets a risk level, reversibility, confidence, and a starred suggested option, and the riskiest pending confirmations sort first. Jev only annotates and ranks — approvals still require an explicit tap, and unconfigured gateways keep the deterministic local labels.
+- ACP agents that archive sub-agents as independent on-disk sessions are now discoverable: kimi session directories (`state.json` + per-agent wire logs), zcode (`acp-lazy-sessions.json` mapping + `cli/agents` transcripts), and claude (`subagents/` sidechain files) all feed the same timeline activity rows, read-only with size caps and mtime caching.
+
 ### Changed / Fixed
 
 - Live chat updates now stream over incremental SSE (ready/changes/reset frames with `epoch.sequence` cursor resume); the web client uses one transport module for SSE and long-polling, with capped reconnect backoff and definitive logout on auth expiry. Legacy full-state SSE and the polling endpoints stay byte-compatible.
@@ -10,4 +15,4 @@
 - English UI now translates native list, send-mode, and work-mode options; migration documentation matches local and remote directory behavior.
 - Child-agent transcripts now preserve nested ACP output, Codex child rollouts, agent identity, status, and command output; queueing can be disabled per chat.
 - DeepSeek Harness exposes its native permission modes through the phone UI; other ACP `mode` options remain untouched when they represent collaboration modes, and Codex retains desktop-owned permission policy.
-- Affected files: `bridge/service.py`, `bridge/uploads.py`, `web/`, and related tests.
+- Affected files: `bridge/jev.py`, `bridge/agents/native_subagents.py`, `bridge/service.py`, `bridge/agents/{kimi,zcode,claude}.py`, `web/`, and related tests.

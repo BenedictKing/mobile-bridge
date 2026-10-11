@@ -1,7 +1,15 @@
+## Jev 权限预判与 ACP 原生子会话发现（2026-10-11，未发布）
+
+- Jev 顾问式权限预判：新增 `bridge/jev.py` 与 `Bridge._annotate_assessments`。配置 `TYPESAFE_API_KEY` 后（`TYPESAFE_BASE_URL`/`JEV_MODEL` 可覆盖，默认 api.typesafe.ai / jev-latest），对 `acp/requestPermission`、Codex 命令/文件/权限审批与 computer-use 卡片发起一次 `/v1/systemone` 请求（score 风险分级 0-3 + noul 可撤销性 + choice 建议选项，choice 选项按卡片实际可用的原生决策裁剪并始终保留 review）；评估按请求指纹缓存（256 条上限、失败缓存不重试），完成回调 `session.changed()` 经既有增量 SSE 推送刷新。待确认列表按风险降序稳定排序（同风险保序），前端 `web/app.js` 显示 Jev 徽章（分级/置信度/可撤销性）、给建议按钮加星标记，未配置或失败时回退既有本地确定性标签；Jev 无任何自动回应路径，`respond` 仍只接受用户显式提交。
+- ACP 原生子会话发现：新增 `bridge/agents/native_subagents.py`（kimi/zcode/claude 三个只读存储读取器）并接入三个适配器的 `subagent_threads`/`subagent_history`。kimi 经 `session_index.jsonl` 定位会话目录，读 `state.json` agents 表与 `agents/main/wire.jsonl` 的 `task.started(info.kind=agent)` 取类型/状态，子 transcript 解析 `turn.prompt`/`append_message`/`tool.call`/`tool.result`；子 ID 带 `父会话/` 前缀（每会话都有 `agent-0`，裸名会跨会话撞缓存，已用真实数据复现并修复）。zcode 经 `v2/acp-lazy-sessions.json` 映射后读 `cli/agents/<sid>/agent_*/metadata.json` 与 transcript（turn_started/tool_call_scheduled/model_complete/turn_complete，跳过 streaming 噪声）。claude 按 `projects/<slug>/<父会话>/subagents/agent-*.jsonl` 目录约定，配对 tool_use/tool_result。读取全部带字节（8 MiB transcript/4 MiB 索引）与条目（4000 事件/32 子）上限，按 mtime 签名缓存，布局缺失静默返回空。
+- 真实数据冒烟（本机只读）：kimi 27 个含子会话的真实会话全部发现（修复后各会话条目数互不相同，无串档）；zcode 40 个含子会话父目录中取样转换为 51 条 timeline 项（1 prompt + 48 tool + 2 回复）；无 transcript 的子目录优雅降级为空记录；claude 25 个 sidechain 文件按父会话目录定位成功。
+- 自动检查：Python 全量 671 项通过、6 项平台条件跳过（新增 `tests/test_jev.py` 13 项：题型映射、指纹、可用决策裁剪、响应规整、推荐到原生选项 ID 的映射、缓存单飞与失败不重试、评估经 view 到达并排序、禁用时零改动；`tests/test_native_subagents.py` 10 项：三家布局合成用例 + 同名子会话隔离 + Bridge 时间线集成）；桌面 Node 158 项通过、i18n 1 项通过。
+- 未验证：Jev 线上真实调用（本机未配置 `TYPESAFE_API_KEY`，HTTP 路径仅以注入 fake `_call` 回归覆盖；端点行为依据 docs.typesafe.ai 的 /v1/systemone 文档实现，429/529 按不可用回退）；dsh 子会话因 zstd 压缩保持不可发现（stdlib-only Python 无解压能力）；zcode 700 MB `db.sqlite` 的 `session.parent_id` 通道未使用（文件层已足够）；mcode 本机无子会话样本，未做处理。
+
 ## 子 Agent 展示、权限模式与队列策略（2026-10-11，未发布）
 
 - 子 Agent：Codex 本地与 SSH child thread、Kimi/ZCode/MiniMax/Claude/DeepSeek ACP 的嵌套 `tool_call` 输出均通过同一时间线活动模型展示；保留 Agent ID、类型、状态、停止原因、命令和 transcript。远程 Codex 通过 SSH 读取 child thread 与 rollout。
-- 权限：ACP Agent 的原生权限模式通过 `/api/sessions/<sid>/permissions` 读取和切换；Codex 仍由桌面端持有策略，仅提供请求级审批和具体命令展示。Jev 尚未接入生产链路，只保留本地确定性风险标签。
+- 权限：ACP Agent 的原生权限模式通过 `/api/sessions/<sid>/permissions` 读取和切换；Codex 仍由桌面端持有策略，仅提供请求级审批和具体命令展示。Jev 预判见上方独立记录。
 - 队列：每聊天持久化启用状态，支持关闭/开启排队；已有排队消息保留，立即发送、编辑、删除继续可用。
 - 自动检查：Python 全量 647 项通过、10 项平台条件跳过；ACP/时间线/Bridge 定向 134 项通过、2 项跳过；桌面/网页 Node 158 项通过。新增嵌套 ACP transcript、child rollout、远程 child history、权限模式和队列开关回归。
 - 未验证：真实 Kimi、ZCode、MiniMax、Claude、DeepSeek 的子 Agent 独立 session 形状仍需实机确认；若 Agent 不把子 Agent transcript 放在父 `tool_call` 输出中，ACP 协议本身没有统一的 child-session 关联字段可读取。

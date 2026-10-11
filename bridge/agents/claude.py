@@ -2,9 +2,11 @@
 import os
 import shlex
 import shutil
+from pathlib import Path
 
 from .acp import AcpUnavailable
 from .acp_adapter import AcpAdapter
+from .native_subagents import ClaudeSubagentStore
 
 
 def discover_argv():
@@ -54,6 +56,28 @@ class ClaudeAdapter(AcpAdapter):
             argv = [argv]
         super().__init__(argv[0], **kwargs)
         self._full_argv = list(argv)
+
+    _subagent_store = None
+
+    def _native_subagents(self):
+        # Claude Code writes sidechain transcripts next to the parent session
+        # file; discovery is the subagents/ directory convention.
+        if self._subagent_store is None:
+            try:
+                self._subagent_store = ClaudeSubagentStore(Path.home() / '.claude')
+            except RuntimeError:  # Windows environments without HOME/USERPROFILE
+                return None
+        return self._subagent_store
+
+    def subagent_threads(self, thread_id):
+        store = self._native_subagents()
+        return store.children(thread_id) if store else []
+
+    def subagent_history(self, thread_id):
+        store = self._native_subagents()
+        if store is None:
+            raise KeyError('此会话没有可读取的子 Agent 记录')
+        return store.history(thread_id)
 
     def _argv(self):
         # The wrapper speaks ACP directly; there is no 'acp' subcommand.

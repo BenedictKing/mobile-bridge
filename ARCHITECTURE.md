@@ -153,7 +153,7 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 ### 会话迁移
 
-权限请求保留 Agent 提供的具体命令、工作目录、网络上下文和文件变更，前端按请求类型显示可审计详情及风险标签；批准动作仍由 Agent 原生选项和用户明确点击决定。Jev 可作为后续风险分类的可选辅助，不能直接授予权限，未配置时使用本地确定性标签。
+权限请求保留 Agent 提供的具体命令、工作目录、网络上下文和文件变更，前端按请求类型显示可审计详情及风险标签；批准动作仍由 Agent 原生选项和用户明确点击决定。配置 `TYPESAFE_API_KEY` 后，Jev 判断模型（TypeSafe `/v1/systemone`，可用 `TYPESAFE_BASE_URL`/`JEV_MODEL` 覆盖）对需要手动确认的权限请求做顾问式预判：风险分级（常规/低/中/高）、可撤销性、建议选项与置信度；高风险请求在待确认列表中排前，建议选项在按钮上加星标记。Jev 只排序和标注，绝不代为授权，任何回应仍需用户点击原生按钮。评估按请求指纹缓存、失败静默回退本地确定性标签；未配置时不产生任何网络请求。
 
 `GET/POST /api/sessions/<sid>/permissions` 读取或切换 Agent 暴露的权限模式。当前仅 DeepSeek Harness 的 `mode` 配置明确作为权限预设；其他 ACP Agent 的 `mode` 可能是协作模式，不能误当权限设置。Codex 当前只保留桌面权限上下文并显示单次审批，未通过未经确认的 IPC 字段写入桌面权限策略。
 
@@ -161,7 +161,7 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 队列策略按聊天持久化，`action=disable/enable` 控制是否允许新消息进入队列；关闭排队不会删除已经排队的消息。
 
-子 Agent：Codex 本地与 SSH 会话从 `thread_spawn_edges` 读取 child thread；ACP Agent 从 `tool_call` 的嵌套输出读取子 Agent transcript。时间线保留子 Agent ID、类型、状态、停止原因和命令输出，并将其作为可展开 activity 展示。
+子 Agent：Codex 本地与 SSH 会话从 `thread_spawn_edges` 读取 child thread；ACP Agent 从 `tool_call` 的嵌套输出读取子 Agent transcript。此外，把子 Agent 存为独立落盘会话的 Agent 由各自的原生存储补充发现（`bridge/agents/native_subagents.py`）：kimi 读会话目录 `state.json` 的 agents 表与每子 `wire.jsonl`（子 ID 带 `父会话/` 前缀去重）；zcode 经 `~/.zcode/v2/acp-lazy-sessions.json` 把 ACP 会话映射到后端 `sess_*` 后读 `~/.zcode/cli/agents/<sid>/agent_*/` 的 metadata 与 transcript；claude 按 `~/.claude/projects/<slug>/<父会话>/subagents/*.jsonl` 目录约定发现 sidechain。读取均为只读、带字节与条目上限、按 mtime 缓存，布局缺失时静默返回空。dsh 的子会话是 zstd 压缩事件流，网关所用的 stdlib-only Python 无 zstd 解压能力，保持不可发现。时间线保留子 Agent ID、类型、状态、停止原因和命令输出，并将其作为可展开 activity 展示。
 
 `POST /api/sessions/<sid>/migrate`（body `{agent, scope?, project?, id, uiLocale?}`）把当前会话的上下文搬到另一个（或同一个）Agent 的新会话。`scope` 选择复制范围，默认 `main`：
 
