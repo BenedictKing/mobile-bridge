@@ -481,7 +481,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.output(200, self.server.notifications.policy(thread_id, bridge.host, body if write else None))
             if not write:
                 if action == 'timeline':
-                    return self.output(200, bridge.timeline_read(thread_id, limit=int(query.get('limit', ['20'])[0]), before=query.get('before', [None])[0]))
+                    return self.output(200, self.with_timeline_agents(
+                        bridge.timeline_read(thread_id, limit=int(query.get('limit', ['20'])[0]), before=query.get('before', [None])[0])))
                 if action == 'detail':
                     return self.output(200, bridge.timeline_read(thread_id, 'detail', cursor=query.get('key', [''])[0],
                                                                offset=int(query.get('offset', ['0'])[0]), version=query.get('version', [None])[0]))
@@ -490,10 +491,9 @@ class Handler(BaseHTTPRequestHandler):
                                         query.get('epoch', [''])[0], query.get('start', [''])[0])
                 if action is None:
                     result = bridge.view(thread_id, background=True)
-                    registry = self.server.registry
-                    if registry is not None:
-                        result['agents'] = [{'kind': kind, 'label': registry.for_agent(kind).adapter.label}
-                                            for kind in registry.kinds()]
+                    agents = self.enabled_agents()
+                    if agents is not None:
+                        result['agents'] = agents
                     return self.output(200, result)
                 if action == "catalog":
                     kind = query.get("kind", [None])[0]
@@ -657,6 +657,26 @@ class Handler(BaseHTTPRequestHandler):
                 session.viewers -= 1
                 session.touched = time.monotonic()
 
+    def enabled_agents(self):
+        """Enabled agent descriptors, or None when running without a registry."""
+        registry = self.server.registry
+        if registry is None:
+            return None
+        return [{'kind': kind, 'label': registry.for_agent(kind).adapter.label}
+                for kind in registry.kinds()]
+
+    def with_timeline_agents(self, result):
+        """Expose the agent roster in timeline meta so live views keep it.
+
+        The chat screen renders exclusively from timeline pages and change
+        polls; without this the migrate control would lose its target list on
+        every refresh after the initial load.
+        """
+        agents = self.enabled_agents()
+        if agents is not None and 'meta' in result:
+            result['meta']['agents'] = agents
+        return result
+
     def changes(self, bridge, thread_id, after, epoch, start):
         session = bridge.session(thread_id, background=True)
         with session.condition:
@@ -665,7 +685,8 @@ class Handler(BaseHTTPRequestHandler):
             with session.condition:
                 session.condition.wait_for(lambda: session.sequence != after or epoch != session.timeline.epoch or bridge.closed.is_set(), timeout=12)
             if self.authorized():
-                self.output(200, bridge.timeline_read(thread_id, 'changes', after=after, epoch=epoch, start=start))
+                self.output(200, self.with_timeline_agents(
+                    bridge.timeline_read(thread_id, 'changes', after=after, epoch=epoch, start=start)))
         finally:
             with session.condition:
                 session.viewers -= 1
