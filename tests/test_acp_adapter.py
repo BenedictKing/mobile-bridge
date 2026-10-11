@@ -120,13 +120,10 @@ class AcpAdapterTests(unittest.TestCase):
                          ['userMessage', 'agentThought', 'agentMessage'])
         self.assertEqual(second['messages'][2]['text'], 'done')
 
-    def test_permission_modes_use_native_mode_config_option(self):
+    def test_generic_acp_does_not_treat_work_mode_as_permission(self):
         _, _, bridge = self.make_bridge()
         settings = bridge.permission_settings(SID)
-        self.assertTrue(settings['supported'])
-        self.assertEqual(settings['current'], 'default')
-        bridge.set_permission_mode(SID, 'plan')
-        self.assertEqual(bridge.permission_settings(SID)['current'], 'plan')
+        self.assertFalse(settings['supported'])
 
     def test_empty_chunks_do_not_create_empty_rows(self):
         fake = FakeAcpAgent(

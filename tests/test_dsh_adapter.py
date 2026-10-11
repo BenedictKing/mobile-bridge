@@ -142,6 +142,14 @@ class DshBridgeTests(unittest.TestCase):
         self.assertEqual(view['effort'], 'high')
         self.assertEqual(view['collaborationMode'], 'default')
 
+    def test_permission_modes_use_dsh_mode_config(self):
+        _, _, bridge = self.make_bridge()
+        settings = bridge.permission_settings(SID)
+        self.assertTrue(settings['supported'])
+        self.assertEqual(settings['current'], 'workspace-write')
+        bridge.set_permission_mode(SID, 'read-only')
+        self.assertEqual(bridge.permission_settings(SID)['current'], 'read-only')
+
     def test_current_mode_update_is_permission_preset_not_collaboration(self):
         fake, _, bridge = self.make_bridge()
         fake.prompt_updates = [

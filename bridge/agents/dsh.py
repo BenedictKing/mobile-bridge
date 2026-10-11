@@ -123,3 +123,9 @@ class DshAdapter(AcpAdapter):
             raise ValueError('当前 Agent 不支持此工作模式')
         if option.get('currentValue') != mode_id:
             self._set_config(handle, session, option['id'], mode_id)
+
+    def _permission_option(self, handle):
+        # DSH's `mode` is the permission preset; collaboration_mode remains
+        # reserved for the bridge's Plan/Default work mode.
+        return next((option for option in handle.config_options
+                     if isinstance(option, dict) and option.get('id') == 'mode'), None)

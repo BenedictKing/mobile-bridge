@@ -666,8 +666,8 @@ class AcpAdapter(AgentAdapter):
     def _permission_option(self, handle):
         return next((option for option in handle.config_options
                       if isinstance(option, dict) and
-                      (option.get('category') in ('mode', 'permission', 'approval') or
-                       option.get('id') in ('mode', 'permission', 'approvalPolicy', 'sandboxPolicy'))), None)
+                      (option.get('category') in ('permission', 'approval') or
+                       option.get('id') in ('permission', 'approvalPolicy', 'sandboxPolicy'))), None)
 
     def permission_settings(self, session):
         handle = self._handles.get(session.id)

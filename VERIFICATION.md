@@ -1,3 +1,11 @@
+## 子 Agent 展示、权限模式与队列策略（2026-10-11，未发布）
+
+- 子 Agent：Codex 本地与 SSH child thread、Kimi/ZCode/MiniMax/Claude/DeepSeek ACP 的嵌套 `tool_call` 输出均通过同一时间线活动模型展示；保留 Agent ID、类型、状态、停止原因、命令和 transcript。远程 Codex 通过 SSH 读取 child thread 与 rollout。
+- 权限：ACP Agent 的原生权限模式通过 `/api/sessions/<sid>/permissions` 读取和切换；Codex 仍由桌面端持有策略，仅提供请求级审批和具体命令展示。Jev 尚未接入生产链路，只保留本地确定性风险标签。
+- 队列：每聊天持久化启用状态，支持关闭/开启排队；已有排队消息保留，立即发送、编辑、删除继续可用。
+- 自动检查：Python 全量 647 项通过、10 项平台条件跳过；ACP/时间线/Bridge 定向 134 项通过、2 项跳过；桌面/网页 Node 158 项通过。新增嵌套 ACP transcript、child rollout、远程 child history、权限模式和队列开关回归。
+- 未验证：真实 Kimi、ZCode、MiniMax、Claude、DeepSeek 的子 Agent 独立 session 形状仍需实机确认；若 Agent 不把子 Agent transcript 放在父 `tool_call` 输出中，ACP 协议本身没有统一的 child-session 关联字段可读取。
+
 ## 事件同步协议升级：增量 SSE 与统一传输层（2026-10-11，未发布）
 
 - 范围：`docs/event-sync-plan.md`（阶段一/二）落地。服务端 `GET /api/sessions/<id>/events?incremental=1` 新增增量帧协议：`ready` 门控首帧、`changes` 增量行、`reset` 快照页、`logout`，`id:` 为 `<epoch>.<sequence>` 游标，经 `Last-Event-ID`（EventSource 自动重连回传）或 `?since=`（手动重连兜底）续传；游标失效（epoch 轮换、超出 `versions` 16 窗口、增量超 100 行/192 KiB）自动回落 reset——判定完全复用 `timeline.changes()` 的回退分支，`Timeline` 数据结构零改动。不带 `incremental` 参数的字节流与升级前一致（`event: state` 全量 + 12 秒心跳 + logout）；`changes`/`poll`/`/api/auth` 响应格式与 `transport` 字段语义均不变（外部移动端客户端契约保持）。

@@ -155,7 +155,7 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 权限请求保留 Agent 提供的具体命令、工作目录、网络上下文和文件变更，前端按请求类型显示可审计详情及风险标签；批准动作仍由 Agent 原生选项和用户明确点击决定。Jev 可作为后续风险分类的可选辅助，不能直接授予权限，未配置时使用本地确定性标签。
 
-`GET/POST /api/sessions/<sid>/permissions` 读取或切换 ACP Agent 暴露的权限模式。Codex 当前只保留桌面权限上下文并显示单次审批，未通过未经确认的 IPC 字段写入桌面权限策略。
+`GET/POST /api/sessions/<sid>/permissions` 读取或切换 Agent 暴露的权限模式。当前仅 DeepSeek Harness 的 `mode` 配置明确作为权限预设；其他 ACP Agent 的 `mode` 可能是协作模式，不能误当权限设置。Codex 当前只保留桌面权限上下文并显示单次审批，未通过未经确认的 IPC 字段写入桌面权限策略。
 
 `POST /api/sessions/<sid>/queue`（body `{id, action, text?}`）管理排队消息：`send` 在当前任务空闲时立即发送，`edit` 修改待发送文本，`delete` 删除排队项。队列项在当前任务完成后自动发送；目标/计划激活消息不可编辑。
 
