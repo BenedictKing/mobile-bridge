@@ -4,6 +4,7 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
+import os
 import re
 import subprocess
 import threading
@@ -28,6 +29,7 @@ from .accounts import Accounts, operation
 from .goal import GoalRPC, GoalError, GoalUnavailable, GoalUnsupported, goal_activation, goal_identity, normalize_goal_result, normalize_ui_locale, goal_command_fingerprint, goal_state_confirms_command, native_goal_absent, normalize_goal, plan_goal_command, read_native_goal
 from .uploads import Uploads, image_type
 from .remote import upload_file
+from .jev import JevAssessor, assessable, fingerprint, parse_recommendation
 from .agents.base import Capability
 from .agents.codex import CodexAdapter
 
@@ -241,6 +243,9 @@ class Bridge:
         self.goal_commands_path = self.data_dir / 'goal-commands.json'
         self.goal_commands = json.loads(self.goal_commands_path.read_text(encoding='utf-8')) if self.goal_commands_path.exists() else {}
         self.goal_lock = threading.RLock()
+        self.assessor = JevAssessor(base_url=os.environ.get('TYPESAFE_BASE_URL'),
+                                    api_key=os.environ.get('TYPESAFE_API_KEY'),
+                                    model=os.environ.get('JEV_MODEL'))
         adapter.bind(self)
         for command in self.goal_commands.values():
             if command.get('state') in ('pending', 'sent'):
@@ -1110,7 +1115,7 @@ class Bridge:
 
     def view(self, thread_id, attach=True, background=False, force=False):
         session = self.session(thread_id, attach=attach, background=background, force=force)
-        view = self._add_subagents(thread_id, session.view())
+        view = self._annotate_assessments(session, self._add_subagents(thread_id, session.view()))
         view["host"] = self.host
         view["hostLabel"] = "此电脑" if self.host == "local" else self.hosts.hosts().get(self.host, {}).get("displayName", self.host)
         view["goalTransport"] = self.goal_transport
@@ -1354,6 +1359,42 @@ class Bridge:
             view["goal"] = None
         return view
 
+    def _annotate_assessments(self, session, view):
+        """Attach advisory Jev triage to manual permission confirmations.
+
+        Assessments only rank and annotate; the native approval buttons stay
+        the sole way to answer. Callers hold session.condition, so a completed
+        lookup re-wakes SSE watchers through session.changed().
+        """
+        requests = view.get('requests')
+        if not isinstance(requests, list) or not self.assessor.enabled:
+            return view
+        context = {'agent': self.adapter.kind,
+                   'cwd': (session.state or {}).get('cwd') or view.get('cwd')}
+        for request in requests:
+            if not isinstance(request, dict) or not assessable(request):
+                continue
+            key = fingerprint(request)
+            assessment = self.assessor.cached(key)
+            if assessment is None:
+                def done(_result, session=session):
+                    with session.condition:
+                        session.changed()
+                self.assessor.start(key, request, context, done)
+                continue
+            if assessment:
+                request['assessment'] = assessment
+                recommendation = parse_recommendation(request, assessment)
+                if recommendation:
+                    request['recommend'] = recommendation
+        # Riskiest confirmations surface first; ties keep arrival order.
+        view['requests'] = sorted(
+            requests,
+            key=lambda r: (-(r.get('assessment') or {}).get('risk', -1),
+                           -((r.get('assessment') or {}).get('confidence') or 0.0))
+            if isinstance(r, dict) and assessable(r) else (1, 0.0))
+        return view
+
     def timeline_read(self, thread_id, mode='page', **options):
         session = self.session(thread_id, background=True)
         # Expand saved history only when the reader reaches its loaded edge.
@@ -1371,7 +1412,9 @@ class Bridge:
                     session.set_history(saved)
         with session.condition:
             projection = session.timeline
-            authoritative_view = self._overlay_native_goal(session, thread_id, self._add_subagents(thread_id, session.view()))
+            authoritative_view = self._overlay_native_goal(
+                session, thread_id,
+                self._annotate_assessments(session, self._add_subagents(thread_id, session.view())))
             if (projection.sequence != session.sequence or projection.meta.get("goal") != authoritative_view.get("goal") or
                     projection.meta.get("subagentRevision") != authoritative_view.get("subagentRevision")):
                 projection.update(authoritative_view)

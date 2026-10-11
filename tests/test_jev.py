@@ -1,0 +1,276 @@
+"""Jev advisory triage: pure mapping helpers plus the Bridge annotation path."""
+import tempfile
+import threading
+import time
+import unittest
+import uuid
+from pathlib import Path
+
+from bridge.agents.kimi import KimiAdapter
+from bridge.jev import (JevAssessor, RISK_LABELS, assessable, build_payload,
+                        fingerprint, normalize_answer, parse_recommendation)
+from bridge.service import Bridge
+from tests.fake_acp import FakeAcpAgent
+from tests.test_acp_adapter import CONFIG_OPTIONS, MODES, SID, UPDATED, chunk
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def acp_permission(options=(('allow', 'Allow once', 'allow_once'),
+                            ('always', 'Always allow', 'allow_always'),
+                            ('deny', 'Deny', 'reject_once'))):
+    return {'id': 'req-1', 'method': 'acp/requestPermission', 'supported': True,
+            'params': {'title': 'Run ls', 'command': 'ls -la',
+                       'options': [{'id': oid, 'label': label, 'kind': kind}
+                                   for oid, label, kind in options]}}
+
+
+def codex_command(decisions=('accept', 'decline', 'cancel')):
+    return {'id': 'req-2', 'method': 'item/commandExecution/requestApproval', 'supported': True,
+            'params': {'command': 'rm -rf /tmp/scratch', 'cwd': '/work',
+                       'availableDecisions': list(decisions)}}
+
+
+class JevMappingTests(unittest.TestCase):
+    def test_assessable_covers_permission_confirmations_only(self):
+        self.assertTrue(assessable(acp_permission()))
+        self.assertTrue(assessable(codex_command()))
+        self.assertTrue(assessable({'method': 'item/fileChange/requestApproval', 'supported': True, 'params': {}}))
+        self.assertTrue(assessable({'method': 'item/permissions/requestApproval', 'supported': True, 'params': {}}))
+        elicitation = {'method': 'mcpServer/elicitation/request', 'supported': True,
+                       'params': {'computerUse': {'app': 'Safari', 'persistModes': ['session']}}}
+        self.assertTrue(assessable(elicitation))
+        self.assertFalse(assessable({'method': 'mcpServer/elicitation/request', 'supported': True,
+                                     'params': {'requestedSchema': {'type': 'object'}}}))
+        self.assertFalse(assessable({'method': 'item/tool/requestUserInput', 'supported': True, 'params': {}}))
+        self.assertFalse(assessable({'method': 'item/plan/requestImplementation', 'supported': True, 'params': {}}))
+        self.assertFalse(assessable({'method': 'acp/requestPermission', 'supported': False, 'params': {}}))
+
+    def test_fingerprint_tracks_payload_not_identity(self):
+        first, second = acp_permission(), acp_permission()
+        second['id'] = 'req-other'
+        self.assertEqual(fingerprint(first), fingerprint(second))
+        second['params']['command'] = 'sudo rm -rf /'
+        self.assertNotEqual(fingerprint(first), fingerprint(second))
+        self.assertEqual(len(fingerprint(first)), 32)
+
+    def test_payload_shape_and_available_options(self):
+        payload = build_payload(acp_permission(), {'agent': 'kimi', 'cwd': '/work'})
+        self.assertEqual(payload['model'], 'jev-latest')
+        self.assertEqual(payload['state']['command'], 'ls -la')
+        self.assertEqual(payload['state']['agent'], 'kimi')
+        self.assertEqual(sorted(payload['questions']), ['recommend', 'reversible', 'risk'])
+        self.assertEqual(payload['questions']['risk']['type'], 'score')
+        self.assertEqual(len(payload['questions']['risk']['criteria']), 4)
+        self.assertEqual(payload['questions']['reversible']['type'], 'noul')
+        # accept_session is absent from the card and must stay out of the choice.
+        self.assertEqual(sorted(payload['questions']['recommend']['criteria']),
+                         ['accept_always', 'accept_once', 'decline', 'review'])
+
+    def test_available_decisions_from_native_fields(self):
+        payload = build_payload(codex_command(), {})
+        self.assertEqual(sorted(payload['questions']['recommend']['criteria']),
+                         ['accept_once', 'decline', 'review'])
+        # Cards without decision metadata still offer the primary pair.
+        bare = codex_command()
+        del bare['params']['availableDecisions']
+        payload = build_payload(bare, {})
+        self.assertEqual(sorted(payload['questions']['recommend']['criteria']),
+                         ['accept_once', 'decline', 'review'])
+
+    def test_normalize_answer_rounds_and_clamps(self):
+        payload = {'answers': {
+            'risk': {'type': 'score', 'score': 2.4, 'confidence': 0.9},
+            'reversible': {'type': 'noul', 'noul': 0.18},
+            'recommend': {'type': 'choice', 'choice': 'accept_once',
+                          'probabilities': {'accept_once': 0.8, 'decline': 0.2}, 'confidence': 0.75},
+        }}
+        assessment = normalize_answer(payload)
+        self.assertEqual(assessment['source'], 'jev')
+        self.assertEqual(assessment['risk'], 2)
+        self.assertEqual(assessment['riskLabel'], RISK_LABELS[2])
+        self.assertEqual(assessment['reversible'], 0.18)
+        self.assertEqual(assessment['recommend'], 'accept_once')
+        self.assertEqual(assessment['confidence'], 0.75)
+        self.assertEqual(assessment['options'], {'accept_once': 0.8, 'decline': 0.2})
+
+    def test_normalize_answer_rejects_malformed(self):
+        self.assertIsNone(normalize_answer({}))
+        self.assertIsNone(normalize_answer({'answers': {'risk': {}, 'recommend': {}}}))
+        bad_choice = {'answers': {'risk': {'score': 1},
+                                  'recommend': {'choice': 'accept_forever'}}}
+        self.assertIsNone(normalize_answer(bad_choice))
+        clamped = normalize_answer({'answers': {'risk': {'score': 9},
+                                                'recommend': {'choice': 'decline'}}})
+        self.assertEqual(clamped['risk'], 3)
+
+    def test_parse_recommendation_targets_native_ids(self):
+        high = {'source': 'jev', 'recommend': 'decline', 'risk': 3, 'confidence': 0.9}
+        self.assertEqual(parse_recommendation(acp_permission(), high), 'deny')
+        once = {'source': 'jev', 'recommend': 'accept_once', 'risk': 1, 'confidence': 0.8}
+        self.assertEqual(parse_recommendation(acp_permission(), once), 'allow')
+        always = {'source': 'jev', 'recommend': 'accept_always', 'risk': 0, 'confidence': 0.7}
+        self.assertEqual(parse_recommendation(acp_permission(), always), 'always')
+        self.assertEqual(parse_recommendation(codex_command(), once), 'accept')
+        self.assertEqual(parse_recommendation(codex_command(), high), 'decline')
+        self.assertIsNone(parse_recommendation(codex_command(), {'source': 'local'}))
+        self.assertIsNone(parse_recommendation(codex_command(),
+                                               {'source': 'jev', 'recommend': 'review'}))
+        elicitation = {'method': 'mcpServer/elicitation/request', 'supported': True,
+                       'params': {'computerUse': {'app': 'Safari', 'persistModes': ['session', 'always']}}}
+        self.assertEqual(parse_recommendation(elicitation, once), 'once')
+        self.assertEqual(parse_recommendation(elicitation, always), 'always')
+        self.assertEqual(parse_recommendation(elicitation,
+                                              {'source': 'jev', 'recommend': 'accept_session'}), 'session')
+
+
+class JevAssessorTests(unittest.TestCase):
+    def test_disabled_without_api_key(self):
+        assessor = JevAssessor()
+        self.assertFalse(assessor.enabled)
+        self.assertFalse(assessor.start('k', acp_permission(), {}, lambda a: None))
+
+    def test_assessment_runs_once_and_caches(self):
+        assessor = JevAssessor(api_key='test-key')
+        seen = []
+        done = threading.Event()
+
+        def on_done(assessment):
+            seen.append(assessment)
+            done.set()
+
+        def fake_call(payload):
+            self.assertEqual(payload['model'], 'jev-latest')
+            self.assertTrue(payload['state'])
+            return {'answers': {
+                'risk': {'score': 1.2},
+                'reversible': {'noul': 0.9},
+                'recommend': {'choice': 'accept_once', 'confidence': 0.66},
+            }}
+
+        assessor._call = fake_call
+        request = acp_permission()
+        self.assertTrue(assessor.start(fingerprint(request), request, {}, on_done))
+        # A second start while in flight is ignored; the key dedupes callers.
+        self.assertFalse(assessor.start(fingerprint(request), request, {}, on_done))
+        self.assertTrue(done.wait(5))
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]['recommend'], 'accept_once')
+        self.assertEqual(assessor.cached(fingerprint(request)), seen[0])
+
+    def test_failure_caches_none_without_retry_loop(self):
+        assessor = JevAssessor(api_key='test-key')
+        done = threading.Event()
+
+        def on_done(assessment):
+            self.assertIsNone(assessment)
+            done.set()
+
+        def broken_call(payload):
+            raise OSError('Jev endpoint returned HTTP 429')
+
+        assessor._call = broken_call
+        request = codex_command()
+        assessor.start(fingerprint(request), request, {}, on_done)
+        self.assertTrue(done.wait(5))
+        self.assertIsNone(assessor.cached(fingerprint(request)))
+        self.assertFalse(assessor.start(fingerprint(request), request, {}, on_done))
+
+
+class BridgeAssessmentTests(unittest.TestCase):
+    def make_bridge(self, canned):
+        fake = FakeAcpAgent(
+            config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],
+            modes=dict(MODES),
+            list_rows=[{'sessionId': SID, 'cwd': '/work', 'title': 'Old', 'updatedAt': UPDATED}])
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        adapter = KimiAdapter('fake-acp', data_dir=Path(tmp.name) / 'data',
+                              spawn=fake.spawn_factory())
+        bridge = Bridge(Path(tmp.name), Path(tmp.name) / 'data', adapter=adapter)
+        self.addCleanup(bridge.close)
+        bridge.assessor = JevAssessor(api_key='test-key')
+        bridge.assessor._call = canned
+        return fake, bridge
+
+    def wait_for(self, predicate, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_assessment_reaches_the_view_and_guides_the_choice(self):
+        canned = {'answers': {
+            'risk': {'score': 2.6},
+            'reversible': {'noul': 0.1},
+            'recommend': {'choice': 'decline', 'confidence': 0.9},
+        }}
+        fake, bridge = self.make_bridge(lambda payload: canned)
+        fake.prompt_updates = [
+            ('permission', {'toolCall': {'toolCallId': 't1', 'title': 'Wipe scratch',
+                                         'kind': 'execute', 'status': 'in_progress',
+                                         'rawInput': {'command': 'rm -rf /tmp/scratch'}},
+                            'options': [{'optionId': 'allow', 'name': 'Allow once', 'kind': 'allow_once'},
+                                        {'optionId': 'deny', 'name': 'Deny', 'kind': 'reject_once'}]}),
+            chunk('agent_message_chunk', 'done'),
+        ]
+        bridge.view(SID)
+        bridge.send(SID, 'run it', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['requests']))
+        assessed = self.wait_for(lambda: bridge.view(SID)['requests'][0].get('assessment'))
+        self.assertTrue(assessed)
+        request = bridge.view(SID)['requests'][0]
+        self.assertEqual(request['assessment']['risk'], 3)
+        self.assertEqual(request['assessment']['riskLabel'], 'high')
+        self.assertEqual(request['recommend'], 'deny')
+        # The manual answer path is untouched: Jev never responds on its own.
+        with self.assertRaises(ValueError):
+            bridge.respond(SID, request['id'], {'optionId': 'bogus'})
+        self.assertEqual(bridge.respond(SID, request['id'], {'optionId': 'deny'})['ok'], True)
+
+    def test_riskiest_request_surfaced_first(self):
+        _, bridge = self.make_bridge(lambda payload: {'answers': {}})
+        safe = acp_permission()
+        safe['params']['command'] = 'ls -la'
+        risky = codex_command()
+        bridge.assessor._cache.update({
+            fingerprint(safe): {'source': 'jev', 'risk': 0, 'riskLabel': 'routine',
+                                'recommend': 'accept_once', 'confidence': 0.9},
+            fingerprint(risky): {'source': 'jev', 'risk': 3, 'riskLabel': 'high',
+                                 'recommend': 'decline', 'confidence': 0.5},
+        })
+        session = bridge.session(SID, background=True)
+
+        class Stub:
+            condition = session.condition
+            state = session.state
+
+        view = bridge._annotate_assessments(Stub(), {'requests': [safe, risky]})
+        ordered = view['requests']
+        self.assertEqual(ordered[0]['method'], 'item/commandExecution/requestApproval')
+        self.assertEqual(ordered[0]['recommend'], 'decline')
+        self.assertEqual(ordered[1]['recommend'], 'allow')
+        self.assertEqual(ordered[1]['assessment']['riskLabel'], 'routine')
+
+    def test_disabled_assessor_keeps_plain_requests(self):
+        fake, bridge = self.make_bridge(lambda payload: {'answers': {}})
+        bridge.assessor = JevAssessor()
+        fake.prompt_updates = [
+            ('permission', {'toolCall': {'toolCallId': 't1', 'title': 'Run ls', 'kind': 'execute',
+                                         'status': 'in_progress', 'rawInput': {'command': 'ls -la'}},
+                            'options': [{'optionId': 'allow', 'name': 'Allow once', 'kind': 'allow_once'},
+                                        {'optionId': 'deny', 'name': 'Deny', 'kind': 'reject_once'}]}),
+            chunk('agent_message_chunk', 'done'),
+        ]
+        bridge.view(SID)
+        bridge.send(SID, 'run it', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['requests']))
+        request = bridge.view(SID)['requests'][0]
+        self.assertNotIn('assessment', request)
+        self.assertNotIn('recommend', request)
+
+
+if __name__ == '__main__':
+    unittest.main()
