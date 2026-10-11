@@ -136,6 +136,11 @@ def normalize_item(item):
         row.update(role="activity", title="文件变更", text="\n\n".join(str(c.get("path", "")) + "\n" + str(c.get("diff", "")) for c in item.get("changes", [])))
     elif kind in ("mcpToolCall", "dynamicToolCall"):
         row.update(role="activity", title=" · ".join(str(x) for x in (item.get("server"), item.get("tool", item.get("toolName"))) if x), text=json.dumps(item.get("arguments", {}), ensure_ascii=False, indent=2), output=json.dumps(item.get("result", item.get("contentItems", item.get("error", ""))), ensure_ascii=False, indent=2))
+    elif kind in ("toolCall", "tool_call", "subagent"):
+        row.update(role="activity", title=item.get("title") or ("子 Agent" if kind == "subagent" else "工具调用"),
+                   text=item.get("text", ""), output=item.get("output", ""))
+        if kind == "subagent" or item.get("subagentId") or item.get("actualSubagentType"):
+            row["kind"] = "subagent"
     elif kind == "error":
         row.update(role="error", text=item.get("message", "执行失败"))
     elif kind == "planImplementation":

@@ -22,9 +22,20 @@ def _text(content):
 
 
 def _output(items):
-    """Flatten ACP tool-call content items into one plain-text output."""
-    parts = [_text(item.get('content')) for item in items or [] if isinstance(item, dict)]
-    return '\n'.join(part for part in parts if part)
+    """Flatten ACP tool output, including nested agent transcripts."""
+    if isinstance(items, str):
+        return items
+    if isinstance(items, dict):
+        parts = []
+        for key in ('text', 'output', 'message', 'summary', 'content', 'result', 'transcript', 'events', 'messages'):
+            if key in items:
+                value = _output(items[key])
+                if value:
+                    parts.append(value)
+        return '\n'.join(parts) or json.dumps(items, ensure_ascii=False, sort_keys=True)[:4000]
+    if isinstance(items, list):
+        return '\n'.join(part for part in (_output(item) for item in items) if part)
+    return ''
 
 
 def _command_summary(raw_input):

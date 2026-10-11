@@ -138,6 +138,26 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(kinds, ['userMessage', 'agentThought', 'agentMessage'])
         self.assertEqual(view['turns'][0]['messages'][2]['text'], 'done')
 
+    def test_nested_subagent_output_survives_acp_normalization(self):
+        fake = FakeAcpAgent(
+            config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],
+            modes=dict(MODES),
+            list_rows=[{'sessionId': SID, 'cwd': '/work', 'title': 'Old', 'updatedAt': UPDATED}])
+        fake.load_updates = [
+            {'sessionUpdate': 'tool_call', 'toolCallId': 'child',
+             'title': 'Launching explore agent: Transport', 'kind': 'execute',
+             'rawInput': {'input': {'description': 'Transport 精读'}},
+             'content': [{'content': {'messages': [
+                 {'role': 'user', 'text': '检查 Transport'},
+                 {'role': 'assistant', 'text': '已完成读取'}]}}]},
+        ]
+        _, _, bridge = self.make_bridge(fake)
+        view = self.view(bridge)
+        tool = view['turns'][0]['messages'][0]
+        self.assertEqual(tool['title'], 'Launching explore agent: Transport')
+        self.assertIn('检查 Transport', tool['output'])
+        self.assertIn('已完成读取', tool['output'])
+
     def test_list_decorates_rows_with_agent_and_project(self):
         _, _, bridge = self.make_bridge()
         rows = bridge.list()
