@@ -38,6 +38,10 @@
 
 .message-actions{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}.message-actions button{font-size:12px;min-height:32px;padding:5px 8px;color:var(--muted)}.message-actions button:hover{color:var(--accent)}.code-block{position:relative;min-width:0}.code-block>pre{margin-top:0;padding-top:38px}.code-copy{position:absolute;right:5px;top:4px;font-size:12px;padding:3px 8px;min-height:28px}.copy-dialog textarea,#message-action-text{width:100%;box-sizing:border-box;resize:vertical;min-height:180px;max-height:55dvh}.copy-dialog textarea{height:45dvh;font:inherit}.copy-dialog h2{margin-top:0}#message-action-form{display:grid;gap:12px}#message-action-error:empty{display:none}#fork-source{max-width:100%;text-align:left;overflow-wrap:anywhere}
 
+.migrate-heading{margin:10px 0 2px;font-size:12px;font-weight:600}
+.migrate-targets{display:flex;flex-wrap:wrap}
+.migrate-scopes{display:flex;flex-direction:column;align-items:flex-start}
+
 .attachment-list{display:grid;gap:8px;margin-bottom:8px}
 .attachment-chip{display:flex;align-items:center;gap:10px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:10px;background:#fff}
 .attachment-thumb{width:40px;height:40px;flex:none;border-radius:7px;object-fit:cover;background:#eef1e9}

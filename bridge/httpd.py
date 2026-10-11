@@ -535,7 +535,8 @@ class Handler(BaseHTTPRequestHandler):
                         target = registry.for_agent(target_kind)
                     except KeyError:
                         raise ValueError('未知的 Agent 类型') from None
-                result = bridge.migrate(thread_id, target, body.get('project'), body.get('id', ''), body.get('uiLocale'))
+                result = bridge.migrate(thread_id, target, body.get('project'), body.get('id', ''),
+                                        body.get('uiLocale'), scope=body.get('scope'))
             elif action == "settings":
                 if 'fastMode' in body and not isinstance(body['fastMode'], bool):
                     raise ValueError('Fast 模式开关无效')

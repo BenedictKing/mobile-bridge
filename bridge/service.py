@@ -35,6 +35,15 @@ from .agents.codex import CodexAdapter
 MIGRATION_MAX_MESSAGES = 20
 MIGRATION_MAX_CHARS = 30000
 MIGRATION_ENTRY_CHARS = 4000
+# Copy scopes offered by the migrate UI. 'main' is the historic default;
+# budgets are (max messages, max total chars, max chars per entry) and the
+# totals must stay under send's 100k message cap including the header/footer.
+MIGRATION_SCOPES = ('full', 'main', 'latest')
+MIGRATION_SCOPE_BUDGETS = {
+    'main': (MIGRATION_MAX_MESSAGES, MIGRATION_MAX_CHARS, MIGRATION_ENTRY_CHARS),
+    'full': (500, 90000, 12000),
+    'latest': (12, 40000, 20000),
+}
 
 MIGRATION_TEXTS = {
     "zh-CN": {
@@ -45,6 +54,10 @@ MIGRATION_TEXTS = {
         "roles": {"user": "用户", "assistant": "助手", "activity": "操作", "error": "错误"},
         "sep": "：",
         "continue": "以上是从 {label} 迁移过来的会话转录，请在此基础上继续。",
+        "latest": {
+            "header": "【来自 {label} 的最新问答】",
+            "continue": "以上是 {label} 中最近一次提问与回答，请在此基础上继续。",
+        },
     },
     "en-US": {
         "header": "[Session migrated from {label}]",
@@ -54,16 +67,32 @@ MIGRATION_TEXTS = {
         "roles": {"user": "User", "assistant": "Assistant", "activity": "Activity", "error": "Error"},
         "sep": ": ",
         "continue": "The transcript above was migrated from {label}. Please continue from this context.",
+        "latest": {
+            "header": "[Latest exchange from {label}]",
+            "continue": "The exchange above is the latest question and answer from {label}. Please continue from this context.",
+        },
     },
 }
 
 
-def migration_transcript(view, max_messages=MIGRATION_MAX_MESSAGES, max_chars=MIGRATION_MAX_CHARS):
+def migration_scope(scope):
+    if scope is None:
+        return 'main'
+    if scope not in MIGRATION_SCOPES:
+        raise ValueError('未知的迁移范围')
+    return scope
+
+
+def migration_transcript(view, scope='main'):
     """Flatten a normalized view into (role, text) entries, biased to the tail.
 
     User/assistant turns keep their full text; activities collapse to a
     one-line summary (title plus the first text line), outputs are dropped.
+    Scope 'full' applies the same flattening with much larger budgets;
+    'latest' keeps only the final user question and the assistant replies
+    that followed it, dropping activities entirely.
     """
+    scope = migration_scope(scope)
     entries = []
     for turn in view.get('turns') or []:
         for message in turn.get('messages') or []:
@@ -72,13 +101,17 @@ def migration_transcript(view, max_messages=MIGRATION_MAX_MESSAGES, max_chars=MI
             if role in ('user', 'assistant'):
                 if text:
                     entries.append((role, text))
-            elif role in ('activity', 'error'):
+            elif scope != 'latest' and role in ('activity', 'error'):
                 title = str(message.get('title') or message.get('kind') or '').strip()
                 first = text.split('\n', 1)[0][:120]
                 summary = title + (('：' + first) if first else '') if title else first
                 if summary:
                     entries.append((role, summary))
-    capped = [(role, text if len(text) <= MIGRATION_ENTRY_CHARS else text[:MIGRATION_ENTRY_CHARS] + '…')
+    if scope == 'latest':
+        last_user = max((i for i, (role, _) in enumerate(entries) if role == 'user'), default=None)
+        entries = entries[-1:] if last_user is None else entries[last_user:]
+    max_messages, max_chars, entry_chars = MIGRATION_SCOPE_BUDGETS[scope]
+    capped = [(role, text if len(text) <= entry_chars else text[:entry_chars] + '…')
               for role, text in entries]
     dropped = len(capped) - min(len(capped), max_messages)
     kept, total = [], 0
@@ -93,9 +126,12 @@ def migration_transcript(view, max_messages=MIGRATION_MAX_MESSAGES, max_chars=MI
     return kept, dropped > 0
 
 
-def migration_message(source_label, view, ui_locale=None):
+def migration_message(source_label, view, ui_locale=None, scope='main'):
+    scope = migration_scope(scope)
     texts = MIGRATION_TEXTS[normalize_ui_locale(ui_locale)]
-    entries, truncated = migration_transcript(view)
+    if scope == 'latest':
+        texts = {**texts, **texts['latest']}
+    entries, truncated = migration_transcript(view, scope)
     lines = [texts['header'].format(label=source_label),
              texts['title'] + str(view.get('title') or ''),
              texts['directory'] + str(view.get('cwd') or '')]
@@ -528,18 +564,23 @@ class Bridge:
                     'message': '已创建，正在连接桌面 App' if opened else '聊天已创建，请在电脑 App 打开后重新连接'}
 
     @operation
-    def migrate(self, thread_id, target, project_key=None, request_id='', ui_locale=None):
+    def migrate(self, thread_id, target, project_key=None, request_id='', ui_locale=None, scope=None):
         """Copy this chat's context into a new session on another (or the same) agent.
 
-        The source chat is read-only. The new chat is created through the
-        target's create_chat (idempotent by request_id) and the transcript is
-        injected as its first message with a request-id-derived submission id,
-        so a retry of the same migration never duplicates either step.
+        The source chat is read-only. ``scope`` selects how much history the
+        transcript carries ('full', 'main' or 'latest'). The new chat is
+        created through the target's create_chat (idempotent by request_id)
+        and the transcript is injected as its first message with a
+        request-id-derived submission id, so a retry of the same migration
+        never duplicates either step.
         """
         if not isinstance(request_id, str):
             raise ValueError('迁移请求标识无效')
         uuid.UUID(request_id)
+        scope = migration_scope(scope)
         view = self.view(thread_id)
+        if scope == 'full':
+            view = self._expand_migration_view(thread_id, view)
         projects = target.adapter.projects()
         if project_key:
             project = next((p for p in projects if p['key'] == project_key), None)
@@ -558,13 +599,33 @@ class Bridge:
                   'project': project['key'], 'status': 'created', 'sent': False}
         submission_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'mobile-bridge:migrate:' + request_id))
         try:
-            target.send(new_id, migration_message(self.adapter.label, view, ui_locale), submission_id,
+            target.send(new_id, migration_message(self.adapter.label, view, ui_locale, scope), submission_id,
                         'send', [], ui_locale=ui_locale)
         except (IPCError, AcpError, ValueError) as exc:
             result['warning'] = str(exc)
             return result
         result.update(status='sent', sent=True)
         return result
+
+    def _expand_migration_view(self, thread_id, view):
+        """Reload the complete saved history before a full-scope copy.
+
+        Codex saved history is paginated and the live snapshot only carries
+        the loaded tail, so a 'full' migration must read the whole rollout
+        first. Read failures propagate: silently copying a truncated head
+        would mislead the user into thinking the history was complete.
+        """
+        session = self.session(thread_id)
+        with session.condition:
+            expand = session.saved_view is not None and not session.saved_view['historyComplete']
+        if not expand:
+            return view
+        with session.condition:
+            session.history_limit = None
+        saved = self._saved_history(session)
+        with session.condition:
+            session.set_history(saved)
+        return self.view(thread_id)
 
     def _save_actions(self):
         target = self.actions_path.with_suffix('.tmp')
@@ -1217,7 +1278,9 @@ class Bridge:
                 position = session.timeline.position(options['before'])
                 expand = position is not None and position < options.get('limit', 20) and session.saved_view and not session.saved_view['historyComplete']
                 if expand:
-                    session.history_limit += 50
+                    # A full-scope migration may have switched this to None (whole
+                    # rollout); paging restarts from a fresh window in that case.
+                    session.history_limit = 50 if session.history_limit is None else session.history_limit + 50
             if expand:
                 saved = self._saved_history(session)
                 with session.condition:
@@ -1268,6 +1331,8 @@ class Bridge:
         if not isinstance(title, str) or not title.strip() or len(title) > 120 or any(unicodedata.category(c) in ('Cc', 'Zl', 'Zp') for c in title):
             raise ValueError('聊天名称需为 1–120 个字符，不能包含换行或控制字符')
         title = title.strip()
+        if Capability.RENAME not in self.adapter.capabilities:
+            raise ValueError('当前 Agent 不支持修改聊天名称')
         self.adapter.session_meta(thread_id)  # Only existing desktop chats may be renamed.
         session = self.session(thread_id, attach=False, background=True)
         with session.action_lock:

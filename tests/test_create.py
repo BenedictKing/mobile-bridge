@@ -43,6 +43,12 @@ class CreationTests(unittest.TestCase):
                 self.bridge.rename(self.tid, 'Rejected')
             self.assertEqual(session.view()['title'], 'New title')
 
+    def test_rename_rejected_without_capability(self):
+        with patch.object(self.bridge.adapter, 'capabilities', frozenset()):
+            with self.assertRaises(ValueError) as ctx:
+                self.bridge.rename(self.tid, 'Nope')
+            self.assertIn('不支持修改聊天名称', str(ctx.exception))
+
     def test_remote_rename_uses_remote_runtime_and_clears_list_cache(self):
         from bridge.remote import RemoteStore
         self.bridge.store = RemoteStore('test-host')
