@@ -220,6 +220,19 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(view['turns'][-1]['status'], 'completed')
         self.assertEqual(view['turns'][-1]['messages'][-1]['text'], 'done')
 
+    def test_permission_card_extracts_nested_command_input(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [
+            ('permission', {'toolCall': {'toolCallId': 't2', 'title': 'Bash',
+                                         'rawInput': {'input': {'command': 'curl https://example.test'}}},
+                            'options': [{'optionId': 'allow', 'name': 'Allow once', 'kind': 'allow_once'}]}),
+        ]
+        self.view(bridge)
+        bridge.send(SID, 'run it', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['requests']))
+        self.assertEqual(bridge.view(SID)['requests'][0]['params']['command'], 'curl https://example.test')
+        bridge.respond(SID, bridge.view(SID)['requests'][0]['id'], {'optionId': 'allow'})
+
     def test_interrupt_cancels_running_turn(self):
         fake, _, bridge = self.make_bridge()
         fake.prompt_updates = [chunk('agent_message_chunk', 'partial'), ('await_cancel',)]

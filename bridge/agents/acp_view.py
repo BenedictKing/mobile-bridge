@@ -28,14 +28,28 @@ def _output(items):
 
 
 def _command_summary(raw_input):
-    """Best-effort one-line summary of a tool call's raw input."""
+    """Extract the concrete command from ACP permission payloads.
+
+    Agent wrappers do not agree on the raw input shape: some use ``command``
+    or ``cmd``, while others nest it under ``input``/``arguments``. Preserve a
+    bounded JSON fallback so a permission card never collapses to only a tool
+    title such as ``Bash``.
+    """
+    if isinstance(raw_input, str):
+        return raw_input
     if not isinstance(raw_input, dict):
         return ''
-    for key in ('command', 'cmd', 'path', 'file_path'):
+    preferred = ('command', 'cmd', 'script', 'shellCommand', 'path', 'file_path')
+    for key in preferred:
         value = raw_input.get(key)
-        if isinstance(value, str) and value:
+        if isinstance(value, str) and value.strip():
             return value
-    return json.dumps(raw_input, ensure_ascii=False)[:500]
+    for key in ('input', 'arguments', 'args', 'params', 'payload', 'toolCall'):
+        value = raw_input.get(key)
+        summary = _command_summary(value)
+        if summary:
+            return summary
+    return json.dumps(raw_input, ensure_ascii=False, sort_keys=True)[:2000]
 
 
 class AcpSessionView:
