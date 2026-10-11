@@ -109,16 +109,32 @@ class SessionStore:
             rows = conn.execute('SELECT id,' + ','.join(fields) + ' FROM threads WHERE id IN (' + ','.join('?' for _ in identifiers) + ')', identifiers)
             return {r['id']: next((r[k] * (1 if k.endswith('_ms') else 1000) for k in fields if r[k]), 0) for r in rows}
 
-    def get(self, thread_id):
+    def get_any(self, thread_id):
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM threads WHERE id = ?", (thread_id,)).fetchone()
             if not row:
                 raise KeyError("找不到这个桌面会话")
             result = dict(row)
             desktop = result.get("originator") in ("Codex Desktop", "codex_work_desktop", "codex_mobile_bridge") or (result.get("originator") is None and result.get("source") == "vscode")
-            if not desktop or result.get("thread_source") == "subagent" or '"subagent"' in (result.get("source") or ""):
+            if not desktop:
                 raise KeyError("不是桌面 App 会话")
             return result
+
+    def get(self, thread_id):
+        result = self.get_any(thread_id)
+        if result.get("thread_source") == "subagent" or '"subagent"' in (result.get("source") or ""):
+            raise KeyError("不是桌面 App 会话")
+        return result
+
+    def child_threads(self, parent_id):
+        with self._connect() as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'thread_spawn_edges' not in tables:
+                return []
+            rows = conn.execute(
+                "SELECT c.* FROM thread_spawn_edges e JOIN threads c ON c.id = e.child_thread_id "
+                "WHERE e.parent_thread_id = ? ORDER BY c.created_at_ms, c.created_at, c.id", (parent_id,)).fetchall()
+            return [dict(row) for row in rows]
 
     @staticmethod
     def _recent_lines(path, turn_limit):
@@ -150,8 +166,8 @@ class SessionStore:
                             return b''.join(reversed(parts)), position == 0 and len(parts) == len(lines)
             return b''.join(reversed(parts)), True
 
-    def history(self, thread_id, turn_limit=None):
-        meta = self.get(thread_id)
+    def history(self, thread_id, turn_limit=None, allow_subagent=False):
+        meta = self.get_any(thread_id) if allow_subagent else self.get(thread_id)
         path = Path(meta["rollout_path"])
         # The file path must be an actual rollout in this user's Codex home.
         resolved = path.resolve()

@@ -498,6 +498,16 @@ class CodexAdapter(AgentAdapter):
     def saved_history(self, session):
         return self.store.history(session.id, turn_limit=session.history_limit)
 
+    def subagent_threads(self, thread_id):
+        if self.bridge.host != 'local' or not isinstance(self.store, SessionStore):
+            return []
+        return self.store.child_threads(thread_id)
+
+    def subagent_history(self, thread_id):
+        if not isinstance(self.store, SessionStore):
+            raise KeyError(thread_id)
+        return self.store.history(thread_id, turn_limit=None, allow_subagent=True)
+
     def list_sessions(self, label, limit=100, offset=0, query='', archived=False):
         rows = self.store.list(limit=limit + offset, archived=archived, query=query)
         rows = self.hosts.decorate(rows, self.host, label)

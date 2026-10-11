@@ -301,6 +301,22 @@ class IntegrationTests(unittest.TestCase):
         changes = self.bridge.timeline_read(THREAD, 'changes', after=page['sequence'], epoch=page['epoch'], start=older['before'])
         self.assertEqual(changes['rows'], [])
 
+    def test_parent_view_includes_child_agent_transcript(self):
+        self.bridge.adapter.subagent_threads = lambda thread_id: [
+            {'id': 'child-agent', 'title': 'Transport 精读', 'agent_role': 'explore', 'updated_at': 2}]
+        self.bridge.adapter.subagent_history = lambda thread_id: {
+            'id': thread_id, 'turns': [{'items': [
+                {'type': 'userMessage', 'content': [{'type': 'text', 'text': '检查 Transport 接口'}]},
+                {'type': 'agentMessage', 'text': '已读取 transport.ts'},
+                {'type': 'commandExecution', 'command': 'rg Transport src/lib/transport'}]}]}
+        view = self.bridge.view(THREAD)
+        child = [message for turn in view['turns'] for message in turn['messages']
+                 if message.get('kind') == 'subagent']
+        self.assertEqual(len(child), 1)
+        self.assertIn('检查 Transport 接口', child[0]['text'])
+        self.assertIn('已读取 transport.ts', child[0]['text'])
+        self.assertIn('rg Transport src/lib/transport', child[0]['text'])
+
     def test_legacy_desktop_threads_visible_but_subagents_excluded(self):
         from bridge.store import SessionStore
         legacy, untagged, child, cli, mobile = (str(uuid.uuid4()) for _ in range(5))

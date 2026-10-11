@@ -638,6 +638,48 @@ class Bridge:
             entry = next((v for v in self.message_actions.values() if v.get('id') == thread_id and v['action'] != 'edit'), None)
             return {'id': entry['source'], 'title': entry['sourceTitle'], 'turnId': entry['turnId'], 'host': self.host} if entry else None
 
+    def _subagent_activity(self, thread_id):
+        """Flatten child-agent rollouts into expandable parent activity rows."""
+        rows = []
+        for child in self.adapter.subagent_threads(thread_id):
+            child_id = child.get('id')
+            if not child_id:
+                continue
+            try:
+                child_view = normalize_state(self.adapter.subagent_history(child_id), False)
+            except (KeyError, OSError, ValueError, StoreUnavailable):
+                continue
+            lines = []
+            for turn in child_view.get('turns', []):
+                for message in turn.get('messages', []):
+                    text = (message.get('text') or '').strip()
+                    if not text:
+                        continue
+                    role = message.get('role')
+                    title = message.get('title') or ('用户' if role == 'user' else 'Agent' if role == 'assistant' else message.get('kind', 'activity'))
+                    lines.append(f'[{title}]\n{text}')
+            description = child.get('name') or child.get('title') or child.get('agent_role') or '子 Agent'
+            subagent_type = child.get('agent_role') or child.get('thread_source') or ''
+            title = '子 Agent' + (f' · {subagent_type}' if subagent_type else '') + f' · {description}'
+            rows.append({'id': 'subagent:' + str(child_id), 'kind': 'subagent', 'role': 'activity',
+                         'title': title, 'text': '\n\n'.join(lines) or '子 Agent 暂无可显示的执行记录',
+                         'subagentId': child_id, 'status': 'completed' if child.get('updated_at') else 'unknown'})
+        return rows
+
+    def _add_subagents(self, thread_id, view):
+        activities = self._subagent_activity(thread_id)
+        children = self.adapter.subagent_threads(thread_id)
+        view['subagentRevision'] = max((child.get('updated_at_ms') or child.get('updated_at') or 0) for child in children) if children else 0
+        if not activities:
+            return view
+        turns = view.setdefault('turns', [])
+        if not turns:
+            turns.append({'id': 'subagents', 'status': 'completed', 'messages': []})
+        messages = turns[-1].setdefault('messages', [])
+        known = {message.get('id') for turn in turns for message in turn.get('messages', [])}
+        messages.extend(row for row in activities if row['id'] not in known)
+        return view
+
     @operation
     def message_action(self, thread_id, body):
         action, identifier = body.get('action'), body.get('id')
@@ -1046,7 +1088,7 @@ class Bridge:
 
     def view(self, thread_id, attach=True, background=False, force=False):
         session = self.session(thread_id, attach=attach, background=background, force=force)
-        view = session.view()
+        view = self._add_subagents(thread_id, session.view())
         view["host"] = self.host
         view["hostLabel"] = "此电脑" if self.host == "local" else self.hosts.hosts().get(self.host, {}).get("displayName", self.host)
         view["goalTransport"] = self.goal_transport
@@ -1289,8 +1331,9 @@ class Bridge:
                     session.set_history(saved)
         with session.condition:
             projection = session.timeline
-            authoritative_view = self._overlay_native_goal(session, thread_id, session.view())
-            if projection.sequence != session.sequence or projection.meta.get("goal") != authoritative_view.get("goal"):
+            authoritative_view = self._overlay_native_goal(session, thread_id, self._add_subagents(thread_id, session.view()))
+            if (projection.sequence != session.sequence or projection.meta.get("goal") != authoritative_view.get("goal") or
+                    projection.meta.get("subagentRevision") != authoritative_view.get("subagentRevision")):
                 projection.update(authoritative_view)
             # Annotate the full projection, not only the returned page. Otherwise
             # older pages briefly render raw localImage paths after an upgrade.

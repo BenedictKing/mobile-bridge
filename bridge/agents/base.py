@@ -170,6 +170,14 @@ class AgentAdapter:
         """Read persisted history without activating the session."""
         raise NotImplementedError
 
+    def subagent_threads(self, thread_id):
+        """Return child-agent metadata for a parent session, when supported."""
+        return []
+
+    def subagent_history(self, thread_id):
+        """Read one child-agent history without activating it."""
+        raise NotImplementedError
+
     def list_sessions(self, label, limit=100, offset=0, query='', archived=False):
         """Return decorated session list rows for this adapter's host."""
         raise NotImplementedError
