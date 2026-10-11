@@ -346,7 +346,7 @@ python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh,zcode
 
 注意：Kimi/MiniMax/Claude/DeepSeek/ZCode 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
 
-聊天详情里可以把当前会话“迁移到”另一个已启用的 Agent：在目标 Agent 上按同目录创建新会话，并把标题与最近消息转录作为首条消息注入，源会话保持不变；目标没有同目录项目时会提示先在目标 Agent 添加。
+聊天详情里可以把当前会话“迁移到”另一个已启用的 Agent：在目标 Agent 上按同目录创建新会话，并把标题与最近消息转录作为首条消息注入，源会话保持不变；目标没有同目录项目时会直接按源目录创建本机项目。远端源会话的目录无法在本机目标上创建，仍需显式选择目标项目。
 
 桌面打包 App 默认仍只接入 Codex；如需多 Agent，在启动 App 前注入环境变量（值与 `--agents` 相同）：macOS 执行 `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` 后再打开 App，或从终端 `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`；显式传 `--agents` 优先级更高。
 

@@ -312,7 +312,7 @@ The corresponding CLI (`kimi` / `mcode` / `npx`; Claude is reached through the `
 
 Note: Kimi/MiniMax/Claude/DeepSeek/ZCode runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns for good (history is preserved). After a gateway restart, sessions with notification watches re-attach automatically in the background; unwatched sessions reconnect when you open the chat. Codex runs are owned by the desktop App and survive gateway restarts.
 
-The chat details dialog can migrate the current session to another enabled agent: a new session is created on the same directory, with the title and a transcript of recent messages injected as its first message; the source session stays unchanged. If the target agent has no project for that directory, add it there first.
+The chat details dialog can migrate the current session to another enabled agent: a new session is created on the same directory, with the title and a transcript of recent messages injected as its first message; the source session stays unchanged. If a local source directory is missing from the target agent, the gateway creates the target session directly from that directory. A remote source directory cannot be created on the local target, so choose an explicit target project.
 
 The packaged desktop App still serves Codex only by default. To enable multiple agents there, inject the environment variable before launching it (same value syntax as `--agents`): on macOS run `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` and then open the App, or start it from a terminal with `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`. An explicit `--agents` argument takes precedence.
 
