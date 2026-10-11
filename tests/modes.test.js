@@ -7,6 +7,7 @@ async function runModeTests(){
   const response=(data,status=200)=>({ok:status===200,status,json:async()=>data});
   const check=(value,label)=>{if(!value)throw Error(label);checks.push(label);};
   window.fetch=async(url,options)=>{
+    if(url.includes('/api/auth'))return response({authenticated:true,csrf:'x',transport:'poll'});
     if(url.includes('/reconnect'))return response({ok:true});
     if(url.includes('/notifications'))return response({available:false});
     if(url.includes('/timeline'))return response({sequence:1,epoch:'test',rows:[],hasMore:false,before:'',files:[],meta});

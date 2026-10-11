@@ -1,6 +1,10 @@
 // Run in a gateway browser page with timeline.js loaded. Uses synthetic data only.
 async function runTimelineTests() {
   const checks=[];
+  // This suite drives rows through fixture pages; live frames belong to
+  // tests/transport.test.cjs, so the real channel is stubbed out here.
+  const subscriptions=[];
+  BridgeTransport={subscribe:(url,opts)=>{subscriptions.push(opts);return ()=>{};}};
   function check(value,label){if(!value)throw Error(label);checks.push(label);}
   const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
   async function until(fn){const end=performance.now()+2500;while(!fn()){if(performance.now()>end)throw Error('Timed out waiting for fixture');await frame();}}

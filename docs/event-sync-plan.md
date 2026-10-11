@@ -1,6 +1,6 @@
 # 事件同步协议升级计划（借鉴 Codeg）
 
-> 状态：待评审 · 起草日期：2026-10-11 · 参考项目：[spacering-net/codeg](https://github.com/spacering-net/codeg)
+> 状态：已实施（阶段一/二完成并通过自动回归；阶段三第 2 条弱网手工验收待做）· 起草日期：2026-10-11 · 实施日期：2026-10-11 · 参考项目：[spacering-net/codeg](https://github.com/spacering-net/codeg)
 
 ## 1. 背景与目标
 
@@ -198,3 +198,17 @@ BridgeTransport.subscribeSession(id, host, {onChanges, onReset, onStatus}) => un
 | emit 锁序 | `src-tauri/src/web/event_bridge.rs:530-614` |
 | 前端退避与 401 三分法 | `src/lib/transport/web-transport.ts:303-547` |
 | 前端游标与去重 | `src/lib/transport/web-event-stream.ts:79-192` |
+
+## 实施结果（2026-10-11）
+
+阶段一、阶段二已落地并通过全量自动回归（Python 639 过/6 跳过；`npm run test:desktop` 158 过，含新增 7 项）。与计划文本的偏差及补充决策：
+
+1. **新订阅首帧是 `reset` 而非字面的「changes 全量行集」**。严格按 §5.2 末段「服务端只把 `timeline.changes()` 返回值映射为帧类型」实现：`after=-1` 必然落入 `changes()` 的 epoch/窗口回退分支，因此新订阅收到的是 reset 快照页（含 `before`/`hasMore` 分页游标）。语义与计划的快照建立等价，且与 `/changes` 端点既有行为一致。
+2. **ready 帧不携带 `id:`**。若 ready 携带当前游标，只收到 ready 即断线的重连会带着「已到最新」的游标跳过快照。
+3. **唤醒谓词同时比对 `session.sequence` 与 `session.timeline.epoch`**（对齐 `/changes` 端点的等待条件）。否则「epoch 轮换但 sequence 恰好相等」的连接会静默等待不发帧。
+4. **前端 API 落地为 `BridgeTransport.subscribe(url, handlers)`**（`url` 为 action→path 构造器，复用 `app.js` 的 `sessionUrl`/host 模式），与计划的 `(id, host, opts)` 签名等价，但避免了改动 `openChat` 的构造现场。轮询侧游标每次请求前经 `cursor()` 回读 timeline 当前的 `(sequence, epoch, before)`——保留原 `updates()` 循环「历史窗口扩张竞态不丢增量」的语义；原 `generation`/`windowRevision` 守卫针对的是异步轮询间隙，订阅回调同步到达后不再需要。
+5. **SSE 重连由 transport 自管**：`onerror → close → 退避重建`，`?since=` 携带最后帧 id；不使用 EventSource 内建重试，退避与游标才可同时受控。
+6. **错误分类取三源**：轮询 401、`/api/auth` `authenticated:false`、SSE `logout` 帧，均立即终止订阅并回调 `unauthorized`（`app.js` 映射 `showLogin`）；其余错误按 1s→32s 封顶退避，ready 帧/一次成功响应清零计数。
+7. **单测文件为 `tests/transport.test.cjs`**（仓库约定 `.js` 为浏览器人工检查脚本、`.cjs` 为 node --test 自动化用例），已加入 `npm run test:desktop`。服务端新增 4 项 HttpTests 帧协议用例与 1 项 IntegrationTests 端到端用例（真实 Bridge + DesktopFixture：ready → 首帧 → 桌面 snapshot → 增量 changes 帧，id 即 `epoch.sequence`）。
+8. **人工浏览器检查脚本同步**：`timeline.test.js` 在文件头 stub 掉 `BridgeTransport`（保持渲染测试聚焦）；`session-open.test.js` 与 `modes.test.js` 的 fetch fixture 补 `/api/auth`。
+9. **待手工验收（阶段三第 2 条）**：真机弱网（断线 30 秒游标续传、devtools 3G 节流）、trycloudflare 隧道回落长轮询、真机登出后的 logout→登录流程。`VERIFICATION.md` 已记录本次自动化验证的边界。

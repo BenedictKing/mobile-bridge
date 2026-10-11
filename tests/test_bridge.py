@@ -153,6 +153,75 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn('modelProvider', request)
         self.assertTrue(call['params']['turnStart']['context']['inheritThreadSettings'])
 
+    def test_incremental_sse_end_to_end_with_desktop_fixture(self):
+        server = GatewayServer(('127.0.0.1', 0), self.bridge, {'auth': {'mode': 'none'}, 'origins': []}, ROOT / 'web')
+        port = server.server_address[1]
+        origin = 'http://127.0.0.1:' + str(port)
+        server.origins.add(origin)
+        server.hosts.add('127.0.0.1:' + str(port))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        login = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        login.request('POST', '/api/login', body='{}',
+                      headers={'Origin': origin, 'Content-Type': 'application/json'})
+        response = login.getresponse()
+        cookie = response.getheader('Set-Cookie').split(';')[0]
+        response.read()
+        login.close()
+        conn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+        try:
+            conn.request('GET', '/api/sessions/' + THREAD + '/events?incremental=1&host=local',
+                         headers={'Origin': origin, 'Cookie': cookie})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertIn('text/event-stream', response.getheader('Content-Type'))
+
+            def frame():
+                lines = []
+                while True:
+                    line = response.fp.readline()
+                    if line in (b'\n', b''):
+                        break
+                    lines.append(line)
+                parsed = {'id': None, 'event': 'message', 'data': ''}
+                for line in lines:
+                    if line.startswith(b'id: '):
+                        parsed['id'] = line[4:].strip().decode()
+                    elif line.startswith(b'event: '):
+                        parsed['event'] = line[7:].strip().decode()
+                    elif line.startswith(b'data: '):
+                        parsed['data'] = line[6:].decode()
+                parsed['payload'] = json.loads(parsed['data']) if parsed['data'] else None
+                return parsed
+
+            ready = frame()
+            self.assertEqual(ready['event'], 'ready')
+            self.assertIsNone(ready['id'])
+            first = frame()
+            self.assertIn(first['event'], ('changes', 'reset'))
+            self.assertIn('rows', first['payload'])
+            # A live desktop change must arrive as an incremental frame keyed by
+            # the epoch.sequence cursor, not as a full view resend.
+            self.fixture.state['turns'] = [{'turnId': 'stream-turn', 'status': 'completed', 'items': [
+                {'type': 'userMessage', 'content': [{'type': 'text', 'text': 'streamed question'}]},
+                {'type': 'agentMessage', 'text': 'streamed answer'}]}]
+            self.fixture.snapshot()
+            delta = frame()
+            for _ in range(12):
+                if delta['event'] == 'logout':
+                    self.fail('SSE logged out mid-stream')
+                if delta['payload'] and delta['payload'].get('rows'):
+                    break
+                delta = frame()
+            self.assertEqual(delta['event'], 'changes')
+            texts = [row.get('text', '') for row in delta['payload']['rows']]
+            self.assertIn('streamed answer', ' '.join(texts))
+            self.assertLess(first['payload']['sequence'], delta['payload']['sequence'])
+            self.assertEqual(delta['id'], f"{delta['payload']['epoch']}.{delta['payload']['sequence']}")
+        finally:
+            conn.close()
+            server.shutdown()
+            server.server_close()
+
     def test_work_mode_turn_pins_recorded_effort(self):
         self.fixture.state['latestReasoningEffort'] = 'ultra'
         self.bridge.send(THREAD, 'hello', str(uuid.uuid4()), work_mode='default')
@@ -997,7 +1066,7 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             scripts = re.findall(r'<script src="([^"]+)"', response.read().decode())
             self.assertEqual([script.split('?', 1)[0] for script in scripts], ['/vendor/markdown-it.min.js', '/vendor/katex/katex.min.js',
-                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/migrate.js', '/app.js', '/presentation.js'])
+                                       '/vendor/texmath.js', '/message-actions.js', '/markdown.js', '/i18n.js', '/transport.js', '/timeline.js', '/account.js', '/modes.js', '/attachments.js', '/activity.js', '/fast-mode.js', '/accounts.js', '/migrate.js', '/app.js', '/presentation.js'])
             for script in scripts:
                 conn.request('GET', script)
                 response = conn.getresponse()
@@ -1155,6 +1224,164 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(value['state']['id'], THREAD)
         self.assertTrue(finished.wait(3), 'Poll request did not finish cleanup')
         self.assertEqual(session.viewers, 0)
+
+    def sse_connect(self, path, headers):
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        conn.request('GET', path, headers={**{'Origin': self.origin}, **headers})
+        response = conn.getresponse()
+        return conn, response
+
+    @staticmethod
+    def sse_frame(response):
+        lines = []
+        while True:
+            line = response.fp.readline()
+            if line in (b'\n', b''):
+                break
+            lines.append(line)
+        frame = {'id': None, 'event': 'message', 'data': ''}
+        for line in lines:
+            if line.startswith(b'id: '):
+                frame['id'] = line[4:].strip().decode()
+            elif line.startswith(b'event: '):
+                frame['event'] = line[7:].strip().decode()
+            elif line.startswith(b'data: '):
+                frame['data'] = line[6:].decode()
+        frame['payload'] = json.loads(frame['data']) if frame['data'] else None
+        return frame
+
+    def incremental_sse_fixture(self, reset_epochs=()):
+        session = LiveSession(THREAD)
+        session.state = state()
+        session.connected = True
+        # The mocked payload epoch must settle against the session projection,
+        # otherwise the wake predicate fires on every loop pass.
+        session.timeline.epoch = 'e1'
+        reads = []
+
+        def timeline_read(thread_id, mode='page', **options):
+            reads.append(options)
+            row = {'key': 'after-' + str(options['after']), 'order': options['after'] + 1,
+                   'role': 'assistant', 'version': 'v1', 'text': 'delta'}
+            if options['epoch'] in reset_epochs:
+                return {'epoch': 'e1', 'sequence': session.sequence, 'reset': True, 'rows': [row],
+                        'before': None, 'hasMore': False, 'meta': {}}
+            return {'epoch': 'e1', 'sequence': session.sequence, 'rows': [row], 'meta': {}}
+
+        self.server.bridge.session = lambda *a, **k: session
+        self.server.bridge.timeline_read = timeline_read
+        return session, reads
+
+    def test_incremental_sse_ready_gate_changes_frames_and_cursor_ids(self):
+        session, reads = self.incremental_sse_fixture()
+        session.sequence = 5
+        auth = self.login()
+        conn, response = self.sse_connect('/api/sessions/' + THREAD + '/events?incremental=1', auth)
+        try:
+            self.assertEqual(response.status, 200)
+            self.assertIn('text/event-stream', response.getheader('Content-Type'))
+            ready = self.sse_frame(response)
+            self.assertEqual(ready['event'], 'ready')
+            self.assertIsNone(ready['id'])
+            self.assertEqual(ready['payload'], {'epoch': session.timeline.epoch, 'sequence': 5})
+            frame = self.sse_frame(response)
+            self.assertEqual(frame['event'], 'changes')
+            self.assertEqual(frame['id'], 'e1.5')
+            self.assertEqual(reads, [{'after': -1, 'epoch': '', 'start': ''}])
+            self.assertEqual(frame['payload']['rows'][0]['key'], 'after--1')
+            with session.condition:
+                session.sequence = 6
+                session.condition.notify_all()
+            frame = self.sse_frame(response)
+            self.assertEqual(frame['event'], 'changes')
+            self.assertEqual(frame['id'], 'e1.6')
+            self.assertEqual(frame['payload']['rows'][0]['key'], 'after-5')
+            self.assertEqual(reads[1], {'after': 5, 'epoch': 'e1', 'start': ''})
+        finally:
+            self.server.bridge.closed.set()
+            conn.close()
+
+    def test_incremental_sse_resumes_from_cursor_and_resets_on_stale_epoch(self):
+        session, reads = self.incremental_sse_fixture(reset_epochs=('gone',))
+        session.sequence = 6
+        auth = self.login()
+        conn, response = self.sse_connect('/api/sessions/' + THREAD + '/events?incremental=1',
+                                          {**auth, 'Last-Event-ID': 'e1.5'})
+        try:
+            self.sse_frame(response)  # ready
+            frame = self.sse_frame(response)
+            self.assertEqual(frame['event'], 'changes')
+            self.assertEqual(reads[0], {'after': 5, 'epoch': 'e1', 'start': ''})
+        finally:
+            self.server.bridge.closed.set()
+            conn.close()
+        self.server.bridge.closed.clear()
+        conn, response = self.sse_connect('/api/sessions/' + THREAD + '/events?incremental=1&since=gone.5', auth)
+        try:
+            self.sse_frame(response)  # ready
+            frame = self.sse_frame(response)
+            self.assertEqual(frame['event'], 'reset')
+            self.assertEqual(frame['id'], 'e1.6')
+            self.assertTrue(frame['payload']['reset'])
+            self.assertEqual(reads[1], {'after': 5, 'epoch': 'gone', 'start': ''})
+        finally:
+            self.server.bridge.closed.set()
+            conn.close()
+        self.server.bridge.closed.clear()
+        conn, response = self.sse_connect('/api/sessions/' + THREAD + '/events?incremental=1',
+                                          {**auth, 'Last-Event-ID': 'garbage'})
+        try:
+            self.sse_frame(response)  # ready
+            self.sse_frame(response)
+            self.assertEqual(reads[2]['after'], -1)
+            self.assertEqual(reads[2]['epoch'], '')
+        finally:
+            self.server.bridge.closed.set()
+            conn.close()
+
+    def test_incremental_sse_logout_frame_when_login_expires(self):
+        session, reads = self.incremental_sse_fixture()
+        session.sequence = 5
+        auth = self.login()
+        conn, response = self.sse_connect('/api/sessions/' + THREAD + '/events?incremental=1', auth)
+        try:
+            self.sse_frame(response)  # ready
+            self.sse_frame(response)  # changes
+            self.server.auth.logout(auth['Cookie'].split('=', 1)[1])
+            with session.condition:
+                session.sequence = 6
+                session.condition.notify_all()
+            frame = self.sse_frame(response)
+            self.assertEqual(frame['event'], 'logout')
+            self.assertEqual(frame['payload'], {})
+            self.assertEqual(response.fp.readline(), b'')
+        finally:
+            self.server.bridge.closed.set()
+            conn.close()
+
+    def test_sse_without_incremental_keeps_full_state_frames(self):
+        session = LiveSession(THREAD)
+        session.state = state()
+        session.connected = True
+        self.server.bridge.session = lambda *a, **k: session
+        self.server.bridge.view = lambda *a, **k: session.view()
+        auth = self.login()
+        conn, response = self.sse_connect('/api/sessions/' + THREAD + '/events', auth)
+        try:
+            self.assertEqual(response.status, 200)
+            frame = self.sse_frame(response)
+            self.assertEqual(frame['event'], 'state')
+            self.assertEqual(frame['id'], '0')
+            self.assertEqual(frame['payload']['id'], THREAD)
+            with session.condition:
+                session.sequence = 1
+                session.condition.notify_all()
+            frame = self.sse_frame(response)
+            self.assertEqual(frame['event'], 'state')
+            self.assertEqual(frame['id'], '1')
+        finally:
+            self.server.bridge.closed.set()
+            conn.close()
 
     def test_api_cannot_execute_arbitrary_rpc_or_read_files(self):
         auth = self.login()
