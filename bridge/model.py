@@ -141,6 +141,9 @@ def normalize_item(item):
                    text=item.get("text", ""), output=item.get("output", ""))
         if kind == "subagent" or item.get("subagentId") or item.get("actualSubagentType"):
             row["kind"] = "subagent"
+        for key in ("subagentId", "subagentType", "subagentDescription", "subagentPrompt", "stopReason"):
+            if item.get(key):
+                row[key] = item[key]
     elif kind == "error":
         row.update(role="error", text=item.get("message", "执行失败"))
     elif kind == "planImplementation":

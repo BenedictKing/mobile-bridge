@@ -49,7 +49,9 @@ class Timeline:
                     text += '\n\n' + message['output']
                 activity = message['role'] == 'activity'
                 version = hashlib.sha256(text.encode()).hexdigest()[:24]
-                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId') if k in message}
+                row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId',
+                                                'subagentId', 'subagentType', 'subagentDescription',
+                                                'subagentPrompt', 'stopReason') if k in message}
                 row.update(key=key, turnId=turn['id'], order=len(rows), version=version,
                            text=text[:180 if activity else TEXT_PREVIEW],
                            truncated=(activity and bool(text)) or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),

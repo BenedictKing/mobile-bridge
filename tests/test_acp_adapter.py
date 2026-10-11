@@ -146,7 +146,8 @@ class AcpAdapterTests(unittest.TestCase):
         fake.load_updates = [
             {'sessionUpdate': 'tool_call', 'toolCallId': 'child',
              'title': 'Launching explore agent: Transport', 'kind': 'execute',
-             'rawInput': {'input': {'description': 'Transport 精读'}},
+             'rawInput': {'input': {'description': 'Transport 精读', 'agent_id': 'agent-1',
+                                    'actual_subagent_type': 'explore', 'stop_reason': 'completed'}},
              'content': [{'content': {'messages': [
                  {'role': 'user', 'text': '检查 Transport'},
                  {'role': 'assistant', 'text': '已完成读取'}]}}]},
@@ -155,6 +156,9 @@ class AcpAdapterTests(unittest.TestCase):
         view = self.view(bridge)
         tool = view['turns'][0]['messages'][0]
         self.assertEqual(tool['title'], 'Launching explore agent: Transport')
+        self.assertEqual(tool['kind'], 'subagent')
+        self.assertEqual(tool['subagentId'], 'agent-1')
+        self.assertEqual(tool['subagentType'], 'explore')
         self.assertIn('检查 Transport', tool['output'])
         self.assertIn('已完成读取', tool['output'])
 

@@ -63,6 +63,35 @@ def _command_summary(raw_input):
     return json.dumps(raw_input, ensure_ascii=False, sort_keys=True)[:2000]
 
 
+def _subagent_meta(raw_input, title=''):
+    """Find common sub-agent identity fields across ACP wrapper payloads."""
+    if not isinstance(raw_input, dict):
+        return {}
+    keys = {
+        'agent_id': 'subagentId', 'agentId': 'subagentId', 'subagent_id': 'subagentId',
+        'actual_subagent_type': 'subagentType', 'actualSubagentType': 'subagentType',
+        'subagent_type': 'subagentType', 'description': 'subagentDescription',
+        'prompt': 'subagentPrompt', 'stop_reason': 'stopReason', 'stopReason': 'stopReason',
+    }
+    found = {}
+    pending = [raw_input]
+    while pending:
+        current = pending.pop(0)
+        if not isinstance(current, dict):
+            continue
+        for key, output in keys.items():
+            value = current.get(key)
+            if isinstance(value, (str, int, float)) and str(value).strip() and output not in found:
+                found[output] = str(value)
+        for key in ('input', 'arguments', 'args', 'params', 'payload', 'toolCall'):
+            value = current.get(key)
+            if isinstance(value, dict):
+                pending.append(value)
+    if found or 'agent' in str(title).lower() or '子 agent' in str(title).lower():
+        return found
+    return {}
+
+
 class AcpSessionView:
     """Thread-safe normalized view for one ACP session."""
 
@@ -189,11 +218,14 @@ class AcpSessionView:
                 self._assistant_message(self._assistant_turn(), 'agentThought',
                                         {'role': 'activity', 'title': '思考摘要'})['text'] += text
         elif kind == 'tool_call':
+            metadata = _subagent_meta(update.get('rawInput'), update.get('title') or '')
             message = {'id': self._next_id('tool'), 'kind': 'toolCall', 'role': 'activity',
                        'title': update.get('title') or update.get('kind') or '工具调用',
                        'text': _command_summary(update.get('rawInput')),
                        'output': _output(update.get('content')),
                        'status': TOOL_STATUS.get(update.get('status'), update.get('status'))}
+            if metadata:
+                message.update(metadata, kind='subagent')
             self._assistant_turn()['messages'].append(message)
             if update.get('toolCallId'):
                 self._tool_index[update['toolCallId']] = message
@@ -206,6 +238,9 @@ class AcpSessionView:
                 # in title and rawInput through updates.
                 if update.get('title'):
                     message['title'] = update['title']
+                message.update(_subagent_meta(update.get('rawInput'), update.get('title') or message.get('title', '')))
+                if message.get('subagentId'):
+                    message['kind'] = 'subagent'
                 command = _command_summary(update.get('rawInput'))
                 if command:
                     message['text'] = command
