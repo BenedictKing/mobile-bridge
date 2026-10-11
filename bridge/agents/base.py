@@ -98,6 +98,14 @@ class AgentAdapter:
         """Validate against the catalog and apply model settings."""
         raise NotImplementedError
 
+    def permission_settings(self, session):
+        """Return permission modes exposed by the native agent."""
+        return {'supported': False, 'options': [], 'current': None}
+
+    def set_permission_mode(self, session, mode):
+        """Apply one native permission mode."""
+        raise ValueError('当前 Agent 不支持权限模式切换')
+
     def catalog(self, session, refresh=False, kind=None, query='', offset=0, limit=200, ids=None):
         """Read the model/skill catalog for this session."""
         raise NotImplementedError

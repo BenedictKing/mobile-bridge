@@ -153,13 +153,23 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 ### 会话迁移
 
+权限请求保留 Agent 提供的具体命令、工作目录、网络上下文和文件变更，前端按请求类型显示可审计详情及风险标签；批准动作仍由 Agent 原生选项和用户明确点击决定。Jev 可作为后续风险分类的可选辅助，不能直接授予权限，未配置时使用本地确定性标签。
+
+`GET/POST /api/sessions/<sid>/permissions` 读取或切换 ACP Agent 暴露的权限模式。Codex 当前只保留桌面权限上下文并显示单次审批，未通过未经确认的 IPC 字段写入桌面权限策略。
+
+`POST /api/sessions/<sid>/queue`（body `{id, action, text?}`）管理排队消息：`send` 在当前任务空闲时立即发送，`edit` 修改待发送文本，`delete` 删除排队项。队列项在当前任务完成后自动发送；目标/计划激活消息不可编辑。
+
+队列策略按聊天持久化，`action=disable/enable` 控制是否允许新消息进入队列；关闭排队不会删除已经排队的消息。
+
+子 Agent：Codex 本地与 SSH 会话从 `thread_spawn_edges` 读取 child thread；ACP Agent 从 `tool_call` 的嵌套输出读取子 Agent transcript。时间线保留子 Agent ID、类型、状态、停止原因和命令输出，并将其作为可展开 activity 展示。
+
 `POST /api/sessions/<sid>/migrate`（body `{agent, scope?, project?, id, uiLocale?}`）把当前会话的上下文搬到另一个（或同一个）Agent 的新会话。`scope` 选择复制范围，默认 `main`：
 
 - `main`：主要历史。user/assistant 保留全文，activity 压缩成"标题+首行"一行，输出丢弃；上限为最近 20 条且总量 30k 字符（单条 4k 截断），超出从头部丢弃并注明。
 - `full`：完全复制历史。同样的摊平规则，预算放大到 500 条 / 90k 字符（单条 12k，总量仍低于 send 的 100k 上限）。codex 源的保存历史是分页的，`Bridge.migrate` 会先把 `history_limit` 置为 None 重读完整 rollout（读取失败直接报错，不静默截断头部）；ACP 源附接时已是完整历史，无需扩展。
 - `latest`：只复制最新提问和回答。仅保留 user/assistant 角色，从最后一条 user 消息截到结尾（无 user 时只留最后一条助手消息），预算 12 条 / 40k 字符（单条 20k，长计划不被单条上限切断）；注入消息使用独立的"最新问答"头尾文案。
 
-源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`，匹配不到返回错误由前端提示；也可显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。前端入口在聊天详情弹层：先按 view 注入的 `agents` 列表选择当前以外的已启用 Agent，再选择复制范围（完全复制历史/只复制主要历史/只复制最新提问和结果）后确认执行。
+源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`；本机源匹配不到时自动以源目录在目标上创建（合成与 `AcpAdapter.projects()` 同构的 resolved 项目，key 为 `kind:sha256(cwd)[:12]`，结果带 `projectCreated: true`，目标随后列出该会话即自然收录该目录），远端源的 cwd 是远端路径、无法在本机目标上创建，仍报错并要求显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。前端入口在聊天详情弹层：先按 view 注入的 `agents` 列表选择当前以外的已启用 Agent，再选择复制范围（完全复制历史/只复制主要历史/只复制最新提问和结果）后确认执行。
 
 ### 能力矩阵
 

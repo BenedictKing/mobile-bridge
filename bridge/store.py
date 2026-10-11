@@ -132,7 +132,7 @@ class SessionStore:
             if 'thread_spawn_edges' not in tables:
                 return []
             rows = conn.execute(
-                "SELECT c.* FROM thread_spawn_edges e JOIN threads c ON c.id = e.child_thread_id "
+                "SELECT c.*, e.status AS spawn_status FROM thread_spawn_edges e JOIN threads c ON c.id = e.child_thread_id "
                 "WHERE e.parent_thread_id = ? ORDER BY c.created_at_ms, c.created_at, c.id", (parent_id,)).fetchall()
             return [dict(row) for row in rows]
 

@@ -54,7 +54,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
           "/icon.png": ("icon.png", "image/png")}
-THREAD_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate))?$")
 FONT_ROUTE = re.compile(r"^/vendor/katex/fonts/(KaTeX_[A-Za-z0-9_-]+\.(woff2|woff|ttf))$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/thumb$")
@@ -510,6 +510,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.output(200, bridge.catalog(
                         thread_id, refresh=query.get("refresh") == ["true"], kind=kind,
                         query=query.get("q", [""])[0][:200], offset=offset, limit=limit, ids=ids))
+                if action == 'permissions':
+                    return self.output(200, bridge.permission_settings(thread_id))
                 if action == "poll":
                     return self.poll(bridge, thread_id, int(query.get("after", ["-1"])[0]))
                 if action == "events":
@@ -542,6 +544,8 @@ class Handler(BaseHTTPRequestHandler):
                 if 'fastMode' in body and not isinstance(body['fastMode'], bool):
                     raise ValueError('Fast 模式开关无效')
                 result = bridge.settings(thread_id, body.get("model"), body.get("effort"), **({'fast_mode': body['fastMode']} if 'fastMode' in body else {}))
+            elif action == 'permissions':
+                result = bridge.set_permission_mode(thread_id, body.get('mode'))
             elif action == "stop":
                 result = bridge.interrupt(thread_id)
             elif action == "history":

@@ -120,7 +120,12 @@ class ChatTimeline {
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
-      heading.textContent=activity?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):timelineText('执行错误');node.append(heading);
+      let label=activity?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):timelineText('执行错误');
+      if(activity&&row.kind==='subagent'){
+        const meta=[row.subagentId,row.subagentType,row.status].filter(Boolean).join(' · ');
+        if(meta)label+=' · '+meta;
+      }
+      heading.textContent=label;node.append(heading);
     }
     const body=document.createElement(activity?'pre':'div');body.className=activity?'activity-body':'message-body';
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
@@ -207,7 +212,7 @@ class ChatTimeline {
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
       const node=entry.node,heading=node.querySelector(':scope>.who,:scope>summary');
-      if(heading)heading.textContent=row.role==='activity'?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):timelineText('执行错误');
+      if(heading){let label=row.role==='activity'?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):timelineText('执行错误');if(row.kind==='subagent'){const meta=[row.subagentId,row.subagentType,row.status].filter(Boolean).join(' · ');if(meta)label+=' · '+meta;}heading.textContent=label;}
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.timeline-attachments small.muted');

@@ -17,7 +17,7 @@ window.BridgeClipboard={
         const help=document.createElement('p');help.className='muted';help.textContent=actionText('浏览器限制自动复制，请长按选中文本复制，或使用系统复制快捷键。');
         const input=document.createElement('textarea');input.readOnly=true;input.value=text;input.setAttribute('aria-label',actionText('复制内容'));
         const close=document.createElement('button');close.className='primary';close.textContent=actionText('完成');close.onclick=()=>dialog.close();
-        dialog.append(heading,help,input,close);document.body.append(dialog);
+        const body=document.createElement('div');body.className='picker-body';body.append(help,input,close);dialog.append(heading,body);document.body.append(dialog);
         dialog.onclose=()=>{dialog.remove();button.focus();};dialog.showModal();input.focus();input.select();input.setSelectionRange(0,text.length);
         button.textContent=label;
       }

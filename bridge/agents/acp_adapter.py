@@ -663,6 +663,33 @@ class AcpAdapter(AgentAdapter):
                     self._set_config(handle, session, thinking['id'], mapped)
         return {'applied': True, 'confirmed': True, 'model': model, 'effort': effort}
 
+    def _permission_option(self, handle):
+        return next((option for option in handle.config_options
+                      if isinstance(option, dict) and
+                      (option.get('category') in ('mode', 'permission', 'approval') or
+                       option.get('id') in ('mode', 'permission', 'approvalPolicy', 'sandboxPolicy'))), None)
+
+    def permission_settings(self, session):
+        handle = self._handles.get(session.id)
+        option = self._permission_option(handle) if handle is not None else None
+        if option is None:
+            return {'supported': False, 'options': [], 'current': None}
+        options = [{'value': item.get('value'), 'name': item.get('name') or item.get('value')}
+                   for item in option.get('options') or [] if isinstance(item, dict) and item.get('value')]
+        return {'supported': bool(options), 'options': options, 'current': option.get('currentValue'),
+                'label': option.get('name') or '权限模式'}
+
+    def set_permission_mode(self, session, mode):
+        handle = self._handles.get(session.id)
+        if handle is None:
+            raise AcpUnavailable('会话尚未连接，请重新打开')
+        option = self._permission_option(handle)
+        values = {item.get('value') for item in option.get('options') or [] if isinstance(item, dict)} if option else set()
+        if option is None or mode not in values:
+            raise ValueError('当前 Agent 不支持所选权限模式')
+        self._set_config(handle, session, option['id'], mode)
+        return self.permission_settings(session)
+
     def catalog(self, session, refresh=False, kind=None, query='', offset=0, limit=200, ids=None):
         handle = self._handles.get(session.id)
         options = list(handle.config_options) if handle is not None else []

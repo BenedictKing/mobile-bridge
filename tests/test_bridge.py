@@ -317,6 +317,17 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn('已读取 transport.ts', child[0]['text'])
         self.assertIn('rg Transport src/lib/transport', child[0]['text'])
 
+    def test_timeline_meta_carries_capability_and_goal_fields(self):
+        # The chat screen renders from timeline meta only; capability-gated
+        # controls (steer/skills/rename, goal mode) break when these lag behind
+        # Bridge.view.
+        page = self.bridge.timeline_read(THREAD)
+        metas = [page['meta'], self.bridge.timeline_read(
+            THREAD, 'changes', after=page['sequence'], epoch=page['epoch'], start=page['before'])['meta']]
+        for meta in metas:
+            self.assertEqual(meta.get('capabilities'), sorted(self.bridge.adapter.capabilities))
+            self.assertEqual(meta.get('goalRuntimeAvailable'), self.bridge._goal_runtime_available())
+
     def test_legacy_desktop_threads_visible_but_subagents_excluded(self):
         from bridge.store import SessionStore
         legacy, untagged, child, cli, mobile = (str(uuid.uuid4()) for _ in range(5))
@@ -697,6 +708,14 @@ class IntegrationTests(unittest.TestCase):
         self.bridge.send(THREAD, '待删除', delete_id, 'queue')
         self.assertEqual(self.bridge.queue_action(THREAD, delete_id, 'delete')['status'], 'cancelled')
         self.assertEqual(self.bridge.submissions[THREAD + ':' + delete_id]['status'], 'cancelled')
+
+    def test_queue_can_be_disabled_and_reenabled_per_chat(self):
+        self.assertTrue(self.bridge.view(THREAD)['queueEnabled'])
+        self.assertEqual(self.bridge.queue_action(THREAD, '', 'disable'), {'enabled': False})
+        with self.assertRaisesRegex(ValueError, '排队已关闭'):
+            self.bridge.send(THREAD, 'blocked queue', str(uuid.uuid4()), 'queue')
+        self.assertEqual(self.bridge.queue_action(THREAD, '', 'enable'), {'enabled': True})
+        self.assertEqual(self.bridge.send(THREAD, 'enabled queue', str(uuid.uuid4()), 'queue')['status'], 'queued')
 
     def test_unknown_delivery_not_replayed_even_after_idle_changes(self):
         self.bridge.session(THREAD)
@@ -1108,6 +1127,25 @@ class HttpTests(unittest.TestCase):
         path = '/api/sessions/' + THREAD + '/detail?key=epoch.key&offset=16000&version=v'
         self.assertEqual(self.request('GET', path, headers=auth)[0], 200)
         self.assertEqual(calls[-1][1:], ('detail', {'cursor': 'epoch.key', 'offset': 16000, 'version': 'v'}))
+
+    def test_timeline_meta_exposes_enabled_agents(self):
+        from types import SimpleNamespace
+        labels = {'kimi': 'Kimi', 'zcode': 'ZCode'}
+        self.server.registry = SimpleNamespace(
+            kinds=lambda: sorted(labels),
+            for_agent=lambda kind: SimpleNamespace(adapter=SimpleNamespace(label=labels[kind])),
+            bridge_for=lambda session_id: None,
+            default=lambda: self.server.bridge)
+        self.server.bridge.timeline_read = lambda thread_id, mode='page', **options: {'meta': {}, 'rows': []}
+        status, _, body = self.request('GET', '/api/sessions/' + THREAD + '/timeline', headers=self.login())
+        self.assertEqual(status, 200)
+        self.assertEqual(body['meta']['agents'], [{'kind': 'kimi', 'label': 'Kimi'}, {'kind': 'zcode', 'label': 'ZCode'}])
+        # Without a registry (single-agent build) the meta stays untouched.
+        self.server.registry = None
+        self.server.bridge.timeline_read = lambda thread_id, mode='page', **options: {'meta': {}, 'rows': []}
+        status, _, body = self.request('GET', '/api/sessions/' + THREAD + '/timeline', headers=self.login())
+        self.assertEqual(status, 200)
+        self.assertNotIn('agents', body['meta'])
 
     def test_notification_route_is_authenticated_and_csrf_protected(self):
         class NotificationsFixture:

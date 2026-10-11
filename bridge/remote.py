@@ -63,8 +63,12 @@ class RemoteStore:
     def get(self, thread_id):
         return self.call('get', {'thread_id': thread_id})
 
-    def history(self, thread_id, turn_limit=None):
-        return self.call('history', {'thread_id': thread_id, 'turn_limit': turn_limit})
+    def history(self, thread_id, turn_limit=None, allow_subagent=False):
+        return self.call('history', {'thread_id': thread_id, 'turn_limit': turn_limit,
+                                     'allow_subagent': allow_subagent})
+
+    def child_threads(self, thread_id):
+        return self.call('child_threads', {'parent_id': thread_id})
 
     def recencies(self, identifiers):
         return self.call('recencies', {'identifiers': identifiers})

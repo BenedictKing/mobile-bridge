@@ -80,6 +80,21 @@ class UploadActivityTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.upload(data=b'x'*(MAX_FILE+1))
         with self.assertRaises(ValueError): self.bridge.uploads.resolve(THREAD, [identifier]*2)
 
+    def test_prefixed_agent_thread_ids_upload_and_traversal_ids_rejected(self):
+        # ACP agents such as zcode use sess_<uuid> ids; the store must accept
+        # the same path-safe charset as the HTTP route instead of bare UUIDs.
+        store = self.bridge.uploads
+        thread = 'sess_' + str(uuid.uuid4())
+        identifier = str(uuid.uuid4())
+        row = store.put(thread, identifier, 'shot.png', PNG)
+        self.assertEqual(row['image'], 'image/png')
+        store.set_thumb(thread, identifier, PNG, 320, 692)
+        preview, variant = store.preview(thread, identifier)
+        self.assertEqual(preview['id'], identifier)
+        self.assertIn(variant, ('thumb', 'original', 'fallback-original'))
+        for bad in ('..', '../escape', '/abs', 'sess/x', '.hidden', 'space id'):
+            with self.assertRaises(ValueError): store.put(bad, str(uuid.uuid4()), 'x.png', PNG)
+
     def test_unknown_delivery_retains_same_file_and_does_not_resubmit(self):
         file = self.upload();identifier = str(uuid.uuid4())
         with patch.object(self.bridge, '_call', side_effect=IPCError('uncertain')) as call:

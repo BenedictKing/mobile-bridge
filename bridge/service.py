@@ -228,6 +228,8 @@ class Bridge:
         self.closed = threading.Event()
         Path(data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ledger_path = Path(data_dir) / "submissions.json"
+        self.queue_settings_path = self.data_dir / 'queue-settings.json'
+        self.queue_settings = json.loads(self.queue_settings_path.read_text(encoding='utf-8')) if self.queue_settings_path.exists() else {}
         self.submit_lock = threading.Lock()
         self.create_lock = threading.Lock()
         self.message_lock = threading.RLock()
@@ -582,21 +584,35 @@ class Bridge:
         if scope == 'full':
             view = self._expand_migration_view(thread_id, view)
         projects = target.adapter.projects()
+        auto_created = False
         if project_key:
             project = next((p for p in projects if p['key'] == project_key), None)
             if project is None:
                 raise ValueError('请选择目标 Agent 中已保存的项目')
         elif view.get('cwd'):
             project = next((p for p in projects if p.get('cwd') == view['cwd']), None)
+            if project is None and self.host == 'local':
+                # 目标 Agent 尚未收录源目录时不再要求手动添加：直接以该目录
+                # 在目标上创建会话，key 与 AcpAdapter.projects() 的构造一致，
+                # 之后目标自身列出该会话时即自然收录该目录。远端源的 cwd 是
+                # 远端路径，无法在本机目标上创建，仍走显式项目。
+                cwd = view['cwd']
+                project = {'key': target.adapter.kind + ':' + hashlib.sha256(cwd.encode('utf-8')).hexdigest()[:12],
+                           'host': 'local', 'hostLabel': '此电脑',
+                           'name': cwd.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1] or cwd,
+                           'cwd': cwd}
+                auto_created = True
             if project is None:
                 raise ValueError('目标 Agent 没有与源会话相同目录的项目，请先在目标 Agent 添加该项目')
         else:
             raise ValueError('源会话缺少目录信息，无法匹配目标项目')
         title = (view.get('title') or '').strip()[:120] or '未命名聊天'
-        created = target.create_chat(project['key'], title, request_id)
+        created = (target.create_chat(project['key'], title, request_id, resolved=project)
+                   if auto_created else target.create_chat(project['key'], title, request_id))
         new_id = created['id']
         result = {'id': new_id, 'host': created.get('host', 'local'), 'agent': target.adapter.kind,
-                  'project': project['key'], 'status': 'created', 'sent': False}
+                  'project': project['key'], 'status': 'created', 'sent': False,
+                  'projectCreated': auto_created}
         submission_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'mobile-bridge:migrate:' + request_id))
         try:
             target.send(new_id, migration_message(self.adapter.label, view, ui_locale, scope), submission_id,
@@ -653,17 +669,23 @@ class Bridge:
             for turn in child_view.get('turns', []):
                 for message in turn.get('messages', []):
                     text = (message.get('text') or '').strip()
-                    if not text:
+                    output = (message.get('output') or '').strip()
+                    if not text and not output:
                         continue
                     role = message.get('role')
                     title = message.get('title') or ('用户' if role == 'user' else 'Agent' if role == 'assistant' else message.get('kind', 'activity'))
-                    lines.append(f'[{title}]\n{text}')
+                    content = '\n\n'.join(value for value in (text, output) if value)
+                    lines.append(f'[{title}]\n{content}')
             description = child.get('name') or child.get('title') or child.get('agent_role') or '子 Agent'
             subagent_type = child.get('agent_role') or child.get('thread_source') or ''
             title = '子 Agent' + (f' · {subagent_type}' if subagent_type else '') + f' · {description}'
+            status = child.get('spawn_status') or next((turn.get('status') for turn in child_view.get('turns', [])
+                                                        if turn.get('status') == 'inProgress'), 'completed')
             rows.append({'id': 'subagent:' + str(child_id), 'kind': 'subagent', 'role': 'activity',
                          'title': title, 'text': '\n\n'.join(lines) or '子 Agent 暂无可显示的执行记录',
-                         'subagentId': child_id, 'status': 'completed' if child.get('updated_at') else 'unknown'})
+                         'subagentId': child_id, 'subagentType': subagent_type,
+                         'subagentPrompt': child.get('first_user_message') or child.get('preview') or '',
+                         'stopReason': child_view.get('stopReason') or '', 'status': status})
         return rows
 
     def _add_subagents(self, thread_id, view):
@@ -1102,7 +1124,25 @@ class Bridge:
         view["forkedFrom"] = self._fork_origin(thread_id)
         view["agent"] = self.adapter.kind
         view["capabilities"] = sorted(self.adapter.capabilities)
+        view["queueEnabled"] = self.queue_enabled(thread_id)
         return view
+
+    def queue_enabled(self, thread_id):
+        return self.queue_settings.get(thread_id, True) is not False
+
+    def set_queue_enabled(self, thread_id, enabled):
+        self.adapter.validate_id(thread_id)
+        self.queue_settings[thread_id] = bool(enabled)
+        target = self.queue_settings_path.with_suffix('.tmp')
+        target.write_text(json.dumps(self.queue_settings, ensure_ascii=False), encoding='utf-8')
+        target.chmod(0o600)
+        target.replace(self.queue_settings_path)
+        with self.lock:
+            session = self.live.get(thread_id)
+        if session:
+            with session.condition:
+                session.changed()
+        return {'enabled': bool(enabled)}
 
     def _latest_created_goal_objective(self, thread_id):
         with self.submit_lock:
@@ -1345,7 +1385,10 @@ class Bridge:
             else:
                 result = projection.changes(**options) if mode == 'changes' else projection.page(**options)
                 result['meta'] = dict(result['meta'], host=self.host, agent=self.adapter.kind,
-                                      hostLabel='此电脑' if self.host == 'local' else self.hosts.hosts().get(self.host, {}).get('displayName', self.host))
+                                      hostLabel='此电脑' if self.host == 'local' else self.hosts.hosts().get(self.host, {}).get('displayName', self.host),
+                                      capabilities=sorted(self.adapter.capabilities),
+                                      goalRuntimeAvailable=self._goal_runtime_available(),
+                                      queueEnabled=self.queue_enabled(thread_id))
                 texts = [row['text'] for row in result['rows'] if row['role'] == 'assistant']
             cwd = (session.state or {}).get('cwd')
             media_items = [item for turn in ordered_turns(session.state or {})
@@ -1400,6 +1443,16 @@ class Bridge:
             raise ValueError('Fast 模式开关无效')
         session = self._target(thread_id)
         return self.adapter.update_settings(session, model, effort, fast_mode)
+
+    def permission_settings(self, thread_id):
+        session = self._target(thread_id)
+        return self.adapter.permission_settings(session)
+
+    def set_permission_mode(self, thread_id, mode):
+        if not isinstance(mode, str) or not mode:
+            raise ValueError('权限模式无效')
+        session = self._target(thread_id)
+        return self.adapter.set_permission_mode(session, mode)
 
     def _goal_activation_ids(self, thread_id):
         """Stable request ids used by goal activation turns."""
@@ -1560,6 +1613,10 @@ class Bridge:
             return result
 
     def queue_action(self, thread_id, submission_id, action, text=None):
+        if action == 'disable':
+            return self.set_queue_enabled(thread_id, False)
+        if action == 'enable':
+            return self.set_queue_enabled(thread_id, True)
         if action == "delete":
             return self.cancel_queued(thread_id, submission_id)
         if action == "edit":
@@ -1596,6 +1653,8 @@ class Bridge:
             raise ValueError("请输入 1–100000 字的消息")
         if mode not in ("send", "steer", "queue"):
             raise ValueError("未知发送方式")
+        if mode == 'queue' and not self.queue_enabled(thread_id):
+            raise ValueError('排队已关闭，请先重新开启排队')
         if work_mode not in (None, "default", "plan", "goal"):
             raise ValueError("未知工作模式")
         if mode == "steer" and work_mode is not None:

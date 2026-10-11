@@ -1,6 +1,8 @@
 """Cross-agent session migration: transcript building, routing, idempotence."""
+import hashlib
 import sqlite3
 import tempfile
+import types
 import unittest
 import uuid
 from pathlib import Path
@@ -137,12 +139,15 @@ class TranscriptTests(unittest.TestCase):
 class MigrateBridgeTests(unittest.TestCase):
     """Bridge.migrate across fake ACP agents and a codex desktop fixture."""
 
-    def make_acp_bridge(self, fake, adapter_cls=KimiAdapter, name='kimi'):
+    def make_acp_bridge(self, fake, adapter_cls=KimiAdapter, name='kimi', host='local'):
         tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
         adapter = adapter_cls('fake-acp', data_dir=root / 'data', spawn=fake.spawn_factory())
-        bridge = Bridge(root, root / 'data', adapter=adapter)
+        if host != 'local':
+            adapter.hosts = types.SimpleNamespace(
+                hosts=lambda: {host: {'alias': host, 'displayName': host}})
+        bridge = Bridge(root, root / 'data', host=host, adapter=adapter)
         self.addCleanup(bridge.close)
         return bridge
 
@@ -184,20 +189,33 @@ class MigrateBridgeTests(unittest.TestCase):
         self.assertEqual(target_fake.session_count, 1)
         self.assertEqual(len(self.prompts(target_fake)), 1)
 
-    def test_explicit_project_key_and_mismatch_errors(self):
+    def test_explicit_project_key_and_auto_creation(self):
         _, source, target_fake, target = self.make_acp_pair(target_cwd='/elsewhere')
         project = target.adapter.projects()[0]
         result = source.migrate(SID_SOURCE, target, project_key=project['key'], request_id=str(uuid.uuid4()))
         self.assertEqual(result['project'], project['key'])
-        with self.assertRaises(ValueError) as ctx:
-            source.migrate(SID_SOURCE, target, request_id=str(uuid.uuid4()))
-        self.assertIn('相同目录的项目', str(ctx.exception))
+        self.assertFalse(result['projectCreated'])
+        # The target has no matching directory: the source cwd is created on it directly.
+        result = source.migrate(SID_SOURCE, target, request_id=str(uuid.uuid4()))
+        self.assertEqual(result['project'], 'acp:' + hashlib.sha256(b'/work').hexdigest()[:12])
+        self.assertTrue(result['projectCreated'])
+        self.assertEqual(result['status'], 'sent')
+        created = [r for r in target_fake.requests if r['method'] == 'session/new'][-1]
+        self.assertEqual(created['params']['cwd'], '/work')
         with self.assertRaises(ValueError):
             source.migrate(SID_SOURCE, target, project_key='bogus', request_id=str(uuid.uuid4()))
         with self.assertRaises(KeyError):
             source.migrate('session_missing_0000', target, request_id=str(uuid.uuid4()))
         with self.assertRaises(ValueError):
             source.migrate(SID_SOURCE, target, request_id='not-a-uuid')
+        # Remote-host sources keep the explicit-project requirement: their cwd
+        # is a remote path that must not become a local project on the target.
+        remote = self.make_acp_bridge(FakeAcpAgent(
+            list_rows=[{'sessionId': SID_SOURCE, 'cwd': '/home/user/proj', 'title': '远端', 'updatedAt': UPDATED}]),
+            host='myserver')
+        with self.assertRaises(ValueError) as ctx:
+            remote.migrate(SID_SOURCE, target, request_id=str(uuid.uuid4()))
+        self.assertIn('相同目录的项目', str(ctx.exception))
 
     def test_send_failure_keeps_created_session_with_warning(self):
         _, source, _, _ = self.make_acp_pair()

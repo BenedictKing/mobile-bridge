@@ -19,6 +19,16 @@ def file_name(value):
     return value
 
 
+def thread_id(value):
+    """Chat ids are agent-native: bare UUIDs for Codex, prefixed forms such as
+    sess_<uuid> for ACP agents. Accept the same path-safe charset (and leading
+    alphanumeric) the HTTP session route enforces, so uploads work for every
+    agent while staying traversal-safe."""
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', value):
+        raise ValueError('会话标识无效')
+    return value
+
+
 def image_type(data):
     if data.startswith(b'\x89PNG\r\n\x1a\n'): return 'image/png'
     if data.startswith(b'\xff\xd8\xff'): return 'image/jpeg'
@@ -51,7 +61,7 @@ class Uploads:
         self.lock = threading.RLock()
 
     def put(self, thread, identifier, name, data):
-        uuid.UUID(thread); uuid.UUID(identifier); file_name(name)
+        thread_id(thread); uuid.UUID(identifier); file_name(name)
         if not isinstance(data, bytes) or not 0 < len(data) <= MAX_FILE:
             raise ValueError('每个附件需为 1 字节至 20 MB')
         digest = hashlib.sha256(data).hexdigest()
@@ -91,7 +101,7 @@ class Uploads:
         return {k: row[k] for k in keys if k in row}
 
     def set_thumb(self, thread, identifier, data, width, height):
-        uuid.UUID(thread); uuid.UUID(identifier)
+        thread_id(thread); uuid.UUID(identifier)
         if not isinstance(data, bytes) or not 0 < len(data) <= 1024 * 1024:
             raise ValueError('缩略图需为 1 字节至 1 MB')
         if not isinstance(width, int) or isinstance(width, bool) or not isinstance(height, int) or isinstance(height, bool) or not 1 <= width <= 8192 or not 1 <= height <= 8192:
@@ -136,7 +146,7 @@ class Uploads:
                 'previewSha256': row['sha256']}, 'fallback-original' if variant != 'original' else 'original'
 
     def get(self, thread, identifier):
-        uuid.UUID(thread);uuid.UUID(identifier)
+        thread_id(thread);uuid.UUID(identifier)
         meta = self.root/thread/(identifier+'.json')
         try:
             row = json.loads(meta.read_text(encoding='utf-8'))
@@ -159,7 +169,7 @@ class Uploads:
 
     def by_path(self, thread, paths):
         """Map exact attachment paths to metadata for safe phone previews."""
-        uuid.UUID(thread)
+        thread_id(thread)
         wanted = {str(Path(value).resolve()) for value in paths if isinstance(value, str) and value}
         rows = {}
         if not wanted:

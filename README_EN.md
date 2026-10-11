@@ -240,7 +240,7 @@ The switch is off by default and independent of chat notifications. Messages use
 | New chats | Create an empty chat in a saved local/SSH project, then hand it to the desktop App; creation itself does not call a model |
 | Markdown and math | Headings, lists, tables, code and LaTeX math; assets and fonts are served locally |
 | Progressive history | Show the latest 20 records first, silently fill to 100, then load 100 more near the top; expand large tool content on demand |
-| Original execution | Send, steer, queue; send queued messages now, edit or delete them; stop and respond to supported confirmation cards |
+| Original execution | Send, steer, queue; disable queueing per chat, send queued messages now, edit or delete them; stop and respond to supported confirmation cards |
 | Local and SSH | Execute on the chat's original computer or server |
 | Chat navigation | Sort by recent activity or group by expandable projects |
 | Model and Skills | Choose model/reasoning effort, toggle Fast for eligible official accounts, or send installed Skills from the chat's host |
