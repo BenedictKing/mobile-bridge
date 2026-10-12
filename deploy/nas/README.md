@@ -47,13 +47,13 @@ python3 -B run.py --lan --origin https://codex.example.com
 | 超时 | 读取、发送均设为 300 秒 |
 | 缓存 / 响应缓冲 | 关闭 |
 
-域名使用独立子域名的根路径；当前网页不支持部署在 `/codex/` 等子路径下。网页使用 HTTP 长轮询，无需 WebSocket。登录和后续写请求的 `Origin`、`Cookie`、`X-CSRF-Token` 应原样传递。
+域名使用独立子域名的根路径；当前网页不支持部署在 `/codex/` 等子路径下。网页使用 HTTP 上的增量 SSE 事件流，无需 WebSocket；每一层反代都需放行并且不缓冲 `text/event-stream`。登录和后续写请求的 `Origin`、`Cookie`、`X-CSRF-Token` 应原样传递。
 
 如果这样已经可以访问，不需要增加容器。
 
 ### B. 希望按 Docker 应用统一管理入口
 
-在 NAS 上下载仓库，本分支为 `feature/desktop-ntfy`，进入 `deploy/nas`：
+在 NAS 上下载仓库（默认分支 `main`），进入 `deploy/nas`：
 
 ```sh
 cp .env.example .env
@@ -92,7 +92,7 @@ docker compose down
 | “此访问地址未在网关配置中允许” | 电脑配置是否包含完整 HTTPS 源并已重启；每一层反代是否保留 Host |
 | “不允许跨站请求” | 地址栏域名与允许的源是否一致；是否错误改写 Origin |
 | 登录后不断回到登录页 | 全程使用 HTTPS；代理是否保留 Cookie；禁用缓存 |
-| 实时更新经常断开 | 外层和内层代理的超时；响应缓冲；不要缓存 `/api/` |
+| 实时更新经常断开 | 外层和内层代理的超时；响应缓冲（SSE 要求不缓冲 `text/event-stream`）；不要缓存 `/api/` |
 | 通知打开旧地址 | 设置通知跳转地址，再产生新通知；已收到通知里的旧链接不会更新 |
 
 把网页直接部署到公网也意味着登录入口对公网开放。保留网关密码验证、HTTPS 和现有 NAS 访问控制；不需要公开任何 App IPC 端点。

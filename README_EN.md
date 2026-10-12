@@ -35,14 +35,14 @@ Download the desktop App for everyday use. **No deployment Agent, Python, Node.j
 
 | Platform | Download | Open |
 | --- | --- | --- |
-| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
-| Windows x64 (no installation) | [Download full ZIP](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64.zip) | Extract the entire ZIP and run `Mobile Bridge.exe`; do not move just the exe |
-| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
-| macOS Intel | [Download x64 DMG](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
-| Ubuntu x64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
-| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
+| Windows x64 (recommended installer) | [Download Setup.exe](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64-Setup.exe) | Run the installer and launch from the shortcut |
+| Windows x64 (no installation) | [Download full ZIP](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Windows-x64.zip) | Extract the entire ZIP and run `Mobile Bridge.exe`; do not move just the exe |
+| macOS Apple Silicon (M series) | [Download arm64 DMG](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-arm64.dmg) | Open the DMG and drag the App to Applications |
+| macOS Intel | [Download x64 DMG](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-macOS-x64.dmg) | Open the DMG and drag the App to Applications |
+| Ubuntu x64 (experimental) | [Download .deb](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-amd64.deb) | Ubuntu 22.04; launch as a regular user |
+| Ubuntu ARM64 (experimental) | [Download .deb](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/Mobile-Bridge-0.1.0-Linux-arm64.deb) | Ubuntu 22.04 ARM64; no 32-bit ARM build |
 
-[All releases and release notes](https://github.com/BenedictKing/mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/try2love/codex-mobile-bridge/releases/download/v0.1.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
+[All releases and release notes](https://github.com/BenedictKing/mobile-bridge/releases) · [Download SHA256 checksums](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/SHA256SUMS.txt). Both Mac architectures also include ZIPs for in-app updates or manual replacement. Windows ARM packages are not available. The Mac build is ad-hoc signed but not notarized and may require manual approval; Windows builds have no certificate signature. See the macOS first-launch instructions below.
 
 1. Open the original **Codex App** on the computer, then open **Mobile Bridge**.
 2. Keep LAN access enabled under **Network and login**, save, and click **Start gateway**. Preserve the existing port if you already have a configuration.
@@ -53,11 +53,11 @@ For access outside your LAN, add temporary HTTPS, an own-server connection or a 
 
 ### In-app updates
 
-**beta.5 / beta.6 update checks can fail with HTTP 415; manually install beta.7 or later once.** Stop the gateway and quit the App before replacing it, preserving the data directory. The corrected updater supports subsequent in-app updates.
+**Releases from the old Codex Mobile Bridge repository (1.x / beta) cannot update in-app to this repository's releases** (the release repository and signing key have changed). Stop the gateway and quit the App, then manually install a package from this page to the same location, preserving the data directory. In-app updates work from this version onward.
 
-Starting with `v0.2.0-beta.5`, use **App updates** to check for a release, read its notes, and select **Update and restart**. The app verifies the signed manifest and package before replacing itself, preserves login, network, notification and watched-chat settings, and restores a previously running gateway. Installation failures attempt to restore the previous app. Older versions need one manual upgrade to a version with this feature. Temporary HTTPS addresses change when the gateway restarts.
+Starting with `v0.1.0`, use **App updates** to check for a release, read its notes, and select **Update and restart**. The app verifies the signed manifest and package before replacing itself, preserves login, network, notification and watched-chat settings, and restores a previously running gateway. Installation failures attempt to restore the previous app. Temporary HTTPS addresses change when the gateway restarts.
 
-**Windows beta.7 / 1.0.0 users:** the old updater may roll back with `WinError 32` because its working directory is locked. Choose **Stop gateway and quit** in the tray, then install **1.4.0 Setup.exe** to the same location. Do not uninstall or delete your data. Version 1.1.0 fixes this working-directory issue for subsequent updates.
+**Windows users of old versions:** the old updater may roll back with `WinError 32` because its working directory is locked. Choose **Stop gateway and quit** in the tray, then install this page's Setup.exe to the same location. Do not uninstall or delete your data. The current updater has fixed this working-directory issue.
 
 ### Phone reading and display settings
 
@@ -93,9 +93,9 @@ View remaining percentages, reset times and available usage resets. Missing info
 
 ### First launch on macOS: “damaged” or unidentified developer
 
-The Mac build has an **ad-hoc integrity signature**, but **no Apple Developer ID signature or notarization**. macOS can still block the first launch. The older `v0.2.0-beta.1` also has a bundle-signing defect; use `v1.1.0` or later.
+The Mac build has an **ad-hoc integrity signature**, but **no Apple Developer ID signature or notarization**. macOS can still block the first launch.
 
-1. Download the DMG or ZIP for your Mac's chip and `SHA256SUMS.txt` from this repository's Release. Calculate the downloaded file's hash and compare it with the matching filename in the checksum file. If they differ, download again instead of allowing the app. The example below uses the 1.4.0 Apple Silicon DMG; replace the filename for other downloads.
+1. Download the DMG or ZIP for your Mac's chip and `SHA256SUMS.txt` from this repository's Release. Calculate the downloaded file's hash and compare it with the matching filename in the checksum file. If they differ, download again instead of allowing the app. The example below uses the 0.1.0 Apple Silicon DMG; replace the filename for other downloads.
 
    ```sh
    shasum -a 256 "$HOME/Downloads/Mobile-Bridge-0.1.0-macOS-arm64.dmg"
@@ -215,9 +215,9 @@ The desktop App and phone website each have a **Language / 语言** selector and
 1. **Bark for iPhone:** install Bark and allow notifications. In the desktop App, enter the server URL and Device Key from the phone app. For `https://api.day.app/YOUR_KEY`, use `https://api.day.app` as the server and only `YOUR_KEY` as the key. Self-hosted servers are supported; register your phone with that server first. Saved keys are hidden, blank keeps the key, and changing the server requires re-entering it. See the [Bark guide](https://bark.day.app/#/tutorial).
 2. **ntfy for Android:** install ntfy and allow notifications, lock-screen display and background activity. For an initial test, use `https://ntfy.sh`. Generate a random topic in the desktop App and subscribe to exactly that server and topic on the phone. Public anonymous topics need no token and are created automatically. Anyone who knows such a topic can read and publish; use a long random name and leave chat titles hidden. Consider a protected topic for regular use.
 3. Enable the channels you need, save, then click **Send Bark test notification** or **Send ntfy test notification**. Either channel or both can receive the same watched-chat notifications. Confirm actual receipt on the phone. This test does not require the gateway to run; server acceptance alone is not proof of phone delivery.
-4. Start the gateway, refresh the phone website, open **Reminders** in a chat, check **Enable chat reminders** and save. Local and SSH chats are watched separately.
+4. Start the gateway, then open **Settings → Notifications for all chats** on the phone website and choose the request-handling and run-completion defaults. Fresh configurations default to request notifications on and completion notifications off; at least one notification channel must be configured and enabled first.
 5. New command, file, permission or question requests trigger a notification. Clicking it opens that chat using the normal web login and confirmation flow.
-6. Each watched chat has an optional **Notify when a run completes** checkbox, off by default. Enable it for the current running turn and future successful runs. Failed, stopped and already completed historical runs do not trigger it. Turning only this option off keeps confirmation reminders enabled.
+6. In each chat's **Reminders**, both notification types can independently **follow the global setting, turn on, or turn off**; explicit choices on watched chats survive upgrades. Completion notifications start from the boundary of the first live connection: failed, stopped and already completed historical runs do not trigger it.
 7. In the desktop App, **Phone notifications → Watched chats** shows each chat's name, device, directory and ID. Toggle completion notifications or **Remove watch**; changes save immediately. Removing a watch stops that chat's reminders without deleting the chat. Add new watches from the phone. Saved watches remain manageable when the gateway is stopped or notification channels are disabled. Remote names use the last available title; the device and chat ID remain visible when the name is unavailable.
 
 Watched chats remain monitored after the phone page closes, provided the computer, gateway, original App and relevant SSH connections stay online. Delivery and retries are tracked separately per channel, destination, chat and event, including after restart. Failure in one channel does not affect the other. New channels or destinations do not replay completed history; runs observed in progress on their first live connection and future completions can notify. Existing ntfy configuration and delivery records are preserved. Failed delivery retries with backoff and rechecks whether the request is still pending. Completion retries continue while that chat has the option enabled and stop when it is disabled. Completed history from before the first live connection is not replayed. Strict exactly-once delivery is not guaranteed during network failures.
@@ -230,7 +230,7 @@ In the desktop App, open **Phone notifications → Gateway startup and entry not
 
 New configurations enable address notifications by default; saved opt-outs survive upgrades. Configure at least one notification channel for delivery. Every gateway start sends the enabled addresses, even when unchanged: LAN, NAS / existing reverse-proxy domains, personal servers once SSH forwarding connects, and temporary HTTPS once ready. Later-ready entries and address changes trigger an update. Disabled interfaces, disabled entries and loopback addresses are excluded. LAN links require the same network; fixed domains require completed deployment.
 
-The switch is off by default and independent of chat notifications. Messages use current entries rather than the chat click URL, contain no passwords or login tokens, and retry per channel. Stopping the gateway or disabling the switch stops new sends. Configure and test after upgrading to v1.3.2 or later before relying on notifications for subsequent restarts; earlier versions do not support this feature.
+The switch is independent of chat notifications. Messages use current entries rather than the chat click URL, contain no passwords or login tokens, and retry per channel. Stopping the gateway or disabling the switch stops new sends. Configure and test after enabling before relying on notifications for subsequent restarts.
 
 ## Features
 
@@ -243,14 +243,14 @@ The switch is off by default and independent of chat notifications. Messages use
 | Original execution | Send, steer, queue; disable queueing per chat, send queued messages now, edit or delete them; stop and respond to supported confirmation cards |
 | Local and SSH | Execute on the chat's original computer or server |
 | Chat navigation | Sort by recent activity or group by expandable projects |
-| Model and Skills | Choose model/reasoning effort, toggle Fast for eligible official accounts, or send installed Skills from the chat's host |
+| Model and Skills | Choose model/reasoning effort, toggle Fast for eligible official accounts, or send Skills: Codex reads installed skills from the chat's host (up to 8 per message); Kimi lists the skills the agent advertises, one per message |
 | Plan and Goal modes | Start a plan or native goal from the composer; implement or revise a completed plan in the browser |
 | Independent authentication | Username/password or explicit passwordless mode |
 | Parallel access | LAN, temporary HTTPS and multiple fixed entries |
 | File previews | Local chat references inside the working directory, up to 50 MiB per file |
 | Bilingual UI | Chinese / English on the desktop and phone |
 
-Large history pages also have a byte budget, so a large reply may require multiple pages. Incremental long polling updates changed records without retransmitting the entire chat. Stale cursors after a gateway restart or replaced desktop snapshot trigger a fresh synchronization. Full model context stays on the computer.
+Large history pages also have a byte budget, so a large reply may require multiple pages. Incremental SSE updates changed records on LAN entries without retransmitting the entire chat; entries that cannot carry SSE (such as temporary Cloudflare tunnels) fall back to incremental long polling. Stale cursors after a gateway restart or replaced desktop snapshot trigger a fresh synchronization. Full model context stays on the computer.
 
 ## Requirements
 
@@ -298,7 +298,7 @@ Alternatively, double-click `启动手机网关.command`. Stop with `Ctrl+C`, `p
 
 Open the printed LAN URL on a phone on the same network, for example `http://192.168.1.10:8787`. The initial username is `admin`; the generated password is in `.local/首次登录.txt`. Select a chat and wait for **Connected** before sending.
 
-Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a system login service. Restarting the gateway requires logging in again. If a chat shows saved history only, open it in the desktop App and reconnect on the phone; the gateway does not create a replacement execution owner for an unloaded chat.
+Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a system login service. Normal gateway restarts preserve unexpired logins. If a chat shows saved history only, open it in the desktop App and reconnect on the phone; the gateway does not create a replacement execution owner for an unloaded chat.
 
 ### Multiple agents (source runs)
 
@@ -308,7 +308,7 @@ The default `auto` probes for locally installed agents (Codex is always enabled;
 python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh,zcode
 ```
 
-The corresponding CLI (`kimi` / `mcode` / `npx`; Claude is reached through the `@agentclientprotocol/claude-agent-acp` wrapper, overridable via the `CLAUDE_ACP_BIN` environment variable; DeepSeek through the `@openma/deepseek-harness-acp` wrapper, overridable via `DSH_ACP_BIN`; ZCode through the `zcode-acp-server` wrapper, overridable via `ZCODE_ACP_BIN`, credentials read from `~/.zcode`, Node.js 22+ required) must be installed on PATH and signed in (for dsh use `dsh-acp login` or the `DEEPSEEK_API_KEY` environment variable; for ZCode sign in via the desktop app or CLI). The gateway spawns these agents as child processes; the phone chat list groups sessions by agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`. When creating a chat, the agent and the project are picked independently; projects pointing at the same directory are deduplicated across agents, and a local project directory known to one agent can be handed to another agent for the new session.
+The corresponding CLI (`kimi` / `mcode` / `npx`; Claude is reached through the `@agentclientprotocol/claude-agent-acp` wrapper, overridable via the `CLAUDE_ACP_BIN` environment variable; DeepSeek through the `@openma/deepseek-harness-acp` wrapper, overridable via `DSH_ACP_BIN`; ZCode through the `zcode-acp-server` wrapper, overridable via `ZCODE_ACP_BIN`, credentials read from `~/.zcode`, Node.js 22+ required) must be installed on PATH and signed in (for dsh use `dsh-acp login` or the `DEEPSEEK_API_KEY` environment variable; for ZCode sign in via the desktop app or CLI). The gateway spawns these agents as child processes; the phone chat list labels each session with its agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`. When creating a chat, the agent and the project are picked independently; projects pointing at the same directory are deduplicated across agents, and a local project directory known to one agent can be handed to another agent for the new session.
 
 Note: Kimi/MiniMax/Claude/DeepSeek/ZCode runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns for good (history is preserved). After a gateway restart, sessions with notification watches re-attach automatically in the background; unwatched sessions reconnect when you open the chat. Codex runs are owned by the desktop App and survive gateway restarts.
 
@@ -341,7 +341,7 @@ Preserve the external Host header, Origin, cookies and CSRF header; disable prox
 ## Phone operations
 
 - **New chat:** choose a saved desktop project and name. Creation stores an empty chat through the official runtime, closes the helper and opens it in the original App. Sending waits for desktop ownership. Creation may change the desktop's visible chat. Saved request IDs prevent blind duplicate creation after an uncertain result. For a local Git project, check **Run in a new worktree** to create the chat in an isolated worktree under `<project>/.agents/worktrees/` with a new branch: `fresh` bases on the latest remote default branch, `head` on the current local HEAD (including unpushed commits).
-- **Model/Skills:** settings follow the current chat's host and project. Custom model availability depends on the provider. Changing a model does not change authentication or permission policy. Select up to eight Skills to send with the next message.
+- **Model/Skills:** settings follow the current chat's host and project. Custom model availability depends on the provider. Changing a model does not change authentication or permission policy. Codex chats accept up to eight Skills sent as native skill input with the next message; Kimi chats list the skills the agent advertises, one per message, sent as a slash command.
 - **Fast mode:** the model panel shows a toggle when the chat's host uses official ChatGPT login and its model and workspace allow Fast. Toggle it and select **Apply to this chat**; changes take effect from the next turn. Turning it off explicitly selects standard speed. The panel reads desktop settings and retains them after a refresh. Leaving the toggle untouched preserves the existing speed tier, including when changing model or reasoning effort. API/custom providers and unsupported models hide it; SSH chats use their remote account and workspace. Fast uses more allowance; see the [official speed guide](https://learn.chatgpt.com/docs/agent-configuration/speed).
 - **Long model names:** the toolbar truncates the name while keeping reasoning effort visible. Open the model panel to read the full ID, or hover over the button on a computer.
 - **Work mode:** choose Default, Plan or Goal between the send-type selector and Send. Plan mode discusses the task first; its completion card lets you view the plan, implement it in Default mode, or send requested changes in Plan mode. Entering revision feedback emphasizes further planning and disables immediate implementation, so feedback cannot be silently ignored.
@@ -371,7 +371,7 @@ The bridge reads desktop chat metadata/history and forwards actions through the 
 
 Gateway data stays in its configured directory, normally `.local`. It includes login hashes, desktop preferences, notification settings/tokens, watched chats, submission/creation deduplication records, caches, process control records and logs. Each SSH connection has separate status/log files. Do not publish this directory or `.tmp`. Keep backups private and use the App's directory selector to adopt an existing installation.
 
-Uploaded files are retained in `uploads/` or `hosts/<host hash>/uploads/` inside gateway data, separated by chat. Remote copies are stored under that host's `$CODEX_HOME/mobile-bridge/uploads/` (default `~/.codex/mobile-bridge/uploads/`). Removing a draft attachment does not delete uploaded files, and automatic cleanup is not provided. Manually deleting a file can break historical or queued references to it.
+Uploaded files are retained in `uploads/` or `hosts/<host hash>/uploads/` inside gateway data, separated by chat. Remote copies are stored under that host's `$CODEX_HOME/mobile-bridge/uploads/` (default `~/.codex/mobile-bridge/uploads/`). Removing a draft attachment does not delete uploaded files. Local uploads older than seven days that are no longer referenced by any send record are cleaned up automatically; remote copies are not cleaned up. Manually deleting a file can break historical or queued references to it.
 
 The local desktop management interface uses guarded Electron IPC and a private stdio worker. Gateway start/stop, updates and network configuration are not exposed through the phone HTTP API. Notification settings are managed in the desktop app. Public HTTP access remains constrained by authentication, allowed Host/Origin checks and CSRF validation.
 

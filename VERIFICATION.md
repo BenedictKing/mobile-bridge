@@ -1,3 +1,12 @@
+## kimi 前端 Skill、ACP 空闲超时与 Jev 设置面板（2026-10-12，未发布）
+
+- kimi Skill 选择：ACP 没有原生 Skill 块；`acp_view` 缓存 `available_commands_update`，`AcpAdapter.catalog` 把广告的斜杠命令映射为 Skill 项（排除 compact/status/usage/mcp/tasks/help 六个内置命令，支持搜索、分页与已选解析），`resolve_skills` 校验后由 `dispatch_turn` 把首文本块改写为 `/<命令名> <正文>`（每次 prompt 只识别一个前导斜杠命令，故一次限选一个；时间线仍显示用户原文）；`KimiAdapter` 声明 `Capability.SKILLS`。已用真实 kimi ACP 进程探针确认广告形状：用户级 Skill 带 `skill:` 前缀，内置 Skill 用裸名。
+- ACP prompt 空闲超时：`PROMPT_TIMEOUT`（3600 秒）从总时长改为空闲判定（30 秒分片），持续有 `session/update` 或存在待答复审批时不计超时；空闲超限即发送 `session/cancel`、把挂起审批答复为 cancelled 并 `discard` 孤儿 future，再标记 turn 失败，避免 agent 侧遗留孤立 turn 拒绝后续消息；teardown、超时与 interrupt 共用 `_flush_responders`。
+- Jev 设置面板：Jev 配置改为网页「设置 → 权限预判」可编辑，持久化数据目录 `jev.json`（0600），密钥掩码回显、空提交保留现值、`clearApiKey` 显式清除，保存即时生效于所有 Agent 的 Bridge；`TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`JEV_MODEL` 仅作启动兜底，显式清除后即使环境变量存在也不启用。
+- 文档对照审查修复：jev 拒绝非回环 http 端点、归档复选框复位、`api()` 非 JSON 容错、queue 缺省 action 置空、agentLabel 未知 kind 兜底，以及 ARCHITECTURE.md 九处纠偏。
+- 自动检查：Python 全量 684 项（678 通过、6 项平台条件跳过；`tests/test_acp_adapter.py` 新增 Skill 广告目录/改写用例与 prompt 空闲超时、审批挂起豁免用例）；桌面 Node 158 项通过（含 i18n 中英键对齐）。
+- 未验证：Jev 线上真实调用（本机未配置 API Key，同前）；kimi Skill 验证到命令广告形状与首文本块改写为止，未实际触发一次真实 Skill 运行（斜杠命令激活由 kimi 内部完成）。
+
 ## Jev 权限预判与 ACP 原生子会话发现（2026-10-11，未发布）
 
 - Jev 顾问式权限预判：新增 `bridge/jev.py` 与 `Bridge._annotate_assessments`。配置 `TYPESAFE_API_KEY` 后（`TYPESAFE_BASE_URL`/`JEV_MODEL` 可覆盖，默认 api.typesafe.ai / jev-latest），对 `acp/requestPermission`、Codex 命令/文件/权限审批与 computer-use 卡片发起一次 `/v1/systemone` 请求（score 风险分级 0-3 + noul 可撤销性 + choice 建议选项，choice 选项按卡片实际可用的原生决策裁剪并始终保留 review）；评估按请求指纹缓存（256 条上限、失败缓存不重试），完成回调 `session.changed()` 经既有增量 SSE 推送刷新。待确认列表按风险降序稳定排序（同风险保序），前端 `web/app.js` 显示 Jev 徽章（分级/置信度/可撤销性）、给建议按钮加星标记，未配置或失败时回退既有本地确定性标签；Jev 无任何自动回应路径，`respond` 仍只接受用户显式提交。
@@ -528,7 +537,7 @@
 python3 -B -m unittest discover -s tests -v
 ```
 
-当前包含 **42 项测试**。它们使用合成会话、模拟原生 IPC 和临时本机 HTTP 服务，不调用真实模型，也不读取使用者的聊天。Windows 使用真实本机命名管道作为模拟桌面服务；macOS/Linux 使用 Unix socket。Windows 可运行 `python -B -m unittest discover -s tests -v`。
+当时包含 **42 项测试**。它们使用合成会话、模拟原生 IPC 和临时本机 HTTP 服务，不调用真实模型，也不读取使用者的聊天。Windows 使用真实本机命名管道作为模拟桌面服务；macOS/Linux 使用 Unix socket。Windows 可运行 `python -B -m unittest discover -s tests -v`。
 
 覆盖：
 

@@ -2,11 +2,13 @@
 
 ### Added
 
+- Kimi sessions now support Skill selection in the phone UI: skills advertised by the agent as ACP slash commands appear in the picker, and the chosen skill is sent as a leading `/<command>` in the message (one skill per message).
 - Optional Jev (TypeSafe AI) advisory triage for manual permission confirmations: each approval card gets a risk level, reversibility, confidence, and a starred suggested option, and the riskiest pending confirmations sort first. Jev only annotates and ranks — approvals still require an explicit tap, and unconfigured gateways keep the deterministic local labels. The API key, endpoint, and model are editable in the web settings dialog (persisted to `jev.json`, masked readback, live effect without a gateway restart); env vars remain launch-time defaults and an explicit key clear disables Jev even when they are set.
 - ACP agents that archive sub-agents as independent on-disk sessions are now discoverable: kimi session directories (`state.json` + per-agent wire logs), zcode (`acp-lazy-sessions.json` mapping + `cli/agents` transcripts), and claude (`subagents/` sidechain files) all feed the same timeline activity rows, read-only with size caps and mtime caching.
 
 ### Changed / Fixed
 
+- ACP prompt timeouts are now idle-based: active `session/update` traffic or a pending permission request no longer counts toward the limit, and an idle-expired turn is cancelled agent-side (`session/cancel` plus cancelled answers to pending approvals) so later messages are not rejected by an orphaned turn.
 - Live chat updates now stream over incremental SSE (ready/changes/reset frames with `epoch.sequence` cursor resume); the web client uses one transport module for SSE and long-polling, with capped reconnect backoff and definitive logout on auth expiry. Legacy full-state SSE and the polling endpoints stay byte-compatible.
 - Queued messages can now be sent immediately when idle, edited, or deleted; automatic dispatch uses the latest edited content.
 - Updated queue API documentation and added regression coverage for queue actions and edit/dispatch races.
