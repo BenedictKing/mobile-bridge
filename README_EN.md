@@ -137,6 +137,8 @@ Unsaved changes appear as red dots in the affected sidebar section and save bar.
 
 Desktop builds bundle a pinned cloudflared binary for the target OS and architecture. No first-run download is needed. Runtime settings keep custom executables and source-run installation under **Advanced: custom program and repair**.
 
+The desktop sidebar links to this project's GitHub home, issues, and pull requests for source code, feedback, and contributions.
+
 ### QR sign-in
 
 1. Start the gateway and find a reachable phone address on the overview page.
@@ -199,6 +201,12 @@ A domain alone does not make separate private networks reachable. A home NAS can
 **Check fixed entry** verifies that the HTTPS endpoint returns the identity of this exact running gateway. It checks from the computer only: also disable phone Wi-Fi and test login and chat over mobile data.
 
 The overview lists all enabled fixed URLs. With the notification click URL empty, notifications prefer the first enabled fixed URL, then another HTTPS entry, then LAN. Enter an explicit notification URL if you want a specific entry. Domain/server costs are determined by the services you choose; this project does not purchase or provision resources.
+
+### Choose which adapters allow access
+
+In the desktop App, open **Network & login**, choose **Selected IPv4 addresses only**, and select the addresses you want to use. Exclude unwanted WSL or VMware adapters. Stop the gateway, save, and restart; unselected addresses do not listen on the gateway port. Selections bind to current IPs: reselect after a DHCP address change. The gateway does not fall back to opening all adapters. **All IPv4 addresses** retains the previous behavior.
+
+**Allow local browser access** independently controls `127.0.0.1 / localhost`. Turning it off hides local URLs and blocks local browser/API access while keeping a private loopback path for desktop status checks and HTTPS tunnels. Turning off LAN access does not disable configured external entries.
 
 ### What are “Additional HTTPS addresses”?
 
@@ -355,6 +363,11 @@ Preserve the external Host header, Origin, cookies and CSRF header; disable prox
 
 Work mode follows the chat unless manually selected. Default and Plan messages can be queued; steering retains the running turn's mode. Modes preserve the original host, model, provider and permissions. After a goal request is accepted, subsequent messages return to ordinary input without cancelling the goal. Local chats support pausing, resuming, editing and closing goals from the browser; these controls are not yet supported for SSH chats. Pause before editing. Saving replaces the objective and resets usage while retaining the token budget and paused state; resume to continue. Pausing or closing a goal does not interrupt an active reply; use Stop for that. Manage budgets with existing Codex controls. These features require desktop runtime support; see [verification scope](VERIFICATION.md).
 
+### Chat notifications and renaming
+
+- **Settings → Notifications for all chats** sets the request-handling and run-completion defaults; each chat's **Reminders** can override them independently. Notifications continue after the page is closed while the gateway keeps running. Bark and ntfy can be used together.
+- Click a chat title, choose **Rename chat**, and save a name of up to 120 characters. The name is saved to Codex on the chat's execution host, including SSH hosts, and the web list and heading update.
+
 ## Login settings
 
 The default is independent username/password authentication. To change the password from the CLI:
@@ -386,66 +399,7 @@ The local desktop management interface uses guarded Electron IPC and a private s
 
 ## Deployment Agent instructions
 
-An Agent is optional for everyday App use. For source deployment, custom network setup or troubleshooting, copy this to an Agent on the computer:
-
-```text
-Deploy and run https://github.com/BenedictKing/mobile-bridge for me. Identify whether this computer runs Windows or macOS and read the repository's deployment Agent instructions. Prefer a published desktop App or reuse an existing installation; configure, start and verify it for my needs. Reuse existing Codex App chats and their model authentication. Keep username/password authentication and LAN access enabled by default, preserving any existing LAN port. For external access, reuse an existing NAS/HTTPS reverse proxy when available; with an owned server and domain, prepare references for SSH forwarding and fixed HTTPS, leaving administrative server operations for me to perform manually; otherwise configure a temporary HTTPS tunnel. Connection methods may run together. Verify chat reading, live updates and the available interaction paths. Keep the service running, then return clickable phone URLs, how to obtain login credentials, App start/stop actions or commands, verified results and any steps I still need to complete.
-```
-
-### 1. Inspect the environment
-
-Read the README and verification records. Identify the OS, project version/branch, running Codex App, current gateway/config directory and protected LAN port. Preserve existing chat owners, model authentication, providers, permission policies and SSH credentials. Reuse an existing gateway rather than starting duplicates.
-
-Choose connections based on actual reachability: LAN, temporary tunnel, an existing NAS proxy, or an owned Linux server with SSH. Profiles can run together. Confirm authorization before installing missing software, changing firewall/DNS/server configuration or creating public exposure. Never publish credentials or copy `.codex` to a NAS.
-
-### 2. Prepare and start
-
-Use the packaged App for the guided workflow, or the OS-specific CLI commands above. Keep default password authentication unless the user explicitly chooses otherwise. Preserve the current port. Use an independent temporary directory for tests, and never commit it.
-
-For SSH server entries, export or copy the manual setup reference. The user must perform all administrative server operations manually; Agents may explain and review the configuration. NAS entries retain their deployment ZIP and Agent instructions. Inspect existing sites and ports before applying configuration. If server access is unavailable, deliver the configuration and explain what remains unconfigured. Do not claim a service is deployed solely because the files were generated.
-
-Keep the process running using the user's chosen launcher or an authorized process-management method. Verify which process actually owns the port. Stop through the project's control mechanism; do not kill arbitrary processes based on stale PIDs.
-
-### 3. Verify the requested paths
-
-1. Confirm the gateway responds at the preserved LAN URL; anonymous chat APIs must reject access in password mode.
-2. Verify login and chat listing, recent history, older-page loading and live synchronization.
-3. Use only an explicitly authorized test chat for real sends, creation, approvals or model calls. Do not spend model credits or mutate user chats merely to test a page.
-4. For SSH, verify the existing desktop owner rather than replacing it with an unrelated CLI process.
-5. For fixed HTTPS, verify the current instance with Check fixed entry and then verify from the phone's external network. Proxy, TLS and phone reachability are separate checks.
-6. For ntfy, confirm both phone receipt and click-through to the intended chat. Server acceptance alone is insufficient.
-7. State which checks were automated, simulated or performed on actual hardware.
-
-### 4. Diagnose by layer
-
-| Symptom | Check |
-| --- | --- |
-| Phone cannot reach LAN | Computer wake state, listening address/port, Wi-Fi isolation, VPN/routing, firewall |
-| HTTP 502/504 | Proxy upstream, SSH connection and remote loopback port |
-| Host/Origin rejection | Exact allowed HTTPS origin and preserved external Host header |
-| Login keeps resetting | HTTPS throughout the external path, cookies preserved, caching disabled |
-| Only saved history | Open the chat in the original desktop App and confirm owner connectivity |
-| Tunnel fails but LAN works | Outbound network restrictions, executable path and tunnel logs |
-| QR login shows `CERTIFICATE_VERIFY_FAILED` | Update to beta.4 or later, which bundles trusted CA roots. If it persists, check system time, HTTPS interception and the domain's certificate chain; keep verification enabled. Restart the gateway for ntfy to use the updated TLS implementation |
-| ntfy receives but chat link fails | Notification click URL, gateway availability and phone network reachability |
-| Missing IPC/runtime | Correct OS/user, App version, explicit executable/endpoint overrides |
-
-### 5. Final handoff to the user
-
-Return concrete results, not just a process-start message:
-
-```text
-Status: running / partially configured / blocked
-Phone URLs: clickable LAN and configured HTTPS URLs
-Login: username and safe credential-retrieval method
-Installation: directory, branch/commit, process and log locations
-Connections: enabled profiles, server/NAS deployment location, known dependencies
-Start / stop / restart: exact commands or App actions
-Verified: local/SSH read, live update, send, model/Skill, approval, external access and ntfy — only those actually checked
-Not verified / user steps: clear remaining actions and limitations
-```
-
-Do not include actual passwords, tokens or API keys in public issues, commits, screenshots or deployment bundles.
+An Agent is optional for everyday App use. For source deployment, custom networking or Agent-assisted troubleshooting, see [docs/deployment-agent.md](docs/deployment-agent.md): it contains a copy-pasteable instruction for an Agent on the computer, plus environment inspection, startup, acceptance, diagnosis and handoff templates (full version in Chinese, with an English summary).
 
 ## Development and packaging
 
@@ -497,16 +451,3 @@ Thanks to [@qybgh (Luoran Yau)](https://github.com/qybgh) for contributing mobil
 - [Caddy documentation](https://caddyserver.com/docs/)
 - [Nginx proxy module](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)
 
-
-### Choose which adapters allow access
-
-In the desktop App, open **Network & login**, choose **Selected IPv4 addresses only**, and select the addresses you want to use. Exclude unwanted WSL or VMware adapters. Stop the gateway, save, and restart; unselected addresses do not listen on the gateway port. Selections bind to current IPs: reselect after a DHCP address change. The gateway does not fall back to opening all adapters. **All IPv4 addresses** retains the previous behavior.
-
-**Allow local browser access** independently controls `127.0.0.1 / localhost`. Turning it off hides local URLs and blocks local browser/API access while keeping a private loopback path for desktop status checks and HTTPS tunnels. Turning off LAN access does not disable configured external entries.
-
-The desktop sidebar links to this project's GitHub home, issues, and pull requests for source code, feedback, and contributions.
-
-### Chat notifications and renaming
-
-- Enable reminders in each chat you want to follow, optionally including successful run completion. Notifications continue after closing the page while the gateway remains running.
-- Click a chat title, choose **Rename chat**, and save a name of up to 120 characters. The name is saved to Codex on the chat's execution host, including SSH hosts, and the web list and heading update.
