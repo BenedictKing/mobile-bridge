@@ -278,6 +278,23 @@ class AcpAdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bridge.interrupt(SID)
 
+    def test_prompt_timeout_cancels_orphaned_turn(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [('await_cancel',)]
+        self.view(bridge)
+        with patch('bridge.agents.acp_adapter.PROMPT_TIMEOUT', 0.2):
+            bridge.send(SID, 'hello', str(uuid.uuid4()))
+            self.assertTrue(self.wait_for(lambda: fake.cancelled))
+            self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'failed'))
+        view = bridge.view(SID)
+        self.assertEqual(view['turns'][-1]['messages'][-1]['text'], 'Agent 响应超时')
+        self.assertTrue(self.wait_prompt_done(bridge))
+        # The agent-side turn was cancelled, so the next prompt is accepted.
+        fake.prompt_updates = [chunk('agent_message_chunk', 'after')]
+        bridge.send(SID, 'again', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'completed'))
+        self.assertEqual(bridge.view(SID)['turns'][-1]['messages'][-1]['text'], 'after')
+
     def test_send_while_active_rejected_and_queue_dispatches_after_idle(self):
         fake, _, bridge = self.make_bridge()
         fake.prompt_updates = [('await_cancel',)]

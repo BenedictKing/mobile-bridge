@@ -355,6 +355,13 @@ class AcpAdapter(AgentAdapter):
         try:
             result = future.result(PROMPT_TIMEOUT) or {}
         except FutureTimeout:
+            # The agent may still be grinding on the orphaned turn; cancel it
+            # like interrupt() does, or every later prompt is rejected with
+            # "another turn is already in progress".
+            try:
+                handle.process.notify('session/cancel', {'sessionId': session.id})
+            except AcpError:
+                pass
             handle.view.fail_turn('Agent 响应超时')
         except AcpError as exc:
             handle.view.fail_turn(str(exc))

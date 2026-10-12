@@ -421,8 +421,10 @@ class JevAssessor:
         try:
             payload = self._call(build_payload(request, context))
             assessment = normalize_answer(payload)
-        except Exception:
-            LOG.warning("Jev assessment failed", exc_info=True)
+        except Exception as exc:
+            # Endpoint failures (HTTP 4xx/5xx, timeouts) are operational, not
+            # code bugs: one log line, no traceback spam per approval card.
+            LOG.warning('Jev assessment failed: %s', exc)
         finally:
             with self._lock:
                 self._inflight.discard(key)
