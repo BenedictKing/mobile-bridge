@@ -102,6 +102,11 @@ class AcpProcess:
         """Send one client request without waiting; the caller awaits the future."""
         return self._enqueue(method, params)
 
+    def discard(self, ident):
+        """Forget one pending request whose caller gave up waiting."""
+        with self._lock:
+            self._pending.pop(ident, None)
+
     def request(self, method, params, timeout=30):
         """Send one client request and wait for its result."""
         ident, future = self._enqueue(method, params)

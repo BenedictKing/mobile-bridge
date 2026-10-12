@@ -17,7 +17,10 @@ from .base import AgentAdapter
 LOG = logging.getLogger(__name__)
 
 LIST_CACHE_SECONDS = 30
+# Idle limit, not a total budget: a prompt times out only after this many
+# seconds without session updates and with no approval waiting on the human.
 PROMPT_TIMEOUT = 3600
+ACTIVITY_SLICE = 30
 
 
 class AcpHandle:
@@ -37,6 +40,7 @@ class AcpHandle:
         self.load_error = None
         self.deliberate = False
         self.dead = False
+        self.last_activity = time.monotonic()
 
 
 class AcpAdapter(AgentAdapter):
@@ -188,6 +192,17 @@ class AcpAdapter(AgentAdapter):
             # A session that was never listed has no transcript anywhere; once
             # its process is gone it is unrecoverable, so drop the placeholder.
             self._pending_created.pop(session_id, None)
+        self._flush_responders(handle)
+        if handle.process is not None:
+            try:
+                handle.process.request('session/close', {'sessionId': session_id}, timeout=5)
+            except AcpError:
+                pass
+            handle.process.close()
+
+    @staticmethod
+    def _flush_responders(handle):
+        """Answer every pending reverse request as cancelled."""
         with handle.lock:
             responders = list(handle.responders.values())
             handle.responders.clear()
@@ -197,12 +212,6 @@ class AcpAdapter(AgentAdapter):
                 respond({'outcome': {'outcome': 'cancelled'}})
             except AcpError:
                 pass
-        if handle.process is not None:
-            try:
-                handle.process.request('session/close', {'sessionId': session_id}, timeout=5)
-            except AcpError:
-                pass
-            handle.process.close()
 
     def activate_owner(self, session):
         self.attach(session, timeout=20)
@@ -216,6 +225,7 @@ class AcpAdapter(AgentAdapter):
         params = message.get('params') or {}
         if params.get('sessionId') != handle.session_id:
             return
+        handle.last_activity = time.monotonic()
         handle.view.on_update(params.get('update') or {})
         with self.bridge.lock:
             session = self.bridge.live.get(handle.session_id)
@@ -225,6 +235,7 @@ class AcpAdapter(AgentAdapter):
     def _on_request(self, handle, message, respond):
         # Answering here would block the reader thread; record the request and
         # let respond_to_request answer it from the HTTP worker instead.
+        handle.last_activity = time.monotonic()
         params = message.get('params') or {}
         request_id = message.get('id')
         with handle.lock:
@@ -308,15 +319,16 @@ class AcpAdapter(AgentAdapter):
         handle.view.begin_turn(entry['text'])
         self._sync(session)
         try:
-            _ident, future = handle.process.submit('session/prompt',
-                                                   {'sessionId': session.id, 'prompt': blocks})
+            ident, future = handle.process.submit('session/prompt',
+                                                  {'sessionId': session.id, 'prompt': blocks})
         except AcpError:
             with handle.lock:
                 handle.prompt_running = False
             handle.view.fail_turn('发送失败，请重新连接后重试')
             self._sync(session)
             raise
-        threading.Thread(target=self._await_prompt, args=(session, handle, future),
+        handle.last_activity = time.monotonic()
+        threading.Thread(target=self._await_prompt, args=(session, handle, ident, future),
                          daemon=True).start()
         return {'accepted': True}
 
@@ -351,28 +363,48 @@ class AcpAdapter(AgentAdapter):
                                'uri': Path(item['path']).resolve().as_uri()})
         return blocks
 
-    def _await_prompt(self, session, handle, future):
+    def _await_prompt(self, session, handle, ident, future):
         try:
-            result = future.result(PROMPT_TIMEOUT) or {}
-        except FutureTimeout:
-            # The agent may still be grinding on the orphaned turn; cancel it
-            # like interrupt() does, or every later prompt is rejected with
-            # "another turn is already in progress".
-            try:
-                handle.process.notify('session/cancel', {'sessionId': session.id})
-            except AcpError:
-                pass
-            handle.view.fail_turn('Agent 响应超时')
+            result = self._wait_prompt(session, handle, ident, future)
         except AcpError as exc:
             handle.view.fail_turn(str(exc))
         except Exception as exc:
             LOG.exception('ACP prompt wait failed')
             handle.view.fail_turn(f'任务失败：{exc}')
         else:
-            handle.view.end_turn(result.get('stopReason') or 'end_turn')
+            if result is not None:
+                handle.view.end_turn(result.get('stopReason') or 'end_turn')
         with handle.lock:
             handle.prompt_running = False
         self._sync(session)
+
+    def _wait_prompt(self, session, handle, ident, future):
+        """Await the prompt answer; None means the idle timeout fired."""
+        while True:
+            try:
+                return future.result(ACTIVITY_SLICE) or {}
+            except FutureTimeout:
+                if self._prompt_alive(handle):
+                    continue
+                # The agent may still be grinding on the orphaned turn; cancel
+                # it like interrupt() does, or every later prompt is rejected
+                # with "another turn is already in progress".
+                try:
+                    handle.process.notify('session/cancel', {'sessionId': session.id})
+                except AcpError:
+                    pass
+                self._flush_responders(handle)
+                handle.process.discard(ident)
+                handle.view.fail_turn('Agent 响应超时')
+                return None
+
+    @staticmethod
+    def _prompt_alive(handle):
+        """The agent is streaming updates or waiting on a pending approval."""
+        with handle.lock:
+            if handle.responders:
+                return True
+        return time.monotonic() - handle.last_activity < PROMPT_TIMEOUT
 
     def interrupt(self, session):
         handle = self._handles.get(session.id)
@@ -381,6 +413,9 @@ class AcpAdapter(AgentAdapter):
         # ACP defines session/cancel as a notification; real agents (kimi)
         # reject it when sent as a request.
         handle.process.notify('session/cancel', {'sessionId': session.id})
+        # Unblock the agent's pending approvals instead of relying on its own
+        # cancel handling.
+        self._flush_responders(handle)
         # The prompt answer settles the turn; flip the view immediately so the
         # phone stops offering actions for a turn that is already cancelled.
         handle.view.end_turn('cancelled')

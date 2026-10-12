@@ -282,7 +282,8 @@ class AcpAdapterTests(unittest.TestCase):
         fake, _, bridge = self.make_bridge()
         fake.prompt_updates = [('await_cancel',)]
         self.view(bridge)
-        with patch('bridge.agents.acp_adapter.PROMPT_TIMEOUT', 0.2):
+        with patch('bridge.agents.acp_adapter.PROMPT_TIMEOUT', 0.2), \
+             patch('bridge.agents.acp_adapter.ACTIVITY_SLICE', 0.05):
             bridge.send(SID, 'hello', str(uuid.uuid4()))
             self.assertTrue(self.wait_for(lambda: fake.cancelled))
             self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'failed'))
@@ -294,6 +295,54 @@ class AcpAdapterTests(unittest.TestCase):
         bridge.send(SID, 'again', str(uuid.uuid4()))
         self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'completed'))
         self.assertEqual(bridge.view(SID)['turns'][-1]['messages'][-1]['text'], 'after')
+
+    def test_pending_permission_pause_prompt_timeout(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [
+            ('permission', {'toolCall': {'toolCallId': 't1', 'title': 'Run ls', 'kind': 'execute',
+                                         'status': 'in_progress', 'rawInput': {'command': 'ls'}},
+                            'options': [{'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'}]}),
+            chunk('agent_message_chunk', 'done'),
+        ]
+        self.view(bridge)
+        with patch('bridge.agents.acp_adapter.PROMPT_TIMEOUT', 0.2), \
+             patch('bridge.agents.acp_adapter.ACTIVITY_SLICE', 0.05):
+            bridge.send(SID, 'run it', str(uuid.uuid4()))
+            self.assertTrue(self.wait_for(lambda: bridge.view(SID)['requests']))
+            time.sleep(0.5)  # Well past the idle limit, but a human is being asked.
+            view = bridge.view(SID)
+            self.assertEqual(view['turns'][-1]['status'], 'inProgress')
+            bridge.respond(SID, view['requests'][0]['id'], {'optionId': 'allow'})
+            self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'completed'))
+        self.assertEqual(bridge.view(SID)['turns'][-1]['messages'][-1]['text'], 'done')
+
+    def test_active_turn_survives_past_idle_limit(self):
+        # Total runtime exceeds the idle limit, but every gap stays under it.
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [chunk('agent_message_chunk', 'one'), ('sleep', 0.35),
+                               chunk('agent_message_chunk', 'two'), ('sleep', 0.35),
+                               chunk('agent_message_chunk', 'three')]
+        self.view(bridge)
+        with patch('bridge.agents.acp_adapter.PROMPT_TIMEOUT', 0.6), \
+             patch('bridge.agents.acp_adapter.ACTIVITY_SLICE', 0.05):
+            bridge.send(SID, 'hello', str(uuid.uuid4()))
+            self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'completed'))
+        self.assertEqual(bridge.view(SID)['turns'][-1]['messages'][-1]['text'], 'onetwothree')
+
+    def test_interrupt_answers_pending_permission_cancelled(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [
+            ('permission', {'toolCall': {'toolCallId': 't1', 'title': 'Run ls', 'kind': 'execute',
+                                         'status': 'in_progress', 'rawInput': {'command': 'ls'}},
+                            'options': [{'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'}]}),
+        ]
+        self.view(bridge)
+        bridge.send(SID, 'run it', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['requests']))
+        bridge.interrupt(SID)
+        self.assertTrue(self.wait_for(lambda: fake.permission_outcome is not None))
+        self.assertEqual(fake.permission_outcome, {'outcome': 'cancelled'})
+        self.assertTrue(self.wait_prompt_done(bridge))
 
     def test_send_while_active_rejected_and_queue_dispatches_after_idle(self):
         fake, _, bridge = self.make_bridge()

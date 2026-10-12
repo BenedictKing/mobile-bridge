@@ -133,7 +133,7 @@ Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主
 
 ### ACP 传输与视图
 
-`bridge/agents/acp.py` 实现 NDJSON JSON-RPC 传输：initialize 能力协商、`session/new`/`list`/`load`/`prompt`/`cancel`、`session/set_config_option` 与 `session/set_mode`，入向 `session/update` 通知与 `session/request_permission` 请求。`acp_view.py` 把 ACP 更新流规范化成与 codex 相同的 view 形状（turns/items/requests/状态），前端因此无需感知传输差异。`session/list` 结果带 15–30 秒缓存与后台刷新，避免每请求 spawn。
+`bridge/agents/acp.py` 实现 NDJSON JSON-RPC 传输：initialize 能力协商、`session/new`/`list`/`load`/`prompt`/`cancel`、`session/set_config_option` 与 `session/set_mode`，入向 `session/update` 通知与 `session/request_permission` 请求。`acp_view.py` 把 ACP 更新流规范化成与 codex 相同的 view 形状（turns/items/requests/状态），前端因此无需感知传输差异。`session/list` 结果带 15–30 秒缓存与后台刷新，避免每请求 spawn。prompt 等待按空闲判定：持续有 `session/update` 或存在待答复审批时不计超时；空闲超过上限即发送 `session/cancel`、把挂起审批答复为 cancelled，再标记 turn 失败，避免 agent 侧遗留孤立 turn 拒绝后续消息。
 
 claude-agent-acp 只在首条消息后才把会话落盘：零消息会话跨进程 `session/load`/`resume`/`prompt` 均报 "Resource not found"。因此 `AcpAdapter.create_session` 对 `KEEP_CREATED_PROCESS` 的子类（claude）把创建进程保活为会话 handle（配置在 `session/new` 响应里直接播种，跳过 load/replay），首条消息就在创建进程内发出；会话入列前由 `_pending_created` 占位补进列表与 `session_meta`，agent 一旦列出即撤占位（占位 id 与入列 id 不一致时经 `_canonical_id` 钩子解析后撤），保活进程被 detach 的未入列会话同时撤占位。
 

@@ -264,6 +264,9 @@ class FakeAcpAgent:
                 elif isinstance(step, tuple) and step[0] == 'await_cancel':
                     self._cancel_turn.wait(10)
                     break
+                elif isinstance(step, tuple) and step[0] == 'sleep':
+                    # Interruptible pause: wakes early when the turn is cancelled.
+                    self._cancel_turn.wait(step[1])
                 else:
                     self._notify(state, session_id, step)
             reason = 'cancelled' if self._cancel_turn.is_set() else self.stop_reason
