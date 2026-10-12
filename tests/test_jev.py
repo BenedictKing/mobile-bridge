@@ -383,9 +383,14 @@ class JevSettingsTests(unittest.TestCase):
                     {'baseUrl': 'http://insecure.example', 'model': ''},
                     {'baseUrl': 'https://ok.example', 'model': 'bad name'},
                     {'model': None},
-                    {'proxy': 'not a url'}, {'proxy': 'ftp://proxy.example'},
-                    {'proxy': 'https://proxy.example'}, {'proxy': 'socks5://127.0.0.1:1080'},
-                    {'proxy': 'http://user:pass@127.0.0.1:6785'}):
+                    {'proxy': 'not a url'}, {'proxy': 'ftp://proxy.example:8080'},
+                    {'proxy': 'https://proxy.example:8080'}, {'proxy': 'socks5://127.0.0.1:1080'},
+                    {'proxy': 'http://user:pass@127.0.0.1:6785'},
+                    {'proxy': 'http://proxy.example'}, {'proxy': 'http://proxy.example:bad'},
+                    {'proxy': 'http://proxy.example:0'}, {'proxy': 'http://proxy.example:65536'},
+                    {'proxy': 'http://proxy.example:8080/path'},
+                    {'proxy': 'http://proxy.example:8080?x=1'},
+                    {'proxy': 'http://proxy.example:8080#fragment'}):
             with self.assertRaises(ValueError):
                 store.update(bad)
         self.assertFalse(self.path.exists())
@@ -394,6 +399,10 @@ class JevSettingsTests(unittest.TestCase):
         self.assertEqual(store.read()['baseUrl'], 'http://127.0.0.1:9000')
         store.update({'proxy': 'http://127.0.0.1:6785'})
         self.assertEqual(store.read()['proxy'], 'http://127.0.0.1:6785')
+        store.update({'model': 'm1'})
+        self.assertEqual(store.read()['proxy'], 'http://127.0.0.1:6785')
+        store.update({'proxy': 'http://[::1]:8080'})
+        self.assertEqual(store.read()['proxy'], 'http://[::1]:8080')
 
     def test_proxy_env_fallback_and_explicit_direct(self):
         with patch.dict(os.environ, {'JEV_PROXY': 'http://127.0.0.1:7000'}):

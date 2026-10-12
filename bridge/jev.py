@@ -386,17 +386,27 @@ class JevSettings:
                 if parsed_url.scheme == 'http' and parsed_url.hostname not in ('localhost', '127.0.0.1', '::1'):
                     raise ValueError('端点请使用 HTTPS；HTTP 仅用于本机测试')
             parsed[field] = raw
-        raw_proxy = value.get('proxy', '')
-        if not isinstance(raw_proxy, str):
-            raise ValueError('Jev 设置格式不正确')
-        raw_proxy = raw_proxy.strip()
-        if raw_proxy:
-            # CONNECT tunnels ride a plain HTTP proxy; credentials would be
-            # silently ignored, so reject them instead of half-working.
-            parsed_proxy = urlsplit(raw_proxy)
-            if parsed_proxy.scheme != 'http' or not parsed_proxy.hostname or parsed_proxy.username or parsed_proxy.password:
-                raise ValueError('代理必须是 http://主机:端口 形式')
-        parsed['proxy'] = raw_proxy
+        if 'proxy' in value:
+            raw_proxy = value['proxy']
+            if not isinstance(raw_proxy, str):
+                raise ValueError('Jev 设置格式不正确')
+            raw_proxy = raw_proxy.strip()
+            if raw_proxy:
+                # CONNECT tunnels ride a plain HTTP proxy; credentials would
+                # be silently ignored, so reject them instead of half-working.
+                parsed_proxy = urlsplit(raw_proxy)
+                try:
+                    proxy_port = parsed_proxy.port
+                except ValueError:
+                    proxy_port = None
+                if (parsed_proxy.scheme != 'http' or not parsed_proxy.hostname or
+                        parsed_proxy.username or parsed_proxy.password or
+                        proxy_port is None or not 1 <= proxy_port <= 65535 or
+                        parsed_proxy.path or parsed_proxy.query or parsed_proxy.fragment):
+                    raise ValueError('代理必须是 http://主机:端口 形式')
+            parsed['proxy'] = raw_proxy
+        elif 'proxy' in saved:
+            parsed['proxy'] = saved['proxy']
         if 'autoApprove' in value:
             if not isinstance(value['autoApprove'], bool):
                 raise ValueError('自动审核设置格式不正确')
