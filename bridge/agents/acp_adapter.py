@@ -459,9 +459,13 @@ class AcpAdapter(AgentAdapter):
             handle.responders.pop(request_id, None)
         try:
             respond({'outcome': outcome})
-        finally:
-            handle.view.remove_permission(request_id)
+        except AcpError:
+            # Delivery failed against a dying process: keep the approval card
+            # visible so the user reconciles on the desktop instead of a retry.
             self._sync(session)
+            raise
+        handle.view.remove_permission(request_id)
+        self._sync(session)
         return {'ok': True}
 
     # -- metadata ----------------------------------------------------------

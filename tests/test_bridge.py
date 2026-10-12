@@ -496,15 +496,25 @@ class IntegrationTests(unittest.TestCase):
         view = self.bridge.view(THREAD)
         self.assertEqual(view['requests'][0]['params']['computerUse'], {'app':'Fixture App','persistModes':['session','always']})
         self.assertNotIn('private', json.dumps(view['requests']))
-        for mode in ('session','always'):
-            self.bridge.respond(THREAD,'computer',{'action':'accept','persist':mode})
+        # The desktop retires a request once decided; each decision targets a
+        # fresh id exactly like a re-issued approval card.
+        session = self.bridge.session(THREAD)
+        for mode in ('session', 'always'):
+            with session.condition:
+                session.state['requests'][0]['id'] = 'computer-' + mode
+            self.bridge.respond(THREAD, 'computer-' + mode, {'action': 'accept', 'persist': mode})
             reply = self.fixture.requests[-1]['params']['response']
-            self.assertEqual(reply, {'action':'accept','content':{},'_meta':{'persist':mode}})
-        self.bridge.respond(THREAD,'computer',{'action':'decline'})
-        self.assertEqual(self.fixture.requests[-1]['params']['response'], {'action':'decline','content':None})
-        for response in ({'action':'accept','persist':'forever'}, {'action':'decline','persist':'always'},
-                         {'action':'accept','_meta':{'persist':'always'}}):
-            with self.assertRaises(ValueError): self.bridge.respond(THREAD,'computer',response)
+            self.assertEqual(reply, {'action': 'accept', 'content': {}, '_meta': {'persist': mode}})
+        with session.condition:
+            session.state['requests'][0]['id'] = 'computer-decline'
+        self.bridge.respond(THREAD, 'computer-decline', {'action': 'decline'})
+        self.assertEqual(self.fixture.requests[-1]['params']['response'], {'action': 'decline', 'content': None})
+        with session.condition:
+            session.state['requests'][0]['id'] = 'computer-invalid'
+        for response in ({'action': 'accept', 'persist': 'forever'}, {'action': 'decline', 'persist': 'always'},
+                         {'action': 'accept', '_meta': {'persist': 'always'}}):
+            with self.assertRaises(ValueError):
+                self.bridge.respond(THREAD, 'computer-invalid', response)
 
     def test_computer_scope_cannot_be_added_to_other_or_session_only_requests(self):
         params = {'mode':'form','requestedSchema':{'type':'object','properties':{}},
@@ -517,12 +527,13 @@ class IntegrationTests(unittest.TestCase):
         session=self.bridge.session(THREAD)
         with session.condition:
             session.state['requests'][0]['params']['_meta']['connector_id']='unrelated'
-        with self.assertRaises(ValueError):self.bridge.respond(THREAD,'computer',{'action':'accept','persist':'session'})
-        self.bridge.respond(THREAD,'computer',{'action':'accept','content':{}})
+            session.state['requests'][0]['id']='computer-plain'
+        with self.assertRaises(ValueError):self.bridge.respond(THREAD,'computer-plain',{'action':'accept','persist':'session'})
+        self.bridge.respond(THREAD,'computer-plain',{'action':'accept','content':{}})
         self.assertNotIn('_meta',self.fixture.requests[-1]['params']['response'])
         with session.condition:session.state['requests']=[]
-        with self.assertRaisesRegex(ValueError,'已处理或已过期'):
-            self.bridge.respond(THREAD,'computer',{'action':'accept','persist':'always'})
+        with self.assertRaisesRegex(ValueError,'已提交过不同操作|已处理或已过期'):
+            self.bridge.respond(THREAD,'computer-plain',{'action':'accept','persist':'always'})
 
     def test_stale_and_pending_approval_routing(self):
         self.fixture.state['requests'] = [{"id": 7, "method": "item/commandExecution/requestApproval", "params": {"command": "pwd", "availableDecisions": ['accept', 'decline']}}]
@@ -708,6 +719,110 @@ class IntegrationTests(unittest.TestCase):
         self.bridge.send(THREAD, '待删除', delete_id, 'queue')
         self.assertEqual(self.bridge.queue_action(THREAD, delete_id, 'delete')['status'], 'cancelled')
         self.assertEqual(self.bridge.submissions[THREAD + ':' + delete_id]['status'], 'cancelled')
+
+    def _pending_command_approval(self, command='pwd'):
+        self.fixture.state['requests'] = [{"id": 7, "method": "item/commandExecution/requestApproval",
+                                           "params": {"command": command, "availableDecisions": ['accept', 'decline']}}]
+        self.bridge.session(THREAD)
+
+    def _decision_calls(self):
+        return [r for r in self.fixture.requests if r['method'] == 'thread-follower-command-approval-decision']
+
+    def test_approval_retry_replays_one_desktop_decision(self):
+        self._pending_command_approval()
+        self.assertEqual(self.bridge.respond(THREAD, 7, {"decision": "accept"}), {"ok": True})
+        again = self.bridge.respond(THREAD, 7, {"decision": "accept"})
+        self.assertTrue(again.get('duplicate'))
+        with self.assertRaisesRegex(ValueError, '不同操作'):
+            self.bridge.respond(THREAD, 7, {"decision": "decline"})
+        self.assertEqual(len(self._decision_calls()), 1)
+        receipt = self.bridge.approvals.receipt(THREAD, 7)
+        self.assertEqual(receipt['state'], 'accepted')
+        self.assertEqual(receipt['response'], {"decision": "accept"})
+        self.assertEqual(receipt['source'], None)
+
+    def test_approval_replay_after_desktop_retires_the_request(self):
+        self._pending_command_approval()
+        self.bridge.respond(THREAD, 7, {"decision": "decline"})
+        session = self.bridge.session(THREAD)
+        with session.condition:
+            session.state['requests'] = []
+        replay = self.bridge.respond(THREAD, 7, {"decision": "decline"})
+        self.assertTrue(replay.get('duplicate'))
+        self.assertEqual(len(self._decision_calls()), 1)
+
+    def test_approval_unknown_delivery_is_durable_and_never_retried(self):
+        self._pending_command_approval()
+        original = self.bridge._call
+
+        def broken_call(session, method, params, timeout=30):
+            if method == 'thread-follower-command-approval-decision':
+                raise IPCError('操作可能已提交，结果未知')
+            return original(session, method, params, timeout)
+
+        self.bridge._call = broken_call
+        with self.assertRaises(IPCError):
+            self.bridge.respond(THREAD, 7, {"decision": "accept"})
+        self.bridge._call = original
+        with self.assertRaisesRegex(ValueError, '结果未知'):
+            self.bridge.respond(THREAD, 7, {"decision": "accept"})
+        saved = json.loads((self.root / 'data/approval-receipts.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved[THREAD + ':7']['state'], 'outcome_unknown')
+
+    def test_double_submission_race_executes_approval_once(self):
+        self._pending_command_approval()
+        original = self.bridge._call
+        entered, release = threading.Event(), threading.Event()
+
+        def slow_call(session, method, params, timeout=30):
+            if method == 'thread-follower-command-approval-decision':
+                entered.set()
+                self.assertTrue(release.wait(5))
+            return original(session, method, params, timeout)
+
+        self.bridge._call = slow_call
+        results, errors, barrier = [], [], threading.Barrier(2)
+
+        def submit(source):
+            barrier.wait()
+            try:
+                results.append(self.bridge.respond(THREAD, 7, {"decision": "accept"}, source=source))
+            except ValueError as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=submit, args=(source,)) for source in ('mobile', 'jev')]
+        for thread in threads:
+            thread.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            deadline = time.monotonic() + 5
+            while not errors and time.monotonic() < deadline:
+                time.sleep(0.01)
+            # The loser is rejected while the winner's decision is in flight.
+            self.assertEqual(len(errors), 1)
+            self.assertIn('正在处理', str(errors[0]))
+        finally:
+            release.set()
+            for thread in threads:
+                thread.join(5)
+        self.assertEqual(results, [{'ok': True}])
+        self.assertEqual(len(self._decision_calls()), 1)
+        self.assertIn(self.bridge.approvals.receipt(THREAD, 7)['source'], ('mobile', 'jev'))
+
+    def test_approval_receipt_survives_bridge_restart(self):
+        self._pending_command_approval()
+        self.bridge.respond(THREAD, 7, {"decision": "accept"})
+        self.assertEqual(len(self._decision_calls()), 1)
+        self.bridge.close()
+        self.fixture.state['requests'] = []  # The desktop consumed the decision.
+        replacement = Bridge(self.root, self.root / 'data')
+        self.addCleanup(replacement.close)
+        replacement.session(THREAD)
+        replay = replacement.respond(THREAD, 7, {"decision": "accept"})
+        self.assertTrue(replay.get('duplicate'))
+        with self.assertRaisesRegex(ValueError, '不同操作'):
+            replacement.respond(THREAD, 7, {"decision": "decline"})
+        self.assertEqual(len(self._decision_calls()), 1)
 
     def test_unknown_delivery_not_replayed_even_after_idle_changes(self):
         self.bridge.session(THREAD)

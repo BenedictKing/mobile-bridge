@@ -296,7 +296,7 @@ class BridgeAssessmentTests(unittest.TestCase):
         session = bridge.session(SID, background=True)
         called = []
         done = threading.Event()
-        bridge.respond = lambda thread_id, request_id, response: (called.append(
+        bridge.respond = lambda thread_id, request_id, response, source=None: (called.append(
             (thread_id, request_id, response)), done.set(), {'status': 'accepted'})[-1]
 
         class Stub:

@@ -570,7 +570,7 @@ class Handler(BaseHTTPRequestHandler):
                 response = body.get("response")
                 if not isinstance(response, dict):
                     raise ValueError("请求回应格式不正确")
-                result = bridge.respond(thread_id, body.get("requestId"), response)
+                result = bridge.respond(thread_id, body.get("requestId"), response, source='mobile')
             elif action == "reconnect":
                 if body.get('activate') is True:
                     session = bridge.activate(thread_id)

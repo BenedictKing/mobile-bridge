@@ -12,6 +12,7 @@ import uuid
 import unicodedata
 from pathlib import Path
 
+from .approvals import ApprovalLedger, UNKNOWN, decision_outcome
 from .ipc import DesktopIPC, IPCError
 from .agents.acp import AcpError
 from .transport import ipc_endpoint
@@ -253,6 +254,7 @@ class Bridge:
         self.closed = threading.Event()
         Path(data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ledger_path = Path(data_dir) / "submissions.json"
+        self.approvals = ApprovalLedger(self.data_dir / 'approval-receipts.json')
         self.submit_lock = threading.Lock()
         self.create_lock = threading.Lock()
         self.message_lock = threading.RLock()
@@ -1430,7 +1432,7 @@ class Bridge:
 
     def _auto_respond(self, thread_id, request_id, response):
         try:
-            result = self.respond(thread_id, request_id, response)
+            result = self.respond(thread_id, request_id, response, source='jev')
             logging.getLogger(__name__).info(
                 'Jev 自动审核已提交: thread=%s request=%s result=%s',
                 thread_id, request_id, result.get('status', 'ok'))
@@ -1866,7 +1868,7 @@ class Bridge:
         session = self._target(thread_id)
         return self.adapter.full_history(session)
 
-    def respond(self, thread_id, request_id, response):
+    def respond(self, thread_id, request_id, response, source=None):
         session = self._target(thread_id)
         try:
             plan_id = str(uuid.uuid5(uuid.UUID(thread_id), "plan:" + str(request_id)))
@@ -1895,9 +1897,14 @@ class Bridge:
             return self.send(thread_id, text, submission, "steer" if active else "send")
         with session.condition:
             pending = next((r for r in session.state.get("requests", []) if str(r.get("id")) == str(request_id)), None)
-            if not pending:
-                raise ValueError("此请求已处理或已过期")
-            pending = copy.deepcopy(pending)
+            pending = copy.deepcopy(pending) if pending is not None else None
+        if pending is None:
+            # The desktop no longer holds the request, but a settled receipt
+            # still answers a weak-network retry deterministically.
+            replayed = self.approvals.replay(thread_id, request_id, response)
+            if replayed is not None:
+                return self._duplicate_result(replayed)
+            raise ValueError("此请求已处理或已过期")
         if not normalize_request(pending)["supported"]:
             raise ValueError("此类请求请在桌面 App 中处理")
         method = pending.get("method", "")
@@ -1915,7 +1922,34 @@ class Bridge:
                 raise ValueError("请选择执行计划或填写修改意见")
             return self.send(thread_id, text, plan_id, work_mode=work_mode,
                              plan_response={"requestId": request_id, **response})
-        return self.adapter.respond_to_request(session, pending, response)
+        if not isinstance(response, dict):
+            raise ValueError("请求回应格式不正确")
+        claim = self.approvals.claim(thread_id, request_id, normalize_request(pending),
+                                     response, source=source)
+        if claim.get('status') == 'duplicate':
+            return self._duplicate_result(claim)
+        try:
+            result = self.adapter.respond_to_request(session, pending, response)
+        except ValueError:
+            # Decision validation failed before any side effect; the user may
+            # correct the response and submit again.
+            self.approvals.release(thread_id, request_id)
+            raise
+        except Exception:
+            # Timeout, disconnect or process death leaves the delivery result
+            # unknown. Persist the tombstone and never auto-replay it.
+            self.approvals.resolve(thread_id, request_id, UNKNOWN)
+            raise
+        self.approvals.resolve(thread_id, request_id,
+                               decision_outcome(method, response, params), result=result)
+        return result
+
+    @staticmethod
+    def _duplicate_result(claim):
+        result = claim.get('result')
+        if isinstance(result, dict):
+            return {**result, 'duplicate': True}
+        return {'ok': True, 'duplicate': True}
 
     def close(self):
         self.closed.set()

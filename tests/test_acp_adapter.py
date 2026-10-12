@@ -316,6 +316,33 @@ class AcpAdapterTests(unittest.TestCase):
             self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'completed'))
         self.assertEqual(bridge.view(SID)['turns'][-1]['messages'][-1]['text'], 'done')
 
+    def test_permission_delivery_failure_keeps_card_and_blocks_retry(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [
+            ('permission', {'toolCall': {'toolCallId': 't1', 'title': 'Run ls', 'kind': 'execute',
+                                         'status': 'in_progress', 'rawInput': {'command': 'ls -la'}},
+                            'options': [{'optionId': 'allow', 'name': 'Allow once', 'kind': 'allow_once'},
+                                        {'optionId': 'deny', 'name': 'Deny', 'kind': 'reject_once'}]}),
+            chunk('agent_message_chunk', 'done'),
+        ]
+        self.view(bridge)
+        bridge.send(SID, 'run it', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['requests']))
+        request_id = bridge.view(SID)['requests'][0]['id']
+        handle = bridge.adapter._handles[SID]
+
+        def broken(result):
+            raise AcpUnavailable('Agent 进程已退出；操作结果未知')
+
+        with handle.lock:
+            handle.responders[request_id] = broken
+        with self.assertRaises(AcpUnavailable):
+            bridge.respond(SID, request_id, {'optionId': 'allow'})
+        # The card stays visible: only a confirmed delivery may remove it.
+        self.assertTrue(bridge.view(SID)['requests'])
+        with self.assertRaisesRegex(ValueError, '结果未知'):
+            bridge.respond(SID, request_id, {'optionId': 'allow'})
+
     def test_active_turn_survives_past_idle_limit(self):
         # Total runtime exceeds the idle limit, but every gap stays under it.
         fake, _, bridge = self.make_bridge()
