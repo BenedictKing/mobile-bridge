@@ -1,14 +1,22 @@
 """Jev advisory triage: pure mapping helpers plus the Bridge annotation path."""
+import http.client
+import json
+import os
 import tempfile
 import threading
 import time
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from bridge.agents.kimi import KimiAdapter
-from bridge.jev import (JevAssessor, RISK_LABELS, assessable, build_payload,
-                        fingerprint, normalize_answer, parse_recommendation)
+from bridge.auth import password_record
+from bridge.httpd import GatewayServer
+from bridge.jev import (JevAssessor, JevSettings, RISK_LABELS, assessable,
+                        build_payload, effective_field, fingerprint,
+                        init_shared_settings, normalize_answer,
+                        parse_recommendation, shared_settings)
 from bridge.service import Bridge
 from tests.fake_acp import FakeAcpAgent
 from tests.test_acp_adapter import CONFIG_OPTIONS, MODES, SID, UPDATED, chunk
@@ -270,6 +278,157 @@ class BridgeAssessmentTests(unittest.TestCase):
         request = bridge.view(SID)['requests'][0]
         self.assertNotIn('assessment', request)
         self.assertNotIn('recommend', request)
+
+
+class JevSettingsTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / 'jev.json'
+        env = patch.dict(os.environ, {'TYPESAFE_API_KEY': 'env-key-123',
+                                      'TYPESAFE_BASE_URL': 'https://env.example',
+                                      'JEV_MODEL': 'env-model'})
+        env.start()
+        self.addCleanup(env.stop)
+        init_shared_settings(self.path)
+
+    def test_file_overrides_and_masks_env(self):
+        store = shared_settings()
+        self.assertEqual(store.read()['apiKey'], 'env-key-123')
+        result = store.update({'apiKey': 'tsk-file-key-9999', 'baseUrl': '', 'model': ''})
+        self.assertTrue(result['configured'])
+        self.assertIn('…', result['apiKeyMasked'])
+        self.assertNotIn('tsk-file-key-9999', json.dumps(result))
+        self.assertEqual(store.read(), {'apiKey': 'tsk-file-key-9999',
+                                        'baseUrl': 'https://api.typesafe.ai',
+                                        'model': 'jev-latest'})
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_unrelated_save_keeps_env_fallback(self):
+        store = shared_settings()
+        # Saving only the model must not copy or suppress the env-provided key.
+        store.update({'model': 'jev-1.13.0'})
+        self.assertEqual(store.read()['apiKey'], 'env-key-123')
+        self.assertEqual(store.read()['model'], 'jev-1.13.0')
+        self.assertNotIn('apiKey', json.loads(self.path.read_text()))
+
+    def test_clear_disables_even_with_env(self):
+        store = shared_settings()
+        store.update({'apiKey': 'tsk-file-key-9999', 'baseUrl': '', 'model': ''})
+        store.update({'clearApiKey': True, 'baseUrl': '', 'model': ''})
+        self.assertFalse(store.public()['configured'])
+        self.assertEqual(store.read()['apiKey'], '')
+        self.assertEqual(effective_field('apiKey'), '')
+
+    def test_blank_key_submission_keeps_saved_value(self):
+        store = shared_settings()
+        store.update({'apiKey': 'tsk-file-key-9999', 'baseUrl': '', 'model': ''})
+        store.update({'apiKey': '   ', 'baseUrl': '', 'model': ''})
+        self.assertEqual(store.read()['apiKey'], 'tsk-file-key-9999')
+
+    def test_validation_rejects_bad_submissions(self):
+        store = shared_settings()
+        for bad in ({'apiKey': 'short'}, {'apiKey': 'has space inside'},
+                    {'apiKey': 42}, {'baseUrl': 'ftp://x', 'model': ''},
+                    {'baseUrl': 'https://ok.example', 'model': 'bad name'},
+                    {'model': None}):
+            with self.assertRaises(ValueError):
+                store.update(bad)
+        self.assertFalse(self.path.exists())
+
+    def test_reload_persists_across_instances(self):
+        shared_settings().update({'apiKey': 'tsk-file-key-9999', 'baseUrl': 'https://a.example', 'model': 'm1'})
+        reloaded = JevSettings(self.path)
+        self.assertEqual(reloaded.read()['baseUrl'], 'https://a.example')
+
+
+class LiveSettingsTests(unittest.TestCase):
+    def test_bridge_assessor_follows_settings_without_restart(self):
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        init_shared_settings(Path(tmp.name) / 'jev.json')
+        bridge = Bridge(Path(tmp.name), Path(tmp.name) / 'data')
+        self.addCleanup(bridge.close)
+        self.assertFalse(bridge.assessor.enabled)
+        shared_settings().update({'apiKey': 'tsk-live-key-42', 'baseUrl': '', 'model': ''})
+        self.assertTrue(bridge.assessor.enabled)
+        seen = {}
+        bridge.assessor._call = lambda payload: seen.update(payload) or {'answers': {
+            'risk': {'score': 1}, 'reversible': {'noul': 1},
+            'recommend': {'choice': 'accept_once', 'confidence': 0.5}}}
+        request = acp_permission()
+        done = threading.Event()
+        self.assertTrue(bridge.assessor.start(fingerprint(request), request, {},
+                                              lambda _assessment: done.set()))
+        self.assertTrue(done.wait(5))
+        self.assertEqual(seen['model'], 'jev-latest')
+        self.assertEqual(seen['state']['command'], 'ls -la')
+
+
+class JevEndpointTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        init_shared_settings(Path(tmp.name) / 'jev.json')
+
+        class EmptyBridge:
+            host_errors = []
+            def for_host(self, host):
+                if host != 'local':
+                    raise KeyError(host)
+                return self
+            closed = threading.Event()
+            def list(self, **kwargs):
+                return []
+        record = password_record('correct password test')
+        self.server = GatewayServer(('127.0.0.1', 0), EmptyBridge(),
+                                    {'auth': {'mode': 'password', 'username': 'admin', **record}, 'origins': []},
+                                    ROOT / 'web')
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.port = self.server.server_address[1]
+        self.origin = 'http://127.0.0.1:' + str(self.port)
+        self.server.origins.add(self.origin)
+        self.server.hosts.add('127.0.0.1:' + str(self.port))
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def request(self, method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+        base = {'Origin': self.origin, 'Content-Type': 'application/json'}
+        base.update(headers or {})
+        conn.request(method, path, body=json.dumps(body) if body is not None else None, headers=base)
+        response = conn.getresponse()
+        status, response_headers, data = response.status, dict(response.getheaders()), response.read()
+        conn.close()
+        return status, response_headers, json.loads(data)
+
+    def test_settings_roundtrip_over_http(self):
+        status, headers, body = self.request('POST', '/api/login', {'username': 'admin', 'password': 'correct password test'})
+        self.assertEqual(status, 200)
+        auth = {'Cookie': headers['Set-Cookie'].split(';')[0], 'X-CSRF-Token': body['csrf']}
+        status, _headers, body = self.request('GET', '/api/jev', headers=auth)
+        self.assertEqual(status, 200)
+        self.assertFalse(body['configured'])
+        self.assertEqual(body['baseUrl'], 'https://api.typesafe.ai')
+        self.assertEqual(body['model'], 'jev-latest')
+        # Writes without a CSRF token stay rejected even with the cookie.
+        self.assertEqual(self.request('POST', '/api/jev', {'apiKey': 'tsk-http-key-77'},
+                                      {'Cookie': auth['Cookie']})[0], 403)
+        status, _headers, body = self.request('POST', '/api/jev', {'apiKey': 'tsk-http-key-77', 'baseUrl': '', 'model': ''}, auth)
+        self.assertEqual(status, 200)
+        self.assertTrue(body['configured'])
+        self.assertIn('…', body['apiKeyMasked'])
+        status, _headers, body = self.request('GET', '/api/jev', headers=auth)
+        self.assertTrue(body['configured'])
+        status, _headers, body = self.request('POST', '/api/jev', {'baseUrl': 'not a url', 'model': ''}, auth)
+        self.assertEqual(status, 400)
+
+
+def tearDownModule():
+    # Leave the shared store pointing at an empty file so later test modules
+    # with permission flows never inherit this module's keys.
+    (ROOT / '.tmp').mkdir(exist_ok=True)
+    init_shared_settings(ROOT / '.tmp' / 'jev-test-reset.json')
 
 
 if __name__ == '__main__':

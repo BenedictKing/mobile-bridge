@@ -32,6 +32,14 @@
     <label class="display-option"><span data-i18n="运行完毕通知">运行完毕通知</span><input id="notification-completions" type="checkbox"></label>
     <p class="muted" data-i18n="应用于所有聊天，可在聊天提醒中单独调整。需先配置通知通道。">应用于所有聊天，可在聊天提醒中单独调整。需先配置通知通道。</p><p id="notification-settings-error" class="error" role="alert"></p>
   </fieldset>
+  <fieldset class="appearance-section"><legend data-i18n="权限预判（Jev）">权限预判（Jev）</legend>
+    <p class="muted" data-i18n="为需要手动确认的权限请求显示风险分级与建议选项；只做标注，不会代替你授权。未配置时使用本地确定性标签。">为需要手动确认的权限请求显示风险分级与建议选项；只做标注，不会代替你授权。未配置时使用本地确定性标签。</p>
+    <label><span data-i18n="API Key">API Key</span><input id="jev-key" type="password" autocomplete="new-password" inputmode="text"></label>
+    <p id="jev-key-status" class="muted" aria-live="polite"></p>
+    <div class="appearance-grid"><label><span data-i18n="端点">端点</span><input id="jev-base-url" type="text" inputmode="url" autocomplete="off" placeholder="https://api.typesafe.ai" data-i18n-placeholder="https://api.typesafe.ai"></label><label><span data-i18n="模型">模型</span><input id="jev-model" type="text" autocomplete="off" placeholder="jev-latest"></label></div>
+    <p id="jev-settings-error" class="error" role="alert"></p>
+    <div class="appearance-actions"><button id="jev-clear" class="plain" type="button" data-i18n="清除密钥">清除密钥</button><button id="jev-save" class="primary" type="button" data-i18n="保存 Jev 设置">保存 Jev 设置</button></div>
+  </fieldset>
   <fieldset class="appearance-section conversation-options"><legend data-i18n="对话内容">对话内容</legend><label class="display-option"><span><strong data-i18n="思考摘要">思考摘要</strong><small data-i18n="显示模型提供的思考摘要">显示模型提供的思考摘要</small></span><input id="appearance-reasoning" type="checkbox" checked></label><label class="display-option"><span><strong data-i18n="执行过程">执行过程</strong><small data-i18n="命令、工具调用、文件变更与进度说明">命令、工具调用、文件变更与进度说明</small></span><input id="appearance-process" type="checkbox" checked></label><p class="appearance-note" data-i18n="关闭两项可专注回复；错误和待确认请求仍会显示。">关闭两项可专注回复；错误和待确认请求仍会显示。</p></fieldset>
   <fieldset class="appearance-section"><legend data-i18n="聊天列表">聊天列表</legend><label class="display-option"><span><strong data-i18n="显示会话运行和完成标识">显示会话运行和完成标识</strong><small data-i18n="绿点表示运行中，蓝点表示完成未查看；进入会话后清除完成标识。">绿点表示运行中，蓝点表示完成未查看；进入会话后清除完成标识。</small></span><input id="appearance-activity" type="checkbox"></label></fieldset>
   <div class="appearance-grid"><label><span data-i18n="主题">主题</span><select id="appearance-theme"><option value="system" data-i18n="跟随系统">跟随系统</option><option value="light" data-i18n="浅色">浅色</option><option value="dark" data-i18n="深色">深色</option></select></label><label><span data-i18n="语言">语言</span><select id="appearance-language" data-language><option value="zh">简体中文</option><option value="en">English</option></select></label></div>

@@ -3,16 +3,26 @@
 Jev (TypeSafe AI) answers typed questions only; it never generates text and
 never grants permissions. The assessment is advisory: risk ranking, option
 recommendations, and confidence that the phone renders next to the native
-approval buttons. Without TYPESAFE_API_KEY the module stays disabled and the
-phone keeps the deterministic local labels.
+approval buttons.
+
+Configuration is web-editable and process-wide: `JevSettings` persists under
+the gateway root (jev.json, 0600). Launch-time env vars (TYPESAFE_API_KEY,
+TYPESAFE_BASE_URL, JEV_MODEL) stay as defaults; saving a value in the file
+overrides them and clearing the key disables Jev even when the env var is
+still set. Without a key the module stays disabled and the phone keeps the
+deterministic local labels.
 """
 import hashlib
 import json
 import logging
+import os
+import re
 import threading
 import http.client
+from pathlib import Path
 from urllib.parse import urlsplit
 
+from .notifications import write_json
 from .tls import client_context
 
 LOG = logging.getLogger(__name__)
@@ -250,20 +260,146 @@ def parse_recommendation(request, assessment):
             'decline': 'decline'}.get(recommend)
 
 
+class JevSettings:
+    """Web-editable Jev configuration, one file per gateway.
+
+    File values override the launch-time env vars; an empty saved key means
+    explicitly disabled even when the env var is still set. Keys are never
+    returned to the client in full — only a masked form for the settings form.
+    """
+
+    FIELDS = ('apiKey', 'baseUrl', 'model')
+    ENV = {'apiKey': 'TYPESAFE_API_KEY', 'baseUrl': 'TYPESAFE_BASE_URL', 'model': 'JEV_MODEL'}
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._values = self._load()
+
+    def _load(self):
+        try:
+            data = json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {key: value for key, value in data.items()
+                if key in self.FIELDS and isinstance(value, str)}
+
+    def read(self):
+        """Effective values: saved file entry, else env var, else default."""
+        with self._lock:
+            saved = dict(self._values)
+        effective = {}
+        for field in self.FIELDS:
+            if field in saved:
+                effective[field] = saved[field]
+            else:
+                effective[field] = os.environ.get(self.ENV[field], '')
+        effective['baseUrl'] = effective['baseUrl'] or DEFAULT_BASE_URL
+        effective['model'] = effective['model'] or 'jev-latest'
+        return effective
+
+    def update(self, value):
+        """Validate and persist a settings-form submission."""
+        if not isinstance(value, dict):
+            raise ValueError('Jev 设置格式不正确')
+        parsed = {}
+        with self._lock:
+            saved = dict(self._values)
+        if value.get('clearApiKey') is True:
+            parsed['apiKey'] = ''
+        else:
+            submitted = value.get('apiKey')
+            if submitted is None:
+                # Not submitted: keep the saved one. A file that never held a
+                # key stays that way so the env fallback survives unrelated
+                # edits; the password input stays blank on reload by design.
+                if 'apiKey' in saved:
+                    parsed['apiKey'] = saved['apiKey']
+            elif not isinstance(submitted, str):
+                raise ValueError('API Key 格式不正确')
+            else:
+                key = submitted.strip()
+                if key:
+                    if not 8 <= len(key) <= 4096 or any(character.isspace() for character in key):
+                        raise ValueError('API Key 格式不正确')
+                    parsed['apiKey'] = key
+                elif 'apiKey' in saved:
+                    parsed['apiKey'] = saved['apiKey']
+        for field, label, pattern in (('baseUrl', '端点', None), ('model', '模型',
+                                     re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}'))):
+            raw = value.get(field, '')
+            if not isinstance(raw, str):
+                raise ValueError('Jev 设置格式不正确')
+            raw = raw.strip()
+            if raw and pattern is not None and not pattern.fullmatch(raw):
+                raise ValueError('模型名格式不正确')
+            if raw and field == 'baseUrl':
+                parsed_url = urlsplit(raw)
+                if parsed_url.scheme not in ('http', 'https') or not parsed_url.hostname:
+                    raise ValueError('端点必须是 http(s) 地址')
+            parsed[field] = raw
+        with self._lock:
+            self._values = parsed
+            write_json(self.path, parsed)
+        return self.public()
+
+    def public(self):
+        """Client-facing view: masked key, effective endpoint and model."""
+        effective = self.read()
+        key = effective['apiKey']
+        masked = (key[:3] + '…' + key[-4:]) if len(key) > 8 else ('已配置' if key else '')
+        return {'configured': bool(key), 'apiKeyMasked': masked,
+                'baseUrl': effective['baseUrl'], 'model': effective['model']}
+
+
+_SHARED = None
+_SHARED_LOCK = threading.Lock()
+
+
+def init_shared_settings(path):
+    """Bind the process-wide settings file; called once at gateway startup."""
+    global _SHARED
+    with _SHARED_LOCK:
+        _SHARED = JevSettings(path)
+    return _SHARED
+
+
+def shared_settings():
+    with _SHARED_LOCK:
+        return _SHARED
+
+
+def effective_field(field):
+    """Current effective value for assessers, honoring the shared store."""
+    store = shared_settings()
+    if store is not None:
+        return store.read()[field]
+    return os.environ.get(JevSettings.ENV.get(field, ''), '')
+
+
 class JevAssessor:
-    """Cache-backed advisory assessment; failures fall back to local labels."""
+    """Cache-backed advisory assessment; failures fall back to local labels.
+
+    api_key/base_url/model accept plain values (tests) or zero-argument
+    callables so live settings edits apply to running bridges."""
 
     def __init__(self, base_url=None, api_key=None, model=None):
-        self.base_url = base_url or DEFAULT_BASE_URL
+        self.base_url = base_url
         self.api_key = api_key
-        self.model = model or 'jev-latest'
+        self.model = model
         self._lock = threading.Lock()
         self._cache = {}
         self._inflight = set()
 
+    @staticmethod
+    def _resolve(value):
+        return value() if callable(value) else value
+
     @property
     def enabled(self):
-        return bool(self.api_key)
+        return bool(self._resolve(self.api_key))
 
     def cached(self, key):
         with self._lock:
@@ -301,9 +437,9 @@ class JevAssessor:
             LOG.warning("Jev assessment callback failed", exc_info=True)
 
     def _call(self, payload):
-        payload = dict(payload, model=self.model)
+        payload = dict(payload, model=self._resolve(self.model) or 'jev-latest')
         body = json.dumps(payload, ensure_ascii=False).encode()
-        headers = {'Authorization': 'Bearer ' + self.api_key,
+        headers = {'Authorization': 'Bearer ' + self._resolve(self.api_key),
                    'Content-Type': 'application/json',
                    'Content-Length': str(len(body))}
         connection = self._connect()
@@ -320,7 +456,7 @@ class JevAssessor:
             connection.close()
 
     def _connect(self):
-        parsed = urlsplit(self.base_url)
+        parsed = urlsplit(self._resolve(self.base_url) or DEFAULT_BASE_URL)
         if parsed.scheme == 'http':
             return http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=TIMEOUT)
         return http.client.HTTPSConnection(parsed.hostname, parsed.port or 443,

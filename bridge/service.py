@@ -4,7 +4,6 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
-import os
 import re
 import subprocess
 import threading
@@ -29,7 +28,7 @@ from .accounts import Accounts, operation
 from .goal import GoalRPC, GoalError, GoalUnavailable, GoalUnsupported, goal_activation, goal_identity, normalize_goal_result, normalize_ui_locale, goal_command_fingerprint, goal_state_confirms_command, native_goal_absent, normalize_goal, plan_goal_command, read_native_goal
 from .uploads import Uploads, image_type
 from .remote import upload_file
-from .jev import JevAssessor, assessable, fingerprint, parse_recommendation
+from .jev import JevAssessor, assessable, effective_field, fingerprint, parse_recommendation
 from .agents.base import Capability
 from .agents.codex import CodexAdapter
 
@@ -243,9 +242,11 @@ class Bridge:
         self.goal_commands_path = self.data_dir / 'goal-commands.json'
         self.goal_commands = json.loads(self.goal_commands_path.read_text(encoding='utf-8')) if self.goal_commands_path.exists() else {}
         self.goal_lock = threading.RLock()
-        self.assessor = JevAssessor(base_url=os.environ.get('TYPESAFE_BASE_URL'),
-                                    api_key=os.environ.get('TYPESAFE_API_KEY'),
-                                    model=os.environ.get('JEV_MODEL'))
+        # Live callables: settings edits in the web UI apply to every bridge
+        # without a restart; env vars remain the fallback defaults.
+        self.assessor = JevAssessor(api_key=lambda: effective_field('apiKey'),
+                                    base_url=lambda: effective_field('baseUrl'),
+                                    model=lambda: effective_field('model'))
         adapter.bind(self)
         for command in self.goal_commands.values():
             if command.get('state') in ('pending', 'sent'):

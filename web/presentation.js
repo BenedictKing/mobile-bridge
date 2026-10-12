@@ -89,7 +89,7 @@ if(typeof document!=='undefined')(()=>{
   composerSize.observe(composer);
   const pageState=new MutationObserver(()=>document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open')));
   pageState.observe(get('app'),{attributes:true,attributeFilter:['hidden','class']});
-  document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();});
+  document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();window.loadJevSettings?.();});
   get('chat-details-button').onclick=()=>{get('details-title').textContent=get('chat-title').textContent;get('chat-details-dialog').showModal();};
   // This script is loaded after app.js, which binds the existing close controls.
   get('appearance-language').onchange=()=>{get('phone-language').value=get('appearance-language').value;get('phone-language').onchange();get('appearance-language').value=BridgeI18n.language();};

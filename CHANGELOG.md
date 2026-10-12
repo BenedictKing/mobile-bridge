@@ -2,7 +2,7 @@
 
 ### Added
 
-- Optional Jev (TypeSafe AI) advisory triage for manual permission confirmations: with `TYPESAFE_API_KEY` set, each approval card gets a risk level, reversibility, confidence, and a starred suggested option, and the riskiest pending confirmations sort first. Jev only annotates and ranks — approvals still require an explicit tap, and unconfigured gateways keep the deterministic local labels.
+- Optional Jev (TypeSafe AI) advisory triage for manual permission confirmations: each approval card gets a risk level, reversibility, confidence, and a starred suggested option, and the riskiest pending confirmations sort first. Jev only annotates and ranks — approvals still require an explicit tap, and unconfigured gateways keep the deterministic local labels. The API key, endpoint, and model are editable in the web settings dialog (persisted to `jev.json`, masked readback, live effect without a gateway restart); env vars remain launch-time defaults and an explicit key clear disables Jev even when they are set.
 - ACP agents that archive sub-agents as independent on-disk sessions are now discoverable: kimi session directories (`state.json` + per-agent wire logs), zcode (`acp-lazy-sessions.json` mapping + `cli/agents` transcripts), and claude (`subagents/` sidechain files) all feed the same timeline activity rows, read-only with size caps and mtime caching.
 
 ### Changed / Fixed

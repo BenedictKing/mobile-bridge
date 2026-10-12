@@ -20,6 +20,7 @@ from bridge.auth import password_record
 from bridge.agents.base import Registry
 from bridge.agents.codex import CodexAdapter
 from bridge.httpd import GatewayServer
+from bridge.jev import init_shared_settings
 from bridge.lifecycle import GatewayControl
 from bridge.service import Bridge
 from bridge.tunnel import QuickTunnel
@@ -135,6 +136,9 @@ def main(connections=None, connection_secrets=None):
         save_config(args.config, config)
         first_login.write_text("Codex App 手机网关\n账号：admin\n密码：" + password + "\n\n仅用于此网关，与 Codex 模型登录无关。\n修改密码：python run.py --set-password\n", encoding='utf-8')
         first_login.chmod(0o600)
+    # Web-editable Jev configuration lives beside the gateway config so every
+    # agent bridge shares one file.
+    init_shared_settings(args.config.parent / 'jev.json')
     if args.set_password:
         password = getpass.getpass("新密码（至少 12 位）：")
         if len(password) < 12 or password != getpass.getpass("再次输入："):

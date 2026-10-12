@@ -27,6 +27,7 @@ from .store import StoreUnavailable
 from .remote import RemoteUnavailable
 from .create import CreationError
 from .account import AccountError
+from .jev import shared_settings
 from .agents.acp import AcpError
 
 LOG = logging.getLogger(__name__)
@@ -409,6 +410,11 @@ class Handler(BaseHTTPRequestHandler):
                 if self.server.notifications is None:
                     raise ValueError('当前网关未启用通知服务')
                 return self.output(200, self.server.notifications.defaults(self.read_json() if write else None))
+            if path == '/api/jev':
+                store = shared_settings()
+                if store is None:
+                    raise ValueError('Jev 设置存储未初始化')
+                return self.output(200, store.update(self.read_json()) if write else store.public())
             root = self.server.bridge
             registry = self.server.registry
             if registry is None:
