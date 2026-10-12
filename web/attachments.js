@@ -1,16 +1,22 @@
 'use strict';
 class ChatAttachments {
   constructor({root,button,input,upload,onChange,preview,paste,drop,thumbnail}){
-    Object.assign(this,{root,button,input,upload,onChange,preview,thumbnail});this.key=null;this.rows=[];this.drafts=new Map();this.locked=false;
+    Object.assign(this,{root,button,input,upload,onChange,preview,thumbnail,drop});this.key=null;this.rows=[];this.drafts=new Map();this.locked=false;
     button.onclick=()=>input.click();input.onchange=()=>{this.add([...input.files]);input.value='';};
     paste?.addEventListener('paste',event=>{
       const files=[...event.clipboardData?.files||[]];
       if(files.length){event.preventDefault();this.add(files);}
     });
-    drop?.addEventListener('dragover',event=>event.preventDefault());
+    // 整个聊天区都可作为拖拽目标；仅对文件拖拽给出悬停反馈并接管放置。
+    const draggingFiles=event=>[...event.dataTransfer?.types||[]].includes('Files');
+    drop?.addEventListener('dragover',event=>{if(draggingFiles(event))event.preventDefault();});
+    drop?.addEventListener('dragenter',event=>{if(this.key&&!this.locked&&draggingFiles(event))drop.classList.add('drag-target');});
+    drop?.addEventListener('dragleave',event=>{if(!drop.contains(event.relatedTarget))drop.classList.remove('drag-target');});
     drop?.addEventListener('drop',event=>{
+      drop.classList.remove('drag-target');
+      if(!draggingFiles(event))return;
       event.preventDefault();
-      const files=[...event.dataTransfer?.files||[]];
+      const files=[...event.dataTransfer.files];
       if(files.length)this.add(files);
     });
   }
@@ -85,6 +91,7 @@ class ChatAttachments {
   render(){
     const t=BridgeI18n.t,node=(tag,text,cls)=>{const n=document.createElement(tag);if(text)n.textContent=text;if(cls)n.className=cls;return n;};
     this.root.replaceChildren();this.button.disabled=!this.key||this.locked;
+    this.drop?.setAttribute('data-drop-hint',t('松开以添加附件'));
     if(this.error)this.root.append(node('p',t(this.error),'error'));
     for(const row of this.rows){
       const card=node('div',null,'attachment-chip'),info=node('div',null,'attachment-info');

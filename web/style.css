@@ -8,7 +8,7 @@
 .approval-risk.risk-elevated{color:#795a1f;background:#f4e7c2}
 .approval-risk.risk-high{color:#a63b20;background:#f8ded5}
 .jev-recommend{outline:2px solid #b08a2e;outline-offset:1px}
-@media (forced-colors: active){.jev-recommend{outline:auto}}.queue-actions{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}.queue-policy{padding-left:0}
+@media (forced-colors: active){.jev-recommend{outline:auto}}.queue-actions{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
 
 .composer-tools{display:flex;gap:8px;margin:0 0 8px}.tool-button{border:1px solid var(--line);background:#f0f3eb;border-radius:20px;padding:6px 12px;color:#4f6656;font-size:11px;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.skill-pills{display:flex;flex-wrap:wrap;gap:6px}.skill-pill{border:0;background:#e0ecdf;border-radius:15px;font-size:10px;color:#305b3e;padding:5px 9px;margin-bottom:8px}.picker{border:1px solid var(--line);border-radius:16px;padding:24px;width:min(94vw,480px);max-height:85dvh;background:#f7f7f2;color:inherit;box-shadow:0 20px 80px #0002}.picker::backdrop{background:#16201b70}.picker-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.picker h2{font-size:20px;margin:0}.picker p{font-size:12px;line-height:1.6}.picker label{display:block;font-size:13px;margin:16px 0}.picker select{width:100%;background:#fff;border:1px solid var(--line);padding:12px;border-radius:8px;margin-top:8px;color:inherit}.picker .primary{width:100%}.picker-actions{display:flex;gap:10px;align-items:center;padding-top:15px}.picker-actions .plain{flex:none}.skill-list{max-height:48dvh;overflow:auto;margin-top:12px;-webkit-overflow-scrolling:touch}.skill-option{display:flex!important;align-items:flex-start;gap:12px;background:#edf1e8;border-radius:9px;padding:12px;margin:8px 0!important;cursor:pointer}.skill-pill.invalid{background:#f4d9d4;color:#7a3325}.skill-option input{margin:3px 0 0;flex:none}.skill-option>span{min-width:0;overflow-wrap:anywhere}.skill-option strong{display:block;font-size:13px}.skill-option small{display:block;color:var(--muted);font-size:11px;line-height:1.5;margin-top:5px}.picker button:disabled{opacity:.45}
 /* 弹窗统一:标题行固定,内容区独立滚动;[open] 避免覆盖浏览器对关闭 dialog 的 display:none */
@@ -57,6 +57,9 @@
 .timeline .attachment-image{display:block;max-width:min(100%,360px);max-height:260px;margin:8px 0;border:1px solid var(--line);border-radius:10px;object-fit:contain;background:#fff}
 .attachment-chip{background:#edf0e8}.attachment-thumb{width:40px;height:40px;object-fit:cover;background:#dfe5d9}
 .timeline .attachment-image{min-height:80px;background:#dfe5d9}
+
+/* 整个聊天区接受拖入文件：悬停时显示全区域遮罩提示 */
+.chat.drag-target::after{content:attr(data-drop-hint);position:absolute;inset:10px;z-index:5;display:flex;align-items:center;justify-content:center;padding:20px;border:2px dashed var(--green);border-radius:18px;background:rgba(247,247,242,.9);background:color-mix(in srgb,var(--page,#f7f7f2) 90%,transparent);color:var(--green);font-size:15px;font-weight:600;text-align:center;pointer-events:none}
 
 .remember-login{display:flex;align-items:center;gap:8px}.remember-login input{width:auto;flex:none}
 .agent-badge{font-style:normal;font-size:9px;letter-spacing:.5px;color:var(--green);background:var(--soft);border-radius:8px;padding:1px 5px;margin-right:5px;vertical-align:1px;text-transform:uppercase}

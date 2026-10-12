@@ -19,7 +19,7 @@
 
 - 子 Agent：Codex 本地与 SSH child thread、Kimi/ZCode/MiniMax/Claude/DeepSeek ACP 的嵌套 `tool_call` 输出均通过同一时间线活动模型展示；保留 Agent ID、类型、状态、停止原因、命令和 transcript。远程 Codex 通过 SSH 读取 child thread 与 rollout。
 - 权限：ACP Agent 的原生权限模式通过 `/api/sessions/<sid>/permissions` 读取和切换；Codex 仍由桌面端持有策略，仅提供请求级审批和具体命令展示。Jev 预判见上方独立记录。
-- 队列：每聊天持久化启用状态，支持关闭/开启排队；已有排队消息保留，立即发送、编辑、删除继续可用。
+- 队列：排队始终可用（按聊天关闭开关已移除），发送方式下拉是唯一入口；排队消息可立即发送、编辑、删除。
 - 自动检查：Python 全量 647 项通过、10 项平台条件跳过；ACP/时间线/Bridge 定向 134 项通过、2 项跳过；桌面/网页 Node 158 项通过。新增嵌套 ACP transcript、child rollout、远程 child history、权限模式和队列开关回归。
 - 未验证：真实 Kimi、ZCode、MiniMax、Claude、DeepSeek 的子 Agent 独立 session 形状仍需实机确认；若 Agent 不把子 Agent transcript 放在父 `tool_call` 输出中，ACP 协议本身没有统一的 child-session 关联字段可读取。
 

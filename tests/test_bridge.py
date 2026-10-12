@@ -709,14 +709,6 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(self.bridge.queue_action(THREAD, delete_id, 'delete')['status'], 'cancelled')
         self.assertEqual(self.bridge.submissions[THREAD + ':' + delete_id]['status'], 'cancelled')
 
-    def test_queue_can_be_disabled_and_reenabled_per_chat(self):
-        self.assertTrue(self.bridge.view(THREAD)['queueEnabled'])
-        self.assertEqual(self.bridge.queue_action(THREAD, '', 'disable'), {'enabled': False})
-        with self.assertRaisesRegex(ValueError, '排队已关闭'):
-            self.bridge.send(THREAD, 'blocked queue', str(uuid.uuid4()), 'queue')
-        self.assertEqual(self.bridge.queue_action(THREAD, '', 'enable'), {'enabled': True})
-        self.assertEqual(self.bridge.send(THREAD, 'enabled queue', str(uuid.uuid4()), 'queue')['status'], 'queued')
-
     def test_unknown_delivery_not_replayed_even_after_idle_changes(self):
         self.bridge.session(THREAD)
         self.bridge._call = lambda *a, **k: (_ for _ in ()).throw(IPCError('timeout'))

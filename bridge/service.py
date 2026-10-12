@@ -229,8 +229,6 @@ class Bridge:
         self.closed = threading.Event()
         Path(data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ledger_path = Path(data_dir) / "submissions.json"
-        self.queue_settings_path = self.data_dir / 'queue-settings.json'
-        self.queue_settings = json.loads(self.queue_settings_path.read_text(encoding='utf-8')) if self.queue_settings_path.exists() else {}
         self.submit_lock = threading.Lock()
         self.create_lock = threading.Lock()
         self.message_lock = threading.RLock()
@@ -1130,25 +1128,7 @@ class Bridge:
         view["forkedFrom"] = self._fork_origin(thread_id)
         view["agent"] = self.adapter.kind
         view["capabilities"] = sorted(self.adapter.capabilities)
-        view["queueEnabled"] = self.queue_enabled(thread_id)
         return view
-
-    def queue_enabled(self, thread_id):
-        return self.queue_settings.get(thread_id, True) is not False
-
-    def set_queue_enabled(self, thread_id, enabled):
-        self.adapter.validate_id(thread_id)
-        self.queue_settings[thread_id] = bool(enabled)
-        target = self.queue_settings_path.with_suffix('.tmp')
-        target.write_text(json.dumps(self.queue_settings, ensure_ascii=False), encoding='utf-8')
-        target.chmod(0o600)
-        target.replace(self.queue_settings_path)
-        with self.lock:
-            session = self.live.get(thread_id)
-        if session:
-            with session.condition:
-                session.changed()
-        return {'enabled': bool(enabled)}
 
     def _latest_created_goal_objective(self, thread_id):
         with self.submit_lock:
@@ -1431,8 +1411,7 @@ class Bridge:
                 result['meta'] = dict(result['meta'], host=self.host, agent=self.adapter.kind,
                                       hostLabel='此电脑' if self.host == 'local' else self.hosts.hosts().get(self.host, {}).get('displayName', self.host),
                                       capabilities=sorted(self.adapter.capabilities),
-                                      goalRuntimeAvailable=self._goal_runtime_available(),
-                                      queueEnabled=self.queue_enabled(thread_id))
+                                      goalRuntimeAvailable=self._goal_runtime_available())
                 texts = [row['text'] for row in result['rows'] if row['role'] == 'assistant']
             cwd = (session.state or {}).get('cwd')
             media_items = [item for turn in ordered_turns(session.state or {})
@@ -1657,10 +1636,6 @@ class Bridge:
             return result
 
     def queue_action(self, thread_id, submission_id, action, text=None):
-        if action == 'disable':
-            return self.set_queue_enabled(thread_id, False)
-        if action == 'enable':
-            return self.set_queue_enabled(thread_id, True)
         if action == "delete":
             return self.cancel_queued(thread_id, submission_id)
         if action == "edit":
@@ -1697,8 +1672,6 @@ class Bridge:
             raise ValueError("请输入 1–100000 字的消息")
         if mode not in ("send", "steer", "queue"):
             raise ValueError("未知发送方式")
-        if mode == 'queue' and not self.queue_enabled(thread_id):
-            raise ValueError('排队已关闭，请先重新开启排队')
         if work_mode not in (None, "default", "plan", "goal"):
             raise ValueError("未知工作模式")
         if mode == "steer" and work_mode is not None:

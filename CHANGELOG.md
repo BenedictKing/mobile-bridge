@@ -15,6 +15,8 @@
 - Cross-agent migration can create a target session for an unmatched local project and exposes target capability metadata in timeline responses.
 - Upload storage accepts path-safe Agent-native session identifiers, and the mobile copy dialog layout keeps long content scrollable.
 - English UI now translates native list, send-mode, and work-mode options; migration documentation matches local and remote directory behavior.
-- Child-agent transcripts now preserve nested ACP output, Codex child rollouts, agent identity, status, and command output; queueing can be disabled per chat.
+- Child-agent transcripts now preserve nested ACP output, Codex child rollouts, agent identity, status, and command output.
+- The per-chat queue on/off toggle is removed: queueing is always available, and the composer's send-mode selector is the single entry point.
+- Fixed duplicate zcode chat entries: the lazy placeholder session is now withdrawn from the chat list once its materialized backend `sess_*` session is listed, and `sess_*` URLs reopen after a page refresh.
 - DeepSeek Harness exposes its native permission modes through the phone UI; other ACP `mode` options remain untouched when they represent collaboration modes, and Codex retains desktop-owned permission policy.
 - Affected files: `bridge/jev.py`, `bridge/agents/native_subagents.py`, `bridge/service.py`, `bridge/agents/{kimi,zcode,claude}.py`, `web/`, and related tests.
