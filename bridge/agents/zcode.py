@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .acp import AcpUnavailable
 from .acp_adapter import AcpAdapter
-from .native_subagents import ZcodeSubagentStore
+from .native_subagents import ZcodeSubagentStore, _read_json
 from . import zcode_creds
 
 
@@ -64,7 +64,7 @@ class ZcodeAdapter(AcpAdapter):
     EFFORT_MAP = {'none': 'off', 'minimal': 'enabled', 'low': 'low', 'medium': 'medium',
                   'high': 'high', 'xhigh': 'xhigh', 'max': 'max', 'ultra': 'ultra'}
 
-    def __init__(self, argv=None, **kwargs):
+    def __init__(self, argv=None, lazy_map=None, **kwargs):
         discovered = argv is None
         argv = argv or discover_argv()
         if not argv:
@@ -73,6 +73,13 @@ class ZcodeAdapter(AcpAdapter):
             argv = [argv]
         super().__init__(argv[0], **kwargs)
         self._full_argv = list(argv)
+        if lazy_map is not None:
+            self._lazy_map = Path(lazy_map)
+        else:
+            try:
+                self._lazy_map = Path.home() / '.zcode' / 'v2' / 'acp-lazy-sessions.json'
+            except RuntimeError:  # Windows environments without HOME/USERPROFILE
+                self._lazy_map = None
         # Real launches (gateway startup) keep the coding-plan key slot in
         # ~/.zcode/v2/config.json healed; explicit argv (tests) must not touch
         # the machine's real ZCode state.
@@ -82,6 +89,17 @@ class ZcodeAdapter(AcpAdapter):
     def _argv(self):
         # The wrapper speaks ACP directly; there is no 'acp' subcommand.
         return list(self._full_argv)
+
+    def _canonical_id(self, thread_id):
+        # session/new's lazy placeholder never appears in session/list; once
+        # the first prompt materializes the backend session, the list carries
+        # the sess_* id this map records, and that covers the placeholder.
+        if self._lazy_map is None or thread_id.startswith('sess_'):
+            return None
+        entry = (_read_json(self._lazy_map) or {}).get(thread_id)
+        if isinstance(entry, dict) and entry.get('zcodeSid'):
+            return entry['zcodeSid']
+        return None
 
     _subagent_store = None
 

@@ -427,6 +427,17 @@ class AcpAdapter(AgentAdapter):
                     self._meta_cache[row['sessionId']] = row
         return rows
 
+    def _canonical_id(self, thread_id):
+        """Subclass hook: the id a placeholder resolves to once the backend
+        materializes it under a different id (zcode's lazy sessions)."""
+        return None
+
+    def _is_covered(self, session_id, listed):
+        if session_id in listed:
+            return True
+        canonical = self._canonical_id(session_id)
+        return canonical is not None and canonical in listed
+
     def _fetch_rows(self):
         with self._list_lock:
             if time.monotonic() - self._list_at < LIST_CACHE_SECONDS:
@@ -444,7 +455,7 @@ class AcpAdapter(AgentAdapter):
         with self._list_lock:
             listed = {row.get('sessionId') for row in rows}
             for known in list(self._pending_created):
-                if known in listed:
+                if self._is_covered(known, listed):
                     self._pending_created.pop(known, None)
             self._list_cache = rows
             self._list_at = time.monotonic()
@@ -455,7 +466,7 @@ class AcpAdapter(AgentAdapter):
         listed = {row.get('sessionId') for row in rows}
         with self._list_lock:
             extra = [row for row in self._pending_created.values()
-                     if row['sessionId'] not in listed]
+                     if not self._is_covered(row['sessionId'], listed)]
         return rows + extra
 
     @staticmethod

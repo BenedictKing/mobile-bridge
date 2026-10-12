@@ -1,4 +1,5 @@
 """ZCode ACP profile: wrapper discovery, argv shape, mode and effort mapping."""
+import json
 import os
 import tempfile
 import time
@@ -248,6 +249,30 @@ class ZcodeBridgeTests(unittest.TestCase):
         adapter.detach(session)
         adapter._list_at = 0
         self.assertNotIn(thread_id, {r['id'] for r in adapter.list_sessions('此电脑')})
+
+    def test_listed_backend_id_covers_lazy_placeholder(self):
+        # zcode 实体化后 session/list 只出现 sess_* 后端 ID，占位 UUID 永不
+        # 原样入列；lazy map 解析到的后端 ID 入列后占位必须撤销，否则列表重复。
+        fake, adapter, bridge = self.make_bridge()
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        adapter._lazy_map = Path(tmp.name) / 'acp-lazy-sessions.json'
+        thread_id = adapter.create_session({'cwd': '/work'}, 'New chat')
+        fake.list_rows = [r for r in fake.list_rows if r['sessionId'] != thread_id]
+        backend_id = 'sess_' + str(uuid.uuid4())
+        adapter._lazy_map.write_text(json.dumps(
+            {thread_id: {'zcodeSid': backend_id, 'cwd': '/work'}}), encoding='utf-8')
+        # 后端尚未入列：占位照常显示，不过早去重
+        self.assertIn(thread_id, {r['id'] for r in adapter.list_sessions('此电脑')})
+        fake.list_rows.append({'sessionId': backend_id, 'cwd': '/work',
+                               'title': 'New chat', 'updatedAt': UPDATED})
+        adapter._list_at = 0
+        ids = [r['id'] for r in adapter.list_sessions('此电脑')]
+        self.assertNotIn(thread_id, ids)
+        self.assertEqual(ids.count(backend_id), 1)
+        self.assertNotIn(thread_id, adapter._pending_created)
+        # 占位句柄不动：已用占位 ID 打开的聊天仍可用
+        self.assertEqual(adapter.session_meta(thread_id)['title'], 'New chat')
 
     def test_send_and_cancel_roundtrip(self):
         fake, _, bridge = self.make_bridge()
