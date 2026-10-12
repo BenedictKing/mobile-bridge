@@ -15,9 +15,17 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler, HTTPSHand
 from .model import pending_requests, ordered_turns
 from .tls import client_context
 
+LOG = logging.getLogger(__name__)
+
 DEFAULTS = {'enabled': False, 'server': 'https://ntfy.sh', 'topic': '', 'token': '',
             'barkEnabled': False, 'barkServer': 'https://api.day.app', 'barkKey': '',
             'clickBase': '', 'includeTitle': False, 'addressEnabled': True, 'addressName': '', 'securityEnabled': True}
+
+# Outcome records only exist to answer retries and audits; a week covers any
+# plausible phone-side reconciliation window.
+OUTCOME_RETENTION = 7 * 86400
+OUTCOME_LIMIT = 2000
+RECONCILE_INTERVAL = 60
 
 
 def read_json(path, default):
@@ -175,10 +183,39 @@ class Notifications:
         self.attached = {}
         self.dormant = set()
         self.target_signature = None
+        # Durable "notification produced, delivery unproven" records. The
+        # per-target delivery ledger stays the sole delivery authority; the
+        # reconciliation loop re-publishes outcomes it cannot prove delivered.
+        self.outcomes = read_json(self.data_dir/'notification-outcomes.json', {})
+        self._next_reconcile = 0.0
+        self._migrate_outcomes()
         self.wakeup = getattr(bridge, 'notification_event', threading.Event())
         self.worker = None
         from .security_notifications import SecurityNotifications
         self.security = SecurityNotifications(self.data_dir)
+
+    def _migrate_outcomes(self):
+        """Carry pending completions into the outcome ledger exactly once.
+
+        Only records missing a publish state are created: a turn already
+        proven delivered keeps no outcome and is never re-sent.
+        """
+        migrated = {}
+        # Completions are keyed by json [host, id, target]; pending turns live inside.
+        for key, record in self.completions.items():
+            try:
+                host, identifier, _target = json.loads(key)
+            except (ValueError, TypeError):
+                continue
+            for turn_id in (record.get('pending') if isinstance(record, dict) else []) or []:
+                outcome_key = self._outcome_key(host, identifier, turn_id)
+                if outcome_key not in self.outcomes and outcome_key not in migrated:
+                    migrated[outcome_key] = {'kind': 'completion', 'host': host, 'id': identifier,
+                                             'event': turn_id, 'title': record.get('title') or '聊天',
+                                             'at': time.time()}
+        if migrated:
+            self.outcomes.update(migrated)
+            write_json(self.data_dir/'notification-outcomes.json', self.outcomes)
 
     def start(self):
         self.worker = threading.Thread(target=self._run, daemon=True)
@@ -373,6 +410,16 @@ class Notifications:
 
     def _clear_completion(self, host, thread_id):
         self.completions = {k: v for k, v in self.completions.items() if json.loads(k)[:2] != [host, thread_id]}
+        prefix = self._outcome_key(host, thread_id, '')
+        outcomes = {k: v for k, v in self.outcomes.items()
+                    if not (isinstance(v, dict) and k.startswith(prefix))}
+        if len(outcomes) != len(self.outcomes):
+            self.outcomes = outcomes
+            write_json(self.data_dir/'notification-outcomes.json', self.outcomes)
+
+    @staticmethod
+    def _outcome_key(host, thread_id, turn_id):
+        return json.dumps(['completion', host, thread_id, turn_id])
 
     @staticmethod
     def _completion_key(host, thread_id, target):
@@ -406,10 +453,31 @@ class Notifications:
                 present = {t.get('turnId') for t in turns}
                 current['running'] += [turn_id for turn_id in previous['running'] if turn_id not in present]
             current['pending'] = [turn_id for turn_id in current['pending'] if not self.ledger.get(self._delivery_key(row, turn_id, completion=True, target=target), {}).get('delivered')]
+            self._record_outcomes(row, current)
             if current != previous:
                 self.completions[key] = current
                 write_json(self.data_dir/'notification-completions.json', self.completions)
             return [self._delivery_key(row, turn_id, completion=True, target=target) for turn_id in current['pending']]
+
+    def _record_outcomes(self, row, current):
+        """Persist one durable outcome per newly completed turn, before delivery.
+
+        The record is the reconciliation source when the process dies between
+        detection and delivery; the delivery ledger alone cannot answer that.
+        """
+        changed = False
+        for turn_id in current.get('pending') or []:
+            key = self._outcome_key(row['host'], row['id'], turn_id)
+            if key not in self.outcomes:
+                self.outcomes[key] = {'kind': 'completion', 'host': row['host'], 'id': row['id'],
+                                      'event': turn_id, 'title': current.get('title') or '聊天',
+                                      'at': time.time()}
+                changed = True
+        if len(self.outcomes) > OUTCOME_LIMIT:
+            self.outcomes = dict(sorted(self.outcomes.items(), key=lambda p: p[1].get('at', 0))[-OUTCOME_LIMIT:])
+            changed = True
+        if changed:
+            write_json(self.data_dir/'notification-outcomes.json', self.outcomes)
 
     @staticmethod
     def _delivery_key(row, event_id, completion=False, target=''):
@@ -565,9 +633,58 @@ class Notifications:
         if current != prior:
             write_json(path, current)
 
+    def _reconcile(self):
+        """Re-publish durable outcomes the delivery ledger cannot prove delivered.
+
+        Runs at startup and every RECONCILE_INTERVAL seconds. It never blocks
+        session maintenance: one failure is logged and retried next round.
+        """
+        try:
+            config = settings(self.data_dir)
+            targets = channels(config)
+            now = time.time()
+            changed = False
+            for key, outcome in list(self.outcomes.items()):
+                if not isinstance(outcome, dict) or not isinstance(outcome.get('event'), str):
+                    self.outcomes.pop(key, None)
+                    changed = True
+                    continue
+                if now - outcome.get('at', 0) > OUTCOME_RETENTION:
+                    self.outcomes.pop(key, None)
+                    changed = True
+                    continue
+                row = {'host': outcome.get('host'), 'id': outcome.get('id')}
+                if not self._effective(row)['notifyOnCompletion']:
+                    # The user turned completion alerts off; never re-open one.
+                    self.outcomes.pop(key, None)
+                    changed = True
+                    continue
+                if not targets:
+                    continue
+                deliveries = [self._delivery_key(row, outcome['event'], completion=True, target=target)
+                              for target in targets.values()]
+                if all(self.ledger.get(k, {}).get('delivered') for k in deliveries):
+                    self.outcomes.pop(key, None)
+                    changed = True
+                    continue
+                with self.lock:
+                    for channel, target in targets.items():
+                        delivery = self._delivery_key(row, outcome['event'], completion=True, target=target)
+                        if self._send_keys(config, row, outcome.get('title') or '聊天', channel, target,
+                                           [delivery], True, self._label_for(row['id'], row['host'])):
+                            changed = True
+            if changed:
+                write_json(self.data_dir/'notification-outcomes.json', self.outcomes)
+                write_json(self.data_dir/'notification-delivery.json', self.ledger)
+        except Exception:
+            LOG.exception('Notification reconciliation failed')
+
     def _run(self):
         while not self.closed.is_set():
             try:
+                if time.monotonic() >= self._next_reconcile:
+                    self._next_reconcile = time.monotonic() + RECONCILE_INTERVAL
+                    self._reconcile()
                 self.security.scan()
                 self.scan()
             except Exception:

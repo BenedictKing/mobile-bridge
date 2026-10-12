@@ -2,12 +2,14 @@ import http.server
 import json
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from bridge.notifications import Notifications, publish, publish_bark, settings, save_settings, write_json, read_json
+from bridge.notifications import (Notifications, destination, publish, publish_bark,
+                                  settings, save_settings, write_json, read_json)
 from bridge.service import LiveSession
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -420,6 +422,112 @@ class NotificationTests(unittest.TestCase):
             self.assertEqual([p for p, _ in captured], ['/bark/push'] * 7)
         finally:
             server.shutdown();server.server_close()
+
+    def _write_outcome(self, turn_id='run', **overrides):
+        record = {'kind': 'completion', 'host': 'remote', 'id': self.thread, 'event': turn_id,
+                  'title': 'Private project', 'at': time.time()}
+        record.update(overrides)
+        write_json(self.directory/'notification-outcomes.json',
+                   {self.manager._outcome_key('remote', self.thread, turn_id): record})
+
+    def test_completion_detection_records_durable_outcome(self):
+        self.turns(('run', 'inProgress'))
+        self.manager.watch(self.thread, 'remote', notify_on_completion=True)
+        # The process "dies" between detection and delivery: the send fails and
+        # no later scan ever runs.
+        with patch('bridge.notifications.publish', side_effect=OSError('offline')):
+            self.turns(('run', 'completed'))
+            self.manager.scan()
+        outcomes = read_json(self.directory/'notification-outcomes.json', {})
+        self.assertIn(self.manager._outcome_key('remote', self.thread, 'run'), outcomes)
+        resurrected = Notifications(self.source, self.directory)
+        for record in resurrected.ledger.values():
+            record['next'] = 0
+        with patch('bridge.notifications.publish') as send:
+            resurrected._reconcile()
+            self.assertEqual(send.call_count, 1)
+            self.assertEqual(send.call_args.args[1], 'Codex 运行已完成')
+            # Realtime and reconciliation delivery converge to one arrival.
+            resurrected._reconcile()
+            self.assertEqual(send.call_count, 1)
+        resurrected.close()
+
+    def test_reconcile_resends_outcome_written_before_restart(self):
+        self.manager.watch(self.thread, 'remote', notify_on_completion=True)
+        self._write_outcome('run')
+        resurrected = Notifications(self.source, self.directory)
+        with patch('bridge.notifications.publish') as send:
+            resurrected._reconcile()
+            self.assertEqual(send.call_count, 1)
+        ledger = read_json(self.directory/'notification-delivery.json', {})
+        self.assertTrue(ledger and all(record.get('delivered') for record in ledger.values()))
+        resurrected.close()
+
+    def test_reconcile_skips_and_drops_already_delivered_outcomes(self):
+        self.manager.watch(self.thread, 'remote', notify_on_completion=True)
+        row = {'id': self.thread, 'host': 'remote'}
+        delivered = self.manager._delivery_key(row, 'run', completion=True,
+                                               target=destination(settings(self.directory), 'ntfy'))
+        write_json(self.directory/'notification-delivery.json', {delivered: {'delivered': True, 'time': 1}})
+        self._write_outcome('run')
+        resurrected = Notifications(self.source, self.directory)
+        with patch('bridge.notifications.publish') as send:
+            resurrected._reconcile()
+            self.assertFalse(send.called)
+        self.assertEqual(resurrected.outcomes, {})
+        resurrected.close()
+
+    def test_reconcile_honors_completion_opt_out_and_never_reopens(self):
+        self.source.store = type('Store', (), {'get': lambda _, identifier: {}})()
+        self.manager.watch(self.thread, 'remote', notify_on_completion=True)
+        self.manager.policy(self.thread, 'remote', {'requests': 'on', 'completion': 'off'})
+        self._write_outcome('run')
+        resurrected = Notifications(self.source, self.directory)
+        with patch('bridge.notifications.publish') as send:
+            resurrected._reconcile()
+            self.assertFalse(send.called)
+        self.assertEqual(resurrected.outcomes, {})
+        resurrected.close()
+
+    def test_reconcile_without_channels_is_inert_and_keeps_the_outcome(self):
+        self.manager.watch(self.thread, 'remote', notify_on_completion=True)
+        save_settings(self.directory, {'enabled': False, 'topic': ''})
+        self._write_outcome('run')
+        resurrected = Notifications(self.source, self.directory)
+        resurrected._reconcile()  # Must not raise without channels or subscriptions.
+        self.assertEqual(len(resurrected.outcomes), 1)
+        resurrected.close()
+
+    def test_reconcile_drops_expired_outcome_records(self):
+        self.manager.watch(self.thread, 'remote', notify_on_completion=True)
+        self._write_outcome('run', at=time.time() - 8 * 86400)
+        resurrected = Notifications(self.source, self.directory)
+        with patch('bridge.notifications.publish') as send:
+            resurrected._reconcile()
+            self.assertFalse(send.called)
+        self.assertEqual(resurrected.outcomes, {})
+        resurrected.close()
+
+    def test_pending_completions_migrate_to_outcomes_without_resending_delivered(self):
+        row = {'id': self.thread, 'host': 'remote'}
+        target = destination(settings(self.directory), 'ntfy')
+        write_json(self.directory/'notification-watches.json', [{**row, 'notifyOnCompletion': True}])
+        write_json(self.directory/'notification-completions.json',
+                   {json.dumps(['remote', self.thread, target]):
+                       {'anchor': None, 'running': [], 'pending': ['pending-run', 'delivered-run'], 'title': 'Private project'}})
+        write_json(self.directory/'notification-delivery.json',
+                   {self.manager._delivery_key(row, 'delivered-run', completion=True, target=target):
+                        {'delivered': True, 'time': 1}})
+        resurrected = Notifications(self.source, self.directory)
+        with patch('bridge.notifications.publish') as send:
+            resurrected._reconcile()
+            self.assertEqual(send.call_count, 1)
+            self.assertIn('1 次运行', send.call_args.args[2])
+            # The freshly delivered record is dropped on the next sweep.
+            resurrected._reconcile()
+            self.assertEqual(send.call_count, 1)
+        self.assertEqual(resurrected.outcomes, {})
+        resurrected.close()
 
     def test_real_http_payload_and_authorization(self):
         captured = []
