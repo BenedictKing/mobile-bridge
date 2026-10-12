@@ -6,16 +6,23 @@ submit only high-confidence, low-risk, reversible allow-once/session choices.
 
 Configuration is web-editable and process-wide: `JevSettings` persists under
 the gateway root (jev.json, 0600). Launch-time env vars (TYPESAFE_API_KEY,
-TYPESAFE_BASE_URL, JEV_MODEL) stay as defaults; saving a value in the file
-overrides them and clearing the key disables Jev even when the env var is
-still set. Without a key the module stays disabled and the phone keeps the
-deterministic local labels.
+TYPESAFE_BASE_URL, JEV_MODEL, JEV_PROXY) stay as defaults; saving a value in
+the file overrides them and clearing the key disables Jev even when the env
+var is still set. Without a key the module stays disabled and the phone keeps
+the deterministic local labels.
+
+An optional HTTP proxy (`proxy`, e.g. http://127.0.0.1:7890) routes every
+assessment through one CONNECT tunnel. The endpoint is unreachable from some
+networks (HTTP 451 regional blocks) without one; stdlib http.client never
+consults the system proxy on its own. An empty value connects directly and
+also disables the JEV_PROXY fallback.
 """
 import hashlib
 import json
 import logging
 import os
 import re
+import socket
 import threading
 import http.client
 from pathlib import Path
@@ -301,8 +308,9 @@ class JevSettings:
     returned to the client in full — only a masked form for the settings form.
     """
 
-    FIELDS = ('apiKey', 'baseUrl', 'model', 'autoApprove')
-    ENV = {'apiKey': 'TYPESAFE_API_KEY', 'baseUrl': 'TYPESAFE_BASE_URL', 'model': 'JEV_MODEL'}
+    FIELDS = ('apiKey', 'baseUrl', 'model', 'proxy', 'autoApprove')
+    ENV = {'apiKey': 'TYPESAFE_API_KEY', 'baseUrl': 'TYPESAFE_BASE_URL',
+           'model': 'JEV_MODEL', 'proxy': 'JEV_PROXY'}
 
     def __init__(self, path):
         self.path = Path(path)
@@ -317,7 +325,7 @@ class JevSettings:
         if not isinstance(data, dict):
             return {}
         return {key: value for key, value in data.items()
-                if key in ('apiKey', 'baseUrl', 'model') and isinstance(value, str)} | (
+                if key in ('apiKey', 'baseUrl', 'model', 'proxy') and isinstance(value, str)} | (
                     {'autoApprove': data['autoApprove']} if isinstance(data.get('autoApprove'), bool) else {})
 
     def read(self):
@@ -325,13 +333,14 @@ class JevSettings:
         with self._lock:
             saved = dict(self._values)
         effective = {}
-        for field in ('apiKey', 'baseUrl', 'model'):
+        for field in ('apiKey', 'baseUrl', 'model', 'proxy'):
             if field in saved:
                 effective[field] = saved[field]
             else:
                 effective[field] = os.environ.get(self.ENV[field], '')
         effective['baseUrl'] = effective['baseUrl'] or DEFAULT_BASE_URL
         effective['model'] = effective['model'] or 'jev-latest'
+        effective['proxy'] = effective['proxy'] or ''
         effective['autoApprove'] = bool(saved.get('autoApprove', False))
         return effective
 
@@ -377,6 +386,17 @@ class JevSettings:
                 if parsed_url.scheme == 'http' and parsed_url.hostname not in ('localhost', '127.0.0.1', '::1'):
                     raise ValueError('端点请使用 HTTPS；HTTP 仅用于本机测试')
             parsed[field] = raw
+        raw_proxy = value.get('proxy', '')
+        if not isinstance(raw_proxy, str):
+            raise ValueError('Jev 设置格式不正确')
+        raw_proxy = raw_proxy.strip()
+        if raw_proxy:
+            # CONNECT tunnels ride a plain HTTP proxy; credentials would be
+            # silently ignored, so reject them instead of half-working.
+            parsed_proxy = urlsplit(raw_proxy)
+            if parsed_proxy.scheme != 'http' or not parsed_proxy.hostname or parsed_proxy.username or parsed_proxy.password:
+                raise ValueError('代理必须是 http://主机:端口 形式')
+        parsed['proxy'] = raw_proxy
         if 'autoApprove' in value:
             if not isinstance(value['autoApprove'], bool):
                 raise ValueError('自动审核设置格式不正确')
@@ -389,13 +409,13 @@ class JevSettings:
         return self.public()
 
     def public(self):
-        """Client-facing view: masked key, effective endpoint and model."""
+        """Client-facing view: masked key, effective endpoint, model, proxy."""
         effective = self.read()
         key = effective['apiKey']
         masked = (key[:3] + '…' + key[-4:]) if len(key) > 8 else ('已配置' if key else '')
         return {'configured': bool(key), 'apiKeyMasked': masked,
                 'baseUrl': effective['baseUrl'], 'model': effective['model'],
-                'autoApprove': effective['autoApprove']}
+                'proxy': effective['proxy'], 'autoApprove': effective['autoApprove']}
 
 
 _SHARED = None
@@ -431,13 +451,14 @@ def auto_approve_enabled():
 class JevAssessor:
     """Cache-backed advisory assessment; failures fall back to local labels.
 
-    api_key/base_url/model accept plain values (tests) or zero-argument
+    api_key/base_url/model/proxy accept plain values (tests) or zero-argument
     callables so live settings edits apply to running bridges."""
 
-    def __init__(self, base_url=None, api_key=None, model=None):
+    def __init__(self, base_url=None, api_key=None, model=None, proxy=None):
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
+        self.proxy = proxy
         self._lock = threading.Lock()
         self._cache = {}
         self._inflight = set()
@@ -508,7 +529,41 @@ class JevAssessor:
 
     def _connect(self):
         parsed = urlsplit(self._resolve(self.base_url) or DEFAULT_BASE_URL)
-        if parsed.scheme == 'http':
-            return http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=TIMEOUT)
-        return http.client.HTTPSConnection(parsed.hostname, parsed.port or 443,
-                                           timeout=TIMEOUT, context=client_context())
+        proxy = urlsplit(self._resolve(self.proxy) or '')
+        secure = parsed.scheme != 'http'
+        port = parsed.port or (443 if secure else 80)
+        if proxy.hostname:
+            # One CONNECT tunnel per assessment; only the proxy sees the
+            # target, and the TLS session (if any) is end-to-end with it.
+            raw = socket.create_connection((proxy.hostname, proxy.port or 80), timeout=TIMEOUT)
+            try:
+                _connect_tunnel(raw, parsed.hostname, port)
+                sock = (client_context().wrap_socket(raw, server_hostname=parsed.hostname)
+                        if secure else raw)
+            except OSError:
+                raw.close()
+                raise
+            connection = http.client.HTTPConnection(parsed.hostname, port, timeout=TIMEOUT)
+            connection.sock = sock
+            return connection
+        if secure:
+            return http.client.HTTPSConnection(parsed.hostname, port, timeout=TIMEOUT,
+                                               context=client_context())
+        return http.client.HTTPConnection(parsed.hostname, port, timeout=TIMEOUT)
+
+
+def _connect_tunnel(sock, hostname, port):
+    """Complete an HTTP proxy CONNECT handshake on an open socket."""
+    target = '%s:%d' % (hostname, port)
+    sock.sendall(('CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n' % (target, target)).encode('ascii'))
+    reply = b''
+    while b'\r\n\r\n' not in reply:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise OSError('代理在 CONNECT 握手期间关闭了连接')
+        reply += chunk
+        if len(reply) > 8192:
+            raise OSError('代理的 CONNECT 响应异常')
+    status_line = reply.split(b'\r\n', 1)[0]
+    if b' 200 ' not in status_line:
+        raise OSError('代理拒绝了 CONNECT 请求：%s' % status_line.decode('ascii', 'replace')[:120])

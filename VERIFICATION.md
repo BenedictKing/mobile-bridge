@@ -1,3 +1,28 @@
+## Jev 代理选项（2026-10-12，未发布）
+
+- 范围：Jev 设置新增 `proxy` 字段（`http://主机:端口`，留空直连），网页「设置 → 权限预判」新增「代理」输入框；`JevAssessor._connect` 对配置了代理的评估请求先完成 HTTP CONNECT 握手，再在隧道上运行原有 HTTP/TLS 会话（HTTPS 端点仍与 `api.typesafe.ai` 端到端建 TLS，代理只见目标主机名）。动因：上一记录发现 `api.typesafe.ai` 对本机网络直连返回 451 地域封锁，而 stdlib `http.client` 不读系统代理。
+- 校验与语义：代理只接受 `http://` 且不带 userinfo（带凭据会被静默忽略，直接拒绝）；保存空串表示显式直连并停用 `JEV_PROXY` 兜底（与清除密钥停用 `TYPESAFE_API_KEY` 同语义）；`proxy` 随 `public()` 回显、随设置即时生效（JevAssessor 以 callable 解析）。CONNECT 被拒/中断抛 OSError，沿用既有的「一条 WARNING + 失败缓存不重试」路径。
+- 自动检查：Python 全量 698 项通过、6 项平台条件跳过（`tests/test_jev.py` 新增：代理校验正负例、`JEV_PROXY` 兜底与显式直连、回环 CONNECT 中继代理下的完整 `_call`（断言 origin-form 路径/Host/Bearer 只出现在隧道内）、代理拒绝时评估失败缓存 None、/api/jev 代理字段 HTTP 往返与非法值 400、live 设置跟随）；桌面 Node 158 项、i18n 中英键对齐通过。
+- 实机冒烟（隔离网关 18796、fake ACP agent、无本地中继）：网页表单填入 `http://127.0.0.1:6785` 保存后，端点保持真实 `https://api.typesafe.ai`，触发权限卡即经系统代理完成真实评估并自动批准（网关日志 `Jev 自动审核已提交: result=ok`，agent 侧收到 `approve_once`）——上一记录的 451 断路在新选项下闭环。
+- 未覆盖：带用户名密码的代理与 SOCKS 代理（明确拒绝/不支持，错误文案说明）；HTTPS 代理（TLS 到代理本身）未支持。真实网关 8787 的 `.local/jev.json` 未改动，是否填代理由用户决定。
+
+## Jev 实链、自动审核与 SSE 续传实测（2026-10-12，未发布）
+
+- 方法：隔离网关（端口 18796、免密、`--agents kimi`、独立数据目录 `.tmp/jev-live/`）经 `KIMI_BIN` 指向独立 stdio fake ACP agent（`.tmp/jev-live/fake-agent.py`，线协议对齐 `tests/fake_acp.py`，会话列表落盘模拟真实 kimi 重启可列出），Bridge/SSE/HTTP/前端均为真实代码；Jev key 复制自真实网关配置，`.local/jev.json` 与 8787 真实网关全程未改动。
+- **关键环境发现**：`api.typesafe.ai` 从本机网络直连一律返回 HTTP 451 "Typesafe is not available in your region"（地域封锁）。真实网关当前配置的 key 实际不可达：每张权限卡只会记一条 `Jev assessment failed: HTTP 451` WARNING 并静默回退本地标签。经系统代理（127.0.0.1:6785）CONNECT 可正常访问；本轮用本地中继（`.tmp/jev-live/jev-relay.py`，18797→代理→api.typesafe.ai）完成真实调用。桥接层 `http.client` 不走系统代理，生产使用 Jev 需要透明代理出口或官方解除地域限制。
+- Jev 真实线上调用（4 次 `/v1/systemone`，服务端自报 jev-1.13.0，全部 200）：
+  - `ls -la` 类读命令 3 次：risk 0.01–0.02、可撤销 0.92–0.94、recommend accept_once，但置信度 0.53/0.67/0.68（accept_once 与 accept_always 分摊概率质量）均低于 `AUTO_MIN_CONFIDENCE=0.8`，守卫不放行、卡片留待手动——负例符合设计。
+  - `tail -n 50 /tmp/mb-jev-once.log`（一次性读日志）：risk 0.02、可撤销 0.92、置信度 0.88 过阈值 → **自动批准端到端成立**：网关日志 `Jev 自动审核已提交: result=ok`，agent 侧实际收到 `{outcome: selected, optionId: approve_once}`（出现 2 次，第二次发生在 SSE 断线测试期间）。
+  - `sudo rm -rf /tmp/important-data`：risk 2.95（P(high)=0.97）→「高风险」、可撤销 0.06→「难以撤销」、recommend decline（0.85）；星标落在「拒绝」，未自动批准。前端 Jev 徽章（「常规操作/高风险 · Jev xx% · 可撤销/难以撤销」）与推荐星标在真实浏览器渲染正确（截图 `.tmp/jev-live/high-risk-card.png`）。
+- watched 会话重启恢复：对落盘的 kimi 会话开启聊天通知关注（requests/completion 均 on，通知通道指向本机死端口仅满足开启条件）→ SIGTERM 重启网关 → `resume_watched` 后台自动重连，GET view 返回 `connected: true`、模型配置经 session/load 重新播种。初版 fake 未落盘会话列表时路由探不到导致 400「badly formed hexadecimal UUID string」，属夹具缺陷，真实 kimi 会话本就持久化。
+- SSE 断线续传（agent-browser 请求日志 + 页面 EventSource 钩子 + CDP 路由拦截模拟断线）：
+  - 断线期间重试请求始终携带 `?since=<epoch>.<sequence>` 游标（Last-Event-ID 语义）；
+  - 同 epoch 断线（网关不重启、切换会话强制重订阅 + 拦截重连）：恢复后服务端只发 `changes` 增量帧（钩子记录 ready+changes、无 reset），断线期间注入的消息经游标到达、历史不重传；
+  - 跨网关重启（epoch 轮换）：正确回退 `reset` 全量快照（curl 直连与页面恢复均验证）；
+  - 登出后 33 秒内零网络请求（无 /events、/changes、/api/auth 探测），传输层完全停止——计划阶段三第 2 条的桌面侧可模拟部分全部通过。
+- 附带复核：Chrome 的 offline 模拟不切断已建立的 SSE 流（断网后已连流仍可收帧），真机弱网表现仍需实机验收。
+- 未覆盖：真实 kimi 等 Agent 产生权限卡的原生端到端（本轮 agent 侧为 fake，桥接层链路全真实）；trycloudflare 自动回落、真机蜂窝网络、手机扫码与 iOS/Android 实机；Windows/Linux 原生桌面。隔离网关、fake agent、中继均已停止，测试产物保留在 `.tmp/jev-live/`。
+
 ## kimi 前端 Skill、ACP 空闲超时与 Jev 设置面板（2026-10-12，未发布）
 
 - kimi Skill 选择：ACP 没有原生 Skill 块；`acp_view` 缓存 `available_commands_update`，`AcpAdapter.catalog` 把广告的斜杠命令映射为 Skill 项（排除 compact/status/usage/mcp/tasks/help 六个内置命令，支持搜索、分页与已选解析），`resolve_skills` 校验后由 `dispatch_turn` 把首文本块改写为 `/<命令名> <正文>`（每次 prompt 只识别一个前导斜杠命令，故一次限选一个；时间线仍显示用户原文）；`KimiAdapter` 声明 `Capability.SKILLS`。已用真实 kimi ACP 进程探针确认广告形状：用户级 Skill 带 `skill:` 前缀，内置 Skill 用裸名。

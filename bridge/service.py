@@ -245,7 +245,8 @@ class Bridge:
         # without a restart; env vars remain the fallback defaults.
         self.assessor = JevAssessor(api_key=lambda: effective_field('apiKey'),
                                     base_url=lambda: effective_field('baseUrl'),
-                                    model=lambda: effective_field('model'))
+                                    model=lambda: effective_field('model'),
+                                    proxy=lambda: effective_field('proxy'))
         self._auto_response_lock = threading.Lock()
         self._auto_response_requests = set()
         adapter.bind(self)

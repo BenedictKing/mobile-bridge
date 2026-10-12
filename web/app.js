@@ -355,12 +355,12 @@ window.loadJevSettings=async()=>{
     $('jev-key').value='';
     $('jev-key-status').textContent=result.configured?t('已配置')+' · '+result.apiKeyMasked:'';
     $('jev-key').placeholder=result.configured?t('已配置，留空保持不变'):t('未配置');
-    $('jev-base-url').value=result.baseUrl;$('jev-model').value=result.model;
+    $('jev-base-url').value=result.baseUrl;$('jev-model').value=result.model;$('jev-proxy').value=result.proxy||'';
     $('jev-auto-approve').checked=Boolean(result.autoApprove);
   }catch(error){if(request===jevSettingsRequest)$('jev-settings-error').textContent=t(error.message);}
 };
 async function saveJevSettings(clear){
-  const body={baseUrl:$('jev-base-url').value.trim(),model:$('jev-model').value.trim(),autoApprove:$('jev-auto-approve').checked};
+  const body={baseUrl:$('jev-base-url').value.trim(),model:$('jev-model').value.trim(),proxy:$('jev-proxy').value.trim(),autoApprove:$('jev-auto-approve').checked};
   if(clear)body.clearApiKey=true;
   else{const key=$('jev-key').value.trim();if(key)body.apiKey=key;}
   $('jev-save').disabled=$('jev-clear').disabled=true;$('jev-settings-error').textContent='';

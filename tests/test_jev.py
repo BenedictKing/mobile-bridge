@@ -1,7 +1,9 @@
 """Jev advisory triage: pure mapping helpers plus the Bridge annotation path."""
 import http.client
+import http.server
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -339,13 +341,17 @@ class JevSettingsTests(unittest.TestCase):
     def test_file_overrides_and_masks_env(self):
         store = shared_settings()
         self.assertEqual(store.read()['apiKey'], 'env-key-123')
-        result = store.update({'apiKey': 'tsk-file-key-9999', 'baseUrl': '', 'model': ''})
+        result = store.update({'apiKey': 'tsk-file-key-9999', 'baseUrl': '',
+                               'model': '', 'proxy': 'http://127.0.0.1:6785'})
         self.assertTrue(result['configured'])
         self.assertIn('…', result['apiKeyMasked'])
         self.assertNotIn('tsk-file-key-9999', json.dumps(result))
         self.assertEqual(store.read(), {'apiKey': 'tsk-file-key-9999',
                                         'baseUrl': 'https://api.typesafe.ai',
-                                        'model': 'jev-latest', 'autoApprove': False})
+                                        'model': 'jev-latest',
+                                        'proxy': 'http://127.0.0.1:6785',
+                                        'autoApprove': False})
+        self.assertEqual(store.public()['proxy'], 'http://127.0.0.1:6785')
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_unrelated_save_keeps_env_fallback(self):
@@ -376,18 +382,151 @@ class JevSettingsTests(unittest.TestCase):
                     {'apiKey': 42}, {'baseUrl': 'ftp://x', 'model': ''},
                     {'baseUrl': 'http://insecure.example', 'model': ''},
                     {'baseUrl': 'https://ok.example', 'model': 'bad name'},
-                    {'model': None}):
+                    {'model': None},
+                    {'proxy': 'not a url'}, {'proxy': 'ftp://proxy.example'},
+                    {'proxy': 'https://proxy.example'}, {'proxy': 'socks5://127.0.0.1:1080'},
+                    {'proxy': 'http://user:pass@127.0.0.1:6785'}):
             with self.assertRaises(ValueError):
                 store.update(bad)
         self.assertFalse(self.path.exists())
         # Loopback HTTP stays allowed for local testing.
         store.update({'baseUrl': 'http://127.0.0.1:9000', 'model': ''})
         self.assertEqual(store.read()['baseUrl'], 'http://127.0.0.1:9000')
+        store.update({'proxy': 'http://127.0.0.1:6785'})
+        self.assertEqual(store.read()['proxy'], 'http://127.0.0.1:6785')
+
+    def test_proxy_env_fallback_and_explicit_direct(self):
+        with patch.dict(os.environ, {'JEV_PROXY': 'http://127.0.0.1:7000'}):
+            self.assertEqual(shared_settings().read()['proxy'], 'http://127.0.0.1:7000')
+            # Saving an empty proxy means explicit direct: the env var stops
+            # applying, mirroring the cleared-key semantics.
+            shared_settings().update({'proxy': ''})
+        self.assertEqual(shared_settings().read()['proxy'], '')
 
     def test_reload_persists_across_instances(self):
         shared_settings().update({'apiKey': 'tsk-file-key-9999', 'baseUrl': 'https://a.example', 'model': 'm1'})
         reloaded = JevSettings(self.path)
         self.assertEqual(reloaded.read()['baseUrl'], 'https://a.example')
+
+
+class JevProxyTests(unittest.TestCase):
+    """Assessment traffic rides one HTTP CONNECT tunnel through the proxy."""
+
+    CANNED = {'answers': {'risk': {'score': 0.4}, 'reversible': {'noul': 0.9},
+                          'recommend': {'choice': 'accept_once', 'confidence': 0.9}}}
+
+    def setUp(self):
+        self.seen = []
+        origin = http.server.ThreadingHTTPServer(('127.0.0.1', 0), self._handler())
+        self.addCleanup(origin.server_close)
+        self.addCleanup(origin.shutdown)
+        self.origin_port = origin.server_address[1]
+        threading.Thread(target=origin.serve_forever, daemon=True).start()
+        self.connects = []
+        listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(4)
+        listener.settimeout(10)
+        self.addCleanup(listener.close)
+        self.proxy_port = listener.getsockname()[1]
+        threading.Thread(target=self._serve_proxy, args=(listener, None), daemon=True).start()
+
+    def _handler(self):
+        seen, canned = self.seen, self.CANNED
+
+        class Origin(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                seen.append({'path': self.path, 'authorization': self.headers.get('Authorization'),
+                             'host': self.headers.get('Host'), 'body': body})
+                data = json.dumps(canned).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+        return Origin
+
+    def _serve_proxy(self, listener, refuse):
+        while True:
+            try:
+                client, _ = listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._proxy_client, args=(client, refuse), daemon=True).start()
+
+    def _proxy_client(self, client, refuse):
+        try:
+            header = b''
+            while b'\r\n\r\n' not in header:
+                chunk = client.recv(4096)
+                if not chunk:
+                    return
+                header += chunk
+            first = header.split(b'\r\n', 1)[0].decode('ascii', 'replace')
+            self.connects.append(first)
+            if refuse:
+                client.sendall(b'HTTP/1.1 403 Forbidden\r\n\r\n')
+                client.close()
+                return
+            host, _, port = first.split(' ')[1].rpartition(':')
+            upstream = socket.create_connection((host, int(port)), timeout=5)
+            client.sendall(b'HTTP/1.1 200 Connection established\r\n\r\n')
+            threading.Thread(target=self._pump, args=(client, upstream), daemon=True).start()
+            self._pump(upstream, client)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _pump(source, target):
+        try:
+            while True:
+                data = source.recv(65536)
+                if not data:
+                    break
+                target.sendall(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                target.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    def test_call_routes_through_connect_tunnel(self):
+        assessor = JevAssessor(base_url='http://127.0.0.1:%d' % self.origin_port,
+                               api_key='tsk-proxy-key', proxy='http://127.0.0.1:%d' % self.proxy_port)
+        payload = build_payload(acp_permission(), {'agent': 'kimi'})
+        self.assertEqual(assessor._call(payload)['answers']['recommend']['choice'], 'accept_once')
+        self.assertEqual(len(self.seen), 1)
+        request = self.seen[0]
+        # The tunnel carries the original request: origin-form path, target
+        # Host, and the API key never leak to the proxy layer.
+        self.assertEqual(request['path'], '/v1/systemone')
+        self.assertEqual(request['authorization'], 'Bearer tsk-proxy-key')
+        self.assertEqual(request['host'], '127.0.0.1:%d' % self.origin_port)
+        self.assertEqual(self.connects,
+                         ['CONNECT 127.0.0.1:%d HTTP/1.1' % self.origin_port])
+
+    def test_refused_tunnel_fails_the_assessment(self):
+        refuse_listener = socket.socket()
+        refuse_listener.bind(('127.0.0.1', 0))
+        refuse_listener.listen(2)
+        refuse_listener.settimeout(10)
+        self.addCleanup(refuse_listener.close)
+        threading.Thread(target=self._serve_proxy, args=(refuse_listener, True), daemon=True).start()
+        assessor = JevAssessor(base_url='http://127.0.0.1:%d' % self.origin_port,
+                               api_key='tsk-proxy-key',
+                               proxy='http://127.0.0.1:%d' % refuse_listener.getsockname()[1])
+        done = threading.Event()
+        results = []
+        assessor.start('refused', acp_permission(), {}, lambda a: (results.append(a), done.set()))
+        self.assertTrue(done.wait(5))
+        self.assertEqual(results, [None])
+        self.assertFalse(self.seen)
 
 
 class LiveSettingsTests(unittest.TestCase):
@@ -398,8 +537,10 @@ class LiveSettingsTests(unittest.TestCase):
         bridge = Bridge(Path(tmp.name), Path(tmp.name) / 'data')
         self.addCleanup(bridge.close)
         self.assertFalse(bridge.assessor.enabled)
-        shared_settings().update({'apiKey': 'tsk-live-key-42', 'baseUrl': '', 'model': ''})
+        shared_settings().update({'apiKey': 'tsk-live-key-42', 'baseUrl': '', 'model': '',
+                                  'proxy': 'http://127.0.0.1:6785'})
         self.assertTrue(bridge.assessor.enabled)
+        self.assertEqual(effective_field('proxy'), 'http://127.0.0.1:6785')
         seen = {}
         bridge.assessor._call = lambda payload: seen.update(payload) or {'answers': {
             'risk': {'score': 1}, 'reversible': {'noul': 1},
@@ -469,6 +610,13 @@ class JevEndpointTests(unittest.TestCase):
         status, _headers, body = self.request('GET', '/api/jev', headers=auth)
         self.assertTrue(body['configured'])
         status, _headers, body = self.request('POST', '/api/jev', {'baseUrl': 'not a url', 'model': ''}, auth)
+        self.assertEqual(status, 400)
+        status, _headers, body = self.request('POST', '/api/jev', {'proxy': 'http://127.0.0.1:6785'}, auth)
+        self.assertEqual(status, 200)
+        self.assertEqual(body['proxy'], 'http://127.0.0.1:6785')
+        status, _headers, body = self.request('GET', '/api/jev', headers=auth)
+        self.assertEqual(body['proxy'], 'http://127.0.0.1:6785')
+        status, _headers, body = self.request('POST', '/api/jev', {'proxy': 'socks5://127.0.0.1:1080'}, auth)
         self.assertEqual(status, 400)
 
 
