@@ -6,10 +6,14 @@
 var BridgeTransport={
   // Capped doubling; only an application-level ready/success clears it.
   backoff(failures){return Math.min(1000<<Math.min(failures-1,8),32000);},
+  // Active wake handles. A foreground return resyncs every open channel now
+  // instead of waiting out a backoff ladder or a silently stalled socket.
+  channels:new Set(),
+  wake(){for(const wake of [...BridgeTransport.channels])wake();},
   subscribe(url,{onChanges,onReset,onStatus,cursor}){
-    let closed=false,failures=0,source=null,timer=null,polling=null,resume=null,lastId='';
+    let closed=false,failures=0,source=null,timer=null,polling=null,resume=null,lastId='',connecting=false,pacing=false,pollSession=0;
     function stop(){
-      closed=true;
+      closed=true;BridgeTransport.channels.delete(wake);
       if(source)source.close();
       source=null;
       if(polling){polling.abort();polling=null;}
@@ -22,6 +26,16 @@ var BridgeTransport={
       onStatus?.('reconnecting');
       timer=setTimeout(()=>{timer=null;resume?resume():start();},BridgeTransport.backoff(++failures));
     }
+    function wake(){
+      // Foreground return: a stalled SSE socket is replaced and a pending
+      // backoff fires now. A healthy long poll needs no push — its next
+      // cycle is 200ms away and an in-flight request lands on its own.
+      if(closed||connecting||pacing||polling)return;
+      if(source){source.close();source=null;}
+      if(timer!==null){clearTimeout(timer);timer=null;}
+      failures=0;
+      resume?resume():start();
+    }
     // Only a definite auth loss logs out; network errors always reconnect.
     async function probe(){
       try{
@@ -32,6 +46,8 @@ var BridgeTransport={
       }catch{retry();}
     }
     async function start(){
+      if(closed||connecting)return;
+      connecting=true;
       try{
         const response=await fetch('/api/auth',{credentials:'same-origin',cache:'no-store'});
         const info=response.ok?await response.json():null;
@@ -40,6 +56,7 @@ var BridgeTransport={
         if(info.transport==='sse'&&typeof EventSource!=='undefined')return subscribeSse();
         subscribePoll();
       }catch{retry();}
+      finally{connecting=false;}
     }
     function sseHandler(kind){
       return message=>{
@@ -50,6 +67,8 @@ var BridgeTransport={
     }
     function subscribeSse(){
       resume=subscribeSse;
+      // Wake and a late retry timer can race; always replace the old socket.
+      if(source){source.close();source=null;}
       // Reconnects are managed here, not by EventSource, so the backoff and
       // the resume cursor stay ours; ?since= replays what the browser would
       // have sent in Last-Event-ID on its own retry.
@@ -66,7 +85,9 @@ var BridgeTransport={
     }
     async function subscribePoll(){
       resume=subscribePoll;
-      while(!closed){
+      // A second entry (wake racing a retry) must retire the older loop.
+      const session=++pollSession;
+      while(!closed&&session===pollSession){
         let page=null;
         try{
           // The cursor is re-read every cycle: history loads may have moved
@@ -86,10 +107,13 @@ var BridgeTransport={
           return probe();
         }
         (page&&page.reset?onReset:onChanges)?.(page);
-        await new Promise(resolve=>setTimeout(resolve,200));
+        pacing=true;
+        await new Promise(resolve=>{timer=setTimeout(resolve,200);});
+        pacing=false;timer=null;
       }
     }
     start();
+    BridgeTransport.channels.add(wake);
     return stop;
   }
 };

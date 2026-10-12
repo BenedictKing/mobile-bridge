@@ -84,7 +84,18 @@ async function refreshActivity(){
 }
 setInterval(refreshActivity,5000);
 window.addEventListener('focus',refreshActivity);
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshActivity();});
+// 前台恢复三件套之一：回前台立即刷新当前会话与列表，不等下一个轮询周期
+// 或退避重连。focus 与 visibilitychange 常成对触发，1 秒内只执行一次。
+let foregroundWakeAt=0;
+function wakeForeground(){
+  if(document.hidden)return;
+  const now=Date.now();
+  if(now-foregroundWakeAt<1000)return;
+  foregroundWakeAt=now;
+  refreshActivity();
+  BridgeTransport.wake?.();
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)wakeForeground();});
 let loginStatus={attemptsRemaining:5,attemptLimit:5,blocked:false};
 function renderLoginStatus(status=loginStatus){
   loginStatus=status||loginStatus;
@@ -260,7 +271,7 @@ async function openChat(id,host="local"){if(messageActions.pending&&messageActio
   await reading;
   if(!timeline.abort.signal.aborted){loadNotificationState(id,host);loadPermissionSettings(id,host);}
 }
-let permissionState={supported:false,options:[],current:null};
+let permissionState={supported:false,options:[],current:null},permissionRequest=0;
 function renderPermissionState(){
   const button=$('permission-button');
   button.hidden=!permissionState.supported;
@@ -271,12 +282,14 @@ function renderPermissionState(){
 }
 async function loadPermissionSettings(id=currentId,host=currentHost){
   const target=id,targetHost=host;
+  // 请求版本：迟到的旧响应不得覆盖新响应（权限面板可能在打开中被重复加载）。
+  const request=++permissionRequest;
   try{
     const result=await api(sessionUrl(target,'permissions',targetHost));
-    if(target!==currentId||targetHost!==currentHost)return;
+    if(request!==permissionRequest||target!==currentId||targetHost!==currentHost)return;
     permissionState=result;renderPermissionState();
   }catch(error){
-    if(target===currentId&&targetHost===currentHost){permissionState={supported:false,options:[],current:null};renderPermissionState();}
+    if(request===permissionRequest&&target===currentId&&targetHost===currentHost){permissionState={supported:false,options:[],current:null};renderPermissionState();}
   }
 }
 $('permission-button').onclick=async()=>{
