@@ -3,6 +3,7 @@ from pathlib import Path
 
 from .acp import AcpUnavailable, discover_executable
 from .acp_adapter import AcpAdapter
+from .base import Capability
 from .native_subagents import KimiSubagentStore
 
 
@@ -15,6 +16,8 @@ class KimiAdapter(AcpAdapter):
     kind = 'kimi'
     label = 'Kimi'
     auth_hint = '请先在电脑终端运行 kimi login 完成登录'
+    # kimi ACP 把可激活的 Skill 广告为 available_commands（skill: 前缀）。
+    capabilities = frozenset({Capability.SKILLS})
     # Kimi exposes one thinking select with low/high/max; bridge efforts fold
     # onto those three values.
     EFFORT_MAP = {'none': 'low', 'minimal': 'low', 'low': 'low', 'medium': 'high',

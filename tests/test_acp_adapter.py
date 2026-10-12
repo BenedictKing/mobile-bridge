@@ -98,7 +98,7 @@ class AcpAdapterTests(unittest.TestCase):
         view = self.view(bridge)
         self.assertTrue(view['connected'])
         self.assertEqual(view['agent'], 'kimi')
-        self.assertEqual(view['capabilities'], [])
+        self.assertEqual(view['capabilities'], ['skills'])
         self.assertEqual(view['title'], 'Old')
         self.assertEqual(view['cwd'], '/work')
         self.assertEqual(view['model'], 'kimi-code/k3-256k')
@@ -179,7 +179,7 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(row['recency'], UPDATED_MS)
         self.assertEqual(row['projectKey'], 'local|/work')
         self.assertEqual(row['projectName'], 'work')
-        self.assertEqual(row['capabilities'], [])
+        self.assertEqual(row['capabilities'], ['skills'])
         self.assertEqual(bridge.list(query='nomatch'), [])
         self.assertEqual(bridge.list(query='old'), rows)
         # ACP 会话没有归档概念，归档视图为空。
@@ -411,9 +411,44 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(models['models'][0]['efforts'], ['low', 'high', 'max'])
         self.assertFalse(models['fastMode']['allowed'])
         skills = bridge.catalog(SID, kind='skills')
-        self.assertEqual(skills, {'kind': 'skills', 'skills': [], 'errors': []})
+        self.assertEqual(skills['skills'], [])
+        self.assertEqual(skills['total'], 0)
         with self.assertRaises(ValueError):
             bridge.send(SID, 'hi', str(uuid.uuid4()), skills=['review'])
+
+    def test_advertised_skill_commands_are_selectable(self):
+        fake = FakeAcpAgent(
+            config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],
+            modes=dict(MODES),
+            list_rows=[{'sessionId': SID, 'cwd': '/work', 'title': 'Old', 'updatedAt': UPDATED}])
+        fake.load_updates = [{'sessionUpdate': 'available_commands_update',
+                              'availableCommands': [
+                                  {'name': 'compact', 'description': 'Compact the context'},
+                                  {'name': 'skill:review', 'description': 'Code review'},
+                                  {'name': 'plain-skill', 'description': 'Bare name'}]}]
+        fake.prompt_updates = [chunk('agent_message_chunk', 'done')]
+        _, _, bridge = self.make_bridge(fake)
+        view = self.view(bridge)
+        self.assertEqual(view['capabilities'], ['skills'])
+        skills = bridge.catalog(SID, kind='skills')
+        self.assertEqual([s['id'] for s in skills['skills']], ['skill:review', 'plain-skill'])
+        self.assertEqual(skills['skills'][0]['displayName'], 'review')
+        self.assertEqual(skills['skills'][0]['description'], 'Code review')
+        self.assertEqual(skills['total'], 2)
+        self.assertEqual(bridge.catalog(SID, kind='skills', query='review')['total'], 1)
+        selected = bridge.catalog(SID, kind='skills', ids=['skill:review', 'gone'])
+        self.assertEqual([s['id'] for s in selected['selectedSkills']], ['skill:review'])
+        with self.assertRaises(ValueError):
+            bridge.send(SID, 'hi', str(uuid.uuid4()), skills=['missing'])
+        with self.assertRaises(ValueError):
+            bridge.send(SID, 'hi', str(uuid.uuid4()), skills=['skill:review', 'plain-skill'])
+        bridge.send(SID, 'hello', str(uuid.uuid4()), skills=['skill:review'])
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['turns'][-1]['status'] == 'completed'))
+        prompts = [r for r in fake.requests if r['method'] == 'session/prompt']
+        self.assertEqual(prompts[-1]['params']['prompt'][0],
+                         {'type': 'text', 'text': '/skill:review hello'})
+        # 时间线里用户消息仍显示原文
+        self.assertEqual(bridge.view(SID)['turns'][-1]['messages'][0]['text'], 'hello')
 
     def test_plan_mode_switch_uses_set_mode(self):
         fake, _, bridge = self.make_bridge()

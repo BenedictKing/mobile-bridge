@@ -310,7 +310,13 @@ class AcpAdapter(AgentAdapter):
             raise ValueError('当前 Agent 不支持补充任务，请使用排队发送')
         if work_mode in ('plan', 'default'):
             self._set_mode(handle, session, work_mode)
-        blocks = [{'type': 'text', 'text': entry['text']}]
+        text = entry['text']
+        skills = entry.get('skills') or []
+        if skills:
+            # ACP has no native skill block: kimi activates a skill from a
+            # leading slash command in the first text block.
+            text = '/' + skills[0]['name'] + (' ' + text if text.strip() else '')
+        blocks = [{'type': 'text', 'text': text}]
         blocks.extend(self._attachment_blocks(handle, files))
         with handle.lock:
             if handle.prompt_running:
@@ -769,14 +775,45 @@ class AcpAdapter(AgentAdapter):
         current_model = handle.view.model if handle is not None else None
         current_effort = handle.view.thinking if handle is not None else None
         if kind == 'skills':
-            return {'kind': 'skills', 'skills': [], 'errors': []}
+            skills = self._command_skills(handle)
+            if query:
+                needle = query.strip().casefold()
+                skills = [s for s in skills if needle in s['name'].casefold()
+                          or needle in s['description'].casefold()]
+            wanted = set(ids or [])
+            return {'kind': 'skills', 'skills': skills[offset:offset + limit],
+                    'selectedSkills': [s for s in skills if s['id'] in wanted],
+                    'total': len(skills), 'offset': offset, 'limit': limit, 'errors': []}
         result = {'models': models, 'currentModel': current_model,
                   'currentEffort': current_effort, 'fastMode': {'allowed': False}}
         if kind == 'models':
             return {'kind': 'models', **result}
         return {**result, 'skills': []}
 
+    # kimi's fixed built-in slash commands; everything else advertised through
+    # available_commands_update is an activatable skill.
+    BUILTIN_COMMANDS = frozenset({'compact', 'status', 'usage', 'mcp', 'tasks', 'help'})
+
+    def _command_skills(self, handle):
+        """Map advertised slash commands to the skill rows the picker shows."""
+        commands = list(handle.view.commands) if handle is not None else []
+        skills = []
+        for command in commands:
+            name = command.get('name')
+            if not name or name in self.BUILTIN_COMMANDS:
+                continue
+            display = name[len('skill:'):] if name.startswith('skill:') else name
+            skills.append({'id': name, 'name': display, 'displayName': display,
+                           'description': command.get('description') or ''})
+        return skills
+
     def resolve_skills(self, session, skills):
         if not skills:
             return []
-        raise ValueError('当前 Agent 暂不支持 Skill 选择')
+        if len(skills) > 1:
+            # ACP 每次 prompt 只识别一个前导斜杠命令。
+            raise ValueError('该 Agent 一次只能调用一个 Skill')
+        known = {s['id'] for s in self._command_skills(self._handles.get(session.id))}
+        if skills[0] not in known:
+            raise ValueError('Skill 不可用，请刷新列表')
+        return [{'id': skills[0], 'name': skills[0]}]

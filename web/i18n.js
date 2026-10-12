@@ -874,6 +874,7 @@ const en={
   "暂无运行日志": "No runtime logs yet",
   "最多关注 100 个聊天": "You can watch up to 100 chats",
   "最多选择 8 个 Skill": "Select up to 8 Skills",
+  "该 Agent 一次只能调用一个 Skill": "This agent can invoke only one Skill per message",
   "各日志来源内最新记录在最上方，同一错误的详细堆栈保持原顺序。": "Newest records appear first within each log source. Stack trace lines keep their original order.",
   "最近一次发送：": "Last sent: ",
   "最近": "Recent",

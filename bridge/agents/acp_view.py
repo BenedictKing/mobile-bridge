@@ -105,6 +105,7 @@ class AcpSessionView:
         self.status = 'idle'
         self.turns = []
         self.requests = []
+        self.commands = []
         self._lock = threading.Lock()
         self._ordinal = 0
         self._tool_index = {}
@@ -254,7 +255,10 @@ class AcpSessionView:
                 {'id': self._next_id('plan'), 'kind': 'plan', 'role': 'activity',
                  'title': '计划', 'text': text})
         elif kind == 'available_commands_update':
-            pass  # Slash commands are not rendered in the mobile timeline.
+            # Slash commands are not rendered in the mobile timeline, but kimi
+            # advertises activatable skills here — keep them for the picker.
+            commands = update.get('availableCommands') or []
+            self.commands = [c for c in commands if isinstance(c, dict) and c.get('name')]
         elif kind == 'current_mode_update':
             self.mode = update.get('currentModeId') or self.mode
         elif kind == 'config_option_update':
