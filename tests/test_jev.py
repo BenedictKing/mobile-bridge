@@ -330,11 +330,15 @@ class JevSettingsTests(unittest.TestCase):
         store = shared_settings()
         for bad in ({'apiKey': 'short'}, {'apiKey': 'has space inside'},
                     {'apiKey': 42}, {'baseUrl': 'ftp://x', 'model': ''},
+                    {'baseUrl': 'http://insecure.example', 'model': ''},
                     {'baseUrl': 'https://ok.example', 'model': 'bad name'},
                     {'model': None}):
             with self.assertRaises(ValueError):
                 store.update(bad)
         self.assertFalse(self.path.exists())
+        # Loopback HTTP stays allowed for local testing.
+        store.update({'baseUrl': 'http://127.0.0.1:9000', 'model': ''})
+        self.assertEqual(store.read()['baseUrl'], 'http://127.0.0.1:9000')
 
     def test_reload_persists_across_instances(self):
         shared_settings().update({'apiKey': 'tsk-file-key-9999', 'baseUrl': 'https://a.example', 'model': 'm1'})

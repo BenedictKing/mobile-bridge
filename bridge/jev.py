@@ -339,6 +339,8 @@ class JevSettings:
                 parsed_url = urlsplit(raw)
                 if parsed_url.scheme not in ('http', 'https') or not parsed_url.hostname:
                     raise ValueError('端点必须是 http(s) 地址')
+                if parsed_url.scheme == 'http' and parsed_url.hostname not in ('localhost', '127.0.0.1', '::1'):
+                    raise ValueError('端点请使用 HTTPS；HTTP 仅用于本机测试')
             parsed[field] = raw
         with self._lock:
             self._values = parsed

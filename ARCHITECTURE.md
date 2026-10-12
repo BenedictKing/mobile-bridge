@@ -53,6 +53,7 @@ Windows 使用 CPython 标准库 `_winapi` 的 overlapped I/O 读取原始字节
 | 会话订阅 | `thread-stream-following-changed` |
 | 状态 | `thread-stream-state-changed` 的 snapshot / patches |
 | 新消息 | `thread-follower-start-turn` |
+| 编辑上一条用户消息 | `thread-follower-edit-last-user-turn` |
 | 补充与停止 | `thread-follower-steer-turn` / `thread-follower-interrupt-turn` |
 | 模型设置 | `thread-follower-update-thread-settings` |
 | 历史加载 | `thread-follower-load-complete-history` |
@@ -68,7 +69,7 @@ Windows 使用 CPython 标准库 `_winapi` 的 overlapped I/O 读取原始字节
 
 桌面分页快照只含最近若干轮时，展示层按首个重合 turn ID 保留保存历史的前缀，再接上实时内容；完整快照仍具有最终权威，可正确反映回退或删除。此合并不改变原生 patch 基础，也不从保存历史推断新的待授权请求。
 
-局域网默认使用 SSE，Cloudflare Quick Tunnel 使用有登录校验的长轮询；SSE 连续失败后也会回退。切换聊天时用代次标识排除旧连接回包，浏览器草稿和 Skill 选择按主机与会话隔离。
+局域网默认使用 SSE，Cloudflare Quick Tunnel 使用有登录校验的长轮询；传输方式由 `/api/auth` 按入口宣告，SSE 断开后按封顶退避重连（带 `?since=` 游标续传），不回退轮询。切换聊天时用代次标识排除旧连接回包，浏览器草稿和 Skill 选择按主机与会话隔离。
 
 ## 消息与审批
 
@@ -80,17 +81,17 @@ App 的异步问题通过原生 questionItemId 格式回答。若原任务仍在
 
 ## 模型与 Skill
 
-Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX 包及 PATH；`--codex-bin` 可明确选择桌面对应版本。仅本地目录查询使用该覆盖，SSH 目录仍由远端运行时读取。
+Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX 包及 PATH；`--codex-bin` 可明确选择桌面对应版本。仅本机辅助运行时（目录、Goal、账号、新建）使用该覆盖，SSH 目录仍由远端运行时读取。
 
-目录辅助进程只允许 `initialize`、`model/list`、`skills/list`。它不会调用 `thread/start`、`thread/resume` 或 `turn/start`。
+目录辅助进程只允许只读方法：`initialize`、`model/list`、`skills/list`、`config/read`、`account/read`、`configRequirements/read`。它不会调用 `thread/start`、`thread/resume` 或 `turn/start`。
 
 网页选择的 Skill ID 来自目录，服务端按 ID 解析受信目录项，再转为原生 `{type: "skill", name, path}` 输入；网页不能直接传入任意技能文件路径。
 
 ## HTTP 与文件
 
-账号密码采用 PBKDF2-HMAC-SHA256，登录 Cookie 使用 HttpOnly、SameSite，HTTPS 入口加 Secure。Host 和 Origin 必须在允许列表；写操作还需 CSRF 令牌。
+账号密码采用 PBKDF2-HMAC-SHA256，登录 Cookie 使用 HttpOnly、SameSite，HTTPS 入口加 Secure。Host 和 Origin 必须在允许列表；写操作还需 CSRF 令牌（预认证的 `/api/login`、`/api/pair` 除外，二者依赖强制 Origin 校验）；`GET /` 的跨站导航（`Sec-Fetch-Mode: navigate`）放行静态页面，API 仍受保护。
 
-聊天内容、事件流、长轮询和附件接口均需要登录。文件访问仅允许当前聊天引用的本地工作目录或 visualizations 文件，并校验解析后的真实路径及大小。远端文件不映射到 本机文件系统。
+聊天内容、事件流、长轮询和附件接口均需要登录。文件访问仅允许当前聊天引用的本地工作目录或 visualizations 文件，并校验解析后的真实路径及大小；例外是运行时事件产生的 ImageView 条目（桌面截图可在工作目录之外），其路径按事件记录受信。远端文件不映射到 本机文件系统。
 
 ## 模块
 
@@ -123,7 +124,7 @@ Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动�
 
 ### 控制模型
 
-Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）与 ZCode（`zcode`，经 `zcode-acp-server` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode,claude,dsh,zcode` 决定注册哪些后端，默认仅 codex。
+Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）与 ZCode（`zcode`，经 `zcode-acp-server` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode,claude,dsh,zcode` 决定注册哪些后端，默认 `auto` 自动探测本机已安装的 Agent。
 
 ### Adapter 接口与路由
 
@@ -133,7 +134,7 @@ Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主
 
 ### ACP 传输与视图
 
-`bridge/agents/acp.py` 实现 NDJSON JSON-RPC 传输：initialize 能力协商、`session/new`/`list`/`load`/`prompt`/`cancel`、`session/set_config_option` 与 `session/set_mode`，入向 `session/update` 通知与 `session/request_permission` 请求。`acp_view.py` 把 ACP 更新流规范化成与 codex 相同的 view 形状（turns/items/requests/状态），前端因此无需感知传输差异。`session/list` 结果带 15–30 秒缓存与后台刷新，避免每请求 spawn。prompt 等待按空闲判定：持续有 `session/update` 或存在待答复审批时不计超时；空闲超过上限即发送 `session/cancel`、把挂起审批答复为 cancelled，再标记 turn 失败，避免 agent 侧遗留孤立 turn 拒绝后续消息。
+`bridge/agents/acp.py` 实现 NDJSON JSON-RPC 传输：initialize 能力协商、`session/new`/`list`/`load`/`prompt`/`cancel`、`session/set_config_option` 与 `session/set_mode`，入向 `session/update` 通知与 `session/request_permission` 请求。`acp_view.py` 把 ACP 更新流规范化成与 codex 相同的 view 形状（turns/items/requests/状态），前端因此无需感知传输差异。`session/list` 结果带 30 秒缓存（网关在启动时预热一次），避免每请求 spawn。prompt 等待按空闲判定：持续有 `session/update` 或存在待答复审批时不计超时；空闲超过上限即发送 `session/cancel`、把挂起审批答复为 cancelled，再标记 turn 失败，避免 agent 侧遗留孤立 turn 拒绝后续消息。
 
 claude-agent-acp 只在首条消息后才把会话落盘：零消息会话跨进程 `session/load`/`resume`/`prompt` 均报 "Resource not found"。因此 `AcpAdapter.create_session` 对 `KEEP_CREATED_PROCESS` 的子类（claude）把创建进程保活为会话 handle（配置在 `session/new` 响应里直接播种，跳过 load/replay），首条消息就在创建进程内发出；会话入列前由 `_pending_created` 占位补进列表与 `session_meta`，agent 一旦列出即撤占位（占位 id 与入列 id 不一致时经 `_canonical_id` 钩子解析后撤），保活进程被 detach 的未入列会话同时撤占位。
 
@@ -149,7 +150,7 @@ view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门�
 
 ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）。
 
-多 Agent 也可用环境变量启用：`--agents` 未显式给出时读 `MOBILE_BRIDGE_AGENTS`（逗号分隔），未设置默认 codex。桌面打包 App 因此无需改动即可注入多 Agent（macOS 可用 `launchctl setenv` 后启动 App）；PyInstaller 静态分析跟随函数内的条件 import，`bridge/agents/` 全部模块随包打进。
+多 Agent 也可用环境变量启用：`--agents` 未显式给出时读 `MOBILE_BRIDGE_AGENTS`（逗号分隔），未设置时默认 `auto` 自动探测。桌面打包 App 因此无需改动即可注入多 Agent（macOS 可用 `launchctl setenv` 后启动 App）；PyInstaller 静态分析跟随函数内的条件 import，`bridge/agents/` 全部模块随包打进。
 
 ### 会话迁移
 
@@ -200,7 +201,7 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 ## 一次性扫码登录
 
-`bridge/pairing.py` 为每个允许源保存一个有效的内存授权：32 字节随机值的 SHA-256 摘要、随机 ID、5 分钟过期时间与消费状态。刷新替换同源旧授权，消费在锁内完成，正确源且未过期的授权只生成一次标准 12 小时登录会话。网关重启不恢复授权和会话。失败兑换限速独立于密码登录。
+`bridge/pairing.py` 为每个允许源保存一个有效的内存授权：32 字节随机值的 SHA-256 摘要、随机 ID、5 分钟过期时间与消费状态。刷新替换同源旧授权，消费在锁内完成，正确源且未过期的授权只生成一个标准登录会话（有效期按 `sessionHours` 配置，默认 12 小时）。网关重启不恢复授权；已签发的登录会话随 `auth-sessions.json` 持久化并恢复。失败兑换限速独立于密码登录。
 
 签发只走本机 stdio/Electron IPC 与 `GatewayControl` 的私有文件通道：每实例随机 `.pairing-*` 目录，独立请求/响应文件和控制令牌，响应读取后删除、服务正常退出时清理目录。Windows 继承本机目录 ACL；数据目录不能放在共享公共目录。HTTP 没有签发接口。桌面签发前检查地址属于当前显示入口，并从该入口读取 `/api/auth` 核对本机 instanceId；公网探测不携带凭据、不跟随重定向。
 
@@ -210,7 +211,7 @@ Electron 主进程使用 qrcode 本地生成 PNG，渲染器接收图片、授�
 
 ## 桌面应用更新
 
-`desktop/updater.cjs` 从固定 GitHub Release 源获取签名清单，使用内置 Ed25519 公钥验证原始载荷，再流式下载并核对长度与 SHA-256。自动检查不自动安装；安装按钮只通过受来源校验的桌面 IPC 调用，HTTP 网关无更新管理接口。
+`desktop/updater.cjs` 从固定 GitHub Release 源获取签名清单（官方源限流或不可达时回退到第三方镜像，机密性与完整性不依赖传输通道），使用内置 Ed25519 公钥验证原始载荷，再流式下载并核对长度与 SHA-256。自动检查不自动安装；安装按钮只通过受来源校验的桌面 IPC 调用，HTTP 网关无更新管理接口。
 
 `bridge/updater.py` 负责原安装目录旁的准备、替换与恢复。准备阶段拒绝路径穿越和危险链接，核对包版本、平台、macOS 签名和内置运行时。独立复制的旧运行时等控制面板退出、协作停止原网关后替换目录，再等待新面板确认加载并恢复此前运行的网关。失败时尝试回滚；配置目录保持独立。发布签名身份和事务恢复操作见 [桌面更新文档](docs/desktop-updates.md)。
 
