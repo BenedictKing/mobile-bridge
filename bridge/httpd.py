@@ -55,7 +55,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8"),
           "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
           "/icon.png": ("icon.png", "image/png")}
-THREAD_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate))?$")
+THREAD_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|input))?$")
 FONT_ROUTE = re.compile(r"^/vendor/katex/fonts/(KaTeX_[A-Za-z0-9_-]+\.(woff2|woff|ttf))$")
 UPLOAD_PREVIEW_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/preview$")
 UPLOAD_THUMB_ROUTE = re.compile(r"^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/thumb$")
@@ -528,6 +528,8 @@ class Handler(BaseHTTPRequestHandler):
                         query=query.get("q", [""])[0][:200], offset=offset, limit=limit, ids=ids))
                 if action == 'permissions':
                     return self.output(200, bridge.permission_settings(thread_id))
+                if action == 'input':
+                    return self.output(200, bridge.task_inputs(thread_id))
                 if action == "poll":
                     return self.poll(bridge, thread_id, int(query.get("after", ["-1"])[0]))
                 if action == "events":
@@ -582,6 +584,10 @@ class Handler(BaseHTTPRequestHandler):
                     result = bridge.view(thread_id, background=True, force=True)
             elif action == "queue":
                 result = bridge.queue_action(thread_id, body.get("id", ""), body.get("action", ""), body.get("text"))
+            elif action == "input":
+                if not isinstance(body.get('answers'), dict):
+                    raise ValueError('请填写所有问题')
+                result = bridge.submit_input(thread_id, body.get('id', ''), body.get('answers'), body.get('version'))
             else:
                 return self.output(404, {"error": "接口不存在"})
             self.output(200, result)

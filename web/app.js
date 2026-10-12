@@ -506,7 +506,13 @@ function renderQueue(rows){
   $('queued').replaceChildren();
   const target=currentId,host=currentHost;
   for(const row of rows){
-    const card=el('div','queue-card'),reply=row.text.startsWith('<send_user_message_question_reply>');
+    const card=el('div','queue-card');
+    if(row.status==='waiting_input'&&row.input){
+      renderWaitingInput(card,row,target,host);
+      $('queued').append(card);
+      continue;
+    }
+    const reply=row.text.startsWith('<send_user_message_question_reply>');
     card.append(el('strong','',row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):row.text));
     if(row.attachments?.length)card.append(el('small','muted',t('附件：')+row.attachments.join('、')));
     if(row.status==='queued'){
@@ -552,6 +558,43 @@ function renderQueue(rows){
     }
     $('queued').append(card);
   }
+}
+// waiting_input 任务卡：复用排队消息区域，展示问题、过期时间与恢复状态。
+function renderWaitingInput(card,row,target,host){
+  card.append(el('strong','',t('等待补充信息')),el('p','',row.input.summary||row.text));
+  const form=el('form'),controls={};
+  for(const question of row.input.questions||[]){
+    const label=el('label','',question.question+(question.required===false?t('（可选）'):''));
+    const input=el('textarea');input.rows=2;input.maxLength=question.maxLength||20000;
+    label.append(input);form.append(label);controls[question.id]=input;
+  }
+  const actions=el('div','queue-actions'),error=el('p','error');
+  const submit=el('button','plain',t('提交并恢复任务'));submit.type='submit';
+  const remove=el('button','plain',t('取消任务'));remove.type='button';
+  remove.onclick=async()=>{
+    remove.disabled=true;
+    try{
+      await api(sessionUrl(target,'queue',host),{id:row.id,action:'delete'});
+      if(currentId===target&&currentHost===host&&state){state.submissions=(state.submissions||[]).filter(item=>item.id!==row.id);renderQueue(state.submissions);}
+      toast(t('已取消任务'));
+    }catch(e){remove.disabled=false;toast(e.message);}
+  };
+  actions.append(submit,remove);form.append(actions,error);
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const answers={};
+    for(const question of row.input.questions||[])answers[question.id]=controls[question.id].value;
+    for(const question of row.input.questions||[])
+      if(question.required!==false&&!answers[question.id].trim()){error.textContent=t('请回答所有问题');return;}
+    submit.disabled=true;error.textContent='';
+    try{
+      const result=await api(sessionUrl(target,'input',host),{id:row.id,answers,version:row.input.version});
+      toast(result.status==='duplicate'?t('回答已提交过，任务恢复中'):t('已提交，等待恢复'));
+      card.append(el('p','muted',t('已提交，等待恢复')));
+    }catch(e){error.textContent=t(e.message);submit.disabled=false;}
+  };
+  card.append(form);
+  if(row.input.expiresAt)card.append(el('small','muted',t('过期时间：')+new Date(row.input.expiresAt*1000).toLocaleString(BridgeI18n.locale())));
 }
 function openQueueEditor(row,target,host){
   let dialog=$('queue-edit-dialog');

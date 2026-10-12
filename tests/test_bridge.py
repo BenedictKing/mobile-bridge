@@ -824,6 +824,78 @@ class IntegrationTests(unittest.TestCase):
             replacement.respond(THREAD, 7, {"decision": "decline"})
         self.assertEqual(len(self._decision_calls()), 1)
 
+    def test_waiting_input_parks_submission_and_resumes_once(self):
+        self.fixture.state['threadRuntimeStatus'] = {'type': 'active'}
+        session = self.bridge.session(THREAD)
+        task_id = str(uuid.uuid4())
+        self.assertEqual(self.bridge.send(THREAD, '执行迁移', task_id, 'queue')['status'], 'queued')
+        deferred = self.bridge.defer_input(THREAD, task_id, [{'id': 'target', 'question': '迁移到哪个项目？'}], '缺目标')
+        self.assertEqual(deferred['status'], 'waiting_input')
+        key = THREAD + ':' + task_id
+        self.assertEqual(self.bridge.submissions[key]['status'], 'waiting_input')
+        # 暂停期间不能按排队消息编辑或立即发送，只能回答或取消。
+        with self.assertRaises(ValueError):
+            self.bridge.queue_action(THREAD, task_id, 'edit', '改')
+        with self.assertRaises(ValueError):
+            self.bridge.queue_action(THREAD, task_id, 'send')
+        view = self.bridge.view(THREAD)
+        row = view['submissions'][0]
+        self.assertEqual(row['status'], 'waiting_input')
+        self.assertEqual(row['input']['questions'][0]['id'], 'target')
+        self.assertFalse(row['editable'])
+        self.assertEqual(self.bridge.waiting_input_requests(THREAD)[0]['id'], 'input:' + task_id)
+        # 校验失败不改变状态；合法回答把任务恢复为 queued 并携带答案。
+        with self.assertRaisesRegex(ValueError, '请回答所有问题'):
+            self.bridge.submit_input(THREAD, task_id, {'target': ' '})
+        self.assertEqual(self.bridge.submit_input(THREAD, task_id, {'target': 'proj-x'})['status'], 'answered')
+        self.assertIn('【任务补充信息】', self.bridge.submissions[key]['text'])
+        self.assertIn('proj-x', self.bridge.submissions[key]['text'])
+        self.assertEqual(self.bridge.submissions[key]['status'], 'queued')
+        with session.condition:
+            session.state['threadRuntimeStatus'] = {'type': 'idle'}
+        self.bridge._send_queued(session, key, self.bridge.submissions[key])
+        self.assertEqual(self.bridge.submissions[key]['status'], 'accepted')
+        turns = [r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn']
+        self.assertEqual(len(turns), 1)
+        # 重复提交返回 duplicate，不再恢复或派发。
+        self.assertEqual(self.bridge.submit_input(THREAD, task_id, {'target': 'proj-x'})['status'], 'duplicate')
+        self.bridge._send_queued(session, key, self.bridge.submissions[key])
+        self.assertEqual(len([r for r in self.fixture.requests if r['method'] == 'thread-follower-start-turn']), 1)
+
+    def test_waiting_input_survives_restart(self):
+        self.fixture.state['threadRuntimeStatus'] = {'type': 'active'}
+        self.bridge.session(THREAD)
+        task_id = str(uuid.uuid4())
+        self.bridge.send(THREAD, '缺上下文任务', task_id, 'queue')
+        self.bridge.defer_input(THREAD, task_id, [{'id': 'info', 'question': '补充什么？'}], '缺上下文')
+        self.bridge.close()
+        replacement = Bridge(self.root, self.root / 'data')
+        self.addCleanup(replacement.close)
+        self.assertEqual(replacement.task_inputs(THREAD)['inputs'][0]['id'], task_id)
+        view = replacement.view(THREAD)
+        self.assertEqual(view['submissions'][0]['status'], 'waiting_input')
+        replacement.submit_input(THREAD, task_id, {'info': '上下文'})
+        self.assertEqual(replacement.submissions[THREAD + ':' + task_id]['status'], 'queued')
+
+    def test_waiting_input_cancel_and_expiry_never_resume(self):
+        self.fixture.state['threadRuntimeStatus'] = {'type': 'active'}
+        self.bridge.session(THREAD)
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        self.bridge.send(THREAD, '取消我', first, 'queue')
+        self.bridge.send(THREAD, '过期我', second, 'queue')
+        self.bridge.defer_input(THREAD, first, [{'id': 'q', 'question': '继续？'}])
+        self.bridge.defer_input(THREAD, second, [{'id': 'q', 'question': '继续？'}])
+        self.assertEqual(self.bridge.queue_action(THREAD, first, 'delete')['status'], 'cancelled')
+        self.assertEqual(self.bridge.submissions[THREAD + ':' + first]['status'], 'cancelled')
+        with self.assertRaisesRegex(ValueError, '已取消'):
+            self.bridge.submit_input(THREAD, first, {'q': 'a'})
+        with self.bridge.inputs._lock:
+            self.bridge.inputs._entries[THREAD + ':' + second]['expiresAt'] = time.time() - 1
+        self.bridge._expire_inputs()
+        self.assertEqual(self.bridge.submissions[THREAD + ':' + second]['status'], 'cancelled')
+        with self.assertRaisesRegex(ValueError, '已过期'):
+            self.bridge.submit_input(THREAD, second, {'q': 'a'})
+
     def test_unknown_delivery_not_replayed_even_after_idle_changes(self):
         self.bridge.session(THREAD)
         self.bridge._call = lambda *a, **k: (_ for _ in ()).throw(IPCError('timeout'))

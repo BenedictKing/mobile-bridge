@@ -593,6 +593,10 @@ class Notifications:
                                 self.attached.pop(key, None)
                             continue  # Saved history is not a live pending approval.
                         requests = pending_requests(session.state)
+                        if hasattr(source, 'waiting_input_requests'):
+                            # A parked waiting_input task asks for input just like
+                            # a pending approval; the delivery ledger dedups by id.
+                            requests = requests + source.waiting_input_requests(session.id)
                         title = session.state.get('title') or '聊天'
                         turns = [{'turnId': t.get('turnId'), 'status': t.get('status')} for t in ordered_turns(session.state)]
                     completed_keys = {channel: self._completion_pending({**current, 'title': title}, turns, target) if current.get('notifyOnCompletion') else [] for channel, target in targets.items()}

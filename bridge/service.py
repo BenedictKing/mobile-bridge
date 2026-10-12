@@ -13,6 +13,7 @@ import unicodedata
 from pathlib import Path
 
 from .approvals import ApprovalLedger, UNKNOWN, decision_outcome
+from .inputs import TaskInputLedger, WAITING as WAITING_INPUT
 from .ipc import DesktopIPC, IPCError
 from .agents.acp import AcpError
 from .transport import ipc_endpoint
@@ -255,6 +256,7 @@ class Bridge:
         Path(data_dir).mkdir(parents=True, exist_ok=True, mode=0o700)
         self.ledger_path = Path(data_dir) / "submissions.json"
         self.approvals = ApprovalLedger(self.data_dir / 'approval-receipts.json')
+        self.inputs = TaskInputLedger(self.data_dir / 'task-inputs.json')
         self.submit_lock = threading.Lock()
         self.create_lock = threading.Lock()
         self.message_lock = threading.RLock()
@@ -528,7 +530,7 @@ class Bridge:
                 with self.submit_lock:
                     protected=set()
                     for value in self.submissions.values():
-                        if value.get("status") in ("queued", "unknown", "accepted"):
+                        if value.get("status") in ("queued", "unknown", "accepted", WAITING_INPUT):
                             protected.update(value.get("attachments") or [])
                 removed=self.uploads.collect(protected=protected)
                 if removed:
@@ -955,7 +957,8 @@ class Bridge:
                 with session.condition:
                     state = session.state or {}
                     if session.connected and (session.watched or state.get('threadRuntimeStatus', {}).get('type') == 'active' or
-                            any(t.get('status') == 'inProgress' for t in ordered_turns(state)) or pending_requests(state)):
+                            any(t.get('status') == 'inProgress' for t in ordered_turns(state)) or pending_requests(state) or
+                            (source.inputs and source.inputs.waiting(session.id))):
                         rows.append({'id': session.id, 'host': source.host})
         return rows
 
@@ -1119,6 +1122,7 @@ class Bridge:
                     continue
             with self.lock:
                 sessions = list(self.live.values())
+            self._expire_inputs()
             for session in sessions:
                 with self.submit_lock:
                     queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
@@ -1218,10 +1222,14 @@ class Bridge:
                 if not old or command_entry['at'] >= old.get('at', 0):
                     merged[command_id] = command_entry
         activation_ids = self._goal_activation_ids(session.id)
+        self._expire_inputs()
+        waiting = {record['inputId']: self._input_public(record) for record in self.inputs.waiting(session.id)}
         view["submissions"] = [{"id": k, "text": v["text"], "status": v["status"],
-                                 "editable": not v.get("planResponse") and not v.get("goalActivation"),
-                                 **({'attachments': v['attachmentNames']} if v.get('attachmentNames') else {})}
-                               for k, v in entries if v["status"] in ("queued", "unknown")
+                                 "editable": (not v.get("planResponse") and not v.get("goalActivation")
+                                              and v["status"] != WAITING_INPUT),
+                                 **({'attachments': v['attachmentNames']} if v.get('attachmentNames') else {}),
+                                 **({'input': waiting[k]} if v["status"] == WAITING_INPUT and k in waiting else {})}
+                               for k, v in entries if v["status"] in ("queued", "unknown", WAITING_INPUT)
                                and k not in activation_ids]
         view["goalSubmission"] = None
         goal = view.get('goal')
@@ -1640,23 +1648,25 @@ class Bridge:
             raise ValueError('请输入 1–4000 字的目标内容')
         return self._goal_control(thread_id, request_id, 'edit', objective=objective, expected=expected)
 
-    def _queued_entry(self, thread_id, submission_id):
+    def _queued_entry(self, thread_id, submission_id, statuses=('queued',)):
         uuid.UUID(submission_id)
         session = self.session(thread_id, attach=False)
         key = thread_id + ":" + submission_id
         with self.submit_lock:
             prior = self.submissions.get(key)
-            if not prior or prior["status"] != "queued":
+            if not prior or prior["status"] not in statuses:
                 raise ValueError("此消息已离开队列，请查看会话")
             return session, key, prior
 
     def cancel_queued(self, thread_id, submission_id):
-        session, key, _ = self._queued_entry(thread_id, submission_id)
+        session, key, _ = self._queued_entry(thread_id, submission_id, ('queued', WAITING_INPUT))
         with session.action_lock:
             with self.submit_lock:
                 prior = self.submissions.get(key)
-                if not prior or prior["status"] != "queued":
+                if not prior or prior["status"] not in ("queued", WAITING_INPUT):
                     raise ValueError("此消息已离开队列，请查看会话")
+                if prior["status"] == WAITING_INPUT:
+                    self.inputs.cancel(thread_id, submission_id)
                 prior["status"] = "cancelled"
                 self._save_ledger()
             with session.condition:
@@ -1728,6 +1738,95 @@ class Bridge:
                 with session.condition:
                     session.changed()
         return {'status': 'ignored', 'id': submission_id}
+
+    @staticmethod
+    def _input_public(record):
+        return {'id': record.get('inputId'), 'summary': record.get('summary') or '',
+                'questions': record.get('questions') or [], 'version': record.get('questionVersion', 1),
+                'state': record.get('state'), 'createdAt': record.get('createdAt'),
+                'expiresAt': record.get('expiresAt'), 'answeredAt': record.get('answeredAt')}
+
+    def _expire_inputs(self):
+        """Cancel submissions whose open questions timed out; never resume them."""
+        expired = self.inputs.expire_due()
+        if not expired:
+            return
+        with self.submit_lock:
+            changed = False
+            for record in expired:
+                entry = self.submissions.get(record.get('threadId', '') + ':' + str(record.get('inputId', '')))
+                if entry is not None and entry.get('status') == WAITING_INPUT:
+                    entry['status'] = 'cancelled'
+                    changed = True
+            if changed:
+                self._save_ledger()
+        for record in expired:
+            session = self.live.get(record.get('threadId'))
+            if session is not None:
+                with session.condition:
+                    session.changed()
+
+    @operation
+    def defer_input(self, thread_id, submission_id, questions, summary=''):
+        """Park one queued task as waiting_input until the user answers."""
+        self.adapter.validate_id(thread_id)
+        uuid.UUID(submission_id)
+        session = self.session(thread_id, attach=False)
+        key = thread_id + ':' + submission_id
+        with session.action_lock:
+            with self.submit_lock:
+                entry = self.submissions.get(key)
+                if entry is None or entry.get('status') != 'queued':
+                    raise ValueError('只能为排队中的任务补充信息')
+                record = self.inputs.defer(thread_id, submission_id, questions, summary)
+                entry['status'] = WAITING_INPUT
+                entry['inputVersion'] = record.get('questionVersion', 1)
+                self._save_ledger()
+            with session.condition:
+                session.changed()
+            with self.lock:
+                self.notification_dirty.add(thread_id)
+            self.notification_event.set()
+        return {'status': WAITING_INPUT, 'id': submission_id, 'input': self._input_public(record)}
+
+    def task_inputs(self, thread_id):
+        self.adapter.validate_id(thread_id)
+        self._expire_inputs()
+        return {'inputs': [self._input_public(record) for record in self.inputs.entries(thread_id)]}
+
+    def waiting_input_requests(self, thread_id):
+        """Pseudo pending-request rows so input needs ride the request channel."""
+        return [{'id': 'input:' + record['inputId'], 'method': 'item/tool/requestUserInput',
+                 'supported': True,
+                 'params': {'questions': [{'id': question['id'], 'question': question['question']}
+                                          for question in record.get('questions') or []]}}
+                for record in self.inputs.waiting(thread_id)]
+
+    @operation
+    def submit_input(self, thread_id, input_id, answers, version=None):
+        """Answer a waiting_input task; recovers the queued submission exactly once."""
+        self.adapter.validate_id(thread_id)
+        uuid.UUID(input_id)
+        session = self.session(thread_id, attach=False)
+        key = thread_id + ':' + input_id
+        with session.action_lock:
+            outcome, record = self.inputs.submit(thread_id, input_id, answers, version)
+            if outcome == 'duplicate':
+                return {'status': 'duplicate', 'id': input_id}
+            with self.submit_lock:
+                entry = self.submissions.get(key)
+                if entry is None or entry.get('status') != WAITING_INPUT:
+                    raise ValueError('任务状态已变化，请刷新后查看')
+                block = '【任务补充信息】\n' + '\n'.join(
+                    '问：{}\n答：{}'.format(question['question'], record['answers'][question['id']])
+                    for question in record.get('questions') or [])
+                entry['text'] = (entry.get('text') or '').strip() + '\n\n' + block
+                entry['status'] = 'queued'
+                entry.pop('inputVersion', None)
+                self._save_ledger()
+            with session.condition:
+                session.changed()
+        return {'status': 'answered', 'id': input_id, 'queued': True}
 
     @operation
     def send(self, thread_id, text, submission_id, mode="send", skills=None, *, work_mode=None,
