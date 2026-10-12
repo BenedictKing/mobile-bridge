@@ -358,7 +358,7 @@ python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh,zcode
 
 桌面打包 App 默认仍只接入 Codex；如需多 Agent，在启动 App 前注入环境变量（值与 `--agents` 相同）：macOS 执行 `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` 后再打开 App，或从终端 `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`；显式传 `--agents` 优先级更高。
 
-可选：Jev 权限预判（TypeSafe AI 的判断模型）在网页「设置 → 权限预判（Jev）」中配置 API Key（保存在网关数据目录 `jev.json`，0600 权限，密钥只回显掩码），保存后立即对所有会话生效，无需重启网关。启用后，手机端的权限确认卡片会获得顾问式预判——风险分级、可撤销性、置信度和建议选项（星标），高风险请求排在待确认列表最前；Jev 只做标注与排序，不会代替你点击允许或拒绝。未配置时保持本地确定性风险标签，行为与之前一致。同一表单可覆盖端点（默认 `https://api.typesafe.ai`）与模型（默认 `jev-latest`）；`TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`JEV_MODEL` 环境变量仍作为启动时兜底，网页保存的值优先，清除密钥后即使环境变量仍在也不再启用。
+可选：Jev 权限预判（TypeSafe AI 的判断模型）在网页「设置 → 权限预判（Jev）」中配置 API Key（保存在网关数据目录 `jev.json`，0600 权限，密钥只回显掩码），保存后立即对所有会话生效，无需重启网关。启用后，手机端的权限确认卡片会获得风险分级、可撤销性、置信度和建议选项（星标），高风险请求排在待确认列表最前。勾选「自动审核低风险操作」后，仅当 Jev 明确建议允许一次/本次会话、风险不高于低风险、可撤销性和置信度均至少为 80% 时自动提交；永久授权、高风险、难以撤销、低置信度或 Jev 失败的请求仍需手动确认。默认关闭自动审核。未配置时保持本地确定性风险标签。同一表单可覆盖端点（默认 `https://api.typesafe.ai`）与模型（默认 `jev-latest`）；`TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`JEV_MODEL` 环境变量仍作为启动时兜底，网页保存的值优先，清除密钥后即使环境变量仍在也不再启用。
 
 ## 外网访问：临时 HTTPS 隧道
 

@@ -28,7 +28,8 @@ from .accounts import Accounts, operation
 from .goal import GoalRPC, GoalError, GoalUnavailable, GoalUnsupported, goal_activation, goal_identity, normalize_goal_result, normalize_ui_locale, goal_command_fingerprint, goal_state_confirms_command, native_goal_absent, normalize_goal, plan_goal_command, read_native_goal
 from .uploads import Uploads, image_type
 from .remote import upload_file
-from .jev import JevAssessor, assessable, effective_field, fingerprint, parse_recommendation
+from .jev import (JevAssessor, assessable, auto_approve_enabled, auto_response,
+                  effective_field, fingerprint, parse_recommendation)
 from .agents.base import Capability
 from .agents.codex import CodexAdapter
 
@@ -245,6 +246,8 @@ class Bridge:
         self.assessor = JevAssessor(api_key=lambda: effective_field('apiKey'),
                                     base_url=lambda: effective_field('baseUrl'),
                                     model=lambda: effective_field('model'))
+        self._auto_response_lock = threading.Lock()
+        self._auto_response_requests = set()
         adapter.bind(self)
         for command in self.goal_commands.values():
             if command.get('state') in ('pending', 'sent'):
@@ -1355,11 +1358,11 @@ class Bridge:
         return view
 
     def _annotate_assessments(self, session, view):
-        """Attach advisory Jev triage to manual permission confirmations.
+        """Attach Jev triage and optionally submit safe auto approvals.
 
-        Assessments only rank and annotate; the native approval buttons stay
-        the sole way to answer. Callers hold session.condition, so a completed
-        lookup re-wakes SSE watchers through session.changed().
+        Callers hold session.condition, so completed lookups re-wake SSE
+        watchers through session.changed(). Auto responses run in a separate
+        thread because the native adapter may block while answering.
         """
         requests = view.get('requests')
         if not isinstance(requests, list) or not self.assessor.enabled:
@@ -1382,6 +1385,17 @@ class Bridge:
                 recommendation = parse_recommendation(request, assessment)
                 if recommendation:
                     request['recommend'] = recommendation
+                response = auto_response(request, assessment) if auto_approve_enabled() else None
+                if response is not None:
+                    response_key = (session.id, str(request.get('id')))
+                    with self._auto_response_lock:
+                        first = response_key not in self._auto_response_requests
+                        if first:
+                            self._auto_response_requests.add(response_key)
+                    if first:
+                        threading.Thread(target=self._auto_respond,
+                                         args=(session.id, request.get('id'), response),
+                                         daemon=True).start()
         # Riskiest confirmations surface first; ties keep arrival order.
         view['requests'] = sorted(
             requests,
@@ -1389,6 +1403,19 @@ class Bridge:
                            -((r.get('assessment') or {}).get('confidence') or 0.0))
             if isinstance(r, dict) and assessable(r) else (1, 0.0))
         return view
+
+    def _auto_respond(self, thread_id, request_id, response):
+        try:
+            result = self.respond(thread_id, request_id, response)
+            logging.getLogger(__name__).info(
+                'Jev 自动审核已提交: thread=%s request=%s result=%s',
+                thread_id, request_id, result.get('status', 'ok'))
+        except Exception as exc:
+            # The request may expire between assessment and submission. Keep
+            # that approval visible to the user and avoid retry loops.
+            logging.getLogger(__name__).warning(
+                'Jev 自动审核未提交: thread=%s request=%s error=%s',
+                thread_id, request_id, exc)
 
     def timeline_read(self, thread_id, mode='page', **options):
         session = self.session(thread_id, background=True)

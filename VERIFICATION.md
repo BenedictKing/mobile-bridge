@@ -2,7 +2,7 @@
 
 - kimi Skill 选择：ACP 没有原生 Skill 块；`acp_view` 缓存 `available_commands_update`，`AcpAdapter.catalog` 把广告的斜杠命令映射为 Skill 项（排除 compact/status/usage/mcp/tasks/help 六个内置命令，支持搜索、分页与已选解析），`resolve_skills` 校验后由 `dispatch_turn` 把首文本块改写为 `/<命令名> <正文>`（每次 prompt 只识别一个前导斜杠命令，故一次限选一个；时间线仍显示用户原文）；`KimiAdapter` 声明 `Capability.SKILLS`。已用真实 kimi ACP 进程探针确认广告形状：用户级 Skill 带 `skill:` 前缀，内置 Skill 用裸名。
 - ACP prompt 空闲超时：`PROMPT_TIMEOUT`（3600 秒）从总时长改为空闲判定（30 秒分片），持续有 `session/update` 或存在待答复审批时不计超时；空闲超限即发送 `session/cancel`、把挂起审批答复为 cancelled 并 `discard` 孤儿 future，再标记 turn 失败，避免 agent 侧遗留孤立 turn 拒绝后续消息；teardown、超时与 interrupt 共用 `_flush_responders`。
-- Jev 设置面板：Jev 配置改为网页「设置 → 权限预判」可编辑，持久化数据目录 `jev.json`（0600），密钥掩码回显、空提交保留现值、`clearApiKey` 显式清除，保存即时生效于所有 Agent 的 Bridge；`TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`JEV_MODEL` 仅作启动兜底，显式清除后即使环境变量存在也不启用。
+- Jev 设置面板：Jev 配置改为网页「设置 → 权限预判」可编辑，持久化数据目录 `jev.json`（0600），密钥掩码回显、空提交保留现值、`clearApiKey` 显式清除，保存即时生效于所有 Agent 的 Bridge；新增默认关闭的「自动审核低风险操作」，仅自动提交 Jev 高置信度、低风险、可撤销的一次/本次会话允许，永久授权及其他请求仍需手动确认；`TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`JEV_MODEL` 仅作启动兜底，显式清除后即使环境变量存在也不启用。
 - 文档对照审查修复：jev 拒绝非回环 http 端点、归档复选框复位、`api()` 非 JSON 容错、queue 缺省 action 置空、agentLabel 未知 kind 兜底，以及 ARCHITECTURE.md 九处纠偏。
 - 自动检查：Python 全量 684 项（678 通过、6 项平台条件跳过；`tests/test_acp_adapter.py` 新增 Skill 广告目录/改写用例与 prompt 空闲超时、审批挂起豁免用例）；桌面 Node 158 项通过（含 i18n 中英键对齐）。
 - 未验证：Jev 线上真实调用（本机未配置 API Key，同前）；kimi Skill 验证到命令广告形状与首文本块改写为止，未实际触发一次真实 Skill 运行（斜杠命令激活由 kimi 内部完成）。

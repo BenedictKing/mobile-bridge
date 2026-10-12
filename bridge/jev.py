@@ -1,9 +1,8 @@
-"""Jev risk triage for manual permission confirmations.
+"""Jev risk triage for permission confirmations.
 
-Jev (TypeSafe AI) answers typed questions only; it never generates text and
-never grants permissions. The assessment is advisory: risk ranking, option
-recommendations, and confidence that the phone renders next to the native
-approval buttons.
+Jev (TypeSafe AI) answers typed questions only; it never generates text. By
+default the assessment is advisory. An explicit auto-approve setting may
+submit only high-confidence, low-risk, reversible allow-once/session choices.
 
 Configuration is web-editable and process-wide: `JevSettings` persists under
 the gateway root (jev.json, 0600). Launch-time env vars (TYPESAFE_API_KEY,
@@ -70,6 +69,12 @@ RECOMMEND_OPTIONS = {
     'review': 'No safe automatic recommendation; the user must read the '
               'details before choosing.',
 }
+
+# Automatic approval is intentionally narrow. A missing value, low confidence,
+# non-reversible effect, or elevated risk always falls back to a human card.
+AUTO_MAX_RISK = 1
+AUTO_MIN_REVERSIBLE = 0.8
+AUTO_MIN_CONFIDENCE = 0.8
 
 
 def assessable(request):
@@ -260,6 +265,34 @@ def parse_recommendation(request, assessment):
             'decline': 'decline'}.get(recommend)
 
 
+def auto_response(request, assessment):
+    """Return a safe native acceptance response, or ``None`` for review.
+
+    Jev never gets to choose a permanent grant automatically. The response is
+    limited to an allow-once/session decision whose risk and confidence meet
+    the explicit policy above.
+    """
+    if not assessment or assessment.get('source') != 'jev':
+        return None
+    if assessment.get('recommend') not in ('accept_once', 'accept_session'):
+        return None
+    try:
+        if (int(assessment.get('risk', 99)) > AUTO_MAX_RISK or
+                float(assessment.get('reversible', -1)) < AUTO_MIN_REVERSIBLE or
+                float(assessment.get('confidence', -1)) < AUTO_MIN_CONFIDENCE):
+            return None
+    except (TypeError, ValueError):
+        return None
+    native = parse_recommendation(request, assessment)
+    if native is None:
+        return None
+    if request.get('method') == 'acp/requestPermission':
+        return {'optionId': native}
+    if request.get('method') == 'mcpServer/elicitation/request':
+        return {'action': 'accept', 'persist': native} if native != 'once' else {'action': 'accept'}
+    return {'decision': native}
+
+
 class JevSettings:
     """Web-editable Jev configuration, one file per gateway.
 
@@ -268,7 +301,7 @@ class JevSettings:
     returned to the client in full — only a masked form for the settings form.
     """
 
-    FIELDS = ('apiKey', 'baseUrl', 'model')
+    FIELDS = ('apiKey', 'baseUrl', 'model', 'autoApprove')
     ENV = {'apiKey': 'TYPESAFE_API_KEY', 'baseUrl': 'TYPESAFE_BASE_URL', 'model': 'JEV_MODEL'}
 
     def __init__(self, path):
@@ -284,20 +317,22 @@ class JevSettings:
         if not isinstance(data, dict):
             return {}
         return {key: value for key, value in data.items()
-                if key in self.FIELDS and isinstance(value, str)}
+                if key in ('apiKey', 'baseUrl', 'model') and isinstance(value, str)} | (
+                    {'autoApprove': data['autoApprove']} if isinstance(data.get('autoApprove'), bool) else {})
 
     def read(self):
         """Effective values: saved file entry, else env var, else default."""
         with self._lock:
             saved = dict(self._values)
         effective = {}
-        for field in self.FIELDS:
+        for field in ('apiKey', 'baseUrl', 'model'):
             if field in saved:
                 effective[field] = saved[field]
             else:
                 effective[field] = os.environ.get(self.ENV[field], '')
         effective['baseUrl'] = effective['baseUrl'] or DEFAULT_BASE_URL
         effective['model'] = effective['model'] or 'jev-latest'
+        effective['autoApprove'] = bool(saved.get('autoApprove', False))
         return effective
 
     def update(self, value):
@@ -342,6 +377,12 @@ class JevSettings:
                 if parsed_url.scheme == 'http' and parsed_url.hostname not in ('localhost', '127.0.0.1', '::1'):
                     raise ValueError('端点请使用 HTTPS；HTTP 仅用于本机测试')
             parsed[field] = raw
+        if 'autoApprove' in value:
+            if not isinstance(value['autoApprove'], bool):
+                raise ValueError('自动审核设置格式不正确')
+            parsed['autoApprove'] = value['autoApprove']
+        elif 'autoApprove' in saved:
+            parsed['autoApprove'] = saved['autoApprove']
         with self._lock:
             self._values = parsed
             write_json(self.path, parsed)
@@ -353,7 +394,8 @@ class JevSettings:
         key = effective['apiKey']
         masked = (key[:3] + '…' + key[-4:]) if len(key) > 8 else ('已配置' if key else '')
         return {'configured': bool(key), 'apiKeyMasked': masked,
-                'baseUrl': effective['baseUrl'], 'model': effective['model']}
+                'baseUrl': effective['baseUrl'], 'model': effective['model'],
+                'autoApprove': effective['autoApprove']}
 
 
 _SHARED = None
@@ -379,6 +421,11 @@ def effective_field(field):
     if store is not None:
         return store.read()[field]
     return os.environ.get(JevSettings.ENV.get(field, ''), '')
+
+
+def auto_approve_enabled():
+    store = shared_settings()
+    return bool(store and store.read().get('autoApprove'))
 
 
 class JevAssessor:

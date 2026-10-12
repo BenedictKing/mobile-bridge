@@ -14,7 +14,7 @@ from bridge.agents.kimi import KimiAdapter
 from bridge.auth import password_record
 from bridge.httpd import GatewayServer
 from bridge.jev import (JevAssessor, JevSettings, RISK_LABELS, assessable,
-                        build_payload, effective_field, fingerprint,
+                        auto_response, build_payload, effective_field, fingerprint,
                         init_shared_settings, normalize_answer,
                         parse_recommendation, shared_settings)
 from bridge.service import Bridge
@@ -40,6 +40,24 @@ def codex_command(decisions=('accept', 'decline', 'cancel')):
 
 
 class JevMappingTests(unittest.TestCase):
+    def test_auto_response_requires_safe_high_confidence_assessment(self):
+        safe = {'source': 'jev', 'risk': 1, 'reversible': 0.9,
+                'recommend': 'accept_once', 'confidence': 0.9}
+        self.assertEqual(auto_response(codex_command(('accept', 'decline')), safe),
+                         {'decision': 'accept'})
+        self.assertIsNone(auto_response(codex_command(), {**safe, 'risk': 2}))
+        self.assertIsNone(auto_response(codex_command(), {**safe, 'reversible': 0.79}))
+        self.assertIsNone(auto_response(codex_command(), {**safe, 'confidence': 0.79}))
+        self.assertIsNone(auto_response(codex_command(), {**safe, 'recommend': 'accept_always'}))
+
+    def test_auto_response_maps_acp_and_computer_use(self):
+        safe = {'source': 'jev', 'risk': 0, 'reversible': 1.0,
+                'recommend': 'accept_once', 'confidence': 1.0}
+        self.assertEqual(auto_response(acp_permission(), safe), {'optionId': 'allow'})
+        computer = {'method': 'mcpServer/elicitation/request', 'supported': True,
+                    'params': {'computerUse': {'app': 'Safari', 'persistModes': ['session']}}}
+        self.assertEqual(auto_response(computer, {**safe, 'recommend': 'accept_session'}),
+                         {'action': 'accept', 'persist': 'session'})
     def test_assessable_covers_permission_confirmations_only(self):
         self.assertTrue(assessable(acp_permission()))
         self.assertTrue(assessable(codex_command()))
@@ -262,6 +280,32 @@ class BridgeAssessmentTests(unittest.TestCase):
         self.assertEqual(ordered[1]['recommend'], 'allow')
         self.assertEqual(ordered[1]['assessment']['riskLabel'], 'routine')
 
+    def test_safe_assessment_auto_responds_when_enabled(self):
+        _, bridge = self.make_bridge(lambda payload: {'answers': {}})
+        settings_path = Path(bridge.data_dir) / 'jev.json'
+        init_shared_settings(settings_path)
+        shared_settings().update({'autoApprove': True, 'baseUrl': '', 'model': ''})
+        request = codex_command(('accept', 'decline'))
+        request['id'] = 'safe-request'
+        bridge.assessor._cache[fingerprint(request)] = {
+            'source': 'jev', 'risk': 1, 'riskLabel': 'low',
+            'reversible': 0.95, 'recommend': 'accept_once', 'confidence': 0.95,
+        }
+        session = bridge.session(SID, background=True)
+        called = []
+        done = threading.Event()
+        bridge.respond = lambda thread_id, request_id, response: (called.append(
+            (thread_id, request_id, response)), done.set(), {'status': 'accepted'})[-1]
+
+        class Stub:
+            condition = session.condition
+            state = session.state
+            id = SID
+
+        bridge._annotate_assessments(Stub(), {'requests': [request]})
+        self.assertTrue(done.wait(5))
+        self.assertEqual(called, [(SID, 'safe-request', {'decision': 'accept'})])
+
     def test_disabled_assessor_keeps_plain_requests(self):
         fake, bridge = self.make_bridge(lambda payload: {'answers': {}})
         bridge.assessor = JevAssessor()
@@ -301,7 +345,7 @@ class JevSettingsTests(unittest.TestCase):
         self.assertNotIn('tsk-file-key-9999', json.dumps(result))
         self.assertEqual(store.read(), {'apiKey': 'tsk-file-key-9999',
                                         'baseUrl': 'https://api.typesafe.ai',
-                                        'model': 'jev-latest'})
+                                        'model': 'jev-latest', 'autoApprove': False})
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
     def test_unrelated_save_keeps_env_fallback(self):

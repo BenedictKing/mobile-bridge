@@ -33,9 +33,10 @@
     <p class="muted" data-i18n="应用于所有聊天，可在聊天提醒中单独调整。需先配置通知通道。">应用于所有聊天，可在聊天提醒中单独调整。需先配置通知通道。</p><p id="notification-settings-error" class="error" role="alert"></p>
   </fieldset>
   <fieldset class="appearance-section"><legend data-i18n="权限预判（Jev）">权限预判（Jev）</legend>
-    <p class="muted" data-i18n="为需要手动确认的权限请求显示风险分级与建议选项；只做标注，不会代替你授权。未配置时使用本地确定性标签。">为需要手动确认的权限请求显示风险分级与建议选项；只做标注，不会代替你授权。未配置时使用本地确定性标签。</p>
+    <p class="muted" data-i18n="为需要手动确认的权限请求显示风险分级与建议选项；默认只做标注。开启自动审核后，仅自动通过高置信度、低风险且可撤销的本次操作。">为需要手动确认的权限请求显示风险分级与建议选项；默认只做标注。开启自动审核后，仅自动通过高置信度、低风险且可撤销的本次操作。</p>
     <label><span data-i18n="API Key">API Key</span><input id="jev-key" type="password" autocomplete="new-password" inputmode="text"></label>
     <p id="jev-key-status" class="muted" aria-live="polite"></p>
+    <label class="display-option"><span><strong data-i18n="自动审核低风险操作">自动审核低风险操作</strong><small data-i18n="仅允许高置信度、低风险且可撤销的本次操作；永久授权和高风险请求仍需手动确认。">仅允许高置信度、低风险且可撤销的本次操作；永久授权和高风险请求仍需手动确认。</small></span><input id="jev-auto-approve" type="checkbox"></label>
     <div class="appearance-grid"><label><span data-i18n="端点">端点</span><input id="jev-base-url" type="text" inputmode="url" autocomplete="off" placeholder="https://api.typesafe.ai" data-i18n-placeholder="https://api.typesafe.ai"></label><label><span data-i18n="模型">模型</span><input id="jev-model" type="text" autocomplete="off" placeholder="jev-latest"></label></div>
     <p id="jev-settings-error" class="error" role="alert"></p>
     <div class="appearance-actions"><button id="jev-clear" class="plain" type="button" data-i18n="清除密钥">清除密钥</button><button id="jev-save" class="primary" type="button" data-i18n="保存 Jev 设置">保存 Jev 设置</button></div>
