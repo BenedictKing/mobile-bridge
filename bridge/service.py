@@ -806,6 +806,20 @@ class Bridge:
                 self.remote_bridges[host].accounts = self.accounts
             return self.remote_bridges[host]
 
+    def refresh_discovery(self, limit=200):
+        """Background discovery read for this bridge's own host only.
+
+        Feeds bridge/discovery.py: re-reads the native session list, refreshes
+        the ``listed`` routing set (so new ids resolve to this bridge before
+        any HTTP list request) and returns the rows for fingerprinting. SSH
+        remote lists stay request-driven; reading them here would cross the
+        network every cycle.
+        """
+        rows = self.adapter.list_sessions("此电脑", limit=limit)
+        with self.lock:
+            self.listed.update(row['id'] for row in rows)
+        return rows
+
     def list(self, query="", limit=100, offset=0, archived=False):
         sources = [(self, "此电脑")]
         if self.host == 'local' and self.hosts is not None:

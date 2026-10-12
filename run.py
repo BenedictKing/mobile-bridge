@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from bridge.auth import password_record
 from bridge.agents.base import Registry
+from bridge.discovery import ListDiscovery
 from bridge.agents.codex import CodexAdapter
 from bridge.httpd import GatewayServer
 from bridge.jev import init_shared_settings
@@ -224,10 +225,12 @@ def main(connections=None, connection_secrets=None):
         zcode_bridge = Bridge(args.codex_home, args.config.parent / 'agents' / 'zcode', adapter=zcode_adapter)
         registry.register('zcode', zcode_bridge)
     servers = []
+    discovery = ListDiscovery({kind: registry.for_agent(kind) for kind in registry.kinds()})
     try:
         for address in network.bindings(preferences):
             servers.append(GatewayServer((address, args.port), bridge, config, ROOT / 'web', args.config.parent,
-                                         **({'shared': servers[0]} if servers else {'registry': registry})))
+                                         **({'shared': servers[0]} if servers else {'registry': registry,
+                                                                                     'discovery': discovery})))
     except OSError:
         for listener in servers:
             listener.server_close()
@@ -329,6 +332,8 @@ def main(connections=None, connection_secrets=None):
                 except Exception:
                     logging.getLogger(__name__).debug('Agent 列表预热失败：%s', kind, exc_info=True)
         threading.Thread(target=warm_agent_lists, daemon=True).start()
+        # 定时会话发现：网页打开期间自动察觉各 Agent 中新开的聊天。
+        discovery.start()
         address_notifications.start()
         control.start(server.shutdown, server.pairing.control, server.instance_id, server.auth, bridge.account.control, server.notifications.control, bridge.accounts.control)
         for listener in servers[1:]:
@@ -342,6 +347,7 @@ def main(connections=None, connection_secrets=None):
         for listener, thread in listener_threads:
             listener.shutdown()
             thread.join()
+        discovery.close()
         address_notifications.close()
         notifications.close()
         if tunnel:

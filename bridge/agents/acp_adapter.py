@@ -486,6 +486,11 @@ class AcpAdapter(AgentAdapter):
         canonical = self._canonical_id(session_id)
         return canonical is not None and canonical in listed
 
+    def refresh_list(self):
+        # 定时发现需要越过读缓存，让下一次 list 读取真正 spawn 一次 Agent。
+        with self._list_lock:
+            self._list_at = 0
+
     def _fetch_rows(self):
         with self._list_lock:
             if time.monotonic() - self._list_at < LIST_CACHE_SECONDS:

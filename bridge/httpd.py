@@ -69,11 +69,13 @@ class GatewayServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None, registry=None):
+    def __init__(self, address, bridge, config, web_dir, data_dir=None, shared=None, registry=None,
+                 discovery=None):
         self.local_access = config.get('localAccess', True)
         if shared is None:
             self.bridge = bridge
             self.registry = registry
+            self.discovery = discovery
             self.notifications = None
             self.instance_id = secrets.token_hex(16)
             self.auth = Auth(config["auth"], data_dir)
@@ -86,7 +88,7 @@ class GatewayServer(ThreadingHTTPServer):
         else:
             # Listeners serve one gateway: shared sessions, pairing, limits and
             # mutable tunnel origins, with a single notification manager.
-            for name in ('bridge', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'registry'):
+            for name in ('bridge', 'notifications', 'instance_id', 'auth', 'origins', 'pairing', 'hosts', 'secure_hosts', 'web_dir', 'slots', 'registry', 'discovery'):
                 setattr(self, name, getattr(shared, name))
         super().__init__(address, Handler)
 
@@ -360,10 +362,18 @@ class Handler(BaseHTTPRequestHandler):
                 groups = self.read_json().get('hosts')
                 if not isinstance(groups, dict) or len(groups) > 20:
                     raise ValueError('会话状态请求无效')
+                discovery = self.server.discovery
+                if discovery is not None:
+                    # An activity poll proves somebody is watching the list;
+                    # that keeps the periodic discovery loop refreshing.
+                    discovery.touch()
                 rows = []
                 for host, identifiers in groups.items():
                     rows.extend(self.server.bridge.for_host(host).activity(identifiers))
-                return self.output(200, {'sessions': rows})
+                payload = {'sessions': rows}
+                if discovery is not None:
+                    payload['listRevision'] = discovery.revision
+                return self.output(200, payload)
             if write and path == '/api/sessions':
                 body = self.read_json()
                 worktree = body.get('worktree')

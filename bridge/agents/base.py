@@ -198,6 +198,9 @@ class AgentAdapter:
         """Return session metadata changed since the discovery cursor."""
         raise NotImplementedError
 
+    def refresh_list(self):
+        """Expire any cached session list; the next read goes to the source."""
+
     def close(self):
         """Release every transport owned by this adapter."""
 

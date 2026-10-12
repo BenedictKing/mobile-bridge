@@ -24,7 +24,7 @@ function bumpRecency(id,host,at=Date.now()){
   const row=listRows.find(row=>row.id===id&&row.host===host);
   if(row&&at>row.recency){row.recency=at;listRows.sort((a,b)=>b.recency-a.recency);renderList();}
 }
-let activityBusy=false;
+let activityBusy=false,listRevision=null;
 const fastModeControl=new FastModeControl({root:$('fast-mode-control'),input:$('fast-mode-enabled'),status:$('fast-mode-status')});
 let modelRequest=0,modelTarget=null,modelSaving=false;
 async function goalAction(action,payload) {
@@ -67,9 +67,20 @@ function renderActivity(){for(const button of document.querySelectorAll('.sessio
   if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-label',t(indicator.label));button.querySelector('strong').prepend(dot);}
 }}
 async function refreshActivity(){
-  if(activityBusy||$('app').hidden||document.hidden||!listRows.length)return;activityBusy=true;
+  if(activityBusy||$('app').hidden||document.hidden)return;activityBusy=true;
   const hosts={};for(const row of listRows)(hosts[row.host]??=[]).push(row.id);
-  try{const result=await api('/api/activity',{hosts});if(!$('app').hidden){sessionActivity.update(result.sessions,visibleChat());for(const row of result.sessions)if(row.recency)bumpRecency(row.id,row.host,row.recency);renderActivity();}}catch{}finally{activityBusy=false;}
+  try{const result=await api('/api/activity',{hosts});
+    if(!$('app').hidden){
+      // 定时发现的列表版本变化（Agent 侧新开、重命名或删除会话）时自动重载列表；
+      // 首次见到的版本只记录基线，不触发重载。空列表也继续轮询，好让第一个
+      // 网页之外创建的会话被发现。
+      if(result.listRevision!=null){
+        if(listRevision===null)listRevision=result.listRevision;
+        else if(result.listRevision!==listRevision){listRevision=result.listRevision;loadList(true).catch(e=>toast(e.message));}
+      }
+      sessionActivity.update(result.sessions,visibleChat());for(const row of result.sessions)if(row.recency)bumpRecency(row.id,row.host,row.recency);renderActivity();
+    }
+  }catch{}finally{activityBusy=false;}
 }
 setInterval(refreshActivity,5000);
 window.addEventListener('focus',refreshActivity);
@@ -95,7 +106,7 @@ async function start(pairingToken=null){
 }
 async function enter(){$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));await list;}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
-$('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;currentId=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
+$('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;currentId=null;listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 $('list-mode').value=localStorage.getItem('list-mode')||'recent';
 $('list-mode').onchange=()=>{localStorage.setItem('list-mode',$('list-mode').value);renderList();};
