@@ -33,20 +33,28 @@ class TranscriptTests(unittest.TestCase):
         return {'title': 'T', 'cwd': '/work',
                 'turns': [{'id': 't1', 'status': 'completed', 'messages': messages}]}
 
-    def test_flattens_roles_and_compresses_activities(self):
+    def test_filters_routine_commands_and_compresses_meaningful_activities(self):
         view = self.view([
             {'role': 'user', 'text': '部署一下'},
-            {'role': 'activity', 'title': '执行命令', 'text': './deploy.sh --prod\n第二行', 'output': '大量输出'},
+            {'role': 'activity', 'title': '执行命令', 'text': 'ls -la\n第二行', 'output': '大量输出'},
+            {'role': 'activity', 'title': '执行命令', 'text': 'grep -rn "route" src'},
             {'role': 'assistant', 'text': '已完成'},
+            {'role': 'activity', 'title': '文件变更', 'text': 'bridge/service.py\n+改动'},
             {'role': 'error', 'text': '尾部报错'},
             {'role': 'activity', 'title': '', 'text': ''},
         ])
         entries, truncated = migration_transcript(view)
         self.assertFalse(truncated)
         self.assertEqual(entries, [('user', '部署一下'),
-                                 ('activity', '执行命令：./deploy.sh --prod'),
                                  ('assistant', '已完成'),
+                                 ('activity', '文件变更：bridge/service.py'),
                                  ('error', '尾部报错')])
+
+    def test_full_scope_retains_routine_commands(self):
+        view = self.view([{'role': 'activity', 'title': '执行命令', 'text': 'grep -rn "route" src'}])
+        entries, truncated = migration_transcript(view, scope='full')
+        self.assertFalse(truncated)
+        self.assertEqual(entries, [('activity', '执行命令：grep -rn "route" src')])
 
     def test_message_cap_keeps_the_tail(self):
         view = self.view([{'role': 'user', 'text': f'message-{i}'} for i in range(MIGRATION_MAX_MESSAGES + 5)])
@@ -58,7 +66,7 @@ class TranscriptTests(unittest.TestCase):
     def test_char_cap_and_per_entry_cap(self):
         # The per-entry cap alone cannot push a short dialogue over the total
         # cap, so use several near-cap entries to force tail-dropping.
-        view = self.view([{'role': 'assistant', 'text': f'{i}:' + 'x' * 3900} for i in range(10)])
+        view = self.view([{'role': 'assistant', 'text': f'{i}:' + 'x' * 5900} for i in range(12)])
         entries, truncated = migration_transcript(view)
         self.assertTrue(truncated)
         self.assertLessEqual(sum(len(text) + 8 for _, text in entries), MIGRATION_MAX_CHARS + 8)

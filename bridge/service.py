@@ -34,9 +34,9 @@ from .agents.base import Capability
 from .agents.codex import CodexAdapter
 
 
-MIGRATION_MAX_MESSAGES = 20
-MIGRATION_MAX_CHARS = 30000
-MIGRATION_ENTRY_CHARS = 4000
+MIGRATION_MAX_MESSAGES = 50
+MIGRATION_MAX_CHARS = 60000
+MIGRATION_ENTRY_CHARS = 6000
 # Copy scopes offered by the migrate UI. 'main' is the historic default;
 # budgets are (max messages, max total chars, max chars per entry) and the
 # totals must stay under send's 100k message cap including the header/footer.
@@ -46,6 +46,27 @@ MIGRATION_SCOPE_BUDGETS = {
     'full': (500, 90000, 12000),
     'latest': (12, 40000, 20000),
 }
+
+_MIGRATION_READ_ONLY_COMMAND = re.compile(
+    r"^(?:rg|grep|find|fd|sed|awk|cat|head|tail|less|ls|pwd|which|command\s+-v|git\s+(?:status|diff|log|show)|"
+    r"python(?:3)?\s+-m\s+(?:pytest|unittest)\s+--collect-only)(?:\s|$)",
+    re.IGNORECASE,
+)
+_MIGRATION_NOISE_TITLES = {
+    'read', '读取', 'bash', 'shell',
+    'todowrite', 'todo write', '任务清单',
+}
+
+
+def _is_migration_noise_activity(message):
+    """Drop routine inspection/tool bookkeeping from the default transcript."""
+    title = str(message.get('title') or message.get('kind') or '').strip().casefold()
+    text = str(message.get('text') or '').strip()
+    if title in _MIGRATION_NOISE_TITLES:
+        return True
+    if title in {'toolcall', '工具调用'} and text.casefold().startswith(('read:', 'todowrite:', 'bash:')):
+        return True
+    return title in {'执行命令', 'command execution'} and bool(_MIGRATION_READ_ONLY_COMMAND.match(text))
 
 MIGRATION_TEXTS = {
     "zh-CN": {
@@ -104,6 +125,8 @@ def migration_transcript(view, scope='main'):
                 if text:
                     entries.append((role, text))
             elif scope != 'latest' and role in ('activity', 'error'):
+                if role == 'activity' and scope == 'main' and _is_migration_noise_activity(message):
+                    continue
                 title = str(message.get('title') or message.get('kind') or '').strip()
                 first = text.split('\n', 1)[0][:120]
                 summary = title + (('：' + first) if first else '') if title else first
