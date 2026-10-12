@@ -1,3 +1,13 @@
+## 可靠性演进四阶段：审批 receipt、通知对账、前台同步、waiting_input（2026-10-12，未发布）
+
+- 范围与依据：[docs/reliability-evolution-plan.md](docs/reliability-evolution-plan.md) 全部四阶段 + 竞态回归；调研背景见 [docs/opendots-openmuse-study.md](docs/opendots-openmuse-study.md)（计划与调研先行提交 `301c8f2`，四阶段各一独立可回滚提交 `d2b1c0a`/`779cc62`/`5b3d21e`/`e546af6`）。
+- 阶段一（审批幂等）：新增 `bridge/approvals.py` + `approval-receipts.json`（thread+request 索引、规范化哈希绑定、claim→accepted/declined/outcome_unknown/expired 状态机、损坏备份降级、终态 7 天保留）。`Bridge.respond` 对适配器路径先 claim 后执行：相同回应重试回放 duplicate，不同回应/内容变化拒绝，`claimed`/`outcome_unknown` 永不自动重放；适配器校验失败（ValueError，副作用前）回退 awaiting_review，回调异常/超时/断开落 outcome_unknown；Jev 自动审核与人工回应共用同一 claim（receipt 记录 source）；ACP 回调失败保留审批卡。旧目录无新文件可正常启动，回滚仅剩闲置文件。
+- 阶段二（通知对账）：`notification-outcomes.json` 在完成检测时落盘确定性 outcome（迁移只补缺失记录、不重发已确认），投递权威仍在 delivery 账本；对账循环启动即跑、此后每 60 秒重放未证实记录，退订/过期/全渠道已投递即清理，异常只记日志不阻塞扫描。
+- 阶段三（前台同步）：`visibilitychange` → 立即活动刷新 + `BridgeTransport.wake()`（stalled SSE 立即换新按 since 重放、退避即刻触发并清零；健康长轮询与停止通道不受扰）；传输层并发加固（start 防重入、SSE 重订阅先关旧、长轮询会话号防双循环）；权限面板补请求版本；写后读失败保留以回归钉住。资产版本号 bump（transport t2 / app d4）。
+- 阶段四（waiting_input）：`bridge/inputs.py` + `task-inputs.json`；`defer_input` 把排队任务 CAS 暂停并产生通知（伪请求行骑乘待确认通道、按 id 去重），`submit_input` 校验版本/完整性/长度后 CAS 恢复 queued，答案结构化并入任务文本由既有维护循环恰好派发一次；过期惰性清理取消任务且永不恢复，queue delete 支持取消等待任务；新增 `GET/POST /api/sessions/<id>/input`；前端排队区渲染任务卡（问题表单、可选题、过期时间、提交后"已提交，等待恢复"）。
+- 自动检查：Python 全量 739 过/6 平台跳过（新增 `tests/test_approval_receipts.py` 15 项：哈希规范化、状态迁移、`threading.Barrier` 8 线程 claim 单胜、重载、损坏降级、保留期清理；`test_bridge` 新增 8 项：重试单次派发、桌面撤卡后回放、未知投递持久且不可重试、双端竞态（mobile/jev）恰一次调用、receipt 跨网关重启、waiting_input 暂停/恢复一次、重启保持、取消与过期；`test_task_inputs.py` 9 项；`test_notifications` 7 项对账用例）。桌面 Node 170 过（新增 `tests/foreground-sync.test.cjs` 7 项：唤醒短路退避并清零、健康 SSE 换新按 lastId 重放、长轮询不双循环、前台立即刷新、隐藏不触发、迟到权限响应不覆盖、写后读失败保留；`tests/task-input-ui.test.cjs` 5 项：卡片渲染、本地必填校验、提交单次与恢复提示、duplicate/服务端错误、取消走 queue delete）。
+- 未覆盖：真机浏览器前后台切换与蜂窝弱网实测（vm 桩无法替代移动 Safari/Chrome 的标签页挂起行为）；双网关进程共享数据目录的跨进程 claim（部署模型单进程，与 submissions.json 等账本一致）；Jev/迁移场景产生 waiting_input 的业务触发器（本轮交付的是一等能力与端点，接入点留给后续功能）。
+
 ## Jev 代理选项（2026-10-12，未发布）
 
 - 范围：Jev 设置新增 `proxy` 字段（`http://主机:端口`，留空直连），网页「设置 → 权限预判」新增「代理」输入框；`JevAssessor._connect` 对配置了代理的评估请求先完成 HTTP CONNECT 握手，再在隧道上运行原有 HTTP/TLS 会话（HTTPS 端点仍与 `api.typesafe.ai` 端到端建 TLS，代理只见目标主机名）。动因：上一记录发现 `api.typesafe.ai` 对本机网络直连返回 451 地域封锁，而 stdlib `http.client` 不读系统代理。
