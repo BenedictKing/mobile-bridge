@@ -1,8 +1,7 @@
 // Package httpd is the Go port of bridge/httpd.py's request pipeline:
-// host/origin validation, the auth + CSRF gate, static assets, JSON output
-// with Python-default separators, and the error-mapping contract. Business
-// routes are stubbed for the P3 conformance gate; the P0 differential golden
-// (conformance/http) is the acceptance test for both implementations.
+// host/origin validation, the auth + CSRF gate, embedded assets, production
+// session routes, JSON output with Python-default separators, and error
+// mapping. The HTTP differential golden is the compatibility gate.
 package httpd
 
 import (
@@ -40,7 +39,7 @@ import (
 
 const contentTypeJSON = "application/json; charset=utf-8"
 
-// Bridge supplies the business responses behind the routes (stubbed in P3).
+// Bridge supplies the business responses behind the routes.
 type Bridge interface {
 	SessionsList() any
 	AccountsPublic() any

@@ -1,7 +1,6 @@
-// Command gateway is the Go gateway (plan doc P3). It serves the embedded
-// web assets and the HTTP API pipeline with business routes stubbed; the
-// conformance/http golden is the shared acceptance gate with the Python
-// gateway.
+// Command gateway is the Go gateway. It serves the embedded web assets and
+// the production HTTP/API pipeline; the conformance/http golden remains the
+// shared compatibility gate with the legacy Python oracle.
 //
 // Environment:
 //
