@@ -258,7 +258,8 @@ def capture_go():
     port = probe.getsockname()[1]
     probe.close()
     environment = dict(os.environ, GATEWAY_PORT=str(port),
-                       GATEWAY_AUTH=json.dumps({'username': USERNAME, **record}))
+                       GATEWAY_AUTH=json.dumps({'username': USERNAME, **record}),
+                       GATEWAY_DISABLE_STORE='1')
     process = subprocess.Popen([str(binary)], env=environment,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

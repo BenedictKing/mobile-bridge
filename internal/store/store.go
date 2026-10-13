@@ -1,8 +1,7 @@
-// Package store is the Go port of bridge/store.py's rollout-history layer:
-// the backward chunked reader (_recent_lines) and the JSONL → turns/items
-// parser (history). The SQLite discovery side stays in Python for now (P5)
-// and is injected as metadata here. Parity with Python is enforced against
-// conformance/store goldens.
+// Package store is the Go port of bridge/store.py's read-only session store:
+// SQLite discovery, the backward chunked reader (_recent_lines), and the
+// JSONL → turns/items parser (history). Parity with Python is enforced against
+// conformance/store goldens and fixture tests.
 package store
 
 import (

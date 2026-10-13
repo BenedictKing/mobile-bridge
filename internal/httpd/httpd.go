@@ -8,6 +8,7 @@ package httpd
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"io/fs"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
+	"github.com/BenedictKing/mobile-bridge/internal/store"
 )
 
 const contentTypeJSON = "application/json; charset=utf-8"
@@ -61,6 +63,7 @@ type Server struct {
 	Origins    map[string]bool
 	Bridge     SessionBridge
 	Pairing    *pairing.Pairing
+	Store      *store.SessionStore
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
@@ -298,6 +301,15 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
+		if h.server.Store != nil {
+			result, err := h.sessionList(h.request.URL.Query())
+			if err != nil {
+				h.fail(http.StatusConflict, errorBody(err.Error()))
+				return
+			}
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return
+		}
 		h.output(http.StatusOK, h.server.Bridge.SessionsList(), contentTypeJSON, "")
 	case !write && path == "/api/accounts":
 		if h.session(write) == nil {
@@ -321,6 +333,36 @@ func (h *handler) handleMethod(write bool) {
 		}
 		h.fail(http.StatusNotFound, errorBody("页面不存在"))
 	}
+}
+
+func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, error) {
+	text := queryValue(query, "q", "")
+	if len([]rune(text)) > 200 {
+		text = string([]rune(text)[:200])
+	}
+	offset, err := strconv.Atoi(queryValue(query, "offset", "0"))
+	if err != nil || offset < 0 {
+		return nil, errors.New("分页参数无效")
+	}
+	archived := queryValue(query, "archived", "false") == "true"
+	rows, err := h.server.Store.List(text, 100, offset, archived)
+	if err != nil {
+		return nil, err
+	}
+	sessions := &jsoncompat.Array{}
+	for _, row := range rows {
+		if _, ok := row.Get("host"); !ok {
+			row.Set("host", "local")
+		}
+		if _, ok := row.Get("agent"); !ok {
+			row.Set("agent", "codex")
+		}
+		sessions.Items = append(sessions.Items, row)
+	}
+	result := jsoncompat.NewObject()
+	result.Set("sessions", sessions)
+	result.Set("unavailableHosts", &jsoncompat.Array{})
+	return result, nil
 }
 
 // handlePair exchanges a one-time QR grant for a normal authenticated session.

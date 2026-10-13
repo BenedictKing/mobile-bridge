@@ -18,11 +18,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	gateway "github.com/BenedictKing/mobile-bridge"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
+	"github.com/BenedictKing/mobile-bridge/internal/store"
 )
 
 func main() {
@@ -66,6 +68,15 @@ func main() {
 		log.Fatalf("listen: %v", err)
 	}
 	server := httpd.New(auth.NewAuth(config), gateway.WebFS, port, instanceID)
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			codexHome = filepath.Join(home, ".codex")
+		}
+	}
+	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_STORE") != "1" {
+		server.Store = store.NewSessionStore(codexHome)
+	}
 	log.Printf("gateway listening on http://%s", listener.Addr())
 	log.Fatal(http.Serve(listener, server))
 }

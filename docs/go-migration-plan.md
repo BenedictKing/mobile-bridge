@@ -177,7 +177,8 @@ Python `json` 与 Go `encoding/json` 的默认行为差异，逐条列出：
 > - `internal/store` + `conformance/store/`（第三批）：rollout 历史**解析层**——`history` 的 JSONL → turns/items
 >   全分支（含 `**payload` 键序覆盖 quirk：`function_call` 的自身 type 会覆盖 `storedToolEvent`）与
 >   `_recent_lines` 的 64KB 倒序分块读取（turn_limit 截断与 `hasLoadedOldest` 完整性标志）。
->   SQLite 发现层（`list`/`notification_changes`/`get`）留给 P5 与 modernc fixture 一并做。
+>   SQLite 发现层（`list`/`get`）已迁入 `internal/store`，使用 modernc SQLite 只读打开 `state_*.sqlite`；
+>   `notification_changes`、WAL 无 sidecar 快照复制和真实 service 接线仍留在 P5/P6。
 >
 > **P2 全部完成（2026-10-13）**：`internal/transport` 补齐 Windows 侧——端点解析（NT 固定管道路径 vs unix socket）
 > + build tag 双实现（POSIX `net.DialTimeout` / Windows `go-winio.DialPipe`），三平台
