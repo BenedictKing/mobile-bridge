@@ -42,6 +42,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
+	"github.com/BenedictKing/mobile-bridge/internal/tunnel"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
 
@@ -400,6 +401,15 @@ func runGateway(args []string) {
 	server.Uploads = uploads.New(dataDir)
 	server.NotificationDir = dataDir
 	server.Jev = jev.New(filepath.Join(dataDir, "jev.json"))
+	var quickTunnel *tunnel.Quick
+	preferences := desktopPreferences(dataDir)
+	if enabled, _ := preferences.MustGet("tunnel").(bool); enabled {
+		cloudflared, _ := preferences.MustGet("cloudflared").(string)
+		quickTunnel = &tunnel.Quick{Executable: cloudflared, DataDir: dataDir, Port: port}
+		if tunnelErr := quickTunnel.Start(); tunnelErr != nil {
+			log.Printf("quick tunnel unavailable: %v", tunnelErr)
+		}
+	}
 	if ledger := notifications.NewOutcomeLedger(dataDir); ledger != nil {
 		_ = ledger.Reconcile(time.Now(), nil, nil)
 	}
@@ -477,6 +487,9 @@ func runGateway(args []string) {
 		_ = httpServer.Shutdown(context.Background())
 	}
 	outcomeWorker.Close()
+	if quickTunnel != nil {
+		quickTunnel.Close()
+	}
 	controller.Close()
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
