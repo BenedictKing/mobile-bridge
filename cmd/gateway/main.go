@@ -174,7 +174,7 @@ func gatewayRuntime(dataDir string) *jsoncompat.Object {
 func workerSnapshot(dataDir string) *jsoncompat.Object {
 	ensureDesktopConfig(dataDir)
 	result := jsoncompat.NewObject()
-	preferences := jsoncompat.NewObject()
+	preferences := desktopPreferences(dataDir)
 	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
 		if value, err := jsoncompat.Unmarshal(raw); err == nil {
 			if root, ok := value.(*jsoncompat.Object); ok {
@@ -204,12 +204,52 @@ func workerSnapshot(dataDir string) *jsoncompat.Object {
 	result.Set("auth", authValue)
 	result.Set("notifications", notifications.ReadSettings(dataDir))
 	result.Set("runtime", gatewayRuntime(dataDir))
-	result.Set("urls", &jsoncompat.Array{})
+	urls := &jsoncompat.Array{}
+	port := 8787
+	if value, ok := preferences.MustGet("port").(json.Number); ok {
+		if parsed, parseErr := strconv.Atoi(value.String()); parseErr == nil {
+			port = parsed
+		}
+	}
+	for _, address := range gatewayListenAddresses(dataDir) {
+		if preferences.MustGet("localAccess") == false && (address == "127.0.0.1" || address == "::1") {
+			continue
+		}
+		urls.Items = append(urls.Items, "http://"+net.JoinHostPort(address, strconv.Itoa(port))+"/")
+	}
+	result.Set("urls", urls)
 	result.Set("externalStatus", jsoncompat.NewObject())
 	result.Set("cloudflared", jsoncompat.NewObject())
 	result.Set("quickTunnel", jsoncompat.NewObject())
 	result.Set("watches", &jsoncompat.Array{})
 	return result
+}
+
+func desktopPreferences(dataDir string) *jsoncompat.Object {
+	preferences := jsoncompat.NewObject()
+	preferences.Set("autoStart", false)
+	preferences.Set("port", jsoncompat.Num(8787))
+	preferences.Set("lan", true)
+	preferences.Set("lanAddresses", nil)
+	preferences.Set("localAccess", true)
+	preferences.Set("tunnel", false)
+	preferences.Set("cloudflared", "")
+	home, _ := os.UserHomeDir()
+	preferences.Set("codexHome", filepath.Join(home, ".codex"))
+	preferences.Set("ipcPath", "")
+	preferences.Set("codexBin", "")
+	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
+		if value, decodeErr := jsoncompat.Unmarshal(raw); decodeErr == nil {
+			if saved, ok := value.(*jsoncompat.Object); ok {
+				for _, key := range []string{"autoStart", "port", "lan", "lanAddresses", "localAccess", "tunnel", "cloudflared", "codexHome", "ipcPath", "codexBin", "connections"} {
+					if item, exists := saved.Get(key); exists {
+						preferences.Set(key, item)
+					}
+				}
+			}
+		}
+	}
+	return preferences
 }
 func readControl(dataDir string) *jsoncompat.Object {
 	raw, err := os.ReadFile(filepath.Join(dataDir, "gateway-control.json"))
