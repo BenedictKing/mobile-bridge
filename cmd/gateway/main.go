@@ -39,6 +39,7 @@ func main() {
 	config := auth.Config{Mode: "password", Username: "admin", Iterations: 600000}
 	if value := os.Getenv("GATEWAY_AUTH"); value != "" {
 		var record struct {
+			Mode       string `json:"mode"`
 			Username   string `json:"username"`
 			Salt       string `json:"salt"`
 			Hash       string `json:"hash"`
@@ -46,6 +47,9 @@ func main() {
 		}
 		if err := json.Unmarshal([]byte(value), &record); err != nil {
 			log.Fatalf("GATEWAY_AUTH: %v", err)
+		}
+		if record.Mode != "" {
+			config.Mode = record.Mode
 		}
 		config.Username = record.Username
 		config.Salt = record.Salt
