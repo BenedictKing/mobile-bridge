@@ -13,6 +13,10 @@ type GatewayService struct{ gateway string }
 
 func NewGatewayService() *GatewayService { return &GatewayService{} }
 
+func (s *GatewayService) Info() map[string]any {
+	return map[string]any{"gateway": resolveGateway(s.gateway), "dataDir": resolveDataDir()}
+}
+
 func (s *GatewayService) Snapshot() (map[string]any, error) {
 	return runAction(s.gateway, "snapshot", nil)
 }
