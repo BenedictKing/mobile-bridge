@@ -30,6 +30,9 @@ class AgentAdapter:
     kind = 'base'
     label = 'Agent'
     capabilities = frozenset()
+    # Whether the cheap activity poll may connect sessions: Codex answers over
+    # one IPC socket, while each ACP attach would spawn a whole agent process.
+    activity_attach = True
     # Whether a confirmed goal create/resume needs a bridge-sent activation turn.
     goal_needs_activation = True
 

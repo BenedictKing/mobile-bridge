@@ -367,9 +367,32 @@ class Handler(BaseHTTPRequestHandler):
                     # An activity poll proves somebody is watching the list;
                     # that keeps the periodic discovery loop refreshing.
                     discovery.touch()
+                registry = self.server.registry
                 rows = []
                 for host, identifiers in groups.items():
-                    rows.extend(self.server.bridge.for_host(host).activity(identifiers))
+                    root = self.server.bridge.for_host(host)
+                    # Every enabled agent bridge owns its own local sessions;
+                    # routing by host alone would hand ACP ids to the Codex
+                    # bridge, whose listed set drops them, so a running ZCode /
+                    # Kimi / Claude chat never got its green dot. Split the ids
+                    # by owning bridge first (SSH hosts stay with Codex).
+                    owners = [(root, list(identifiers))]
+                    if host == self.server.bridge.host and registry is not None and len(registry.kinds()) > 1:
+                        remaining = set(identifiers)
+                        owners = []
+                        for kind in registry.kinds():
+                            bridge = registry.for_agent(kind)
+                            if bridge is root:
+                                continue
+                            with bridge.lock:
+                                owned = sorted(remaining & bridge.listed)
+                            if owned:
+                                owners.append((bridge, owned))
+                            remaining -= set(owned)
+                        if remaining:
+                            owners.append((root, sorted(remaining)))
+                    for bridge, owned in owners:
+                        rows.extend(bridge.activity(owned))
                 payload = {'sessions': rows}
                 if discovery is not None:
                     payload['listRevision'] = discovery.revision

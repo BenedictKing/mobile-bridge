@@ -16,6 +16,7 @@ from .approvals import ApprovalLedger, UNKNOWN, decision_outcome
 from .inputs import TaskInputLedger, WAITING as WAITING_INPUT
 from .ipc import DesktopIPC, IPCError
 from .agents.acp import AcpError
+from .agents.acp_adapter import TurnNotDispatched
 from .transport import ipc_endpoint
 from .model import apply_patches, computer_use_approval, items_array, normalize_state, normalize_request, ordered_turns, pending_requests, async_requests, request_id, user_display_text
 from .store import SessionStore, StoreUnavailable
@@ -249,6 +250,10 @@ class Bridge:
         self.notification_dirty = set()
         self.notification_boundary = set()
         self.notification_event = threading.Event()
+        # Wakes the maintain loop early: a turn just ended or an approval was
+        # answered, so a queued follow-up can dispatch without waiting out the
+        # idle backoff (up to 30s on bridges without a desktop IPC).
+        self.maintain_kick = threading.Event()
         self.uploads = Uploads(data_dir, adapter.upload_transport())
         self.live = {}
         self.lock = threading.RLock()
@@ -530,7 +535,7 @@ class Bridge:
                 with self.submit_lock:
                     protected=set()
                     for value in self.submissions.values():
-                        if value.get("status") in ("queued", "unknown", "accepted", WAITING_INPUT):
+                        if value.get("status") in ("queued", "unknown", "accepted", "failed", WAITING_INPUT):
                             protected.update(value.get("attachments") or [])
                 removed=self.uploads.collect(protected=protected)
                 if removed:
@@ -880,17 +885,25 @@ class Bridge:
             raise ValueError('会话状态请求无效')
         with self.lock:
             sessions = []
+            detached = []
             for identifier in dict.fromkeys(identifiers):
                 if identifier not in self.listed:
                     continue
                 session = self.live.get(identifier)
                 if session is None:
+                    if not self.adapter.activity_attach:
+                        # No live handle and attaching one would spawn an agent
+                        # process: report offline so the phone clears stale
+                        # running dots instead of resurrecting them.
+                        detached.append(identifier)
+                        continue
                     session = self.live[identifier] = LiveSession(identifier)
                     self.adapter.adopt_session(session)
                     session.activity_only = True
                 session.touched = time.monotonic()
                 sessions.append(session)
-            pending = [s for s in sessions if not s.connected and time.monotonic() >= s.retry_at]
+            pending = [s for s in sessions if self.adapter.activity_attach
+                       and not s.connected and time.monotonic() >= s.retry_at]
             if pending and not self.activity_following:
                 self.activity_following = True
                 def follow():
@@ -902,11 +915,12 @@ class Bridge:
                     finally:
                         with self.lock: self.activity_following = False
                 threading.Thread(target=follow, daemon=True).start()
+        rows = [{'id': identifier, 'host': self.host, 'connected': False, 'status': 'unknown'}
+                for identifier in detached]
         try:
             recencies = self.adapter.recencies([s.id for s in sessions])
         except (OSError, ValueError, StoreUnavailable, RemoteUnavailable):
             recencies = {}
-        rows = []
         for session in sessions:
             with session.condition:
                 state = session.state or {}
@@ -1114,7 +1128,11 @@ class Bridge:
 
     def _maintain(self):
         delay = 3
-        while not self.closed.wait(delay):
+        while True:
+            self.maintain_kick.wait(delay)
+            self.maintain_kick.clear()
+            if self.closed.is_set():
+                return
             if self.accounts is not None:
                 try:
                     self.accounts.check_ready()
@@ -1123,9 +1141,11 @@ class Bridge:
             with self.lock:
                 sessions = list(self.live.values())
             self._expire_inputs()
+            any_queued = False
             for session in sessions:
                 with self.submit_lock:
                     queued = [(k, dict(v)) for k, v in self.submissions.items() if k.startswith(session.id + ":") and v["status"] == "queued"]
+                any_queued = any_queued or bool(queued)
                 if queued and session.connected and session.view().get("status") == "idle":
                     key, entry = queued[0]
                     try:
@@ -1145,7 +1165,32 @@ class Bridge:
                             continue
                         self.live.pop(session.id, None)
                     self.adapter.detach(session)
-            delay = 3 if self.ipc is not None and self.ipc.client_id else min(30, delay * 2)
+            # Pending queue work pins the loop to its fast cadence; only an
+            # idle ACP bridge (no desktop IPC) settles into the slow backoff.
+            delay = 3 if (self.ipc is not None and self.ipc.client_id) or any_queued else min(30, delay * 2)
+
+    def kick_maintenance(self):
+        """Wake the maintain loop now (turn end, approval answer, reconnect)."""
+        self.maintain_kick.set()
+
+    def mark_submission_failed(self, thread_id, submission_id, error):
+        """Record a definitive agent-side rejection of one dispatched message.
+
+        The submission stays in the queue list with a failed status, so the
+        phone offers retry/edit/delete instead of silently losing the text.
+        """
+        key = thread_id + ':' + submission_id
+        with self.submit_lock:
+            entry = self.submissions.get(key)
+            if entry is None or entry.get('status') != 'accepted':
+                return
+            entry['status'] = 'failed'
+            entry['error'] = str(error)[:500]
+            self._save_ledger()
+        session = self.live.get(thread_id)
+        if session is not None:
+            with session.condition:
+                session.changed()
 
     def _target(self, thread_id):
         session = self.activate(thread_id)
@@ -1228,8 +1273,10 @@ class Bridge:
                                  "editable": (not v.get("planResponse") and not v.get("goalActivation")
                                               and v["status"] != WAITING_INPUT),
                                  **({'attachments': v['attachmentNames']} if v.get('attachmentNames') else {}),
+                                 **({'error': v['error']} if v.get('error') else {}),
+                                 **({'error': v['lastQueueError']} if not v.get('error') and v.get('lastQueueError') else {}),
                                  **({'input': waiting[k]} if v["status"] == WAITING_INPUT and k in waiting else {})}
-                               for k, v in entries if v["status"] in ("queued", "unknown", WAITING_INPUT)
+                               for k, v in entries if v["status"] in ("queued", "unknown", "failed", WAITING_INPUT)
                                and k not in activation_ids]
         view["goalSubmission"] = None
         goal = view.get('goal')
@@ -1659,11 +1706,11 @@ class Bridge:
             return session, key, prior
 
     def cancel_queued(self, thread_id, submission_id):
-        session, key, _ = self._queued_entry(thread_id, submission_id, ('queued', WAITING_INPUT))
+        session, key, _ = self._queued_entry(thread_id, submission_id, ('queued', WAITING_INPUT, 'failed'))
         with session.action_lock:
             with self.submit_lock:
                 prior = self.submissions.get(key)
-                if not prior or prior["status"] not in ("queued", WAITING_INPUT):
+                if not prior or prior["status"] not in ("queued", WAITING_INPUT, "failed"):
                     raise ValueError("此消息已离开队列，请查看会话")
                 if prior["status"] == WAITING_INPUT:
                     self.inputs.cancel(thread_id, submission_id)
@@ -1676,23 +1723,27 @@ class Bridge:
     def edit_queued(self, thread_id, submission_id, text):
         if not isinstance(text, str) or not text.strip() or len(text) > 100000:
             raise ValueError("请输入 1–100000 字的消息")
-        session, key, _ = self._queued_entry(thread_id, submission_id)
+        session, key, _ = self._queued_entry(thread_id, submission_id, ('queued', 'failed'))
         with session.action_lock:
             with self.submit_lock:
                 prior = self.submissions.get(key)
-                if not prior or prior["status"] != "queued":
+                if not prior or prior["status"] not in ("queued", "failed"):
                     raise ValueError("此消息已离开队列，请查看会话")
                 if prior.get("planResponse") or prior.get("goalActivation"):
                     raise ValueError("此类排队消息不能编辑")
                 prior["text"] = text
                 prior["at"] = time.time()
+                prior.pop("queueAttempts", None)
+                prior.pop("error", None)
+                prior.pop("lastQueueError", None)
+                prior["status"] = "queued"
                 self._save_ledger()
             with session.condition:
                 session.changed()
         return {"status": "queued", "id": submission_id, "text": text}
 
     def send_queued_now(self, thread_id, submission_id):
-        session, key, entry = self._queued_entry(thread_id, submission_id)
+        session, key, entry = self._queued_entry(thread_id, submission_id, ('queued', 'failed'))
         with session.action_lock:
             with session.condition:
                 if not session.connected:
@@ -1701,8 +1752,11 @@ class Bridge:
                     raise ValueError("当前任务仍在运行，请等待完成后再立即发送")
             with self.submit_lock:
                 current = self.submissions.get(key)
-                if not current or current["status"] != "queued":
+                if not current or current["status"] not in ("queued", "failed"):
                     raise ValueError("此消息已离开队列，请查看会话")
+                current.pop("queueAttempts", None)
+                current.pop("error", None)
+                current.pop("lastQueueError", None)
                 current["status"] = "unknown"
                 self._save_ledger()
             try:
@@ -1882,7 +1936,7 @@ class Bridge:
             with session.condition:
                 active = self.adapter.is_active(session)
                 if active and mode == "send":
-                    raise ValueError("Codex 正在执行。请选择「排队发送」或「补充当前任务」。")
+                    raise ValueError(f"{self.adapter.label} 正在执行。请选择「排队发送」或「补充当前任务」。")
                 if not active and mode == "steer":
                     raise ValueError("当前任务已经结束，请使用普通发送")
                 if work_mode is not None and not (session.state.get("latestModel") or
@@ -1951,13 +2005,52 @@ class Bridge:
     def _dispatch(self, session, key, entry):
         submission_id = key.split(":")[1]
         files = self.uploads.resolve(session.id, entry.get('attachments', []))
-        response = self.adapter.dispatch_turn(session, submission_id, entry, files)
+        try:
+            response = self.adapter.dispatch_turn(session, submission_id, entry, files)
+        except TurnNotDispatched as exc:
+            # The turn provably never reached the agent: requeue instead of
+            # stranding the text as an "unknown outcome" card.
+            self._requeue_submission(key, str(exc))
+            raise
+        except ValueError as exc:
+            # Permanent validation failure (mode, skill, attachment): mark
+            # failed so the queue card offers edit/retry instead of retrying
+            # the same rejection forever.
+            self._fail_submission(key, str(exc))
+            raise
         with self.submit_lock:
             self.submissions[key]["status"] = "accepted"
             self._save_ledger()
         with session.condition:
             session.changed()
         return {"status": "accepted", "id": submission_id, "result": response}
+
+    def _requeue_submission(self, key, error):
+        attempts = 0
+        with self.submit_lock:
+            current = self.submissions.get(key)
+            if current is not None and current.get("status") == "unknown":
+                attempts = current.get('queueAttempts', 0) + 1
+                current['queueAttempts'] = attempts
+                current['lastQueueError'] = str(error)[:500]
+                current['status'] = 'failed' if attempts >= 10 else 'queued'
+                self._save_ledger()
+        self._signal_submission_change(key)
+
+    def _fail_submission(self, key, error):
+        with self.submit_lock:
+            current = self.submissions.get(key)
+            if current is not None and current.get("status") == "unknown":
+                current['status'] = 'failed'
+                current['error'] = str(error)[:500]
+                self._save_ledger()
+        self._signal_submission_change(key)
+
+    def _signal_submission_change(self, key):
+        session = self.live.get(key.split(":")[0])
+        if session is not None:
+            with session.condition:
+                session.changed()
 
     def interrupt(self, thread_id):
         session = self._target(thread_id)

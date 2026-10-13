@@ -2,6 +2,15 @@
 
 ### Added
 
+- ACP agents can now ask the phone structured questions: the gateway advertises `elicitation.form` at the ACP handshake, so ZCode / DeepSeek / Claude wrappers forward AskUserQuestion-style dialogs as one form card (single-select dropdowns, multi-select checkboxes, free-text companions) instead of refusing with "the ACP client does not support form elicitation". Answers validate against the form schema and reply as accept/decline/cancel; interrupting a pending question answers cancel, and unsupported schemas still point to the desktop.
+- Queued messages are now dispatched the moment the running turn ends (the maintenance loop is kicked on turn completion, approval answers and reconnects) instead of waiting out the ACP bridges' up-to-30s idle backoff.
+- Failed queued sends are no longer lost: a prompt that provably never reached the agent returns to the queue (with a retry cap), a definitive agent-side rejection or validation failure marks the row failed with its error, and the queue card offers 重试发送 / 修改 / 删除.
+
+### Changed / Fixed
+
+- Collapsed activity rows (commands, tool calls, thought summaries) now keep a three-line preview instead of hiding or flooding the timeline; expanding still shows the full text with lazy loading.
+- The phone now preselects 完成后发送（排队） in the composer while an agent without steering support is working, so one tap on 发送 queues the message instead of showing the busy error; the choice reverts when the session goes idle and a manual override wins. The busy error itself names the actual agent instead of always saying "Codex".
+- The chat list's running / completed dots work for ACP sessions again: `/api/activity` previously routed every local id to the Codex bridge, which silently dropped ZCode / Kimi / Claude / DeepSeek sessions, so their status markers never showed. Ids are now split by owning bridge, and ACP bridges report from live handles only — the poll never spawns an agent process just to paint a dot.
 - Kimi sessions now support Skill selection in the phone UI: skills advertised by the agent as ACP slash commands appear in the picker, and the chosen skill is sent as a leading `/<command>` in the message (one skill per message).
 - Optional Jev (TypeSafe AI) advisory triage for manual permission confirmations: each approval card gets a risk level, reversibility, confidence, and a starred suggested option, and the riskiest pending confirmations sort first. Jev only annotates and ranks — approvals still require an explicit tap, and unconfigured gateways keep the deterministic local labels. The API key, endpoint, and model are editable in the web settings dialog (persisted to `jev.json`, masked readback, live effect without a gateway restart); env vars remain launch-time defaults and an explicit key clear disables Jev even when they are set.
 - ACP agents that archive sub-agents as independent on-disk sessions are now discoverable: kimi session directories (`state.json` + per-agent wire logs), zcode (`acp-lazy-sessions.json` mapping + `cli/agents` transcripts), and claude (`subagents/` sidechain files) all feed the same timeline activity rows, read-only with size caps and mtime caching.
@@ -9,10 +18,10 @@
 
 ### Changed / Fixed
 
+- Plan (todo) panels now show completion state: ACP plan snapshots fold into one live panel per turn, entries render as a checklist with ✓/strikethrough for completed, ▸ for in-progress and ○ for pending, and the collapsed heading shows a `done/total` count (plus ✓ when everything is done) so a finished plan is recognizable at a glance.
 - ACP prompt timeouts are now idle-based: active `session/update` traffic or a pending permission request no longer counts toward the limit, and an idle-expired turn is cancelled agent-side (`session/cancel` plus cancelled answers to pending approvals) so later messages are not rejected by an orphaned turn.
 - Live chat updates now stream over incremental SSE (ready/changes/reset frames with `epoch.sequence` cursor resume); the web client uses one transport module for SSE and long-polling, with capped reconnect backoff and definitive logout on auth expiry. Legacy full-state SSE and the polling endpoints stay byte-compatible.
 - Queued messages can now be sent immediately when idle, edited, or deleted; automatic dispatch uses the latest edited content.
-- Plan (todo) panels now show completion state: ACP plan snapshots fold into one live panel per turn, entries render as a checklist with ✓/strikethrough for completed, ▸ for in-progress and ○ for pending, and the collapsed heading shows a `done/total` count (plus ✓ when everything is done) so a finished plan is recognizable at a glance.
 - Updated queue API documentation and added regression coverage for queue actions and edit/dispatch races.
 - Cross-agent migration can create a target session for an unmatched local project and exposes target capability metadata in timeline responses.
 - Upload storage accepts path-safe Agent-native session identifiers, and the mobile copy dialog layout keeps long content scrollable.

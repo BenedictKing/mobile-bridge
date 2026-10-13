@@ -10,8 +10,8 @@ from pathlib import Path
 
 from ..store import StoreUnavailable
 from ..uploads import image_type
-from .acp import AcpAuthRequired, AcpError, AcpProcess, AcpUnavailable
-from .acp_view import AcpSessionView, acp_normalize
+from .acp import AcpAuthRequired, AcpError, AcpProcess, AcpTimeout, AcpUnavailable
+from .acp_view import AcpSessionView, acp_normalize, validate_acp_form
 from .base import AgentAdapter
 
 LOG = logging.getLogger(__name__)
@@ -21,6 +21,14 @@ LIST_CACHE_SECONDS = 30
 # seconds without session updates and with no approval waiting on the human.
 PROMPT_TIMEOUT = 3600
 ACTIVITY_SLICE = 30
+
+
+class TurnNotDispatched(AcpUnavailable):
+    """The turn provably never reached the agent (safe to retry later)."""
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.dispatched = False
 
 
 class AcpHandle:
@@ -34,6 +42,7 @@ class AcpHandle:
         self.lock = threading.Lock()
         self.prompt_running = False
         self.pending_permissions = {}
+        self.pending_kinds = {}
         self.responders = {}
         self.config_options = []
         self.modes = None
@@ -50,6 +59,10 @@ class AcpAdapter(AgentAdapter):
     label = 'ACP Agent'
     capabilities = frozenset()
     auth_hint = '请先在电脑终端完成 Agent 登录'
+    # Attaching an ACP session means spawning its agent process; the list-page
+    # activity poll must never do that. Status rows only cover sessions that
+    # already have a live handle (open chat or notification watch).
+    activity_attach = False
     # npx-wrapped agents download the package on first run; subclasses raise this.
     INITIALIZE_TIMEOUT = 10
     # claude-agent-acp persists a transcript only after the first message; until
@@ -204,12 +217,17 @@ class AcpAdapter(AgentAdapter):
     def _flush_responders(handle):
         """Answer every pending reverse request as cancelled."""
         with handle.lock:
-            responders = list(handle.responders.values())
+            responders = [(request_id, respond, handle.pending_kinds.get(request_id))
+                          for request_id, respond in handle.responders.items()]
             handle.responders.clear()
             handle.pending_permissions.clear()
-        for respond in responders:
+            handle.pending_kinds.clear()
+        for request_id, respond, kind in responders:
             try:
-                respond({'outcome': {'outcome': 'cancelled'}})
+                if kind == 'input':
+                    respond({'action': 'cancel'})
+                else:
+                    respond({'outcome': {'outcome': 'cancelled'}})
             except AcpError:
                 pass
 
@@ -238,10 +256,26 @@ class AcpAdapter(AgentAdapter):
         handle.last_activity = time.monotonic()
         params = message.get('params') or {}
         request_id = message.get('id')
+        method = message.get('method')
+        if method == 'elicitation/create':
+            kind = 'input'
+        elif method in ('session/request_permission', 'session/requestPermission'):
+            kind = 'permission'
+        else:
+            # An unserved reverse request would block the agent forever.
+            try:
+                handle.process.respond_error(request_id, -32601, 'Method not found: ' + str(method))
+            except AcpError:
+                pass
+            return
         with handle.lock:
             handle.pending_permissions[request_id] = params
+            handle.pending_kinds[request_id] = kind
             handle.responders[request_id] = respond
-        handle.view.add_permission(request_id, params)
+        if kind == 'input':
+            handle.view.add_input(request_id, params)
+        else:
+            handle.view.add_permission(request_id, params)
         with self.bridge.lock:
             session = self.bridge.live.get(handle.session_id)
         if session is not None:
@@ -302,7 +336,7 @@ class AcpAdapter(AgentAdapter):
     def dispatch_turn(self, session, submission_id, entry, files):
         handle = self._handles.get(session.id)
         if handle is None or handle.dead or handle.load_error is not None:
-            raise AcpUnavailable('会话尚未连接，请重新打开')
+            raise TurnNotDispatched('会话尚未连接，请重新打开')
         work_mode = entry.get('workMode')
         if work_mode == 'goal':
             raise ValueError('当前 Agent 不支持目标模式')
@@ -320,7 +354,7 @@ class AcpAdapter(AgentAdapter):
         blocks.extend(self._attachment_blocks(handle, files))
         with handle.lock:
             if handle.prompt_running:
-                raise AcpUnavailable('任务正在执行，请稍候')
+                raise TurnNotDispatched('任务正在执行，请稍候')
             handle.prompt_running = True
         handle.view.begin_turn(entry['text'])
         self._sync(session)
@@ -334,7 +368,8 @@ class AcpAdapter(AgentAdapter):
             self._sync(session)
             raise
         handle.last_activity = time.monotonic()
-        threading.Thread(target=self._await_prompt, args=(session, handle, ident, future),
+        threading.Thread(target=self._await_prompt,
+                         args=(session, handle, ident, future, submission_id),
                          daemon=True).start()
         return {'accepted': True}
 
@@ -369,20 +404,52 @@ class AcpAdapter(AgentAdapter):
                                'uri': Path(item['path']).resolve().as_uri()})
         return blocks
 
-    def _await_prompt(self, session, handle, ident, future):
+    def _await_prompt(self, session, handle, ident, future, submission_id=None):
         try:
             result = self._wait_prompt(session, handle, ident, future)
+        except AcpTimeout:
+            # Outcome unknown: the turn may still be grinding agent-side, so
+            # the submission stays accepted and is never auto-replayed.
+            handle.view.fail_turn('Agent 响应超时')
+            self._notify_dispatch_outcome(session, submission_id, None)
+        except AcpUnavailable:
+            # Process death mid-turn: delivery result unknown, same rule.
+            handle.view.fail_turn('Agent 进程已退出，任务结果未知')
+            self._notify_dispatch_outcome(session, submission_id, None)
         except AcpError as exc:
+            # A JSON-RPC error is a definitive rejection: the wrapper reports
+            # the turn was never accepted, so the message can safely be marked
+            # failed and retried by hand from the queue card.
             handle.view.fail_turn(str(exc))
+            self._notify_dispatch_outcome(session, submission_id, str(exc))
         except Exception as exc:
             LOG.exception('ACP prompt wait failed')
             handle.view.fail_turn(f'任务失败：{exc}')
+            self._notify_dispatch_outcome(session, submission_id, None)
         else:
             if result is not None:
                 handle.view.end_turn(result.get('stopReason') or 'end_turn')
+            self._notify_dispatch_outcome(session, submission_id, None)
         with handle.lock:
             handle.prompt_running = False
         self._sync(session)
+        # A queued follow-up dispatches now, not on the next maintain tick.
+        self._kick_maintenance()
+
+    def _notify_dispatch_outcome(self, session, submission_id, error):
+        """Report a definitive prompt rejection to the submission ledger."""
+        if submission_id is None or error is None:
+            return
+        try:
+            self.bridge.mark_submission_failed(session.id, submission_id, error)
+        except Exception:
+            LOG.exception('Failed to mark submission as failed')
+
+    def _kick_maintenance(self):
+        try:
+            self.bridge.kick_maintenance()
+        except Exception:
+            pass
 
     def _wait_prompt(self, session, handle, ident, future):
         """Await the prompt answer; None means the idle timeout fired."""
@@ -440,9 +507,12 @@ class AcpAdapter(AgentAdapter):
         request_id = pending.get('id')
         with handle.lock:
             params = handle.pending_permissions.get(request_id)
+            kind = handle.pending_kinds.get(request_id)
             respond = handle.responders.get(request_id)
         if params is None or respond is None:
             raise ValueError('此请求已处理或已过期')
+        if kind == 'input':
+            return self._respond_to_input(handle, session, request_id, params, response, respond)
         if set(response) - {'optionId', 'cancel'}:
             raise ValueError('请求回应格式不正确')
         if response.get('cancel') is True:
@@ -456,6 +526,7 @@ class AcpAdapter(AgentAdapter):
             outcome = {'outcome': 'selected', 'optionId': option_id}
         with handle.lock:
             handle.pending_permissions.pop(request_id, None)
+            handle.pending_kinds.pop(request_id, None)
             handle.responders.pop(request_id, None)
         try:
             respond({'outcome': outcome})
@@ -466,6 +537,35 @@ class AcpAdapter(AgentAdapter):
             raise
         handle.view.remove_permission(request_id)
         self._sync(session)
+        return {'ok': True}
+
+    def _respond_to_input(self, handle, session, request_id, params, response, respond):
+        """Answer one elicitation/create form request."""
+        if not isinstance(response, dict) or set(response) - {'action', 'content'}:
+            raise ValueError('请求回应格式不正确')
+        action = response.get('action')
+        if action not in ('accept', 'decline', 'cancel'):
+            raise ValueError('请选择有效的回应')
+        content = None
+        if action == 'accept':
+            schema = params.get('requestedSchema') or {}
+            content = validate_acp_form(schema, response.get('content'))
+        with handle.lock:
+            handle.pending_permissions.pop(request_id, None)
+            handle.pending_kinds.pop(request_id, None)
+            handle.responders.pop(request_id, None)
+        try:
+            result = {'action': action}
+            if content is not None:
+                result['content'] = content
+            respond(result)
+        except AcpError:
+            self._sync(session)
+            raise
+        handle.view.remove_permission(request_id)
+        self._sync(session)
+        # Answering may unblock the turn; a queued follow-up can go out now.
+        self._kick_maintenance()
         return {'ok': True}
 
     # -- metadata ----------------------------------------------------------

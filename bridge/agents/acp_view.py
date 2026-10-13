@@ -14,6 +14,127 @@ TOOL_STATUS = {'pending': 'inProgress', 'in_progress': 'inProgress',
 # text fallback (copy, detail endpoint) readable when entries are flattened.
 PLAN_MARKS = {'completed': '✓', 'in_progress': '▸', 'pending': '○'}
 
+# Bounds for one elicitation form the phone must render and answer.
+MAX_FORM_FIELDS = 12
+MAX_FORM_CHARS = 20000
+MAX_FORM_ITEMS = 20
+
+
+def _enum_values(field):
+    """Extract the selectable string values of one elicitation property."""
+    values = field.get('enum')
+    if isinstance(values, list) and values:
+        return [v for v in values if isinstance(v, str)]
+    variants = field.get('oneOf') or field.get('anyOf') or []
+    if isinstance(variants, list) and variants:
+        picked = [v.get('const') for v in variants if isinstance(v, dict)]
+        return [v for v in picked if isinstance(v, str)]
+    return None
+
+
+def acp_form_supported(schema):
+    """Whether the phone can render this elicitation form schema.
+
+    Wrappers build forms out of a tiny vocabulary (AskUserQuestion-style):
+    string fields with a ``oneOf``/``enum`` pick list, multi-select arrays
+    with ``items.anyOf`` consts, and free-text/number/boolean companions.
+    Anything richer stays unsupported so the card points to the desktop.
+    """
+    if not isinstance(schema, dict) or schema.get('type', 'object') != 'object':
+        return False
+    properties = schema.get('properties')
+    if not isinstance(properties, dict) or not 1 <= len(properties) <= MAX_FORM_FIELDS:
+        return False
+    required = schema.get('required')
+    if required is not None and (not isinstance(required, list)
+                                 or not set(required) <= set(properties)):
+        return False
+    if len(json.dumps(schema, ensure_ascii=False)) > 65536:
+        return False
+    for field in properties.values():
+        if not isinstance(field, dict):
+            return False
+        allowed = {'type', 'title', 'description', 'enum', 'oneOf', 'anyOf', 'items',
+                   'default', 'minLength', 'maxLength', 'minimum', 'maximum', '_meta'}
+        if set(field) - allowed:
+            return False
+        kind = field.get('type', 'string')
+        if kind not in ('string', 'number', 'integer', 'boolean', 'array'):
+            return False
+        if kind == 'array':
+            items = field.get('items')
+            if not isinstance(items, dict) or set(items) - {'anyOf', 'enum', 'oneOf'}:
+                return False
+    return True
+
+
+def validate_acp_form(schema, content):
+    """Check one elicitation answer against its schema; returns normalized content.
+
+    Raises ``ValueError`` with a phone-friendly message on any mismatch, so an
+    invalid answer keeps the form open instead of cancelling the agent's ask.
+    """
+    if not isinstance(content, dict):
+        raise ValueError('请填写表单')
+    schema = schema if isinstance(schema, dict) else {}
+    properties = schema.get('properties') if isinstance(schema.get('properties'), dict) else {}
+    if not properties:
+        raise ValueError('此表单没有可填写的字段')
+    if set(content) - set(properties):
+        raise ValueError('回答包含未知字段')
+    for key in schema.get('required') or []:
+        if key not in content:
+            raise ValueError('请填写所有必填项')
+    result = {}
+    for key, value in content.items():
+        field = properties.get(key) or {}
+        kind = field.get('type', 'string')
+        choices = _enum_values(field) if kind in ('string', 'array') else None
+        if kind == 'array':
+            items = field.get('items') or {}
+            choices = _enum_values(items) if choices is None else choices
+            if not isinstance(value, list) or not value:
+                raise ValueError('请至少选择一项：' + str(field.get('title') or key))
+            if len(value) > MAX_FORM_ITEMS or any(not isinstance(v, str) for v in value):
+                raise ValueError('选择数量超出限制：' + str(field.get('title') or key))
+            if choices is not None:
+                bad = [v for v in value if v not in choices]
+                if bad:
+                    raise ValueError('包含无效选项：' + str(field.get('title') or key))
+            result[key] = value
+            continue
+        if kind == 'boolean':
+            if not isinstance(value, bool):
+                raise ValueError('请勾选或留空：' + str(field.get('title') or key))
+            result[key] = value
+            continue
+        if kind in ('number', 'integer'):
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError('请填写数字：' + str(field.get('title') or key))
+            if kind == 'integer' and int(value) != value:
+                raise ValueError('请填写整数：' + str(field.get('title') or key))
+            minimum, maximum = field.get('minimum'), field.get('maximum')
+            if minimum is not None and value < minimum or maximum is not None and value > maximum:
+                raise ValueError('数值超出范围：' + str(field.get('title') or key))
+            result[key] = value
+            continue
+        if not isinstance(value, str):
+            raise ValueError('请填写文本：' + str(field.get('title') or key))
+        if not field.get('minLength', 0) <= len(value) <= field.get('maxLength', MAX_FORM_CHARS):
+            raise ValueError('文本长度超出限制：' + str(field.get('title') or key))
+        if choices is not None and field.get('enum') is not None and value not in choices:
+            # Plain-enum string fields are strict; oneOf lists may carry a skip
+            # sentinel the wrapper interprets, so they stay open.
+            raise ValueError('请选择有效的选项：' + str(field.get('title') or key))
+        if not value:
+            # Wrappers treat a blank "Other" companion as absent.
+            if key in (schema.get('required') or []):
+                raise ValueError('请填写所有必填项')
+            continue
+        result[key] = value
+    return result
+
+
 def acp_normalize(state, connected):
     """ACP state is already normalized; only the liveness flag is dynamic."""
     return {**state, 'connected': connected}
@@ -180,6 +301,24 @@ class AcpSessionView:
         with self._lock:
             self.requests = [r for r in self.requests if r.get('id') != request_id]
             self.requests.append(entry)
+
+    def add_input(self, request_id, params):
+        """Surface one elicitation/create form request as an answer card."""
+        schema = params.get('requestedSchema')
+        supported = acp_form_supported(schema)
+        entry = {'id': request_id, 'method': 'acp/requestInput',
+                 'supported': supported,
+                 'params': {'message': params.get('message') or ''}
+                 if supported else {'message': '此问题需要在桌面回答'}}
+        if supported:
+            entry['params']['schema'] = schema
+        with self._lock:
+            self.requests = [r for r in self.requests if r.get('id') != request_id]
+            self.requests.append(entry)
+
+    def remove_permission(self, request_id):
+        with self._lock:
+            self.requests = [r for r in self.requests if r.get('id') != request_id]
 
     def apply_config(self, config_options, modes):
         """Seed model/thinking/mode from a session/new or session/load result."""

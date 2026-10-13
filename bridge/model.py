@@ -246,6 +246,7 @@ def normalize_request(request):
         "item/plan/requestImplementation": ("turnId", "planContent"),
         "mcpServer/elicitation/request": ("serverName", "message", "mode", "requestedSchema"),
         "acp/requestPermission": ("title", "command", "options"),
+        "acp/requestInput": ("message", "schema"),
     }
     # Identity verification is intentionally desktop-only, including its challenge data.
     verification = "openai/userVerification" in json.dumps(params.get("_meta", {})) or "openai/userVerification" in params

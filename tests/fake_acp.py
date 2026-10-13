@@ -75,6 +75,8 @@ class FakeAcpAgent:
         self.stop_reason = 'end_turn'
         self.cancelled = False
         self.permission_outcome = None
+        self.elicitation_outcome = None
+        self.initialize_params = None
         self.session_count = 0
         self.config_echo_all = True
         self.requests = []
@@ -197,6 +199,7 @@ class FakeAcpAgent:
         handler(state, ident, params)
 
     def _method_initialize(self, state, ident, params):
+        self.initialize_params = params
         result = {
             'protocolVersion': 1,
             'agentCapabilities': self.capabilities,
@@ -261,6 +264,8 @@ class FakeAcpAgent:
                     break
                 if isinstance(step, tuple) and step[0] == 'permission':
                     self._ask_permission(state, session_id, step[1])
+                elif isinstance(step, tuple) and step[0] == 'elicitation':
+                    self._ask_elicitation(state, session_id, step[1])
                 elif isinstance(step, tuple) and step[0] == 'await_cancel':
                     self._cancel_turn.wait(10)
                     break
@@ -339,6 +344,24 @@ class FakeAcpAgent:
             self._client_responses.pop(ident, None)
         result = (slot['message'] or {}).get('result') or {}
         self.permission_outcome = result.get('outcome')
+
+    def _ask_elicitation(self, state, session_id, params):
+        """Round-trip one elicitation/create form request, like the wrappers."""
+        with self._responses_lock:
+            ident = self._next_reverse
+            self._next_reverse += 1
+            slot = {'event': threading.Event(), 'message': None}
+            self._client_responses[ident] = slot
+        payload = dict(params) if isinstance(params, dict) else {}
+        payload['sessionId'] = session_id
+        self._reply(state, {'jsonrpc': '2.0', 'id': ident,
+                            'method': 'elicitation/create', 'params': payload})
+        slot['event'].wait(10)
+        with self._responses_lock:
+            self._client_responses.pop(ident, None)
+        message = slot['message'] or {}
+        self.elicitation_outcome = message.get('result') if message.get('result') is not None \
+            else message.get('error')
 
     def _client_response(self, message):
         with self._responses_lock:

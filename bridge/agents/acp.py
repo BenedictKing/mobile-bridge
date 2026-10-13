@@ -122,7 +122,10 @@ class AcpProcess:
         result = self.request('initialize', {
             'protocolVersion': 1,
             'clientCapabilities': {'fs': {'readTextFile': False, 'writeTextFile': False},
-                                   'terminal': False},
+                                   'terminal': False,
+                                   # Without this flag zcode/dsh/claude wrappers refuse to
+                                   # surface AskUserQuestion-style dialogs at all.
+                                   'elicitation': {'form': True}},
         }, timeout=timeout) or {}
         self.capabilities = result.get('agentCapabilities') or {}
         self.agent_info = result.get('agentInfo') or {}

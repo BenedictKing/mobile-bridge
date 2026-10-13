@@ -32,7 +32,7 @@ class AcpTransportTests(unittest.TestCase):
         self.assertEqual(fake.requests[0]['params'], {
             'protocolVersion': 1,
             'clientCapabilities': {'fs': {'readTextFile': False, 'writeTextFile': False},
-                                   'terminal': False},
+                                   'terminal': False, 'elicitation': {'form': True}},
         })
 
     def test_request_roundtrip_and_unknown_method_keeps_error_code(self):

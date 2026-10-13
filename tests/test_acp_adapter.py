@@ -416,6 +416,113 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(fake.permission_outcome, {'outcome': 'cancelled'})
         self.assertTrue(self.wait_prompt_done(bridge))
 
+    def test_initialize_declares_elicitation_form_capability(self):
+        fake, _, bridge = self.make_bridge()
+        self.view(bridge)
+        params = fake.initialize_params or {}
+        self.assertTrue(params.get('clientCapabilities', {}).get('elicitation', {}).get('form'))
+
+    def test_elicitation_form_round_trip(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [('elicitation', {
+            'mode': 'form',
+            'message': 'Please answer the question.',
+            'requestedSchema': {
+                'type': 'object',
+                'properties': {
+                    'q_0': {'type': 'string', 'title': 'Auth method',
+                            'oneOf': [{'const': 'cli', 'title': 'CLI'},
+                                      {'const': 'api', 'title': 'API Key'}]},
+                    'q_0_other': {'type': 'string', 'title': 'Other'},
+                },
+                'required': ['q_0'],
+            },
+        })]
+        self.view(bridge)
+        bridge.send(SID, 'ask me', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: any(r.get('method') == 'acp/requestInput'
+                                                   for r in self.view(bridge)['requests'])))
+        request = next(r for r in self.view(bridge)['requests']
+                       if r.get('method') == 'acp/requestInput')
+        self.assertTrue(request['supported'])
+        self.assertEqual(request['params']['message'], 'Please answer the question.')
+        # Missing required answers keep the card open without touching the agent.
+        with self.assertRaises(ValueError):
+            bridge.respond(SID, request['id'], {'action': 'accept', 'content': {}})
+        result = bridge.respond(SID, request['id'],
+                                {'action': 'accept', 'content': {'q_0': 'api', 'q_0_other': ''}})
+        self.assertEqual(result, {'ok': True})
+        self.assertEqual(fake.elicitation_outcome,
+                         {'action': 'accept', 'content': {'q_0': 'api'}})
+        self.assertTrue(self.wait_prompt_done(bridge))
+        self.assertTrue(self.wait_for(lambda: not self.view(bridge)['requests']))
+
+    def test_elicitation_decline_and_interrupt_cancel(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [('elicitation', {
+            'mode': 'form', 'message': 'Pick one',
+            'requestedSchema': {'type': 'object', 'properties': {
+                'q_0': {'type': 'string', 'oneOf': [{'const': 'a'}, {'const': 'b'}]}}},
+        })]
+        self.view(bridge)
+        bridge.send(SID, 'ask', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: any(r.get('method') == 'acp/requestInput'
+                                                   for r in self.view(bridge)['requests'])))
+        request = next(r for r in self.view(bridge)['requests']
+                       if r.get('method') == 'acp/requestInput')
+        bridge.respond(SID, request['id'], {'action': 'decline'})
+        self.assertEqual(fake.elicitation_outcome, {'action': 'decline'})
+
+        # A second ask interrupted by the user answers cancel instead of hanging.
+        fake.elicitation_outcome = None
+        fake.prompt_updates = [('elicitation', {
+            'mode': 'form', 'message': 'Pick again',
+            'requestedSchema': {'type': 'object', 'properties': {
+                'q_0': {'type': 'string', 'oneOf': [{'const': 'a'}]}}},
+        })]
+        bridge.send(SID, 'ask again', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: any(r.get('method') == 'acp/requestInput'
+                                                   for r in self.view(bridge)['requests'])))
+        bridge.interrupt(SID)
+        self.assertTrue(self.wait_for(lambda: fake.elicitation_outcome == {'action': 'cancel'}))
+        self.assertTrue(self.wait_prompt_done(bridge))
+
+    def test_elicitation_multiselect_and_unsupported_schema(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [('elicitation', {
+            'mode': 'form', 'message': 'Multi',
+            'requestedSchema': {'type': 'object', 'properties': {
+                'q_0': {'type': 'array', 'title': 'Libraries',
+                        'items': {'anyOf': [{'const': 'vue'}, {'const': 'svelte'}]}}}},
+        })]
+        self.view(bridge)
+        bridge.send(SID, 'pick', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: any(r.get('method') == 'acp/requestInput'
+                                                   for r in self.view(bridge)['requests'])))
+        request = next(r for r in self.view(bridge)['requests']
+                       if r.get('method') == 'acp/requestInput')
+        with self.assertRaises(ValueError):  # empty multi-select
+            bridge.respond(SID, request['id'], {'action': 'accept', 'content': {'q_0': []}})
+        with self.assertRaises(ValueError):  # value outside the const list
+            bridge.respond(SID, request['id'], {'action': 'accept', 'content': {'q_0': ['react']}})
+        bridge.respond(SID, request['id'],
+                       {'action': 'accept', 'content': {'q_0': ['vue', 'svelte']}})
+        self.assertEqual(fake.elicitation_outcome,
+                         {'action': 'accept', 'content': {'q_0': ['vue', 'svelte']}})
+        self.assertTrue(self.wait_prompt_done(bridge))
+
+    def test_unsupported_elicitation_schema_stays_desktop_only(self):
+        _, _, bridge = self.make_bridge()
+        view = bridge.adapter  # adapter-level check without a live turn
+        from bridge.agents.acp_view import acp_form_supported
+        self.assertFalse(acp_form_supported({'type': 'object', 'properties': {
+            'x': {'type': 'string', 'pattern': '^a'}}}))
+        self.assertFalse(acp_form_supported({'type': 'object', 'properties': {
+            f'f{i}': {'type': 'string'} for i in range(13)}}))
+        self.assertTrue(acp_form_supported({'type': 'object', 'properties': {
+            'x': {'type': 'string', 'oneOf': [{'const': 'a', 'title': 'A'}]}}}))
+        self.assertIsNotNone(view)
+
     def test_send_while_active_rejected_and_queue_dispatches_after_idle(self):
         fake, _, bridge = self.make_bridge()
         fake.prompt_updates = [('await_cancel',)]
@@ -426,18 +533,119 @@ class AcpAdapterTests(unittest.TestCase):
             bridge.send(SID, 'second', str(uuid.uuid4()))
         queued_id = str(uuid.uuid4())
         self.assertEqual(bridge.send(SID, 'later', queued_id, 'queue')['status'], 'queued')
-        bridge.interrupt(SID)
-        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['status'] == 'idle'))
-        self.assertTrue(self.wait_prompt_done(bridge))
+        # The follow-up script is armed before the interrupt: the turn-end kick
+        # dispatches the queued message immediately, without a maintain delay.
         fake.prompt_updates = [chunk('agent_message_chunk', 'queued answer')]
-        session = bridge.live[SID]
         key = SID + ':' + queued_id
-        bridge._send_queued(session, key, bridge.submissions[key])
-        self.assertEqual(bridge.submissions[key]['status'], 'accepted')
+        bridge.interrupt(SID)
+        self.assertTrue(self.wait_for(lambda: bridge.submissions[key]['status'] == 'accepted'))
+        self.assertTrue(self.wait_prompt_done(bridge))
         self.assertTrue(self.wait_for(lambda: bridge.view(SID)['status'] == 'idle'))
         prompts = [r for r in fake.requests if r['method'] == 'session/prompt']
         self.assertEqual(len(prompts), 2)
         self.assertEqual(prompts[-1]['params']['prompt'][0]['text'], 'later')
+
+    def test_queue_requeues_when_turn_never_dispatched(self):
+        from bridge.agents.acp_adapter import TurnNotDispatched
+        fake, adapter, bridge = self.make_bridge()
+        fake.prompt_updates = [chunk('agent_message_chunk', 'hi')]
+        self.view(bridge)
+        queued_id = str(uuid.uuid4())
+        key = SID + ':' + queued_id
+        self.assertEqual(bridge.send(SID, 'later', queued_id, 'queue')['status'], 'queued')
+        session = bridge.live[SID]
+        # A busy handle means the prompt provably never left: the entry returns
+        # to the queue instead of lingering as an unknown outcome.
+        handle = adapter._handles[SID]
+        with handle.lock:
+            handle.prompt_running = True
+        # The idle check passes but the prompt submit hits the busy guard: the
+        # exact race the requeue path exists for.
+        with patch.object(adapter, 'is_active', return_value=False):
+            with self.assertRaises(TurnNotDispatched):
+                bridge._send_queued(session, key, bridge.submissions[key])
+        self.assertEqual(bridge.submissions[key]['status'], 'queued')
+        self.assertEqual(bridge.submissions[key]['queueAttempts'], 1)
+        with handle.lock:
+            handle.prompt_running = False
+
+    def test_queue_marks_failed_after_repeated_dispatch_errors(self):
+        from bridge.agents.acp_adapter import TurnNotDispatched
+        fake, adapter, bridge = self.make_bridge()
+        self.view(bridge)
+        queued_id = str(uuid.uuid4())
+        key = SID + ':' + queued_id
+        bridge.send(SID, 'later', queued_id, 'queue')
+        session = bridge.live[SID]
+        handle = adapter._handles[SID]
+        with handle.lock:
+            handle.prompt_running = True
+        with patch.object(adapter, 'is_active', return_value=False):
+            for _ in range(10):
+                with self.assertRaises(TurnNotDispatched):
+                    bridge._send_queued(session, key, bridge.submissions[key])
+        self.assertEqual(bridge.submissions[key]['status'], 'failed')
+        self.assertIn('lastQueueError', bridge.submissions[key])
+        # The failed row stays visible in the queue list for retry/edit.
+        row = next(r for r in bridge.view(SID)['submissions'] if r['id'] == queued_id)
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('error', row)
+        with handle.lock:
+            handle.prompt_running = False
+        # A retry through the queue action clears the failure state.
+        bridge.submissions[key]['status'] = 'failed'
+        fake.prompt_updates = [chunk('agent_message_chunk', 'ok')]
+        self.assertEqual(bridge.send_queued_now(SID, queued_id)['status'], 'accepted')
+        self.assertEqual(bridge.submissions[key]['status'], 'accepted')
+        self.assertTrue(self.wait_prompt_done(bridge))
+
+    def test_queue_permanent_validation_error_marks_failed(self):
+        fake, adapter, bridge = self.make_bridge()
+        self.view(bridge)
+        queued_id = str(uuid.uuid4())
+        key = SID + ':' + queued_id
+        bridge.send(SID, 'later', queued_id, 'queue')
+        entry = bridge.submissions[key]
+        entry['skills'] = [{'name': 'gone', 'kind': 'command', 'title': 'gone'}]
+        # The generic path rejects the skill before touching the agent.
+        entry['text'] = '/gone later'
+        def refuse(*args, **kwargs):
+            raise ValueError('此 Agent 暂不支持文件附件')
+        original = adapter.dispatch_turn
+        adapter.dispatch_turn = refuse
+        session = bridge.live[SID]
+        try:
+            with self.assertRaises(ValueError):
+                bridge._send_queued(session, key, entry)
+        finally:
+            adapter.dispatch_turn = original
+        self.assertEqual(bridge.submissions[key]['status'], 'failed')
+        # Editing repairs the message back into the queue.
+        bridge.edit_queued(SID, queued_id, 'fixed text')
+        self.assertEqual(bridge.submissions[key]['status'], 'queued')
+        self.assertNotIn('error', bridge.submissions[key])
+
+    def test_prompt_rejection_marks_submission_failed(self):
+        fake, _, bridge = self.make_bridge()
+        fake.prompt_updates = [chunk('agent_message_chunk', 'partial')]
+        self.errors_note = None
+        self.view(bridge)
+        submission_id = str(uuid.uuid4())
+        key = SID + ':' + submission_id
+        bridge.send(SID, 'hello', submission_id)
+        self.assertTrue(self.wait_for(lambda: bridge.submissions[key]['status'] == 'accepted'))
+        # A definitive JSON-RPC rejection of a later queued prompt flips the
+        # submission to failed so the phone offers retry instead of silence.
+        queued_id = str(uuid.uuid4())
+        qkey = SID + ':' + queued_id
+        bridge.send(SID, 'next', queued_id, 'queue')
+        fake.errors['session/prompt'] = {'code': -32010, 'message': 'A prompt is already running'}
+        fake.prompt_updates = []
+        bridge._send_queued(bridge.live[SID], qkey, bridge.submissions[qkey])
+        self.assertTrue(self.wait_for(lambda: bridge.submissions[qkey]['status'] == 'failed'))
+        self.assertIn('already running', bridge.submissions[qkey].get('error', ''))
+        self.assertTrue(self.wait_prompt_done(bridge))
+        del fake.errors['session/prompt']
 
     def test_process_death_disconnects_session(self):
         fake, adapter, bridge = self.make_bridge()
@@ -675,6 +883,35 @@ class AcpHttpTests(unittest.TestCase):
         status, data = response.status, response.read()
         conn.close()
         return status, json.loads(data)
+
+    def test_activity_routes_acp_sessions_to_owning_bridge(self):
+        # Load the list so each bridge's routing set knows its session ids.
+        self.request('GET', '/api/sessions')
+        # A kimi chat with a live running handle reports active; an unattached
+        # ACP session reports offline without spawning an agent process.
+        self.fake_k.prompt_updates = [('await_cancel',)]
+        status, body = self.request('POST', '/api/sessions/' + self.SID_K + '/send',
+                                    {'text': 'run', 'id': str(uuid.uuid4())})
+        self.assertEqual(status, 200, body)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with self.bridge_k.live[self.SID_K].condition:
+                active = self.bridge_k.adapter.is_active(self.bridge_k.live[self.SID_K])
+            if active:
+                break
+            time.sleep(0.02)
+        self.assertTrue(active)
+        status, body = self.request('POST', '/api/activity',
+                                    {'hosts': {'local': [self.SID_A, self.SID_K]}})
+        self.assertEqual(status, 200)
+        rows = {row['id']: row for row in body['sessions']}
+        self.assertEqual(rows[self.SID_K]['status'], 'active')
+        self.assertTrue(rows[self.SID_K]['connected'])
+        self.assertEqual(rows[self.SID_A]['status'], 'unknown')
+        self.assertFalse(rows[self.SID_A]['connected'])
+        # No agent process was spawned just to answer the activity poll.
+        self.assertNotIn(self.SID_A, self.bridge_a.adapter._handles)
+        self.bridge_k.interrupt(self.SID_K)
 
     def test_agent_query_selects_bridge_and_merges_rows(self):
         status, body = self.request('GET', '/api/sessions')
