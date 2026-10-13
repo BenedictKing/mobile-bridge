@@ -13,6 +13,7 @@ Volatile values (instance ids, csrf tokens, session cookies, server/date
 headers) are masked; everything else must be stable across runs.
 """
 import argparse
+import gzip
 import hashlib
 import http.client
 import json
@@ -59,12 +60,18 @@ REQUESTS = [
     ('timeline-detail', 'GET', '/api/sessions/abcde/detail?key=k-1&offset=0', None, {}, True),
     ('poll-after', 'GET', '/api/sessions/abcde/poll?after=6', None, {}, True),
     ('changes-immediate', 'GET', '/api/sessions/abcde/changes?after=6&epoch=other', None, {}, True),
+    ('timeline-js-gzip', 'GET', '/timeline.js', None,
+     {'Accept-Encoding': 'gzip'}, True),
+    ('timeline-js-gzip-q0', 'GET', '/timeline.js', None,
+     {'Accept-Encoding': 'gzip;q=0'}, True),
+    ('index-gzip', 'GET', '/', None, {'Accept-Encoding': 'gzip, br'}, True),
 ]
 
 # SSE streams captured separately: (name, path, frames-to-read)
 SSE_REQUESTS = [
     ('sse-state', '/api/sessions/abcde/events', 1),
     ('sse-incremental', '/api/sessions/abcde/events?incremental=1', 2),
+    ('sse-logged-out', '/api/sessions/abcde/events', 1),
 ]
 
 MASKS = [
@@ -124,11 +131,14 @@ class EmptyBridge:
                                         'switch': {'phase': 'idle'}})})()
 
 
-def normalize_headers(headers):
+def normalize_headers(headers, gzip_body=False):
     kept = []
     for name, value in headers:
         lowered = name.lower()
         if lowered in DROPPED_HEADERS:
+            continue
+        if gzip_body and lowered == 'content-length':
+            # Compressed length is an artifact of each stack's deflate.
             continue
         if lowered == 'set-cookie':
             value = re.sub(r'^([^=;]+)=[^;]*(;.*)?$', r'\1=<TOKEN>\2', value)
@@ -182,8 +192,11 @@ def replay(port):
         if name.startswith('login-') and 'wrong' not in name:
             session['cookie'] = response.getheader('Set-Cookie', '').split(';')[0]
             session['csrf'] = json.loads(data)['csrf']
+        gzipped = response.getheader('Content-Encoding', '') == 'gzip'
+        if gzipped:
+            data = gzip.decompress(data)
         entry = {'name': name, 'status': status,
-                 'headers': normalize_headers(response_headers)}
+                 'headers': normalize_headers(response_headers, gzipped)}
         content_type = response.getheader('Content-Type', '')
         if 'json' in content_type or data[:1] in (b'{', b'['):
             entry['body'] = mask(data.decode('utf-8', 'replace'))
@@ -197,7 +210,8 @@ def replay(port):
 
     def capture_sse(name, path, frames_wanted):
         headers = {'Origin': origin, 'Host': f'127.0.0.1:{port}',
-                   'Cookie': session.get('cookie', ''),
+                   'Cookie': ('codex_mobile_session=bogus-token' if name == 'sse-logged-out'
+                              else session.get('cookie', '')),
                    'X-CSRF-Token': session.get('csrf', '')}
         connection = http.client.HTTPConnection('127.0.0.1', port, timeout=6)
         connection.request('GET', path, headers=headers)
