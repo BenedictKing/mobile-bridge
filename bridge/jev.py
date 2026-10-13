@@ -1,8 +1,15 @@
-"""Jev risk triage for permission confirmations.
+"""Jev risk triage for permission confirmations and task continuation.
 
 Jev (TypeSafe AI) answers typed questions only; it never generates text. By
 default the assessment is advisory. An explicit auto-approve setting may
 submit only high-confidence, low-risk, reversible allow-once/session choices.
+
+A separate auto-continue setting lets the gateway resume unfinished work:
+when a live turn settles, Jev judges whether the user's task is complete and
+why the agent stopped; an incomplete task (or an unexpectedly interrupted
+turn, even without a Jev key) sends one automatic "继续" message. Stops that
+look like quota or billing exhaustion never continue — a deterministic
+keyword check runs before and below the Jev classification.
 
 Configuration is web-editable and process-wide: `JevSettings` persists under
 the gateway root (jev.json, 0600). Launch-time env vars (TYPESAFE_API_KEY,
@@ -300,6 +307,144 @@ def auto_response(request, assessment):
     return {'decision': native}
 
 
+# -- auto continue -------------------------------------------------------
+#
+# A turn that settles while quota or billing is exhausted must never be
+# resumed: every "继续" would just bounce off the same paywall. The keyword
+# scan is deliberately wide and runs below Jev — a false positive costs one
+# skipped nudge, a false negative costs an error loop.
+QUOTA_STOP_RE = re.compile(
+    r'额度不足|额度已|余额不足|余额耗尽|余额已|积分不足|欠费|充值|配额不足|配额已'
+    r'|用量限制|用量已达|用量超|达到.{0,6}上限|请求过于频繁|频率限制|限流'
+    # Separators must be real (space/hyphen): usage_limit / RateLimiter are
+    # code identifiers, not paywall messages.
+    r'|usage[\s-]+limit|rate[\s-]+limit|rate-limit|quota|insufficient\s+credit'
+    r'|out\s+of\s+credit|credit\s+balance|no\s+credits?\b|exceeded\s+your'
+    r'|limit\s+reached|too\s+many\s+requests|payment\s+required|billing'
+    r'|subscription\s+limit|\b402\b|\b429\b', re.IGNORECASE)
+
+CONTINUE_STOP_KINDS = ('finished', 'interrupted', 'quota', 'awaiting_user', 'other')
+# A resume needs the same certainty bar as an auto approval: below it the
+# task waits for the human, not for a coin flip.
+CONTINUE_MIN_CONFIDENCE = 0.8
+
+
+def quota_stop(*texts):
+    """True when any stop context text signals quota/billing exhaustion."""
+    return any(isinstance(text, str) and QUOTA_STOP_RE.search(text)
+               for text in texts)
+
+
+def build_continue_payload(context):
+    """One Jev request: is the task done, why did it stop, should we resume."""
+    return {
+        'model': 'jev-latest',
+        'state': dict(context or {}),
+        'questions': {
+            'complete': {
+                'type': 'noul',
+                'instructions': 'Based on this conversation tail, is the '
+                                "user's task fully completed?",
+                'criteria': {
+                    'true': 'The agent finished the requested work: the final '
+                            'message states or shows the outcome, and nothing '
+                            'requested is left open.',
+                    'false': 'Work remains: the agent stopped midway, the task '
+                             'was interrupted, the plan is only partly done, '
+                             'or the final message defers or truncates work.',
+                },
+            },
+            'stop_kind': {
+                'type': 'choice',
+                'instructions': 'Why did the agent stop after this turn?',
+                'criteria': {
+                    'finished': 'The agent chose to end the turn because the '
+                                'task is done.',
+                    'interrupted': 'The turn was cut off unexpectedly: a '
+                                   'timeout, process exit, output/token limit, '
+                                   'or transport drop.',
+                    'quota': 'The account ran out of quota, credits, or rate '
+                             'limit; the message mentions usage limits, '
+                             'billing, or asks to upgrade or recharge.',
+                    'awaiting_user': 'The agent asked the user a question or '
+                                     'needs more input before it can proceed.',
+                    'other': 'None of the above clearly applies.',
+                },
+            },
+            'continue': {
+                'type': 'choice',
+                'instructions': 'Should the gateway automatically send one '
+                                '"继续" (continue) message so the agent keeps '
+                                'working on this task?',
+                'criteria': {
+                    'continue': 'The task is incomplete, the agent is able to '
+                                'make progress, and resuming is safe.',
+                    'stop': 'Do not resume: the task is complete, blocked on '
+                            'the user, out of quota, or resuming would be '
+                            'unsafe or pointless.',
+                    'review': 'Not confident enough to decide either way.',
+                },
+            },
+        },
+    }
+
+
+def normalize_continue_answer(payload):
+    """Map a Jev continuation response to the decision shape, or None."""
+    answers = (payload or {}).get('answers') or {}
+    complete = answers.get('complete') if isinstance(answers.get('complete'), dict) else {}
+    kind = answers.get('stop_kind') if isinstance(answers.get('stop_kind'), dict) else {}
+    resume = answers.get('continue') if isinstance(answers.get('continue'), dict) else {}
+    choice = resume.get('choice')
+    if choice not in ('continue', 'stop', 'review'):
+        return None
+    result = {'source': 'jev',
+              'shouldContinue': choice == 'continue',
+              'confidence': _probability(resume.get('confidence'))}
+    noul = _probability(complete.get('noul'))
+    if noul is not None:
+        result['complete'] = noul >= 0.5
+        result['incomplete'] = noul < 0.5
+    if kind.get('choice') in CONTINUE_STOP_KINDS:
+        result['stopKind'] = kind.get('choice')
+    return result
+
+
+def decide_continue(context, assessment):
+    """Whether to send the automatic continue; returns (send, reason).
+
+    ``context`` is the shape ``build_continue_payload`` serializes:
+    turnStatus/stopReason/error plus the conversation tail. The deterministic
+    quota check always wins over Jev; a missing assessment (no key or an API
+    failure) still resumes unexpectedly interrupted turns.
+    """
+    stop_reason = str(context.get('stopReason') or '')
+    error = str(context.get('error') or '')
+    tail = str(context.get('assistantTail') or '')[-800:]
+    if quota_stop(stop_reason, error, tail):
+        return False, 'quota'
+    status = str(context.get('turnStatus') or '')
+    if status == 'interrupted' or stop_reason == 'cancelled':
+        # The user stopped the turn; resuming would undo their decision.
+        return False, 'cancelled'
+    interrupted = status == 'failed' or stop_reason in ('max_tokens', 'max_turns')
+    if assessment is None or assessment.get('source') != 'jev':
+        return (True, 'interrupted') if interrupted else (False, 'undecided')
+    kind = assessment.get('stopKind')
+    if kind == 'quota':
+        return False, 'quota'
+    if kind == 'awaiting_user':
+        return False, 'awaiting_user'
+    if not assessment.get('incomplete'):
+        return False, 'complete' if assessment.get('incomplete') is False else 'unsure'
+    if assessment.get('shouldContinue') is not True:
+        return False, 'jev_stop' if assessment.get('shouldContinue') is False else 'jev_review'
+    confidence = assessment.get('confidence') or 0.0
+    if confidence < CONTINUE_MIN_CONFIDENCE:
+        return False, 'low_confidence'
+    return True, 'jev_continue'
+
+
 class JevSettings:
     """Web-editable Jev configuration, one file per gateway.
 
@@ -308,9 +453,10 @@ class JevSettings:
     returned to the client in full — only a masked form for the settings form.
     """
 
-    FIELDS = ('apiKey', 'baseUrl', 'model', 'proxy', 'autoApprove')
+    FIELDS = ('apiKey', 'baseUrl', 'model', 'proxy', 'autoApprove', 'autoContinue')
     ENV = {'apiKey': 'TYPESAFE_API_KEY', 'baseUrl': 'TYPESAFE_BASE_URL',
            'model': 'JEV_MODEL', 'proxy': 'JEV_PROXY'}
+    BOOL_FIELDS = ('autoApprove', 'autoContinue')
 
     def __init__(self, path):
         self.path = Path(path)
@@ -324,9 +470,12 @@ class JevSettings:
             return {}
         if not isinstance(data, dict):
             return {}
-        return {key: value for key, value in data.items()
-                if key in ('apiKey', 'baseUrl', 'model', 'proxy') and isinstance(value, str)} | (
-                    {'autoApprove': data['autoApprove']} if isinstance(data.get('autoApprove'), bool) else {})
+        values = {key: value for key, value in data.items()
+                  if key in ('apiKey', 'baseUrl', 'model', 'proxy') and isinstance(value, str)}
+        for field in self.BOOL_FIELDS:
+            if isinstance(data.get(field), bool):
+                values[field] = data[field]
+        return values
 
     def read(self):
         """Effective values: saved file entry, else env var, else default."""
@@ -341,7 +490,8 @@ class JevSettings:
         effective['baseUrl'] = effective['baseUrl'] or DEFAULT_BASE_URL
         effective['model'] = effective['model'] or 'jev-latest'
         effective['proxy'] = effective['proxy'] or ''
-        effective['autoApprove'] = bool(saved.get('autoApprove', False))
+        for field in self.BOOL_FIELDS:
+            effective[field] = bool(saved.get(field, False))
         return effective
 
     def update(self, value):
@@ -413,6 +563,12 @@ class JevSettings:
             parsed['autoApprove'] = value['autoApprove']
         elif 'autoApprove' in saved:
             parsed['autoApprove'] = saved['autoApprove']
+        if 'autoContinue' in value:
+            if not isinstance(value['autoContinue'], bool):
+                raise ValueError('自动继续设置格式不正确')
+            parsed['autoContinue'] = value['autoContinue']
+        elif 'autoContinue' in saved:
+            parsed['autoContinue'] = saved['autoContinue']
         with self._lock:
             self._values = parsed
             write_json(self.path, parsed)
@@ -425,7 +581,8 @@ class JevSettings:
         masked = (key[:3] + '…' + key[-4:]) if len(key) > 8 else ('已配置' if key else '')
         return {'configured': bool(key), 'apiKeyMasked': masked,
                 'baseUrl': effective['baseUrl'], 'model': effective['model'],
-                'proxy': effective['proxy'], 'autoApprove': effective['autoApprove']}
+                'proxy': effective['proxy'], 'autoApprove': effective['autoApprove'],
+                'autoContinue': effective['autoContinue']}
 
 
 _SHARED = None
@@ -458,6 +615,11 @@ def auto_approve_enabled():
     return bool(store and store.read().get('autoApprove'))
 
 
+def auto_continue_enabled():
+    store = shared_settings()
+    return bool(store and store.read().get('autoContinue'))
+
+
 class JevAssessor:
     """Cache-backed advisory assessment; failures fall back to local labels.
 
@@ -486,6 +648,17 @@ class JevAssessor:
             return self._cache.get(key)
 
     def start(self, key, request, context, on_done):
+        """Assess one permission request in the background."""
+        return self._start(key, lambda: build_payload(request, context),
+                           normalize_answer, on_done)
+
+    def start_continue(self, key, context, on_done):
+        """Judge one settled turn in the background; on_done gets the
+        continuation decision shape (or None on failure)."""
+        return self._start(key, lambda: build_continue_payload(context),
+                           normalize_continue_answer, on_done)
+
+    def _start(self, key, build, normalize, on_done):
         """Assess in the background; call on_done(assessment) exactly once."""
         if not self.enabled:
             return False
@@ -493,14 +666,15 @@ class JevAssessor:
             if key in self._cache or key in self._inflight:
                 return False
             self._inflight.add(key)
-        threading.Thread(target=self._run, args=(key, request, context, on_done), daemon=True).start()
+        threading.Thread(target=self._run, args=(key, build, normalize, on_done),
+                         daemon=True).start()
         return True
 
-    def _run(self, key, request, context, on_done):
+    def _run(self, key, build, normalize, on_done):
         assessment = None
         try:
-            payload = self._call(build_payload(request, context))
-            assessment = normalize_answer(payload)
+            payload = self._call(build())
+            assessment = normalize(payload)
         except Exception as exc:
             # Endpoint failures (HTTP 4xx/5xx, timeouts) are operational, not
             # code bugs: one log line, no traceback spam per approval card.

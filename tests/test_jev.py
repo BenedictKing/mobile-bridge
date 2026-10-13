@@ -16,10 +16,12 @@ from bridge.agents.kimi import KimiAdapter
 from bridge.auth import password_record
 from bridge.httpd import GatewayServer
 from bridge.jev import (JevAssessor, JevSettings, RISK_LABELS, assessable,
-                        auto_response, build_payload, effective_field, fingerprint,
+                        auto_response, build_continue_payload, build_payload,
+                        decide_continue, effective_field, fingerprint,
                         init_shared_settings, normalize_answer,
-                        parse_recommendation, shared_settings)
-from bridge.service import Bridge
+                        normalize_continue_answer, parse_recommendation,
+                        quota_stop, shared_settings)
+from bridge.service import AUTO_CONTINUE_MAX, Bridge
 from tests.fake_acp import FakeAcpAgent
 from tests.test_acp_adapter import CONFIG_OPTIONS, MODES, SID, UPDATED, chunk
 
@@ -149,7 +151,91 @@ class JevMappingTests(unittest.TestCase):
         self.assertEqual(parse_recommendation(elicitation, once), 'once')
         self.assertEqual(parse_recommendation(elicitation, always), 'always')
         self.assertEqual(parse_recommendation(elicitation,
-                                              {'source': 'jev', 'recommend': 'accept_session'}), 'session')
+                                               {'source': 'jev', 'recommend': 'accept_session'}), 'session')
+
+    def test_quota_stop_matches_billing_signals(self):
+        for text in ('额度不足，请充值后重试', 'Your usage limit reached', 'rate limited (429)',
+                     'insufficient credits for this request', '请求过于频繁，请稍后再试',
+                     'You exceeded your current quota'):
+            self.assertTrue(quota_stop(text), text)
+        self.assertFalse(quota_stop('重构完成，测试全部通过'))
+        self.assertFalse(quota_stop('RateLimiter 类已按计划实现'))
+        self.assertFalse(quota_stop('', None, 42))
+
+    def test_continue_payload_shape(self):
+        context = {'agent': 'kimi', 'cwd': '/work', 'turnStatus': 'completed',
+                   'stopReason': 'end_turn', 'error': '', 'userRequest': '修好测试',
+                   'assistantTail': '第一部分完成'}
+        payload = build_continue_payload(context)
+        self.assertEqual(sorted(payload['questions']), ['complete', 'continue', 'stop_kind'])
+        self.assertEqual(payload['questions']['complete']['type'], 'noul')
+        self.assertEqual(payload['questions']['stop_kind']['type'], 'choice')
+        self.assertEqual(sorted(payload['questions']['stop_kind']['criteria']),
+                         ['awaiting_user', 'finished', 'interrupted', 'other', 'quota'])
+        self.assertEqual(payload['state']['turnStatus'], 'completed')
+        self.assertEqual(payload['state']['userRequest'], '修好测试')
+
+    def test_normalize_continue_answer_rounds_and_clamps(self):
+        answer = normalize_continue_answer({'answers': {
+            'complete': {'noul': 0.18},
+            'stop_kind': {'choice': 'other'},
+            'continue': {'choice': 'continue', 'confidence': 0.87},
+        }})
+        self.assertTrue(answer['shouldContinue'])
+        self.assertFalse(answer['complete'])
+        self.assertTrue(answer['incomplete'])
+        self.assertEqual(answer['stopKind'], 'other')
+        self.assertEqual(answer['confidence'], 0.87)
+        self.assertIsNone(normalize_continue_answer({}))
+        self.assertIsNone(normalize_continue_answer({'answers': {
+            'complete': {'noul': 0.1}, 'stop_kind': {'choice': 'other'},
+            'continue': {'choice': 'maybe'}}}))
+        # An unknown stop_kind is dropped without invalidating the answer.
+        partial = normalize_continue_answer({'answers': {
+            'complete': {'noul': 0.1}, 'stop_kind': {'choice': 'weird'},
+            'continue': {'choice': 'stop'}}})
+        self.assertFalse(partial['shouldContinue'])
+        self.assertNotIn('stopKind', partial)
+
+    def incomplete(self, **overrides):
+        answer = {'source': 'jev', 'shouldContinue': True, 'confidence': 0.9,
+                  'complete': 0.1, 'incomplete': True, 'stopKind': 'other'}
+        answer.update(overrides)
+        return answer
+
+    def test_decide_continue_policy(self):
+        completed = {'turnStatus': 'completed', 'stopReason': 'end_turn', 'error': '',
+                     'assistantTail': '全部完成'}
+        failed = {'turnStatus': 'failed', 'stopReason': '', 'error': 'Agent 响应超时',
+                  'assistantTail': ''}
+        # Quota signals win over everything, including Jev wanting to resume.
+        self.assertEqual(decide_continue({**completed, 'error': '额度不足'}, self.incomplete()),
+                         (False, 'quota'))
+        self.assertEqual(decide_continue({**completed, 'stopReason': 'max_tokens',
+                                          'assistantTail': 'usage limit reached'}, self.incomplete()),
+                         (False, 'quota'))
+        # A user stop is never undone.
+        self.assertEqual(decide_continue({'turnStatus': 'interrupted', 'stopReason': 'cancelled',
+                                          'error': '', 'assistantTail': ''}, self.incomplete()),
+                         (False, 'cancelled'))
+        # Without an assessment only interruptions resume.
+        self.assertEqual(decide_continue(failed, None), (True, 'interrupted'))
+        self.assertEqual(decide_continue(completed, None), (False, 'undecided'))
+        self.assertEqual(decide_continue({'turnStatus': 'completed', 'stopReason': 'max_tokens',
+                                          'error': '', 'assistantTail': ''}, None),
+                         (True, 'interrupted'))
+        # Jev verdicts gate the rest.
+        self.assertEqual(decide_continue(completed, self.incomplete(stopKind='quota')),
+                         (False, 'quota'))
+        self.assertEqual(decide_continue(completed, self.incomplete(stopKind='awaiting_user')),
+                         (False, 'awaiting_user'))
+        self.assertEqual(decide_continue(completed, self.incomplete(incomplete=False, complete=0.95)),
+                         (False, 'complete'))
+        self.assertEqual(decide_continue(completed, self.incomplete(shouldContinue=False)),
+                         (False, 'jev_stop'))
+        self.assertEqual(decide_continue(completed, self.incomplete(confidence=0.5)),
+                         (False, 'low_confidence'))
+        self.assertEqual(decide_continue(completed, self.incomplete()), (True, 'jev_continue'))
 
 
 class JevAssessorTests(unittest.TestCase):
@@ -326,6 +412,126 @@ class BridgeAssessmentTests(unittest.TestCase):
         self.assertNotIn('recommend', request)
 
 
+class AutoContinueTests(unittest.TestCase):
+    """Turn settlement triggers: interruption resume, Jev verdicts, budget."""
+
+    def make_bridge(self, canned=None, stop_reason='end_turn', updates=()):
+        fake = FakeAcpAgent(
+            config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],
+            modes=dict(MODES),
+            list_rows=[{'sessionId': SID, 'cwd': '/work', 'title': 'Old', 'updatedAt': UPDATED}])
+        fake.stop_reason = stop_reason
+        fake.prompt_updates = list(updates)
+        tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
+        self.addCleanup(tmp.cleanup)
+        init_shared_settings(Path(tmp.name) / 'jev.json')
+        shared_settings().update({'autoContinue': True})
+        adapter = KimiAdapter('fake-acp', data_dir=Path(tmp.name) / 'data',
+                              spawn=fake.spawn_factory())
+        bridge = Bridge(Path(tmp.name), Path(tmp.name) / 'data', adapter=adapter)
+        self.addCleanup(bridge.close)
+        if canned is not None:
+            bridge.assessor = JevAssessor(api_key='test-key')
+            bridge.assessor._call = canned
+        # A watched chat continues unattended, like a reminder-enabled one.
+        bridge.view(SID)
+        session = bridge.session(SID, attach=False)
+        session.watched = True
+        return fake, bridge
+
+    def wait_for(self, predicate, timeout=20):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    @staticmethod
+    def auto_entries(bridge):
+        with bridge.submit_lock:
+            return [v for k, v in bridge.submissions.items() if v.get('autoContinue')]
+
+    def test_interrupted_turn_resumes_without_key_up_to_budget(self):
+        updates = (chunk('agent_message_chunk', '第一部分完成'),)
+        fake, bridge = self.make_bridge(stop_reason='max_tokens', updates=updates)
+        bridge.view(SID)
+        bridge.send(SID, '跑完整个迁移', str(uuid.uuid4()))
+        # max_tokens keeps truncating: every turn settles interrupted and the
+        # bridge keeps resuming until the unattended budget is spent.
+        self.assertTrue(self.wait_for(
+            lambda: len(self.auto_entries(bridge)) >= AUTO_CONTINUE_MAX))
+        self.assertTrue(self.wait_for(
+            lambda: bridge.auto_continue_runs.get(SID) == AUTO_CONTINUE_MAX))
+        time.sleep(0.5)
+        self.assertEqual(len(self.auto_entries(bridge)), AUTO_CONTINUE_MAX)
+        self.assertTrue(all(entry['text'] == '继续' for entry in self.auto_entries(bridge)))
+
+    def test_jev_incomplete_turn_auto_continues(self):
+        seen = []
+
+        def canned(payload):
+            seen.append(payload)
+            if len(seen) > 1:
+                # Later judgments see the resumed turn as finished, so the
+                # cascade stops after exactly one automatic continue.
+                return {'answers': {'complete': {'noul': 0.97},
+                                    'stop_kind': {'choice': 'finished'},
+                                    'continue': {'choice': 'stop', 'confidence': 0.9}}}
+            return {'answers': {'complete': {'noul': 0.12},
+                                'stop_kind': {'choice': 'other'},
+                                'continue': {'choice': 'continue', 'confidence': 0.91}}}
+
+        updates = (chunk('agent_message_chunk', '第一步完成，接下来处理第二步'),)
+        _, bridge = self.make_bridge(canned=canned, updates=updates)
+        bridge.view(SID)
+        bridge.send(SID, '完成整个任务', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: self.auto_entries(bridge)))
+        time.sleep(0.3)
+        entries = self.auto_entries(bridge)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]['text'], '继续')
+        # The judgment request carried the conversation tail, not a permission card.
+        self.assertTrue(any('complete' in (payload or {}).get('questions', {})
+                            and (payload['state'] or {}).get('assistantTail')
+                            for payload in seen))
+
+    def test_jev_complete_turn_stays_idle(self):
+        def canned(payload):
+            return {'answers': {'complete': {'noul': 0.97},
+                                'stop_kind': {'choice': 'finished'},
+                                'continue': {'choice': 'stop', 'confidence': 0.9}}}
+
+        updates = (chunk('agent_message_chunk', '任务完成，测试全部通过'),)
+        _, bridge = self.make_bridge(canned=canned, updates=updates)
+        bridge.view(SID)
+        bridge.send(SID, '完成任务', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['status'] == 'idle'))
+        time.sleep(0.6)
+        self.assertEqual(self.auto_entries(bridge), [])
+
+    def test_quota_message_never_auto_continues(self):
+        updates = (chunk('agent_message_chunk', '当前额度不足，请充值后再试'),)
+        _, bridge = self.make_bridge(stop_reason='max_tokens', updates=updates)
+        bridge.view(SID)
+        bridge.send(SID, '跑任务', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['status'] == 'idle'))
+        time.sleep(0.6)
+        self.assertEqual(self.auto_entries(bridge), [])
+        self.assertNotIn(SID, bridge.auto_continue_runs)
+
+    def test_human_message_re_arms_the_budget(self):
+        updates = (chunk('agent_message_chunk', '第一部分完成'),)
+        _, bridge = self.make_bridge(stop_reason='max_tokens', updates=updates)
+        bridge.view(SID)
+        bridge.send(SID, '跑任务', str(uuid.uuid4()))
+        self.assertTrue(self.wait_for(lambda: self.auto_entries(bridge)))
+        shared_settings().update({'autoContinue': False})
+        self.assertTrue(self.wait_for(lambda: bridge.view(SID)['status'] == 'idle'))
+        bridge.send(SID, '人工接手', str(uuid.uuid4()))
+        self.assertNotIn(SID, bridge.auto_continue_runs)
+
+
 class JevSettingsTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(dir=ROOT / '.tmp')
@@ -350,7 +556,8 @@ class JevSettingsTests(unittest.TestCase):
                                         'baseUrl': 'https://api.typesafe.ai',
                                         'model': 'jev-latest',
                                         'proxy': 'http://127.0.0.1:6785',
-                                        'autoApprove': False})
+                                        'autoApprove': False,
+                                        'autoContinue': False})
         self.assertEqual(store.public()['proxy'], 'http://127.0.0.1:6785')
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
@@ -361,6 +568,15 @@ class JevSettingsTests(unittest.TestCase):
         self.assertEqual(store.read()['apiKey'], 'env-key-123')
         self.assertEqual(store.read()['model'], 'jev-1.13.0')
         self.assertNotIn('apiKey', json.loads(self.path.read_text()))
+
+    def test_auto_continue_roundtrip_and_validation(self):
+        store = shared_settings()
+        self.assertFalse(store.read()['autoContinue'])
+        result = store.update({'autoContinue': True, 'baseUrl': '', 'model': ''})
+        self.assertTrue(result['autoContinue'])
+        self.assertTrue(store.read()['autoContinue'])
+        with self.assertRaises(ValueError):
+            store.update({'autoContinue': 'yes'})
 
     def test_clear_disables_even_with_env(self):
         store = shared_settings()
@@ -612,12 +828,15 @@ class JevEndpointTests(unittest.TestCase):
         # Writes without a CSRF token stay rejected even with the cookie.
         self.assertEqual(self.request('POST', '/api/jev', {'apiKey': 'tsk-http-key-77'},
                                       {'Cookie': auth['Cookie']})[0], 403)
-        status, _headers, body = self.request('POST', '/api/jev', {'apiKey': 'tsk-http-key-77', 'baseUrl': '', 'model': ''}, auth)
+        status, _headers, body = self.request('POST', '/api/jev', {'apiKey': 'tsk-http-key-77', 'baseUrl': '', 'model': '', 'autoContinue': True}, auth)
         self.assertEqual(status, 200)
         self.assertTrue(body['configured'])
-        self.assertIn('…', body['apiKeyMasked'])
+        self.assertTrue(body['autoContinue'])
         status, _headers, body = self.request('GET', '/api/jev', headers=auth)
         self.assertTrue(body['configured'])
+        self.assertTrue(body['autoContinue'])
+        status, _headers, body = self.request('POST', '/api/jev', {'autoContinue': 'on'}, auth)
+        self.assertEqual(status, 400)
         status, _headers, body = self.request('POST', '/api/jev', {'baseUrl': 'not a url', 'model': ''}, auth)
         self.assertEqual(status, 400)
         status, _headers, body = self.request('POST', '/api/jev', {'proxy': 'http://127.0.0.1:6785'}, auth)

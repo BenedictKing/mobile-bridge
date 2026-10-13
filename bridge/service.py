@@ -31,10 +31,14 @@ from .accounts import Accounts, operation
 from .goal import GoalRPC, GoalError, GoalUnavailable, GoalUnsupported, goal_activation, goal_identity, normalize_goal_result, normalize_ui_locale, goal_command_fingerprint, goal_state_confirms_command, native_goal_absent, normalize_goal, plan_goal_command, read_native_goal
 from .uploads import Uploads, image_type
 from .remote import upload_file
-from .jev import (JevAssessor, assessable, auto_approve_enabled, auto_response,
-                  effective_field, fingerprint, parse_recommendation)
+from .jev import (JevAssessor, assessable, auto_approve_enabled, auto_continue_enabled,
+                  auto_response, decide_continue, effective_field, fingerprint,
+                  parse_recommendation, quota_stop)
 from .agents.base import Capability
 from .agents.codex import CodexAdapter
+
+
+LOG = logging.getLogger(__name__)
 
 
 MIGRATION_MAX_MESSAGES = 50
@@ -55,6 +59,11 @@ _MIGRATION_READ_ONLY_COMMAND = re.compile(
     r"python(?:3)?\s+-m\s+(?:pytest|unittest)\s+--collect-only)(?:\s|$)",
     re.IGNORECASE,
 )
+# Jev auto-continue bounds: one resume text, and a cap on consecutive
+# automatic "继续" turns without an intervening human message so a confused
+# agent cannot loop unattended forever.
+AUTO_CONTINUE_TEXT = '继续'
+AUTO_CONTINUE_MAX = 5
 _MIGRATION_NOISE_TITLES = {
     'read', '读取', 'bash', 'shell',
     'todowrite', 'todo write', '任务清单',
@@ -194,6 +203,13 @@ class LiveSession:
         self.notification_probe_until = 0
         self.activity_only = False
         self.touched = time.monotonic()
+        # Edge detector for the auto-continue trigger. auto_prev_active is
+        # True while a dispatched turn is assumed running; auto_anchor_at is
+        # stamped by every dispatch so the maintenance pass never clobbers a
+        # newer anchor with an observation taken before it.
+        self.auto_prev_active = None
+        self.auto_anchor_at = 0.0
+        self.auto_edge_lock = threading.Lock()
         self.normalizer = None
         self.condition = threading.Condition(threading.RLock())
         self.attach_lock = threading.Lock()
@@ -281,6 +297,9 @@ class Bridge:
                                     proxy=lambda: effective_field('proxy'))
         self._auto_response_lock = threading.Lock()
         self._auto_response_requests = set()
+        # Consecutive auto-continue turns per chat since the last human
+        # message; guarded by submit_lock alongside the submission ledger.
+        self.auto_continue_runs = {}
         adapter.bind(self)
         for command in self.goal_commands.values():
             if command.get('state') in ('pending', 'sent'):
@@ -1152,6 +1171,19 @@ class Bridge:
                         self._send_queued(session, key, entry)
                     except Exception:
                         pass  # Unknown outcomes stay recorded and are never automatically replayed.
+                observed_at = time.monotonic()
+                active = session.connected and self.adapter.is_active(session)
+                with session.auto_edge_lock:
+                    settled = (session.auto_prev_active and not active
+                               and observed_at >= session.auto_anchor_at)
+                if settled:
+                    # A live turn just settled; consider resuming inline — a
+                    # dispatch re-anchors below, Jev verdicts stay async.
+                    self._consider_auto_continue(session)
+                with session.auto_edge_lock:
+                    # Keep the edge armed when a dispatch anchored after this
+                    # observation; its own settle must stay detectable.
+                    session.auto_prev_active = active or session.auto_anchor_at > observed_at
                 if (session.viewers > 0 or queued or session.watched) and not session.connected:
                     if session.activity_only and session.viewers == 0 and not queued:
                         if time.monotonic() >= session.retry_at:
@@ -1498,6 +1530,113 @@ class Bridge:
                 'Jev 自动审核未提交: thread=%s request=%s error=%s',
                 thread_id, request_id, exc)
 
+    # -- Jev auto continue -------------------------------------------------
+
+    def _continue_context(self, session, view, turn):
+        """Compact, PII-light description of the turn that just settled."""
+        messages = turn.get('messages') or []
+        user_text = next((m.get('text') for m in reversed(messages)
+                          if isinstance(m, dict) and m.get('role') == 'user' and m.get('text')), '')
+        tail = []
+        for message in reversed(messages):
+            if (isinstance(message, dict) and message.get('kind') == 'agentMessage'
+                    and message.get('text')):
+                tail.append(str(message['text']))
+            if sum(len(part) for part in tail) >= 6000:
+                break
+        errors = [str(m.get('text') or '') for m in messages
+                  if isinstance(m, dict) and m.get('kind') == 'error' and m.get('text')]
+        if turn.get('error'):
+            errors.append(str(turn['error']))
+        return {'agent': self.adapter.kind, 'cwd': view.get('cwd'),
+                'turnId': turn.get('id'), 'turnStatus': turn.get('status'),
+                'stopReason': turn.get('stopReason') or '',
+                'error': '\n'.join(part for part in errors if part)[-1500:],
+                'userRequest': (user_text or '')[:4000],
+                'assistantTail': '\n'.join(reversed(tail))[-6000:]}
+
+    def _consider_auto_continue(self, session):
+        """One live turn just settled; maybe resume it automatically."""
+        try:
+            if not auto_continue_enabled() or self.closed.is_set():
+                return
+            if not (session.viewers or session.watched):
+                # Documented scope: chats someone is watching — an open page
+                # or a reminder watch — not sessions merely list-polled.
+                return
+            view = session.view()
+            if not view.get('connected') or view.get('status') != 'idle':
+                return
+            if view.get('requests') or view.get('goal'):
+                # Pending approvals/questions or a native goal own the next step.
+                return
+            thread_id = session.id
+            with self.submit_lock:
+                pending = any(k.startswith(thread_id + ':')
+                              and v.get('status') in ('queued', WAITING_INPUT)
+                              for k, v in self.submissions.items())
+                generation = self.auto_continue_runs.get(thread_id, 0) + 1
+            if pending or generation > AUTO_CONTINUE_MAX:
+                return
+            turn = next((t for t in reversed(view.get('turns') or [])
+                         if isinstance(t, dict)), None)
+            if turn is None or turn.get('status') == 'inProgress' or not turn.get('messages'):
+                return
+            context = self._continue_context(session, view, turn)
+            if quota_stop(context['stopReason'], context['error']):
+                LOG.info('Jev 自动继续跳过（疑似额度不足）: thread=%s', thread_id)
+                return
+            if self.assessor.enabled:
+                key = 'continue:{}:{}:{}'.format(thread_id, turn.get('id'), generation)
+                self.assessor.start_continue(key, context, lambda assessment: self._auto_continue_decided(
+                    session, context, generation, assessment))
+            else:
+                # Without a key only the deterministic interruption rule applies.
+                self._auto_continue_decided(session, context, generation, None)
+        except Exception:
+            LOG.exception('Auto-continue consideration failed')
+
+    def _auto_continue_decided(self, session, context, generation, assessment):
+        """Apply the continuation policy once Jev (or its absence) answered."""
+        try:
+            if self.closed.is_set() or not auto_continue_enabled():
+                return
+            send, reason = decide_continue(context, assessment)
+            if not send:
+                LOG.info('Jev 自动继续未触发（%s）: thread=%s', reason, session.id)
+                return
+            self._send_auto_continue(session, context, generation)
+        except Exception:
+            LOG.exception('Auto-continue decision failed')
+
+    def _send_auto_continue(self, session, context, generation):
+        thread_id = session.id
+        with session.action_lock:
+            with session.condition:
+                if not session.connected or self.adapter.is_active(session):
+                    return
+        with self.submit_lock:
+            if any(k.startswith(thread_id + ':')
+                   and v.get('status') in ('queued', WAITING_INPUT)
+                   for k, v in self.submissions.items()):
+                return
+            if self.auto_continue_runs.get(thread_id, 0) + 1 != generation:
+                return  # A newer decision or a human message raced us.
+            self.auto_continue_runs[thread_id] = generation
+        # The deterministic id makes weak-network replays idempotent.
+        submission_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'mobile-bridge:auto-continue:{}/{}/{}'.format(
+            thread_id, context.get('turnId'), generation)))
+        try:
+            self.send(thread_id, AUTO_CONTINUE_TEXT, submission_id, auto_continue=True)
+        except Exception as exc:
+            with self.submit_lock:
+                if self.auto_continue_runs.get(thread_id) == generation:
+                    self.auto_continue_runs.pop(thread_id, None)
+            LOG.info('Jev 自动继续发送失败: thread=%s error=%s', thread_id, exc)
+            return
+        LOG.info('Jev 自动继续已发送: thread=%s turn=%s generation=%d',
+                 thread_id, context.get('turnId'), generation)
+
     def timeline_read(self, thread_id, mode='page', **options):
         session = self.session(thread_id, background=True)
         # Expand saved history only when the reader reaches its loaded edge.
@@ -1715,6 +1854,7 @@ class Bridge:
                 if prior["status"] == WAITING_INPUT:
                     self.inputs.cancel(thread_id, submission_id)
                 prior["status"] = "cancelled"
+                self.auto_continue_runs.pop(thread_id, None)
                 self._save_ledger()
             with session.condition:
                 session.changed()
@@ -1737,6 +1877,7 @@ class Bridge:
                 prior.pop("error", None)
                 prior.pop("lastQueueError", None)
                 prior["status"] = "queued"
+                self.auto_continue_runs.pop(thread_id, None)
                 self._save_ledger()
             with session.condition:
                 session.changed()
@@ -1758,6 +1899,7 @@ class Bridge:
                 current.pop("error", None)
                 current.pop("lastQueueError", None)
                 current["status"] = "unknown"
+                self.auto_continue_runs.pop(thread_id, None)
                 self._save_ledger()
             try:
                 result = self._dispatch(session, key, current)
@@ -1877,6 +2019,7 @@ class Bridge:
                 entry['text'] = (entry.get('text') or '').strip() + '\n\n' + block
                 entry['status'] = 'queued'
                 entry.pop('inputVersion', None)
+                self.auto_continue_runs.pop(thread_id, None)
                 self._save_ledger()
             with session.condition:
                 session.changed()
@@ -1884,7 +2027,7 @@ class Bridge:
 
     @operation
     def send(self, thread_id, text, submission_id, mode="send", skills=None, *, work_mode=None,
-             plan_response=None, attachments=None, ui_locale=None, activation=None):
+             plan_response=None, attachments=None, ui_locale=None, activation=None, auto_continue=False):
         uuid.UUID(submission_id)
         identifiers = [] if attachments is None else attachments
         files = self.uploads.resolve(thread_id, identifiers)
@@ -1952,6 +2095,8 @@ class Bridge:
                             raise ValueError("计划已更新，请刷新后重试")
             with self.submit_lock:
                 entry = {"text": text, "mode": mode, "skills": selected, "status": "queued" if mode == "queue" else "unknown", "at": time.time()}
+                if auto_continue:
+                    entry["autoContinue"] = True
                 if identifiers:
                     entry['attachments'] = identifiers
                     entry['attachmentNames'] = [f['name'] for f in files]
@@ -1962,6 +2107,9 @@ class Bridge:
                 if activation:
                     entry["goalActivation"] = activation
                 self.submissions[key] = entry
+                if not auto_continue:
+                    # A human message re-arms the automatic-continue budget.
+                    self.auto_continue_runs.pop(thread_id, None)
                 self._save_ledger()
             with session.condition:
                 session.changed()
@@ -2021,6 +2169,12 @@ class Bridge:
         with self.submit_lock:
             self.submissions[key]["status"] = "accepted"
             self._save_ledger()
+        # The turn is running now; anchor the auto-continue edge detector so
+        # even a turn shorter than one maintenance tick is still noticed as
+        # settling on the next pass.
+        with session.auto_edge_lock:
+            session.auto_prev_active = True
+            session.auto_anchor_at = time.monotonic()
         with session.condition:
             session.changed()
         return {"status": "accepted", "id": submission_id, "result": response}
@@ -2062,6 +2216,10 @@ class Bridge:
 
     def respond(self, thread_id, request_id, response, source=None):
         session = self._target(thread_id)
+        if source != 'jev':
+            # A human answered something; the automatic-continue budget re-arms.
+            with self.submit_lock:
+                self.auto_continue_runs.pop(thread_id, None)
         try:
             plan_id = str(uuid.uuid5(uuid.UUID(thread_id), "plan:" + str(request_id)))
         except ValueError:

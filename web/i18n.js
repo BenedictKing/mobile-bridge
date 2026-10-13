@@ -770,6 +770,8 @@ const en={
   "为需要手动确认的权限请求显示风险分级与建议选项；默认只做标注。开启自动审核后，仅自动通过高置信度、低风险且可撤销的本次操作。": "Shows risk levels and suggested options on permission confirmations. By default it is advisory; auto review only accepts high-confidence, low-risk, reversible one-time operations.",
   "自动审核低风险操作": "Auto-review low-risk operations",
   "仅允许高置信度、低风险且可撤销的本次操作；永久授权和高风险请求仍需手动确认。": "Only high-confidence, low-risk, reversible one-time operations are accepted; permanent grants and high-risk requests still require review.",
+  "自动继续未完成任务": "Auto-continue unfinished tasks",
+  "任务意外中断（超时、进程退出、输出截断）时自动发送“继续”，无需密钥；配置密钥后还会判断任务是否完成。额度不足、等待你回答或手动停止时不继续。会话需保持在线（打开页面或开启提醒），连续自动继续最多 5 次。": "Sends an automatic \"continue\" when a task is unexpectedly interrupted (timeout, process exit, truncated output) — no key required; with a key configured, task completeness is judged too. Quota exhaustion, questions awaiting your answer, and manual stops never continue. The chat must stay online (page open or reminders on); at most 5 consecutive auto-continues.",
   "API Key": "API key",
   "端点": "Endpoint",
   "代理": "Proxy",

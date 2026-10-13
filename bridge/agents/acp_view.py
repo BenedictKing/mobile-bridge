@@ -268,6 +268,9 @@ class AcpSessionView:
             turn = self._current_turn()
             if turn is not None and turn['status'] == 'inProgress':
                 turn['status'] = 'interrupted' if stop_reason == 'cancelled' else 'completed'
+                # Kept for auto-continue triage: max_tokens resumes, cancelled
+                # never does.
+                turn['stopReason'] = stop_reason
             self.status = 'idle'
             self.requests = []
 
