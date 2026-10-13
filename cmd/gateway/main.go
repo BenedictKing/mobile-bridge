@@ -478,7 +478,8 @@ func gatewayListenAddresses(dataDir string) []string {
 			addresses, _ := iface.Addrs()
 			for _, raw := range addresses {
 				value := strings.Split(raw.String(), "/")[0]
-				if net.ParseIP(value) != nil {
+				ip := net.ParseIP(value)
+				if ip != nil && !ip.IsLinkLocalUnicast() {
 					selected = append(selected, value)
 				}
 			}
