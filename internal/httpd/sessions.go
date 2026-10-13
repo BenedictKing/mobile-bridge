@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/model"
+	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 )
 
 var threadRoute = regexp.MustCompile(
@@ -180,6 +182,13 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			return true
 		}
 		h.output(http.StatusOK, result, contentTypeJSON, "")
+	case !write && h.server.Store != nil && (action == "timeline" || action == "changes" || action == "detail"):
+		result, err := h.historicalTimeline(threadID, action, query)
+		if err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
+			return true
+		}
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case !write && action == "timeline":
 		h.output(http.StatusOK, h.withTimelineAgents(bridge.TimelineRead(threadID, "page")),
 			contentTypeJSON, "")
@@ -195,6 +204,66 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		h.fail(http.StatusNotFound, errorBody("接口不存在"))
 	}
 	return true
+}
+
+// historicalTimeline projects a saved rollout through the same Go timeline
+// implementation used for live sessions. The projection is retained per
+// thread so cursors remain valid across HTTP requests.
+func (h *handler) historicalTimeline(threadID, action string, query map[string][]string) (any, error) {
+	history, err := h.server.Store.HistoryFor(threadID, nil)
+	if err != nil {
+		return nil, err
+	}
+	state := jsoncompat.NewObject()
+	for _, key := range []string{"id", "title", "cwd", "latestModel", "modelProvider", "turns"} {
+		if value, ok := history.Get(key); ok {
+			state.Set(key, value)
+		}
+	}
+	state.Set("turnsPagination", history.MustGet("turnsPagination"))
+	var sequence any = jsoncompat.Num(1)
+	if value, ok := history.Get("updated_at_ms"); ok {
+		sequence = value
+	} else if value, ok := history.Get("updated_at"); ok {
+		sequence = value
+	}
+	state.Set("sequence", sequence)
+	view := model.NormalizeState(state, false)
+	view.Set("sequence", sequence)
+
+	h.server.historyMu.Lock()
+	defer h.server.historyMu.Unlock()
+	projection := h.server.historyTL[threadID]
+	if projection == nil {
+		projection = timeline.New(nil)
+		h.server.historyTL[threadID] = projection
+	}
+	projection.Update(view)
+	meta := projection.Meta()
+	meta.Set("host", "local")
+	meta.Set("agent", "codex")
+	meta.Set("hostLabel", "此电脑")
+	meta.Set("capabilities", &jsoncompat.Array{})
+	meta.Set("goalRuntimeAvailable", false)
+	if action == "detail" {
+		version := any(nil)
+		if raw := queryValue(query, "version", ""); raw != "" {
+			version = raw
+		}
+		return projection.Detail(queryValue(query, "key", ""), intQuery(query, "offset", 0), version)
+	}
+	if action == "changes" {
+		return projection.Changes(queryValue(query, "after", "-1"), queryValue(query, "epoch", ""), queryValue(query, "start", "")), nil
+	}
+	return projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", "")), nil
+}
+
+func intQuery(query map[string][]string, key string, fallback int) int {
+	value, err := strconv.Atoi(queryValue(query, key, strconv.Itoa(fallback)))
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func queryValue(query map[string][]string, key, fallback string) string {

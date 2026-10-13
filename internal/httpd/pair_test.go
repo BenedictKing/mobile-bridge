@@ -1,9 +1,12 @@
 package httpd
 
 import (
+	"database/sql"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,8 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
+	"github.com/BenedictKing/mobile-bridge/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 func TestPairExchangeCreatesAuthenticatedSession(t *testing.T) {
@@ -38,6 +43,49 @@ func TestPairExchangeCreatesAuthenticatedSession(t *testing.T) {
 	}
 	if grant.MustGet("state") != "active" {
 		t.Fatal("control result unexpectedly changed")
+	}
+}
+
+func TestHistoricalTimelineUsesGoStore(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(home, "sessions", "rollout.jsonl")
+	if err := os.WriteFile(rollout, []byte(`{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"event_msg","payload":{"type":"task_complete"}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(home, "state_1.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, cwd TEXT,
+		updated_at INTEGER, archived INTEGER, originator TEXT, source TEXT, rollout_path TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO threads VALUES ('desktop-1','History','/work',1,0,'Codex Desktop','desktop',?)`, rollout); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	authenticator := auth.NewAuth(auth.Config{Mode: "none"})
+	token, _, err := authenticator.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(authenticator, fsys{}, 8790, "instance")
+	server.Store = store.NewSessionStore(home)
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790/api/sessions/desktop-1/timeline", nil)
+	request.Host = "127.0.0.1:8790"
+	request.Header.Set("Origin", "http://127.0.0.1:8790")
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "hello") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

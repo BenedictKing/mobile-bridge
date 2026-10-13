@@ -16,12 +16,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
+	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 )
 
 const contentTypeJSON = "application/json; charset=utf-8"
@@ -64,6 +66,8 @@ type Server struct {
 	Bridge     SessionBridge
 	Pairing    *pairing.Pairing
 	Store      *store.SessionStore
+	historyMu  sync.Mutex
+	historyTL  map[string]*timeline.Timeline
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
@@ -74,7 +78,7 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"localhost:" + strconv.Itoa(port): true},
 		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
 			"http://localhost:" + strconv.Itoa(port): true},
-		Bridge: newScriptedSessionBridge(), Pairing: pairing.New(nil)}
+		Bridge: newScriptedSessionBridge(), Pairing: pairing.New(nil), historyTL: map[string]*timeline.Timeline{}}
 	return server
 }
 
