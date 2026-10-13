@@ -102,6 +102,18 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 	return server
 }
 
+// AddListenHost extends the local gateway allowlist for a listener created by
+// the process. Keeping this explicit prevents an arbitrary Host header from
+// becoming an accepted origin when LAN mode is enabled.
+func (s *Server) AddListenHost(host string, local bool) {
+	hostPort := net.JoinHostPort(host, strconv.Itoa(s.Port))
+	s.Hosts[hostPort] = true
+	s.Origins["http://"+hostPort] = true
+	if local {
+		s.LocalHosts[hostPort] = true
+	}
+}
+
 func (s *Server) ACPManager(kind string) *acpruntime.Manager {
 	if kind != "" && s.ACPAgents != nil {
 		return s.ACPAgents[kind]

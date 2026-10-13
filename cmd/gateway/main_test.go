@@ -25,3 +25,20 @@ func TestFreshWorkerSnapshotSeedsConfigWithoutReturningPasswordHash(t *testing.T
 		t.Fatalf("first-run credential file missing: %v", err)
 	}
 }
+
+func TestGatewayListenAddressesHonorsLanSelection(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(`{"lan":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := gatewayListenAddresses(dataDir); len(got) != 1 || got[0] != "127.0.0.1" {
+		t.Fatalf("lan disabled addresses=%v", got)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(`{"lan":true,"localAccess":true,"lanAddresses":["192.0.2.10","192.0.2.10"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := gatewayListenAddresses(dataDir)
+	if len(got) != 2 || got[0] != "127.0.0.1" || got[1] != "192.0.2.10" {
+		t.Fatalf("selected addresses=%v", got)
+	}
+}

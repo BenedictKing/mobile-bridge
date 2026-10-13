@@ -341,11 +341,20 @@ func runGateway(args []string) {
 		instanceID = hex.EncodeToString(buffer)
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
-	if err != nil {
-		log.Fatalf("listen: %v", err)
-	}
 	server := httpd.New(auth.NewAuth(config), gateway.WebFS, port, instanceID)
+	addresses := gatewayListenAddresses(dataDir)
+	listeners := make([]net.Listener, 0, len(addresses))
+	for _, address := range addresses {
+		listener, listenErr := net.Listen("tcp", net.JoinHostPort(address, strconv.Itoa(port)))
+		if listenErr != nil {
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
+			log.Fatalf("listen %s: %v", address, listenErr)
+		}
+		listeners = append(listeners, listener)
+		server.AddListenHost(address, address == "127.0.0.1" || address == "::1" || address == "localhost")
+	}
 	server.Uploads = uploads.New(dataDir)
 	server.NotificationDir = dataDir
 	server.Jev = jev.New(filepath.Join(dataDir, "jev.json"))
@@ -413,11 +422,81 @@ func runGateway(args []string) {
 			}
 		}
 	}()
-	log.Printf("gateway listening on http://%s", listener.Addr())
-	err = httpServer.Serve(listener)
+	serveErrors := make(chan error, len(listeners))
+	for _, listener := range listeners {
+		go func(opened net.Listener) {
+			serveErrors <- httpServer.Serve(opened)
+		}(listener)
+	}
+	log.Printf("gateway listening on %s", strings.Join(addresses, ","))
+	err := <-serveErrors
+	if err != nil && err != http.ErrServerClosed {
+		_ = httpServer.Shutdown(context.Background())
+	}
 	outcomeWorker.Close()
 	controller.Close()
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+// gatewayListenAddresses mirrors the desktop network defaults without
+// depending on a Python helper. Explicit lanAddresses are honored exactly;
+// when omitted, all non-loopback interface addresses are selected.
+func gatewayListenAddresses(dataDir string) []string {
+	lan := true
+	localAccess := true
+	var selected []string
+	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
+		if value, decodeErr := jsoncompat.Unmarshal(raw); decodeErr == nil {
+			if root, ok := value.(*jsoncompat.Object); ok {
+				if flag, ok := root.MustGet("lan").(bool); ok {
+					lan = flag
+				}
+				if flag, ok := root.MustGet("localAccess").(bool); ok {
+					localAccess = flag
+				}
+				if values, ok := root.MustGet("lanAddresses").(*jsoncompat.Array); ok {
+					for _, item := range values.Items {
+						if address, ok := item.(string); ok && net.ParseIP(address) != nil {
+							selected = append(selected, address)
+						}
+					}
+				}
+			}
+		}
+	}
+	if !lan {
+		return []string{"127.0.0.1"}
+	}
+	if len(selected) == 0 {
+		interfaces, _ := net.Interfaces()
+		for _, iface := range interfaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addresses, _ := iface.Addrs()
+			for _, raw := range addresses {
+				value := strings.Split(raw.String(), "/")[0]
+				if net.ParseIP(value) != nil {
+					selected = append(selected, value)
+				}
+			}
+		}
+	}
+	if localAccess {
+		selected = append([]string{"127.0.0.1"}, selected...)
+	}
+	if len(selected) == 0 {
+		selected = []string{"127.0.0.1"}
+	}
+	seen := map[string]bool{}
+	result := make([]string, 0, len(selected))
+	for _, address := range selected {
+		if !seen[address] {
+			seen[address] = true
+			result = append(result, address)
+		}
+	}
+	return result
 }
