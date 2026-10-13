@@ -3,7 +3,7 @@
 # P7 分发矩阵：五平台交叉编译（本地可验证的部分）
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: build-matrix build-gateway-package build-wails
+.PHONY: build-matrix build-gateway-package build-wails run-gateway
 build-matrix:
 	@mkdir -p dist
 	@for platform in $(PLATFORMS); do \
@@ -48,6 +48,14 @@ build-wails:
 	@mkdir -p dist/desktop
 	@cd wails && go build -trimpath -ldflags='-s -w' -o ../dist/desktop/mobile-bridge-wails .
 	@ls -lh dist/desktop/mobile-bridge-wails
+
+# Run the Go gateway under the current terminal; Wails can supervise the same
+# binary through its bound service methods. Override GATEWAY_DATA_DIR/GATEWAY_PORT
+# when testing an isolated data directory or port.
+GATEWAY_DATA_DIR ?= .local-go
+GATEWAY_PORT ?= 8790
+run-gateway: build-gateway-package
+	@GATEWAY_PORT=$(GATEWAY_PORT) ./dist/gateway/codex-mobile-gateway serve --data-dir "$(GATEWAY_DATA_DIR)"
 
 # 742 个测试的三分类清单（docs/go-migration-test-audit.md 的数据源）
 audit:
