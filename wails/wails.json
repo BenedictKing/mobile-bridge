@@ -1,0 +1,13 @@
+{
+  "name": "Mobile Bridge",
+  "outputfilename": "mobile-bridge-wails",
+  "frontend:install": "",
+  "frontend:build": "",
+  "author": { "name": "Mobile Bridge" },
+  "info": {
+    "companyName": "Mobile Bridge",
+    "productName": "Mobile Bridge",
+    "productVersion": "0.1.0",
+    "comments": "Codex Mobile Bridge Go/Wails desktop controller"
+  }
+}

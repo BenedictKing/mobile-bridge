@@ -20,6 +20,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
+	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
@@ -201,6 +202,24 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return false
 	}
 	threadID, action := match[1], match[2]
+	if action == "notifications" && h.server.NotificationDir != "" {
+		var value *jsoncompat.Object
+		if write {
+			raw, err := h.readJSON()
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return true
+			}
+			value = raw.(*jsoncompat.Object)
+		}
+		result, err := notifications.NewPolicyManager(h.server.NotificationDir).Chat(queryValue(query, "host", "local"), threadID, value)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		} else {
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+		}
+		return true
+	}
 	if manager := h.server.ACPManager(queryValue(query, "agent", "")); manager != nil && strings.HasPrefix(threadID, "sess_") {
 		if h.handleACPRoute(manager, threadID, action, write, query) {
 			return true
