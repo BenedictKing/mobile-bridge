@@ -342,6 +342,9 @@ func runGateway(args []string) {
 	}
 
 	server := httpd.New(auth.NewAuth(config), gateway.WebFS, port, instanceID)
+	if os.Getenv("GATEWAY_DISABLE_STORE") == "1" && os.Getenv("GATEWAY_DISABLE_IPC") == "1" {
+		server.Bridge = httpd.NewScriptedBridge()
+	}
 	addresses := gatewayListenAddresses(dataDir)
 	listeners := make([]net.Listener, 0, len(addresses))
 	for _, address := range addresses {
@@ -372,6 +375,7 @@ func runGateway(args []string) {
 	}
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_IPC") != "1" {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
+		server.Codex.Executable = os.Getenv("GATEWAY_CODEX_BIN")
 	}
 	server.Account = account.NewWithData(codexHome, dataDir, os.Getenv("GATEWAY_CODEX_BIN"))
 	server.Goal = goal.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))

@@ -384,7 +384,31 @@ func (h *handler) handleMethod(write bool) {
 		agent, _ := body.MustGet("agent").(string)
 		manager := h.server.ACPManager(agent)
 		if manager == nil {
-			h.fail(http.StatusBadRequest, errorBody("当前 Go 网关仅支持通过 ACP 创建会话"))
+			if h.server.Codex == nil || (agent != "" && agent != "codex") {
+				h.fail(http.StatusBadRequest, errorBody("未知的 Agent 类型或当前网关未启用创建服务"))
+				return
+			}
+			cwd, _ := body.MustGet("cwd").(string)
+			if cwd == "" {
+				cwd, _ = body.MustGet("project").(string)
+			}
+			title, _ := body.MustGet("title").(string)
+			if cwd == "" || strings.TrimSpace(title) == "" {
+				h.fail(http.StatusBadRequest, errorBody("请选择项目并填写聊天名称"))
+				return
+			}
+			id, createErr := h.server.Codex.CreateConversation(cwd, strings.TrimSpace(title))
+			if createErr != nil {
+				h.fail(http.StatusConflict, errorBody(createErr.Error()))
+				return
+			}
+			result := jsoncompat.NewObject()
+			result.Set("id", id)
+			result.Set("title", strings.TrimSpace(title))
+			result.Set("cwd", cwd)
+			result.Set("host", "local")
+			result.Set("agent", "codex")
+			h.output(http.StatusOK, result, contentTypeJSON, "")
 			return
 		}
 		cwd, _ := body.MustGet("cwd").(string)
@@ -694,6 +718,29 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 func (h *handler) projectList() *jsoncompat.Object {
 	projects := &jsoncompat.Array{}
 	seen := map[string]bool{}
+	if h.server.Store != nil {
+		if rows, err := h.server.Store.List("", 200, 0, false); err == nil {
+			for _, row := range rows {
+				cwd, _ := row.MustGet("cwd").(string)
+				if cwd == "" {
+					continue
+				}
+				key := "codex:" + hashProject(cwd)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				item := jsoncompat.NewObject()
+				item.Set("key", key)
+				item.Set("host", "local")
+				item.Set("hostLabel", "此电脑")
+				item.Set("name", filepath.Base(filepath.Clean(cwd)))
+				item.Set("cwd", cwd)
+				item.Set("agent", "codex")
+				projects.Items = append(projects.Items, item)
+			}
+		}
+	}
 	acpAgents := h.server.ACPAgents
 	if len(acpAgents) == 0 && h.server.ACP != nil {
 		acpAgents = map[string]*acpruntime.Manager{"acp": h.server.ACP}

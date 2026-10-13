@@ -26,17 +26,19 @@ type Session struct {
 }
 
 type Bridge struct {
-	Host     string
-	IPC      *ipc.Desktop
-	mu       sync.Mutex
-	sessions map[string]*Session
+	Host       string
+	Home       string
+	Executable string
+	IPC        *ipc.Desktop
+	mu         sync.Mutex
+	sessions   map[string]*Session
 }
 
 func New(home, endpoint string) *Bridge {
 	if endpoint == "" {
 		endpoint = transport.CurrentOSEndpoint(home)
 	}
-	bridge := &Bridge{Host: "local", IPC: ipc.NewDesktop(endpoint), sessions: map[string]*Session{}}
+	bridge := &Bridge{Host: "local", Home: home, Executable: "", IPC: ipc.NewDesktop(endpoint), sessions: map[string]*Session{}}
 	bridge.IPC.OnEvent = bridge.handleEvent
 	bridge.IPC.OnDisconnect = bridge.handleDisconnect
 	return bridge

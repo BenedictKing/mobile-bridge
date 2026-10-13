@@ -121,6 +121,10 @@ func newScriptedSessionBridge() *scriptedSessionBridge {
 	return &scriptedSessionBridge{closed: make(chan struct{})}
 }
 
+// NewScriptedBridge is reserved for the deterministic HTTP differential
+// harness; production servers use Server as their bridge.
+func NewScriptedBridge() SessionBridge { return newScriptedSessionBridge() }
+
 func (b *scriptedSessionBridge) SessionsList() any {
 	sessions := jsoncompat.NewObject()
 	sessions.Set("sessions", &jsoncompat.Array{})
