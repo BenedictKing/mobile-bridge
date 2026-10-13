@@ -44,6 +44,13 @@ func (s *GatewayService) Start() (map[string]any, error) {
 		return map[string]any{"started": false, "pid": pid, "message": "网关已在运行"}, nil
 	}
 	s.mu.Unlock()
+	if snapshot, err := runAction(s.gateway, "snapshot", nil); err == nil {
+		if runtime, ok := snapshot["runtime"].(map[string]any); ok {
+			if running, _ := runtime["running"].(bool); running {
+				return map[string]any{"started": false, "message": "已连接正在运行的网关", "runtime": runtime}, nil
+			}
+		}
+	}
 	return s.startProcess()
 }
 
