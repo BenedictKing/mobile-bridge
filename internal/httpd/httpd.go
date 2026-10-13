@@ -382,6 +382,25 @@ func (h *handler) handleMethod(write bool) {
 		} else {
 			h.output(http.StatusOK, h.server.Account.Read(h.request.URL.Query().Get("cached") != "1"), contentTypeJSON, "")
 		}
+	case write && path == "/api/account/reset":
+		if h.session(write) == nil {
+			return
+		}
+		if h.server.Account == nil {
+			h.fail(http.StatusConflict, errorBody("请启动支持账号管理的新版网关"))
+			return
+		}
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		result, consumeErr := h.server.Account.Consume(value.(*jsoncompat.Object))
+		if consumeErr != nil {
+			h.fail(http.StatusConflict, errorBody(consumeErr.Error()))
+			return
+		}
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case path == "/api/notifications/defaults":
 		if h.session(write) == nil {
 			return

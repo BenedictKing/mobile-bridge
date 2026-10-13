@@ -99,7 +99,7 @@ func main() {
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_IPC") != "1" {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
 	}
-	server.Account = account.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))
+	server.Account = account.NewWithData(codexHome, dataDir, os.Getenv("GATEWAY_CODEX_BIN"))
 	if executable := os.Getenv("GATEWAY_ACP_BIN"); executable != "" {
 		server.ACP = acpruntime.New(executable)
 	}

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -18,11 +19,16 @@ import (
 )
 
 type Manager struct {
-	Home, Executable string
-	mu               sync.Mutex
+	Home, Executable, DataDir string
+	mu                        sync.Mutex
 }
 
-func New(home, executable string) *Manager { return &Manager{Home: home, Executable: executable} }
+func New(home, executable string) *Manager {
+	return &Manager{Home: home, DataDir: filepath.Join(home, "mobile-bridge"), Executable: executable}
+}
+func NewWithData(home, dataDir, executable string) *Manager {
+	return &Manager{Home: home, DataDir: dataDir, Executable: executable}
+}
 
 func (m *Manager) Read(refresh bool) *jsoncompat.Object {
 	result := jsoncompat.NewObject()
@@ -46,6 +52,9 @@ func (m *Manager) Read(refresh bool) *jsoncompat.Object {
 	if err != nil {
 		result.Set("error", err.Error())
 		return result
+	}
+	if nested := object(config, "config"); nested != nil {
+		config = nested
 	}
 	if isCustomProvider(config) {
 		result.Set("loginType", "api")
@@ -90,6 +99,55 @@ func (m *Manager) Read(refresh bool) *jsoncompat.Object {
 	}
 	result.Set("updatedAt", time.Now().Unix())
 	return result
+}
+
+func (m *Manager) Consume(value *jsoncompat.Object) (*jsoncompat.Object, error) {
+	confirmed, _ := value.MustGet("confirmed").(bool)
+	if !confirmed {
+		return nil, errors.New("请先确认使用重置卡")
+	}
+	requestID, _ := value.MustGet("requestId").(string)
+	accountKey, _ := value.MustGet("accountKey").(string)
+	creditID, _ := value.MustGet("creditId").(string)
+	if requestID == "" {
+		return nil, errors.New("重置请求标识无效")
+	}
+	if len(accountKey) != 64 {
+		return nil, errors.New("请刷新账号信息后重试")
+	}
+	status := m.Read(true)
+	if status.MustGet("visible") != true || status.MustGet("accountKey") != accountKey {
+		return nil, errors.New("电脑端账号已变化，请刷新后重新确认")
+	}
+	if status.MustGet("canReset") != true {
+		return nil, errors.New("请先在 Codex 桌面设置中允许使用额度重置")
+	}
+	m.mu.Lock()
+	rpc, err := startRPC(m.Home, m.Executable)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	params := map[string]any{"idempotencyKey": requestID}
+	if creditID != "" {
+		params["creditId"] = creditID
+	}
+	result, err := rpc.Request("account/rateLimitResetCredit/consume", params)
+	rpc.Close()
+	m.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	outcome, _ := result.MustGet("outcome").(string)
+	switch outcome {
+	case "reset", "alreadyRedeemed", "nothingToReset", "noCredit":
+	default:
+		return nil, errors.New("重置结果尚未确认，请刷新并重试")
+	}
+	response := jsoncompat.NewObject()
+	response.Set("outcome", outcome)
+	response.Set("account", m.Read(true))
+	return response, nil
 }
 
 type rpc struct {

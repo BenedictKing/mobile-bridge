@@ -17,6 +17,7 @@ for line in sys.stdin:
  elif method=='config/read': result={'config':{'model_provider':'openai','desktop':{'agent-usage-reset-enabled':True}}}
  elif method=='account/read': result={'account':{'type':'chatgpt','email':'user@example.com','planType':'plus'},'workspaceRouting':'team'}
  elif method=='account/rateLimits/read': result={'rateLimitsByLimitId':{'codex':{'limitName':'Codex','primary':{'usedPercent':25,'windowDurationMins':60,'resetsAt':10}}}}
+ elif method=='account/rateLimitResetCredit/consume': result={'outcome':'reset'}
  else: result={}
  print(json.dumps({'id':ident,'result':result}),flush=True)
 `
@@ -32,4 +33,17 @@ for line in sys.stdin:
 	if result.MustGet("email") != "user@example.com" {
 		t.Fatalf("email missing: %s", jsoncompat.EncodeCompact(result))
 	}
+	accountKey, _ := result.MustGet("accountKey").(string)
+	reset, err := manager.Consume(jsonObject(map[string]any{"confirmed": true, "requestId": "request-1", "accountKey": accountKey}))
+	if err != nil || reset.MustGet("outcome") != "reset" {
+		t.Fatalf("reset=%v err=%v", reset, err)
+	}
+}
+
+func jsonObject(values map[string]any) *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	for key, value := range values {
+		result.Set(key, value)
+	}
+	return result
 }
