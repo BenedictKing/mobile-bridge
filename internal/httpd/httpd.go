@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -322,6 +323,26 @@ func (h *handler) handleMethod(write bool) {
 				}
 				h.output(http.StatusOK, data, contentType, "")
 				return
+			}
+		}
+		if strings.HasPrefix(path, "/vendor/") {
+			name := strings.TrimPrefix(path, "/")
+			if name == pathpkg.Clean(name) && !strings.Contains(name, "..") {
+				if data, err := fs.ReadFile(h.server.WebFS, "web/"+name); err == nil {
+					contentType := "application/octet-stream"
+					switch filepath.Ext(name) {
+					case ".js":
+						contentType = "text/javascript; charset=utf-8"
+					case ".css":
+						contentType = "text/css; charset=utf-8"
+					case ".woff", ".woff2":
+						contentType = "font/" + strings.TrimPrefix(filepath.Ext(name), ".")
+					case ".ttf":
+						contentType = "font/ttf"
+					}
+					h.output(http.StatusOK, data, contentType, "")
+					return
+				}
 			}
 		}
 	}
