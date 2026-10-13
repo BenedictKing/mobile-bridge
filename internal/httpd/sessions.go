@@ -197,6 +197,11 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return false
 	}
 	threadID, action := match[1], match[2]
+	if h.server.ACP != nil && strings.HasPrefix(threadID, "sess_") {
+		if h.handleACPRoute(threadID, action, write, query) {
+			return true
+		}
+	}
 	if write && h.server.Codex != nil {
 		if action == "uploads" && h.server.Uploads != nil {
 			id := queryValue(query, "id", "")
@@ -331,6 +336,81 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		h.stream(bridge, threadID, query)
 	default:
 		h.fail(http.StatusNotFound, errorBody("接口不存在"))
+	}
+	return true
+}
+
+func (h *handler) handleACPRoute(threadID, action string, write bool, query map[string][]string) bool {
+	session, err := h.server.ACP.Open(threadID, queryValue(query, "cwd", "."), 10*time.Second)
+	if err != nil {
+		h.fail(http.StatusConflict, errorBody(err.Error()))
+		return true
+	}
+	if !write {
+		if action == "" {
+			h.output(http.StatusOK, session.Snapshot(), contentTypeJSON, "")
+			return true
+		}
+		if action == "timeline" {
+			view := session.Snapshot()
+			view.Set("sequence", jsoncompat.Num(1))
+			h.server.historyMu.Lock()
+			projection := h.server.historyTL[threadID]
+			if projection == nil {
+				projection = timeline.New(nil)
+				h.server.historyTL[threadID] = projection
+			}
+			projection.Update(view)
+			result := projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", ""))
+			projection.Meta().Set("host", "local")
+			projection.Meta().Set("agent", "acp")
+			projection.Meta().Set("hostLabel", "ACP Agent")
+			h.server.historyMu.Unlock()
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return true
+		}
+		return false
+	}
+	body, bodyErr := h.readJSON()
+	if bodyErr != nil {
+		h.fail(http.StatusBadRequest, errorBody(bodyErr.Error()))
+		return true
+	}
+	object := body.(*jsoncompat.Object)
+	switch action {
+	case "send":
+		text, _ := object.MustGet("text").(string)
+		if text == "" {
+			h.fail(http.StatusBadRequest, errorBody("消息内容不能为空"))
+			return true
+		}
+		if callErr := session.Prompt(text, 3600*time.Second); callErr != nil {
+			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		} else {
+			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+		}
+	case "stop":
+		if callErr := session.Cancel(); callErr != nil {
+			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		} else {
+			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+		}
+	case "respond", "input":
+		requestID, _ := object.MustGet("requestId").(string)
+		response := jsoncompat.NewObject()
+		if action == "input" {
+			requestID, _ = object.MustGet("id").(string)
+			response.Set("answers", object.MustGet("answers"))
+		} else if raw, ok := object.MustGet("response").(*jsoncompat.Object); ok {
+			response = raw
+		}
+		if callErr := session.Respond(requestID, response); callErr != nil {
+			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		} else {
+			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+		}
+	default:
+		return false
 	}
 	return true
 }

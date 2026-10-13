@@ -22,6 +22,7 @@ import (
 	"strconv"
 
 	gateway "github.com/BenedictKing/mobile-bridge"
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
@@ -90,6 +91,9 @@ func main() {
 	}
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_IPC") != "1" {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
+	}
+	if executable := os.Getenv("GATEWAY_ACP_BIN"); executable != "" {
+		server.ACP = acpruntime.New(executable)
 	}
 	log.Printf("gateway listening on http://%s", listener.Addr())
 	log.Fatal(http.Serve(listener, server))

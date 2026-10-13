@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -70,6 +71,7 @@ type Server struct {
 	Store      *store.SessionStore
 	Codex      *codex.Bridge
 	Uploads    *uploads.Manager
+	ACP        *acpruntime.Manager
 	historyMu  sync.Mutex
 	historyTL  map[string]*timeline.Timeline
 }
