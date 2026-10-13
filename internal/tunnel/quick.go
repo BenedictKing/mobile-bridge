@@ -29,6 +29,7 @@ type Quick struct {
 	mu      sync.Mutex
 	process *exec.Cmd
 	stop    context.CancelFunc
+	done    chan struct{}
 	URL     string
 }
 
@@ -67,7 +68,7 @@ func (q *Quick) Start() error {
 		return err
 	}
 	q.mu.Lock()
-	q.process, q.stop = command, cancel
+	q.process, q.stop, q.done = command, cancel, make(chan struct{})
 	q.URL = ""
 	q.mu.Unlock()
 	q.writeStatus("connecting", "正在建立临时 HTTPS 连接，局域网可独立使用。")
@@ -76,6 +77,20 @@ func (q *Quick) Start() error {
 }
 
 func (q *Quick) read(command *exec.Cmd, output io.Reader) {
+	q.mu.Lock()
+	done := q.done
+	q.mu.Unlock()
+	defer func() {
+		_, _ = command.Process.Wait()
+		if done != nil {
+			close(done)
+		}
+		q.mu.Lock()
+		if q.process == command {
+			q.done = nil
+		}
+		q.mu.Unlock()
+	}()
 	logPath := filepath.Join(q.DataDir, "tunnel.log")
 	logFile, _ := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if logFile != nil {
@@ -116,19 +131,20 @@ func (q *Quick) read(command *exec.Cmd, output io.Reader) {
 
 func (q *Quick) Close() {
 	q.mu.Lock()
-	stop, process := q.stop, q.process
+	stop, process, done := q.stop, q.process, q.done
 	q.stop, q.process = nil, nil
 	q.mu.Unlock()
 	if stop != nil {
 		stop()
 	}
 	if process != nil {
-		wait := make(chan struct{})
-		go func() { _, _ = process.Process.Wait(); close(wait) }()
-		select {
-		case <-wait:
-		case <-time.After(5 * time.Second):
-			_ = process.Process.Kill()
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				_ = process.Process.Kill()
+				<-done
+			}
 		}
 	}
 	q.writeStatus("stopped", "临时 HTTPS 已停止")
