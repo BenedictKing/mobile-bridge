@@ -598,8 +598,11 @@ class Handler(BaseHTTPRequestHandler):
                 result = bridge.respond(thread_id, body.get("requestId"), response, source='mobile')
             elif action == "reconnect":
                 if body.get('activate') is True:
-                    session = bridge.activate(thread_id)
-                    result = {'ok': True, 'connected': session.connected}
+                    bridge.activate(thread_id)
+                    # On an already-connected ACP chat, manual reconnect means
+                    # "resync from the authoritative store": the projection may
+                    # be stale-but-live after turns driven elsewhere.
+                    result = bridge.force_reconcile(thread_id)
                 elif body.get('progressive'):
                     bridge.session(thread_id, background=True, force=True)
                     result = {'ok': True}

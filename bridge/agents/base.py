@@ -33,6 +33,11 @@ class AgentAdapter:
     # Whether the cheap activity poll may connect sessions: Codex answers over
     # one IPC socket, while each ACP attach would spawn a whole agent process.
     activity_attach = True
+    # Whether this adapter's live view can go stale without disconnecting:
+    # ACP event streams only describe turns driven by the bridge's own child
+    # process, so turns driven elsewhere need an authoritative-store reconcile.
+    # The IPC-followed codex view streams every owner's patches and does not.
+    reconciles = False
     # Whether a confirmed goal create/resume needs a bridge-sent activation turn.
     goal_needs_activation = True
 
@@ -71,6 +76,14 @@ class AgentAdapter:
 
     def is_active(self, session):
         """Whether the session currently runs a turn."""
+        return False
+
+    def reconcile(self, session, force=False):
+        """Rebuild a connected-but-stale projection from the authoritative store.
+
+        Returns True when the projection was replaced. Adapters without a
+        store-driven staleness problem keep the default no-op.
+        """
         return False
 
     def require_ready(self, session):

@@ -203,6 +203,11 @@ class LiveSession:
         self.notification_probe_until = 0
         self.activity_only = False
         self.touched = time.monotonic()
+        # Recency observed from the authoritative session index.  ACP event
+        # streams only describe turns driven by our child process, so this is
+        # also the cursor used to detect desktop-owned turns.
+        self.source_recency = None
+        self.reconciling = False
         # Edge detector for the auto-continue trigger. auto_prev_active is
         # True while a dispatched turn is assumed running; auto_anchor_at is
         # stamped by every dispatch so the maintenance pass never clobbers a
@@ -1107,6 +1112,45 @@ class Bridge:
                     session.changed()
         threading.Thread(target=refresh, daemon=True).start()
 
+    def _reconcile_async(self, session, force=False):
+        """Reload an idle ACP projection after another process changed it."""
+        with session.condition:
+            if (session.reconciling or session.connecting or not session.connected
+                    or self.closed.is_set()):
+                return
+            session.reconciling = True
+            session.changed()
+
+        def reconcile():
+            try:
+                self.adapter.reconcile(session, force=force)
+            except Exception:
+                logging.getLogger(__name__).exception("Background session reconcile failed")
+            finally:
+                with session.condition:
+                    session.reconciling = False
+                    session.retry_at = time.monotonic() + 15
+                    session.changed()
+
+        threading.Thread(target=reconcile, daemon=True).start()
+
+    def force_reconcile(self, thread_id):
+        """Manual 恢复入口: rebuild a connected projection from the store now.
+
+        The explicit 重新连接 action shares the automatic path — same guards,
+        same atomic swap — instead of a divergent "connected, nothing to do"
+        fast return. Never blocks the caller: the rebuild runs in the
+        background and the change stream carries the refreshed view.
+        """
+        session = self.session(thread_id, background=True)
+        if not self.adapter.reconciles:
+            with session.condition:
+                return {'ok': True, 'connected': session.connected, 'reconciling': False}
+        self._reconcile_async(session, force=True)
+        with session.condition:
+            return {'ok': True, 'connected': session.connected,
+                    'reconciling': session.reconciling}
+
     @operation
     def activate(self, thread_id):
         """Explicit phone operation only; reads and notification watches never navigate."""
@@ -1145,6 +1189,34 @@ class Bridge:
                     session.activating = False
                     session.changed()
 
+    def _check_source_freshness(self, session, queued, active):
+        """Compare one watched session's projection against the session index.
+
+        The listed recency is only the trigger signal, never proof: whether a
+        rebuild is safe (own turn idle, no pending approval, cadence) is the
+        adapter's call, and the rebuild itself re-verifies against the store.
+        """
+        if not self.adapter.reconciles:
+            return
+        if not (session.connected and (session.viewers > 0 or session.watched)
+                and not active and not queued and not session.reconciling):
+            return
+        try:
+            recency = self.adapter.recencies([session.id]).get(session.id)
+        except Exception:
+            return
+        if recency is None:
+            return
+        with session.condition:
+            prior = session.source_recency
+            if prior is None or recency <= prior:
+                # Seeding the baseline, or the index caught up with changes the
+                # projection already streamed (own turns re-align through the
+                # adapter's settle sample).
+                session.source_recency = max(prior or 0, recency)
+                return
+        self._reconcile_async(session)
+
     def _maintain(self):
         delay = 3
         while True:
@@ -1173,6 +1245,7 @@ class Bridge:
                         pass  # Unknown outcomes stay recorded and are never automatically replayed.
                 observed_at = time.monotonic()
                 active = session.connected and self.adapter.is_active(session)
+                self._check_source_freshness(session, bool(queued), active)
                 with session.auto_edge_lock:
                     settled = (session.auto_prev_active and not active
                                and observed_at >= session.auto_anchor_at)

@@ -353,12 +353,14 @@ class AcpSessionView:
             text = _text(update.get('content'))
             if text:
                 self._assistant_message(self._assistant_turn(), 'agentMessage',
-                                        {'role': 'assistant', 'phase': 'final'})['text'] += text
+                                        {'role': 'assistant', 'phase': 'final'},
+                                        identity=update.get('messageId'))['text'] += text
         elif kind == 'agent_thought_chunk':
             text = _text(update.get('content'))
             if text:
                 self._assistant_message(self._assistant_turn(), 'agentThought',
-                                        {'role': 'activity', 'title': '思考摘要'})['text'] += text
+                                        {'role': 'activity', 'title': '思考摘要'},
+                                        identity=update.get('messageId'))['text'] += text
         elif kind == 'tool_call':
             metadata = _subagent_meta(update.get('rawInput'), update.get('title') or '')
             message = {'id': self._next_id('tool'), 'kind': 'toolCall', 'role': 'activity',
@@ -398,6 +400,16 @@ class AcpSessionView:
                 content = str(entry.get('content', '')) if isinstance(entry, dict) else str(entry)
                 status = str(entry.get('status') or 'pending') if isinstance(entry, dict) else 'pending'
                 entries.append({'content': content, 'status': status})
+            if not entries:
+                # Wrappers announce the (empty) todo baseline on every attach;
+                # an empty list is not content. Never open a panel — or a
+                # turn — for it; drop an existing one when the plan cleared.
+                turn = self._current_turn()
+                if turn is not None:
+                    message = next((m for m in turn['messages'] if m.get('kind') == 'plan'), None)
+                    if message is not None:
+                        turn['messages'].remove(message)
+                return
             turn = self._assistant_turn()
             message = next((m for m in turn['messages'] if m.get('kind') == 'plan'), None)
             if message is None:
@@ -459,9 +471,20 @@ class AcpSessionView:
                                'actionable': False, 'error': None, 'diff': None})
         return turn
 
-    def _assistant_message(self, turn, kind, extra):
-        if turn['messages'] and turn['messages'][-1].get('kind') == kind:
-            return turn['messages'][-1]
-        message = {'id': self._next_id(kind), 'kind': kind, 'text': '', **extra}
+    def _assistant_message(self, turn, kind, extra, identity=None):
+        """Fold one streamed chunk into the turn's current message of ``kind``.
+
+        Chunks that carry a messageId (replay and the zcode live stream both
+        do) merge only within the same id, so consecutive distinct messages —
+        a preamble and the final reply of one turn — stay separate rows.
+        Chunks without an id fall back to adjacency, preserving the plain
+        streaming behavior of wrappers that never send one.
+        """
+        last = turn['messages'][-1] if turn['messages'] else None
+        if (last is not None and last.get('kind') == kind
+                and last.get('chunkIdentity') == identity):
+            return last
+        message = {'id': self._next_id(kind), 'kind': kind, 'text': '',
+                   'chunkIdentity': identity, **extra}
         turn['messages'].append(message)
         return message

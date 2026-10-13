@@ -21,6 +21,17 @@ LIST_CACHE_SECONDS = 30
 # seconds without session updates and with no approval waiting on the human.
 PROMPT_TIMEOUT = 3600
 ACTIVITY_SLICE = 30
+# Reconcile cadence: one automatic rebuild at most this often per session,
+# never closer than this to recent wrapper events, and backing off this far
+# after a failed rebuild.
+RECONCILE_MIN_INTERVAL = 25.0
+RECONCILE_IDLE_GRACE = 8.0
+RECONCILE_FAILURE_BACKOFF = 45.0
+# After a bridge-driven turn ends: how long reconciliation waits for
+# persistence plus one discovery cycle, and when the store cursor is re-read
+# (on the live process — no spawn) so an own turn does not read as external.
+RECONCILE_SETTLE_GRACE = 30.0
+RECONCILE_SETTLE_SAMPLE_DELAY = 8.0
 
 
 class TurnNotDispatched(AcpUnavailable):
@@ -50,6 +61,19 @@ class AcpHandle:
         self.deliberate = False
         self.dead = False
         self.last_activity = time.monotonic()
+        # Authoritative-store freshness the current view already covers. The
+        # wrapper's event stream only describes turns driven by this handle's
+        # own child process; turns driven elsewhere (desktop app, CLI) advance
+        # the store's updatedAt without a single event reaching us, so the
+        # reconciler compares the listed recency against this cursor.
+        self.view_synced_recency = None
+        self.view_synced_at = 0.0
+        self.reconcile_not_before = 0.0
+        # After a bridge-driven turn ends, persistence and the session index
+        # need a moment before the store recency describes the view we already
+        # streamed; reconciliation waits out that window before trusting the
+        # recency comparison again.
+        self.settling_until = 0.0
 
 
 class AcpAdapter(AgentAdapter):
@@ -63,6 +87,9 @@ class AcpAdapter(AgentAdapter):
     # activity poll must never do that. Status rows only cover sessions that
     # already have a live handle (open chat or notification watch).
     activity_attach = False
+    # ACP event streams only describe the bridge's own child process; turns
+    # driven elsewhere go stale silently and need store reconciliation.
+    reconciles = True
     # npx-wrapped agents download the package on first run; subclasses raise this.
     INITIALIZE_TIMEOUT = 10
     # claude-agent-acp persists a transcript only after the first message; until
@@ -100,6 +127,9 @@ class AcpAdapter(AgentAdapter):
         self._list_cache = []
         self._list_at = 0
         self._meta_cache = {}
+        self._meta_at = 0.0
+        # One rebuild at a time per session, however many viewers asked.
+        self._reconcile_locks = {}
         # Sessions created here but not yet listed by the agent (claude-agent-acp
         # only persists a transcript after the first message).
         self._pending_created = {}
@@ -161,7 +191,13 @@ class AcpAdapter(AgentAdapter):
             raise
         return handle
 
-    def _load(self, session, handle):
+    def _load(self, session, handle, publish=True):
+        """Replay the authoritative history into one handle's view.
+
+        publish=False serves the reconciler's replacement handle: the replay
+        folds into its private view without touching the live session state,
+        so a failed rebuild never disturbs the current page.
+        """
         try:
             if not handle.view.cwd:
                 row = next((r for r in self._list_rows_via(handle.process)
@@ -178,6 +214,9 @@ class AcpAdapter(AgentAdapter):
             handle.view.apply_config(handle.config_options, handle.modes)
             # Replayed history carries no turn-end markers; close open turns.
             handle.view.finish_replay()
+            # The replay covered exactly what the store held while it ran;
+            # record that recency as this handle's freshness cursor.
+            self._sample_store(handle)
         except AcpAuthRequired:
             handle.load_error = self.auth_hint
         except AcpError as exc:
@@ -185,11 +224,28 @@ class AcpAdapter(AgentAdapter):
         except Exception:
             LOG.exception('ACP session load failed')
             handle.load_error = '读取会话失败，请重新连接或查看网关日志。'
-        if handle.load_error is not None:
-            with session.condition:
-                session.error = handle.load_error
         handle.ready.set()
-        self._sync(session)
+        if publish:
+            if handle.load_error is not None:
+                with session.condition:
+                    session.error = handle.load_error
+            self._sync(session)
+
+    def _sample_store(self, handle):
+        """Point one handle's freshness cursor at the listed store recency.
+
+        Reads session/list on the handle's own process (no extra spawn). A
+        missing row — a not-yet-listed created placeholder — leaves the cursor
+        unset, which simply keeps reconciliation off until the list covers it.
+        """
+        try:
+            rows = self._list_rows_via(handle.process)
+        except AcpError:
+            return
+        row = next((r for r in rows if r.get('sessionId') == handle.session_id), None)
+        if row is not None:
+            handle.view_synced_recency = self._recency_ms(row.get('updatedAt'))
+            handle.view_synced_at = time.monotonic()
 
     def detach(self, session):
         handle = self._handles.get(session.id)
@@ -356,6 +412,14 @@ class AcpAdapter(AgentAdapter):
             if handle.prompt_running:
                 raise TurnNotDispatched('任务正在执行，请稍候')
             handle.prompt_running = True
+            # A reconcile may have swapped the handle out from under us between
+            # the map lookup above and this lock; the queued-send path retries
+            # on the current handle after the next maintenance kick.
+            swapped = self._handles.get(session.id) is not handle
+        if swapped:
+            with handle.lock:
+                handle.prompt_running = False
+            raise TurnNotDispatched('会话正在同步，请稍候')
         handle.view.begin_turn(entry['text'])
         self._sync(session)
         try:
@@ -432,6 +496,13 @@ class AcpAdapter(AgentAdapter):
             self._notify_dispatch_outcome(session, submission_id, None)
         with handle.lock:
             handle.prompt_running = False
+        # Our own turn's persistence and the session index settle slightly
+        # after the stream ends; hold reconciliation off that long and then
+        # re-align the store cursor so the turn we drove is not mistaken for
+        # an external change.
+        handle.settling_until = time.monotonic() + RECONCILE_SETTLE_GRACE
+        threading.Thread(target=self._settle_sample, args=(session, handle),
+                         daemon=True).start()
         self._sync(session)
         # A queued follow-up dispatches now, not on the next maintain tick.
         self._kick_maintenance()
@@ -494,6 +565,113 @@ class AcpAdapter(AgentAdapter):
         handle.view.end_turn('cancelled')
         self._sync(session)
         return {'stopped': True}
+
+    # -- reconcile ---------------------------------------------------------
+
+    def reconcile(self, session, force=False):
+        """Rebuild a connected-but-stale projection from the authoritative store.
+
+        The wrapper's event stream only describes turns driven by its own
+        child process; a turn driven elsewhere (desktop app, CLI) advances the
+        stored history without a single event reaching us. This builds the
+        replacement handle first and swaps it into ``_handles`` only after its
+        replay verified. Every publisher resolves the live handle through that
+        map, so the swap itself is the generation boundary: a retired handle
+        keeps folding late events into its private view but can never publish
+        again. A failed rebuild leaves the current view untouched and retries
+        later.
+
+        ``force`` bypasses the cadence guards (manual 重新连接); the live-turn
+        and pending-approval guards never yield — a rebuild must not cut our
+        own prompt or an approval card the phone may still answer.
+        """
+        handle = self._handles.get(session.id)
+        if handle is None or not handle.ready.is_set() or handle.dead or handle.load_error is not None:
+            # Not attached, or already failing: the ordinary attach/refresh
+            # path owns recovery here.
+            return False
+        now = time.monotonic()
+        with handle.lock:
+            if handle.prompt_running or handle.responders:
+                return False
+            if not force:
+                if now < handle.reconcile_not_before or now < handle.settling_until:
+                    return False
+                if now - handle.last_activity < RECONCILE_IDLE_GRACE:
+                    return False
+                if session.id in self._pending_created:
+                    return False
+        with self._list_lock:
+            lock = self._reconcile_locks.setdefault(session.id, threading.Lock())
+        with lock:
+            return self._reconcile_locked(session, handle)
+
+    def _reconcile_locked(self, session, handle):
+        if self._handles.get(session.id) is not handle:
+            return False  # A newer attach or rebuild already replaced it.
+        try:
+            fresh = self._spawn_handle(session)
+        except AcpError as exc:
+            LOG.info('ACP reconcile spawn failed: session=%s error=%s', session.id, exc)
+            handle.reconcile_not_before = time.monotonic() + RECONCILE_FAILURE_BACKOFF
+            return False
+        try:
+            self._load(session, fresh, publish=False)
+            if fresh.dead or fresh.load_error is not None:
+                raise AcpUnavailable(fresh.load_error or 'Agent 进程已退出')
+        except Exception:
+            LOG.info('ACP reconcile replay failed: session=%s', session.id, exc_info=True)
+            fresh.deliberate = True
+            fresh.process.close()
+            handle.reconcile_not_before = time.monotonic() + RECONCILE_FAILURE_BACKOFF
+            return False
+        # Atomic swap under the old handle's lock: a dispatch that started in
+        # between (it sets prompt_running under the same lock) aborts the swap,
+        # and a swap that already happened makes the dispatch back off.
+        with handle.lock:
+            if (handle.prompt_running or handle.responders
+                    or self._handles.get(session.id) is not handle):
+                fresh.deliberate = True
+                fresh.process.close()
+                handle.reconcile_not_before = time.monotonic() + RECONCILE_MIN_INTERVAL
+                return False
+            self._handles[session.id] = fresh
+        fresh.reconcile_not_before = time.monotonic() + RECONCILE_MIN_INTERVAL
+        # Retire off-thread: session/close waits up to 5s on a process whose
+        # reply no longer matters.
+        handle.deliberate = True
+        threading.Thread(target=self._retire, args=(session.id, handle), daemon=True).start()
+        self._sync(session)
+        with session.condition:
+            if fresh.view_synced_recency is not None:
+                session.source_recency = max(session.source_recency or 0, fresh.view_synced_recency)
+        LOG.info('ACP reconcile swapped projection: session=%s recency=%s',
+                 session.id, fresh.view_synced_recency)
+        return True
+
+    def _retire(self, session_id, handle):
+        try:
+            self._teardown(session_id, handle)
+        except Exception:
+            LOG.exception('ACP handle retire failed')
+
+    def _settle_sample(self, session, handle):
+        """Re-read the store cursor after a bridge-driven turn settles.
+
+        Alignment, not repair: the live stream already described the turn, so
+        this only advances the handle's freshness cursor (and the session's
+        source recency) to what the store now lists. Without it, the turn we
+        just drove ourselves would read as an external change and cost one
+        wasted rebuild per turn. A desktop write that lands after the sample
+        still lists higher and reconciles normally.
+        """
+        time.sleep(RECONCILE_SETTLE_SAMPLE_DELAY)
+        if self._handles.get(session.id) is not handle or handle.dead:
+            return
+        self._sample_store(handle)
+        with session.condition:
+            if handle.view_synced_recency is not None:
+                session.source_recency = max(session.source_recency or 0, handle.view_synced_recency)
 
     def full_history(self, session):
         raise ValueError('历史已在连接时完整加载')
@@ -577,6 +755,11 @@ class AcpAdapter(AgentAdapter):
             for row in rows:
                 if row.get('sessionId'):
                     self._meta_cache[row['sessionId']] = row
+            # Any list read is as authoritative as the discovery cycle's; a
+            # warm cache here also keeps recencies() from re-spawning.
+            self._list_cache = rows
+            self._list_at = time.monotonic()
+            self._meta_at = self._list_at
         return rows
 
     def _canonical_id(self, thread_id):

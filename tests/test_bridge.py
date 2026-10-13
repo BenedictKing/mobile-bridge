@@ -1237,7 +1237,8 @@ class HttpTests(unittest.TestCase):
     def test_explicit_reconnect_requires_auth_csrf_and_activation_flag(self):
         from types import SimpleNamespace
         calls = []
-        self.server.bridge.activate = lambda tid: calls.append(tid) or SimpleNamespace(connected=True)
+        self.server.bridge.activate = lambda tid: calls.append(('activate', tid)) or SimpleNamespace(connected=True)
+        self.server.bridge.force_reconcile = lambda tid: calls.append(('reconcile', tid)) or {'ok': True, 'connected': True, 'reconciling': False}
         path = '/api/sessions/' + THREAD + '/reconnect'
         self.assertEqual(self.request('POST', path, {'activate': True})[0], 401)
         headers = self.login()
@@ -1247,7 +1248,9 @@ class HttpTests(unittest.TestCase):
         status, _, body = self.request('POST', path, {'activate': True}, headers)
         self.assertEqual(status, 200)
         self.assertTrue(body['connected'])
-        self.assertEqual(calls, [THREAD])
+        # The explicit reconnect shares the store-resync path: activation first,
+        # then the forced reconcile instead of a connected no-op.
+        self.assertEqual(calls, [('activate', THREAD), ('reconcile', THREAD)])
 
     def test_database_read_failure_has_actionable_http_error(self):
         from bridge.store import StoreUnavailable
