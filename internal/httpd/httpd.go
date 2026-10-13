@@ -7,12 +7,15 @@ package httpd
 
 import (
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"net"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,6 +30,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
+	"github.com/google/uuid"
 )
 
 const contentTypeJSON = "application/json; charset=utf-8"
@@ -311,16 +315,55 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
-		if h.server.Store != nil {
-			result, err := h.sessionList(h.request.URL.Query())
-			if err != nil {
-				h.fail(http.StatusConflict, errorBody(err.Error()))
-				return
-			}
-			h.output(http.StatusOK, result, contentTypeJSON, "")
+		result, err := h.sessionList(h.request.URL.Query())
+		if err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
 			return
 		}
-		h.output(http.StatusOK, h.server.Bridge.SessionsList(), contentTypeJSON, "")
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+	case write && path == "/api/sessions":
+		if h.session(write) == nil {
+			return
+		}
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		body := value.(*jsoncompat.Object)
+		agent, _ := body.MustGet("agent").(string)
+		if agent != "acp" || h.server.ACP == nil {
+			h.fail(http.StatusBadRequest, errorBody("当前 Go 网关仅支持通过 ACP 创建会话"))
+			return
+		}
+		cwd, _ := body.MustGet("cwd").(string)
+		if cwd == "" {
+			cwd, _ = body.MustGet("project").(string)
+		}
+		if cwd == "" {
+			cwd = "."
+		}
+		id, _ := body.MustGet("id").(string)
+		if id == "" {
+			id = "sess_" + uuid.NewString()
+		}
+		title, _ := body.MustGet("title").(string)
+		session, createErr := h.server.ACP.Create(id, cwd, 60*time.Second)
+		if createErr != nil {
+			h.fail(http.StatusConflict, errorBody(createErr.Error()))
+			return
+		}
+		result := jsoncompat.NewObject()
+		result.Set("id", session.ID)
+		result.Set("title", title)
+		result.Set("cwd", cwd)
+		result.Set("agent", "acp")
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+	case !write && path == "/api/projects":
+		if h.session(write) == nil {
+			return
+		}
+		h.output(http.StatusOK, h.projectList(), contentTypeJSON, "")
 	case !write && path == "/api/accounts":
 		if h.session(write) == nil {
 			return
@@ -358,24 +401,89 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 		return nil, errors.New("分页参数无效")
 	}
 	archived := queryValue(query, "archived", "false") == "true"
-	rows, err := h.server.Store.List(text, 100, offset, archived)
-	if err != nil {
-		return nil, err
-	}
 	sessions := &jsoncompat.Array{}
-	for _, row := range rows {
-		if _, ok := row.Get("host"); !ok {
-			row.Set("host", "local")
+	agent := queryValue(query, "agent", "")
+	if h.server.Store != nil && (agent == "" || agent == "codex") {
+		rows, err := h.server.Store.List(text, 100, offset, archived)
+		if err != nil {
+			return nil, err
 		}
-		if _, ok := row.Get("agent"); !ok {
-			row.Set("agent", "codex")
+		for _, row := range rows {
+			if _, ok := row.Get("host"); !ok {
+				row.Set("host", "local")
+			}
+			if _, ok := row.Get("agent"); !ok {
+				row.Set("agent", "codex")
+			}
+			sessions.Items = append(sessions.Items, row)
 		}
-		sessions.Items = append(sessions.Items, row)
+	}
+	unavailable := &jsoncompat.Array{}
+	if h.server.ACP != nil && !archived && (agent == "" || agent == "acp") {
+		rows, err := h.server.ACP.List(15 * time.Second)
+		if err != nil {
+			unavailable.Items = append(unavailable.Items, err.Error())
+		} else {
+			for _, row := range rows {
+				id, _ := row.MustGet("sessionId").(string)
+				title, _ := row.MustGet("title").(string)
+				cwd, _ := row.MustGet("cwd").(string)
+				if id == "" || (text != "" && !strings.Contains(strings.ToLower(title+" "+cwd), strings.ToLower(text))) {
+					continue
+				}
+				item := jsoncompat.NewObject()
+				item.Set("id", id)
+				item.Set("title", title)
+				item.Set("name", title)
+				item.Set("cwd", cwd)
+				item.Set("host", "local")
+				item.Set("hostLabel", "此电脑")
+				item.Set("agent", "acp")
+				sessions.Items = append(sessions.Items, item)
+			}
+		}
 	}
 	result := jsoncompat.NewObject()
 	result.Set("sessions", sessions)
-	result.Set("unavailableHosts", &jsoncompat.Array{})
+	result.Set("unavailableHosts", unavailable)
 	return result, nil
+}
+
+func (h *handler) projectList() *jsoncompat.Object {
+	projects := &jsoncompat.Array{}
+	seen := map[string]bool{}
+	if h.server.ACP != nil {
+		if rows, err := h.server.ACP.List(15 * time.Second); err == nil {
+			for _, row := range rows {
+				cwd, _ := row.MustGet("cwd").(string)
+				if cwd == "" {
+					continue
+				}
+				key := "acp:" + hashProject(cwd)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				item := jsoncompat.NewObject()
+				item.Set("key", key)
+				item.Set("host", "local")
+				item.Set("hostLabel", "此电脑")
+				item.Set("name", filepath.Base(filepath.Clean(cwd)))
+				item.Set("cwd", cwd)
+				item.Set("agent", "acp")
+				projects.Items = append(projects.Items, item)
+			}
+		}
+	}
+	result := jsoncompat.NewObject()
+	result.Set("projects", projects)
+	result.Set("agents", &jsoncompat.Array{})
+	return result
+}
+
+func hashProject(cwd string) string {
+	sum := sha256.Sum256([]byte(cwd))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // handlePair exchanges a one-time QR grant for a normal authenticated session.

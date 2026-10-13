@@ -37,6 +37,39 @@ func New(executable string) *Manager {
 	return &Manager{Executable: executable, sessions: map[string]*Session{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 }}
 }
 
+func (m *Manager) List(timeout time.Duration) ([]*jsoncompat.Object, error) {
+	if m.Executable == "" {
+		return nil, errors.New("未找到 Agent 命令，请先安装")
+	}
+	process, err := acp.Start([]string{m.Executable, "acp"})
+	if err != nil {
+		return nil, err
+	}
+	defer process.Close()
+	if _, err = process.Initialize(timeout); err != nil {
+		return nil, err
+	}
+	value, err := process.Request("session/list", jsoncompat.NewObject(), timeout)
+	if err != nil {
+		return nil, err
+	}
+	result, _ := value.(*jsoncompat.Object)
+	if result == nil {
+		return []*jsoncompat.Object{}, nil
+	}
+	rows, _ := result.MustGet("sessions").(*jsoncompat.Array)
+	if rows == nil {
+		return []*jsoncompat.Object{}, nil
+	}
+	output := []*jsoncompat.Object{}
+	for _, item := range rows.Items {
+		if row, ok := item.(*jsoncompat.Object); ok {
+			output = append(output, row)
+		}
+	}
+	return output, nil
+}
+
 func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) {
 	m.mu.Lock()
 	if session := m.sessions[id]; session != nil && !session.closed {
@@ -98,9 +131,19 @@ func (m *Manager) Create(id, cwd string, timeout time.Duration) (*Session, error
 	params := jsoncompat.NewObject()
 	params.Set("cwd", cwd)
 	params.Set("mcpServers", &jsoncompat.Array{})
-	if _, err = process.Request("session/new", params, timeout); err != nil {
+	value, err := process.Request("session/new", params, timeout)
+	if err != nil {
 		session.Close()
 		return nil, err
+	}
+	if result, ok := value.(*jsoncompat.Object); ok {
+		if native, ok := result.MustGet("sessionId").(string); ok && native != "" {
+			session.ID = native
+			m.mu.Lock()
+			delete(m.sessions, id)
+			m.sessions[native] = session
+			m.mu.Unlock()
+		}
 	}
 	return session, nil
 }
