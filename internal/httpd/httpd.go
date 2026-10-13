@@ -15,9 +15,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 )
 
 const contentTypeJSON = "application/json; charset=utf-8"
@@ -58,6 +60,7 @@ type Server struct {
 	Hosts      map[string]bool
 	Origins    map[string]bool
 	Bridge     SessionBridge
+	Pairing    *pairing.Pairing
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
@@ -68,7 +71,7 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"localhost:" + strconv.Itoa(port): true},
 		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
 			"http://localhost:" + strconv.Itoa(port): true},
-		Bridge: newScriptedSessionBridge()}
+		Bridge: newScriptedSessionBridge(), Pairing: pairing.New(nil)}
 	return server
 }
 
@@ -281,6 +284,8 @@ func (h *handler) handleMethod(write bool) {
 		h.handleAuth()
 	case write && path == "/api/login":
 		h.handleLogin()
+	case write && path == "/api/pair":
+		h.handlePair()
 	case write && path == "/api/logout":
 		if h.session(write) == nil {
 			return
@@ -316,6 +321,57 @@ func (h *handler) handleMethod(write bool) {
 		}
 		h.fail(http.StatusNotFound, errorBody("页面不存在"))
 	}
+}
+
+// handlePair exchanges a one-time QR grant for a normal authenticated session.
+// The grant registry is populated by the desktop control path; keeping the
+// exchange here preserves the Python gateway's origin binding and cookie
+// semantics without giving the phone a second authentication mechanism.
+func (h *handler) handlePair() {
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	host := h.request.Host
+	origin := "http://" + host
+	if h.request.Header.Get("Origin") == "https://"+host {
+		origin = "https://" + host
+	}
+	if h.request.Header.Get("Origin") != origin {
+		h.fail(http.StatusForbidden, errorBody("不允许的请求来源"))
+		return
+	}
+	token, _ := value.(*jsoncompat.Object).MustGet("token").(string)
+	if h.server.Pairing == nil {
+		h.fail(http.StatusForbidden, errorBody("二维码已失效或已使用，请在电脑上刷新二维码，或使用账号密码登录"))
+		return
+	}
+	issued, err := h.server.Pairing.Exchange(token, origin, clientIP(h.request), float64(time.Now().Unix()), func(address string) any {
+		sessionToken, session, issueErr := h.server.Auth.NewSession(address, h.request.UserAgent(), true)
+		if issueErr != nil {
+			return issueErr
+		}
+		return []any{sessionToken, session}
+	})
+	if err != nil {
+		h.fail(http.StatusForbidden, errorBody(err.Error()))
+		return
+	}
+	parts, ok := issued.([]any)
+	if !ok || len(parts) != 2 {
+		h.fail(http.StatusForbidden, errorBody("二维码已失效或已使用，请在电脑上刷新二维码，或使用账号密码登录"))
+		return
+	}
+	sessionToken, _ := parts[0].(string)
+	session, _ := parts[1].(*jsoncompat.Object)
+	if session == nil {
+		h.fail(http.StatusForbidden, errorBody("二维码已失效或已使用，请在电脑上刷新二维码，或使用账号密码登录"))
+		return
+	}
+	result := jsoncompat.NewObject()
+	result.Set("csrf", session.MustGet("csrf"))
+	h.output(http.StatusOK, result, contentTypeJSON, h.server.Auth.CookieValue(sessionToken))
 }
 
 func (h *handler) handleAuth() {
