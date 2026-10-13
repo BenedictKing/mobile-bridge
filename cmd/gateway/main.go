@@ -80,6 +80,7 @@ func main() {
 		dataDir = filepath.Join(".local")
 	}
 	server.Uploads = uploads.New(dataDir)
+	server.NotificationDir = dataDir
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {

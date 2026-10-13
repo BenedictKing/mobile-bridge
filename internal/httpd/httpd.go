@@ -26,6 +26,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
@@ -63,21 +64,22 @@ func (stubBridge) AccountsPublic() any {
 
 // Server mirrors GatewayServer's request-facing behavior.
 type Server struct {
-	Auth       *auth.Auth
-	WebFS      fs.FS
-	InstanceID string
-	Port       int
-	LocalHosts map[string]bool // "127.0.0.1:port", "localhost:port"
-	Hosts      map[string]bool
-	Origins    map[string]bool
-	Bridge     SessionBridge
-	Pairing    *pairing.Pairing
-	Store      *store.SessionStore
-	Codex      *codex.Bridge
-	Uploads    *uploads.Manager
-	ACP        *acpruntime.Manager
-	historyMu  sync.Mutex
-	historyTL  map[string]*timeline.Timeline
+	Auth            *auth.Auth
+	WebFS           fs.FS
+	InstanceID      string
+	Port            int
+	LocalHosts      map[string]bool // "127.0.0.1:port", "localhost:port"
+	Hosts           map[string]bool
+	Origins         map[string]bool
+	Bridge          SessionBridge
+	Pairing         *pairing.Pairing
+	Store           *store.SessionStore
+	Codex           *codex.Bridge
+	Uploads         *uploads.Manager
+	ACP             *acpruntime.Manager
+	NotificationDir string
+	historyMu       sync.Mutex
+	historyTL       map[string]*timeline.Timeline
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
@@ -369,6 +371,29 @@ func (h *handler) handleMethod(write bool) {
 			return
 		}
 		h.output(http.StatusOK, h.server.Bridge.AccountsPublic(), contentTypeJSON, "")
+	case path == "/api/notifications/defaults":
+		if h.session(write) == nil {
+			return
+		}
+		if h.server.NotificationDir == "" {
+			h.fail(http.StatusBadRequest, errorBody("当前网关未启用通知服务"))
+			return
+		}
+		if write {
+			value, err := h.readJSON()
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return
+			}
+			result, saveErr := notifications.SaveSettings(h.server.NotificationDir, value.(*jsoncompat.Object))
+			if saveErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(saveErr.Error()))
+				return
+			}
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+		} else {
+			h.output(http.StatusOK, notifications.ReadSettings(h.server.NotificationDir), contentTypeJSON, "")
+		}
 	default:
 		// The auth gate runs before every unmatched path (Python's
 		// authorized() precedes all remaining routing).
