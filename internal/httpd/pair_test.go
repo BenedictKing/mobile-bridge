@@ -1,7 +1,9 @@
 package httpd
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -118,6 +120,16 @@ func TestUploadAndPreviewRoutes(t *testing.T) {
 	server.ServeHTTP(response, preview)
 	if response.Code != http.StatusOK || !strings.HasPrefix(response.Body.String(), "\x89PNG") {
 		t.Fatalf("preview status=%d body=%q", response.Code, response.Body.String())
+	}
+	digest := sha256.Sum256([]byte("\x89PNG\r\n\x1a\nbody"))
+	download := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790/api/sessions/thread-1/files/"+fmt.Sprintf("%x", digest), nil)
+	download.Host = "127.0.0.1:8790"
+	download.Header.Set("Origin", "http://127.0.0.1:8790")
+	download.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, download)
+	if response.Code != http.StatusOK || response.Body.String() != "\x89PNG\r\n\x1a\nbody" {
+		t.Fatalf("download status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

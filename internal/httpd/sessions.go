@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 var threadRoute = regexp.MustCompile(
 	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|input))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
+var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
 
 // ScriptedSession is the conformance stand-in for service.LiveSession: an
 // epoch, a sequence and a predicate-based wait. Production wiring replaces it
@@ -429,6 +431,36 @@ func readBodyLimit(request *http.Request, limit int) ([]byte, error) {
 func (h *handler) handleUploadHTTP(write bool, path string, query map[string][]string) bool {
 	if h.server.Uploads == nil {
 		return false
+	}
+	if !write {
+		if match := fileRoute.FindStringSubmatch(path); match != nil {
+			row, err := h.server.Uploads.Artifact(match[1], match[2])
+			if err != nil {
+				h.fail(http.StatusNotFound, errorBody(err.Error()))
+				return true
+			}
+			localPath, _ := row.MustGet("localPath").(string)
+			data, err := os.ReadFile(localPath)
+			if err != nil {
+				h.fail(http.StatusNotFound, errorBody("附件已不可用，请重新上传"))
+				return true
+			}
+			mimeType := "application/octet-stream"
+			if image, _ := row.MustGet("image").(string); image != "" {
+				mimeType = image
+			}
+			name, _ := row.MustGet("name").(string)
+			disposition := "attachment"
+			if mimeType != "application/octet-stream" {
+				disposition = "inline"
+			}
+			h.writer.Header().Set("Content-Type", mimeType)
+			h.writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			h.writer.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+url.PathEscape(name))
+			h.writer.WriteHeader(http.StatusOK)
+			_, _ = h.writer.Write(data)
+			return true
+		}
 	}
 	match := uploadRoute.FindStringSubmatch(path)
 	if match == nil {

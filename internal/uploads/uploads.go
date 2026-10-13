@@ -153,6 +153,27 @@ func (m *Manager) Get(thread, id string) (*jsoncompat.Object, error) {
 	return row, nil
 }
 
+func (m *Manager) Artifact(thread, digest string) (*jsoncompat.Object, error) {
+	if !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(digest) {
+		return nil, errors.New("附件标识无效")
+	}
+	entries, err := os.ReadDir(filepath.Join(m.Root, thread))
+	if err != nil {
+		return nil, errors.New("附件不存在")
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		row, getErr := m.Get(thread, id)
+		if getErr == nil && row.MustGet("sha256") == digest {
+			return row, nil
+		}
+	}
+	return nil, errors.New("附件不存在")
+}
+
 func (m *Manager) Preview(thread, id, variant string) (*jsoncompat.Object, string, error) {
 	row, err := m.Get(thread, id)
 	if err != nil {
