@@ -2,14 +2,27 @@ package main
 
 import (
 	"embed"
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"errors"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 //go:embed frontend
 var assets embed.FS
 
-type GatewayService struct{ gateway string }
+type GatewayService struct {
+	gateway string
+	mu      sync.Mutex
+	process *exec.Cmd
+	logFile *os.File
+	done    chan error
+}
 
 func NewGatewayService() *GatewayService { return &GatewayService{} }
 
@@ -23,8 +36,80 @@ func (s *GatewayService) Snapshot() (map[string]any, error) {
 func (s *GatewayService) Save(value map[string]any) (map[string]any, error) {
 	return runAction(s.gateway, "save", value)
 }
-func (s *GatewayService) Start() (map[string]any, error) { return runAction(s.gateway, "start", nil) }
-func (s *GatewayService) Stop() (map[string]any, error)  { return runAction(s.gateway, "stop", nil) }
+func (s *GatewayService) Start() (map[string]any, error) {
+	s.mu.Lock()
+	if s.process != nil && s.process.ProcessState == nil {
+		pid := s.process.Process.Pid
+		s.mu.Unlock()
+		return map[string]any{"started": false, "pid": pid, "message": "网关已在运行"}, nil
+	}
+	s.mu.Unlock()
+	return s.startProcess()
+}
+
+func (s *GatewayService) Stop() (map[string]any, error) {
+	result, err := runAction(s.gateway, "stop", nil)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	process := s.process
+	s.process = nil
+	logFile := s.logFile
+	s.logFile = nil
+	done := s.done
+	s.done = nil
+	s.mu.Unlock()
+	if process != nil && process.ProcessState == nil {
+		select {
+		case <-done:
+		case <-time.After(8 * time.Second):
+			return nil, errors.New("网关停止超时，请检查本机日志")
+		}
+	}
+	if logFile != nil {
+		_ = logFile.Close()
+	}
+	return result, nil
+}
+
+func (s *GatewayService) startProcess() (map[string]any, error) {
+	executable := resolveGateway(s.gateway)
+	dataDir := resolveDataDir()
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	logFile, err := os.OpenFile(filepath.Join(dataDir, "gateway.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	process := exec.Command(executable, "serve", "--data-dir", dataDir)
+	process.Env = append(os.Environ(), "GATEWAY_DATA_DIR="+dataDir)
+	process.Stdout = logFile
+	process.Stderr = logFile
+	if err := process.Start(); err != nil {
+		_ = logFile.Close()
+		return nil, err
+	}
+	s.mu.Lock()
+	s.process = process
+	s.logFile = logFile
+	done := make(chan error, 1)
+	s.done = done
+	s.mu.Unlock()
+	go func() {
+		done <- process.Wait()
+		s.mu.Lock()
+		if s.process == process {
+			s.process = nil
+			s.logFile = nil
+			s.done = nil
+		}
+		s.mu.Unlock()
+		_ = logFile.Close()
+	}()
+	return map[string]any{"started": true, "pid": process.Process.Pid, "message": "正在启动网关"}, nil
+}
 
 func main() {
 	service := NewGatewayService()
