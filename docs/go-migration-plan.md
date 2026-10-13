@@ -230,8 +230,13 @@ Python `json` 与 Go `encoding/json` 的默认行为差异，逐条列出：
 > **进行中（2026-10-13，首切片）**：`internal/service` + `conformance/service/`（6 步 golden 首跑全绿）——
 > `LiveSession` 视图合并：`set_history` 的快照规范化与非连接态收养、`view()` 的保存前缀拼接
 > （触界回合 id 匹配、空不完整快照不清空、不匹配的新历史直通）、`savedHistoryMore` 与连接状态字段追加。
-> 这是 P1 时三个依赖 LiveSession 的 A 类测试的能力补齐。剩余：Bridge 编排（live 表、timeline_read
-> 派发、提交账本、队列、通知对账）与 ACP 生命周期接线。
+> 这是 P1 时三个依赖 LiveSession 的 A 类测试的能力补齐。
+> - `internal/service` 组合链（同日第二批，`conformance/projection/`，首跑全绿）：`LiveSession.view()`
+>   → `Timeline.update()` 的真实喂数——timeline_read 的**无标注内核**：投影更新触发（sequence/goal/
+>   subagentRevision 三条件）、分页/回填/changes、保存前缀合并下的游标稳定，以及权威完整快照收缩
+>   引发的 epoch 滚动与旧游标 RESET。**quirk 入册**：`LiveSession.__init__` 内部构造 Timeline 会消耗
+>   一个 epoch id（跨场景共享计数时的账目）。
+> 剩余：Bridge 编排（live 表、timeline_read 派发、提交账本、队列、通知对账）与 ACP 生命周期接线。
 
 
 `Bridge` / `LiveSession` 状态机、去重、队列、submission ledger、`timeline_read` 分页、uploads GC、通知对账。

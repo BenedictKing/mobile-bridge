@@ -1,0 +1,196 @@
+{
+ "name": "01_composition",
+ "steps": [
+  {
+   "op": "session",
+   "steps": [
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "0",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "0",
+          "text": "saved 0"
+         }
+        ]
+       },
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "saved 1"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "saved 2"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "live"
+         }
+        ]
+       }
+      ],
+      "requests": [],
+      "turnsPagination": {
+       "hasLoadedOldest": false
+      }
+     },
+     "connected": true
+    },
+    {
+     "project": true
+    },
+    {
+     "page": {
+      "limit": 2
+     }
+    },
+    {
+     "page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "live streaming"
+         }
+        ]
+       }
+      ],
+      "requests": []
+     },
+     "connected": true
+    },
+    {
+     "changed": true
+    },
+    {
+     "project": true
+    },
+    {
+     "page": {}
+    },
+    {
+     "changes": {
+      "after": 1,
+      "epoch_last": true
+     }
+    },
+    {
+     "project": true
+    },
+    {
+     "page": {}
+    }
+   ]
+  },
+  {
+   "op": "session",
+   "steps": [
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "a",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "a",
+          "text": "第一轮"
+         }
+        ]
+       },
+       {
+        "turnId": "b",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "b",
+          "text": "第一轮"
+         }
+        ]
+       }
+      ],
+      "requests": []
+     },
+     "connected": true
+    },
+    {
+     "project": true
+    },
+    {
+     "page": {}
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "b",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "b",
+          "text": "收缩即替换"
+         }
+        ]
+       }
+      ],
+      "requests": []
+     },
+     "connected": true
+    },
+    {
+     "changed": true
+    },
+    {
+     "project": true
+    },
+    {
+     "page": {}
+    },
+    {
+     "page": {
+      "before_prev": true
+     }
+    }
+   ]
+  }
+ ]
+}

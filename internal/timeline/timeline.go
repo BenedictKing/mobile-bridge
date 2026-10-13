@@ -539,6 +539,10 @@ type State struct {
 	Rows     int
 }
 
+// Meta exposes the current projection meta (timeline_read's trigger
+// compares goal/subagentRevision against the fresh view).
+func (t *Timeline) Meta() *jsoncompat.Object { return t.meta }
+
 func (t *Timeline) State() State {
 	return State{Epoch: t.epoch, Sequence: t.sequence,
 		Versions: len(t.versionKeys), Rows: len(t.rows)}
