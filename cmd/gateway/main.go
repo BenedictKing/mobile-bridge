@@ -22,6 +22,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -291,6 +292,58 @@ func workerSnapshot(dataDir string) *jsoncompat.Object {
 	return result
 }
 
+// trustedOrigins mirrors run.py's origin assembly for server deployments:
+// the stored config.json origins plus the publicUrl of every enabled
+// server/nas/cloudflare connection. config.json carries server-deployment
+// connections (run.py --lan); desktop.json carries desktop-managed ones.
+func trustedOrigins(dataDir string, preferences *jsoncompat.Object) []string {
+	seen := map[string]bool{}
+	var origins []string
+	add := func(value string) {
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		origins = append(origins, value)
+	}
+	addEntry := func(item any) {
+		entry, _ := item.(*jsoncompat.Object)
+		if entry == nil || entry.MustGet("enabled") != true {
+			return
+		}
+		mode, _ := entry.MustGet("accessMode").(string)
+		if mode != "server" && mode != "nas" && mode != "cloudflare" {
+			return
+		}
+		value, _ := entry.MustGet("publicUrl").(string)
+		add(value)
+	}
+	if raw, err := os.ReadFile(filepath.Join(dataDir, "config.json")); err == nil {
+		if value, err := jsoncompat.Unmarshal(raw); err == nil {
+			if root, ok := value.(*jsoncompat.Object); ok {
+				if items, ok := root.MustGet("origins").(*jsoncompat.Array); ok {
+					for _, item := range items.Items {
+						if value, _ := item.(string); value != "" {
+							add(value)
+						}
+					}
+				}
+				if items, ok := root.MustGet("connections").(*jsoncompat.Array); ok {
+					for _, item := range items.Items {
+						addEntry(item)
+					}
+				}
+			}
+		}
+	}
+	if items, ok := preferences.MustGet("connections").(*jsoncompat.Array); ok {
+		for _, item := range items.Items {
+			addEntry(item)
+		}
+	}
+	return origins
+}
+
 func desktopPreferences(dataDir string) *jsoncompat.Object {
 	preferences := jsoncompat.NewObject()
 	preferences.Set("autoStart", false)
@@ -486,6 +539,15 @@ func runGateway(args []string) {
 	var quickTunnel *tunnel.Quick
 	sshForwards := []*tunnel.SSHForward{}
 	preferences := desktopPreferences(dataDir)
+	for _, origin := range trustedOrigins(dataDir, preferences) {
+		parsed, parseErr := url.Parse(origin)
+		if parseErr != nil || parsed.Scheme == "" || parsed.Host == "" {
+			log.Printf("忽略无效外网地址 %q: %v", origin, parseErr)
+			continue
+		}
+		server.Origins[origin] = true
+		server.Hosts[parsed.Host] = true
+	}
 	if enabled, _ := preferences.MustGet("tunnel").(bool); enabled {
 		cloudflared, _ := preferences.MustGet("cloudflared").(string)
 		quickTunnel = &tunnel.Quick{Executable: cloudflared, DataDir: dataDir, Port: port}

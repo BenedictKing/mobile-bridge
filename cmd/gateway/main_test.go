@@ -76,3 +76,35 @@ func TestApplyServeFlagsRejectsUnknownAndMissingValue(t *testing.T) {
 		t.Fatal("missing value accepted")
 	}
 }
+
+func TestTrustedOriginsFromConfigAndDesktopConnections(t *testing.T) {
+	dataDir := t.TempDir()
+	config := `{"origins":["https://stored.example"],"connections":[` +
+		`{"id":"a","enabled":true,"accessMode":"cloudflare","publicUrl":"https://a.example"},` +
+		`{"id":"b","enabled":false,"accessMode":"cloudflare","publicUrl":"https://b.example"},` +
+		`{"id":"c","enabled":true,"accessMode":"nas","publicUrl":"https://c.example"},` +
+		`{"id":"d","enabled":true,"accessMode":"quick","publicUrl":"https://d.example"}]}`
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed := jsoncompat.NewObject()
+	managed.Set("id", "e")
+	managed.Set("enabled", true)
+	managed.Set("accessMode", "server")
+	managed.Set("publicUrl", "https://e.example")
+	connections := &jsoncompat.Array{}
+	connections.Items = append(connections.Items, managed)
+	preferences := jsoncompat.NewObject()
+	preferences.Set("connections", connections)
+
+	got := trustedOrigins(dataDir, preferences)
+	want := []string{"https://stored.example", "https://a.example", "https://c.example", "https://e.example"}
+	if len(got) != len(want) {
+		t.Fatalf("origins=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("origins=%v want=%v", got, want)
+		}
+	}
+}
