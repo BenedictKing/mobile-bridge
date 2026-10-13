@@ -23,6 +23,7 @@ import (
 
 	gateway "github.com/BenedictKing/mobile-bridge"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 )
@@ -80,6 +81,9 @@ func main() {
 	}
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_STORE") != "1" {
 		server.Store = store.NewSessionStore(codexHome)
+	}
+	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_IPC") != "1" {
+		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
 	}
 	log.Printf("gateway listening on http://%s", listener.Addr())
 	log.Fatal(http.Serve(listener, server))

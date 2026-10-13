@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
@@ -66,6 +67,7 @@ type Server struct {
 	Bridge     SessionBridge
 	Pairing    *pairing.Pairing
 	Store      *store.SessionStore
+	Codex      *codex.Bridge
 	historyMu  sync.Mutex
 	historyTL  map[string]*timeline.Timeline
 }

@@ -174,6 +174,22 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return false
 	}
 	threadID, action := match[1], match[2]
+	if !write && action == "" && h.server.Codex != nil {
+		if view, ok := h.liveView(threadID); ok {
+			h.output(http.StatusOK, view, contentTypeJSON, "")
+			return true
+		}
+	}
+	if !write && h.server.Codex != nil && (action == "timeline" || action == "changes" || action == "detail") {
+		if result, handled, err := h.liveTimeline(threadID, action, query); handled {
+			if err != nil {
+				h.fail(http.StatusConflict, errorBody(err.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
+		}
+	}
 	switch {
 	case !write && action == "history" && h.server.Store != nil:
 		result, err := h.server.Store.HistoryFor(threadID, nil)
@@ -204,6 +220,57 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		h.fail(http.StatusNotFound, errorBody("接口不存在"))
 	}
 	return true
+}
+
+func (h *handler) liveView(threadID string) (*jsoncompat.Object, bool) {
+	if h.server.Codex == nil {
+		return nil, false
+	}
+	_, _ = h.server.Codex.Watch(threadID, 1500*time.Millisecond)
+	state, sequence, connected, connectionError := h.server.Codex.Snapshot(threadID)
+	if state == nil {
+		return nil, false
+	}
+	view := model.NormalizeState(state, connected)
+	view.Set("sequence", jsoncompat.Num(sequence))
+	view.Set("connectionError", connectionError)
+	view.Set("connecting", false)
+	view.Set("activating", false)
+	view.Set("loadingHistory", false)
+	return view, true
+}
+
+func (h *handler) liveTimeline(threadID, action string, query map[string][]string) (any, bool, error) {
+	view, ok := h.liveView(threadID)
+	if !ok {
+		return nil, false, nil
+	}
+	h.server.historyMu.Lock()
+	defer h.server.historyMu.Unlock()
+	projection := h.server.historyTL[threadID]
+	if projection == nil {
+		projection = timeline.New(nil)
+		h.server.historyTL[threadID] = projection
+	}
+	projection.Update(view)
+	meta := projection.Meta()
+	meta.Set("host", "local")
+	meta.Set("agent", "codex")
+	meta.Set("hostLabel", "此电脑")
+	meta.Set("capabilities", &jsoncompat.Array{})
+	meta.Set("goalRuntimeAvailable", false)
+	if action == "detail" {
+		var version any
+		if value := queryValue(query, "version", ""); value != "" {
+			version = value
+		}
+		result, err := projection.Detail(queryValue(query, "key", ""), intQuery(query, "offset", 0), version)
+		return result, true, err
+	}
+	if action == "changes" {
+		return projection.Changes(queryValue(query, "after", "-1"), queryValue(query, "epoch", ""), queryValue(query, "start", "")), true, nil
+	}
+	return projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", "")), true, nil
 }
 
 // historicalTimeline projects a saved rollout through the same Go timeline
