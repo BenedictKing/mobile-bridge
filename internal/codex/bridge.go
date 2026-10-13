@@ -297,16 +297,55 @@ func (s *Session) ErrorOr(fallback string) string {
 }
 
 func (b *Bridge) StartTurn(id, submissionID, text string) (*jsoncompat.Object, error) {
+	return b.StartTurnWithOptions(id, submissionID, text, "send", "")
+}
+
+// StartTurnWithOptions preserves the mobile mode contract for native Codex
+// owners. Attachments and Skills are capability-specific and are rejected by
+// the caller until their local artifact mapping is available.
+func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode string) (*jsoncompat.Object, error) {
 	input := jsoncompat.NewObject()
 	input.Set("type", "text")
 	input.Set("text", text)
 	input.Set("text_elements", &jsoncompat.Array{})
+	inputs := &jsoncompat.Array{Items: []any{input}}
+	if mode == "steer" {
+		params := jsoncompat.NewObject()
+		params.Set("input", inputs)
+		params.Set("clientUserMessageId", submissionID)
+		return b.Call(id, "thread-follower-steer-turn", params, 30*time.Second)
+	}
 	request := jsoncompat.NewObject()
 	request.Set("threadId", id)
-	request.Set("input", &jsoncompat.Array{Items: []any{input}})
+	request.Set("input", inputs)
 	request.Set("clientUserMessageId", submissionID)
 	context := jsoncompat.NewObject()
 	context.Set("inheritThreadSettings", true)
+	if workMode != "" {
+		state, _, _, _ := b.Snapshot(id)
+		modelName, effort := "", ""
+		if state != nil {
+			modelName, _ = state.MustGet("latestModel").(string)
+			effort, _ = state.MustGet("latestReasoningEffort").(string)
+		}
+		if modelName == "" {
+			return nil, errors.New("尚未取得桌面模型设置，请重新连接后再切换模式")
+		}
+		settings := jsoncompat.NewObject()
+		settings.Set("model", modelName)
+		settings.Set("developer_instructions", nil)
+		if effort != "" {
+			settings.Set("reasoning_effort", effort)
+		}
+		collaboration := jsoncompat.NewObject()
+		if workMode == "plan" {
+			collaboration.Set("mode", "plan")
+		} else {
+			collaboration.Set("mode", "default")
+		}
+		collaboration.Set("settings", settings)
+		request.Set("collaborationMode", collaboration)
+	}
 	turnStart := jsoncompat.NewObject()
 	turnStart.Set("request", request)
 	turnStart.Set("context", context)

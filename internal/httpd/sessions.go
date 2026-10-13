@@ -319,7 +319,13 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				return true
 			}
 			id, _ := body.(*jsoncompat.Object).MustGet("id").(string)
-			result, callErr := h.server.Codex.StartTurn(threadID, id, text)
+			mode, _ := body.(*jsoncompat.Object).MustGet("mode").(string)
+			workMode, _ := body.(*jsoncompat.Object).MustGet("workMode").(string)
+			if attachments, ok := body.(*jsoncompat.Object).MustGet("attachments").(*jsoncompat.Array); ok && len(attachments.Items) > 0 {
+				h.fail(http.StatusConflict, errorBody("当前 Go 网关暂不支持 Codex 原生附件发送"))
+				return true
+			}
+			result, callErr := h.server.Codex.StartTurnWithOptions(threadID, id, text, mode, workMode)
 			if callErr != nil {
 				h.fail(http.StatusConflict, errorBody(callErr.Error()))
 			} else {
