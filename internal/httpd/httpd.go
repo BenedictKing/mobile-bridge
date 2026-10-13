@@ -97,7 +97,8 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"localhost:" + strconv.Itoa(port): true},
 		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
 			"http://localhost:" + strconv.Itoa(port): true},
-		Bridge: newScriptedSessionBridge(), Pairing: pairing.New(nil), historyTL: map[string]*timeline.Timeline{}}
+		Pairing: pairing.New(nil), historyTL: map[string]*timeline.Timeline{}}
+	server.Bridge = server
 	return server
 }
 

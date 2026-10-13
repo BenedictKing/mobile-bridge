@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -172,6 +173,7 @@ func gatewayRuntime(dataDir string) *jsoncompat.Object {
 }
 
 func workerSnapshot(dataDir string) *jsoncompat.Object {
+	ensureDesktopConfig(dataDir)
 	result := jsoncompat.NewObject()
 	preferences := jsoncompat.NewObject()
 	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
@@ -188,7 +190,13 @@ func workerSnapshot(dataDir string) *jsoncompat.Object {
 		if value, err := jsoncompat.Unmarshal(raw); err == nil {
 			if root, ok := value.(*jsoncompat.Object); ok {
 				if value, ok := root.Get("auth"); ok {
-					authValue, _ = value.(*jsoncompat.Object)
+					if saved, ok := value.(*jsoncompat.Object); ok {
+						for _, key := range []string{"username", "mode", "sessionHours"} {
+							if item, exists := saved.Get(key); exists {
+								authValue.Set(key, item)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -213,6 +221,7 @@ func readControl(dataDir string) *jsoncompat.Object {
 }
 
 func applyDesktopDefaults(dataDir string) {
+	ensureDesktopConfig(dataDir)
 	if os.Getenv("GATEWAY_PORT") == "" {
 		if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
 			if value, err := jsoncompat.Unmarshal(raw); err == nil {
@@ -237,6 +246,40 @@ func applyDesktopDefaults(dataDir string) {
 			}
 		}
 	}
+}
+
+// ensureDesktopConfig creates the first-run password record used by the Go
+// gateway. A fresh Wails installation must be usable without a Python helper
+// or an Electron worker having to seed the data directory first.
+func ensureDesktopConfig(dataDir string) {
+	path := filepath.Join(dataDir, "config.json")
+	if _, err := os.Stat(path); err == nil {
+		return
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		log.Fatalf("data directory: %v", err)
+	}
+	passwordBytes := make([]byte, 18)
+	if _, err := rand.Read(passwordBytes); err != nil {
+		log.Fatal(err)
+	}
+	password := base64.RawURLEncoding.EncodeToString(passwordBytes)
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		log.Fatal(err)
+	}
+	authRecord := auth.PasswordRecord(password, salt)
+	authRecord.Set("mode", "password")
+	authRecord.Set("username", "admin")
+	authRecord.Set("sessionHours", jsoncompat.Num(12))
+	config := jsoncompat.NewObject()
+	config.Set("auth", authRecord)
+	config.Set("origins", &jsoncompat.Array{})
+	if err := os.WriteFile(path, append(jsoncompat.EncodePythonIndent2(config), '\n'), 0o600); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	credentials := "Codex App 手机网关\n账号：admin\n密码：" + password + "\n"
+	_ = os.WriteFile(filepath.Join(dataDir, "首次登录.txt"), []byte(credentials), 0o600)
 }
 
 func runGateway(args []string) {
