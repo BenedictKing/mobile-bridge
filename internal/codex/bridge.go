@@ -122,6 +122,58 @@ func (b *Bridge) Snapshot(id string) (*jsoncompat.Object, int, bool, string) {
 	return copy, session.Sequence, session.Connected, session.Error
 }
 
+// Activity reports already-followed local sessions without activating a new
+// desktop owner. This keeps list polling cheap and avoids resurrecting chats
+// merely because they appear in saved history.
+func (b *Bridge) Activity(ids []string) []*jsoncompat.Object {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	rows := make([]*jsoncompat.Object, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		row := jsoncompat.NewObject()
+		row.Set("id", id)
+		row.Set("host", b.Host)
+		session := b.sessions[id]
+		connected := session != nil && session.Connected
+		row.Set("connected", connected)
+		status := "unknown"
+		var turnID, turnStatus string
+		if session != nil {
+			if state, ok := session.State.(*jsoncompat.Object); ok {
+				if turns, ok := state.MustGet("turns").(*jsoncompat.Array); ok && len(turns.Items) > 0 {
+					if turn, ok := turns.Items[len(turns.Items)-1].(*jsoncompat.Object); ok {
+						turnID, _ = turn.MustGet("turnId").(string)
+						if turnID == "" {
+							turnID, _ = turn.MustGet("id").(string)
+						}
+						turnStatus, _ = turn.MustGet("status").(string)
+					}
+				}
+			}
+		}
+		if connected {
+			status = "idle"
+			if turnStatus == "inProgress" {
+				status = "active"
+			}
+		}
+		row.Set("status", status)
+		if turnID != "" {
+			row.Set("turnId", turnID)
+		}
+		if turnStatus != "" {
+			row.Set("turnStatus", turnStatus)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 func (b *Bridge) Wait(id string, timeout time.Duration) *Session {
 	b.mu.Lock()
 	session := b.sessions[id]

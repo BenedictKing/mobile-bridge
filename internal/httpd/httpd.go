@@ -27,6 +27,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
+	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
@@ -81,6 +82,7 @@ type Server struct {
 	ACP             *acpruntime.Manager
 	ACPAgents       map[string]*acpruntime.Manager
 	NotificationDir string
+	Jev             *jev.Settings
 	Account         *account.Manager
 	Goal            *goal.Manager
 	historyMu       sync.Mutex
@@ -374,6 +376,73 @@ func (h *handler) handleMethod(write bool) {
 		result.Set("cwd", cwd)
 		result.Set("agent", "acp")
 		h.output(http.StatusOK, result, contentTypeJSON, "")
+	case write && path == "/api/activity":
+		if h.session(write) == nil {
+			return
+		}
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		groups, ok := value.(*jsoncompat.Object).MustGet("hosts").(*jsoncompat.Object)
+		if !ok || groups.Len() > 20 {
+			h.fail(http.StatusBadRequest, errorBody("会话状态请求无效"))
+			return
+		}
+		rows := &jsoncompat.Array{}
+		for _, host := range groups.Keys() {
+			if host != "local" {
+				continue
+			}
+			identifiers, ok := groups.MustGet(host).(*jsoncompat.Array)
+			if !ok || len(identifiers.Items) > 500 {
+				h.fail(http.StatusBadRequest, errorBody("会话状态请求无效"))
+				return
+			}
+			ids := make([]string, 0, len(identifiers.Items))
+			for _, item := range identifiers.Items {
+				id, valid := item.(string)
+				if !valid {
+					h.fail(http.StatusBadRequest, errorBody("会话状态请求无效"))
+					return
+				}
+				ids = append(ids, id)
+			}
+			if h.server.Codex != nil {
+				for _, row := range h.server.Codex.Activity(ids) {
+					rows.Items = append(rows.Items, row)
+				}
+			}
+			for kind, manager := range h.server.ACPAgents {
+				if manager == nil {
+					continue
+				}
+				for _, id := range ids {
+					if !strings.HasPrefix(id, "sess_") {
+						continue
+					}
+					session := manager.Get(id)
+					if session == nil {
+						continue
+					}
+					row := jsoncompat.NewObject()
+					row.Set("id", id)
+					row.Set("host", "local")
+					row.Set("agent", kind)
+					row.Set("connected", true)
+					row.Set("status", "idle")
+					snapshot := session.Snapshot()
+					if snapshot.MustGet("status") == "active" {
+						row.Set("status", "active")
+					}
+					rows.Items = append(rows.Items, row)
+				}
+			}
+		}
+		result := jsoncompat.NewObject()
+		result.Set("sessions", rows)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case !write && path == "/api/projects":
 		if h.session(write) == nil {
 			return
@@ -473,6 +542,29 @@ func (h *handler) handleMethod(write bool) {
 		} else {
 			h.output(http.StatusOK, notifications.ReadSettings(h.server.NotificationDir), contentTypeJSON, "")
 		}
+	case path == "/api/jev":
+		if h.session(write) == nil {
+			return
+		}
+		if h.server.Jev == nil {
+			h.fail(http.StatusConflict, errorBody("当前网关未启用 Jev 设置"))
+			return
+		}
+		if write {
+			value, err := h.readJSON()
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return
+			}
+			result, updateErr := h.server.Jev.Update(value.(*jsoncompat.Object))
+			if updateErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(updateErr.Error()))
+				return
+			}
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return
+		}
+		h.output(http.StatusOK, h.server.Jev.Public(), contentTypeJSON, "")
 	default:
 		// The auth gate runs before every unmatched path (Python's
 		// authorized() precedes all remaining routing).

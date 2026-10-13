@@ -37,6 +37,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
+	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
@@ -304,6 +305,7 @@ func runGateway(args []string) {
 	server := httpd.New(auth.NewAuth(config), gateway.WebFS, port, instanceID)
 	server.Uploads = uploads.New(dataDir)
 	server.NotificationDir = dataDir
+	server.Jev = jev.New(filepath.Join(dataDir, "jev.json"))
 	if ledger := notifications.NewOutcomeLedger(dataDir); ledger != nil {
 		_ = ledger.Reconcile(time.Now(), nil, nil)
 	}
