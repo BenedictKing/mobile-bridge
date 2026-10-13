@@ -1,0 +1,125 @@
+{
+ "name": "03_requeue_limit",
+ "steps": [
+  {
+   "op": "session",
+   "steps": [
+    {
+     "dispatch": {
+      "not_dispatched": "会话尚未连接，请重新打开"
+     }
+    },
+    {
+     "op": "send",
+     "value": {
+      "text": "重试 climbing",
+      "submission_id": "11111111-1111-1111-1111-111111111111"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    }
+   ]
+  }
+ ]
+}

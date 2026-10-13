@@ -16,11 +16,22 @@ type Bridge struct {
 	Agent        string
 	Capabilities []string
 	Live         map[string]*LiveSession
+	Adapter      SubmissionAdapter
+	Submissions  map[string]*jsoncompat.Object
+	ledgerOrder  []string
 }
 
 func NewBridge(host, agent string, capabilities []string) *Bridge {
 	return &Bridge{Host: host, Agent: agent, Capabilities: capabilities,
-		Live: map[string]*LiveSession{}}
+		Live: map[string]*LiveSession{}, Submissions: map[string]*jsoncompat.Object{}}
+}
+
+// recordLedger inserts one entry, preserving ledger order like Python's dict.
+func (b *Bridge) recordLedger(key string, entry *jsoncompat.Object) {
+	if _, exists := b.Submissions[key]; !exists {
+		b.ledgerOrder = append(b.ledgerOrder, key)
+	}
+	b.Submissions[key] = entry
 }
 
 func (b *Bridge) Session(threadID string) *LiveSession {

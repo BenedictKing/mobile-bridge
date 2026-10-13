@@ -1,0 +1,109 @@
+{
+ "name": "02_failures_and_retry",
+ "steps": [
+  {
+   "op": "session",
+   "steps": [
+    {
+     "dispatch": {
+      "error": "此 Agent 不支持图片附件"
+     }
+    },
+    {
+     "op": "send",
+     "value": {
+      "text": "带坏附件",
+      "submission_id": "11111111-1111-1111-1111-111111111111"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "dispatch": {
+      "ok": true
+     }
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "dispatch": {
+      "ok": true
+     }
+    },
+    {
+     "op": "send",
+     "value": {
+      "text": "直发成功",
+      "submission_id": "22222222-2222-2222-2222-222222222222"
+     }
+    },
+    {
+     "op": "mark_failed",
+     "value": {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "error": "Agent 请求失败"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "queue_action",
+     "value": {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "action": "send"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "dispatch": {
+      "timeout": true
+     }
+    },
+    {
+     "op": "send",
+     "value": {
+      "text": "结果未知",
+      "submission_id": "33333333-3333-3333-3333-333333333333"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "ignore_submission",
+     "value": {
+      "id": "33333333-3333-3333-3333-333333333333"
+     }
+    },
+    {
+     "op": "meta"
+    },
+    {
+     "op": "ignore_submission",
+     "value": {
+      "id": "33333333-3333-3333-3333-333333333333"
+     }
+    }
+   ]
+  }
+ ]
+}

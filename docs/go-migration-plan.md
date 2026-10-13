@@ -241,7 +241,13 @@ Python `json` 与 Go `encoding/json` 的默认行为差异，逐条列出：
 >   goal 覆盖空路径、meta 增补（host/agent/hostLabel/排序 capabilities/goalRuntimeAvailable/submissions/
 >   goalSubmission/forkedFrom，**page 与 changes 都增补、仅 detail 跳过**——对拍器抓到的分歧）、
 >   `files` 空数组、更新触发含 subagentRevision。会话预注册 + connected 规避后台 attach 竞态。
-> 剩余：Bridge 编排（提交账本、队列派发、通知对账、保存历史边缘扩展）与 ACP 生命周期接线。
+> - `internal/service` 提交账本与队列状态机（2026-10-13 第四批，`conformance/submissions/`，首跑全绿）：
+>   send 校验链/同 ID 去重（内容全等比对）、dispatch 三分支（accepted / ValueError→failed /
+>   TurnNotDispatched→重排队）、**重试上限 10 次**（quirk：手动 `send` 重试不攀升计数——计数入口仅在
+>   unknown 状态的重排队）、`mark_submission_failed` 仅作用于 accepted（其余静默无操作→null）、
+>   edit/delete/send 队列动作（edit 清 attempt/error 三键回 queued）、ignore 仅接受 unknown/ignored、
+>   `_submission_meta` 的可见状态集与 error/lastQueueError 折叠。
+> 剩余：通知对账、保存历史边缘扩展（store 接线）、ACP 生命周期（FakeAcpAgent 双端化）。
 
 
 `Bridge` / `LiveSession` 状态机、去重、队列、submission ledger、`timeline_read` 分页、uploads GC、通知对账。
