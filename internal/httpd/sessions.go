@@ -222,6 +222,25 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				h.output(http.StatusOK, result, contentTypeJSON, "")
 			}
 			return true
+		case "respond", "input":
+			requestID := ""
+			response := jsoncompat.NewObject()
+			if action == "respond" {
+				requestID, _ = body.(*jsoncompat.Object).MustGet("requestId").(string)
+				if raw, ok := body.(*jsoncompat.Object).MustGet("response").(*jsoncompat.Object); ok {
+					response = raw
+				}
+			} else {
+				requestID, _ = body.(*jsoncompat.Object).MustGet("id").(string)
+				response.Set("answers", body.(*jsoncompat.Object).MustGet("answers"))
+			}
+			result, callErr := h.server.Codex.Respond(threadID, requestID, response)
+			if callErr != nil {
+				h.fail(http.StatusConflict, errorBody(callErr.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
 		}
 	}
 	if !write && action == "" && h.server.Codex != nil {

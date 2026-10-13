@@ -307,6 +307,48 @@ func (b *Bridge) UpdateSettings(id, modelName, effort string, fastMode *bool) (*
 	return b.Call(id, "thread-follower-update-thread-settings", params, 30*time.Second)
 }
 
+func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object) (*jsoncompat.Object, error) {
+	state, _, _, _ := b.Snapshot(id)
+	if state == nil {
+		return nil, errors.New("请先在桌面 App 打开此聊天")
+	}
+	view := model.NormalizeState(state, true)
+	requests, _ := view.MustGet("requests").(*jsoncompat.Array)
+	var pending *jsoncompat.Object
+	if requests != nil {
+		for _, value := range requests.Items {
+			entry, _ := value.(*jsoncompat.Object)
+			if entry != nil && jsoncompat.PyStr(entry.MustGet("id")) == requestID {
+				pending = entry
+				break
+			}
+		}
+	}
+	if pending == nil {
+		return nil, errors.New("请求已过期，请刷新聊天")
+	}
+	method, _ := pending.MustGet("method").(string)
+	mapping := map[string]string{
+		"item/commandExecution/requestApproval": "thread-follower-command-approval-decision",
+		"item/fileChange/requestApproval":       "thread-follower-file-approval-decision",
+		"item/permissions/requestApproval":      "thread-follower-permissions-request-approval-response",
+		"item/tool/requestUserInput":            "thread-follower-submit-user-input",
+		"tool/requestUserInput":                 "thread-follower-submit-user-input",
+		"mcpServer/elicitation/request":         "thread-follower-submit-mcp-server-elicitation-response",
+	}
+	operation, ok := mapping[method]
+	if !ok {
+		return nil, errors.New("此类请求请在桌面 App 中处理")
+	}
+	payload := jsoncompat.NewObject()
+	payload.Set("requestId", requestID)
+	for _, key := range response.Keys() {
+		value, _ := response.Get(key)
+		payload.Set(key, value)
+	}
+	return b.Call(id, operation, payload, 30*time.Second)
+}
+
 func object(value map[string]any) *jsoncompat.Object {
 	result := jsoncompat.NewObject()
 	for key, item := range value {
