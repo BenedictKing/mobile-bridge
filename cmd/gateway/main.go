@@ -348,7 +348,7 @@ func runGateway(args []string) {
 	if controlErr != nil {
 		log.Fatalf("control file: %v", controlErr)
 	}
-	outcomeWorker := notifications.NewOutcomeLedger(dataDir).StartWorker(time.Minute, nil, nil)
+	outcomeWorker := notifications.NewOutcomeLedger(dataDir).StartPublisher(time.Minute, notifications.NewPublisher(nil), nil)
 	httpServer := &http.Server{Handler: server}
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)

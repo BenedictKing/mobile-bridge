@@ -27,6 +27,7 @@ type Worker struct {
 	Done      chan struct{}
 	Delivered func(host, threadID, event string) bool
 	Enabled   func(host, threadID string) bool
+	Publisher *Publisher
 }
 
 func (l *OutcomeLedger) StartWorker(interval time.Duration, delivered func(string, string, string) bool, enabled func(string, string) bool) *Worker {
@@ -38,19 +39,33 @@ func (l *OutcomeLedger) StartWorker(interval time.Duration, delivered func(strin
 	return worker
 }
 
+func (l *OutcomeLedger) StartPublisher(interval time.Duration, publisher *Publisher, enabled func(string, string) bool) *Worker {
+	worker := l.StartWorker(interval, nil, enabled)
+	worker.Publisher = publisher
+	return worker
+}
+
 func (w *Worker) run() {
 	defer close(w.Done)
-	_ = w.Ledger.Reconcile(time.Now(), w.Delivered, w.Enabled)
+	w.reconcile()
 	ticker := time.NewTicker(w.Interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			_ = w.Ledger.Reconcile(time.Now(), w.Delivered, w.Enabled)
+			w.reconcile()
 		case <-w.Stop:
 			return
 		}
 	}
+}
+
+func (w *Worker) reconcile() {
+	if w.Publisher != nil {
+		_ = w.Ledger.ReconcilePublish(time.Now(), w.Publisher, w.Enabled)
+		return
+	}
+	_ = w.Ledger.Reconcile(time.Now(), w.Delivered, w.Enabled)
 }
 func (w *Worker) Close() {
 	select {
@@ -108,6 +123,48 @@ func (l *OutcomeLedger) Reconcile(now time.Time, delivered func(host, threadID, 
 		return l.saveLocked()
 	}
 	return nil
+}
+
+func (l *OutcomeLedger) ReconcilePublish(now time.Time, publisher *Publisher, enabled func(string, string) bool) error {
+	config := ReadSettings(l.DataDir)
+	channels := Channels(config)
+	keys := []string{}
+	l.mu.Lock()
+	for key, row := range l.outcomes {
+		stamp := numberValue(row.MustGet("at"))
+		host, _ := row.MustGet("host").(string)
+		threadID, _ := row.MustGet("id").(string)
+		if stamp <= 0 || now.Sub(time.Unix(stamp, 0)) > outcomeRetention || (enabled != nil && !enabled(host, threadID)) {
+			delete(l.outcomes, key)
+			continue
+		}
+		keys = append(keys, key)
+	}
+	l.mu.Unlock()
+	for _, key := range keys {
+		l.mu.Lock()
+		row := l.outcomes[key]
+		l.mu.Unlock()
+		if row == nil {
+			continue
+		}
+		event, _ := row.MustGet("event").(string)
+		title, _ := row.MustGet("title").(string)
+		success := false
+		for _, channel := range channels.Keys() {
+			if err := publisher.Publish(config, channel, title, "任务已完成（"+event+"）", ""); err == nil {
+				success = true
+			}
+		}
+		if success {
+			l.mu.Lock()
+			delete(l.outcomes, key)
+			l.mu.Unlock()
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.saveLocked()
 }
 
 func (l *OutcomeLedger) Snapshot() *jsoncompat.Object {
