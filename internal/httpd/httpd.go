@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/account"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
@@ -78,6 +79,7 @@ type Server struct {
 	Uploads         *uploads.Manager
 	ACP             *acpruntime.Manager
 	NotificationDir string
+	Account         *account.Manager
 	historyMu       sync.Mutex
 	historyTL       map[string]*timeline.Timeline
 }
@@ -371,6 +373,15 @@ func (h *handler) handleMethod(write bool) {
 			return
 		}
 		h.output(http.StatusOK, h.server.Bridge.AccountsPublic(), contentTypeJSON, "")
+	case !write && path == "/api/account":
+		if h.session(write) == nil {
+			return
+		}
+		if h.server.Account == nil {
+			h.output(http.StatusOK, stubAccount(), contentTypeJSON, "")
+		} else {
+			h.output(http.StatusOK, h.server.Account.Read(h.request.URL.Query().Get("cached") != "1"), contentTypeJSON, "")
+		}
 	case path == "/api/notifications/defaults":
 		if h.session(write) == nil {
 			return
@@ -503,6 +514,13 @@ func (h *handler) projectList() *jsoncompat.Object {
 	result := jsoncompat.NewObject()
 	result.Set("projects", projects)
 	result.Set("agents", &jsoncompat.Array{})
+	return result
+}
+
+func stubAccount() *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	result.Set("visible", false)
+	result.Set("loginType", "unknown")
 	return result
 }
 
