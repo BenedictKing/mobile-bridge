@@ -417,12 +417,33 @@ func runGateway(args []string) {
 	server.NotificationDir = dataDir
 	server.Jev = jev.New(filepath.Join(dataDir, "jev.json"))
 	var quickTunnel *tunnel.Quick
+	sshForwards := []*tunnel.SSHForward{}
 	preferences := desktopPreferences(dataDir)
 	if enabled, _ := preferences.MustGet("tunnel").(bool); enabled {
 		cloudflared, _ := preferences.MustGet("cloudflared").(string)
 		quickTunnel = &tunnel.Quick{Executable: cloudflared, DataDir: dataDir, Port: port}
 		if tunnelErr := quickTunnel.Start(); tunnelErr != nil {
 			log.Printf("quick tunnel unavailable: %v", tunnelErr)
+		}
+	}
+	if connections, ok := preferences.MustGet("connections").(*jsoncompat.Array); ok {
+		for _, item := range connections.Items {
+			entry, _ := item.(*jsoncompat.Object)
+			if entry == nil || entry.MustGet("enabled") != true || entry.MustGet("accessMode") != "server" {
+				continue
+			}
+			target, _ := entry.MustGet("sshTarget").(string)
+			id, _ := entry.MustGet("id").(string)
+			remotePort := 0
+			if value, ok := entry.MustGet("sshRemotePort").(json.Number); ok {
+				remotePort, _ = strconv.Atoi(value.String())
+			}
+			forward := &tunnel.SSHForward{Target: target, RemotePort: remotePort, LocalPort: port, DataDir: dataDir, ID: id}
+			if forwardErr := forward.Start(); forwardErr != nil {
+				log.Printf("SSH forward %s unavailable: %v", id, forwardErr)
+				continue
+			}
+			sshForwards = append(sshForwards, forward)
 		}
 	}
 	if ledger := notifications.NewOutcomeLedger(dataDir); ledger != nil {
@@ -504,6 +525,9 @@ func runGateway(args []string) {
 	outcomeWorker.Close()
 	if quickTunnel != nil {
 		quickTunnel.Close()
+	}
+	for _, forward := range sshForwards {
+		forward.Close()
 	}
 	controller.Close()
 	if err != nil && err != http.ErrServerClosed {
