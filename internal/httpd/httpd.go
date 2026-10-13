@@ -79,6 +79,7 @@ type Server struct {
 	Codex           *codex.Bridge
 	Uploads         *uploads.Manager
 	ACP             *acpruntime.Manager
+	ACPAgents       map[string]*acpruntime.Manager
 	NotificationDir string
 	Account         *account.Manager
 	Goal            *goal.Manager
@@ -96,6 +97,13 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"http://localhost:" + strconv.Itoa(port): true},
 		Bridge: newScriptedSessionBridge(), Pairing: pairing.New(nil), historyTL: map[string]*timeline.Timeline{}}
 	return server
+}
+
+func (s *Server) ACPManager(kind string) *acpruntime.Manager {
+	if kind != "" && s.ACPAgents != nil {
+		return s.ACPAgents[kind]
+	}
+	return s.ACP
 }
 
 var acceptsGzip = regexp.MustCompile(`(?:^|,)\s*gzip\s*(?:;\s*q=([01](?:\.\d+)?))?\s*(?:,|$)`)
@@ -338,7 +346,8 @@ func (h *handler) handleMethod(write bool) {
 		}
 		body := value.(*jsoncompat.Object)
 		agent, _ := body.MustGet("agent").(string)
-		if agent != "acp" || h.server.ACP == nil {
+		manager := h.server.ACPManager(agent)
+		if manager == nil {
 			h.fail(http.StatusBadRequest, errorBody("当前 Go 网关仅支持通过 ACP 创建会话"))
 			return
 		}
@@ -354,7 +363,7 @@ func (h *handler) handleMethod(write bool) {
 			id = "sess_" + uuid.NewString()
 		}
 		title, _ := body.MustGet("title").(string)
-		session, createErr := h.server.ACP.Create(id, cwd, 60*time.Second)
+		session, createErr := manager.Create(id, cwd, 60*time.Second)
 		if createErr != nil {
 			h.fail(http.StatusConflict, errorBody(createErr.Error()))
 			return
@@ -517,27 +526,36 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 		}
 	}
 	unavailable := &jsoncompat.Array{}
-	if h.server.ACP != nil && !archived && (agent == "" || agent == "acp") {
-		rows, err := h.server.ACP.List(15 * time.Second)
-		if err != nil {
-			unavailable.Items = append(unavailable.Items, err.Error())
-		} else {
-			for _, row := range rows {
-				id, _ := row.MustGet("sessionId").(string)
-				title, _ := row.MustGet("title").(string)
-				cwd, _ := row.MustGet("cwd").(string)
-				if id == "" || (text != "" && !strings.Contains(strings.ToLower(title+" "+cwd), strings.ToLower(text))) {
-					continue
+	acpAgents := h.server.ACPAgents
+	if len(acpAgents) == 0 && h.server.ACP != nil {
+		acpAgents = map[string]*acpruntime.Manager{"acp": h.server.ACP}
+	}
+	if !archived {
+		for kind, manager := range acpAgents {
+			if agent != "" && agent != kind {
+				continue
+			}
+			rows, err := manager.List(15 * time.Second)
+			if err != nil {
+				unavailable.Items = append(unavailable.Items, err.Error())
+			} else {
+				for _, row := range rows {
+					id, _ := row.MustGet("sessionId").(string)
+					title, _ := row.MustGet("title").(string)
+					cwd, _ := row.MustGet("cwd").(string)
+					if id == "" || (text != "" && !strings.Contains(strings.ToLower(title+" "+cwd), strings.ToLower(text))) {
+						continue
+					}
+					item := jsoncompat.NewObject()
+					item.Set("id", id)
+					item.Set("title", title)
+					item.Set("name", title)
+					item.Set("cwd", cwd)
+					item.Set("host", "local")
+					item.Set("hostLabel", "此电脑")
+					item.Set("agent", kind)
+					sessions.Items = append(sessions.Items, item)
 				}
-				item := jsoncompat.NewObject()
-				item.Set("id", id)
-				item.Set("title", title)
-				item.Set("name", title)
-				item.Set("cwd", cwd)
-				item.Set("host", "local")
-				item.Set("hostLabel", "此电脑")
-				item.Set("agent", "acp")
-				sessions.Items = append(sessions.Items, item)
 			}
 		}
 	}
@@ -550,8 +568,12 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 func (h *handler) projectList() *jsoncompat.Object {
 	projects := &jsoncompat.Array{}
 	seen := map[string]bool{}
-	if h.server.ACP != nil {
-		if rows, err := h.server.ACP.List(15 * time.Second); err == nil {
+	acpAgents := h.server.ACPAgents
+	if len(acpAgents) == 0 && h.server.ACP != nil {
+		acpAgents = map[string]*acpruntime.Manager{"acp": h.server.ACP}
+	}
+	for kind, manager := range acpAgents {
+		if rows, err := manager.List(15 * time.Second); err == nil {
 			for _, row := range rows {
 				cwd, _ := row.MustGet("cwd").(string)
 				if cwd == "" {
@@ -568,7 +590,7 @@ func (h *handler) projectList() *jsoncompat.Object {
 				item.Set("hostLabel", "此电脑")
 				item.Set("name", filepath.Base(filepath.Clean(cwd)))
 				item.Set("cwd", cwd)
-				item.Set("agent", "acp")
+				item.Set("agent", kind)
 				projects.Items = append(projects.Items, item)
 			}
 		}

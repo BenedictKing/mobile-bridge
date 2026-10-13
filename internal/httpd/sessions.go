@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
@@ -200,8 +201,8 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return false
 	}
 	threadID, action := match[1], match[2]
-	if h.server.ACP != nil && strings.HasPrefix(threadID, "sess_") {
-		if h.handleACPRoute(threadID, action, write, query) {
+	if manager := h.server.ACPManager(queryValue(query, "agent", "")); manager != nil && strings.HasPrefix(threadID, "sess_") {
+		if h.handleACPRoute(manager, threadID, action, write, query) {
 			return true
 		}
 	}
@@ -343,8 +344,8 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	return true
 }
 
-func (h *handler) handleACPRoute(threadID, action string, write bool, query map[string][]string) bool {
-	session, err := h.server.ACP.Open(threadID, queryValue(query, "cwd", "."), 10*time.Second)
+func (h *handler) handleACPRoute(manager *acpruntime.Manager, threadID, action string, write bool, query map[string][]string) bool {
+	session, err := manager.Open(threadID, queryValue(query, "cwd", "."), 10*time.Second)
 	if err != nil {
 		h.fail(http.StatusConflict, errorBody(err.Error()))
 		return true

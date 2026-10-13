@@ -323,6 +323,26 @@ func runGateway(args []string) {
 	server.Goal = goal.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))
 	if executable := os.Getenv("GATEWAY_ACP_BIN"); executable != "" {
 		server.ACP = acpruntime.New(executable)
+		server.ACPAgents = map[string]*acpruntime.Manager{"acp": server.ACP}
+	}
+	if raw := os.Getenv("GATEWAY_ACP_BINS"); raw != "" {
+		var bins map[string]string
+		if err := json.Unmarshal([]byte(raw), &bins); err != nil {
+			log.Fatalf("GATEWAY_ACP_BINS: %v", err)
+		}
+		if server.ACPAgents == nil {
+			server.ACPAgents = map[string]*acpruntime.Manager{}
+		}
+		for kind, executable := range bins {
+			if strings.TrimSpace(kind) != "" && executable != "" {
+				server.ACPAgents[kind] = acpruntime.New(executable)
+			}
+		}
+		if server.ACP == nil {
+			if manager := server.ACPAgents["acp"]; manager != nil {
+				server.ACP = manager
+			}
+		}
 	}
 	controller, controlErr := lifecycle.NewController(dataDir, os.Getpid(), instanceID)
 	if controlErr != nil {
