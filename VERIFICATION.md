@@ -1,3 +1,11 @@
+## 计划面板完成态展示（2026-10-13，未发布）
+
+- 问题：ACP `plan` 更新（TodoWrite 类快照）在 `acp_view` 展平时丢弃每条 entry 的 `status`，一律渲染成 `• ` 圆点，且每次快照追加一个独立面板；对话结束后既看不出哪些条目已完成，时间线还堆积多份过期快照。
+- 后端：`bridge/agents/acp_view.py` 的 plan 分支保留 `entries` 结构（`content` + 规范化 `status`，缺省 pending），同一轮次的全部快照折叠进单个面板（就地更新 text/entries/status）；纯文本回退（复制、detail 端点）用 `✓`/`▸`/`○` 标记状态，全部完成时面板 status 置 `completed`。`bridge/timeline.py` 行投影新增 `entries` 白名单字段。
+- 前端：`web/timeline.js` 把带 entries 的计划行渲染成结构化清单（完成项绿色 ✓ + 删除线置灰、进行中项 ▸ 高亮、待办 ○ 弱化），面板标题显示 `计划 · done/total`、全部完成时追加 ` ✓`；结构化清单不触发纯文本 detail 拉取。`rowLabel` 抽取为 renderRow/relabel 共用。样式落在 `style.css`（基础主题）与 `presentation.css`（浅/深主题与强调色变量适配）。资产版本 bump（timeline.js / style.css / presentation.css → `20261013-p1`）。
+- 自动检查：Python 全量 742 过/6 平台跳过（`test_acp_adapter` 新增 2 项：双快照折叠单面板 + 三态标记与无 status 缺省；`test_timeline` 新增 1 项：entries 随行透出且状态变化翻转 version）。桌面 Node 170 过。人工浏览器检查脚本 `timeline.test.js` 新增 `runTimelinePlanTests`（标题计数、状态类与删除线、不拉 detail、晚到快照刷新同一面板）；另以静态 harness（真实 style/presentation CSS + timeline.js）在 Chrome 实测浅/深主题渲染并截图检查通过。
+- 未覆盖：真机移动端 Safari/Chrome 的长计划列表滚动与系统字体下 ✓/▸/○ 字形对齐（模拟器与桌面 Chrome 无法完全替代）。
+
 ## 可靠性演进四阶段：审批 receipt、通知对账、前台同步、waiting_input（2026-10-12，未发布）
 
 - 范围与依据：[docs/reliability-evolution-plan.md](docs/reliability-evolution-plan.md) 全部四阶段 + 竞态回归；调研背景见 [docs/opendots-openmuse-study.md](docs/opendots-openmuse-study.md)（计划与调研先行提交 `301c8f2`，四阶段各一独立可回滚提交 `d2b1c0a`/`779cc62`/`5b3d21e`/`e546af6`）。

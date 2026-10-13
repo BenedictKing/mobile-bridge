@@ -52,6 +52,8 @@ class Timeline:
                 row = {k: message[k] for k in ('role', 'kind', 'status', 'title', 'phase', 'requestId',
                                                 'subagentId', 'subagentType', 'subagentDescription',
                                                 'subagentPrompt', 'stopReason') if k in message}
+                if message.get('entries'):
+                    row['entries'] = message['entries']
                 row.update(key=key, turnId=turn['id'], order=len(rows), version=version,
                            text=text[:180 if activity else TEXT_PREVIEW],
                            truncated=(activity and bool(text)) or len(text) > TEXT_PREVIEW, turnStatus=turn.get('status'),

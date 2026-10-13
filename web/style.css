@@ -63,3 +63,12 @@
 
 .remember-login{display:flex;align-items:center;gap:8px}.remember-login input{width:auto;flex:none}
 .agent-badge{font-style:normal;font-size:9px;letter-spacing:.5px;color:var(--green);background:var(--soft);border-radius:8px;padding:1px 5px;margin-right:5px;vertical-align:1px;text-transform:uppercase}
+
+/* 计划清单：completed 划线、in_progress 高亮，标题行显示 done/total */
+.plan-entries{margin:0;padding:10px 12px;background:#edf0e8;border-radius:8px;list-style:none;display:grid;gap:6px;font-size:12px;line-height:1.7}
+.plan-entry{display:flex;gap:8px;color:#67716a;overflow-wrap:anywhere}
+.plan-mark{flex:none;width:15px;text-align:center;color:#a8b9a6}
+.plan-entry.status-in_progress{color:#3d4a42}
+.plan-entry.status-in_progress .plan-mark{color:var(--green)}
+.plan-entry.status-completed .plan-mark{color:var(--green)}
+.plan-entry.status-completed .plan-text{text-decoration:line-through;color:#96a098}

@@ -143,3 +143,35 @@ async function runTimelineVisibilityTests() {
   empty.dispose();
   return checks;
 }
+
+async function runTimelinePlanTests() {
+  const checks=[];
+  document.getElementById('messages').replaceChildren();
+  const check=(value,label)=>{if(!value)throw Error(label);checks.push(label);};
+  const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+  const rows=[
+    {key:'user',role:'user',kind:'userMessage',text:'请按计划执行'},
+    {key:'plan',role:'activity',kind:'plan',title:'计划',text:'✓ one\n✓ two\n○ three',
+     entries:[{content:'one',status:'completed'},{content:'two',status:'completed'},{content:'three',status:'pending'}]},
+  ].map((row,order)=>({...row,order,version:'v1'}));
+  const page=(items,sequence=1)=>({rows:items,sequence,epoch:'plan',before:'plan.'+items[0]?.key,hasMore:false,meta:{requests:[]},files:[]});
+  const detailCalls=[];
+  const timeline=new ChatTimeline({url:action=>'/fixture/'+action+'?host=local',request:async url=>{if(new URL(url,location.origin).pathname.endsWith('/detail'))detailCalls.push(url);return page(rows);},renderMeta:()=>{},renderText:(node,text)=>node.textContent=text,status:()=>{}});
+  timeline.apply(page(rows),true);await frame();
+  const node=timeline.nodes.get('plan').node;
+  check(node.querySelector('summary').textContent.includes('计划 · 2/3'),'Plan heading shows completed/total counts');
+  node.open=true;await frame();
+  const items=node.querySelectorAll('.plan-entry');
+  check(items.length===3,'Plan body renders one entry per item');
+  check(items[0].classList.contains('status-completed')&&items[2].classList.contains('status-pending'),'Plan entries carry their status class');
+  check(items[0].querySelector('.plan-text').textContent==='one'&&getComputedStyle(items[0].querySelector('.plan-text')).textDecorationLine.includes('line-through'),'Completed entries are struck through');
+  check(node.querySelector('.detail-more')?.hidden&&detailCalls.length===0,'Structured plans never fetch plain-text detail');
+  timeline.apply(page([{...rows[1],version:'v2',status:'completed',
+    entries:rows[1].entries.map(entry=>({...entry,status:'completed'})),text:'✓ one\n✓ two\n✓ three'}],2));
+  await frame();
+  check(timeline.nodes.get('plan').node.querySelector('summary').textContent.includes('计划 · 3/3 ✓'),'Finished plans surface completion in the heading');
+  check(timeline.nodes.get('plan').node.querySelectorAll('.plan-entry.status-completed').length===3,'Late plan snapshots refresh the same panel');
+  timeline.dispose();
+  timeline.container.replaceChildren();
+  return checks;
+}

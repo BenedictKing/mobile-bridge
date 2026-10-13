@@ -131,6 +131,29 @@ class TimelineTests(unittest.TestCase):
         self.assertTrue(timeline.changes(1, first['epoch'], first['before'])['reset'])
         self.assertEqual(len(timeline.versions), 16)
 
+    def test_plan_entries_travel_with_rows(self):
+        timeline = Timeline()
+        state = view(2)
+        message = state['turns'][0]['messages'][0]
+        message.update(kind='plan', role='activity', title='计划', status='completed',
+                       entries=[{'content': 'one', 'status': 'completed'},
+                                {'content': 'two', 'status': 'in_progress'}],
+                       text='✓ one\n▸ two')
+        timeline.update(state)
+        row = timeline.page()['rows'][0]
+        self.assertEqual(row['kind'], 'plan')
+        self.assertEqual(row['status'], 'completed')
+        self.assertEqual(row['entries'], [{'content': 'one', 'status': 'completed'},
+                                          {'content': 'two', 'status': 'in_progress'}])
+        # Entry changes flip the row version so live clients re-render.
+        state['sequence'] = 2
+        message['entries'][1]['status'] = 'completed'
+        message['text'] = '✓ one\n✓ two'
+        timeline.update(state)
+        updated = timeline.page()['rows'][0]
+        self.assertNotEqual(updated['version'], row['version'])
+        self.assertEqual(updated['entries'][1]['status'], 'completed')
+
     def test_saved_call_and_result_are_one_record(self):
         state = {'turns': [{'turnId': 'turn', 'items': [
             {'type': 'function_call', 'call_id': 'call', 'name': 'test', 'arguments': '{}'},

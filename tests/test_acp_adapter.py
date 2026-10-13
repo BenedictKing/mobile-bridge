@@ -143,6 +143,51 @@ class AcpAdapterTests(unittest.TestCase):
         self.assertEqual(kinds, ['userMessage', 'agentThought', 'agentMessage'])
         self.assertEqual(view['turns'][0]['messages'][2]['text'], 'done')
 
+    def test_plan_snapshots_fold_into_one_completion_panel(self):
+        fake = FakeAcpAgent(
+            config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],
+            modes=dict(MODES),
+            list_rows=[{'sessionId': SID, 'cwd': '/work', 'title': 'Old', 'updatedAt': UPDATED}])
+        fake.load_updates = [
+            chunk('user_message_chunk', 'go'),
+            {'sessionUpdate': 'plan', 'entries': [
+                {'content': 'first', 'status': 'completed'},
+                {'content': 'second', 'status': 'in_progress'},
+                {'content': 'third', 'status': 'pending'}]},
+            chunk('agent_message_chunk', 'working'),
+            {'sessionUpdate': 'plan', 'entries': [
+                {'content': 'first', 'status': 'completed'},
+                {'content': 'second', 'status': 'completed'},
+                {'content': 'third', 'status': 'completed'}]},
+            chunk('agent_message_chunk', 'done'),
+        ]
+        _, _, bridge = self.make_bridge(fake)
+        messages = self.view(bridge)['turns'][0]['messages']
+        plans = [m for m in messages if m.get('kind') == 'plan']
+        self.assertEqual(len(plans), 1)
+        self.assertEqual(plans[0]['title'], '计划')
+        self.assertEqual([e['status'] for e in plans[0]['entries']],
+                         ['completed', 'completed', 'completed'])
+        self.assertIn('✓ first', plans[0]['text'])
+        self.assertNotIn('○', plans[0]['text'])
+        self.assertEqual(plans[0]['status'], 'completed')
+
+    def test_plan_without_entry_status_defaults_to_pending(self):
+        fake = FakeAcpAgent(
+            config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],
+            modes=dict(MODES),
+            list_rows=[{'sessionId': SID, 'cwd': '/work', 'title': 'Old', 'updatedAt': UPDATED}])
+        fake.load_updates = [
+            chunk('user_message_chunk', 'go'),
+            {'sessionUpdate': 'plan', 'entries': [{'content': 'only'}, 'bare']},
+        ]
+        _, _, bridge = self.make_bridge(fake)
+        plan = next(m for m in self.view(bridge)['turns'][0]['messages'] if m.get('kind') == 'plan')
+        self.assertEqual(plan['entries'], [{'content': 'only', 'status': 'pending'},
+                                           {'content': 'bare', 'status': 'pending'}])
+        self.assertIsNone(plan['status'])
+        self.assertEqual(plan['text'], '○ only\n○ bare')
+
     def test_nested_subagent_output_survives_acp_normalization(self):
         fake = FakeAcpAgent(
             config_options=[dict(o, options=list(o['options'])) for o in CONFIG_OPTIONS],

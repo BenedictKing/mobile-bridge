@@ -10,6 +10,9 @@ LOG = logging.getLogger(__name__)
 TOOL_STATUS = {'pending': 'inProgress', 'in_progress': 'inProgress',
                'completed': 'completed', 'failed': 'failed'}
 
+# Plan entries carry their own status vocabulary; these marks keep the plain
+# text fallback (copy, detail endpoint) readable when entries are flattened.
+PLAN_MARKS = {'completed': '✓', 'in_progress': '▸', 'pending': '○'}
 
 def acp_normalize(state, connected):
     """ACP state is already normalized; only the liveness flag is dynamic."""
@@ -178,10 +181,6 @@ class AcpSessionView:
             self.requests = [r for r in self.requests if r.get('id') != request_id]
             self.requests.append(entry)
 
-    def remove_permission(self, request_id):
-        with self._lock:
-            self.requests = [r for r in self.requests if r.get('id') != request_id]
-
     def apply_config(self, config_options, modes):
         """Seed model/thinking/mode from a session/new or session/load result."""
         with self._lock:
@@ -249,11 +248,22 @@ class AcpSessionView:
                 if output:
                     message['output'] = output
         elif kind == 'plan':
-            entries = update.get('entries') or []
-            text = '\n'.join('• ' + (str(e.get('content', '')) if isinstance(e, dict) else str(e)) for e in entries)
-            self._assistant_turn()['messages'].append(
-                {'id': self._next_id('plan'), 'kind': 'plan', 'role': 'activity',
-                 'title': '计划', 'text': text})
+            # Plan updates are whole-list snapshots (TodoWrite-style); fold them
+            # into the turn's single plan panel so the timeline ends on the
+            # final state instead of one stale bullet list per update.
+            entries = []
+            for entry in update.get('entries') or []:
+                content = str(entry.get('content', '')) if isinstance(entry, dict) else str(entry)
+                status = str(entry.get('status') or 'pending') if isinstance(entry, dict) else 'pending'
+                entries.append({'content': content, 'status': status})
+            turn = self._assistant_turn()
+            message = next((m for m in turn['messages'] if m.get('kind') == 'plan'), None)
+            if message is None:
+                message = {'id': self._next_id('plan'), 'kind': 'plan', 'role': 'activity', 'title': '计划'}
+                turn['messages'].append(message)
+            message['entries'] = entries
+            message['text'] = '\n'.join(PLAN_MARKS.get(e['status'], '○') + ' ' + e['content'] for e in entries)
+            message['status'] = 'completed' if entries and all(e['status'] == 'completed' for e in entries) else None
         elif kind == 'available_commands_update':
             # Slash commands are not rendered in the mobile timeline, but kimi
             # advertises activatable skills here — keep them for the picker.

@@ -1,6 +1,21 @@
 'use strict';
 const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
 
+// Heading label for one row; plan rows surface live completion counts.
+const rowLabel=row=>{
+  if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
+  let label=row.title||row.kind;
+  if(row.kind==='plan'&&row.entries?.length){
+    const done=row.entries.filter(entry=>entry.status==='completed').length;
+    label+=' · '+done+'/'+row.entries.length+(done===row.entries.length?' ✓':'');
+  }else if(row.status==='inProgress')label+=timelineText(' · 进行中');
+  if(row.kind==='subagent'){
+    const meta=[row.subagentId,row.subagentType,row.status].filter(Boolean).join(' · ');
+    if(meta)label+=' · '+meta;
+  }
+  return label;
+};
+
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
   constructor({url, request, renderMeta, renderText, status, onAction}) {
@@ -115,28 +130,43 @@ class ChatTimeline {
     if(reset)requestAnimationFrame(()=>this.fillRecent());
   }
   renderRow(row,open){
-    const activity=row.role==='activity',node=document.createElement(activity?'details':'div');
+    const activity=row.role==='activity',
+          planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
+          node=document.createElement(activity?'details':'div');
     node.className=activity?'activity timeline-row':'message timeline-row '+row.role;
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
-      let label=activity?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):timelineText('执行错误');
-      if(activity&&row.kind==='subagent'){
-        const meta=[row.subagentId,row.subagentType,row.status].filter(Boolean).join(' · ');
-        if(meta)label+=' · '+meta;
-      }
-      heading.textContent=label;node.append(heading);
+      heading.textContent=rowLabel(row);node.append(heading);
     }
-    const body=document.createElement(activity?'pre':'div');body.className=activity?'activity-body':'message-body';
+    const body=document.createElement(activity&&!planEntries?'pre':'div');
+    body.className=activity?(planEntries?'activity-body plan-body':'activity-body'):'message-body';
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
     const cached=this.details.get(row.key);
     if(cached&&cached.version!==row.version)this.details.delete(row.key);
     const paint=()=>{
       const detail=this.details.get(row.key),text=detail?.text??row.text;
-      body.replaceChildren();if(activity)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
-      if(activity)body.hidden=!text;
-      more.hidden=detail?detail.next===null:!row.truncated;
-      more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
+      body.replaceChildren();
+      if(planEntries){
+        // The structured checklist replaces the plain-text preview; its
+        // entries are always complete, so there is no detail to fetch.
+        const list=document.createElement('ul');list.className='plan-entries';
+        for(const entry of planEntries){
+          const item=document.createElement('li');
+          item.className='plan-entry status-'+String(entry.status||'pending').replace(/[^a-z_]/g,'');
+          const mark=document.createElement('span');mark.className='plan-mark';
+          mark.textContent=entry.status==='completed'?'✓':entry.status==='in_progress'?'▸':'○';
+          const content=document.createElement('span');content.className='plan-text';
+          content.textContent=entry.content||'';
+          item.append(mark,content);list.append(item);
+        }
+        body.append(list);body.hidden=false;more.hidden=true;
+      }else{
+        if(activity)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
+        if(activity)body.hidden=!text;
+        more.hidden=detail?detail.next===null:!row.truncated;
+        more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
+      }
     };
     const load=async()=>{
       if(more.disabled||this.abort.signal.aborted)return;
@@ -178,7 +208,7 @@ class ChatTimeline {
       attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
       attachments.append(attachment);node.append(attachments);
     }
-    if(activity){node.open=!!open;node.ontoggle=()=>{if(node.open&&!this.details.has(row.key))load();};}
+    if(activity){node.open=!!open;node.ontoggle=()=>{if(node.open&&!this.details.has(row.key)&&!planEntries)load();};}
     return node;
   }
   async fullText(row){
@@ -212,7 +242,7 @@ class ChatTimeline {
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
       const node=entry.node,heading=node.querySelector(':scope>.who,:scope>summary');
-      if(heading){let label=row.role==='activity'?(row.title||row.kind)+(row.status==='inProgress'?timelineText(' · 进行中'):''):row.role==='user'?timelineText('你'):timelineText('执行错误');if(row.kind==='subagent'){const meta=[row.subagentId,row.subagentType,row.status].filter(Boolean).join(' · ');if(meta)label+=' · '+meta;}heading.textContent=label;}
+      if(heading)heading.textContent=rowLabel(row);
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.timeline-attachments small.muted');

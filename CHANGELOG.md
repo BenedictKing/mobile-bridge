@@ -12,6 +12,7 @@
 - ACP prompt timeouts are now idle-based: active `session/update` traffic or a pending permission request no longer counts toward the limit, and an idle-expired turn is cancelled agent-side (`session/cancel` plus cancelled answers to pending approvals) so later messages are not rejected by an orphaned turn.
 - Live chat updates now stream over incremental SSE (ready/changes/reset frames with `epoch.sequence` cursor resume); the web client uses one transport module for SSE and long-polling, with capped reconnect backoff and definitive logout on auth expiry. Legacy full-state SSE and the polling endpoints stay byte-compatible.
 - Queued messages can now be sent immediately when idle, edited, or deleted; automatic dispatch uses the latest edited content.
+- Plan (todo) panels now show completion state: ACP plan snapshots fold into one live panel per turn, entries render as a checklist with ✓/strikethrough for completed, ▸ for in-progress and ○ for pending, and the collapsed heading shows a `done/total` count (plus ✓ when everything is done) so a finished plan is recognizable at a glance.
 - Updated queue API documentation and added regression coverage for queue actions and edit/dispatch races.
 - Cross-agent migration can create a target session for an unmatched local project and exposes target capability metadata in timeline responses.
 - Upload storage accepts path-safe Agent-native session identifiers, and the mobile copy dialog layout keeps long content scrollable.

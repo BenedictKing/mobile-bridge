@@ -37,6 +37,11 @@ aside{background:var(--surface)}
 .message .who{font-size:10px;letter-spacing:1.1px;margin-bottom:10px;color:var(--muted)}
 .message.assistant{padding:0}
 .message pre,.activity pre{background:var(--code);border-color:var(--line);font-size:var(--code-size)}
+.plan-entries{background:var(--code)}
+.plan-entry{color:var(--muted)}
+.plan-entry.status-in_progress{color:var(--text)}
+.plan-entry.status-in_progress .plan-mark,.plan-entry.status-completed .plan-mark{color:var(--green)}
+.plan-entry.status-completed .plan-text{color:var(--muted);opacity:.75}
 .markdown-body code{background:var(--code)}
 .markdown-body pre code{background:none}
 .markdown-body blockquote{color:var(--muted);border-color:var(--line)}
