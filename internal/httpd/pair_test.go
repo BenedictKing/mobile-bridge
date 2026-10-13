@@ -15,6 +15,8 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
+	"github.com/BenedictKing/mobile-bridge/internal/uploads"
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -86,6 +88,36 @@ func TestHistoricalTimelineUsesGoStore(t *testing.T) {
 	server.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "hello") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestUploadAndPreviewRoutes(t *testing.T) {
+	authenticator := auth.NewAuth(auth.Config{Mode: "none"})
+	token, session, err := authenticator.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(authenticator, fsys{}, 8790, "instance")
+	server.Uploads = uploads.New(t.TempDir())
+	id := uuid.NewString()
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8790/api/sessions/thread-1/uploads?id="+id+"&name=photo.png", strings.NewReader("\x89PNG\r\n\x1a\nbody"))
+	request.Host = "127.0.0.1:8790"
+	request.Header.Set("Origin", "http://127.0.0.1:8790")
+	request.Header.Set("X-CSRF-Token", session.MustGet("csrf").(string))
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", response.Code, response.Body.String())
+	}
+	preview := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790/api/sessions/thread-1/uploads/"+id+"/preview", nil)
+	preview.Host = "127.0.0.1:8790"
+	preview.Header.Set("Origin", "http://127.0.0.1:8790")
+	preview.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, preview)
+	if response.Code != http.StatusOK || !strings.HasPrefix(response.Body.String(), "\x89PNG") {
+		t.Fatalf("preview status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 
