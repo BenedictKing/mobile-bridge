@@ -4,7 +4,7 @@
 //
 // Environment:
 //
-//	GATEWAY_PORT          listen port (default 8790)
+//	GATEWAY_PORT          listen port (default 8787)
 //	GATEWAY_AUTH          JSON: {"username","salt","hash","iterations"} (pbkdf2 record)
 //	GATEWAY_INSTANCE_ID   deterministic instance id for tests
 package main
@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -47,11 +48,60 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && isDesktopAction(os.Args[1]) {
-		desktopAction(os.Args[1], os.Args[2:])
+	help, action, rest, err := classifyArgs(os.Args[1:])
+	if help {
+		writeUsage(os.Stdout)
 		return
 	}
-	runGateway(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		writeUsage(os.Stderr)
+		os.Exit(2)
+	}
+	if action != "" {
+		desktopAction(action, rest)
+		return
+	}
+	runGateway(rest)
+}
+
+// classifyArgs turns the command line into a dispatch decision. Help requests
+// print usage and exit 0; an unrecognized leading word or flag is an error —
+// unknown arguments must never fall through into silently serving.
+func classifyArgs(args []string) (help bool, action string, rest []string, err error) {
+	for _, value := range args {
+		if value == "--help" || value == "-h" || value == "help" {
+			return true, "", nil, nil
+		}
+	}
+	if len(args) == 0 {
+		return false, "", nil, nil
+	}
+	if !isDesktopAction(args[0]) {
+		return false, "", nil, fmt.Errorf("未知子命令或参数：%s（运行网关请用 serve，--help 查看用法）", args[0])
+	}
+	return false, args[0], args[1:], nil
+}
+
+func writeUsage(w io.Writer) {
+	fmt.Fprint(w, `用法：codex-mobile-gateway <子命令> [参数]
+
+子命令：
+  serve            运行网关（默认数据目录 .local，默认端口 8787）
+  start            后台启动网关进程
+  stop             通过控制文件请求网关停止
+  snapshot         输出桌面状态快照 JSON
+  snapshot-stream  按 stdin 指令持续输出快照
+  save             从 stdin 读取并保存桌面配置
+  help             显示本帮助（同 --help / -h）
+
+serve 参数：
+  --data-dir DIR   数据目录（GATEWAY_DATA_DIR）
+  --port N         监听端口（GATEWAY_PORT，默认 8787）
+  --codex-home DIR Codex 主目录（CODEX_HOME）
+  --ipc-path PATH  桌面 IPC 端点（GATEWAY_IPC_PATH）
+  --codex-bin PATH Codex 可执行文件（GATEWAY_CODEX_BIN）
+`)
 }
 
 func isDesktopAction(action string) bool {
@@ -337,23 +387,40 @@ func ensureDesktopConfig(dataDir string) {
 	_ = os.WriteFile(filepath.Join(dataDir, "首次登录.txt"), []byte(credentials), 0o600)
 }
 
-func runGateway(args []string) {
-	for i, value := range args {
-		if i+1 >= len(args) {
+// serveFlagEnvs maps the serve CLI flags to the environment variables
+// runGateway actually reads.
+var serveFlagEnvs = map[string]string{
+	"--data-dir":   "GATEWAY_DATA_DIR",
+	"--port":       "GATEWAY_PORT",
+	"--codex-home": "CODEX_HOME",
+	"--ipc-path":   "GATEWAY_IPC_PATH",
+	"--codex-bin":  "GATEWAY_CODEX_BIN",
+}
+
+func applyServeFlags(args []string) error {
+	for i := 0; i < len(args); i++ {
+		value := args[i]
+		if !strings.HasPrefix(value, "--") {
 			continue
 		}
-		switch value {
-		case "--data-dir":
-			_ = os.Setenv("GATEWAY_DATA_DIR", args[i+1])
-		case "--port":
-			_ = os.Setenv("GATEWAY_PORT", args[i+1])
-		case "--codex-home":
-			_ = os.Setenv("CODEX_HOME", args[i+1])
-		case "--ipc-path":
-			_ = os.Setenv("GATEWAY_IPC_PATH", args[i+1])
-		case "--codex-bin":
-			_ = os.Setenv("GATEWAY_CODEX_BIN", args[i+1])
+		env, ok := serveFlagEnvs[value]
+		if !ok {
+			return fmt.Errorf("未知参数：%s（--help 查看用法）", value)
 		}
+		if i+1 >= len(args) {
+			return fmt.Errorf("参数 %s 缺少取值", value)
+		}
+		i++
+		_ = os.Setenv(env, args[i])
+	}
+	return nil
+}
+
+func runGateway(args []string) {
+	if err := applyServeFlags(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		writeUsage(os.Stderr)
+		os.Exit(2)
 	}
 	dataDir := desktopDataDir(args)
 	applyDesktopDefaults(dataDir)

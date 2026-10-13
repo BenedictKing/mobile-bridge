@@ -42,3 +42,37 @@ func TestGatewayListenAddressesHonorsLanSelection(t *testing.T) {
 		t.Fatalf("selected addresses=%v", got)
 	}
 }
+
+func TestClassifyArgsHelpVariantsAndUnknownRejected(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"serve", "--help"}, {"snapshot", "-h"}} {
+		help, action, _, err := classifyArgs(args)
+		if !help || err != nil || action != "" {
+			t.Fatalf("args=%v help=%v action=%q err=%v", args, help, action, err)
+		}
+	}
+	// Bare invocation keeps the serve default.
+	if help, action, _, err := classifyArgs(nil); help || action != "" || err != nil {
+		t.Fatalf("bare help=%v action=%q err=%v", help, action, err)
+	}
+	help, action, rest, err := classifyArgs([]string{"serve", "--data-dir", "X"})
+	if help || err != nil || action != "serve" || len(rest) != 2 {
+		t.Fatalf("serve help=%v action=%q rest=%v err=%v", help, action, rest, err)
+	}
+	for _, args := range [][]string{{"frobnicate"}, {"--data-dir", "X"}} {
+		if _, _, _, err := classifyArgs(args); err == nil {
+			t.Fatalf("args=%v must be rejected", args)
+		}
+	}
+}
+
+func TestApplyServeFlagsRejectsUnknownAndMissingValue(t *testing.T) {
+	if err := applyServeFlags([]string{"--port", "9000"}); err != nil {
+		t.Fatalf("valid pair rejected: %v", err)
+	}
+	if err := applyServeFlags([]string{"--wat", "1"}); err == nil {
+		t.Fatal("unknown flag accepted")
+	}
+	if err := applyServeFlags([]string{"--port"}); err == nil {
+		t.Fatal("missing value accepted")
+	}
+}
