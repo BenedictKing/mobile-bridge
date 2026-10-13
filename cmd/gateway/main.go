@@ -33,6 +33,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
 	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
+	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
@@ -88,6 +89,9 @@ func main() {
 	}
 	server.Uploads = uploads.New(dataDir)
 	server.NotificationDir = dataDir
+	if ledger := notifications.NewOutcomeLedger(dataDir); ledger != nil {
+		_ = ledger.Reconcile(time.Now(), nil, nil)
+	}
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {
