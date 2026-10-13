@@ -229,6 +229,58 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			return true
 		}
 	}
+	// Catalog and permission panels are capability-driven. Until a provider
+	// exposes a native catalog/permission preset, return an explicit empty
+	// capability response so the mobile client can keep the controls hidden
+	// instead of treating a valid session as a missing route.
+	if !write && action == "catalog" {
+		result := jsoncompat.NewObject()
+		result.Set("kind", queryValue(query, "kind", "models"))
+		result.Set("models", &jsoncompat.Array{})
+		result.Set("skills", &jsoncompat.Array{})
+		result.Set("selectedSkills", &jsoncompat.Array{})
+		result.Set("total", jsoncompat.Num(0))
+		result.Set("currentModel", nil)
+		result.Set("currentEffort", nil)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return true
+	}
+	if !write && action == "permissions" {
+		result := jsoncompat.NewObject()
+		result.Set("supported", false)
+		result.Set("options", &jsoncompat.Array{})
+		result.Set("current", nil)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return true
+	}
+	if write && action == "permissions" {
+		h.fail(http.StatusConflict, errorBody("当前 Agent 不支持移动端权限模式设置"))
+		return true
+	}
+	if !write && action == "input" {
+		result := jsoncompat.NewObject()
+		result.Set("waiting", false)
+		result.Set("inputs", &jsoncompat.Array{})
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return true
+	}
+	if write && action == "reconnect" && h.server.Codex != nil {
+		body, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return true
+		}
+		if activate, _ := body.(*jsoncompat.Object).MustGet("activate").(bool); activate {
+			if _, watchErr := h.server.Codex.Watch(threadID, 1500*time.Millisecond); watchErr != nil {
+				h.fail(http.StatusConflict, errorBody(watchErr.Error()))
+				return true
+			}
+		}
+		result := jsoncompat.NewObject()
+		result.Set("ok", true)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return true
+	}
 	if write && h.server.Codex != nil {
 		if action == "uploads" && h.server.Uploads != nil {
 			id := queryValue(query, "id", "")
@@ -252,6 +304,14 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			return true
 		}
 		switch action {
+		case "history":
+			result, callErr := h.server.Codex.Call(threadID, "thread-follower-load-complete-history", jsoncompat.NewObject(), 180*time.Second)
+			if callErr != nil {
+				h.fail(http.StatusConflict, errorBody(callErr.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
 		case "send":
 			text, _ := body.(*jsoncompat.Object).MustGet("text").(string)
 			if text == "" {
