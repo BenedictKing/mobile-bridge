@@ -1,0 +1,132 @@
+{
+ "name": "02_state_and_flags",
+ "steps": [
+  {
+   "op": "session",
+   "steps": [
+    {
+     "view": true
+    },
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "0",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "0",
+          "text": "saved 0"
+         }
+        ]
+       },
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "saved 1"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "view": true
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "live"
+         }
+        ]
+       }
+      ]
+     },
+     "connected": true
+    },
+    {
+     "changed": true
+    },
+    {
+     "error": "Agent 进程已退出，请重新连接"
+    },
+    {
+     "view": true
+    },
+    {
+     "error": null
+    },
+    {
+     "connecting": true
+    },
+    {
+     "activating": true
+    },
+    {
+     "changed": true
+    },
+    {
+     "view": true
+    },
+    {
+     "connecting": false
+    },
+    {
+     "activating": false
+    },
+    {
+     "set": "pagination_complete"
+    },
+    {
+     "view": true
+    }
+   ]
+  },
+  {
+   "op": "session",
+   "steps": [
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [],
+      "turnsPagination": {
+       "hasLoadedOldest": true
+      }
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "live"
+         }
+        ]
+       }
+      ]
+     },
+     "connected": true
+    },
+    {
+     "view": true
+    }
+   ]
+  }
+ ]
+}

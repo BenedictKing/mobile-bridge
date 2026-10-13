@@ -1,0 +1,121 @@
+{
+ "name": "01_attachment_blocks",
+ "steps": [
+  {
+   "op": "attachment_blocks",
+   "capabilities": {
+    "promptCapabilities": {
+     "image": true,
+     "embeddedContext": true
+    }
+   },
+   "files": [
+    {
+     "name": "图.png",
+     "kind": "png",
+     "image": true
+    },
+    {
+     "name": "photo.bin",
+     "kind": "unknown",
+     "image": true
+    },
+    {
+     "name": "笔记.txt",
+     "kind": "text",
+     "image": false
+    }
+   ]
+  },
+  {
+   "op": "attachment_blocks",
+   "capabilities": {
+    "promptCapabilities": {
+     "image": true,
+     "embeddedContext": true
+    }
+   },
+   "files": []
+  },
+  {
+   "op": "attachment_blocks",
+   "capabilities": {
+    "promptCapabilities": {
+     "embeddedContext": true
+    }
+   },
+   "files": [
+    {
+     "name": "图.png",
+     "kind": "png",
+     "image": true
+    }
+   ]
+  },
+  {
+   "op": "attachment_blocks",
+   "capabilities": {
+    "promptCapabilities": {
+     "image": true
+    }
+   },
+   "files": [
+    {
+     "name": "笔记.txt",
+     "kind": "text",
+     "image": false
+    }
+   ]
+  },
+  {
+   "op": "attachment_blocks",
+   "capabilities": {},
+   "files": [
+    {
+     "name": "图.png",
+     "kind": "png",
+     "image": true
+    }
+   ]
+  },
+  {
+   "op": "attachment_blocks",
+   "capabilities": {
+    "promptCapabilities": {}
+   },
+   "files": [
+    {
+     "name": "笔记.txt",
+     "kind": "text",
+     "image": false
+    }
+   ]
+  },
+  {
+   "op": "attachment_blocks",
+   "capabilities": {
+    "promptCapabilities": {
+     "image": true,
+     "embeddedContext": true
+    }
+   },
+   "files": [
+    {
+     "name": "j.bin",
+     "kind": "jpeg",
+     "image": true
+    },
+    {
+     "name": "g.gif",
+     "kind": "gif",
+     "image": true
+    },
+    {
+     "name": "w.webp",
+     "kind": "webp",
+     "image": true
+    }
+   ]
+  }
+ ]
+}

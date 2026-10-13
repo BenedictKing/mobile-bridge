@@ -1,0 +1,388 @@
+// Package httpd is the Go port of bridge/httpd.py's request pipeline:
+// host/origin validation, the auth + CSRF gate, static assets, JSON output
+// with Python-default separators, and the error-mapping contract. Business
+// routes are stubbed for the P3 conformance gate; the P0 differential golden
+// (conformance/http) is the acceptance test for both implementations.
+package httpd
+
+import (
+	"compress/gzip"
+	"encoding/json"
+	"io"
+	"io/fs"
+	"net"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+)
+
+const contentTypeJSON = "application/json; charset=utf-8"
+
+// Bridge supplies the business responses behind the routes (stubbed in P3).
+type Bridge interface {
+	SessionsList() any
+	AccountsPublic() any
+}
+
+type stubBridge struct{}
+
+func (stubBridge) SessionsList() any {
+	sessions := jsoncompat.NewObject()
+	sessions.Set("sessions", &jsoncompat.Array{})
+	sessions.Set("unavailableHosts", &jsoncompat.Array{})
+	return sessions
+}
+
+func (stubBridge) AccountsPublic() any {
+	public := jsoncompat.NewObject()
+	public.Set("accounts", &jsoncompat.Array{})
+	public.Set("activeId", nil)
+	switchState := jsoncompat.NewObject()
+	switchState.Set("phase", "idle")
+	public.Set("switch", switchState)
+	public.Set("canSwitch", true)
+	return public
+}
+
+// Server mirrors GatewayServer's request-facing behavior.
+type Server struct {
+	Auth       *auth.Auth
+	WebFS      fs.FS
+	InstanceID string
+	Port       int
+	LocalHosts map[string]bool // "127.0.0.1:port", "localhost:port"
+	Hosts      map[string]bool
+	Origins    map[string]bool
+	Bridge     SessionBridge
+}
+
+func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
+	server := &Server{Auth: authenticator, WebFS: webFS, Port: port, InstanceID: instanceID,
+		LocalHosts: map[string]bool{"127.0.0.1:" + strconv.Itoa(port): true,
+			"localhost:" + strconv.Itoa(port): true},
+		Hosts: map[string]bool{"127.0.0.1:" + strconv.Itoa(port): true,
+			"localhost:" + strconv.Itoa(port): true},
+		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
+			"http://localhost:" + strconv.Itoa(port): true},
+		Bridge: newScriptedSessionBridge()}
+	return server
+}
+
+var acceptsGzip = regexp.MustCompile(`(?:^|,)\s*gzip\s*(?:;\s*q=([01](?:\.\d+)?))?\s*(?:,|$)`)
+
+// permissionError / output mirror the handler contract.
+type handler struct {
+	server          *Server
+	writer          http.ResponseWriter
+	request         *http.Request
+	closeConnection bool
+}
+
+func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	h := &handler{server: s, writer: writer, request: request}
+	h.handleMethod(request.Method == http.MethodPost)
+	if h.closeConnection {
+		writer.Header().Set("Connection", "close")
+	}
+}
+
+// output mirrors BaseHTTPRequestHandler.output: serialize with json.dumps
+// defaults (", "/": "), shared security headers, optional gzip.
+func (h *handler) output(status int, data any, contentType string, cookie string) {
+	var body []byte
+	if raw, ok := data.([]byte); ok {
+		body = raw
+	} else {
+		body = jsoncompat.EncodePythonDefault(data)
+	}
+	compressible := strings.HasPrefix(contentType, "text/") ||
+		strings.HasPrefix(contentType, "application/json") ||
+		contentType == "image/svg+xml"
+	header := h.writer.Header()
+	header.Set("Cache-Control", "no-store")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("X-Frame-Options", "DENY")
+	header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
+	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	header.Set("Content-Type", contentType)
+	header.Set("Vary", "Accept-Encoding")
+	if compressible && len(body) >= 1024 && gzipAccepted(h.request) {
+		compressed := gzipBytes(body)
+		if len(compressed) < len(body) {
+			body = compressed
+			header.Set("Content-Encoding", "gzip")
+		}
+	}
+	header.Set("Content-Length", strconv.Itoa(len(body)))
+	if cookie != "" {
+		header.Add("Set-Cookie", cookie)
+	}
+	h.writer.WriteHeader(status)
+	_, _ = h.writer.Write(body)
+}
+
+func gzipAccepted(request *http.Request) bool {
+	match := acceptsGzip.FindStringSubmatch(request.Header.Get("Accept-Encoding"))
+	if match == nil {
+		return false
+	}
+	if match[1] == "" {
+		return true
+	}
+	quality, err := strconv.ParseFloat(match[1], 64)
+	return err == nil && quality > 0
+}
+
+func gzipBytes(data []byte) []byte {
+	var buffer sliceWriter
+	compressor, _ := gzip.NewWriterLevel(&buffer, 5)
+	_, _ = compressor.Write(data)
+	_ = compressor.Close()
+	return buffer.data
+}
+
+type sliceWriter struct{ data []byte }
+
+func (w *sliceWriter) Write(p []byte) (int, error) {
+	w.data = append(w.data, p...)
+	return len(p), nil
+}
+
+// errorBody builds an ordered {"error": ...} body (Python dict literal order).
+func errorBody(message string) *jsoncompat.Object {
+	body := jsoncompat.NewObject()
+	body.Set("error", message)
+	return body
+}
+
+func (h *handler) fail(status int, body *jsoncompat.Object) {
+	h.closeConnection = true
+	h.output(status, body, contentTypeJSON, "")
+}
+
+func unauthenticatedBody() *jsoncompat.Object {
+	body := jsoncompat.NewObject()
+	body.Set("error", "请登录")
+	body.Set("code", "unauthenticated")
+	return body
+}
+
+func (h *handler) cookieToken() string {
+	cookie, err := h.request.Cookie(auth.CookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+
+func (h *handler) session(write bool) *jsoncompat.Object {
+	session := h.server.Auth.Get(h.cookieToken())
+	if session == nil {
+		h.fail(http.StatusUnauthorized, unauthenticatedBody())
+		return nil
+	}
+	if write {
+		expected, _ := session.MustGet("csrf").(string)
+		if h.request.Header.Get("X-CSRF-Token") != expected {
+			h.fail(http.StatusForbidden, errorBody("登录验证已失效，请刷新页面"))
+			return nil
+		}
+	}
+	return session
+}
+
+func (h *handler) checkRequest(write bool) bool {
+	host := h.request.Host
+	if !h.server.Hosts[host] {
+		h.fail(http.StatusForbidden, errorBody("此访问地址未在网关配置中允许"))
+		return false
+	}
+	origin := h.request.Header.Get("Origin")
+	if (origin != "" && !h.server.Origins[origin]) || (write && origin == "") {
+		h.fail(http.StatusForbidden, errorBody("不允许跨站请求"))
+		return false
+	}
+	if h.request.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		h.fail(http.StatusForbidden, errorBody("不允许跨站请求"))
+		return false
+	}
+	return true
+}
+
+var staticRoutes = map[string]string{ // path -> file name under web/ (bridge/httpd.py STATIC)
+	"/": "index.html", "/i18n.js": "i18n.js", "/app.js": "app.js", "/modes.js": "modes.js",
+	"/attachments.js": "attachments.js", "/activity.js": "activity.js",
+	"/fast-mode.js": "fast-mode.js", "/accounts.js": "accounts.js",
+	"/timeline.js": "timeline.js", "/markdown.js": "markdown.js",
+	"/transport.js": "transport.js", "/presentation.js": "presentation.js",
+	"/message-actions.js": "message-actions.js", "/migrate.js": "migrate.js",
+}
+
+func (h *handler) readJSON() (any, error) {
+	body, err := io.ReadAll(io.LimitReader(h.request.Body, 512001))
+	if err != nil {
+		return nil, errJSON("需要 JSON 请求")
+	}
+	if len(body) == 0 || len(body) > 512000 {
+		return nil, errJSON("请求过大或为空")
+	}
+	value, err := jsoncompat.Unmarshal(body)
+	if err != nil {
+		return nil, errJSON("请求内容格式不正确")
+	}
+	if _, isObject := value.(*jsoncompat.Object); !isObject {
+		return nil, errJSON("请求内容必须为对象")
+	}
+	return value, nil
+}
+
+type errJSON string
+
+func (e errJSON) Error() string { return string(e) }
+
+func (h *handler) handleMethod(write bool) {
+	if !write && h.request.URL.Path == "/api/health" {
+		if h.request.Header.Get("Origin") != "" ||
+			h.request.Header.Get("Sec-Fetch-Site") == "cross-site" ||
+			!h.server.LocalHosts[h.request.Host] {
+			h.fail(http.StatusForbidden, errorBody("仅允许本机状态检查"))
+			return
+		}
+		body := jsoncompat.NewObject()
+		body.Set("service", "codex-mobile-bridge")
+		body.Set("instanceId", h.server.InstanceID)
+		body.Set("notifications", false)
+		h.output(http.StatusOK, body, contentTypeJSON, "")
+		return
+	}
+	if !h.checkRequest(write) {
+		return
+	}
+	path := h.request.URL.Path
+	if !write {
+		if name, ok := staticRoutes[path]; ok {
+			if data, err := fs.ReadFile(h.server.WebFS, "web/"+name); err == nil {
+				contentType := "text/html; charset=utf-8"
+				if strings.HasSuffix(name, ".js") {
+					contentType = "text/javascript; charset=utf-8"
+				}
+				h.output(http.StatusOK, data, contentType, "")
+				return
+			}
+		}
+	}
+	switch {
+	case !write && path == "/api/auth":
+		h.handleAuth()
+	case write && path == "/api/login":
+		h.handleLogin()
+	case write && path == "/api/logout":
+		if h.session(write) == nil {
+			return
+		}
+		h.server.Auth.Logout(h.cookieToken())
+		result := jsoncompat.NewObject()
+		result.Set("ok", true)
+		h.output(http.StatusOK, result, contentTypeJSON, h.server.Auth.CookieValue(""))
+	case !write && path == "/api/sessions":
+		if h.session(write) == nil {
+			return
+		}
+		h.output(http.StatusOK, h.server.Bridge.SessionsList(), contentTypeJSON, "")
+	case !write && path == "/api/accounts":
+		if h.session(write) == nil {
+			return
+		}
+		h.output(http.StatusOK, h.server.Bridge.AccountsPublic(), contentTypeJSON, "")
+	default:
+		// The auth gate runs before every unmatched path (Python's
+		// authorized() precedes all remaining routing).
+		if h.session(write) == nil {
+			return
+		}
+		query := map[string][]string(h.request.URL.Query())
+		bridge, err := h.server.Bridge.ForHost(queryValue(query, "host", "local"))
+		if err != nil {
+			h.fail(http.StatusNotFound, errorBody("找不到这个会话"))
+			return
+		}
+		if h.handleSessionRoutes(bridge, write, path, query) {
+			return
+		}
+		h.fail(http.StatusNotFound, errorBody("页面不存在"))
+	}
+}
+
+func (h *handler) handleAuth() {
+	token := h.cookieToken()
+	session := h.server.Auth.Get(token)
+	address := clientIP(h.request)
+	body := jsoncompat.NewObject()
+	body.Set("authenticated", session != nil)
+	if session != nil {
+		body.Set("csrf", session.MustGet("csrf"))
+	} else {
+		body.Set("csrf", nil)
+	}
+	body.Set("loginStatus", h.server.Auth.LoginStatus(address))
+	body.Set("instanceId", h.server.InstanceID)
+	body.Set("notifications", false)
+	body.Set("passwordless", h.server.Auth.Config.Mode == "none")
+	transport := "sse"
+	if strings.HasSuffix(h.request.Host, ".trycloudflare.com") {
+		transport = "poll"
+	}
+	body.Set("transport", transport)
+	cookie := ""
+	if session != nil {
+		cookie = h.server.Auth.CookieValue(token)
+	}
+	h.output(http.StatusOK, body, contentTypeJSON, cookie)
+}
+
+func (h *handler) handleLogin() {
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	body := value.(*jsoncompat.Object)
+	username, _ := body.MustGet("username").(string)
+	password, _ := body.MustGet("password").(string)
+	if len(username) > 200 || len(password) > 1000 {
+		h.fail(http.StatusBadRequest, errorBody("账号或密码格式不正确"))
+		return
+	}
+	var remember any
+	if raw, ok := body.Get("remember"); ok {
+		remember = raw
+	}
+	token, session, loginErr := h.server.Auth.Login(username, password, clientIP(h.request), remember)
+	if loginErr != nil {
+		rejected := loginErr.(*auth.LoginRejected)
+		status := jsoncompat.NewObject()
+		status.Set("error", rejected.Message)
+		status.Set("loginStatus", rejected.Status)
+		h.fail(http.StatusForbidden, status)
+		return
+	}
+	// A fresh login replaces the caller's previous session.
+	h.server.Auth.Logout(h.cookieToken())
+	result := jsoncompat.NewObject()
+	result.Set("csrf", session.MustGet("csrf"))
+	h.output(http.StatusOK, result, contentTypeJSON, h.server.Auth.CookieValue(token))
+}
+
+func clientIP(request *http.Request) string {
+	if host, _, err := net.SplitHostPort(request.RemoteAddr); err == nil {
+		return host
+	}
+	return request.RemoteAddr
+}
+
+var _ = json.Marshal

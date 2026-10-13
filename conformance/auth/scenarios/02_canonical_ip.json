@@ -1,0 +1,105 @@
+{
+ "name": "02_canonical_ip",
+ "steps": [
+  {
+   "op": "canonical_ip",
+   "value": "127.0.0.1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "1.2.3.4"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "0.0.0.0"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "255.255.255.255"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "::1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "::"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "2001:db8::1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "2001:0db8:0000:0000:0000:ff00:0042:8329"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "2001:DB8::FF00:42:8329"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "0:0:0:0:0:0:0:1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "fd00::"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "::ffff:192.168.1.1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "::ffff:0.0.0.0"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "::0.0.0.0"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "64:ff9b::1.2.3.4"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "fe80::1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "2001:db8:0:1:1:1:1:1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "01.2.3.4"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "256.1.1.1"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "1.2.3"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "localhost"
+  },
+  {
+   "op": "canonical_ip",
+   "value": ""
+  },
+  {
+   "op": "canonical_ip",
+   "value": "1.2.3.4.5"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "fe80::1%eth0"
+  },
+  {
+   "op": "canonical_ip",
+   "value": "::ffff:1.2.3.4 "
+  }
+ ]
+}

@@ -1,0 +1,131 @@
+{
+ "name": "02_flatten",
+ "steps": [
+  {
+   "op": "output",
+   "value": "纯字符串"
+  },
+  {
+   "op": "output",
+   "value": {
+    "text": "一",
+    "result": {
+     "output": "二",
+     "empty": ""
+    }
+   }
+  },
+  {
+   "op": "output",
+   "value": {
+    "only_null": null,
+    "nums": [
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "op": "output",
+   "value": [
+    {
+     "text": "a"
+    },
+    "b",
+    {
+     "summary": null
+    },
+    []
+   ]
+  },
+  {
+   "op": "output",
+   "value": 42
+  },
+  {
+   "op": "command_summary",
+   "value": "rm -rf /tmp"
+  },
+  {
+   "op": "command_summary",
+   "value": {
+    "command": " git status ",
+    "cmd": "ignored"
+   }
+  },
+  {
+   "op": "command_summary",
+   "value": {
+    "input": {
+     "arguments": {
+      "shellCommand": "npm test"
+     }
+    }
+   }
+  },
+  {
+   "op": "command_summary",
+   "value": {
+    "path": "  ",
+    "whatever": {
+     "z": 1,
+     "a": [
+      true
+     ]
+    }
+   }
+  },
+  {
+   "op": "command_summary",
+   "value": [
+    "not",
+    "a",
+    "dict"
+   ]
+  },
+  {
+   "op": "subagent_meta",
+   "input": {
+    "agentId": "sa-9",
+    "description": "描述"
+   },
+   "title": ""
+  },
+  {
+   "op": "subagent_meta",
+   "input": {
+    "input": {
+     "actual_subagent_type": "general",
+     "stop_reason": "end"
+    }
+   },
+   "title": "普通标题"
+  },
+  {
+   "op": "subagent_meta",
+   "input": {
+    "prompt": 42
+   },
+   "title": "子 Agent 任务"
+  },
+  {
+   "op": "subagent_meta",
+   "input": {
+    "agent_id": "  ",
+    "prompt": " p "
+   },
+   "title": ""
+  },
+  {
+   "op": "subagent_meta",
+   "input": {
+    "nested": {
+     "deep": {
+      "agentId": "x"
+     }
+    }
+   },
+   "title": ""
+  }
+ ]
+}

@@ -1,0 +1,56 @@
+{
+ "name": "08_escapes_passthrough",
+ "steps": [
+  {
+   "op": "update",
+   "view": {
+    "sequence": 1,
+    "turns": [
+     {
+      "id": "转义·turn",
+      "messages": [
+       {
+        "stopReason": "end_turn",
+        "subagentPrompt": "sub prompt",
+        "subagentDescription": "子代理说明",
+        "subagentType": "general",
+        "subagentId": "sub-1",
+        "requestId": "req-9",
+        "phase": "final",
+        "title": "标题 \"引号\" <b>&amp;",
+        "status": "streaming",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "<b>&\"\\\n\t\u0001 中文🚀",
+        "id": "wl-1"
+       },
+       {
+        "id": "floats",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "x"
+       }
+      ]
+     }
+    ],
+    "requests": [],
+    "nested": {
+     "b": 1.0,
+     "a": [
+      1,
+      2.5,
+      "x",
+      null,
+      true
+     ]
+    },
+    "big": 12345678901234567890,
+    "unicodekey": "值"
+   }
+  },
+  {
+   "op": "page",
+   "limit": 10
+  }
+ ]
+}

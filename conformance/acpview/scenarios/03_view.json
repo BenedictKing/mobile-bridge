@@ -1,0 +1,316 @@
+{
+ "name": "03_view",
+ "steps": [
+  {
+   "op": "view",
+   "now": 1700000000.5,
+   "steps": [
+    {
+     "apply_config": {
+      "options": [
+       {
+        "id": "model",
+        "currentValue": "kimi-k3"
+       },
+       {
+        "category": "thought_level",
+        "currentValue": "high"
+       },
+       {
+        "id": "ignored",
+        "currentValue": null
+       }
+      ],
+      "modes": {
+       "currentModeId": "plan"
+      }
+     }
+    },
+    {
+     "snapshot": true
+    },
+    {
+     "begin_turn": "第一句提问"
+    },
+    {
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "text": "回答"
+      }
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "text": "（续）"
+      }
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "agent_thought_chunk",
+      "content": {
+       "text": "想一想"
+      }
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "tc-1",
+      "title": "Bash",
+      "kind": "execute",
+      "status": "in_progress",
+      "rawInput": {
+       "command": "ls -la"
+      },
+      "content": [
+       {
+        "text": "文件列表"
+       },
+       {
+        "output": "done"
+       }
+      ]
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "tool_call",
+      "toolCallId": "tc-2",
+      "status": "completed",
+      "rawInput": {
+       "agentId": "sa-1",
+       "description": "搜索"
+      },
+      "content": "子代理输出"
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tc-1",
+      "status": "completed",
+      "title": "Bash 更新",
+      "content": "完整输出"
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "tc-2",
+      "rawInput": {
+       "subagent_type": "researcher"
+      }
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "plan",
+      "entries": [
+       {
+        "content": "步骤一",
+        "status": "completed"
+       },
+       {
+        "content": "步骤二",
+        "status": "in_progress"
+       },
+       "裸字符串",
+       {
+        "content": null,
+        "status": null
+       }
+      ]
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "plan",
+      "entries": [
+       {
+        "content": "步骤一",
+        "status": "completed"
+       },
+       {
+        "content": "步骤二",
+        "status": "completed"
+       }
+      ]
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "user_message_chunk",
+      "content": {
+       "text": "中途追问"
+      }
+     }
+    },
+    {
+     "add_permission": {
+      "id": "req-1",
+      "params": {
+       "toolCall": {
+        "title": "危险命令",
+        "rawInput": {
+         "cmd": "rm x"
+        }
+       },
+       "options": [
+        {
+         "optionId": "allow",
+         "name": "允许",
+         "kind": "allow_once"
+        },
+        {
+         "name": "坏形状"
+        },
+        "not-dict"
+       ]
+      }
+     }
+    },
+    {
+     "add_input": {
+      "id": "req-2",
+      "params": {
+       "message": "选择模式",
+       "requestedSchema": {
+        "type": "object",
+        "properties": {
+         "q": {
+          "type": "string",
+          "enum": [
+           "是",
+           "否"
+          ]
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "add_input": {
+      "id": "req-3",
+      "params": {
+       "message": "复杂表单",
+       "requestedSchema": {
+        "type": "object",
+        "properties": {
+         "x": {
+          "type": "object"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "snapshot": true
+    },
+    {
+     "remove_permission": "req-1"
+    },
+    {
+     "update": {
+      "sessionUpdate": "available_commands_update",
+      "availableCommands": [
+       {
+        "name": "/plan"
+       },
+       {
+        "noname": 1
+       },
+       "junk"
+      ]
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "current_mode_update",
+      "currentModeId": "chat"
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "config_option_update",
+      "configOptions": [
+       {
+        "category": "model",
+        "currentValue": "kimi-k4"
+       }
+      ]
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "config_option_update",
+      "configOption": {
+       "category": "mode",
+       "currentValue": "agent"
+      }
+     }
+    },
+    {
+     "update": {
+      "sessionUpdate": "unknown_kind",
+      "whatever": 1
+     }
+    },
+    {
+     "snapshot": true
+    },
+    {
+     "end_turn": "end_turn"
+    },
+    {
+     "fail_turn": "出错了"
+    },
+    {
+     "snapshot": true
+    },
+    {
+     "begin_turn": "重试提问"
+    },
+    {
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "text": "部分回答"
+      }
+     }
+    },
+    {
+     "end_turn": "cancelled"
+    },
+    {
+     "snapshot": true
+    }
+   ]
+  },
+  {
+   "op": "view",
+   "now": 1700000000.5,
+   "steps": [
+    {
+     "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+       "text": "无开场"
+      }
+     }
+    },
+    {
+     "finish_replay": true
+    },
+    {
+     "snapshot": true
+    }
+   ]
+  }
+ ]
+}

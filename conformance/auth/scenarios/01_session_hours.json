@@ -1,0 +1,41 @@
+{
+ "name": "01_session_hours",
+ "steps": [
+  {
+   "op": "session_hours",
+   "value": 12
+  },
+  {
+   "op": "session_hours",
+   "value": 0
+  },
+  {
+   "op": "session_hours",
+   "value": 87600
+  },
+  {
+   "op": "session_hours",
+   "value": -1
+  },
+  {
+   "op": "session_hours",
+   "value": 87601
+  },
+  {
+   "op": "session_hours",
+   "value": 3.5
+  },
+  {
+   "op": "session_hours",
+   "value": 3.0
+  },
+  {
+   "op": "session_hours",
+   "value": true
+  },
+  {
+   "op": "session_hours",
+   "value": "12"
+  }
+ ]
+}

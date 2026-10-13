@@ -1,0 +1,74 @@
+{
+ "name": "02_set_mode",
+ "steps": [
+  {
+   "op": "set_mode",
+   "modes": {
+    "availableModes": [
+     {
+      "id": "default"
+     },
+     {
+      "id": "plan"
+     },
+     {
+      "name": "坏形状"
+     }
+    ],
+    "currentModeId": "default"
+   },
+   "set": "plan"
+  },
+  {
+   "op": "set_mode",
+   "modes": {
+    "availableModes": [
+     {
+      "id": "default"
+     },
+     {
+      "id": "plan"
+     },
+     {
+      "name": "坏形状"
+     }
+    ],
+    "currentModeId": "default"
+   },
+   "set": "default"
+  },
+  {
+   "op": "set_mode",
+   "modes": {
+    "availableModes": [
+     {
+      "id": "default"
+     },
+     {
+      "id": "plan"
+     },
+     {
+      "name": "坏形状"
+     }
+    ],
+    "currentModeId": "default"
+   },
+   "set": "goal"
+  },
+  {
+   "op": "set_mode",
+   "modes": {
+    "availableModes": [],
+    "currentModeId": "chat"
+   },
+   "set": "chat"
+  },
+  {
+   "op": "set_mode",
+   "modes": {
+    "currentModeId": "chat"
+   },
+   "set": "chat"
+  }
+ ]
+}

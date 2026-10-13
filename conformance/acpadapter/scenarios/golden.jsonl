@@ -1,0 +1,12 @@
+{"scenario":"01_attachment_blocks","i":0,"op":"attachment_blocks","out":{"blocks":[{"type":"image","data":"iVBORw0KGgpwbmctYnl0ZXM=","mimeType":"image/png"},{"type":"image","data":"AAFwbGFpbi1iaW5hcnk=","mimeType":"image/png"},{"type":"resource_link","name":"笔记.txt","uri":"file://<WS>/%E7%AC%94%E8%AE%B0.txt"}]}}
+{"scenario":"01_attachment_blocks","i":1,"op":"attachment_blocks","out":{"blocks":[]}}
+{"scenario":"01_attachment_blocks","i":2,"op":"attachment_blocks","out":{"$error":"此 Agent 暂不支持图片附件"}}
+{"scenario":"01_attachment_blocks","i":3,"op":"attachment_blocks","out":{"$error":"此 Agent 暂不支持文件附件"}}
+{"scenario":"01_attachment_blocks","i":4,"op":"attachment_blocks","out":{"$error":"此 Agent 暂不支持图片附件"}}
+{"scenario":"01_attachment_blocks","i":5,"op":"attachment_blocks","out":{"$error":"此 Agent 暂不支持文件附件"}}
+{"scenario":"01_attachment_blocks","i":6,"op":"attachment_blocks","out":{"blocks":[{"type":"image","data":"/9j/anBlZy1ieXRlcw==","mimeType":"image/jpeg"},{"type":"image","data":"R0lGODlhZ2lmLWJ5dGVz","mimeType":"image/gif"},{"type":"image","data":"UklGRi0tLS1XRUJQd2VicC1ieXRlcw==","mimeType":"image/webp"}]}}
+{"scenario":"02_set_mode","i":0,"op":"set_mode","out":{"requests":[{"method":"session/set_mode","params":{"sessionId":"sess-1","modeId":"plan"}}],"currentModeId":"plan","viewMode":"plan"}}
+{"scenario":"02_set_mode","i":1,"op":"set_mode","out":{"requests":[],"currentModeId":"default","viewMode":null}}
+{"scenario":"02_set_mode","i":2,"op":"set_mode","out":{"$error":"当前 Agent 不支持此工作模式"}}
+{"scenario":"02_set_mode","i":3,"op":"set_mode","out":{"$error":"当前 Agent 不支持此工作模式"}}
+{"scenario":"02_set_mode","i":4,"op":"set_mode","out":{"$error":"当前 Agent 不支持此工作模式"}}

@@ -1,0 +1,227 @@
+{
+ "name": "04_patches_and_helpers",
+ "steps": [
+  {
+   "op": "apply_patches",
+   "state": {
+    "a": 1
+   },
+   "patches": [
+    {
+     "op": "replace",
+     "path": "",
+     "value": {
+      "fresh": true
+     }
+    }
+   ]
+  },
+  {
+   "op": "apply_patches",
+   "state": {
+    "b": [
+     1,
+     2
+    ],
+    "o": {}
+   },
+   "patches": [
+    {
+     "path": "/b/1",
+     "op": "add",
+     "value": 9
+    },
+    {
+     "path": [
+      "b",
+      "-"
+     ],
+     "op": "add",
+     "value": "end"
+    },
+    {
+     "path": [
+      "b",
+      0
+     ],
+     "op": "remove"
+    },
+    {
+     "path": [
+      "o",
+      "k~1x"
+     ],
+     "op": "replace",
+     "value": true
+    },
+    {
+     "path": [
+      "o",
+      "j~0"
+     ],
+     "op": "add",
+     "value": null
+    }
+   ]
+  },
+  {
+   "op": "apply_patches",
+   "state": [
+    1
+   ],
+   "patches": [
+    {
+     "op": "add",
+     "value": 2
+    }
+   ]
+  },
+  {
+   "op": "apply_patches",
+   "state": [
+    1
+   ],
+   "patches": [
+    {
+     "path": [
+      0
+     ],
+     "op": "copy"
+    }
+   ]
+  },
+  {
+   "op": "apply_patches",
+   "state": {},
+   "patches": [
+    {
+     "path": [
+      "x"
+     ],
+     "op": "delete"
+    }
+   ]
+  },
+  {
+   "op": "text_content",
+   "content": "直接字符串"
+  },
+  {
+   "op": "text_content",
+   "content": [
+    {
+     "type": "text",
+     "text": "第一段"
+    },
+    {
+     "type": "inputText",
+     "text": "第二段"
+    },
+    {
+     "type": "image",
+     "url": "跳过"
+    },
+    {
+     "type": "output_text",
+     "text": "第三段"
+    },
+    "not-a-dict"
+   ]
+  },
+  {
+   "op": "text_content",
+   "content": {
+    "items": [
+     "忽略"
+    ]
+   }
+  },
+  {
+   "op": "user_display_text",
+   "text": "没有标记的普通文本"
+  },
+  {
+   "op": "user_display_text",
+   "text": "# Files mentioned by the user:\n- x\n\n别的"
+  },
+  {
+   "op": "user_display_text",
+   "text": "# Files mentioned by the user:\n\n## My request:\n\n\r\n修剪\r\n"
+  },
+  {
+   "op": "user_display_text",
+   "text": "# Files mentioned by the user:\n\n## My request:\n\n"
+  },
+  {
+   "op": "question_replies",
+   "text": "<send_user_message_question_reply>[{\"questionItemId\": \"k\", \"question\": \"q\", \"answer\": \"a\"}]</send_user_message_question_reply>"
+  },
+  {
+   "op": "question_replies",
+   "text": "<send_user_message_question_reply>[\"不是对象\"]</send_user_message_question_reply>"
+  },
+  {
+   "op": "question_replies",
+   "text": "<send_user_message_question_reply>[broken</send_user_message_question_reply>"
+  },
+  {
+   "op": "question_replies",
+   "text": "前置 <send_user_message_question_reply>[]</send_user_message_question_reply>"
+  },
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "object",
+    "title": "t",
+    "properties": {
+     "s": {
+      "type": "string"
+     },
+     "n": {
+      "minimum": 1
+     },
+     "b": {
+      "enum": [
+       1
+      ]
+     }
+    }
+   }
+  },
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "array"
+   }
+  },
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "object",
+    "surprise": 1
+   }
+  },
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "bad": {
+      "type": "object"
+     }
+    }
+   }
+  },
+  {
+   "op": "normalize_request",
+   "request": {
+    "id": "n1",
+    "method": "item/tool/requestUserInput",
+    "params": {
+     "questions": [],
+     "extra": "drop"
+    }
+   }
+  }
+ ]
+}

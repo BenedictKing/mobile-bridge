@@ -1,0 +1,68 @@
+{
+ "name": "01_requests",
+ "steps": [
+  {
+   "op": "request",
+   "method": "thread-owner-discovery",
+   "params": {
+    "hostId": "local",
+    "conversationId": "sess-1"
+   },
+   "timeout": 6
+  },
+  {
+   "op": "request",
+   "method": "thread-follower-start-turn",
+   "params": {
+    "conversationId": "sess-1",
+    "turn": {
+     "userText": "你好 <b>&amp;"
+    }
+   },
+   "host": "remote-host",
+   "timeout": 15
+  },
+  {
+   "op": "request",
+   "method": "thread-follower-interrupt-turn",
+   "params": {
+    "conversationId": "sess-1"
+   },
+   "target": "owner-client-7",
+   "timeout": 2.75
+  },
+  {
+   "op": "request",
+   "method": "initialize",
+   "params": {
+    "clientType": "codex-mobile-bridge"
+   },
+   "timeout": 5
+  },
+  {
+   "op": "request",
+   "method": "thread-follower-submit-user-input",
+   "params": {
+    "conversationId": "转义·会话",
+    "responses": [
+     "是",
+     "否"
+    ]
+   },
+   "timeout": 0.5
+  },
+  {
+   "op": "request",
+   "method": "no-such-method",
+   "params": {},
+   "timeout": 5
+  },
+  {
+   "op": "request",
+   "method": "thread-follower-load-complete-history",
+   "params": {},
+   "host": "second",
+   "timeout": 15
+  }
+ ]
+}

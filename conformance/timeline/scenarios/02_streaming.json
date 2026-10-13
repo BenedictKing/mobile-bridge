@@ -1,0 +1,119 @@
+{
+ "name": "02_streaming",
+ "steps": [
+  {
+   "op": "update",
+   "view": {
+    "sequence": 1,
+    "turns": [
+     {
+      "id": "turn",
+      "messages": [
+       {
+        "id": "0",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 0"
+       },
+       {
+        "id": "1",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 1"
+       },
+       {
+        "id": "2",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 2"
+       },
+       {
+        "id": "3",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 3"
+       },
+       {
+        "id": "4",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 4"
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "approval"
+     }
+    ]
+   }
+  },
+  {
+   "op": "page"
+  },
+  {
+   "op": "update",
+   "view": {
+    "sequence": 2,
+    "turns": [
+     {
+      "id": "turn",
+      "messages": [
+       {
+        "id": "0",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 0"
+       },
+       {
+        "id": "1",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 1"
+       },
+       {
+        "id": "2",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 2"
+       },
+       {
+        "id": "3",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 3"
+       },
+       {
+        "id": "4",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 4 streaming"
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "approval"
+     }
+    ]
+   }
+  },
+  {
+   "op": "changes",
+   "after": 1,
+   "epoch": "$1.epoch",
+   "start": "$1.before"
+  },
+  {
+   "op": "changes",
+   "after": 2,
+   "epoch": "$1.epoch",
+   "start": "$1.before"
+  },
+  {
+   "op": "page"
+  }
+ ]
+}

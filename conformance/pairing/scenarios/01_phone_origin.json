@@ -1,0 +1,85 @@
+{
+ "name": "01_phone_origin",
+ "steps": [
+  {
+   "op": "phone_origin",
+   "value": "https://example.com"
+  },
+  {
+   "op": "phone_origin",
+   "value": "http://192.168.1.5:8787"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://a.b.c/path"
+  },
+  {
+   "op": "phone_origin",
+   "value": "http://x/y"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://x?q=1"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://x#f"
+  },
+  {
+   "op": "phone_origin",
+   "value": "ftp://x"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://u:p@x"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://127.0.0.1:8787"
+  },
+  {
+   "op": "phone_origin",
+   "value": "http://localhost:9000"
+  },
+  {
+   "op": "phone_origin",
+   "value": "http://dev.localhost"
+  },
+  {
+   "op": "phone_origin",
+   "value": "http://[::1]:8787"
+  },
+  {
+   "op": "phone_origin",
+   "value": "http://[fe80::1]"
+  },
+  {
+   "op": "phone_origin",
+   "value": "HTTPS://EXAMPLE.COM:443"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://xn--fiqs8s.example"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://x/"
+  },
+  {
+   "op": "phone_origin",
+   "value": "https://x//"
+  },
+  {
+   "op": "phone_origin",
+   "value": "not a url"
+  },
+  {
+   "op": "phone_origin",
+   "value": 42
+  }
+ ]
+}

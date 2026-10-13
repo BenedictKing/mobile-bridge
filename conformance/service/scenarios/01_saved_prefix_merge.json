@@ -1,0 +1,252 @@
+{
+ "name": "01_saved_prefix_merge",
+ "steps": [
+  {
+   "op": "session",
+   "steps": [
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "0",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "0",
+          "text": "saved 0"
+         }
+        ]
+       },
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "saved 1"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "saved 2"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "live"
+         }
+        ]
+       }
+      ],
+      "turnsPagination": {
+       "hasLoadedOldest": false
+      },
+      "requests": []
+     },
+     "connected": true
+    },
+    {
+     "view": true
+    },
+    {
+     "set": "pagination_complete"
+    },
+    {
+     "view": true
+    }
+   ]
+  },
+  {
+   "op": "session",
+   "steps": [
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "old",
+        "items": []
+       }
+      ]
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [],
+      "turnsPagination": {
+       "hasLoadedOldest": false
+      }
+     }
+    },
+    {
+     "view": true
+    }
+   ]
+  },
+  {
+   "op": "session",
+   "steps": [
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "0",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "0",
+          "text": "saved 0"
+         }
+        ]
+       },
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "saved 1"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "saved 2"
+         }
+        ]
+       },
+       {
+        "turnId": "3",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "3",
+          "text": "saved 3"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "9",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "9",
+          "text": "全新回合"
+         }
+        ]
+       }
+      ]
+     },
+     "connected": true
+    },
+    {
+     "view": true
+    }
+   ]
+  },
+  {
+   "op": "session",
+   "steps": [
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "0",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "0",
+          "text": "saved 0"
+         }
+        ]
+       },
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "saved 1"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "saved 2"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "重叠两个"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "重叠两个"
+         }
+        ]
+       }
+      ]
+     },
+     "connected": true
+    },
+    {
+     "view": true
+    }
+   ]
+  }
+ ]
+}

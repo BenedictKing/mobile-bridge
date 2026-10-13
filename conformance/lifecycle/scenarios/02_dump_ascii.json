@@ -1,0 +1,51 @@
+{
+ "name": "02_dump_ascii",
+ "steps": [
+  {
+   "op": "dump_ascii",
+   "value": {
+    "ok": true,
+    "result": {
+     "list": [],
+     "n": null
+    }
+   }
+  },
+  {
+   "op": "dump_ascii",
+   "value": {
+    "ok": false,
+    "error": "扫码登录操作超时，请重试"
+   }
+  },
+  {
+   "op": "dump_ascii",
+   "value": {
+    "text": "quote \" backslash \\ emoji 🚀 tab\tnew\nend"
+   }
+  },
+  {
+   "op": "dump_ascii",
+   "value": {
+    "nested": {
+     "a": [
+      1,
+      2,
+      {
+       "b": false
+      }
+     ],
+     "c": "中文"
+    }
+   }
+  },
+  {
+   "op": "dump_ascii",
+   "value": 12345
+  },
+  {
+   "op": "dump_ascii",
+   "value": "plain string"
+  }
+ ]
+}

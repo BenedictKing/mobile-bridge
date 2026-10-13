@@ -1,0 +1,18 @@
+{"scenario":"01_control_record","i":0,"op":"control_record","out":{"bytes_hex":"7b22706964223a2031323334352c2022746f6b656e223a202261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162222c202270616972696e67446972223a20222e70616972696e672d6162313263643334222c2022696e7374616e63654964223a206e756c6c2c20226465766963654d616e6167656d656e74223a20747275652c20226163636f756e74734d616e6167656d656e74223a20747275652c20226163636f756e744d616e6167656d656e74223a2066616c73652c20226e6f74696669636174696f6e4d616e6167656d656e74223a20747275657d"}}
+{"scenario":"01_control_record","i":1,"op":"control_record","out":{"bytes_hex":"7b22706964223a20322c2022746f6b656e223a202230303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c202270616972696e67446972223a20222e70616972696e672d7a7a7a222c2022696e7374616e63654964223a2022696e73742d39222c20226465766963654d616e6167656d656e74223a2066616c73652c20226163636f756e74734d616e6167656d656e74223a2066616c73652c20226163636f756e744d616e6167656d656e74223a2066616c73652c20226e6f74696669636174696f6e4d616e6167656d656e74223a2066616c73657d"}}
+{"scenario":"02_dump_ascii","i":0,"op":"dump_ascii","out":{"bytes_hex":"7b226f6b223a20747275652c2022726573756c74223a207b226c697374223a205b5d2c20226e223a206e756c6c7d7d"}}
+{"scenario":"02_dump_ascii","i":1,"op":"dump_ascii","out":{"bytes_hex":"7b226f6b223a2066616c73652c20226572726f72223a20225c75363236625c75373830315c75373637625c75356635355c75363463645c75346635635c75386438355c75363566365c75666630635c75386266375c75393163645c7538626435227d"}}
+{"scenario":"02_dump_ascii","i":2,"op":"dump_ascii","out":{"bytes_hex":"7b2274657874223a202271756f7465205c22206261636b736c617368205c5c20656d6f6a69205c75643833645c7564653830207461625c746e65775c6e656e64227d"}}
+{"scenario":"02_dump_ascii","i":3,"op":"dump_ascii","out":{"bytes_hex":"7b226e6573746564223a207b2261223a205b312c20322c207b2262223a2066616c73657d5d2c202263223a20225c75346532645c7536353837227d7d"}}
+{"scenario":"02_dump_ascii","i":4,"op":"dump_ascii","out":{"bytes_hex":"3132333435"}}
+{"scenario":"02_dump_ascii","i":5,"op":"dump_ascii","out":{"bytes_hex":"22706c61696e20737472696e6722"}}
+{"scenario":"03_stop_and_read","i":0,"op":"stop_validate","out":{"valid":true}}
+{"scenario":"03_stop_and_read","i":1,"op":"stop_validate","out":{"valid":false,"error":"No gateway control record; use Ctrl+C in its terminal if it is running."}}
+{"scenario":"03_stop_and_read","i":2,"op":"stop_validate","out":{"valid":false,"error":"No gateway control record; use Ctrl+C in its terminal if it is running."}}
+{"scenario":"03_stop_and_read","i":3,"op":"stop_validate","out":{"valid":false,"error":"No gateway control record; use Ctrl+C in its terminal if it is running."}}
+{"scenario":"03_stop_and_read","i":4,"op":"stop_validate","out":{"valid":false,"error":"No gateway control record; use Ctrl+C in its terminal if it is running."}}
+{"scenario":"03_stop_and_read","i":5,"op":"stop_validate","out":{"valid":false,"error":"No gateway control record; use Ctrl+C in its terminal if it is running."}}
+{"scenario":"03_stop_and_read","i":6,"op":"read_record","out":{"pid":1,"token":"ab","x":{"y":[1,2]}}}
+{"scenario":"03_stop_and_read","i":7,"op":"read_record","out":null}
+{"scenario":"03_stop_and_read","i":8,"op":"read_record","out":null}
+{"scenario":"03_stop_and_read","i":9,"op":"read_record","out":{"pid":2}}

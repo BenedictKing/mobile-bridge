@@ -1,0 +1,27 @@
+{
+ "name": "01_control_record",
+ "steps": [
+  {
+   "op": "control_record",
+   "pid": 12345,
+   "token_hex": "abababababababababababababababababababababababababababababababab",
+   "pairing_dir": ".pairing-ab12cd34",
+   "instance_id": null,
+   "device": true,
+   "accounts": true,
+   "account": false,
+   "notifications": true
+  },
+  {
+   "op": "control_record",
+   "pid": 2,
+   "token_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+   "pairing_dir": ".pairing-zzz",
+   "instance_id": "inst-9",
+   "device": false,
+   "accounts": false,
+   "account": false,
+   "notifications": false
+  }
+ ]
+}

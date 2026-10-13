@@ -1,0 +1,264 @@
+{
+ "name": "03_requests",
+ "steps": [
+  {
+   "op": "normalize_state",
+   "state": {
+    "turns": [
+     {
+      "turnId": "t-cmd",
+      "items": [
+       {
+        "id": "ci",
+        "type": "commandExecution",
+        "command": "related-cmd",
+        "changes": [
+         {
+          "path": "x"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "turnId": "t-file",
+      "items": [
+       {
+        "id": "fi",
+        "type": "fileChange",
+        "changes": [
+         {
+          "path": "a.py",
+          "diff": "+1"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "turnId": "t-last",
+      "status": "inProgress",
+      "items": [
+       {
+        "id": "qu",
+        "type": "userMessage",
+        "content": [
+         {
+          "type": "text",
+          "text": "<send_user_message_question_reply>[{\"questionItemId\": \"[\\\"request_user_input_async\\\",\\\"q1\\\",0]\", \"question\": \"问\", \"answer\": \"答\"}]</send_user_message_question_reply>"
+         }
+        ]
+       },
+       {
+        "id": "q1",
+        "type": "agentMessage",
+        "text": "问一下",
+        "questions": [
+         {
+          "title": "选择",
+          "options": [
+           "甲",
+           "乙"
+          ]
+         },
+         {
+          "title": "第二问",
+          "options": []
+         }
+        ]
+       },
+       {
+        "id": "q2",
+        "type": "agentMessage",
+        "questions": [
+         {
+          "title": "全答完",
+          "options": [
+           "x"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "r1",
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+       "itemId": "ci",
+       "reason": "why",
+       "cwd": "/w",
+       "networkApprovalContext": "n"
+      }
+     },
+     {
+      "id": "r2",
+      "method": "item/fileChange/requestApproval",
+      "params": {
+       "itemId": "fi",
+       "reason": "r",
+       "grantRoot": "/g"
+      }
+     },
+     {
+      "id": "r3",
+      "method": "item/fileChange/requestApproval",
+      "params": {
+       "itemId": "ghost",
+       "reason": "r2"
+      }
+     },
+     {
+      "id": "r4",
+      "method": "item/permissions/requestApproval",
+      "params": {
+       "reason": "需要权限",
+       "permissions": [
+        "net"
+       ],
+       "_meta": {
+        "nested": [
+         "openai/userVerification"
+        ]
+       }
+      }
+     },
+     {
+      "id": "r5",
+      "method": "mcpServer/elicitation/request",
+      "params": {
+       "serverName": "s",
+       "message": "m",
+       "mode": "form",
+       "requestedSchema": {
+        "type": "object",
+        "properties": {
+         "q": {
+          "type": "string",
+          "minLength": 1
+         },
+         "n": {
+          "type": "integer",
+          "maximum": 9
+         }
+        }
+       },
+       "_meta": {
+        "codex_approval_kind": "mcp_tool_call",
+        "connector_id": "Computer Use PRO!!",
+        "tool_params": {
+         "app": "浏览器"
+        },
+        "persist": [
+         "always",
+         "session",
+         "junk"
+        ]
+       }
+      }
+     },
+     {
+      "id": "r6",
+      "method": "mcpServer/elicitation/request",
+      "params": {
+       "mode": "json",
+       "requestedSchema": {}
+      }
+     },
+     {
+      "id": "r7",
+      "method": "mcpServer/elicitation/request",
+      "params": {
+       "mode": "form",
+       "requestedSchema": {
+        "type": "object",
+        "extra": 1,
+        "properties": {}
+       }
+      }
+     },
+     {
+      "id": "r8",
+      "method": "tool/requestUserInput",
+      "params": {
+       "questions": [
+        {
+         "id": "q",
+         "title": "t"
+        }
+       ]
+      }
+     },
+     {
+      "id": "r9",
+      "method": "acp/requestPermission",
+      "params": {
+       "title": "允许",
+       "command": "ls",
+       "options": [
+        "allow"
+       ]
+      }
+     },
+     {
+      "id": "r10",
+      "method": "unknown/method",
+      "params": {
+       "x": 1
+      }
+     }
+    ]
+   }
+  },
+  {
+   "op": "normalize_state",
+   "state": {
+    "turns": [
+     {
+      "turnId": "done",
+      "status": "completed",
+      "items": [
+       {
+        "id": "q9",
+        "type": "agentMessage",
+        "questions": [
+         {
+          "title": "完成后仍可问",
+          "options": null
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "op": "normalize_state",
+   "state": {
+    "turns": [
+     {
+      "turnId": "queued",
+      "status": "queued",
+      "items": [
+       {
+        "id": "qx",
+        "type": "agentMessage",
+        "questions": [
+         {
+          "title": "不该出现",
+          "options": [
+           "a"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -1,0 +1,59 @@
+{"scenario":"01_session_hours","i":0,"op":"session_hours","out":12}
+{"scenario":"01_session_hours","i":1,"op":"session_hours","out":0}
+{"scenario":"01_session_hours","i":2,"op":"session_hours","out":87600}
+{"scenario":"01_session_hours","i":3,"op":"session_hours","out":{"$error":"登录有效期必须为 0–87600 的整数小时"}}
+{"scenario":"01_session_hours","i":4,"op":"session_hours","out":{"$error":"登录有效期必须为 0–87600 的整数小时"}}
+{"scenario":"01_session_hours","i":5,"op":"session_hours","out":{"$error":"登录有效期必须为 0–87600 的整数小时"}}
+{"scenario":"01_session_hours","i":6,"op":"session_hours","out":{"$error":"登录有效期必须为 0–87600 的整数小时"}}
+{"scenario":"01_session_hours","i":7,"op":"session_hours","out":{"$error":"登录有效期必须为 0–87600 的整数小时"}}
+{"scenario":"01_session_hours","i":8,"op":"session_hours","out":{"$error":"登录有效期必须为 0–87600 的整数小时"}}
+{"scenario":"02_canonical_ip","i":0,"op":"canonical_ip","out":"127.0.0.1"}
+{"scenario":"02_canonical_ip","i":1,"op":"canonical_ip","out":"1.2.3.4"}
+{"scenario":"02_canonical_ip","i":2,"op":"canonical_ip","out":"0.0.0.0"}
+{"scenario":"02_canonical_ip","i":3,"op":"canonical_ip","out":"255.255.255.255"}
+{"scenario":"02_canonical_ip","i":4,"op":"canonical_ip","out":"::1"}
+{"scenario":"02_canonical_ip","i":5,"op":"canonical_ip","out":"::"}
+{"scenario":"02_canonical_ip","i":6,"op":"canonical_ip","out":"2001:db8::1"}
+{"scenario":"02_canonical_ip","i":7,"op":"canonical_ip","out":"2001:db8::ff00:42:8329"}
+{"scenario":"02_canonical_ip","i":8,"op":"canonical_ip","out":"2001:db8::ff00:42:8329"}
+{"scenario":"02_canonical_ip","i":9,"op":"canonical_ip","out":"::1"}
+{"scenario":"02_canonical_ip","i":10,"op":"canonical_ip","out":"fd00::"}
+{"scenario":"02_canonical_ip","i":11,"op":"canonical_ip","out":"192.168.1.1"}
+{"scenario":"02_canonical_ip","i":12,"op":"canonical_ip","out":"0.0.0.0"}
+{"scenario":"02_canonical_ip","i":13,"op":"canonical_ip","out":"::"}
+{"scenario":"02_canonical_ip","i":14,"op":"canonical_ip","out":"64:ff9b::102:304"}
+{"scenario":"02_canonical_ip","i":15,"op":"canonical_ip","out":"fe80::1"}
+{"scenario":"02_canonical_ip","i":16,"op":"canonical_ip","out":"2001:db8:0:1:1:1:1:1"}
+{"scenario":"02_canonical_ip","i":17,"op":"canonical_ip","out":{"$error":"'01.2.3.4' does not appear to be an IPv4 or IPv6 address"}}
+{"scenario":"02_canonical_ip","i":18,"op":"canonical_ip","out":{"$error":"'256.1.1.1' does not appear to be an IPv4 or IPv6 address"}}
+{"scenario":"02_canonical_ip","i":19,"op":"canonical_ip","out":{"$error":"'1.2.3' does not appear to be an IPv4 or IPv6 address"}}
+{"scenario":"02_canonical_ip","i":20,"op":"canonical_ip","out":{"$error":"'localhost' does not appear to be an IPv4 or IPv6 address"}}
+{"scenario":"02_canonical_ip","i":21,"op":"canonical_ip","out":{"$error":"'' does not appear to be an IPv4 or IPv6 address"}}
+{"scenario":"02_canonical_ip","i":22,"op":"canonical_ip","out":{"$error":"'1.2.3.4.5' does not appear to be an IPv4 or IPv6 address"}}
+{"scenario":"02_canonical_ip","i":23,"op":"canonical_ip","out":"fe80::1%eth0"}
+{"scenario":"02_canonical_ip","i":24,"op":"canonical_ip","out":{"$error":"'::ffff:1.2.3.4 ' does not appear to be an IPv4 or IPv6 address"}}
+{"scenario":"03_access_policy","i":0,"op":"access_policy","out":{"allowlistEnabled":false,"allowlist":[],"blocklist":[],"trustedProxies":[]}}
+{"scenario":"03_access_policy","i":1,"op":"access_policy","out":{"allowlistEnabled":false,"allowlist":[],"blocklist":[],"trustedProxies":[]}}
+{"scenario":"03_access_policy","i":2,"op":"access_policy","out":{"$error":"启用白名单前，请至少添加一个允许访问的 IP"}}
+{"scenario":"03_access_policy","i":3,"op":"access_policy","out":{"$error":"IP 访问规则格式不正确"}}
+{"scenario":"03_access_policy","i":4,"op":"access_policy","out":{"allowlistEnabled":true,"allowlist":["10.0.0.1"],"blocklist":[],"trustedProxies":[]}}
+{"scenario":"03_access_policy","i":5,"op":"access_policy","out":{"allowlistEnabled":false,"allowlist":["10.0.0.2","10.0.0.1","10.0.0.3","::1"],"blocklist":["2001:db8::1"],"trustedProxies":[]}}
+{"scenario":"03_access_policy","i":6,"op":"access_policy","out":{"$error":"IP 列表最多允许 256 个地址"}}
+{"scenario":"03_access_policy","i":7,"op":"access_policy","out":{"$error":"请填写有效的 IPv4 或 IPv6 地址，每行一个"}}
+{"scenario":"03_access_policy","i":8,"op":"access_policy","out":{"$error":"请填写有效的 IPv4 或 IPv6 地址，每行一个"}}
+{"scenario":"03_access_policy","i":9,"op":"access_policy","out":{"$error":"IP 列表最多允许 256 个地址"}}
+{"scenario":"03_access_policy","i":10,"op":"access_policy","out":{"$error":"IP 访问规则格式不正确"}}
+{"scenario":"04_password_and_sessions","i":0,"op":"password_record","out":{"algorithm":"pbkdf2-sha256","iterations":600000,"salt":"00112233445566778899aabbccddeeff","hash":"6bffd97b1415a39596f9e82ca6a4b640f102487dcd4b6a7d7bde3dde6a3ed7bb"}}
+{"scenario":"04_password_and_sessions","i":1,"op":"password_record","out":{"algorithm":"pbkdf2-sha256","iterations":600000,"salt":"ffeeddccbbaa99887766554433221100","hash":"c42c0c1113c060a1793f3eae08b863286d1b715b9201c2ea0e6f0c7aeec3104e"}}
+{"scenario":"04_password_and_sessions","i":2,"op":"password_record","out":{"algorithm":"pbkdf2-sha256","iterations":600000,"salt":"00000000000000000000000000000000","hash":"bee561ed43458731afdfd3be7e313981e65c87f1dc41bb674fcf0aa3a1a411d6"}}
+{"scenario":"04_password_and_sessions","i":3,"op":"key","out":"a14791aee8bb9b4b82824b9d290e9600514f47b6d5631749b3750a8a553796b7"}
+{"scenario":"04_password_and_sessions","i":4,"op":"key","out":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+{"scenario":"04_password_and_sessions","i":5,"op":"valid","out":true}
+{"scenario":"04_password_and_sessions","i":6,"op":"valid","out":true}
+{"scenario":"04_password_and_sessions","i":7,"op":"valid","out":false}
+{"scenario":"04_password_and_sessions","i":8,"op":"cookie_age","out":null}
+{"scenario":"04_password_and_sessions","i":9,"op":"cookie_age","out":34560000}
+{"scenario":"04_password_and_sessions","i":10,"op":"cookie_age","out":1}
+{"scenario":"04_password_and_sessions","i":11,"op":"cookie_age","out":259201}
+{"scenario":"04_password_and_sessions","i":12,"op":"cookie_age","out":34560000}
+{"scenario":"04_password_and_sessions","i":13,"op":"cookie_age","out":0}

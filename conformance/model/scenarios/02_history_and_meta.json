@@ -1,0 +1,144 @@
+{
+ "name": "02_history_and_meta",
+ "steps": [
+  {
+   "op": "normalize_state",
+   "state": {
+    "turnHistory": {
+     "kind": "canonical",
+     "history": {
+      "entitiesByKey": {
+       "t1": {
+        "turnId": "t1",
+        "status": "completed",
+        "items": {
+         "entitiesByKey": {
+          "i1": {
+           "id": "i1",
+           "type": "agentMessage",
+           "text": "来自实体图"
+          }
+         },
+         "islands": [
+          {
+           "entries": [
+            {
+             "value": "i1"
+            },
+            {
+             "value": "nope"
+            },
+            {
+             "value": "i1"
+            }
+           ]
+          }
+         ]
+        }
+       },
+       "dup": {
+        "turnId": "dup",
+        "items": []
+       }
+      },
+      "islands": [
+       {
+        "entries": [
+         {
+          "value": "t1"
+         },
+         {
+          "value": "ghost"
+         },
+         {
+          "value": "t1"
+         },
+         {
+          "value": "dup"
+         }
+        ]
+       }
+      ],
+      "isComplete": false
+     }
+    },
+    "turns": [
+     {
+      "turnId": "ignored",
+      "items": []
+     }
+    ],
+    "latestThreadSettings": {
+     "serviceTier": "flex",
+     "effort": "x"
+    }
+   }
+  },
+  {
+   "op": "normalize_state",
+   "state": {
+    "turns": [
+     {
+      "turnId": "",
+      "params": {
+       "input": [
+        {
+         "type": "text",
+         "text": "开场白"
+        }
+       ]
+      },
+      "items": [
+       {
+        "id": "a",
+        "type": "agentMessage",
+        "text": "答"
+       }
+      ]
+     },
+     {
+      "turnId": "history",
+      "params": {
+       "serviceTier": "priority",
+       "input": "纯字符串输入"
+      }
+     },
+     {
+      "status": "queued",
+      "params": {
+       "serviceTier": "ignored-tier"
+      }
+     }
+    ],
+    "completedThreadGoal": {
+     "goal": "已完成目标"
+    },
+    "turnsPagination": {
+     "hasLoadedOldest": false
+    }
+   }
+  },
+  {
+   "op": "normalize_state",
+   "state": {
+    "turns": [],
+    "threadGoal": {
+     "goal": "进行中目标"
+    },
+    "latestReasoningEffort": "high",
+    "threadRuntimeStatus": {
+     "type": "running"
+    },
+    "latestCollaborationMode": {
+     "mode": "review"
+    },
+    "turnHistory": {
+     "kind": "other",
+     "history": {
+      "isComplete": true
+     }
+    }
+   }
+  }
+ ]
+}

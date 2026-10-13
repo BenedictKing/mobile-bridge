@@ -1,0 +1,94 @@
+{
+ "name": "07_order_origin",
+ "steps": [
+  {
+   "op": "update",
+   "view": {
+    "sequence": 1,
+    "turns": [
+     {
+      "id": "A",
+      "messages": [
+       {
+        "id": "0",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 0"
+       },
+       {
+        "id": "1",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 1"
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "approval"
+     }
+    ]
+   }
+  },
+  {
+   "op": "page"
+  },
+  {
+   "op": "update",
+   "view": {
+    "sequence": 2,
+    "turns": [
+     {
+      "id": "B",
+      "messages": [
+       {
+        "id": "0",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 0"
+       },
+       {
+        "id": "1",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 1"
+       }
+      ]
+     },
+     {
+      "id": "A",
+      "messages": [
+       {
+        "id": "0",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 0"
+       },
+       {
+        "id": "1",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 1"
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "approval"
+     }
+    ]
+   }
+  },
+  {
+   "op": "page",
+   "limit": 10
+  },
+  {
+   "op": "changes",
+   "after": 1,
+   "epoch": "$1.epoch"
+  }
+ ]
+}

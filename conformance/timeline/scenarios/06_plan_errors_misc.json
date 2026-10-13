@@ -1,0 +1,265 @@
+{
+ "name": "06_plan_errors_misc",
+ "steps": [
+  {
+   "op": "update",
+   "view": {
+    "sequence": 1,
+    "turns": [
+     {
+      "id": "plan-turn",
+      "actionable": true,
+      "status": "completed",
+      "messages": [
+       {
+        "id": "u1",
+        "kind": "userMessage",
+        "role": "user",
+        "text": "列个计划"
+       },
+       {
+        "kind": "plan",
+        "role": "activity",
+        "title": "计划",
+        "status": "in_progress",
+        "text": "▸ one",
+        "entries": [
+         {
+          "content": "one",
+          "status": "pending"
+         },
+         {
+          "content": "two 很很很很很很很很很很很很很很很很很很很很很很很很很很很很很很",
+          "status": "pending"
+         }
+        ]
+       },
+       {
+        "id": "dup",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "第一段"
+       },
+       {
+        "id": "dup",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "第二段 同 id"
+       },
+       {
+        "role": "assistant",
+        "kind": "agentMessage",
+        "phase": "commentary",
+        "text": "旁白不可 fork"
+       },
+       {
+        "role": "assistant",
+        "kind": "agentMessage",
+        "text": "正文可 fork",
+        "output": "附加输出"
+       },
+       {
+        "role": "activity",
+        "kind": "tool",
+        "text": "短活动",
+        "requestId": "req-other",
+        "attachments": [
+         {
+          "type": "image",
+          "name": "屏幕 截图.png",
+          "path": "/tmp/a b/c.png"
+         },
+         {
+          "type": "log",
+          "name": 42,
+          "path": true
+         },
+         {
+          "name": null,
+          "extra": "dropped"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "err-str",
+      "error": "boom",
+      "messages": []
+     },
+     {
+      "id": "err-dict",
+      "error": {
+       "code": 4,
+       "msg": "坏了"
+      },
+      "messages": []
+     },
+     {
+      "id": "activated",
+      "actionable": false,
+      "messages": [
+       {
+        "id": "skipme",
+        "kind": "userMessage",
+        "role": "user",
+        "text": "被目标激活吞掉",
+        "requestId": "req-act"
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "approval"
+     }
+    ],
+    "goalActivationIds": [
+     "req-act"
+    ],
+    "savedHistoryMore": true
+   }
+  },
+  {
+   "op": "page",
+   "limit": 100
+  },
+  {
+   "op": "cursor",
+   "epoch": "$1.epoch",
+   "key": "$1.rows.0.key"
+  },
+  {
+   "op": "detail",
+   "cursor": "$2"
+  },
+  {
+   "op": "update",
+   "view": {
+    "sequence": 2,
+    "turns": [
+     {
+      "id": "plan-turn",
+      "actionable": true,
+      "status": "running",
+      "messages": [
+       {
+        "id": "u1",
+        "kind": "userMessage",
+        "role": "user",
+        "text": "列个计划"
+       },
+       {
+        "kind": "plan",
+        "role": "activity",
+        "title": "计划",
+        "status": "completed",
+        "text": "✓ one\n▸ two",
+        "entries": [
+         {
+          "content": "one",
+          "status": "completed"
+         },
+         {
+          "content": "two 很很很很很很很很很很很很很很很很很很很很很很很很很很很很很很",
+          "status": "in_progress"
+         }
+        ]
+       },
+       {
+        "id": "dup",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "第一段"
+       },
+       {
+        "id": "dup",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "第二段 同 id"
+       },
+       {
+        "role": "assistant",
+        "kind": "agentMessage",
+        "phase": "commentary",
+        "text": "旁白不可 fork"
+       },
+       {
+        "role": "assistant",
+        "kind": "agentMessage",
+        "text": "正文可 fork",
+        "output": "附加输出"
+       },
+       {
+        "role": "activity",
+        "kind": "tool",
+        "text": "短活动",
+        "requestId": "req-other",
+        "attachments": [
+         {
+          "type": "image",
+          "name": "屏幕 截图.png",
+          "path": "/tmp/a b/c.png"
+         },
+         {
+          "type": "log",
+          "name": 42,
+          "path": true
+         },
+         {
+          "name": null,
+          "extra": "dropped"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "err-str",
+      "error": "boom",
+      "messages": []
+     },
+     {
+      "id": "err-dict",
+      "error": {
+       "code": 4,
+       "msg": "坏了"
+      },
+      "messages": []
+     },
+     {
+      "id": "activated",
+      "actionable": false,
+      "messages": [
+       {
+        "id": "skipme",
+        "kind": "userMessage",
+        "role": "user",
+        "text": "被目标激活吞掉",
+        "requestId": "req-act"
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "approval"
+     }
+    ],
+    "goalActivationIds": [
+     "req-act"
+    ],
+    "savedHistoryMore": true
+   }
+  },
+  {
+   "op": "changes",
+   "after": 1,
+   "epoch": "$1.epoch"
+  },
+  {
+   "op": "page",
+   "limit": 3
+  }
+ ]
+}

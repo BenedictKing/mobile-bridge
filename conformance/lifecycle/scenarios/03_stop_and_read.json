@@ -1,0 +1,63 @@
+{
+ "name": "03_stop_and_read",
+ "steps": [
+  {
+   "op": "stop_validate",
+   "record": {
+    "pid": 12345,
+    "token": "abababababababababababababababababababababababababababababababab",
+    "pairingDir": ".pairing-x",
+    "instanceId": null,
+    "deviceManagement": true,
+    "accountsManagement": false,
+    "accountManagement": false,
+    "notificationManagement": false
+   }
+  },
+  {
+   "op": "stop_validate",
+   "record": {
+    "pid": 1.5,
+    "token": "ab"
+   }
+  },
+  {
+   "op": "stop_validate",
+   "record": {
+    "pid": "12345",
+    "token": "ab"
+   }
+  },
+  {
+   "op": "stop_validate",
+   "record": {
+    "pid": 12345,
+    "token": ""
+   }
+  },
+  {
+   "op": "stop_validate",
+   "record": null
+  },
+  {
+   "op": "stop_validate",
+   "record": "text"
+  },
+  {
+   "op": "read_record",
+   "text": "{\"pid\": 1, \"token\": \"ab\", \"x\": {\"y\": [1, 2]}}"
+  },
+  {
+   "op": "read_record",
+   "text": "not json at all"
+  },
+  {
+   "op": "read_record",
+   "text": ""
+  },
+  {
+   "op": "read_record",
+   "text": "{\"pid\": 1, \"pid\": 2}"
+  }
+ ]
+}

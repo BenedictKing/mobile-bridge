@@ -1,0 +1,52 @@
+{
+ "name": "02_broadcast",
+ "steps": [
+  {
+   "op": "follow",
+   "session": "sess-1",
+   "owner": "owner-client-7",
+   "enabled": true
+  },
+  {
+   "op": "follow",
+   "session": "sess-2",
+   "enabled": false,
+   "host": "remote-host"
+  },
+  {
+   "op": "incoming",
+   "message": {
+    "type": "client-discovery-request",
+    "requestId": "desktop-req-1"
+   }
+  },
+  {
+   "op": "incoming",
+   "message": {
+    "type": "broadcast",
+    "method": "agent-update",
+    "version": 3,
+    "params": {
+     "text": "事件 ✓"
+    },
+    "targetClientIds": [
+     "client-abc"
+    ]
+   }
+  },
+  {
+   "op": "incoming",
+   "message": {
+    "type": "broadcast",
+    "method": "agent-update",
+    "version": 3,
+    "params": {
+     "text": "别人的事件"
+    },
+    "targetClientIds": [
+     "other"
+    ]
+   }
+  }
+ ]
+}

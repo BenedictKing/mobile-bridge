@@ -1,0 +1,10 @@
+{"i":0,"out":{"ok":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"agentInfo":{"name":"假 Agent","version":"1.0"},"authMethods":["local"]},"meta":{"capabilities":{"loadSession":true},"agentInfo":{"name":"假 Agent","version":"1.0"},"authMethods":["local"]}}}
+{"i":1,"out":{"ok":{"文本":"你好 🚀","n":[1,2.5]},"meta":null}}
+{"i":2,"out":{"error":{"type":"AcpAuthRequired","message":"需要认证","code":-32000,"data":{"hint":"登录"}},"meta":null}}
+{"i":3,"out":{"error":{"type":"AcpError","message":"普通失败","code":-100,"data":[1,"x"]},"meta":null}}
+{"i":4,"out":{"ok":null,"meta":null}}
+{"i":5,"out":{"ok":"banner-ok","meta":null}}
+{"i":6,"out":{"ok":"orphan-ok","meta":null}}
+{"i":7,"out":{"ok":"poke-ok","meta":null,"notifications":[{"jsonrpc":"2.0","method":"agent/notice","params":{"text":"异步通知 ✓"}}]}}
+{"i":8,"out":{"ok":{"echoed":{"answer":"来自网关"}},"meta":null}}
+{"i":"wire","out":{"log":"{\"jsonrpc\": \"2.0\", \"id\": 0, \"method\": \"initialize\", \"params\": {\"protocolVersion\": 1, \"clientCapabilities\": {\"fs\": {\"readTextFile\": false, \"writeTextFile\": false}, \"terminal\": false, \"elicitation\": {\"form\": true}}}}\n{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"echo\", \"params\": {\"文本\": \"你好 🚀\", \"n\": [1, 2.5]}}\n{\"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"fail\", \"params\": {}}\n{\"jsonrpc\": \"2.0\", \"id\": 3, \"method\": \"fail_generic\", \"params\": {}}\n{\"jsonrpc\": \"2.0\", \"id\": 4, \"method\": \"null\", \"params\": {}}\n{\"jsonrpc\": \"2.0\", \"id\": 5, \"method\": \"banner\", \"params\": {}}\n{\"jsonrpc\": \"2.0\", \"id\": 6, \"method\": \"orphan\", \"params\": {}}\n{\"jsonrpc\": \"2.0\", \"id\": 7, \"method\": \"poke\", \"params\": {\"x\": 1}}\n{\"jsonrpc\": \"2.0\", \"id\": 8, \"method\": \"reverse\", \"params\": {}}\n{\"jsonrpc\": \"2.0\", \"id\": \"ag-1\", \"result\": {\"answer\": \"来自网关\"}}\n"}}

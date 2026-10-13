@@ -1,0 +1,132 @@
+{
+ "name": "09_cursor_edges",
+ "steps": [
+  {
+   "op": "update",
+   "view": {
+    "sequence": 1,
+    "turns": [
+     {
+      "id": "turn",
+      "messages": [
+       {
+        "id": "0",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 0"
+       },
+       {
+        "id": "1",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 1"
+       },
+       {
+        "id": "2",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 2"
+       },
+       {
+        "id": "3",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 3"
+       },
+       {
+        "id": "4",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 4"
+       },
+       {
+        "id": "5",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 5"
+       },
+       {
+        "id": "6",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 6"
+       },
+       {
+        "id": "7",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 7"
+       },
+       {
+        "id": "8",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 8"
+       },
+       {
+        "id": "9",
+        "kind": "agentMessage",
+        "role": "assistant",
+        "text": "message 9"
+       }
+      ]
+     }
+    ],
+    "requests": [
+     {
+      "id": "approval"
+     }
+    ]
+   }
+  },
+  {
+   "op": "page"
+  },
+  {
+   "op": "cursor",
+   "epoch": "$1.epoch",
+   "key": "$1.rows.0.key"
+  },
+  {
+   "op": "page",
+   "limit": 5,
+   "before": "$2"
+  },
+  {
+   "op": "page",
+   "before": "no-dot-cursor"
+  },
+  {
+   "op": "page",
+   "before": {
+    "$concat": [
+     "wrongepoch.",
+     "$1.rows.0.key"
+    ]
+   }
+  },
+  {
+   "op": "page",
+   "before": {
+    "$concat": [
+     "$1.epoch",
+     ".nonexistent-key"
+    ]
+   }
+  },
+  {
+   "op": "detail",
+   "cursor": {
+    "$concat": [
+     "$1.epoch",
+     ".",
+     "$1.rows.0.key"
+    ]
+   }
+  },
+  {
+   "op": "detail",
+   "cursor": ""
+  }
+ ]
+}

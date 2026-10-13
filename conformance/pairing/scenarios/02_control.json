@@ -1,0 +1,75 @@
+{
+ "name": "02_control",
+ "steps": [
+  {
+   "op": "create",
+   "url": "https://example.com",
+   "now": 1000,
+   "token": "ttttttttttttttttttttttttttttttttttttttttttt",
+   "id": "id-1"
+  },
+  {
+   "op": "status_single",
+   "id": "id-1",
+   "now": 1001
+  },
+  {
+   "op": "status_list",
+   "ids": [
+    "id-1",
+    "missing",
+    5,
+    null
+   ],
+   "now": 1002
+  },
+  {
+   "op": "create",
+   "url": "https://example.com",
+   "now": 1100,
+   "token": "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
+   "id": "id-2"
+  },
+  {
+   "op": "status_list",
+   "ids": [
+    "id-1",
+    "id-2"
+   ],
+   "now": 1101
+  },
+  {
+   "op": "create",
+   "url": "http://192.168.1.5:8787",
+   "now": 1200,
+   "token": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv",
+   "id": "id-3"
+  },
+  {
+   "op": "create",
+   "url": "https://not-in-origins.example",
+   "now": 1201,
+   "token": "wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww",
+   "id": "id-4"
+  },
+  {
+   "op": "revoke",
+   "id": "id-3",
+   "now": 1202
+  },
+  {
+   "op": "status_single",
+   "id": "id-3",
+   "now": 1203
+  },
+  {
+   "op": "status_single",
+   "id": "id-2",
+   "now": 9999
+  },
+  {
+   "op": "bogus",
+   "now": 1204
+  }
+ ]
+}

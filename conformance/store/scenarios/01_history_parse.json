@@ -1,0 +1,65 @@
+{
+ "name": "01_history_parse",
+ "steps": [
+  {
+   "op": "history",
+   "meta": {
+    "name": "会话名",
+    "cwd": "/工作目录",
+    "model": "gpt-x",
+    "model_provider": "oai",
+    "thread_source": null,
+    "source": "vscode"
+   },
+   "turn_limit": null,
+   "lines": [
+    "不是 JSON 的垃圾行",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"task_started\", \"turn_id\": \"t1\"}}",
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"message\", \"role\": \"user\", \"content\": [{\"type\": \"text\", \"text\": \"你好\"}, {\"type\": \"other\"}, \"纯字符串\"]}}",
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"message\", \"role\": \"assistant\", \"phase\": \"final\", \"content\": [{\"text\": \"第一段\"}, {}, {\"text\": \"第二段\"}]}}",
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"message\", \"role\": \"system\", \"content\": []}}",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"item_completed\", \"item\": {\"type\": \"imageView\", \"id\": \"im1\", \"path\": \"/x 贴图.png\"}}}",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"item_completed\", \"item\": {\"type\": \"reasoning\", \"summary\": []}}}",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"task_complete\"}}",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"task_started\", \"turn_id\": \"t2\"}}",
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"agent_message\", \"id\": \"am1\", \"text\": \"智能体消息\"}}",
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"agentMessage\"}}",
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"function_call\", \"call_id\": \"c1\", \"name\": \"npm\", \"arguments\": \"{}\", \"id\": \"覆盖前置 id\"}}",
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"custom_tool_call_output\", \"output\": \"done\"}}",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"turn_aborted\"}}",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"task_complete\"}}"
+   ]
+  },
+  {
+   "op": "history",
+   "meta": {
+    "name": null,
+    "cwd": "/工作目录",
+    "model": "gpt-x",
+    "model_provider": "oai",
+    "thread_source": null,
+    "source": "vscode",
+    "title": "标题回退"
+   },
+   "turn_limit": null,
+   "lines": [
+    "{\"type\": \"response_item\", \"payload\": {\"type\": \"message\", \"role\": \"user\", \"content\": \"无回合开场的字符串内容\"}}",
+    "{\"type\": \"event_msg\", \"payload\": {\"type\": \"task_complete\"}}"
+   ]
+  },
+  {
+   "op": "history",
+   "meta": {
+    "name": null,
+    "cwd": "/工作目录",
+    "model": "gpt-x",
+    "model_provider": "oai",
+    "thread_source": null,
+    "source": "vscode",
+    "title": null
+   },
+   "turn_limit": null,
+   "lines": []
+  }
+ ]
+}

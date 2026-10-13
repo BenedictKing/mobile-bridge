@@ -1,0 +1,919 @@
+{
+ "name": "01_form",
+ "steps": [
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   }
+  },
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "object",
+    "properties": {}
+   }
+  },
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "object",
+    "properties": {
+     "x": {
+      "type": "object"
+     }
+    }
+   }
+  },
+  {
+   "op": "form_supported",
+   "schema": {
+    "type": "object",
+    "required": [
+     "nope"
+    ],
+    "properties": {
+     "x": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "tags": [
+     "a",
+     "b"
+    ],
+    "count": 3,
+    "ratio": 0.5,
+    "agree": true,
+    "note": "备注"
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": "not-a-dict"
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {}
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "extra": 1
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "note": "x"
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "tags": []
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "tags": [
+     "c"
+    ]
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "count": 2.5
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "count": 99
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "agree": "yes"
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "note": "一"
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "快",
+    "note": "长了超出限制的文本"
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "mode": "别的",
+    "note": "有效文本"
+   }
+  },
+  {
+   "op": "validate_form",
+   "schema": {
+    "type": "object",
+    "required": [
+     "mode"
+    ],
+    "properties": {
+     "mode": {
+      "type": "string",
+      "title": "模式",
+      "enum": [
+       "快",
+       "慢"
+      ],
+      "oneOf": [
+       {
+        "const": "快"
+       },
+       {
+        "const": "慢"
+       }
+      ]
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "enum": [
+        "a",
+        "b"
+       ]
+      },
+      "title": "标签"
+     },
+     "count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9,
+      "title": "数量"
+     },
+     "ratio": {
+      "type": "number"
+     },
+     "agree": {
+      "type": "boolean",
+      "title": "同意"
+     },
+     "note": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 10
+     }
+    }
+   },
+   "content": {
+    "note": "有效文本"
+   }
+  }
+ ]
+}

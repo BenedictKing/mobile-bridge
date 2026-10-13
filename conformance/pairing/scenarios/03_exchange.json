@@ -1,0 +1,147 @@
+{
+ "name": "03_exchange",
+ "steps": [
+  {
+   "op": "create",
+   "url": "https://example.com",
+   "now": 5000,
+   "token": "ttttttttttttttttttttttttttttttttttttttttttt",
+   "id": "grant-1"
+  },
+  {
+   "op": "exchange",
+   "token": "ttttttttttttttttttttttttttttttttttttttttttt",
+   "origin": "https://example.com",
+   "address": "203.0.113.7",
+   "now": 5100,
+   "session": "first"
+  },
+  {
+   "op": "exchange",
+   "token": "ttttttttttttttttttttttttttttttttttttttttttt",
+   "origin": "https://example.com",
+   "address": "203.0.113.7",
+   "now": 5101,
+   "session": "again"
+  },
+  {
+   "op": "create",
+   "url": "https://example.com",
+   "now": 5200,
+   "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "id": "grant-2"
+  },
+  {
+   "op": "exchange",
+   "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "origin": "https://example.com",
+   "address": "203.0.113.8",
+   "now": 5201,
+   "session": "miss"
+  },
+  {
+   "op": "exchange",
+   "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "origin": "http://192.168.1.5:8787",
+   "address": "203.0.113.8",
+   "now": 5202,
+   "session": "wrong-origin"
+  },
+  {
+   "op": "exchange",
+   "token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "origin": "https://example.com",
+   "address": "203.0.113.8",
+   "now": 6000,
+   "session": "expired"
+  },
+  {
+   "op": "exchange",
+   "token": "short",
+   "origin": "https://example.com",
+   "address": "203.0.113.8",
+   "now": 6001,
+   "session": "bad-length"
+  },
+  {
+   "op": "exchange",
+   "token": "ccccccccccccccccccccccccccccccccccccccccccc",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6100,
+   "session": "burst-1"
+  },
+  {
+   "op": "exchange",
+   "token": "ddddddddddddddddddddddddddddddddddddddddddd",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6101,
+   "session": "burst-2"
+  },
+  {
+   "op": "exchange",
+   "token": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6102,
+   "session": "burst-3"
+  },
+  {
+   "op": "exchange",
+   "token": "fffffffffffffffffffffffffffffffffffffffffff",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6103,
+   "session": "burst-4"
+  },
+  {
+   "op": "exchange",
+   "token": "ggggggggggggggggggggggggggggggggggggggggggg",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6104,
+   "session": "burst-5"
+  },
+  {
+   "op": "exchange",
+   "token": "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6105,
+   "session": "burst-6"
+  },
+  {
+   "op": "exchange",
+   "token": "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6106,
+   "session": "burst-7"
+  },
+  {
+   "op": "exchange",
+   "token": "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6107,
+   "session": "burst-8"
+  },
+  {
+   "op": "exchange",
+   "token": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6108,
+   "session": "burst-9"
+  },
+  {
+   "op": "exchange",
+   "token": "lllllllllllllllllllllllllllllllllllllllllll",
+   "origin": "https://example.com",
+   "address": "203.0.113.9",
+   "now": 6400,
+   "session": "after-window"
+  }
+ ]
+}

@@ -1,0 +1,472 @@
+{
+ "name": "01_normalize_items",
+ "steps": [
+  {
+   "op": "normalize_state",
+   "state": {
+    "id": "sess",
+    "title": "标题",
+    "turns": [
+     {
+      "turnId": "turn-1",
+      "status": "completed",
+      "turnStartedAtMs": 123,
+      "items": [
+       {
+        "id": "u1",
+        "type": "userMessage",
+        "clientId": "sub-9",
+        "status": "done",
+        "content": [
+         {
+          "type": "text",
+          "text": "查看附件\n# Files mentioned by the user:\n- /tmp/a.png\n\n## My request:\n\r\n\n真正的请求\n\r\n"
+         }
+        ]
+       },
+       {
+        "id": "u2",
+        "type": "userMessage",
+        "content": [
+         {
+          "type": "text",
+          "text": "no client id"
+         }
+        ]
+       },
+       {
+        "id": "s1",
+        "type": "steeringUserMessage",
+        "status": "accepted",
+        "input": [
+         {
+          "type": "inputText",
+          "text": "转向中"
+         }
+        ]
+       },
+       {
+        "id": "a1",
+        "type": "agentMessage",
+        "text": "回答",
+        "phase": "final"
+       },
+       {
+        "id": "a2",
+        "type": "agentMessage"
+       },
+       {
+        "id": "im1",
+        "type": "imageView",
+        "path": "file://localhost/tmp/pic%20a.png"
+       },
+       {
+        "id": "im2",
+        "type": "ImageView",
+        "path": "file:///D:/win%20dir/x.txt"
+       },
+       {
+        "id": "im3",
+        "type": "imageView",
+        "path": "/local/path.png"
+       },
+       {
+        "id": "im4",
+        "type": "imageView",
+        "path": "https://example.com/x.png"
+       },
+       {
+        "id": "im5",
+        "type": "imageView",
+        "path": ""
+       },
+       {
+        "id": "r1",
+        "type": "reasoning",
+        "summary": [
+         "想到 A",
+         "想到 B"
+        ]
+       },
+       {
+        "id": "c1",
+        "type": "commandExecution",
+        "command": "npm test",
+        "aggregatedOutput": "ok"
+       },
+       {
+        "id": "f1",
+        "type": "fileChange",
+        "changes": [
+         {
+          "path": "a.py",
+          "diff": "+1"
+         },
+         {
+          "path": "b.py"
+         }
+        ]
+       },
+       {
+        "id": "m1",
+        "type": "mcpToolCall",
+        "server": "srv",
+        "tool": "tl",
+        "arguments": {
+         "a": 1,
+         "b": "中文"
+        },
+        "result": {
+         "ok": true
+        }
+       },
+       {
+        "id": "m2",
+        "type": "mcpToolCall",
+        "toolName": "only",
+        "error": "bad"
+       },
+       {
+        "id": "t1",
+        "type": "toolCall",
+        "title": "自定义标题",
+        "text": "x",
+        "output": "y"
+       },
+       {
+        "id": "t2",
+        "type": "toolCall",
+        "text": "t",
+        "output": "o",
+        "subagentId": "sa-1",
+        "subagentType": "general",
+        "subagentDescription": "描述",
+        "subagentPrompt": "提示",
+        "stopReason": "end_turn"
+       },
+       {
+        "id": "t3",
+        "type": "subagent",
+        "subagentDescription": "只带描述"
+       },
+       {
+        "id": "e1",
+        "type": "error"
+       },
+       {
+        "id": "e2",
+        "type": "error",
+        "message": "boom"
+       },
+       {
+        "id": "p1",
+        "type": "planImplementation",
+        "planContent": "计划内容"
+       },
+       {
+        "id": "x1",
+        "type": "weirdKind",
+        "whatever": [
+         1,
+         "two",
+         {
+          "three": null
+         }
+        ]
+       },
+       {
+        "id": "i-fc",
+        "type": "function_call",
+        "call_id": "call-1",
+        "name": "npm",
+        "arguments": "{\"verbose\": true}"
+       },
+       {
+        "id": "fo1",
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": {
+         "status": "done",
+         "items": [
+          1,
+          2
+         ]
+        }
+       },
+       {
+        "id": "ct1",
+        "type": "custom_tool_call",
+        "call_id": "call-2",
+        "input": "raw input"
+       },
+       {
+        "id": "cto1",
+        "type": "custom_tool_call_output",
+        "call_id": "call-2",
+        "output": "done"
+       },
+       {
+        "id": "fo2",
+        "type": "function_call_output",
+        "call_id": "orphan",
+        "output": "x"
+       },
+       {
+        "id": "u3",
+        "type": "userMessage",
+        "content": [
+         {
+          "type": "text",
+          "text": "带附件"
+         },
+         {
+          "type": "image",
+          "url": "/img.png",
+          "name": "截图"
+         },
+         {
+          "type": "input_text",
+          "text": "filtered"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "connected": false
+  },
+  {
+   "op": "normalize_state",
+   "state": {
+    "sessionId": "via-session",
+    "turns": [
+     {
+      "turnId": "turn-2",
+      "status": "inProgress",
+      "items": [
+       {
+        "id": "u1",
+        "type": "userMessage",
+        "clientId": "sub-9",
+        "status": "done",
+        "content": [
+         {
+          "type": "text",
+          "text": "查看附件\n# Files mentioned by the user:\n- /tmp/a.png\n\n## My request:\n\r\n\n真正的请求\n\r\n"
+         }
+        ]
+       },
+       {
+        "id": "u2",
+        "type": "userMessage",
+        "content": [
+         {
+          "type": "text",
+          "text": "no client id"
+         }
+        ]
+       },
+       {
+        "id": "s1",
+        "type": "steeringUserMessage",
+        "status": "accepted",
+        "input": [
+         {
+          "type": "inputText",
+          "text": "转向中"
+         }
+        ]
+       },
+       {
+        "id": "a1",
+        "type": "agentMessage",
+        "text": "回答",
+        "phase": "final"
+       },
+       {
+        "id": "a2",
+        "type": "agentMessage"
+       },
+       {
+        "id": "im1",
+        "type": "imageView",
+        "path": "file://localhost/tmp/pic%20a.png"
+       },
+       {
+        "id": "im2",
+        "type": "ImageView",
+        "path": "file:///D:/win%20dir/x.txt"
+       },
+       {
+        "id": "im3",
+        "type": "imageView",
+        "path": "/local/path.png"
+       },
+       {
+        "id": "im4",
+        "type": "imageView",
+        "path": "https://example.com/x.png"
+       },
+       {
+        "id": "im5",
+        "type": "imageView",
+        "path": ""
+       },
+       {
+        "id": "r1",
+        "type": "reasoning",
+        "summary": [
+         "想到 A",
+         "想到 B"
+        ]
+       },
+       {
+        "id": "c1",
+        "type": "commandExecution",
+        "command": "npm test",
+        "aggregatedOutput": "ok"
+       },
+       {
+        "id": "f1",
+        "type": "fileChange",
+        "changes": [
+         {
+          "path": "a.py",
+          "diff": "+1"
+         },
+         {
+          "path": "b.py"
+         }
+        ]
+       },
+       {
+        "id": "m1",
+        "type": "mcpToolCall",
+        "server": "srv",
+        "tool": "tl",
+        "arguments": {
+         "a": 1,
+         "b": "中文"
+        },
+        "result": {
+         "ok": true
+        }
+       },
+       {
+        "id": "m2",
+        "type": "mcpToolCall",
+        "toolName": "only",
+        "error": "bad"
+       },
+       {
+        "id": "t1",
+        "type": "toolCall",
+        "title": "自定义标题",
+        "text": "x",
+        "output": "y"
+       },
+       {
+        "id": "t2",
+        "type": "toolCall",
+        "text": "t",
+        "output": "o",
+        "subagentId": "sa-1",
+        "subagentType": "general",
+        "subagentDescription": "描述",
+        "subagentPrompt": "提示",
+        "stopReason": "end_turn"
+       },
+       {
+        "id": "t3",
+        "type": "subagent",
+        "subagentDescription": "只带描述"
+       },
+       {
+        "id": "e1",
+        "type": "error"
+       },
+       {
+        "id": "e2",
+        "type": "error",
+        "message": "boom"
+       },
+       {
+        "id": "p1",
+        "type": "planImplementation",
+        "planContent": "计划内容"
+       },
+       {
+        "id": "x1",
+        "type": "weirdKind",
+        "whatever": [
+         1,
+         "two",
+         {
+          "three": null
+         }
+        ]
+       },
+       {
+        "id": "i-fc",
+        "type": "function_call",
+        "call_id": "call-1",
+        "name": "npm",
+        "arguments": "{\"verbose\": true}"
+       },
+       {
+        "id": "fo1",
+        "type": "function_call_output",
+        "call_id": "call-1",
+        "output": {
+         "status": "done",
+         "items": [
+          1,
+          2
+         ]
+        }
+       },
+       {
+        "id": "ct1",
+        "type": "custom_tool_call",
+        "call_id": "call-2",
+        "input": "raw input"
+       },
+       {
+        "id": "cto1",
+        "type": "custom_tool_call_output",
+        "call_id": "call-2",
+        "output": "done"
+       },
+       {
+        "id": "fo2",
+        "type": "function_call_output",
+        "call_id": "orphan",
+        "output": "x"
+       },
+       {
+        "id": "u3",
+        "type": "userMessage",
+        "content": [
+         {
+          "type": "text",
+          "text": "带附件"
+         },
+         {
+          "type": "image",
+          "url": "/img.png",
+          "name": "截图"
+         },
+         {
+          "type": "input_text",
+          "text": "filtered"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}
