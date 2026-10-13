@@ -76,6 +76,7 @@ type Process struct {
 	closed  bool
 	writeMu sync.Mutex
 	done    chan struct{}
+	finish  sync.Once
 }
 
 // Start launches the agent process and its reader loop.
@@ -146,7 +147,7 @@ func (p *Process) Submit(method string, params *jsoncompat.Object) (string, <-ch
 
 // Request mirrors request: send and wait with a timeout.
 func (p *Process) Request(method string, params *jsoncompat.Object, timeout time.Duration) (any, error) {
-	_, channel, err := p.Submit(method, params)
+	ident, channel, err := p.Submit(method, params)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +158,7 @@ func (p *Process) Request(method string, params *jsoncompat.Object, timeout time
 		}
 		return outcome.value, nil
 	case <-time.After(timeout):
+		p.discard(ident)
 		return nil, &Error{Message: "Agent 请求超时：" + method, Kind: KindTimeout}
 	}
 }
@@ -257,9 +259,28 @@ func (p *Process) Close() {
 			_ = p.cmd.Process.Kill()
 		}
 	}
-	p.failAll(unavailable())
-	close(p.done)
+	p.finishUnavailable()
 	_ = p.stdout.Close()
+}
+
+// discard removes a timed-out request so a late response cannot retain a
+// waiter or consume a future request's bookkeeping.
+func (p *Process) discard(ident string) {
+	p.mu.Lock()
+	delete(p.pending, ident)
+	p.mu.Unlock()
+}
+
+// finishUnavailable wakes every waiter exactly once. Reader EOF and explicit
+// Close can race when an Agent exits while the gateway is shutting down.
+func (p *Process) finishUnavailable() {
+	p.finish.Do(func() {
+		p.mu.Lock()
+		p.closed = true
+		p.mu.Unlock()
+		p.failAll(unavailable())
+		close(p.done)
+	})
 }
 
 func (p *Process) failAll(failure *Error) {
@@ -277,6 +298,7 @@ func (p *Process) readLoop() {
 	for {
 		line, err := readLine(reader)
 		if err != nil {
+			p.finishUnavailable()
 			return
 		}
 		trimmed := strings.TrimSpace(line)
