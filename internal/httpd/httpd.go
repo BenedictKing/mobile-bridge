@@ -26,6 +26,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
+	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
@@ -80,6 +81,7 @@ type Server struct {
 	ACP             *acpruntime.Manager
 	NotificationDir string
 	Account         *account.Manager
+	Goal            *goal.Manager
 	historyMu       sync.Mutex
 	historyTL       map[string]*timeline.Timeline
 }
@@ -469,6 +471,9 @@ func (h *handler) handleMethod(write bool) {
 			return
 		}
 		query := map[string][]string(h.request.URL.Query())
+		if h.handleGoalHTTP(write, path) {
+			return
+		}
 		if h.handleUploadHTTP(write, path, query) {
 			return
 		}

@@ -27,6 +27,7 @@ var threadRoute = regexp.MustCompile(
 	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|input))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
+var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status)$`)
 
 // ScriptedSession is the conformance stand-in for service.LiveSession: an
 // epoch, a sequence and a predicate-based wait. Production wiring replaces it
@@ -426,6 +427,52 @@ func readBodyLimit(request *http.Request, limit int) ([]byte, error) {
 		return nil, errors.New("请求体大小无效")
 	}
 	return data, nil
+}
+
+func (h *handler) handleGoalHTTP(write bool, path string) bool {
+	if !write {
+		return false
+	}
+	match := goalRoute.FindStringSubmatch(path)
+	if match == nil {
+		return false
+	}
+	if h.server.Goal == nil {
+		h.fail(http.StatusConflict, errorBody("请启动支持目标模式的新版网关"))
+		return true
+	}
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return true
+	}
+	body := value.(*jsoncompat.Object)
+	threadID, action := match[1], match[2]
+	switch action {
+	case "cancel":
+		if err := h.server.Goal.Clear(threadID); err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
+		} else {
+			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+		}
+	case "edit":
+		objective, _ := body.MustGet("objective").(string)
+		result, callErr := h.server.Goal.Set(threadID, objective, "paused")
+		if callErr != nil {
+			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		} else {
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+		}
+	case "status":
+		status, _ := body.MustGet("status").(string)
+		result, callErr := h.server.Goal.Set(threadID, "", status)
+		if callErr != nil {
+			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		} else {
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+		}
+	}
+	return true
 }
 
 func (h *handler) handleUploadHTTP(write bool, path string, query map[string][]string) bool {
