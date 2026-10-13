@@ -2,14 +2,14 @@
 
 > 状态：**P0+P1 已交付（2026-10-13）**，其余阶段未开工。本文件是「Rust 还是 Go」结论的落地细化与路线图。
 >
-> 一句话：**迁 Go**；迁的只是 Python 网关，前端与 Electron 桌面壳原地不动；真正的成本不在 15k 行代码，而在重建一套能同时验收新旧实现的差分测试台。
+> 一句话：**迁 Go**；网关和桌面壳统一使用 Go，桌面壳采用 Wails v3；手机 Web 前端保持不变。
 
 ---
 
 > **执行归属（2026-10-13 起）：Go 迁移由单一会话串行推进。** 2026-10-13 上午曾出现两场会话并行认领
 > 同一模块（acp 传输层），在动手阶段被写入保护拦下、零损失，但已确认并行必然撞车。此后迁移的
 > conformance/、internal/、cmd/、go.mod、Makefile 及本文档只由承接会话修改；功能开发（bridge/、
-> web/、tests/、desktop/）与迁移互不越界。
+> web/、tests/、wails/）与迁移统一推进。
 
 ## 1. 迁移边界
 
@@ -17,12 +17,12 @@
 
 **不迁**：
 - `web/`：3,781 行原生 HTML/CSS/JS，无构建步骤。原样 `go:embed` 进二进制，手机端与桌面内嵌页零改动。
-- `desktop/`：Electron 控制面板与 `electron-builder` 链路继续复用。只需把 `extraResources` 里的 `dist/gateway` 从 PyInstaller 产物换成 Go 二进制，`desktop/` 的 IPC 调用和 `GatewayControl` 协议保持字节兼容。
+- `wails/`：Go/Wails 控制面板，直接绑定 Go gateway action 协议和 GatewayControl。
 - `site/`、`docs/`、`deploy/`、`scripts/smoke-*.cjs`。
 
 **三条硬约束**（违反任意一条就等于换了个产品）：
 
-1. **HTTP API 兼容**：状态码、关键响应头、gzip、SSE 帧、JSON body 字节。手机端和 Electron 不重新发版就能连上新网关。
+1. **HTTP API 兼容**：状态码、关键响应头、gzip、SSE 帧、JSON body 字节。手机端无需重新发版即可连接 Go 网关。
 2. **数据目录兼容**：文件名、JSON 字节、`0600` 权限、目录布局不变；新旧二进制可以交替启动同一目录而互不损坏（不能同时写）。
 3. **私有协议兼容**：桌面 IPC 帧、ACP NDJSON、停止控制文件与实例令牌协议不变。
 
@@ -37,7 +37,7 @@
 | 前端 | 3,781 行（不含 `web/vendor/`），无构建 |
 | 运行时依赖 | **0**（`pyproject.dependencies = []`，纯标准库；可选 `desktop` 组只用 paramiko/keyring） |
 | 入口 | `run.py:main`、`stop.py`、`bridge/lifecycle.py` 协作停止 |
-| 平台 | macOS / Windows / Linux；PyInstaller 打包 |
+| 平台 | macOS / Windows / Linux；Go/Wails 打包 |
 | 本机工具链 | go1.27.2、rustc1.99.0、Python3.14.8、Node26.11.0 均已安装 |
 | 当前服务 | launchd `com.mobile-bridge.gateway`，监听 8787 |
 
@@ -94,7 +94,7 @@ Codex 侧**只读**：`~/.codex/state_*.sqlite`、`history.sqlite`、`skills-v2.
 | Unix socket | `net.Dial("unix", ...)` | 低 |
 | Windows 命名管道 | `github.com/Microsoft/go-winio`（build tag） | 中 |
 | Ed25519 / SHA-256 / zip / tar | `crypto/ed25519` 等标准库 | 低 |
-| PyInstaller onefile + 静态分析 workaround | `GOOS/GOARCH` 交叉编译 + `go:embed` | 低（这是主要收益） |
+| Python runtime + old desktop shell | Go/Wails 二进制 + `go:embed` | 低 |
 | `json` | `encoding/json` + 自写兼容层 | **高**，见第 5 节 |
 
 建议依赖清单（全部纯 Go、可交叉编译）：`modernc.org/sqlite`、`golang.org/x/crypto`、`github.com/Microsoft/go-winio`、`github.com/zalando/go-keyring`。其余走标准库。
@@ -259,11 +259,11 @@ Python `json` 与 Go `encoding/json` 的默认行为差异，逐条列出：
 ### P7 · 隧道 / 更新 / 分发
 
 cloudflared 监控、OpenSSH 回程、`updater`、`desktop` 控制进程。五平台交叉编译 + 签名 + DMG/NSIS/AppImage。
-- 移除 `scripts/build-desktop.py` 里的 PyInstaller 静态分析 workaround 与 `bundle-cloudflared.py` 的等价逻辑（保留 SHA-256 锁定）。
+- Wails 直接嵌入 Go 控制面板与网关 action，cloudflared SHA-256 锁定逻辑继续保留。
 
 ### P8 · 灰度切换与回滚
 
-- Electron `extraResources` 支持在 Python 包与 Go 二进制间切换；P0 差分套件作为放行门槛。
+- Wails 产物直接携带 Go gateway，P0 差分套件作为放行门槛。
 - 同一数据目录**不可同时**被两个网关写：灰度按「先停后起」的短窗口切换，或用只读镜像。
 - 保留可回滚的 Python 包，定义回滚触发条件（HTTP 5xx 比例、通知漏发、审批卡死）。
 
@@ -287,14 +287,14 @@ cloudflared 监控、OpenSSH 回程、`updater`、`desktop` 控制进程。五�
 ## 8. 收益与工作量
 
 **确定的收益**：
-- 五平台单静态二进制，`GOOS/GOARCH` 交叉编译零配置；PyInstaller 静态分析与「条件 import 跟随」的全部 workaround 消失。
+- 五平台 Go 网关单静态二进制，`GOOS/GOARCH` 交叉编译；Wails 桌面壳在目标系统链接原生 WebView。
 - `go:embed` 把 `web/` 打进二进制，无需运行时找资源路径。
 - 无解释器冷启动、无 pycache、无 Python 版本矩阵（当前 `requires-python >=3.9` 需同时支持 3.9–3.14）。
 - 依赖归零（当前网关已是 stdlib-only，Go 进一步免除「本机 Python 环境」这一部署前置条件）。
 
 **待实测后才能写进结论的项**（建议 P0 顺手量）：
 - 当前网关常驻内存 RSS（上一轮口头给过 ~150MB，**未实测**）
-- PyInstaller 产物体积 / 冷启动时间
+- Go/Wails 产物体积 / 冷启动时间
 - Go 版对应数值
 
 **工作量粗估**：迁移本身约 15k 行 Go，测试改造 5k–8k 行，合计与现有 28k 行体量同阶。分 P0–P8 可独立交付，不存在必须 big-bang 的环节。

@@ -34,9 +34,8 @@ parity: test-go
 build-gateway:
 	go build -o dist/gateway-go ./cmd/gateway
 
-# Electron's extraResources expects this stable runtime directory/name. The
-# Go binary itself serves the gateway; desktop control actions remain outside
-# this target and are wired by the host controller.
+# The Wails desktop shell expects this stable runtime directory/name. The Go
+# binary serves the gateway and exposes the private desktop action protocol.
 build-gateway-package:
 	@mkdir -p dist/gateway
 	@go build -trimpath -ldflags='-s -w' -o dist/gateway/codex-mobile-gateway ./cmd/gateway
@@ -44,8 +43,7 @@ build-gateway-package:
 	@ls -lh dist/gateway/codex-mobile-gateway
 
 # Wails is the Go desktop shell. It embeds wails/frontend and calls the Go
-# gateway action protocol directly; Electron remains only for the legacy Python
-# desktop path while the Go platform uses this target.
+# gateway action protocol directly.
 build-wails:
 	@mkdir -p dist/desktop
 	@cd wails && go build -trimpath -ldflags='-s -w' -o ../dist/desktop/mobile-bridge-wails .

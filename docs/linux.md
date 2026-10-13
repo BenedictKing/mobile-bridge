@@ -34,37 +34,30 @@ enumeration; the existing hostname fallback remains available if `ip` fails.
 
 ## Build on the Target Architecture
 
-Use Ubuntu 22.04 or a compatible build environment, Node.js 24, Python 3.9+
-(CI uses 3.13), npm, and [uv](https://docs.astral.sh/uv/) with the project's
-pinned dependencies in `uv.lock`. Build the Python runtime and Electron app on
-the same OS and architecture. An ARM64 Electron shell cannot run an x64 Python
-runtime.
+Use Ubuntu 22.04 or a compatible Go/Wails build environment and build the
+gateway and Wails shell for the same architecture. Wails links to the native
+WebKit/GTK libraries on the target system.
 
 ```sh
-uv sync --all-groups
-npm ci
-uv run python scripts/build-desktop.py
+make build-gateway-package
+make build-wails
 ```
 
 On an x64 host:
 
 ```sh
-npm run build:linux -- --x64
+GOOS=linux GOARCH=amd64 make build-gateway-package
 ```
 
 On an ARM64 host:
 
 ```sh
-npm run build:linux -- --arm64
+GOOS=linux GOARCH=arm64 make build-gateway-package
 ```
 
-The build hook rejects missing or mismatched gateway metadata. Outputs go to
-`dist/desktop/Mobile-Bridge-<version>-Linux-<arch>.deb` and `.AppImage`.
-For x64, electron-builder uses `amd64` in .deb filenames and `x86_64` in
-AppImage filenames. Both ARM64 package formats use `arm64`.
-The existing release workflow collects both architectures and includes these
-files in `SHA256SUMS.txt`. Linux is deliberately excluded from the macOS/Windows
-signed in-app update manifest until a Linux update/recovery strategy is tested.
+The gateway artifact is `dist/gateway/codex-mobile-gateway`; the Wails shell is
+`dist/desktop/mobile-bridge-wails`. Package these two files with the native
+distribution tooling for the target Linux architecture.
 
 ## Install and Launch
 
@@ -85,11 +78,10 @@ the environment cannot mount AppImages, try its `--appimage-extract-and-run`
 option or prefer the .deb. Do not disable Chromium's sandbox or run the GUI
 as root to work around startup failures.
 
-Keep the original desktop App running. The bridge retains the shared Chinese
-and English interface and stores preferences under Electron's user data
-directory, not under `/opt`. Closing the Linux control window leaves the
-gateway running. Reopen the App to manage it; click Stop before closing if you
-want the gateway stopped. Linux does not depend on a GNOME tray extension.
+Keep the Codex desktop App running. The bridge retains the shared Chinese and
+English interface and stores preferences under the Wails data directory, not
+under `/opt`. Closing the control window leaves the gateway running. Reopen the
+Wails app to manage it.
 
 In-app updates are disabled for Linux. Stop the gateway and exit the controller
 before installing a newer .deb or replacing the AppImage. Keep the user data
@@ -97,10 +89,10 @@ directory. Do not use the macOS/Windows directory-swap updater for Linux.
 
 ## Source Mode and Desktop IPC
 
-Source mode needs Python 3.9+ but not npm or Electron:
+Source mode uses the Go gateway:
 
 ```sh
-python3 run.py --lan --codex-bin /usr/lib/chatgpt/resources/codex
+./dist/gateway/codex-mobile-gateway
 ```
 
 Run this in the logged-in desktop session. A headless SSH session may lack the

@@ -101,9 +101,9 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 
 ## 模块
 
-桌面控制器通过白名单 Electron IPC 调用 `desktop.py` 的独立 JSON 工作进程；网关启停、更新和网络配置管理不监听网络。通知配置只在电脑端修改，沿用 Host、Origin、登录及写入 CSRF 校验，不返回 Token。该配置影响整个网关的关注聊天，不按登录设备隔离。打包版本执行随包提供的 PyInstaller 运行时，网关以独立后台进程运行，退出控制器不会停止网关。Windows 使用 NSIS 安装包或完整 ZIP 目录，避免临时自解压目录随控制器退出被删除而破坏后台运行时。
+Wails 桌面控制器通过绑定方法调用 Go 网关的独立 action 进程；网关启停和网络配置管理不监听网络。通知配置只在电脑端修改，沿用 Host、Origin、登录及写入 CSRF 校验，不返回 Token。网关以独立后台进程运行，退出控制器不会停止网关。
 
-Windows `desktop/tray.cjs` 管理托盘状态、手机地址和两种退出动作；仅显式停止才调用网关的协作停止协议。主窗口关闭时隐藏，第二次启动恢复原窗口；退出前销毁托盘并允许窗口关闭。状态请求合并，菜单操作避免重复提交；停止失败保留控制器并显示错误。macOS 不创建此托盘，保留原窗口生命周期。
+Wails 桌面服务管理托盘状态、手机地址和退出动作；仅显式停止才调用网关的协作停止协议。状态请求合并，停止失败保留控制器并显示错误。
 
 网关停止使用带随机实例令牌的本地控制文件，由服务主动调用 `shutdown`，再关闭隧道、IPC 和 HTTP。`stop.py --config` 与启动配置对应，不依赖 Unix 信号或 Windows PID 强制终止。文件统一使用 UTF-8；Windows 权限继承目录 ACL。
 
@@ -157,7 +157,7 @@ view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门�
 
 ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）。
 
-多 Agent 也可用环境变量启用：`--agents` 未显式给出时读 `MOBILE_BRIDGE_AGENTS`（逗号分隔），未设置时默认 `auto` 自动探测。桌面打包 App 因此无需改动即可注入多 Agent（macOS 可用 `launchctl setenv` 后启动 App）；PyInstaller 静态分析跟随函数内的条件 import，`bridge/agents/` 全部模块随包打进。
+多 Agent 通过 `GATEWAY_ACP_BINS` JSON 映射启用；Wails 桌面服务继承网关进程的 Agent 配置。
 
 ### 会话迁移
 
@@ -197,7 +197,7 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 `bridge/ssh_tunnel.py` 管理独立 OpenSSH 子进程，复用已有 SSH 目标和身份，以 `-R 127.0.0.1:服务器端口:127.0.0.1:电脑端口` 回程。启用 BatchMode、StrictHostKeyChecking、ExitOnForwardFailure 与保活，不复用 ControlMaster。失败后台退避重连，不阻塞 LAN 服务。各 SSH 配置独立保存状态与日志，状态关联当前网关 PID；服务器 GatewayPorts 应使用 no/clientspecified，不能强制公网绑定。
 
-`/api/auth` 返回非秘密的本次运行 instanceId。固定入口检测仅从本机管理进程请求本机与已保存 HTTPS 地址，核对实例一致，不携带登录凭据，不跟随重定向。配置包导出、剪贴板和入口检测仅经受保护的本机 Electron IPC 提供，手机 HTTP 不提供这些操作。
+`/api/auth` 返回非秘密的本次运行 instanceId。固定入口检测仅从本机管理进程请求本机与已保存 HTTPS 地址，核对实例一致，不携带登录凭据，不跟随重定向。配置包导出、剪贴板和入口检测仅经受保护的本机 Wails service 提供，手机 HTTP 不提供这些操作。
 
 临时 Cloudflare 握手在后台进行，避免等待外网隧道拖延 LAN 和其他入口的服务。关闭网关时停止各隧道。
 
@@ -208,15 +208,15 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 `bridge/pairing.py` 为每个允许源保存一个有效的内存授权：32 字节随机值的 SHA-256 摘要、随机 ID、5 分钟过期时间与消费状态。刷新替换同源旧授权，消费在锁内完成，正确源且未过期的授权只生成一个标准登录会话（有效期按 `sessionHours` 配置，默认 12 小时）。网关重启不恢复授权；已签发的登录会话随 `auth-sessions.json` 持久化并恢复。失败兑换限速独立于密码登录。
 
-签发只走本机 stdio/Electron IPC 与 `GatewayControl` 的私有文件通道：每实例随机 `.pairing-*` 目录，独立请求/响应文件和控制令牌，响应读取后删除、服务正常退出时清理目录。Windows 继承本机目录 ACL；数据目录不能放在共享公共目录。HTTP 没有签发接口。桌面签发前检查地址属于当前显示入口，并从该入口读取 `/api/auth` 核对本机 instanceId；公网探测不携带凭据、不跟随重定向。
+签发只走本机 Wails service 与 `GatewayControl` 的私有文件通道：每实例使用独立控制令牌，响应读取后删除、服务正常退出时清理目录。数据目录不能放在共享公共目录。HTTP 没有签发接口。
 
-Electron 主进程使用 qrcode 本地生成 PNG，渲染器接收图片、授权 ID 与有效期。每张地址卡片的折叠区域独立保留状态，收起撤销、刷新替换、轮询显示已使用/已过期；语言和常规状态刷新不重新签发。
+Wails service 使用本地二维码生成 PNG，界面接收图片、授权 ID 与有效期。每张地址卡片独立保留状态，收起撤销、刷新替换、轮询显示已使用/已过期。
 
 手机首次加载时捕获 `#pair=` 片段并立即通过 `history.replaceState` 清除，随后 `POST /api/pair` 换取 HttpOnly/SameSite Cookie 和 CSRF。兑换要求 HTTP Host 对应的完整 Origin 与授权源一致；HTTPS Cookie 使用 Secure。片段不会作为 HTTP 请求路径或查询串发送，接口也不记录请求体。手机失败时提供原有密码登录入口。二维码仅授予与普通登录相同的访问权限，不绕过 Codex 原生人工确认。
 
 ## 桌面应用更新
 
-`desktop/updater.cjs` 从固定 GitHub Release 源获取签名清单（官方源限流或不可达时回退到第三方镜像，机密性与完整性不依赖传输通道），使用内置 Ed25519 公钥验证原始载荷，再流式下载并核对长度与 SHA-256。自动检查不自动安装；安装按钮只通过受来源校验的桌面 IPC 调用，HTTP 网关无更新管理接口。
+Wails 更新 service 从固定 GitHub Release 源获取签名清单，使用内置 Ed25519 公钥验证原始载荷，再核对长度与 SHA-256。HTTP 网关无更新管理接口。
 
 `bridge/updater.py` 负责原安装目录旁的准备、替换与恢复。准备阶段拒绝路径穿越和危险链接，核对包版本、平台、macOS 签名和内置运行时。独立复制的旧运行时等控制面板退出、协作停止原网关后替换目录，再等待新面板确认加载并恢复此前运行的网关。失败时尝试回滚；配置目录保持独立。发布签名身份和事务恢复操作见 [桌面更新文档](docs/desktop-updates.md)。
 

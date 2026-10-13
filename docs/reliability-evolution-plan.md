@@ -157,7 +157,7 @@ receipt 写入采用现有的临时文件替换方式，并由独立锁保护。
 
 1. `python3 -B -m unittest tests.test_bridge tests.test_jev tests.test_notification_activity -v`
 2. `python3 -B -m unittest discover -s tests -v`
-3. `npm run test:desktop`
+3. `go test ./...` 与 `go test -race ./internal/...`
 
 新增测试按层次放置：
 

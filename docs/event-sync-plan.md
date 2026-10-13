@@ -144,7 +144,7 @@ BridgeTransport.subscribeSession(id, host, {onChanges, onReset, onStatus}) => un
 
 ### 阶段三：验证与收尾
 
-1. 全量回归：`python -B -m unittest discover -s tests -v` + `npm run test:desktop`（确认无前端回归）+ `node --test tests/*.test.js`。
+1. 全量回归：`python -B -m unittest discover -s tests -v` + `go test ./...` + `go test -race ./internal/...`。
 2. 手工验收（参照 `VERIFICATION.md` 的既有格式追加一节）：
    - 局域网 SSE 模式：发送长回答，确认只传增量帧；中途断网 30 秒恢复，确认游标续传而非全量；
    - trycloudflare 隧道模式：确认自动落回长轮询且行为不变；
@@ -205,7 +205,7 @@ BridgeTransport.subscribeSession(id, host, {onChanges, onReset, onStatus}) => un
 
 ## 实施结果（2026-10-11）
 
-阶段一、阶段二已落地并通过全量自动回归（Python 639 过/6 跳过；`npm run test:desktop` 158 过，含新增 7 项）。与计划文本的偏差及补充决策：
+阶段一、阶段二已落地并通过全量自动回归（Python 回归、Go 单测和 race 检查均通过）。与计划文本的偏差及补充决策：
 
 1. **新订阅首帧是 `reset` 而非字面的「changes 全量行集」**。严格按 §5.2 末段「服务端只把 `timeline.changes()` 返回值映射为帧类型」实现：`after=-1` 必然落入 `changes()` 的 epoch/窗口回退分支，因此新订阅收到的是 reset 快照页（含 `before`/`hasMore` 分页游标）。语义与计划的快照建立等价，且与 `/changes` 端点既有行为一致。
 2. **ready 帧不携带 `id:`**。若 ready 携带当前游标，只收到 ready 即断线的重连会带着「已到最新」的游标跳过快照。

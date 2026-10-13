@@ -225,25 +225,15 @@ NAS 方案：Docker 只部署 HTTP 入口，原电脑仍需保持唤醒并运行
 
 ### 从源码运行与打包
 
-开发环境需要 Node.js 与 Python；只有构建时需要 Electron、electron-builder 和 PyInstaller。Windows 与 Mac 应分别在目标系统上构建，Python、Node.js 与安装包的 CPU 架构必须一致。
-
-macOS 在构建网关运行时后执行 `npm run build:mac -- --arm64`（M 系列）或 `npm run build:mac -- --x64`（Intel），在 `dist/desktop/` 生成对应架构的 DMG 和 ZIP。DMG 用于拖入“应用程序”安装；ZIP 用于应用内更新。切换架构时须先用对应架构的 Python 重新执行 `scripts/build-desktop.py`。CI 分别使用 Apple Silicon 和 Intel Mac 构建并验证完整安装包。
+Go 平台桌面壳使用 Wails v3，网关和控制器均为 Go 二进制。目标系统需要 Go、Wails 所需的 WebView/GTK 或 WebKit 依赖；发布用户不需要 Python 或 Node.js。
 
 ```bash
 git switch main
-npm ci
-npm run desktop
+make build-gateway-package
+make build-wails
 ```
 
-构建步骤（在当前项目的 uv 环境中执行）：
-
-```bash
-uv sync --all-groups
-uv run python scripts/build-desktop.py
-npm run pack:desktop
-```
-
-Windows 可再执行 `npm run build:windows` 生成安装包与 ZIP；文件位于 `dist/desktop/`。随后执行 `npm run test:windows-app` 验证实际打包窗口、内置运行时、托盘恢复与启停。此检查使用临时端口和合成数据，不发送模型请求或真实通知，需要可显示窗口的 Windows 会话和 Node.js 24。开发测试可用 `CMB_DATA_DIR` 指定独立数据目录，`CMB_PYTHON` 指定开发用 Python；打包后的 App 使用内置运行时。运行 `python -B -m unittest discover -s tests -v` 和 `npm run test:desktop` 进行自动检查。产品图标源为 `assets/icon.png`，可用 `npm run icons:desktop` 更新桌面 PNG/ICO、手机网页和介绍页图标。macOS 打包时会从桌面 PNG 生成系统图标。
+运行 `go test ./...`、`go test -race ./internal/...` 和 `make conformance` 验证网关。Wails 桌面产物位于 `dist/desktop/mobile-bridge-wails`，Go 网关产物位于 `dist/gateway/codex-mobile-gateway`。
 
 App 设置界面通过本机进程通信管理网关；网关启停、更新及网络配置管理不对局域网或隧道开放。通知配置只在电脑端修改，沿用 Host、Origin、登录与 CSRF 校验。配置、通知密钥、凭据和投递记录位于网关数据目录，三个推送通道默认关闭；打包与提交不包含 `.local`、`.tmp` 或个人配置。
 

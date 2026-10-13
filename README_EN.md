@@ -386,7 +386,7 @@ Gateway data stays in its configured directory, normally `.local`. It includes l
 
 Uploaded files are retained in `uploads/` or `hosts/<host hash>/uploads/` inside gateway data, separated by chat. Remote copies are stored under that host's `$CODEX_HOME/mobile-bridge/uploads/` (default `~/.codex/mobile-bridge/uploads/`). Removing a draft attachment does not delete uploaded files. Local uploads older than seven days that are no longer referenced by any send record are cleaned up automatically; remote copies are not cleaned up. Manually deleting a file can break historical or queued references to it.
 
-The local desktop management interface uses guarded Electron IPC and a private stdio worker. Gateway start/stop, updates and network configuration are not exposed through the phone HTTP API. Notification settings are managed in the desktop app. Public HTTP access remains constrained by authentication, allowed Host/Origin checks and CSRF validation.
+The Go desktop management interface uses Wails v3 bindings and the private gateway action protocol. Gateway start/stop and network configuration are not exposed through the phone HTTP API. Notification settings are managed in the Wails app. Public HTTP access remains constrained by authentication, allowed Host/Origin checks and CSRF validation.
 
 ## Known limits
 
@@ -403,33 +403,24 @@ An Agent is optional for everyday App use. For source deployment, custom network
 
 ## Development and packaging
 
-The product icon source is `assets/icon.png`. Run `npm run icons:desktop` to refresh the desktop PNG/ICO, phone and product-site icons. macOS packaging converts the desktop PNG into its system icon.
+The product icon source is `assets/icon.png`. The Go/Wails desktop build uses the icon assets directly.
 
 The product website lives in `site/` and is hosted on GitHub Pages. Pushing changes under `site/` to `main` automatically publishes them through the **Product website** workflow; no separate build step is required.
 
-This section requires Node.js and Python on the target OS, matching the package's CPU architecture. Release users do not need these tools.
+This section requires Go and the native WebView dependencies used by Wails on the target OS. Release users do not need Python or Node.js.
 
-On macOS, after building the gateway runtime, run `npm run build:mac -- --arm64` for Apple Silicon or `npm run build:mac -- --x64` for Intel. Both produce a DMG for drag-to-Applications installation and a ZIP for in-app updates under `dist/desktop/`. When switching architectures, first rerun `scripts/build-desktop.py` with Python for the target architecture. CI builds and verifies the complete packages on separate Apple Silicon and Intel runners.
+On macOS, build the Go gateway and Wails shell with `make build-gateway-package` and `make build-wails` for the current architecture. Cross-compile gateway binaries with `make build-matrix`; Wails packaging must run on the target OS because it links to the native WebView.
 
 ```sh
 git switch main
-npm ci
-npm run desktop
+make build-gateway-package
+make build-wails
 ```
 
-For packaging, use the project's uv-managed environment on the target OS:
-
 ```sh
-uv sync --all-groups
-uv run python scripts/build-desktop.py
-npm run pack:desktop
-```
-
-On Windows, `npm run build:windows` produces a Setup installer and a full ZIP under `dist/desktop/`. Development can use `CMB_DATA_DIR` for isolated gateway data and `CMB_PYTHON` for the Python executable. Packaged builds use their bundled runtime.
-
-```sh
-python -B -m unittest discover -s tests -v
-npm run test:desktop
+go test ./...
+go test -race ./internal/...
+make conformance
 ```
 
 Report the OS, App/runtime version, branch/commit and redacted reproduction steps when opening an issue. Include logs without credentials or private chat content. Current verification boundaries are recorded in [VERIFICATION.md](VERIFICATION.md).

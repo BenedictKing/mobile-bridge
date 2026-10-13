@@ -1,7 +1,7 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showActivity:true,showComputer:true,showPushplus:true,showAccounts:true,showFileThumbnails:true};
+  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
     return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
@@ -11,10 +11,7 @@ const ChatAppearance=(()=>{
       density:['compact','standard','relaxed'].includes(value.density)?value.density:defaults.density,
       showReasoning:typeof value.showReasoning==='boolean'?value.showReasoning:defaults.showReasoning,
       showProcess:typeof value.showProcess==='boolean'?value.showProcess:defaults.showProcess,
-      showPushplus:typeof value.showPushplus==='boolean'?value.showPushplus:defaults.showPushplus,
       showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts,
-      showFileThumbnails:typeof value.showFileThumbnails==='boolean'?value.showFileThumbnails:defaults.showFileThumbnails,
-      showComputer:typeof value.showComputer==='boolean'?value.showComputer:defaults.showComputer,
       showActivity:typeof value.showActivity==='boolean'?value.showActivity:defaults.showActivity};
   }
   function luminance(hex){
@@ -53,11 +50,8 @@ if(typeof document!=='undefined')(()=>{
     const colors=ChatAppearance.colors(settings.accent,dark);
     root.dataset.theme=dark?'dark':'light';root.dataset.density=settings.density;
     root.dataset.showActivity=String(settings.showActivity);
-    root.dataset.showComputer=String(settings.showComputer);get('appearance-computer').checked=settings.showComputer;
-    root.dataset.showPushplus=String(settings.showPushplus);root.dataset.showAccounts=String(settings.showAccounts);
-    get('appearance-file-thumbnails').checked=settings.showFileThumbnails;
-    window.BridgeWorkbench?.setThumbnails(settings.showFileThumbnails);
-    get('appearance-pushplus').checked=settings.showPushplus;get('appearance-accounts').checked=settings.showAccounts;
+    root.dataset.showAccounts=String(settings.showAccounts);
+    get('appearance-accounts').checked=settings.showAccounts;
     root.dataset.showReasoning=String(settings.showReasoning);root.dataset.showProcess=String(settings.showProcess);
     if(typeof chatTimeline!=='undefined')chatTimeline?.setVisibility(settings);
     root.style.setProperty('--accent',settings.accent);
@@ -95,7 +89,7 @@ if(typeof document!=='undefined')(()=>{
   composerSize.observe(composer);
   const pageState=new MutationObserver(()=>document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open')));
   pageState.observe(get('app'),{attributes:true,attributeFilter:['hidden','class']});
-  document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();});
+  document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();window.loadJevSettings?.();});
   get('chat-details-button').onclick=()=>{get('details-title').textContent=get('chat-title').textContent;get('chat-details-dialog').showModal();};
   // This script is loaded after app.js, which binds the existing close controls.
   get('appearance-language').onchange=()=>{get('phone-language').value=get('appearance-language').value;get('phone-language').onchange();get('appearance-language').value=BridgeI18n.language();};
@@ -105,14 +99,11 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-code').oninput=()=>change({codeSize:Number(get('appearance-code').value)});
   get('appearance-density').onchange=()=>change({density:get('appearance-density').value});
   get('appearance-reasoning').onchange=()=>change({showReasoning:get('appearance-reasoning').checked});
-  get('appearance-computer').onchange=()=>change({showComputer:get('appearance-computer').checked});
   get('appearance-activity').onchange=()=>change({showActivity:get('appearance-activity').checked});
-  get('appearance-file-thumbnails').onchange=()=>change({showFileThumbnails:get('appearance-file-thumbnails').checked});
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
-  get('appearance-pushplus').onchange=()=>change({showPushplus:get('appearance-pushplus').checked});
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
-  for(const [shortcut,target] of [['settings-pushplus','pushplus-settings'],['settings-accounts','accounts-button']])get(shortcut).onclick=()=>{get('appearance-dialog').close();get(target).click();};
+  get('settings-accounts').onclick=()=>{get('appearance-dialog').close();get('accounts-button').click();};
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);
   system.addEventListener('change',()=>{if(settings.theme==='system')preserveReading(apply);});
   window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false)};
