@@ -28,6 +28,7 @@ type Session struct {
 
 type Manager struct {
 	Executable string
+	Command    []string
 	mu         sync.Mutex
 	sessions   map[string]*Session
 	now        func() float64
@@ -37,11 +38,22 @@ func New(executable string) *Manager {
 	return &Manager{Executable: executable, sessions: map[string]*Session{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 }}
 }
 
-func (m *Manager) List(timeout time.Duration) ([]*jsoncompat.Object, error) {
+func NewCommand(command []string) *Manager {
+	return &Manager{Command: append([]string{}, command...), sessions: map[string]*Session{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 }}
+}
+
+func (m *Manager) start() (*acp.Process, error) {
+	if len(m.Command) > 0 {
+		return acp.Start(m.Command)
+	}
 	if m.Executable == "" {
 		return nil, errors.New("未找到 Agent 命令，请先安装")
 	}
-	process, err := acp.Start([]string{m.Executable, "acp"})
+	return acp.Start([]string{m.Executable, "acp"})
+}
+
+func (m *Manager) List(timeout time.Duration) ([]*jsoncompat.Object, error) {
+	process, err := m.start()
 	if err != nil {
 		return nil, err
 	}
@@ -77,10 +89,7 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 		return session, nil
 	}
 	m.mu.Unlock()
-	if m.Executable == "" {
-		return nil, errors.New("未找到 Agent 命令，请先安装")
-	}
-	process, err := acp.Start([]string{m.Executable, "acp"})
+	process, err := m.start()
 	if err != nil {
 		return nil, err
 	}
@@ -111,10 +120,7 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 // support session/load use Open for existing ids; creation keeps the same
 // process ownership and sends session/new.
 func (m *Manager) Create(id, cwd string, timeout time.Duration) (*Session, error) {
-	if m.Executable == "" {
-		return nil, errors.New("未找到 Agent 命令，请先安装")
-	}
-	process, err := acp.Start([]string{m.Executable, "acp"})
+	process, err := m.start()
 	if err != nil {
 		return nil, err
 	}
