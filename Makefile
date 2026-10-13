@@ -1,5 +1,19 @@
 # Go 迁移配套（docs/go-migration-plan.md P0/P1 交付物）。现有 Python 测试不受影响。
 
+# P7 分发矩阵：五平台交叉编译（本地可验证的部分）
+PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
+
+.PHONY: build-matrix
+build-matrix:
+	@mkdir -p dist
+	@for platform in $(PLATFORMS); do \
+		os=$${platform%/*}; arch=$${platform#*/}; \
+		echo "building $$os/$$arch"; \
+		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags='-s -w' \
+			-o dist/gateway-$$os-$$arch ./cmd/gateway || exit 1; \
+	done
+	@ls -lh dist/ | grep gateway-
+
 .PHONY: parity-goldens test-go parity build-gateway audit conformance
 
 # 重新生成全部差分场景与 Python oracle goldens（改契约后必须重跑）

@@ -179,8 +179,10 @@ Python `json` 与 Go `encoding/json` 的默认行为差异，逐条列出：
 >   `_recent_lines` 的 64KB 倒序分块读取（turn_limit 截断与 `hasLoadedOldest` 完整性标志）。
 >   SQLite 发现层（`list`/`notification_changes`/`get`）留给 P5 与 modernc fixture 一并做。
 >
-> **P2 状态：除 `transport` 的 Windows 命名管道侧（go-winio + build tag，需真机验证）外全部完成。**
-> 七个对拍套件（timeline/ipc/auth/lifecycle/model/pairing/store）全部字节级全绿，`make parity-goldens` 一键重建。
+> **P2 全部完成（2026-10-13）**：`internal/transport` 补齐 Windows 侧——端点解析（NT 固定管道路径 vs unix socket）
+> + build tag 双实现（POSIX `net.DialTimeout` / Windows `go-winio.DialPipe`），三平台
+> `GOOS={darwin,linux,windows} go build ./...` 全绿；管道路径 I/O 行为待真机验证。
+> 十六个对拍套件全部字节级全绿，`make parity-goldens` 一键重建；`make build-matrix` 五平台产物 8.3–8.9MB。
 
 `config`、`lifecycle`（控制文件/实例令牌/停止）、`store`（Codex 只读 SQLite）、`model`（`normalize_state`/`apply_patches`）、`auth`、`pairing`、`transport`+`ipc`。
 - 验收：`test_store/model/auth/pairing/platform/tls` 等移植；IPC 用 `tests/pipe_fixture.py` 的 Go 等价物对拍帧。
