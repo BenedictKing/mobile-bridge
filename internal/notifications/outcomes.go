@@ -173,12 +173,7 @@ func (l *OutcomeLedger) trimLocked() {
 	}
 }
 func outcomeKey(host, threadID, event string) string {
-	key := jsoncompat.NewObject()
-	key.Set("kind", "completion")
-	key.Set("host", host)
-	key.Set("id", threadID)
-	key.Set("event", event)
-	return string(jsoncompat.EncodePythonDefault(key))
+	return string(jsoncompat.EncodePythonDefault(&jsoncompat.Array{Items: []any{"completion", host, threadID, event}}))
 }
 func numberValue(value any) int64 {
 	switch number := value.(type) {
