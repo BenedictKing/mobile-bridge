@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -18,14 +19,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"syscall"
+	"time"
 
 	gateway "github.com/BenedictKing/mobile-bridge"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
+	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
@@ -96,6 +101,33 @@ func main() {
 	if executable := os.Getenv("GATEWAY_ACP_BIN"); executable != "" {
 		server.ACP = acpruntime.New(executable)
 	}
+	controller, controlErr := lifecycle.NewController(dataDir, os.Getpid(), instanceID)
+	if controlErr != nil {
+		log.Fatalf("control file: %v", controlErr)
+	}
+	httpServer := &http.Server{Handler: server}
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if controller.StopRequested() {
+					_ = httpServer.Shutdown(context.Background())
+					return
+				}
+			case <-shutdown:
+				_ = httpServer.Shutdown(context.Background())
+				return
+			}
+		}
+	}()
 	log.Printf("gateway listening on http://%s", listener.Addr())
-	log.Fatal(http.Serve(listener, server))
+	err = httpServer.Serve(listener)
+	controller.Close()
+	if err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }

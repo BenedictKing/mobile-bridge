@@ -7,10 +7,51 @@ package lifecycle
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
+
+type Controller struct {
+	DataDir string
+	Record  *jsoncompat.Object
+	Path    string
+	Request string
+}
+
+func NewController(dataDir string, pid int, instanceID string) (*Controller, error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	record := ControlRecord(pid, randomToken(), ".pairing-go", instanceID, false, false, false, false)
+	controller := &Controller{DataDir: dataDir, Record: record, Path: filepath.Join(dataDir, "gateway-control.json"), Request: filepath.Join(dataDir, "gateway.stop")}
+	if err := os.WriteFile(controller.Path, DumpASCII(record), 0o600); err != nil {
+		return nil, err
+	}
+	return controller, nil
+}
+
+func (c *Controller) StopRequested() bool {
+	raw, err := os.ReadFile(c.Request)
+	if err != nil {
+		return false
+	}
+	value := ParseRecord(string(raw))
+	return string(jsoncompat.EncodeCompact(value)) == string(jsoncompat.EncodeCompact(c.Record))
+}
+
+func (c *Controller) Close() {
+	for _, path := range []string{c.Request, c.Path} {
+		if raw, err := os.ReadFile(path); err == nil && string(jsoncompat.EncodeCompact(ParseRecord(string(raw)))) == string(jsoncompat.EncodeCompact(c.Record)) {
+			_ = os.Remove(path)
+		}
+	}
+}
+
+func randomToken() string { return strconv.FormatInt(time.Now().UnixNano(), 16) }
 
 // ErrNoControlRecord mirrors request_stop's refusal message; it never kills a
 // PID that may have been reused.
