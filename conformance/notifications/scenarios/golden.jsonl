@@ -1,0 +1,38 @@
+{"scenario":"01_valid_url","i":0,"op":"valid_url","out":"https://ntfy.example.com"}
+{"scenario":"01_valid_url","i":1,"op":"valid_url","out":"https://ntfy.example.com"}
+{"scenario":"01_valid_url","i":2,"op":"valid_url","out":{"$error":"ValueError: 请输入完整的 HTTP/HTTPS 地址，不含账号、查询参数或片段"}}
+{"scenario":"01_valid_url","i":3,"op":"valid_url","out":"https://ntfy.example.com/topic"}
+{"scenario":"01_valid_url","i":4,"op":"valid_url","out":"http://localhost:8080"}
+{"scenario":"01_valid_url","i":5,"op":"valid_url","out":"http://127.0.0.1:8080/base"}
+{"scenario":"01_valid_url","i":6,"op":"valid_url","out":"http://[::1]:8080"}
+{"scenario":"01_valid_url","i":7,"op":"valid_url","out":{"$error":"ValueError: 推送服务请使用 HTTPS；HTTP 仅用于本机测试"}}
+{"scenario":"01_valid_url","i":8,"op":"valid_url","out":{"$error":"ValueError: 请输入完整的 HTTP/HTTPS 地址，不含账号、查询参数或片段"}}
+{"scenario":"01_valid_url","i":9,"op":"valid_url","out":{"$error":"ValueError: 请输入完整的 HTTP/HTTPS 地址，不含账号、查询参数或片段"}}
+{"scenario":"01_valid_url","i":10,"op":"valid_url","out":{"$error":"ValueError: 请输入完整的 HTTP/HTTPS 地址，不含账号、查询参数或片段"}}
+{"scenario":"01_valid_url","i":11,"op":"valid_url","out":{"$error":"ValueError: 请输入完整的 HTTP/HTTPS 地址，不含账号、查询参数或片段"}}
+{"scenario":"01_valid_url","i":12,"op":"valid_url","out":{"$error":"ValueError: 请输入完整的 HTTP/HTTPS 地址，不含账号、查询参数或片段"}}
+{"scenario":"01_valid_url","i":13,"op":"valid_url","out":"https://中文.example.com"}
+{"scenario":"01_valid_url","i":14,"op":"valid_url","out":"  https://ntfy.example.com  "}
+{"scenario":"02_settings","i":0,"op":"settings_read","out":{"enabled":false,"server":"https://ntfy.sh","topic":"","token":"","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":false,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":1,"op":"settings_save","out":{"enabled":true,"server":"https://ntfy.sh","topic":"my-topic","token":"tk_abc","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":2,"op":"settings_read","out":{"enabled":true,"server":"https://ntfy.sh","topic":"my-topic","token":"tk_abc","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":3,"op":"settings_save","out":{"enabled":true,"server":"https://ntfy.sh","topic":"my-topic","token":"tk_abc","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":4,"op":"settings_save","out":{"enabled":true,"server":"https://ntfy.cn.example.com","topic":"my-topic","token":"","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":5,"op":"settings_read","out":{"enabled":true,"server":"https://ntfy.cn.example.com","topic":"my-topic","token":"","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":6,"op":"settings_save","out":{"enabled":true,"server":"https://ntfy.cn.example.com","topic":"my-topic","token":"","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":7,"op":"settings_read","out":{"enabled":true,"server":"https://ntfy.cn.example.com","topic":"my-topic","token":"","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":8,"op":"settings_save","out":{"$error":"FieldError: Bark Device Key 格式不正确，请仅填写密钥，不要粘贴完整推送地址","field":"bark-key"}}
+{"scenario":"02_settings","i":9,"op":"settings_save","out":{"$error":"ValueError: 通知开关格式不正确"}}
+{"scenario":"02_settings","i":10,"op":"settings_save","out":{"$error":"FieldError: 推送服务请使用 HTTPS；HTTP 仅用于本机测试","field":"ntfy-server"}}
+{"scenario":"02_settings","i":11,"op":"settings_save","out":{"$error":"FieldError: 请输入完整的 HTTP/HTTPS 地址，不含账号、查询参数或片段","field":"ntfy-server"}}
+{"scenario":"02_settings","i":12,"op":"settings_save","out":{"$error":"FieldError: ntfy 主题只允许 1–64 位字母、数字、下划线和短横线","field":"ntfy-topic"}}
+{"scenario":"02_settings","i":13,"op":"settings_save","out":{"$error":"FieldError: 开启通知前请填写 ntfy 主题","field":"ntfy-topic"}}
+{"scenario":"02_settings","i":14,"op":"settings_save","out":{"$error":"FieldError: 网关名称应为不超过 80 字的单行文本","field":"address-name"}}
+{"scenario":"02_settings","i":15,"op":"settings_save","out":{"$error":"FieldError: Bark Device Key 格式不正确，请仅填写密钥，不要粘贴完整推送地址","field":"bark-key"}}
+{"scenario":"02_settings","i":16,"op":"settings_save","out":{"enabled":true,"server":"https://ntfy.cn.example.com","topic":"my-topic","token":"tk_abc","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"https://lan.example.com/p","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":17,"op":"settings_read","out":{"enabled":true,"server":"https://ntfy.cn.example.com","topic":"my-topic","token":"tk_abc","barkEnabled":false,"barkServer":"https://api.day.app","barkKey":"","clickBase":"https://lan.example.com/p","includeTitle":true,"addressEnabled":true,"addressName":"","securityEnabled":true}}
+{"scenario":"02_settings","i":18,"op":"destination","out":"ntfy:e633c0192970671868200bc05a9fde3b42ac567ee0b06d22234305531de9a1c3"}
+{"scenario":"02_settings","i":19,"op":"destination","out":"bark:d6b67bc444bb96a9e4a600335a3ec1e4fd23bd4f3903f6f0bcb165b19cb5a06d"}
+{"scenario":"02_settings","i":20,"op":"destination","out":{"$error":"ValueError: 未知通知通道"}}
+{"scenario":"02_settings","i":21,"op":"channels","out":{"ntfy":"ntfy:e633c0192970671868200bc05a9fde3b42ac567ee0b06d22234305531de9a1c3"}}
+{"scenario":"02_settings","i":22,"op":"channels","out":{"ntfy":"ntfy:571029eb87d17d84135d2a57701b69da07ac54874329d1375d7a933309baee8f","bark":"bark:a04721a44d51d1b22f6cf7fdf8dfd093094a23c541859827b5f308875ffbc5cd"}}

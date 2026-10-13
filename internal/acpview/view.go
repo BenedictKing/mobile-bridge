@@ -71,11 +71,16 @@ func messages(turn *jsoncompat.Object) *jsoncompat.Array {
 	return list
 }
 
-func (v *View) assistantMessage(turn *jsoncompat.Object, kind string, role any, extra func(*jsoncompat.Object)) *jsoncompat.Object {
+// assistantMessage mirrors _assistant_message: streamed chunks merge only
+// within the same chunk identity (messageId); id-less chunks fall back to
+// adjacency. A nil identity never matches another message's set identity.
+func (v *View) assistantMessage(turn *jsoncompat.Object, kind string, role any,
+	identity any, extra func(*jsoncompat.Object)) *jsoncompat.Object {
 	list := messages(turn)
 	if len(list.Items) > 0 {
 		if last := obj(list.Items[len(list.Items)-1]); last != nil {
-			if lastKind, _ := last.MustGet("kind").(string); lastKind == kind {
+			if lastKind, _ := last.MustGet("kind").(string); lastKind == kind &&
+				valueEqual(last.MustGet("chunkIdentity"), identity) {
 				return last
 			}
 		}
@@ -84,12 +89,20 @@ func (v *View) assistantMessage(turn *jsoncompat.Object, kind string, role any, 
 	message.Set("id", v.nextID(kind))
 	message.Set("kind", kind)
 	message.Set("text", "")
+	message.Set("chunkIdentity", identity)
 	message.Set("role", role)
 	if extra != nil {
 		extra(message)
 	}
 	list.Items = append(list.Items, message)
 	return message
+}
+
+func valueEqual(a, b any) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	return string(jsoncompat.EncodeCompact(a)) == string(jsoncompat.EncodeCompact(b))
 }
 
 // Snapshot mirrors AcpSessionView.snapshot.
@@ -325,14 +338,16 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 	case "agent_message_chunk":
 		if text := Text(update.MustGet("content")); text != "" {
 			message := v.assistantMessage(v.assistantTurn(), "agentMessage",
-				"assistant", func(m *jsoncompat.Object) { m.Set("phase", "final") })
+				"assistant", update.MustGet("messageId"),
+				func(m *jsoncompat.Object) { m.Set("phase", "final") })
 			previous, _ := message.MustGet("text").(string)
 			message.Set("text", previous+text)
 		}
 	case "agent_thought_chunk":
 		if text := Text(update.MustGet("content")); text != "" {
 			message := v.assistantMessage(v.assistantTurn(), "agentThought",
-				"activity", func(m *jsoncompat.Object) { m.Set("title", "思考摘要") })
+				"activity", update.MustGet("messageId"),
+				func(m *jsoncompat.Object) { m.Set("title", "思考摘要") })
 			previous, _ := message.MustGet("text").(string)
 			message.Set("text", previous+text)
 		}
@@ -405,6 +420,24 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 				}
 				entries.Items = append(entries.Items, entry)
 			}
+		}
+		if len(entries.Items) == 0 {
+			// The empty todo baseline is not content: never open a panel for
+			// it; drop an existing one when the plan cleared.
+			if turn := v.currentTurn(); turn != nil {
+				list := messages(turn)
+				kept := list.Items[:0]
+				for _, item := range list.Items {
+					if message := obj(item); message != nil {
+						if kind, _ := message.MustGet("kind").(string); kind == "plan" {
+							continue
+						}
+					}
+					kept = append(kept, item)
+				}
+				list.Items = kept
+			}
+			return
 		}
 		turn := v.assistantTurn()
 		var plan *jsoncompat.Object

@@ -96,6 +96,17 @@ VIEW_STEPS = [
     {'update': {'sessionUpdate': 'plan', 'entries': [
         {'content': '步骤一', 'status': 'completed'},
         {'content': '步骤二', 'status': 'completed'}]}},
+    {'update': {'sessionUpdate': 'plan', 'entries': []}},
+    {'snapshot': True},
+    {'update': {'sessionUpdate': 'plan', 'entries': [{'content': '重建', 'status': 'pending'}]}},
+    {'snapshot': True},
+    {'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'text': '前导'},
+                'messageId': 'm-1'}},
+    {'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'text': '正文'},
+                'messageId': 'm-2'}},
+    {'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'text': '（续）'},
+                'messageId': 'm-2'}},
+    {'snapshot': True},
     {'update': {'sessionUpdate': 'user_message_chunk', 'content': {'text': '中途追问'}}},
     {'add_permission': {'id': 'req-1', 'params': {
         'toolCall': {'title': '危险命令', 'rawInput': {'cmd': 'rm x'}},

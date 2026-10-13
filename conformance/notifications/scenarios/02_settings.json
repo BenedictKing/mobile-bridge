@@ -1,0 +1,222 @@
+{
+ "name": "02_settings",
+ "steps": [
+  {
+   "op": "settings_read",
+   "file": null
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true
+   }
+  },
+  {
+   "op": "settings_read",
+   "file": "after"
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true,
+    "server": "https://ntfy.cn.example.com"
+   }
+  },
+  {
+   "op": "settings_read",
+   "file": "after"
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true,
+    "server": "https://ntfy.cn.example.com",
+    "clearToken": true
+   }
+  },
+  {
+   "op": "settings_read",
+   "file": "after"
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "tk_abc",
+    "barkEnabled": true,
+    "barkServer": "https://api.day.app",
+    "barkKey": "dev-key/",
+    "clickBase": "",
+    "includeTitle": true,
+    "server": "https://ntfy.cn.example.com"
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": "yes",
+    "topic": "x"
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true,
+    "server": "http://remote.example.com"
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true,
+    "server": "not-a-url"
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "非法主题!",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "",
+    "includeTitle": true,
+    "addressName": "带\n换行"
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "k k",
+    "clickBase": "",
+    "includeTitle": true
+   }
+  },
+  {
+   "op": "settings_save",
+   "value": {
+    "enabled": true,
+    "topic": "my-topic",
+    "token": "tk_abc",
+    "barkEnabled": false,
+    "barkServer": "https://api.day.app",
+    "barkKey": "",
+    "clickBase": "https://lan.example.com/p",
+    "includeTitle": true
+   }
+  },
+  {
+   "op": "settings_read",
+   "file": "after"
+  },
+  {
+   "op": "destination",
+   "channel": "ntfy"
+  },
+  {
+   "op": "destination",
+   "channel": "bark"
+  },
+  {
+   "op": "destination",
+   "channel": "sms"
+  },
+  {
+   "op": "channels",
+   "config": null
+  },
+  {
+   "op": "channels",
+   "config": {
+    "enabled": true,
+    "server": "https://n.example.com",
+    "topic": "t",
+    "barkEnabled": true,
+    "barkServer": "https://b.example.com",
+    "barkKey": "k"
+   }
+  }
+ ]
+}

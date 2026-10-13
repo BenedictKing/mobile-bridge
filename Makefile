@@ -3,7 +3,7 @@
 .PHONY: parity-goldens test-go parity build-gateway audit conformance
 
 # 重新生成全部差分场景与 Python oracle goldens（改契约后必须重跑）
-PARITY_DIRS = timeline ipc auth lifecycle model pairing store acpview acpadapter service projection timelineread submissions
+PARITY_DIRS = timeline ipc auth lifecycle model pairing store acpview acpadapter service projection timelineread submissions notifications historyexp
 
 parity-goldens:
 	@for dir in $(PARITY_DIRS) acp; do \

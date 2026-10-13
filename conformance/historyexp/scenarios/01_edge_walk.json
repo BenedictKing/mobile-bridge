@@ -1,0 +1,88 @@
+{
+ "name": "01_edge_walk",
+ "steps": [
+  {
+   "op": "session",
+   "total": 45,
+   "steps": [
+    {
+     "read_page": {
+      "limit": 2
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    },
+    {
+     "read_page": {
+      "limit": 2,
+      "before_last": true
+     }
+    }
+   ]
+  }
+ ]
+}

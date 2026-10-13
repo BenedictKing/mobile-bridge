@@ -41,7 +41,27 @@ func (b *Bridge) Session(threadID string) *LiveSession {
 // TimelineRead mirrors Bridge.timeline_read for page/changes/detail. The
 // saved-history edge expansion needs the store and stays unexercised here
 // (scenarios never page past a loaded incomplete edge).
+// HistoryProvider supplies saved history windows for edge expansion.
+type HistoryProvider interface {
+	SavedHistory(session *LiveSession) *jsoncompat.Object
+}
+
 func (b *Bridge) TimelineRead(mode string, session *LiveSession, options ReadOptions) (*jsoncompat.Object, error) {
+	// Expand saved history only when the reader reaches its loaded edge.
+	if mode == "page" && options.Before != "" {
+		if provider, ok := b.Adapter.(HistoryProvider); ok {
+			position, valid := session.Timeline.Position(options.Before)
+			complete := jsoncompat.Truthy(fieldOf(session.SavedView, "historyComplete"))
+			if valid && position < options.Limit && session.SavedView != nil && !complete {
+				if session.HistoryLimit <= 0 {
+					session.HistoryLimit = 50
+				} else {
+					session.HistoryLimit += 50
+				}
+				session.SetHistory(provider.SavedHistory(session))
+			}
+		}
+	}
 	// _add_subagents (empty): the revision marker is injected unconditionally
 	// and feeds the projection update trigger.
 	view := session.View()
@@ -100,6 +120,13 @@ func (b *Bridge) TimelineRead(mode string, session *LiveSession, options ReadOpt
 	// artifact_paths skipped: the stub adapter has no home.
 	result.Set("files", &jsoncompat.Array{})
 	return result, nil
+}
+
+func fieldOf(entry *jsoncompat.Object, key string) any {
+	if entry == nil {
+		return nil
+	}
+	return entry.MustGet(key)
 }
 
 func stringsToArray(values []string) []any {

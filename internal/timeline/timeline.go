@@ -396,6 +396,9 @@ func latestUserTurnID(turns *jsoncompat.Array, activation map[string]bool) any {
 	return nil
 }
 
+// Position resolves a cursor to its row index; false when unusable.
+func (t *Timeline) Position(cursor string) (int, bool) { return t.position(cursor) }
+
 // Cursor builds an opaque cursor for a row key.
 func (t *Timeline) Cursor(key string) string { return t.epoch + "." + key }
 

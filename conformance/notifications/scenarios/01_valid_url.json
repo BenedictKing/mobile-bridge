@@ -1,0 +1,80 @@
+{
+ "name": "01_valid_url",
+ "steps": [
+  {
+   "op": "valid_url",
+   "value": "https://ntfy.example.com",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://ntfy.example.com/",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://ntfy.example.com/topic",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://ntfy.example.com/topic",
+   "allow_path": true
+  },
+  {
+   "op": "valid_url",
+   "value": "http://localhost:8080",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "http://127.0.0.1:8080/base",
+   "allow_path": true
+  },
+  {
+   "op": "valid_url",
+   "value": "http://[::1]:8080",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "http://insecure.example.com",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "ftp://x.example.com",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://u:p@x.example.com",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://x.example.com?q=1",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://x.example.com#f",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "https://中文.example.com/",
+   "allow_path": false
+  },
+  {
+   "op": "valid_url",
+   "value": "  https://ntfy.example.com  ",
+   "allow_path": false
+  }
+ ]
+}

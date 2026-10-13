@@ -21,6 +21,9 @@ type LiveSession struct {
 	Activating bool
 	Error      any
 	Timeline   *timeline.Timeline // the projection this session owns
+	// HistoryLimit mirrors history_limit: the saved-history window; 0 means
+	// "not set" (a fresh window of 50 loads next).
+	HistoryLimit int
 }
 
 func (s *LiveSession) Changed() { s.Sequence++ }
