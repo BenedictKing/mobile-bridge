@@ -6,8 +6,11 @@ package httpd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,10 +19,12 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
+	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
 
 var threadRoute = regexp.MustCompile(
 	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|input))?$`)
+var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 
 // ScriptedSession is the conformance stand-in for service.LiveSession: an
 // epoch, a sequence and a predicate-based wait. Production wiring replaces it
@@ -169,12 +174,46 @@ func (h *handler) sseFrame(event string, payload any, cursor string) {
 // Returns false when the path is not a session route.
 func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path string,
 	query map[string][]string) bool {
+	if write && h.server.Uploads != nil {
+		if match := threadRoute.FindStringSubmatch(path); match != nil && match[2] == "uploads" {
+			id := queryValue(query, "id", "")
+			name := queryValue(query, "name", "")
+			data, err := readBodyLimit(h.request, uploads.MaxFile)
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return true
+			}
+			result, putErr := h.server.Uploads.Put(match[1], id, name, data)
+			if putErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(putErr.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
+		}
+	}
 	match := threadRoute.FindStringSubmatch(path)
 	if match == nil {
 		return false
 	}
 	threadID, action := match[1], match[2]
 	if write && h.server.Codex != nil {
+		if action == "uploads" && h.server.Uploads != nil {
+			id := queryValue(query, "id", "")
+			name := queryValue(query, "name", "")
+			data, err := readBodyLimit(h.request, uploads.MaxFile)
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return true
+			}
+			result, putErr := h.server.Uploads.Put(threadID, id, name, data)
+			if putErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(putErr.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
+		}
 		body, err := h.readJSON()
 		if err != nil {
 			h.fail(http.StatusBadRequest, errorBody(err.Error()))
@@ -243,6 +282,11 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			return true
 		}
 	}
+	if !write && h.server.Uploads != nil {
+		if strings.HasSuffix(path, "/preview") || strings.HasSuffix(path, "/thumb") {
+			// Preview/thumb routes are handled below by their fixed path parser.
+		}
+	}
 	if !write && action == "" && h.server.Codex != nil {
 		if view, ok := h.liveView(threadID); ok {
 			h.output(http.StatusOK, view, contentTypeJSON, "")
@@ -288,6 +332,78 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	default:
 		h.fail(http.StatusNotFound, errorBody("接口不存在"))
 	}
+	return true
+}
+
+func readBodyLimit(request *http.Request, limit int) ([]byte, error) {
+	if request.ContentLength <= 0 || request.ContentLength > int64(limit) {
+		return nil, errors.New("请求体大小无效")
+	}
+	data, err := io.ReadAll(io.LimitReader(request.Body, int64(limit)+1))
+	if err != nil || len(data) == 0 || len(data) > limit {
+		return nil, errors.New("请求体大小无效")
+	}
+	return data, nil
+}
+
+func (h *handler) handleUploadHTTP(write bool, path string, query map[string][]string) bool {
+	if h.server.Uploads == nil {
+		return false
+	}
+	match := uploadRoute.FindStringSubmatch(path)
+	if match == nil {
+		return false
+	}
+	threadID, id, action := match[1], match[2], match[3]
+	if action == "thumb" && write {
+		data, err := readBodyLimit(h.request, uploads.MaxThumb)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return true
+		}
+		width, errW := strconv.Atoi(queryValue(query, "width", "0"))
+		height, errH := strconv.Atoi(queryValue(query, "height", "0"))
+		if errW != nil || errH != nil {
+			h.fail(http.StatusBadRequest, errorBody("缩略图尺寸无效"))
+			return true
+		}
+		result, setErr := h.server.Uploads.SetThumb(threadID, id, data, width, height)
+		if setErr != nil {
+			h.fail(http.StatusBadRequest, errorBody(setErr.Error()))
+		} else {
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+		}
+		return true
+	}
+	if write {
+		return false
+	}
+	row, variant, err := h.server.Uploads.Preview(threadID, id, queryValue(query, "variant", "thumb"))
+	if err != nil {
+		h.fail(http.StatusNotFound, errorBody(err.Error()))
+		return true
+	}
+	pathName, _ := row.MustGet("previewPath").(string)
+	data, err := os.ReadFile(pathName)
+	if err != nil {
+		h.fail(http.StatusNotFound, errorBody("附件已不可用，请重新上传"))
+		return true
+	}
+	mime, _ := row.MustGet("previewMime").(string)
+	etag := `"` + jsoncompat.PyStr(row.MustGet("previewSha256")) + `"`
+	if h.request.Header.Get("If-None-Match") == etag {
+		h.writer.Header().Set("ETag", etag)
+		h.writer.Header().Set("X-Preview-Variant", variant)
+		h.writer.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	h.writer.Header().Set("Cache-Control", "private, no-store")
+	h.writer.Header().Set("Content-Type", mime)
+	h.writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	h.writer.Header().Set("ETag", etag)
+	h.writer.Header().Set("X-Preview-Variant", variant)
+	h.writer.WriteHeader(http.StatusOK)
+	_, _ = h.writer.Write(data)
 	return true
 }
 

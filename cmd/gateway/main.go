@@ -26,6 +26,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
+	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
 
 func main() {
@@ -73,6 +74,11 @@ func main() {
 		log.Fatalf("listen: %v", err)
 	}
 	server := httpd.New(auth.NewAuth(config), gateway.WebFS, port, instanceID)
+	dataDir := os.Getenv("GATEWAY_DATA_DIR")
+	if dataDir == "" {
+		dataDir = filepath.Join(".local")
+	}
+	server.Uploads = uploads.New(dataDir)
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {

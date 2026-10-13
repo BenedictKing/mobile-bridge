@@ -25,6 +25,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
+	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
 
 const contentTypeJSON = "application/json; charset=utf-8"
@@ -68,6 +69,7 @@ type Server struct {
 	Pairing    *pairing.Pairing
 	Store      *store.SessionStore
 	Codex      *codex.Bridge
+	Uploads    *uploads.Manager
 	historyMu  sync.Mutex
 	historyTL  map[string]*timeline.Timeline
 }
@@ -329,6 +331,9 @@ func (h *handler) handleMethod(write bool) {
 			return
 		}
 		query := map[string][]string(h.request.URL.Query())
+		if h.handleUploadHTTP(write, path, query) {
+			return
+		}
 		bridge, err := h.server.Bridge.ForHost(queryValue(query, "host", "local"))
 		if err != nil {
 			h.fail(http.StatusNotFound, errorBody("找不到这个会话"))
