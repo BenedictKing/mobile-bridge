@@ -221,7 +221,22 @@ func workerSnapshot(dataDir string) *jsoncompat.Object {
 	result.Set("urls", urls)
 	result.Set("externalStatus", jsoncompat.NewObject())
 	result.Set("cloudflared", jsoncompat.NewObject())
-	result.Set("quickTunnel", jsoncompat.NewObject())
+	quickTunnel := jsoncompat.NewObject()
+	if raw, err := os.ReadFile(filepath.Join(dataDir, "cloudflare-status.json")); err == nil {
+		if value, decodeErr := jsoncompat.Unmarshal(raw); decodeErr == nil {
+			if status, ok := value.(*jsoncompat.Object); ok {
+				quickTunnel = status
+			}
+		}
+	}
+	if quickTunnel.MustGet("state") == "ready" {
+		if raw, err := os.ReadFile(filepath.Join(dataDir, "外网地址.txt")); err == nil {
+			if line := strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0]); strings.HasPrefix(line, "https://") {
+				urls.Items = append([]any{line + "/"}, urls.Items...)
+			}
+		}
+	}
+	result.Set("quickTunnel", quickTunnel)
 	result.Set("watches", &jsoncompat.Array{})
 	return result
 }
