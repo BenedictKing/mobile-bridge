@@ -1,0 +1,139 @@
+{
+ "name": "01_annotated_read",
+ "steps": [
+  {
+   "op": "bridge_session",
+   "steps": [
+    {
+     "set_history": {
+      "id": "chat",
+      "turns": [
+       {
+        "turnId": "0",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "0",
+          "text": "saved 0"
+         }
+        ]
+       },
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "saved 1"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "saved 2"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "state": {
+      "id": "chat",
+      "cwd": "/工作目录",
+      "turns": [
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "live"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "live"
+         }
+        ]
+       }
+      ],
+      "requests": []
+     },
+     "connected": true
+    },
+    {
+     "read_page": {
+      "limit": 1
+     }
+    },
+    {
+     "read_page": {
+      "limit": 5,
+      "before_last": true
+     }
+    },
+    {
+     "read_detail": {}
+    },
+    {
+     "state": {
+      "id": "chat",
+      "cwd": "/工作目录",
+      "turns": [
+       {
+        "turnId": "1",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "1",
+          "text": "live streaming"
+         }
+        ]
+       },
+       {
+        "turnId": "2",
+        "items": [
+         {
+          "type": "agentMessage",
+          "id": "2",
+          "text": "live streaming"
+         }
+        ]
+       }
+      ],
+      "requests": []
+     },
+     "connected": true
+    },
+    {
+     "changed": true
+    },
+    {
+     "read_page": {}
+    },
+    {
+     "read_changes": {
+      "after": 1,
+      "epoch_last": true
+     }
+    },
+    {
+     "read_detail": {
+      "offset": 3,
+      "version": "wrong"
+     }
+    }
+   ]
+  }
+ ]
+}

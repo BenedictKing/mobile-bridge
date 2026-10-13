@@ -7,6 +7,7 @@ package service
 import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
+	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 )
 
 // LiveSession mirrors the LiveSession fields this slice touches.
@@ -19,6 +20,7 @@ type LiveSession struct {
 	Connecting bool
 	Activating bool
 	Error      any
+	Timeline   *timeline.Timeline // the projection this session owns
 }
 
 func (s *LiveSession) Changed() { s.Sequence++ }

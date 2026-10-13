@@ -236,7 +236,12 @@ Python `json` 与 Go `encoding/json` 的默认行为差异，逐条列出：
 >   subagentRevision 三条件）、分页/回填/changes、保存前缀合并下的游标稳定，以及权威完整快照收缩
 >   引发的 epoch 滚动与旧游标 RESET。**quirk 入册**：`LiveSession.__init__` 内部构造 Timeline 会消耗
 >   一个 epoch id（跨场景共享计数时的账目）。
-> 剩余：Bridge 编排（live 表、timeline_read 派发、提交账本、队列、通知对账）与 ACP 生命周期接线。
+> - `internal/service` 真实 `timeline_read`（同日第三批，`conformance/timelineread/`，全绿）：真 Bridge +
+>   桩 AgentAdapter 子类（空临时目录）驱动**真函数**——`_add_subagents` 的 `subagentRevision:0` 无条件注入、
+>   goal 覆盖空路径、meta 增补（host/agent/hostLabel/排序 capabilities/goalRuntimeAvailable/submissions/
+>   goalSubmission/forkedFrom，**page 与 changes 都增补、仅 detail 跳过**——对拍器抓到的分歧）、
+>   `files` 空数组、更新触发含 subagentRevision。会话预注册 + connected 规避后台 attach 竞态。
+> 剩余：Bridge 编排（提交账本、队列派发、通知对账、保存历史边缘扩展）与 ACP 生命周期接线。
 
 
 `Bridge` / `LiveSession` 状态机、去重、队列、submission ledger、`timeline_read` 分页、uploads GC、通知对账。
