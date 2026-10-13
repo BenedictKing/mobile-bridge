@@ -207,6 +207,106 @@ func (b *Bridge) handleDisconnect() {
 
 func (b *Bridge) Close() { b.IPC.Close() }
 
+// Call sends a follower operation to the conversation owner.
+func (b *Bridge) Call(id, method string, params *jsoncompat.Object, timeout time.Duration) (*jsoncompat.Object, error) {
+	session, err := b.Watch(id, 1500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	if session.Owner == "" {
+		return nil, errors.New(session.ErrorOr("请先在桌面 App 打开此聊天"))
+	}
+	request := jsoncompat.NewObject()
+	request.Set("conversationId", id)
+	if params != nil {
+		for _, key := range params.Keys() {
+			value, _ := params.Get(key)
+			request.Set(key, value)
+		}
+	}
+	response, err := b.IPC.Request(method, request, session.Owner, b.Host, timeout)
+	if err != nil {
+		return nil, err
+	}
+	result, _ := response.MustGet("result").(*jsoncompat.Object)
+	if result == nil {
+		result = jsoncompat.NewObject()
+	}
+	return result, nil
+}
+
+func (s *Session) ErrorOr(fallback string) string {
+	if s.Error != "" {
+		return s.Error
+	}
+	return fallback
+}
+
+func (b *Bridge) StartTurn(id, submissionID, text string) (*jsoncompat.Object, error) {
+	input := jsoncompat.NewObject()
+	input.Set("type", "text")
+	input.Set("text", text)
+	input.Set("text_elements", &jsoncompat.Array{})
+	request := jsoncompat.NewObject()
+	request.Set("threadId", id)
+	request.Set("input", &jsoncompat.Array{Items: []any{input}})
+	request.Set("clientUserMessageId", submissionID)
+	context := jsoncompat.NewObject()
+	context.Set("inheritThreadSettings", true)
+	turnStart := jsoncompat.NewObject()
+	turnStart.Set("request", request)
+	turnStart.Set("context", context)
+	params := jsoncompat.NewObject()
+	params.Set("turnStart", turnStart)
+	return b.Call(id, "thread-follower-start-turn", params, 90*time.Second)
+}
+
+func (b *Bridge) Interrupt(id string) (*jsoncompat.Object, error) {
+	state, _, _, _ := b.Snapshot(id)
+	if state == nil {
+		return nil, errors.New("请先在桌面 App 打开此聊天")
+	}
+	turnID := ""
+	if turns, ok := state.MustGet("turns").(*jsoncompat.Array); ok {
+		for index := len(turns.Items) - 1; index >= 0; index-- {
+			turn, _ := turns.Items[index].(*jsoncompat.Object)
+			if turn == nil {
+				continue
+			}
+			if turn.MustGet("status") == "inProgress" {
+				turnID, _ = turn.MustGet("turnId").(string)
+				if turnID == "" {
+					turnID, _ = turn.MustGet("id").(string)
+				}
+				break
+			}
+		}
+	}
+	if turnID == "" {
+		return nil, errors.New("当前没有可停止的任务")
+	}
+	params := jsoncompat.NewObject()
+	params.Set("mode", "user-stop")
+	params.Set("expectedTurnId", turnID)
+	return b.Call(id, "thread-follower-interrupt-turn", params, 30*time.Second)
+}
+
+func (b *Bridge) UpdateSettings(id, modelName, effort string, fastMode *bool) (*jsoncompat.Object, error) {
+	settings := jsoncompat.NewObject()
+	settings.Set("model", modelName)
+	settings.Set("effort", effort)
+	if fastMode != nil {
+		if *fastMode {
+			settings.Set("serviceTier", "fast")
+		} else {
+			settings.Set("serviceTier", "default")
+		}
+	}
+	params := jsoncompat.NewObject()
+	params.Set("threadSettings", settings)
+	return b.Call(id, "thread-follower-update-thread-settings", params, 30*time.Second)
+}
+
 func object(value map[string]any) *jsoncompat.Object {
 	result := jsoncompat.NewObject()
 	for key, item := range value {

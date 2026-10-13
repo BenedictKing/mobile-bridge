@@ -174,6 +174,56 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return false
 	}
 	threadID, action := match[1], match[2]
+	if write && h.server.Codex != nil {
+		body, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return true
+		}
+		switch action {
+		case "send":
+			text, _ := body.(*jsoncompat.Object).MustGet("text").(string)
+			if text == "" {
+				h.fail(http.StatusBadRequest, errorBody("消息内容不能为空"))
+				return true
+			}
+			id, _ := body.(*jsoncompat.Object).MustGet("id").(string)
+			result, callErr := h.server.Codex.StartTurn(threadID, id, text)
+			if callErr != nil {
+				h.fail(http.StatusConflict, errorBody(callErr.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
+		case "stop":
+			result, callErr := h.server.Codex.Interrupt(threadID)
+			if callErr != nil {
+				h.fail(http.StatusConflict, errorBody(callErr.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
+		case "settings":
+			modelName, _ := body.(*jsoncompat.Object).MustGet("model").(string)
+			effort, _ := body.(*jsoncompat.Object).MustGet("effort").(string)
+			var fastMode *bool
+			if value, exists := body.(*jsoncompat.Object).Get("fastMode"); exists {
+				flag, valid := value.(bool)
+				if !valid {
+					h.fail(http.StatusBadRequest, errorBody("Fast 模式开关无效"))
+					return true
+				}
+				fastMode = &flag
+			}
+			result, callErr := h.server.Codex.UpdateSettings(threadID, modelName, effort, fastMode)
+			if callErr != nil {
+				h.fail(http.StatusConflict, errorBody(callErr.Error()))
+			} else {
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			}
+			return true
+		}
+	}
 	if !write && action == "" && h.server.Codex != nil {
 		if view, ok := h.liveView(threadID); ok {
 			h.output(http.StatusOK, view, contentTypeJSON, "")
