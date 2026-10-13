@@ -372,7 +372,45 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
-		h.output(http.StatusOK, h.server.Bridge.AccountsPublic(), contentTypeJSON, "")
+		if h.server.Account != nil {
+			h.output(http.StatusOK, h.server.Account.AccountsPublic(), contentTypeJSON, "")
+		} else {
+			h.output(http.StatusOK, h.server.Bridge.AccountsPublic(), contentTypeJSON, "")
+		}
+	case write && path == "/api/accounts/details":
+		if h.session(write) == nil {
+			return
+		}
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		id, _ := value.(*jsoncompat.Object).MustGet("id").(string)
+		if h.server.Account == nil {
+			h.fail(http.StatusConflict, errorBody("请启动支持账号管理的新版网关"))
+			return
+		}
+		row := h.server.Account.AccountDetails(id)
+		if row == nil {
+			h.fail(http.StatusNotFound, errorBody("账号不存在，请刷新列表"))
+			return
+		}
+		h.output(http.StatusAccepted, row, contentTypeJSON, "")
+	case write && path == "/api/accounts/ignore-submission":
+		if h.session(write) == nil {
+			return
+		}
+		if h.server.Account == nil {
+			h.fail(http.StatusConflict, errorBody("请启动支持账号管理的新版网关"))
+			return
+		}
+		h.output(http.StatusOK, h.server.Account.AccountsPublic(), contentTypeJSON, "")
+	case write && path == "/api/accounts/switch":
+		if h.session(write) == nil {
+			return
+		}
+		h.fail(http.StatusConflict, errorBody("账号切换需要桌面端协调，请在电脑端操作"))
 	case !write && path == "/api/account":
 		if h.session(write) == nil {
 			return

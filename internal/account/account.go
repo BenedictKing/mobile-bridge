@@ -23,6 +23,41 @@ type Manager struct {
 	mu                        sync.Mutex
 }
 
+func (m *Manager) AccountsPublic() *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	result.Set("accounts", &jsoncompat.Array{})
+	result.Set("activeId", nil)
+	switchState := jsoncompat.NewObject()
+	switchState.Set("phase", "idle")
+	result.Set("switch", switchState)
+	result.Set("canSwitch", true)
+	index := readObject(filepath.Join(m.DataDir, "accounts", "index.json"))
+	if index == nil {
+		return result
+	}
+	if accounts, ok := index.MustGet("accounts").(*jsoncompat.Array); ok {
+		result.Set("accounts", accounts)
+	}
+	result.Set("activeId", index.MustGet("activeId"))
+	switchState = readObject(filepath.Join(m.DataDir, "accounts", "switch.json"))
+	if switchState != nil {
+		result.Set("switch", switchState)
+	}
+	return result
+}
+
+func (m *Manager) AccountDetails(id string) *jsoncompat.Object {
+	public := m.AccountsPublic()
+	accounts, _ := public.MustGet("accounts").(*jsoncompat.Array)
+	for _, value := range accounts.Items {
+		row, _ := value.(*jsoncompat.Object)
+		if row != nil && row.MustGet("id") == id {
+			return row
+		}
+	}
+	return nil
+}
+
 func New(home, executable string) *Manager {
 	return &Manager{Home: home, DataDir: filepath.Join(home, "mobile-bridge"), Executable: executable}
 }
@@ -293,4 +328,17 @@ func remaining(value any) any {
 		f = 100
 	}
 	return 100 - f
+}
+
+func readObject(path string) *jsoncompat.Object {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	value, err := jsoncompat.Unmarshal(raw)
+	if err != nil {
+		return nil
+	}
+	result, _ := value.(*jsoncompat.Object)
+	return result
 }
