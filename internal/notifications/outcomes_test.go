@@ -32,3 +32,8 @@ func TestOutcomeLedgerPersistsAndReconciles(t *testing.T) {
 		t.Fatal("delivered outcome was not removed")
 	}
 }
+
+func TestOutcomeWorkerStopsCleanly(t *testing.T) {
+	worker := NewOutcomeLedger(t.TempDir()).StartWorker(time.Millisecond, nil, nil)
+	worker.Close()
+}

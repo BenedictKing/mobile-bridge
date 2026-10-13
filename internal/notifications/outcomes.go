@@ -20,6 +20,47 @@ type OutcomeLedger struct {
 	outcomes map[string]*jsoncompat.Object
 }
 
+type Worker struct {
+	Ledger    *OutcomeLedger
+	Interval  time.Duration
+	Stop      chan struct{}
+	Done      chan struct{}
+	Delivered func(host, threadID, event string) bool
+	Enabled   func(host, threadID string) bool
+}
+
+func (l *OutcomeLedger) StartWorker(interval time.Duration, delivered func(string, string, string) bool, enabled func(string, string) bool) *Worker {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	worker := &Worker{Ledger: l, Interval: interval, Stop: make(chan struct{}), Done: make(chan struct{}), Delivered: delivered, Enabled: enabled}
+	go worker.run()
+	return worker
+}
+
+func (w *Worker) run() {
+	defer close(w.Done)
+	_ = w.Ledger.Reconcile(time.Now(), w.Delivered, w.Enabled)
+	ticker := time.NewTicker(w.Interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_ = w.Ledger.Reconcile(time.Now(), w.Delivered, w.Enabled)
+		case <-w.Stop:
+			return
+		}
+	}
+}
+func (w *Worker) Close() {
+	select {
+	case <-w.Stop:
+	default:
+		close(w.Stop)
+	}
+	<-w.Done
+}
+
 func NewOutcomeLedger(dataDir string) *OutcomeLedger {
 	ledger := &OutcomeLedger{DataDir: dataDir, outcomes: map[string]*jsoncompat.Object{}}
 	ledger.load()

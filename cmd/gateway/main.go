@@ -113,6 +113,7 @@ func main() {
 	if controlErr != nil {
 		log.Fatalf("control file: %v", controlErr)
 	}
+	outcomeWorker := notifications.NewOutcomeLedger(dataDir).StartWorker(time.Minute, nil, nil)
 	httpServer := &http.Server{Handler: server}
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
@@ -134,6 +135,7 @@ func main() {
 	}()
 	log.Printf("gateway listening on http://%s", listener.Addr())
 	err = httpServer.Serve(listener)
+	outcomeWorker.Close()
 	controller.Close()
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
