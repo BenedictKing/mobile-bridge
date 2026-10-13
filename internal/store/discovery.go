@@ -212,6 +212,95 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 	return scanObjects(rows, fields)
 }
 
+// Get returns one desktop-owned thread row, rejecting subagent rows that are
+// not user-facing chats.
+func (s *SessionStore) Get(threadID string) (*jsoncompat.Object, error) {
+	db, err := s.open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	fields := []string{}
+	rows, err := db.Query("SELECT * FROM threads WHERE id = ?", threadID)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	// Query column order is the table declaration order and therefore matches
+	// the values returned by SELECT *. Keep it instead of rebuilding a map.
+	fields, err = rows.Columns()
+	if err != nil {
+		_ = rows.Close()
+		return nil, ErrUnavailable
+	}
+	objects, err := scanObjects(rows, fields)
+	if err != nil {
+		return nil, err
+	}
+	if len(objects) == 0 {
+		return nil, errors.New("找不到这个桌面会话")
+	}
+	object := objects[0]
+	originator, _ := object.MustGet("originator").(string)
+	source, _ := object.MustGet("source").(string)
+	if originator != "Codex Desktop" && originator != "codex_work_desktop" &&
+		originator != "codex_mobile_bridge" && !(originator == "" && source == "vscode") {
+		return nil, errors.New("不是桌面 App 会话")
+	}
+	if sourceText, ok := object.MustGet("source").(string); ok && strings.Contains(sourceText, `"subagent"`) {
+		return nil, errors.New("不是桌面 App 会话")
+	}
+	if threadSource, ok := object.MustGet("thread_source").(string); ok && threadSource == "subagent" {
+		return nil, errors.New("不是桌面 App 会话")
+	}
+	return object, nil
+}
+
+// HistoryFor loads and parses a rollout belonging to the configured Codex
+// home. The path guard prevents a database row from escaping the home folder.
+func (s *SessionStore) HistoryFor(threadID string, turnLimit *int) (*jsoncompat.Object, error) {
+	meta, err := s.Get(threadID)
+	if err != nil {
+		return nil, err
+	}
+	pathText, _ := meta.MustGet("rollout_path").(string)
+	if pathText == "" {
+		return nil, errors.New("找不到这个会话的历史记录")
+	}
+	path, err := filepath.Abs(pathText)
+	if err != nil {
+		return nil, errors.New("会话记录路径无效")
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, errors.New("找不到这个会话的历史记录")
+	}
+	home, err := filepath.Abs(s.Home)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	allowed := false
+	for _, rootName := range []string{"sessions", "archived_sessions"} {
+		root, _ := filepath.EvalSymlinks(filepath.Join(home, rootName))
+		if root != "" && withinPath(root, path) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, errors.New("会话记录路径不在 Codex 数据目录中")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("找不到这个会话的历史记录")
+	}
+	return History(threadID, meta, raw, turnLimit), nil
+}
+
+func withinPath(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func boolInt(value bool) int {
 	if value {
 		return 1

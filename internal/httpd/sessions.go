@@ -173,6 +173,13 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	}
 	threadID, action := match[1], match[2]
 	switch {
+	case !write && action == "history" && h.server.Store != nil:
+		result, err := h.server.Store.HistoryFor(threadID, nil)
+		if err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
+			return true
+		}
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case !write && action == "timeline":
 		h.output(http.StatusOK, h.withTimelineAgents(bridge.TimelineRead(threadID, "page")),
 			contentTypeJSON, "")
