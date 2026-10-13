@@ -3,7 +3,7 @@
 # P7 分发矩阵：五平台交叉编译（本地可验证的部分）
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: build-matrix
+.PHONY: build-matrix build-gateway-package
 build-matrix:
 	@mkdir -p dist
 	@for platform in $(PLATFORMS); do \
@@ -33,6 +33,15 @@ parity: test-go
 
 build-gateway:
 	go build -o dist/gateway-go ./cmd/gateway
+
+# Electron's extraResources expects this stable runtime directory/name. The
+# Go binary itself serves the gateway; desktop control actions remain outside
+# this target and are wired by the host controller.
+build-gateway-package:
+	@mkdir -p dist/gateway
+	@go build -trimpath -ldflags='-s -w' -o dist/gateway/codex-mobile-gateway ./cmd/gateway
+	@chmod 755 dist/gateway/codex-mobile-gateway
+	@ls -lh dist/gateway/codex-mobile-gateway
 
 # 742 个测试的三分类清单（docs/go-migration-test-audit.md 的数据源）
 audit:
