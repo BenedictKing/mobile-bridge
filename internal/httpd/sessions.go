@@ -32,28 +32,42 @@ var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,
 var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status)$`)
 
 // ScriptedSession is the conformance stand-in for service.LiveSession: an
-// epoch, a sequence and a predicate-based wait. Production wiring replaces it
-// in P6; the scripted state never changes, so waits with an already-true
-// predicate return immediately (matching Python's condition.wait_for).
+// epoch, a sequence and a predicate-based wait. Production wiring injects a
+// live follower sequence through Live so waits wake on desktop patches; the
+// scripted state never changes on its own (matching Python's
+// condition.wait_for semantics for static fixtures).
 type ScriptedSession struct {
 	Epoch    string
 	Sequence int
+	Live     func() (string, int, bool) // optional: (epoch, sequence) from the live projection
+}
+
+func (s *ScriptedSession) refresh() {
+	if s.Live == nil {
+		return
+	}
+	if epoch, sequence, ok := s.Live(); ok {
+		s.Epoch, s.Sequence = epoch, sequence
+	}
 }
 
 // WaitFor mirrors condition.wait_for(pred, timeout): immediate when the
 // predicate already holds, otherwise it polls until the timeout and reports
 // the predicate one last time.
 func (s *ScriptedSession) WaitFor(predicate func() bool, timeout time.Duration) bool {
+	s.refresh()
 	if predicate() {
 		return true
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
+		s.refresh()
 		if predicate() {
 			return true
 		}
 	}
+	s.refresh()
 	return predicate()
 }
 
@@ -885,17 +899,27 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 			return
 		}
 		if changed {
-			payload, _ := h.withTimelineAgents(
-				bridge.TimelineRead(threadID, "changes")).(*jsoncompat.Object)
-			epochValue, _ := payload.MustGet("epoch").(string)
-			sequenceNumber, _ := payload.MustGet("sequence").(json.Number)
-			epoch = epochValue
-			sequence, _ = strconv.Atoi(sequenceNumber.String())
-			event := "changes"
-			if _, reset := payload.Get("reset"); reset {
-				event = "reset"
+			// The same persistent projection the HTTP routes read from,
+			// fed the connection's own cursor (stream_incremental parity).
+			payloadAny, handled, err := h.liveTimeline(threadID, "changes", map[string][]string{
+				"after": {strconv.Itoa(sequence)},
+				"epoch": {epoch},
+				"start": {""},
+			})
+			payload, _ := payloadAny.(*jsoncompat.Object)
+			if err != nil || !handled || payload == nil {
+				h.writeRaw(": heartbeat\n\n")
+			} else {
+				epochValue, _ := payload.MustGet("epoch").(string)
+				sequenceNumber, _ := payload.MustGet("sequence").(json.Number)
+				parsed, _ := strconv.Atoi(sequenceNumber.String())
+				event := "changes"
+				if _, reset := payload.Get("reset"); reset {
+					event = "reset"
+				}
+				epoch, sequence = epochValue, parsed
+				h.sseFrame(event, payload, epoch+"."+strconv.Itoa(sequence))
 			}
-			h.sseFrame(event, payload, epoch+"."+strconv.Itoa(sequence))
 		} else {
 			h.writeRaw(": heartbeat\n\n")
 		}

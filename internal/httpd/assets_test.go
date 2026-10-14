@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 )
@@ -59,5 +60,27 @@ func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != contentType {
 			t.Fatalf("%s status=%d type=%q", path, response.Code, response.Header().Get("Content-Type"))
 		}
+	}
+}
+
+func TestScriptedSessionLiveSequenceWakesWaits(t *testing.T) {
+	current := 3
+	session := &ScriptedSession{Epoch: "go-x", Sequence: current, Live: func() (string, int, bool) {
+		return "go-x", current, true
+	}}
+	done := make(chan bool, 1)
+	go func() {
+		changed := session.WaitFor(func() bool { return session.Sequence != 3 }, 5*time.Second)
+		done <- changed
+	}()
+	time.Sleep(300 * time.Millisecond)
+	current = 4
+	select {
+	case changed := <-done:
+		if !changed || session.Sequence != 4 {
+			t.Fatalf("live wait: changed=%v sequence=%d", changed, session.Sequence)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("live wait never woke")
 	}
 }

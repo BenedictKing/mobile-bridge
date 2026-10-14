@@ -2,6 +2,8 @@ package httpd
 
 import (
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
@@ -37,11 +39,54 @@ func (s *Server) ForHost(host string) (SessionBridge, error) {
 }
 
 func (s *Server) Session(threadID string) *ScriptedSession {
-	sequence := 0
+	epoch, sequence := "go-"+threadID, 0
 	if s.Codex != nil {
-		_, sequence, _, _ = s.Codex.Snapshot(threadID)
+		if liveEpoch, liveSequence, ok := s.refreshLiveProjection(threadID); ok {
+			epoch, sequence = liveEpoch, liveSequence
+		}
 	}
-	return &ScriptedSession{Epoch: "go-" + threadID, Sequence: sequence}
+	session := &ScriptedSession{Epoch: epoch, Sequence: sequence}
+	if s.Codex != nil {
+		server := s
+		session.Live = func() (string, int, bool) { return server.refreshLiveProjection(threadID) }
+	}
+	return session
+}
+
+// refreshLiveProjection mirrors liveTimeline's read path for the SSE loop:
+// attach the follower, fold the latest snapshot into the shared per-thread
+// projection, and report the projection's epoch/sequence.
+func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
+	if s.Codex == nil {
+		return "", 0, false
+	}
+	_, _ = s.Codex.Watch(threadID, 1500*time.Millisecond)
+	state, sequence, connected, connectionError := s.Codex.Snapshot(threadID)
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	projection := s.historyTL[threadID]
+	if state == nil {
+		if projection == nil {
+			return "", 0, false
+		}
+		current := projection.State()
+		parsed, _ := strconv.Atoi(current.Sequence)
+		return current.Epoch, parsed, true
+	}
+	if projection == nil {
+		projection = timeline.New(nil)
+		s.historyTL[threadID] = projection
+	}
+	view := model.NormalizeState(state, connected)
+	view.Set("sequence", jsoncompat.Num(sequence))
+	view.Set("connectionError", connectionError)
+	view.Set("connecting", false)
+	view.Set("activating", false)
+	view.Set("loadingHistory", false)
+	projection.Update(view)
+	current := projection.State()
+	parsed, _ := strconv.Atoi(current.Sequence)
+	return current.Epoch, parsed, true
 }
 
 func (s *Server) View(threadID string) any {

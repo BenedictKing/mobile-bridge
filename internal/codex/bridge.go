@@ -63,7 +63,11 @@ func (b *Bridge) Watch(id string, timeout time.Duration) (*Session, error) {
 	}
 	session := b.session(id)
 	b.mu.Lock()
-	if session.Connected {
+	// A broadcast follow may have connected this session without an owner
+	// (snapshots arrive for any open conversation). Operations need the
+	// owner, so keep discovering until one is known — Python's send path
+	// resolves thread-owner-discovery per call the same way.
+	if session.Connected && session.Owner != "" {
 		b.mu.Unlock()
 		return session, nil
 	}
@@ -122,6 +126,18 @@ func (b *Bridge) Snapshot(id string) (*jsoncompat.Object, int, bool, string) {
 	}
 	copy, _ := jsoncompat.Clone(state).(*jsoncompat.Object)
 	return copy, session.Sequence, session.Connected, session.Error
+}
+
+// LiveSequence reports the follower session's monotonic sequence so the SSE
+// layer can wake on desktop patches; false when the thread is not followed.
+func (b *Bridge) LiveSequence(id string) (int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	session := b.sessions[id]
+	if session == nil {
+		return 0, false
+	}
+	return session.Sequence, true
 }
 
 // Activity reports already-followed local sessions without activating a new
