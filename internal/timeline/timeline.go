@@ -399,6 +399,17 @@ func latestUserTurnID(turns *jsoncompat.Array, activation map[string]bool) any {
 // Position resolves a cursor to its row index; false when unusable.
 func (t *Timeline) Position(cursor string) (int, bool) { return t.position(cursor) }
 
+// Row returns one projection row by cursor (epoch.key), cloned, for request
+// validation such as message-action position and version checks.
+func (t *Timeline) Row(cursor string) *jsoncompat.Object {
+	index, ok := t.position(cursor)
+	if !ok {
+		return nil
+	}
+	object, _ := jsoncompat.Clone(t.rows[index].obj).(*jsoncompat.Object)
+	return object
+}
+
 // Cursor builds an opaque cursor for a row key.
 func (t *Timeline) Cursor(key string) string { return t.epoch + "." + key }
 

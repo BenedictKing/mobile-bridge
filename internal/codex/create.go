@@ -121,3 +121,55 @@ func appRequest(stdin io.Writer, scanner *bufio.Scanner, method string, params a
 	}
 	return nil, errors.New("Codex 创建服务超时或已断开")
 }
+
+// RenameConversation renames an existing thread through the short-lived
+// app-server protocol (service.rename_thread port). Only existing desktop
+// chats may be renamed; callers validate the id first.
+func (b *Bridge) RenameConversation(threadID, title string) error {
+	if b.Home == "" {
+		return errors.New("找不到 Codex 数据目录")
+	}
+	executable := b.Executable
+	if executable == "" {
+		executable = os.Getenv("GATEWAY_CODEX_BIN")
+	}
+	if executable == "" {
+		executable, _ = exec.LookPath("codex")
+	}
+	if executable == "" {
+		return errors.New("找不到 Codex 运行时，请在电脑端运行配置中指定路径")
+	}
+	command := exec.Command(executable, "app-server", "--listen", "stdio://")
+	command.Dir = b.Home
+	command.Env = append(os.Environ(), "CODEX_HOME="+b.Home)
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		return errors.New("无法连接 Codex 重命名服务")
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return errors.New("无法连接 Codex 重命名服务")
+	}
+	command.Stderr = io.Discard
+	if err := command.Start(); err != nil {
+		return errors.New("无法启动 Codex 重命名服务")
+	}
+	defer func() {
+		_ = stdin.Close()
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+	}()
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 4096), 4<<20)
+	request := func(method string, params any) (*jsoncompat.Object, error) {
+		return appRequestTimeout(stdin, scanner, method, params, 60*time.Second)
+	}
+	if _, err := request("initialize", map[string]any{"clientInfo": map[string]any{"name": "mobile_bridge_go", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}}); err != nil {
+		return err
+	}
+	if _, err := stdin.Write([]byte("{\"method\":\"initialized\"}\n")); err != nil {
+		return err
+	}
+	_, err = request("thread/name/set", map[string]any{"threadId": threadID, "name": title})
+	return err
+}

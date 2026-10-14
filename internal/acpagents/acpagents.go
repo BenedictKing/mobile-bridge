@@ -24,6 +24,11 @@ type Profile struct {
 	Capabilities      []string
 	EffortMap         map[string]string
 	Canonical         func(id string) string
+
+	// SteerMethod names the steering RPC (dsh/mcode); ModeMap translates the
+	// bridge's plan/default work modes onto the agent's own mode ids.
+	SteerMethod string
+	ModeMap     map[string]string
 }
 
 // Discover probes the machine like run.py's --agents auto. env abstracts
@@ -162,6 +167,7 @@ func mcodeProfile(env func(string) string, home string) Profile {
 		InitializeTimeout: 10 * time.Second,
 		Capabilities:      []string{"goals", "steer"},
 		EffortMap:         map[string]string{"none": "default", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},
+		SteerMethod:       "mcode/session/steer",
 	}
 }
 
@@ -197,6 +203,7 @@ func dshProfile(env func(string) string, home string) Profile {
 		InitializeTimeout: 180 * time.Second,
 		Capabilities:      []string{"steer"},
 		EffortMap:         map[string]string{"none": "off", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},
+		SteerMethod:       "_session/steering",
 	}
 }
 
@@ -220,6 +227,7 @@ func zcodeProfile(env func(string) string, home string) Profile {
 		InitializeTimeout: 180 * time.Second,
 		EffortMap:         map[string]string{"none": "off", "minimal": "enabled", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "ultra": "ultra"},
 		Canonical:         zcodeCanonicalFactory(env, home),
+		ModeMap:           map[string]string{"plan": "plan", "default": "yolo"},
 	}
 }
 

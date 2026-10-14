@@ -699,6 +699,8 @@ func runGateway(args []string) {
 		manager.Capabilities = profile.Capabilities
 		manager.EffortMap = profile.EffortMap
 		manager.InitializeTimeout = profile.InitializeTimeout
+		manager.SteerMethod = profile.SteerMethod
+		manager.ModeMap = profile.ModeMap
 		manager.Canonical = profile.Canonical
 		manager.Subagents = subagentStoreFor(profile.Kind, home)
 		if server.ACPAgents == nil {

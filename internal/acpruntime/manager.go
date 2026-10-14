@@ -4,6 +4,7 @@ package acpruntime
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,7 +43,7 @@ type Session struct {
 	touched time.Time
 	// activitySlice is the prompt wait slice (Python ACTIVITY_SLICE); the
 	// default matches, tests shrink it.
-	activitySlice       time.Duration
+	activitySlice        time.Duration
 	lastSubagentRevision int64
 }
 
@@ -66,6 +67,14 @@ type Manager struct {
 	Capabilities      []string
 	EffortMap         map[string]string
 	InitializeTimeout time.Duration
+
+	// SteerMethod names the agent's steering RPC ("_session/steering" for
+	// dsh, "mcode/session/steer" for mcode); empty means the agent cannot
+	// steer and the send route rejects the mode. ModeMap translates the
+	// bridge's plan/default work modes onto the agent's own mode ids
+	// (zcode: default→yolo).
+	SteerMethod string
+	ModeMap     map[string]string
 
 	// Subagents decorates this agent's views with on-disk child agents.
 	Subagents Subagents
@@ -542,6 +551,88 @@ func (s *Session) flushResponders() {
 	}
 }
 
+// Steer injects a supplementary prompt into the running turn through the
+// agent's steering RPC (dsh/mcode dispatch_turn ports). dsh answers
+// outcome "injected"; anything else means the turn ended in the race
+// window and the caller should fall back to a normal prompt.
+func (s *Session) Steer(method, text string) (injected bool, err error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return false, errors.New("Agent 进程已退出；操作结果未知")
+	}
+	s.mu.Unlock()
+	block := jsoncompat.NewObject()
+	block.Set("type", "text")
+	block.Set("text", text)
+	params := jsoncompat.NewObject()
+	params.Set("sessionId", s.ID)
+	if method == "mcode/session/steer" {
+		params.Set("text", text)
+	} else {
+		params.Set("prompt", &jsoncompat.Array{Items: []any{block}})
+		meta := jsoncompat.NewObject()
+		steering := jsoncompat.NewObject()
+		steering.Set("idleBehavior", "promptRequired")
+		meta.Set("steering", steering)
+		params.Set("_meta", meta)
+	}
+	result, err := s.Process.Request(method, params, 30*time.Second)
+	if err != nil {
+		return false, err
+	}
+	outcome := ""
+	if object, ok := result.(*jsoncompat.Object); ok {
+		outcome, _ = object.MustGet("outcome").(string)
+	}
+	return outcome == "injected", nil
+}
+
+// SetMode switches the session's work mode (AcpAdapter._set_mode port):
+// the requested id must be advertised, and a no-op when already current.
+func (s *Session) SetMode(modeID string) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errors.New("Agent 进程已退出；操作结果未知")
+	}
+	modes := s.modes
+	s.mu.Unlock()
+	if modes == nil {
+		return errors.New("当前 Agent 不支持此工作模式")
+	}
+	available, _ := modes.MustGet("availableModes").(*jsoncompat.Array)
+	found := false
+	if available != nil {
+		for _, item := range available.Items {
+			if mode, ok := item.(*jsoncompat.Object); ok {
+				if id, _ := mode.MustGet("id").(string); id == modeID {
+					found = true
+					break
+				}
+			}
+		}
+	}
+	if !found {
+		return errors.New("当前 Agent 不支持此工作模式")
+	}
+	if current, _ := modes.MustGet("currentModeId").(string); current == modeID {
+		return nil
+	}
+	params := jsoncompat.NewObject()
+	params.Set("sessionId", s.ID)
+	params.Set("modeId", modeID)
+	if _, err := s.Process.Request("session/set_mode", params, 30*time.Second); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.modes.Set("currentModeId", modeID)
+	s.View.SetMode(modeID)
+	s.signalLocked()
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *Session) Cancel() error {
 	s.mu.Lock()
 	if s.closed {
@@ -669,7 +760,56 @@ func (m *Manager) setConfig(session *Session, option *jsoncompat.Object, value s
 // model catalog: one entry per model option, efforts folded through the
 // agent's EFFORT_MAP (the exact agent value wins so kimi's low/high/max do
 // not expand into the eight bridge levels). Mirrors AcpAdapter.catalog.
-func (m *Manager) Catalog(session *Session, kindParam string) *jsoncompat.Object {
+// commandSkillBuiltins mirrors kimi's fixed built-in slash commands: every
+// other advertised command is an activatable skill.
+var commandSkillBuiltins = map[string]bool{"compact": true, "status": true, "usage": true,
+	"mcp": true, "tasks": true, "help": true}
+
+// CommandSkills maps the session's advertised slash commands to picker rows
+// (AcpAdapter._command_skills port).
+func (m *Manager) CommandSkills(session *Session) []*jsoncompat.Object {
+	rows := []*jsoncompat.Object{}
+	for _, command := range session.View.Commands {
+		name, _ := command.MustGet("name").(string)
+		if name == "" || commandSkillBuiltins[name] {
+			continue
+		}
+		display := name
+		if strings.HasPrefix(name, "skill:") {
+			display = name[len("skill:"):]
+		}
+		row := jsoncompat.NewObject()
+		row.Set("id", name)
+		row.Set("name", display)
+		row.Set("displayName", display)
+		row.Set("description", stringField(command, "description"))
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// ResolveCommandSkill validates the picker's skill selection for one prompt:
+// ACP agents accept a single leading slash command.
+func (m *Manager) ResolveCommandSkill(session *Session, ids []string) (string, error) {
+	if len(ids) == 0 {
+		return "", nil
+	}
+	if len(ids) > 1 {
+		return "", errors.New("该 Agent 一次只能调用一个 Skill")
+	}
+	for _, row := range m.CommandSkills(session) {
+		if id, _ := row.MustGet("id").(string); id == ids[0] {
+			name, _ := row.MustGet("name").(string)
+			return name, nil
+		}
+	}
+	return "", errors.New("Skill 不可用，请刷新列表")
+}
+
+func (m *Manager) Catalog(session *Session, kindParam, query string, ids []string) *jsoncompat.Object {
+	if kindParam == "skills" {
+		return m.skillCatalog(session, query, ids)
+	}
 	options := session.ConfigOptions()
 	modelOption := findCategory(options, "model")
 	thinking := findCategory(options, "thought_level")
@@ -749,6 +889,11 @@ func (m *Manager) Catalog(session *Session, kindParam string) *jsoncompat.Object
 	result.Set("currentModel", snapshot.MustGet("model"))
 	result.Set("currentEffort", snapshot.MustGet("effort"))
 	return result
+}
+
+func stringField(object *jsoncompat.Object, key string) string {
+	text, _ := object.MustGet(key).(string)
+	return text
 }
 
 func findCategory(options *jsoncompat.Array, category string) *jsoncompat.Object {
@@ -978,4 +1123,47 @@ func sessionParams(id string) *jsoncompat.Object {
 	params := jsoncompat.NewObject()
 	params.Set("sessionId", id)
 	return params
+}
+
+// skillCatalog serves kind=skills: the session's advertised command skills
+// (AcpAdapter.catalog's skills branch — name/description substring filter,
+// page slice, selected echo).
+func (m *Manager) skillCatalog(session *Session, rawQuery string, wanted []string) *jsoncompat.Object {
+	rows := m.CommandSkills(session)
+	filtered := rows
+	if query := strings.TrimSpace(rawQuery); query != "" {
+		needle := strings.ToLower(query)
+		filtered = nil
+		for _, row := range rows {
+			hay := strings.ToLower(stringField(row, "name") + " " +
+				stringField(row, "displayName") + " " + stringField(row, "description"))
+			if strings.Contains(hay, needle) {
+				filtered = append(filtered, row)
+			}
+		}
+	}
+	result := jsoncompat.NewObject()
+	result.Set("kind", "skills")
+	result.Set("models", &jsoncompat.Array{})
+	skills := &jsoncompat.Array{}
+	for _, row := range filtered {
+		skills.Items = append(skills.Items, row)
+	}
+	result.Set("skills", skills)
+	selected := &jsoncompat.Array{}
+	for _, row := range rows {
+		if id := stringField(row, "id"); id != "" {
+			for _, id := range wanted {
+				if id == stringField(row, "id") {
+					selected.Items = append(selected.Items, row)
+					break
+				}
+			}
+		}
+	}
+	result.Set("selectedSkills", selected)
+	result.Set("total", jsoncompat.Num(len(filtered)))
+	result.Set("currentModel", nil)
+	result.Set("currentEffort", nil)
+	return result
 }

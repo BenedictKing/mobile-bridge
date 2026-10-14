@@ -72,7 +72,7 @@ var migrationTextsByLocale = map[string]migrationTexts{
 		truncated: "（转录过长，仅保留最近部分，已截断）",
 		roles:     map[string]string{"user": "用户", "assistant": "助手", "activity": "操作", "error": "错误"},
 		sep:       "：", cont: "以上是从 %s 迁移过来的会话转录，请在此基础上继续。",
-		latestHeader:  "【来自 %s 的最新问答】",
+		latestHeader:   "【来自 %s 的最新问答】",
 		latestContinue: "以上是 %s 中最近一次提问与回答，请在此基础上继续。",
 	},
 	"en-US": {
@@ -80,7 +80,7 @@ var migrationTextsByLocale = map[string]migrationTexts{
 		truncated: "(Transcript truncated to the most recent messages.)",
 		roles:     map[string]string{"user": "User", "assistant": "Assistant", "activity": "Activity", "error": "Error"},
 		sep:       ": ", cont: "The transcript above was migrated from %s. Please continue from this context.",
-		latestHeader:  "[Latest exchange from %s]",
+		latestHeader:   "[Latest exchange from %s]",
 		latestContinue: "The exchange above is the latest question and answer from %s. Please continue from this context.",
 	},
 }
@@ -471,7 +471,7 @@ func (h *handler) handleMigrate(threadID string) {
 			sendErr = session.Prompt(message, 3600*time.Second)
 		}
 	} else {
-		_, sendErr = h.server.Codex.StartTurnWithOptions(createdID, submissionID, message, "send", "")
+		_, sendErr = h.server.Codex.StartTurnWithOptions(createdID, submissionID, message, "send", "", nil)
 	}
 	if sendErr != nil {
 		result.Set("warning", sendErr.Error())

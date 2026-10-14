@@ -153,6 +153,11 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 	view.Set("agent", kind)
 	capabilities := &jsoncompat.Array{}
 	for _, capability := range manager.Capabilities {
+		// The ACP goal send path is not ported; hide the control rather
+		// than offer a goal mode that silently degrades to a plain prompt.
+		if capability == "goals" || capability == "fork" {
+			continue
+		}
 		capabilities.Items = append(capabilities.Items, capability)
 	}
 	view.Set("capabilities", capabilities)
@@ -160,6 +165,20 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)
 	return view
+}
+
+// codexCapabilities mirrors the CodexAdapter capability set minus the
+// surfaces the Go gateway has not ported yet (fork branches and the native
+// goal send path); each entry re-enables a phone control that reads it from
+// the timeline meta.
+func (s *Server) codexCapabilities() *jsoncompat.Array {
+	items := []string{"accounts", "editMessage", "fastMode", "fullHistory",
+		"notificationScan", "rename", "serviceTier", "skills", "steer"}
+	array := &jsoncompat.Array{}
+	for _, item := range items {
+		array.Items = append(array.Items, item)
+	}
+	return array
 }
 
 // agentRoster mirrors Registry.kinds(): every enabled agent including codex,
@@ -233,6 +252,7 @@ func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
+	view.Set("capabilities", s.codexCapabilities())
 	s.codexSubagentView(threadID, view)
 	projection.Update(view)
 	current := projection.State()
@@ -307,6 +327,7 @@ func (s *Server) View(threadID string) any {
 			view.Set("host", "local")
 			view.Set("hostLabel", "此电脑")
 			view.Set("agent", "codex")
+			view.Set("capabilities", s.codexCapabilities())
 			s.codexSubagentView(threadID, view)
 			return view
 		}
@@ -373,5 +394,6 @@ func (s *Server) liveViewForBridge(threadID string) (any, bool) {
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
+	view.Set("capabilities", s.codexCapabilities())
 	return view, true
 }

@@ -26,12 +26,14 @@ type Session struct {
 }
 
 type Bridge struct {
-	Host       string
-	Home       string
-	Executable string
-	IPC        *ipc.Desktop
-	mu         sync.Mutex
-	sessions   map[string]*Session
+	Host        string
+	Home        string
+	Executable  string
+	IPC         *ipc.Desktop
+	mu          sync.Mutex
+	sessions    map[string]*Session
+	catalogOnce sync.Once
+	catalog     *Catalog
 }
 
 func New(home, endpoint string) *Bridge {
@@ -313,18 +315,31 @@ func (s *Session) ErrorOr(fallback string) string {
 }
 
 func (b *Bridge) StartTurn(id, submissionID, text string) (*jsoncompat.Object, error) {
-	return b.StartTurnWithOptions(id, submissionID, text, "send", "")
+	return b.StartTurnWithOptions(id, submissionID, text, "send", "", nil)
 }
 
 // StartTurnWithOptions preserves the mobile mode contract for native Codex
 // owners. Attachments and Skills are capability-specific and are rejected by
 // the caller until their local artifact mapping is available.
-func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode string) (*jsoncompat.Object, error) {
+// SkillInput is one resolved Skill block (catalog validate output).
+type SkillInput struct {
+	Name string
+	Path string
+}
+
+func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode string, skills []SkillInput) (*jsoncompat.Object, error) {
 	input := jsoncompat.NewObject()
 	input.Set("type", "text")
 	input.Set("text", text)
 	input.Set("text_elements", &jsoncompat.Array{})
 	inputs := &jsoncompat.Array{Items: []any{input}}
+	for _, skill := range skills {
+		block := jsoncompat.NewObject()
+		block.Set("type", "skill")
+		block.Set("name", skill.Name)
+		block.Set("path", skill.Path)
+		inputs.Items = append(inputs.Items, block)
+	}
 	if mode == "steer" {
 		params := jsoncompat.NewObject()
 		params.Set("input", inputs)
@@ -368,6 +383,20 @@ func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode str
 	params := jsoncompat.NewObject()
 	params.Set("turnStart", turnStart)
 	return b.Call(id, "thread-follower-start-turn", params, 90*time.Second)
+}
+
+// EditLastUserTurn replaces one user turn in place and regenerates the
+// answer (thread-follower-edit-last-user-turn). serviceTier rides along
+// when the thread pinned one.
+func (b *Bridge) EditLastUserTurn(id, turnID, text, serviceTier string) (*jsoncompat.Object, error) {
+	params := jsoncompat.NewObject()
+	params.Set("turnId", turnID)
+	params.Set("message", text)
+	params.Set("shouldSendPermissionOverrides", false)
+	if serviceTier != "" {
+		params.Set("serviceTier", serviceTier)
+	}
+	return b.Call(id, "thread-follower-edit-last-user-turn", params, 90*time.Second)
 }
 
 func (b *Bridge) Interrupt(id string) (*jsoncompat.Object, error) {

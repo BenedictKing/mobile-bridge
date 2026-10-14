@@ -18,11 +18,13 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
+	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
+	"github.com/google/uuid"
 )
 
 var threadRoute = regexp.MustCompile(
@@ -282,20 +284,12 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		if h.handleACPRoute(acpKind, acpManager, threadID, action, write, query) {
 			return true
 		}
-	}	// Catalog and permission panels are capability-driven. Until a provider
-	// exposes a native catalog/permission preset, return an explicit empty
-	// capability response so the mobile client can keep the controls hidden
-	// instead of treating a valid session as a missing route.
+	} // Catalog and permission panels are capability-driven. ACP agents
+	// answer through their manager above; codex reads its runtime catalog.
+	// A gateway with neither surfaces an explicit empty response so the
+	// mobile client keeps the controls hidden instead of 404ing.
 	if !write && action == "catalog" {
-		result := jsoncompat.NewObject()
-		result.Set("kind", queryValue(query, "kind", "models"))
-		result.Set("models", &jsoncompat.Array{})
-		result.Set("skills", &jsoncompat.Array{})
-		result.Set("selectedSkills", &jsoncompat.Array{})
-		result.Set("total", jsoncompat.Num(0))
-		result.Set("currentModel", nil)
-		result.Set("currentEffort", nil)
-		h.output(http.StatusOK, result, contentTypeJSON, "")
+		h.handleCodexCatalog(threadID, query)
 		return true
 	}
 	if !write && action == "permissions" {
@@ -378,12 +372,47 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				h.fail(http.StatusConflict, errorBody("当前 Go 网关暂不支持 Codex 原生附件发送"))
 				return true
 			}
-			result, callErr := h.server.Codex.StartTurnWithOptions(threadID, id, text, mode, workMode)
+			var skills []codex.SkillInput
+			if raw := bodyList(body, "skills"); len(raw) > 0 {
+				resolved, skillErr := h.server.Codex.Catalog().ValidateSkills(h.codexCatalogCwd(threadID), raw, false)
+				if skillErr != nil {
+					h.fail(http.StatusBadRequest, errorBody(skillErr.Error()))
+					return true
+				}
+				for _, entry := range resolved {
+					skills = append(skills, codex.SkillInput{Name: entry["name"], Path: entry["path"]})
+				}
+			}
+			result, callErr := h.server.Codex.StartTurnWithOptions(threadID, id, text, mode, workMode, skills)
 			if callErr != nil {
 				h.fail(http.StatusConflict, errorBody(callErr.Error()))
 			} else {
 				h.output(http.StatusOK, result, contentTypeJSON, "")
 			}
+			return true
+		case "rename":
+			title, _ := body.(*jsoncompat.Object).MustGet("title").(string)
+			if err := validRenameTitle(title); err != "" {
+				h.fail(http.StatusBadRequest, errorBody(err))
+				return true
+			}
+			if _, parseErr := uuid.Parse(threadID); parseErr != nil {
+				h.fail(http.StatusBadRequest, errorBody("会话 ID 无效"))
+				return true
+			}
+			title = strings.TrimSpace(title)
+			if renameErr := h.server.Codex.RenameConversation(threadID, title); renameErr != nil {
+				h.fail(http.StatusConflict, errorBody(renameErr.Error()))
+				return true
+			}
+			result := jsoncompat.NewObject()
+			result.Set("id", threadID)
+			result.Set("host", "local")
+			result.Set("title", title)
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return true
+		case "message-action":
+			h.handleCodexMessageAction(threadID, acpKind, body.(*jsoncompat.Object))
 			return true
 		case "stop":
 			result, callErr := h.server.Codex.Interrupt(threadID)
@@ -501,8 +530,10 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	}
 	if !write {
 		if action == "catalog" {
-			h.output(http.StatusOK, manager.Catalog(session, queryValue(query, "kind", "models")),
-				contentTypeJSON, "")
+			result := manager.Catalog(session, queryValue(query, "kind", "models"),
+				queryValue(query, "q", ""), queryIDs(query))
+			pageCatalogSkills(result, intQuery(query, "offset", 0), intQuery(query, "limit", 200))
+			h.output(http.StatusOK, result, contentTypeJSON, "")
 			return true
 		}
 		return false
@@ -519,6 +550,55 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		if text == "" {
 			h.fail(http.StatusBadRequest, errorBody("消息内容不能为空"))
 			return true
+		}
+		mode, _ := object.MustGet("mode").(string)
+		workMode, _ := object.MustGet("workMode").(string)
+		if workMode == "goal" {
+			h.fail(http.StatusBadRequest, errorBody("当前 Agent 不支持目标模式"))
+			return true
+		}
+		// ACP has no native skill block: kimi activates a skill from a
+		// leading slash command in the first text block.
+		if raw := bodyList(body, "skills"); len(raw) > 0 {
+			name, skillErr := manager.ResolveCommandSkill(session, raw)
+			if skillErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(skillErr.Error()))
+				return true
+			}
+			if strings.TrimSpace(text) != "" {
+				text = "/" + name + " " + text
+			} else {
+				text = "/" + name
+			}
+		}
+		if mode == "steer" {
+			if manager.SteerMethod == "" {
+				h.fail(http.StatusBadRequest, errorBody("当前 Agent 不支持补充任务，请使用排队发送"))
+				return true
+			}
+			injected, steerErr := session.Steer(manager.SteerMethod, text)
+			if steerErr != nil {
+				h.fail(http.StatusConflict, errorBody(steerErr.Error()))
+				return true
+			}
+			if injected {
+				result := jsoncompat.NewObject()
+				result.Set("accepted", true)
+				result.Set("steered", true)
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+				return true
+			}
+			// promptRequired: the turn ended in the race window; send normally.
+		}
+		if workMode == "plan" || workMode == "default" {
+			modeID := workMode
+			if mapped, ok := manager.ModeMap[workMode]; ok {
+				modeID = mapped
+			}
+			if modeErr := session.SetMode(modeID); modeErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(modeErr.Error()))
+				return true
+			}
 		}
 		if callErr := session.Prompt(text, 3600*time.Second); callErr != nil {
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
@@ -742,6 +822,7 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
+	view.Set("capabilities", h.server.codexCapabilities())
 	h.server.codexSubagentView(threadID, view)
 	return view, "", true
 }
@@ -770,8 +851,11 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 		meta.Set("agent", "codex")
 		meta.Set("hostLabel", "此电脑")
 	}
-	meta.Set("capabilities", &jsoncompat.Array{})
-	meta.Set("goalRuntimeAvailable", false)
+	// Views carry their own capabilities (codex set, per-agent ACP set);
+	// only a view that shipped without any gets the empty default.
+	if _, ok := meta.Get("capabilities"); !ok {
+		meta.Set("capabilities", &jsoncompat.Array{})
+	}
 	// Live timelines keep the agent roster in meta (with_timeline_agents):
 	// the chat screen renders from timeline pages/changes, and the migrate
 	// control loses its target list without it.
@@ -816,6 +900,10 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	state.Set("sequence", sequence)
 	view := model.NormalizeState(state, false)
 	view.Set("sequence", sequence)
+	view.Set("host", "local")
+	view.Set("hostLabel", "此电脑")
+	view.Set("agent", "codex")
+	view.Set("capabilities", h.server.codexCapabilities())
 	h.server.codexSubagentView(threadID, view)
 
 	h.server.historyMu.Lock()
@@ -830,8 +918,9 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	meta.Set("host", "local")
 	meta.Set("agent", "codex")
 	meta.Set("hostLabel", "此电脑")
-	meta.Set("capabilities", &jsoncompat.Array{})
-	meta.Set("goalRuntimeAvailable", false)
+	if _, ok := meta.Get("capabilities"); !ok {
+		meta.Set("capabilities", &jsoncompat.Array{})
+	}
 	// Saved-rollout timelines carry the roster too (with_timeline_agents
 	// applied to every timeline_read in Python).
 	if len(h.server.acpAgentSet()) > 0 {
