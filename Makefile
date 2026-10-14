@@ -55,8 +55,9 @@ start: build-gateway-package
 	@launchctl bootstrap gui/$$(id -u) $(LAUNCHD_PLIST)
 	@launchctl kickstart gui/$$(id -u)/$(LAUNCHD_LABEL)
 	@sleep 1
-	@launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null | grep -E "state =|pid =" | head -2
-	@echo "$(LAUNCHD_LABEL) 已启动（KeepAlive 常驻）。日志: make logs"
+	@pid=$$(launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null | awk -F' = ' '/^\tpid = /{print $$2; exit}'); \
+		echo "$(LAUNCHD_LABEL) 已启动（pid $${pid:-?}，KeepAlive 常驻，崩溃自动拉活）"; \
+		echo "日志: make logs   状态: make status"
 
 # 彻底停止：bootout 卸载服务，KeepAlive 不会复活；下次 make start 再拉起。
 stop:
@@ -66,11 +67,29 @@ stop:
 restart: stop start
 
 status:
-	@launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null | grep -E "state =|pid =|last exit code" | head -4 || echo "$(LAUNCHD_LABEL) 未加载（make start 启动）"
-	@curl -fsS -m 3 -o /dev/null -H "Host: 127.0.0.1:$(GATEWAY_PORT)" \
-		"http://127.0.0.1:$(GATEWAY_PORT)/api/health" \
-		&& echo "gateway health: OK (127.0.0.1:$(GATEWAY_PORT))" \
-		|| echo "gateway health: 不可达"
+	@echo "== mobile-bridge 网关 =="
+	@if launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) >/dev/null 2>&1; then \
+		state=$$(launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null | awk -F' = ' '/^\tstate = /{print $$2; exit}'); \
+		pid=$$(launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null | awk -F' = ' '/^\tpid = /{print $$2; exit}'); \
+		echo "  服务:   $${state:-未知}（pid $${pid:-无}，KeepAlive 崩溃自动拉活）"; \
+	else \
+		echo "  服务:   未加载 —— make start 启动"; \
+	fi
+	@if curl -fsS -m 3 -o /dev/null -H "Host: 127.0.0.1:$(GATEWAY_PORT)" \
+		"http://127.0.0.1:$(GATEWAY_PORT)/api/health" 2>/dev/null; then \
+		echo "  本机:   OK  http://127.0.0.1:$(GATEWAY_PORT)"; \
+	else \
+		echo "  本机:   不可达（服务未运行或健康检查失败）"; \
+	fi
+	@lan=$$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null); \
+		[ -n "$$lan" ] && echo "  局域网: http://$$lan:$(GATEWAY_PORT)（手机连同一 Wi-Fi 访问）" || true
+	@url=$$(python3 -c "import json;c=json.load(open('$(GATEWAY_DATA_DIR)/config.json'));print(next((x.get('publicUrl') for x in c.get('connections',[]) if x.get('publicUrl')),''))" 2>/dev/null); \
+		if [ -n "$$url" ]; then \
+			if curl -fsS -m 5 -o /dev/null "$$url" 2>/dev/null; then echo "  外网:   OK  $$url"; \
+			else echo "  外网:   不可达  $$url —— 检查 cloudflared 与隧道日志"; fi; \
+		fi
+	@grep "agents enabled" $(LAUNCHD_LOG) 2>/dev/null | tail -1 | sed 's/^[0-9/: ]*//; s/^/  Agent:  /' || true
+	@echo "  日志:   $(LAUNCHD_LOG)（make logs 跟随）"
 
 logs:
 	@tail -n $${LINES:-50} -F $(LAUNCHD_LOG) 2>/dev/null || echo "暂无日志（make start 后生成于 $(LAUNCHD_LOG)）"
