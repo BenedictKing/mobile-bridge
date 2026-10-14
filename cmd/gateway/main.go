@@ -516,7 +516,9 @@ func runGateway(args []string) {
 		instanceID = hex.EncodeToString(buffer)
 	}
 
-	server := httpd.New(auth.NewAuth(config), gateway.WebFS, port, instanceID)
+	authenticator := auth.NewAuth(config)
+	authenticator.EnablePersistence(dataDir)
+	server := httpd.New(authenticator, gateway.WebFS, port, instanceID)
 	if os.Getenv("GATEWAY_DISABLE_STORE") == "1" && os.Getenv("GATEWAY_DISABLE_IPC") == "1" {
 		server.Bridge = httpd.NewScriptedBridge()
 	}

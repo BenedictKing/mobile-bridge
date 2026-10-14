@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/pbkdf2"
@@ -44,12 +45,17 @@ type Config struct {
 
 // Auth holds login state. now and newToken are injectable for tests.
 type Auth struct {
-	Config    Config
-	Now       func() float64
-	NewToken  func() string
-	sessions  map[string]*jsoncompat.Object // sha256(token) -> session
-	failures  map[string]int
-	blockedIP map[string]bool
+	Config     Config
+	Now        func() float64
+	NewToken   func() string
+	mu         sync.Mutex
+	sessions   map[string]*jsoncompat.Object // sha256(token) -> session
+	failures   map[string]int
+	blockedIP  map[string]bool
+	autoBlocks map[string]*jsoncompat.Object // durable auto-block records
+	policy     *jsoncompat.Object            // persisted through verbatim (not enforced here)
+	identity   string                        // auth config fingerprint (persist.go)
+	path       string                        // <dataDir>/auth-sessions.json when persisting
 }
 
 func pbkdf2Digest(password, salt []byte, iterations, keyLen int) []byte {
@@ -64,6 +70,14 @@ func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(buffer)
 }
 
+func randomHex(size int) string {
+	buffer := make([]byte, size)
+	if _, err := rand.Read(buffer); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(buffer)
+}
+
 func NewAuth(config Config) *Auth {
 	if config.SessionHours == 0 {
 		config.SessionHours = 12
@@ -74,7 +88,7 @@ func NewAuth(config Config) *Auth {
 	return &Auth{Config: config, Now: func() float64 {
 		return float64(time.Now().UnixNano()) / 1e9
 	}, NewToken: randomToken, sessions: map[string]*jsoncompat.Object{},
-		failures: map[string]int{}, blockedIP: map[string]bool{}}
+		failures: map[string]int{}, blockedIP: map[string]bool{}, autoBlocks: map[string]*jsoncompat.Object{}}
 }
 
 func (a *Auth) sessionKey(token string) string {
@@ -83,6 +97,12 @@ func (a *Auth) sessionKey(token string) string {
 
 // LoginStatus mirrors login_status: attempts remaining / blocked shape.
 func (a *Auth) LoginStatus(address string) *jsoncompat.Object {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.loginStatusLocked(address)
+}
+
+func (a *Auth) loginStatusLocked(address string) *jsoncompat.Object {
 	blocked := a.blockedIP[address]
 	remaining := 0
 	if !blocked {
@@ -102,9 +122,11 @@ func (a *Auth) LoginStatus(address string) *jsoncompat.Object {
 // the derived digest and the username, failure accounting with auto-block at
 // MaxFailures, and failure clearing on success.
 func (a *Auth) Login(username, password, address string, remember any) (string, *jsoncompat.Object, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.blockedIP[address] {
 		return "", nil, &LoginRejected{Message: "此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。",
-			Status: a.LoginStatus(address)}
+			Status: a.loginStatusLocked(address)}
 	}
 	if a.Config.Mode != "none" {
 		if !a.passwordMatches(password) || username != a.Config.Username {
@@ -112,6 +134,12 @@ func (a *Auth) Login(username, password, address string, remember any) (string, 
 			a.failures[address] = count
 			if count >= MaxFailures {
 				a.blockedIP[address] = true
+				block := jsoncompat.NewObject()
+				block.Set("id", randomHex(16))
+				block.Set("ip", address)
+				block.Set("blockedAt", json.Number(numberText(a.Now())))
+				block.Set("attempts", jsoncompat.Num(count))
+				a.autoBlocks[address] = block
 				// Sessions from the offending address are dropped.
 				for key, session := range a.sessions {
 					if ip, _ := session.MustGet("ip").(string); ip == address {
@@ -119,15 +147,16 @@ func (a *Auth) Login(username, password, address string, remember any) (string, 
 					}
 				}
 			}
+			a.persistLocked()
 			message := "账号或密码不正确"
 			if a.blockedIP[address] {
 				message = "此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。"
 			}
-			return "", nil, &LoginRejected{Message: message, Status: a.LoginStatus(address)}
+			return "", nil, &LoginRejected{Message: message, Status: a.loginStatusLocked(address)}
 		}
 	}
 	delete(a.failures, address)
-	return a.NewSession(address, "", remember)
+	return a.newSessionLocked(address, "", remember)
 }
 
 func (a *Auth) passwordMatches(password string) bool {
@@ -141,10 +170,24 @@ func (a *Auth) passwordMatches(password string) bool {
 
 // NewSession mirrors Auth.new_session: token + csrf + expiry bookkeeping.
 func (a *Auth) NewSession(address, userAgent string, remember any) (string, *jsoncompat.Object, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.newSessionLocked(address, userAgent, remember)
+}
+
+func (a *Auth) newSessionLocked(address, userAgent string, remember any) (string, *jsoncompat.Object, error) {
 	if address != "" && a.blockedIP[address] {
 		return "", nil, errors.New("此 IP 已被访问规则禁止")
 	}
 	now := a.Now()
+	// Expired sessions leave with every new one, as Python prunes them here.
+	for key, session := range a.sessions {
+		if expires, ok := session.MustGet("expires").(json.Number); ok {
+			if expiry, err := strconv.ParseFloat(expires.String(), 64); err == nil && !SessionValid(expiry, now) {
+				delete(a.sessions, key)
+			}
+		}
+	}
 	hours := a.Config.SessionHours
 	if isTrue, ok := remember.(bool); ok && isTrue {
 		hours = RememberHours
@@ -161,11 +204,14 @@ func (a *Auth) NewSession(address, userAgent string, remember any) (string, *jso
 	session.Set("peer", address)
 	session.Set("source", "direct")
 	a.sessions[a.sessionKey(token)] = session
+	a.persistLocked()
 	return token, session, nil
 }
 
 // Get mirrors Auth.get: validity check and lastSeen refresh (60s throttle).
 func (a *Auth) Get(token string) *jsoncompat.Object {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	session, ok := a.sessions[a.sessionKey(token)]
 	if !ok {
 		return nil
@@ -174,6 +220,7 @@ func (a *Auth) Get(token string) *jsoncompat.Object {
 	expiry, _ := strconv.ParseFloat(expires.String(), 64)
 	if !SessionValid(expiry, a.Now()) {
 		delete(a.sessions, a.sessionKey(token))
+		a.persistLocked()
 		return nil
 	}
 	now := a.Now()
@@ -181,12 +228,18 @@ func (a *Auth) Get(token string) *jsoncompat.Object {
 	seen, _ := strconv.ParseFloat(lastSeen.String(), 64)
 	if now-seen >= 60 {
 		session.Set("lastSeen", json.Number(numberText(now)))
+		a.persistLocked()
 	}
 	return session
 }
 
 func (a *Auth) Logout(token string) {
-	delete(a.sessions, a.sessionKey(token))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, existed := a.sessions[a.sessionKey(token)]; existed {
+		delete(a.sessions, a.sessionKey(token))
+		a.persistLocked()
+	}
 }
 
 // CookieValue mirrors httpd's cookie(): the Set-Cookie header value for a
