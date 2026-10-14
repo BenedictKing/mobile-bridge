@@ -26,7 +26,7 @@ NAS 必须能够访问电脑的局域网地址。两者不在同一网络时，�
 命令行部署也可以在原有启动参数后添加（示例为 macOS，Windows 用 `py -3 -B`）：
 
 ```sh
-python3 -B run.py --lan --origin https://codex.example.com
+./codex-mobile-gateway serve --data-dir .local   # origins 在 .local/config.json 配置
 ```
 
 替换示例域名和 IP；有非标准 HTTPS 端口时，允许的源、代理保留的 Host 和通知地址都要包含该端口。源不带路径或末尾 `/`。

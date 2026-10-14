@@ -148,7 +148,7 @@ func discoverExecutable(env func(string) string, home, envVar, defaultRel, name 
 func kimiProfile(env func(string) string, home string) Profile {
 	return Profile{
 		Kind: "kimi", Label: "Kimi",
-		Command:           subcommandArgv(discoverExecutable(env, home, "KIMI_BIN", ".kimi-code/bin/kimi", "kimi")),
+		Command:           subcommandArgv(discoverExecutable(env, home, "KIMI_BIN", ".kimi-code/bin", "kimi")),
 		InitializeTimeout: 10 * time.Second,
 		Capabilities:      []string{"skills"},
 		EffortMap:         map[string]string{"none": "low", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},
@@ -158,7 +158,7 @@ func kimiProfile(env func(string) string, home string) Profile {
 func mcodeProfile(env func(string) string, home string) Profile {
 	return Profile{
 		Kind: "mcode", Label: "MiniMax",
-		Command:           subcommandArgv(discoverExecutable(env, home, "MCODE_BIN", ".minimax-code/bin/mcode", "mcode")),
+		Command:           subcommandArgv(discoverExecutable(env, home, "MCODE_BIN", ".minimax-code/bin", "mcode")),
 		InitializeTimeout: 10 * time.Second,
 		Capabilities:      []string{"goals", "steer"},
 		EffortMap:         map[string]string{"none": "default", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},

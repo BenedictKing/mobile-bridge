@@ -264,11 +264,11 @@ Large history pages also have a byte budget, so a large reply may require multip
 
 - macOS or Windows 10/11 with the original Codex App running.
 - Release packages include the gateway runtime; no Python or Node.js installation is needed.
-- For command-line deployment: native Python 3.9+. The gateway uses only the Python standard library; LAN runs need no third-party dependencies. Optional dependencies and packaging are managed with [uv](https://docs.astral.sh/uv/) (`uv sync`, `uv run`).
+- For command-line deployment: Go (single Go binary built by `make build-gateway-package`); the ACP multi-agent npx fallback needs Node.js 22+.
 - Desktop App development and packaging additionally require Node.js and the build dependencies below.
 - Keep the computer awake, network reachable and gateway running.
 - For SSH chats: the host is configured in the App, the SSH alias works non-interactively, and remote Python 3 is available. Model/Skill discovery also needs the remote Codex runtime. On Windows, OpenSSH `ssh.exe` must be on PATH.
-- Desktop builds include cloudflared. Source runs install it separately; new SSH profiles and native credential storage need `uv sync` first (optional desktop dependencies), then start with `uv run python run.py`.
+- Desktop builds include cloudflared; source runs install it separately.
 
 ## Command-line LAN setup (advanced)
 
@@ -279,17 +279,18 @@ Skip this section if you downloaded the desktop App. These commands are for runn
 ```powershell
 git clone https://github.com/BenedictKing/mobile-bridge.git
 cd mobile-bridge
-py -3 -B .\run.py --lan
+go build -trimpath -ldflags="-s -w" -o dist\gateway\codex-mobile-gateway.exe .\cmd\gateway
+.\dist\gateway\codex-mobile-gateway.exe serve --data-dir ".local"
 ```
 
-You can also double-click `start.cmd`; it tries `py -3`, then `python`. Keep the terminal open. Stop with `Ctrl+C`, `py -3 -B .\stop.py`, or `stop.cmd`. With a custom `--config`, pass the same path to the stop command.
+You can also double-click `start.cmd` (it runs `dist\gateway\codex-mobile-gateway.exe` and prompts to build when missing). Keep the terminal open. Stop with `Ctrl+C` or `stop.cmd`.
 
 The gateway reads `%USERPROFILE%\.codex` or `CODEX_HOME` and uses the local `\\.\pipe\codex-ipc` named pipe. Run it as the same Windows user as the App. `--codex-home` changes the data directory, not the pipe name. `--ipc-path` is a local endpoint override, not a way to connect to another computer.
 
 Runtime discovery includes `%LOCALAPPDATA%\OpenAI\Codex\bin`, common installation directories, the current user's MSIX package and PATH. For custom installations:
 
 ```powershell
-py -3 -B .\run.py --lan --codex-bin 'C:\path\to\codex.exe'
+$env:GATEWAY_CODEX_BIN = 'C:\path\to\codex.exe' before serve
 ```
 
 If Windows Firewall prompts, allow only the network scope you need. Files use UTF-8. Restrict access with Windows directory ACLs; POSIX chmod does not replace them.
@@ -299,10 +300,17 @@ If Windows Firewall prompts, allow only the network scope you need. Files use UT
 ```sh
 git clone https://github.com/BenedictKing/mobile-bridge.git
 cd mobile-bridge
-python3 -B "$PWD/run.py" --lan
+make serve          # foreground (builds dist/gateway/codex-mobile-gateway)
 ```
 
-Alternatively, double-click `启动手机网关.command`. Stop with `Ctrl+C`, `python3 -B stop.py`, or `停止手机网关.command`. System Python is enough for LAN-only use; before enabling Cloudflare tunnels or SSH connections, run `uv sync` and start with `uv run python run.py --lan` (optional dependencies such as keyring are required).
+For an always-on production setup use launchd:
+
+```sh
+make start          # install plist, load and start (KeepAlive)
+make status         # service state + health probe
+make logs           # follow ~/Library/Logs/mobile-bridge-gateway.log
+make stop           # stop and unload
+```
 
 Open the printed LAN URL on a phone on the same network, for example `http://192.168.1.10:8787`. The initial username is `admin`; the generated password is in `.local/首次登录.txt`. Select a chat and wait for **Connected** before sending.
 
@@ -313,7 +321,7 @@ Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a 
 The default `auto` probes for locally installed agents (Codex is always enabled; Kimi Code CLI, MiniMax mcode, Claude Code, DeepSeek Harness dsh and ZCode are enabled when a local install is detected — an npx download fallback alone does not count). You can also declare them explicitly with `--agents`, comma-separated:
 
 ```sh
-python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh,zcode
+GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode make serve
 ```
 
 The corresponding CLI (`kimi` / `mcode` / `npx`; Claude is reached through the `@agentclientprotocol/claude-agent-acp` wrapper, overridable via the `CLAUDE_ACP_BIN` environment variable; DeepSeek through the `@openma/deepseek-harness-acp` wrapper, overridable via `DSH_ACP_BIN`; ZCode through the `zcode-acp-server` wrapper, overridable via `ZCODE_ACP_BIN`, credentials read from `~/.zcode`, Node.js 22+ required) must be installed on PATH and signed in (for dsh use `dsh-acp login` or the `DEEPSEEK_API_KEY` environment variable; for ZCode sign in via the desktop app or CLI). The gateway spawns these agents as child processes; the phone chat list labels each session with its agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`. When creating a chat, the agent and the project are picked independently; projects pointing at the same directory are deduplicated across agents, and a local project directory known to one agent can be handed to another agent for the new session.
@@ -333,15 +341,15 @@ The detected path is filled in as an unsaved change. Save settings, then start t
 **Source / CLI:** Install cloudflared from the [official download instructions](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/). Then, using the same configuration and port as your existing gateway:
 
 ```sh
-python3 -B run.py --lan --tunnel --cloudflared /path/to/cloudflared
+enable the tunnel connection in `.local/config.json` (or the desktop App), then `make serve`
 ```
 
-On Windows, use `py -3 -B .\run.py` and the path to `cloudflared.exe`. Quick Tunnel URLs are temporary, require no purchased domain and may change after restart. The computer must be able to make outbound connections to the tunnel service. The initial tunnel handshake runs in the background so LAN access can become ready independently.
+On Windows, put `cloudflared.exe` in `.local\bin\` or PATH. Quick Tunnel URLs are temporary, require no purchased domain and may change after restart. The computer must be able to make outbound connections to the tunnel service. The initial tunnel handshake runs in the background so LAN access can become ready independently.
 
 For an already configured HTTPS reverse proxy:
 
 ```sh
-python3 -B run.py --lan --origin https://codex.try2love.com
+add the origin to `.local/config.json`'s `origins` array, then `make serve`
 ```
 
 Preserve the external Host header, Origin, cookies and CSRF header; disable proxy caching/buffering and allow long requests. Use a dedicated hostname root, not `/codex/`. The proxy must reach the computer. TLS termination and DNS are configured on your own infrastructure. The App's profile export is the guided route for own-server SSH and NAS deployments.
@@ -373,10 +381,10 @@ Work mode follows the chat unless manually selected. Default and Plan messages c
 The default is independent username/password authentication. To change the password from the CLI:
 
 ```sh
-python3 -B run.py --set-password
+stop the gateway, write a new PBKDF2-SHA256 `salt`/`hash` into `.local/config.json`'s `auth` (or use the desktop App)
 ```
 
-Use `py -3 -B .\run.py --set-password` on Windows. Passwords must contain at least 12 characters. Restart the gateway for login changes to take effect. Passwordless access is explicit through the App or `--no-auth`; anyone who can reach that entry can then operate connected chats. Keep authentication for public access.
+Passwords must contain at least 12 characters. Restart the gateway for login changes to take effect. Passwordless access is explicit through the App or `--no-auth`; anyone who can reach that entry can then operate connected chats. Keep authentication for public access.
 
 ## Architecture and stored data
 

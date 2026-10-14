@@ -1,13 +1,13 @@
 @echo off
 setlocal
 pushd "%~dp0"
-call py -3 -c "import sys; sys.exit(sys.version_info < (3, 9))" >nul 2>&1
-if not errorlevel 1 (
-    call py -3 -B "%~dp0stop.py" %*
-) else (
-    call python -B "%~dp0stop.py" %*
-)
+if not exist "dist\gateway\codex-mobile-gateway.exe" goto missing
+"dist\gateway\codex-mobile-gateway.exe" stop --data-dir ".local"
 set "result=%errorlevel%"
+goto end
+:missing
+echo [mobile-bridge] 未找到网关程序 dist\gateway\codex-mobile-gateway.exe
+set "result=1"
+:end
 popd
 if not "%result%"=="0" pause
-exit /b %result%

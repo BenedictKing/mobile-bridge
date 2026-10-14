@@ -1,9 +1,17 @@
-# Go 迁移配套（docs/go-migration-plan.md P0/P1 交付物）。现有 Python 测试不受影响。
+# Go 网关（docs/go-migration-plan.md 已收官；Python 实现已退役删除）。
+# 日常入口：make start / make stop / make restart / make status / make logs。
 
-# P7 分发矩阵：五平台交叉编译（本地可验证的部分）
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: build-matrix build-gateway-package build-wails run-gateway
+LAUNCHD_LABEL := com.mobile-bridge.gateway
+LAUNCHD_PLIST := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
+LAUNCHD_LOG := $(HOME)/Library/Logs/mobile-bridge-gateway.log
+GATEWAY_DATA_DIR ?= $(CURDIR)/.local
+GATEWAY_PORT ?= 8787
+
+.PHONY: build-matrix build-gateway-package build-wails serve \
+	start stop restart status logs uninstall conformance
+
 build-matrix:
 	@mkdir -p dist
 	@for platform in $(PLATFORMS); do \
@@ -13,23 +21,6 @@ build-matrix:
 			-o dist/gateway-$$os-$$arch ./cmd/gateway || exit 1; \
 	done
 	@ls -lh dist/ | grep gateway-
-
-.PHONY: parity-goldens test-go parity build-gateway audit conformance
-
-# 重新生成全部差分场景与 Python oracle goldens（改契约后必须重跑）
-PARITY_DIRS = timeline ipc auth lifecycle model pairing store acpview acpadapter service projection timelineread submissions notifications historyexp
-
-parity-goldens:
-	@for dir in $(PARITY_DIRS) acp; do \
-		if [ -f conformance/$$dir/gen_scenarios.py ]; then python3 conformance/$$dir/gen_scenarios.py; fi; \
-		python3 conformance/$$dir/oracle.py --goldens; \
-	done
-
-test-go:
-	go test ./...
-
-# Go/Python 字节对拍（P1/P2 验收门槛）
-parity: test-go
 
 build-gateway:
 	go build -o dist/gateway-go ./cmd/gateway
@@ -49,19 +40,47 @@ build-wails:
 	@cd wails && go build -trimpath -ldflags='-s -w' -o ../dist/desktop/mobile-bridge-wails .
 	@ls -lh dist/desktop/mobile-bridge-wails
 
-# Run the Go gateway under the current terminal; Wails can supervise the same
-# binary through its bound service methods. Override GATEWAY_DATA_DIR/GATEWAY_PORT
-# when testing an isolated data directory or port.
-GATEWAY_DATA_DIR ?= .local-go
-GATEWAY_PORT ?= 8790
-run-gateway: build-gateway-package
+# 前台运行（调试用；生产请用 make start 走 launchd 常驻）。
+# GATEWAY_DATA_DIR / GATEWAY_PORT 可覆盖以隔离验证。
+serve: build-gateway-package
 	@GATEWAY_PORT=$(GATEWAY_PORT) ./dist/gateway/codex-mobile-gateway serve --data-dir "$(GATEWAY_DATA_DIR)"
 
-# 742 个测试的三分类清单（docs/go-migration-test-audit.md 的数据源）
-audit:
-	python3 conformance/classify_tests.py > /dev/null && echo "audit ok"
+# launchd 常驻：写入 plist、加载并启动（KeepAlive 自动拉活）。
+# 幂等——已加载时先卸载再以当前二进制重启。
+start: build-gateway-package
+	@mkdir -p $(HOME)/Library/LaunchAgents $(HOME)/Library/Logs
+	@sed -e "s|@CURDIR@|$(CURDIR)|g" -e "s|@HOME@|$(HOME)|g" \
+		deploy/launchd/gateway.plist.template > $(LAUNCHD_PLIST)
+	@launchctl bootout gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null || true
+	@launchctl bootstrap gui/$$(id -u) $(LAUNCHD_PLIST)
+	@launchctl kickstart gui/$$(id -u)/$(LAUNCHD_LABEL)
+	@sleep 1
+	@launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null | grep -E "state =|pid =" | head -2
+	@echo "$(LAUNCHD_LABEL) 已启动（KeepAlive 常驻）。日志: make logs"
 
-# HTTP 差分：同一份 golden 验收两个实现
+# 彻底停止：bootout 卸载服务，KeepAlive 不会复活；下次 make start 再拉起。
+stop:
+	@launchctl bootout gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null && echo "$(LAUNCHD_LABEL) 已停止并卸载" || echo "$(LAUNCHD_LABEL) 未在运行"
+	@pkill -f "codex-mobile-gateway serve" 2>/dev/null || true
+
+restart: stop start
+
+status:
+	@launchctl print gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null | grep -E "state =|pid =|last exit code" | head -4 || echo "$(LAUNCHD_LABEL) 未加载（make start 启动）"
+	@curl -fsS -m 3 -o /dev/null -H "Host: 127.0.0.1:$(GATEWAY_PORT)" \
+		"http://127.0.0.1:$(GATEWAY_PORT)/api/health" \
+		&& echo "gateway health: OK (127.0.0.1:$(GATEWAY_PORT))" \
+		|| echo "gateway health: 不可达"
+
+logs:
+	@tail -n $${LINES:-50} -F $(LAUNCHD_LOG) 2>/dev/null || echo "暂无日志（make start 后生成于 $(LAUNCHD_LOG)）"
+
+# 卸载 launchd 服务并删除 plist（保留数据目录与二进制）。
+uninstall: stop
+	@rm -f $(LAUNCHD_PLIST)
+	@echo "已删除 $(LAUNCHD_PLIST)"
+
+# HTTP 差分（Go 实现对拍已冻结的 golden；Python oracle 已随迁移退役，
+# golden 变更需手工维护 conformance/http/golden.jsonl）。
 conformance:
-	python3 conformance/http/run.py --verify
 	python3 conformance/http/run.py --verify --target go

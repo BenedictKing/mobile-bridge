@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.mobile-bridge.gateway</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@CURDIR@/dist/gateway/codex-mobile-gateway</string>
+		<string>serve</string>
+		<string>--data-dir</string>
+		<string>@CURDIR@/.local</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>@CURDIR@</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- ACP agent 自动发现依赖 PATH 里的 npx/node（zcode/claude/dsh 的
+		     npx 回退）；注入 fnm 稳定安装路径，launchd 无 shell 钩子。 -->
+		<key>PATH</key>
+		<string>@HOME@/.local/bin:@HOME@/.local/share/fnm/node-versions/v24.18.0/installation/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>StandardOutPath</key>
+	<string>@HOME@/Library/Logs/mobile-bridge-gateway.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/Library/Logs/mobile-bridge-gateway.log</string>
+</dict>
+</plist>

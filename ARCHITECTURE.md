@@ -109,7 +109,7 @@ Wails 桌面服务管理托盘状态、手机地址和退出动作；仅显式�
 
 | 模块 | 职责 |
 | --- | --- |
-| `run.py` / `stop.py` | 启动参数、进程记录、停止 |
+| `cmd/gateway`（make start/stop，launchd 托管） | 启动参数、进程记录、停止 |
 | `bridge/ipc.py` | 原生帧传输、请求白名单和事件分发 |
 | `bridge/transport.py` | Unix socket / Windows 命名管道字节流 |
 | `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
@@ -131,7 +131,7 @@ Wails 桌面服务管理托盘状态、手机地址和退出动作；仅显式�
 
 ### 控制模型
 
-Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）与 ZCode（`zcode`，经 `zcode-acp-server` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`run.py --agents codex,kimi,mcode,claude,dsh,zcode` 决定注册哪些后端，默认 `auto` 自动探测本机已安装的 Agent。
+Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）与 ZCode（`zcode`，经 `zcode-acp-server` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`GATEWAY_AGENTS`（或 `MOBILE_BRIDGE_AGENTS`）环境变量决定注册哪些后端，默认 `auto` 自动探测本机已安装的 Agent。
 
 ### Adapter 接口与路由
 

@@ -36,43 +36,17 @@
 
 1. 优先使用已发布的桌面 App，按快速开始配置并启动。只有源码部署才需要准备仓库并在仓库根目录运行自动测试；测试不需要真实模型账号。受限工具环境若禁止临时 TCP、Unix socket 或 Windows 命名管道，应按该环境的权限流程处理并如实记录。
 2. 只有选择隧道时才准备 `cloudflared`。复用已有可执行文件，核对路径；缺少时按用户授权使用官方安装来源。
-3. App 用户在“网络与登录”添加并启用所需连接，可同时保留局域网、临时隧道和固定入口。命令行用户组合所需参数：局域网 `--lan`；临时外网追加 `--tunnel --cloudflared <实际路径>`；已有自有入口追加 `--origin <实际 HTTPS 源>`。
-4. 沿用已有数据目录与端口。源码启动时使用 `run.py` 的绝对路径，让 `stop.py` 可以验证进程，默认使用项目内 `.local/` 配置；用户要求换端口时统一更新检查命令和交付地址。
+3. App 用户在“网络与登录”添加并启用所需连接，可同时保留局域网、临时隧道和固定入口。命令行用户把入口写进 `.local/config.json`（`origins` 数组 / `connections`），或经桌面 App 配置。
+4. 沿用已有数据目录与端口。源码启动统一走 make：`make start`（launchd 常驻，KeepAlive 自动拉活）、`make serve`（前台）、`make stop` / `make status` / `make logs`；默认使用项目内 `.local/` 配置，用户要求换端口时统一更新 `GATEWAY_PORT` 与交付地址。
 5. 为用户保留可以持续运行的进程，并记录启动方式、PID、日志和停止方式。
 
 以下终端方式仅用于源码部署，App 用户直接使用界面启停。
 
-**前台方式：** 在用户可以保留的终端中执行前面的启动命令。交付时说明该终端需要保持运行，以及如何用 `Ctrl+C` 停止。
+**前台方式：** 在用户可以保留的终端中执行 `make serve`。交付时说明该终端需要保持运行，以及如何用 `Ctrl+C` 停止。
 
-**Windows 前台方式：** 使用 `start.cmd` 或 PowerShell 中的 `py -3 -B .\run.py`，按已选方案追加参数。下方 shell heredoc 示例适用于 macOS；不要直接粘贴到 PowerShell。
+**Windows 前台方式：** 构建后使用 `start.cmd`（运行 `dist\gateway\codex-mobile-gateway.exe`），停止用 `stop.cmd`。
 
-**后台方式（macOS）：** 若 Agent 的执行环境允许保留子进程，确认没有已有实例占用目标端口后，可在仓库根目录使用以下 Python 3.9+ 示例。先按已选方案修改 `serve_args`；示例默认只启用局域网和账号密码。
-
-```sh
-python3 -B - <<'PY'
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-root = Path.cwd().resolve()
-assert (root / "run.py").is_file(), "请在仓库根目录执行"
-serve_args = ["--lan"]
-# 临时外网：改为 ["--lan", "--tunnel", "--cloudflared", "已核对的绝对路径"]
-# 自有入口：改为 ["--origin", "用户的实际 HTTPS 源"]
-os.umask(0o077)
-data_dir = root / ".local"
-data_dir.mkdir(mode=0o700, exist_ok=True)
-with (data_dir / "gateway.log").open("ab") as log:
-    process = subprocess.Popen(
-        [sys.executable, "-B", str(root / "run.py"), *serve_args],
-        cwd=str(root),
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-print("启动请求已提交，PID:", process.pid)
+**后台方式（macOS）：** `make start` 交给 launchd 托管（KeepAlive 崩溃自动拉活、开机自启），日志在 `~/Library/Logs/mobile-bridge-gateway.log`（`make logs` 跟随）。停止与重启用 `make stop` / `make restart`。
 print("日志:", data_dir / "gateway.log")
 PY
 ```

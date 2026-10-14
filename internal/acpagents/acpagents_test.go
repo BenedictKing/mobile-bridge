@@ -139,3 +139,26 @@ func TestDiscoverEnvOverrides(t *testing.T) {
 		t.Fatalf("zcode argv=%v", zcode.Command)
 	}
 }
+
+func TestDiscoverKimiViaHomeDirectoryLayout(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, ".kimi-code", "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	kimi := filepath.Join(bin, "kimi")
+	if err := os.WriteFile(kimi, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profiles := Discover(emptyEnv, home)
+	var found *Profile
+	for _, profile := range profiles {
+		if profile.Kind == "kimi" {
+			copy := profile
+			found = &copy
+		}
+	}
+	if found == nil || found.Command == nil || found.Command[0] != kimi {
+		t.Fatalf("kimi command=%v", found)
+	}
+}

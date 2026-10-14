@@ -27,10 +27,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from bridge.auth import password_record  # noqa: E402
-from bridge.httpd import GatewayServer  # noqa: E402
-
 USERNAME, PASSWORD = 'admin', 'correct password test'
+
+
+def password_record(password):
+    """Inline copy of the retired bridge.auth.password_record (stdlib only)."""
+    import hashlib
+    import secrets
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600000, dklen=32)
+    return {"algorithm": "pbkdf2-sha256", "iterations": 600000,
+            "salt": salt.hex(), "hash": digest.hex()}
 
 # name, method, path, body, extra headers, requires session cookie+csrf
 REQUESTS = [
@@ -153,6 +160,9 @@ def mask(text):
 
 
 def boot():
+    # The Python gateway was retired with the Go migration; the oracle import
+    # only resolves when regenerating goldens from a historical checkout.
+    from bridge.httpd import GatewayServer
     config = {'auth': {'mode': 'password', 'username': USERNAME,
                        **password_record(PASSWORD)}, 'origins': []}
     server = GatewayServer(('127.0.0.1', 0), EmptyBridge(), config, ROOT / 'web')

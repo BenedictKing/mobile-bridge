@@ -273,10 +273,9 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 
 - macOS 或 Windows 10/11，已安装并运行 Codex App。
 - 使用发布的桌面 App 时无需安装 Python 或 Node.js，网关运行时已内置。
-- 仅从源码或命令行运行时需要 Python 3.9+；网关本身只使用 Python 标准库，局域网运行无需第三方依赖或前端构建。Windows 使用原生 CPython，无需 WSL。可选依赖与打包统一由 [uv](https://docs.astral.sh/uv/) 管理（`uv sync`、`uv run`）。桌面 App 的开发与打包另需 Node.js 及构建依赖。
+- 从源码运行需要 Go（网关为单一 Go 二进制，`make build-gateway-package` 构建）；ACP 多 Agent 的 npx 回退需要 Node.js 22+。桌面 App 的开发与打包另需 Wails 所需的 WebView/GTK 或 WebKit 依赖。
 - 电脑保持唤醒、联网，网关进程保持运行。
-- 使用 SSH 聊天时：App 中已配置该主机，电脑上相应 SSH 别名可非交互连接，远端有 Python 3。Windows 需要 PATH 中可用的 OpenSSH `ssh.exe`。模型/Skill 目录还需要远端可用的 Codex 运行时。
-- 外网隧道：桌面构建内置 `cloudflared`，源码运行可自行安装；二进制在构建时按锁定版本和 SHA-256 获取，不提交到仓库。源码使用新 SSH 配置或系统凭据存储时，先执行 `uv sync` 安装桌面可选依赖，再用 `uv run python run.py` 启动。
+- 外网隧道：桌面构建内置 `cloudflared`，源码运行可自行安装；二进制在构建时按锁定版本和 SHA-256 获取，不提交到仓库。
 
 ## 命令行启动：局域网（进阶）
 
@@ -289,19 +288,21 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 ```powershell
 git clone https://github.com/BenedictKing/mobile-bridge.git
 cd mobile-bridge
-py -3 -B .\run.py --lan
+go build -trimpath -ldflags="-s -w" -o dist\gateway\codex-mobile-gateway.exe .\cmd\gateway
+.\dist\gateway\codex-mobile-gateway.exe serve --data-dir ".local"
 ```
 
-也可以双击 `start.cmd`。如果没有 Python Launcher，将 `py -3` 换成 `python`；双击脚本会自动尝试这两种入口。保持启动窗口打开，手机连接同一局域网后访问终端显示的 IP 地址。
+也可以双击 `start.cmd`（自动使用 `dist\gateway\codex-mobile-gateway.exe`，缺失时提示先构建）。保持启动窗口打开，手机连接同一局域网后访问终端显示的 IP 地址。
 
-停止时按 `Ctrl+C`，或在另一个终端运行 `py -3 -B .\stop.py`，也可以双击 `stop.cmd`。网关收到停止请求后会清理连接及隧道，不会按旧 PID 强制终止其他进程。使用自定义 `--config` 时，停止命令须传入同一个配置路径。
+停止时按 `Ctrl+C`，或在另一个终端运行 `stop.cmd`。网关收到停止请求后会清理连接及隧道，不会按旧 PID 强制终止其他进程。
 
 默认读取 `%USERPROFILE%\.codex`（或 `CODEX_HOME`），使用本机命名管道 `\\.\pipe\codex-ipc`。网关与 App 应使用同一个 Windows 用户运行。自定义数据目录可通过 `--codex-home` 指定；命名管道名不随该目录改变。
 
 模型/Skill 目录会查找 `%LOCALAPPDATA%\OpenAI\Codex\bin` 下的运行时、常见安装路径、当前用户的 MSIX 包及 PATH 中的 `codex.exe`。自定义安装或同时安装多个版本时，可明确指定 App 对应的程序：
 
 ```powershell
-py -3 -B .\run.py --lan --codex-bin 'C:\path\to\codex.exe'
+$env:GATEWAY_CODEX_BIN = 'C:\path\to\codex.exe'
+.\dist\gateway\codex-mobile-gateway.exe serve --data-dir ".local"
 ```
 
 `--ipc-path` 可覆盖本机命名管道地址。它不是 TCP 入口，不能用于连接其他电脑。
@@ -313,10 +314,18 @@ Windows 防火墙若弹出提示，仅按需要允许专用网络访问。凭据
 ```sh
 git clone https://github.com/BenedictKing/mobile-bridge.git
 cd mobile-bridge
-python3 -B "$PWD/run.py" --lan
+make serve          # 前台运行（自动构建 dist/gateway/codex-mobile-gateway）
 ```
 
-也可以双击 `启动手机网关.command`。仅用局域网时系统 Python 即可；启用 Cloudflare 隧道或 SSH 连接前先执行 `uv sync`，并用 `uv run python run.py --lan` 启动（需要 keyring 等可选依赖）。
+生产常驻建议改用 launchd 托管（崩溃自动拉活、开机自启）：
+
+```sh
+make start          # 写入 plist、加载并启动（KeepAlive）
+make status         # 查看服务状态与健康探测
+make logs           # 跟随日志（~/Library/Logs/mobile-bridge-gateway.log）
+make stop           # 彻底停止并卸载服务
+make restart        # 重启
+```
 
 1. 打开电脑上的 Codex App。
 2. 启动网关，在终端找到局域网地址，例如 `http://192.168.1.10:8787`。
@@ -328,16 +337,16 @@ python3 -B "$PWD/run.py" --lan
 
 如果聊天只显示历史记录，请先在电脑 App 打开该聊天，再点击手机页面的“重新连接”。网关不会自动为尚未加载的聊天启动新的执行实例。看到“桌面读取超时”表示实时状态尚未取得，不代表已经发送消息；只有发送操作结果不明时才会提示“操作可能已提交”，此时请先查看聊天，避免重复发送。
 
-不加 `--lan` 时，仅监听本机 `127.0.0.1`。前台运行时按 `Ctrl+C` 停止；也可以运行 `python3 -B stop.py`，或双击 `停止手机网关.command`。从旧版本升级后，首次请在旧服务窗口按 `Ctrl+C` 停止，再启用新的停止控制机制。
+`make serve` 同时监听本机与局域网地址；仅本机监听可通过 `GATEWAY_PORT` 与防火墙控制。前台运行按 `Ctrl+C` 停止；`make start` 的 launchd 服务用 `make stop` 停止。
 
-网关不安装开机启动服务。重启网关后需要重新登录。
+launchd 托管（`make start`）开机自启、崩溃自动拉活；登录会话持久化在数据目录，重启网关后手机不掉线。
 
 ### 多 Agent（源码运行）
 
-默认 `auto` 会自动探测本机已安装的 Agent（Codex 始终启用；Kimi Code CLI、MiniMax mcode、Claude Code、DeepSeek Harness dsh、ZCode 按本机安装情况启用，仅有 npx 兜底下载的不算已安装）。也可以用 `--agents` 显式声明，多个类型用逗号分隔：
+默认 `auto` 会自动探测本机已安装的 Agent（Codex 始终启用；Kimi Code CLI、MiniMax mcode、Claude Code、DeepSeek Harness dsh、ZCode 按本机安装情况启用，仅有 npx 兜底下载的不算已安装）。也可以用 `GATEWAY_AGENTS` 环境变量显式声明，多个类型用逗号分隔：
 
 ```sh
-python3 -B "$PWD/run.py" --lan --agents codex,kimi,mcode,claude,dsh,zcode
+GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode make serve
 ```
 
 前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
@@ -374,32 +383,13 @@ brew install cloudflared
 
 也可以从 [Cloudflare 官方下载页](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) 获取对应 macOS 或 Windows 程序。
 
-Windows 将 `cloudflared.exe` 放在 `.local\bin\cloudflared.exe` 或 PATH 中，然后双击 `start-tunnel.cmd`；也可以指定完整路径：
-
-```powershell
-py -3 -B .\run.py --lan --tunnel --cloudflared 'C:\tools\cloudflared.exe'
-```
-
-macOS 启动命令如下。
+Quick Tunnel 由网关在检测到 `cloudflared` 时自动拉起：Windows 将 `cloudflared.exe` 放在 `.local\bin\cloudflared.exe` 或 PATH 中；macOS 安装 Homebrew 版 `cloudflared` 即可。
 
 ### 启动
 
-先停止已经占用同一端口的网关，再运行：
+先停止已经占用同一端口的网关（`make stop`），再在 `.local/config.json` 的 `connections` 中启用隧道（或通过桌面 App 的连接管理开启），然后 `make serve` / `make start`。
 
-```sh
-python3 -B "$PWD/run.py" --lan --tunnel --cloudflared "$(command -v cloudflared)"
-```
-
-终端会打印随机的 `https://…trycloudflare.com` 地址，同时写入 `.local/外网地址.txt`。手机使用同一套网关账号密码登录，无需登录 Cloudflare。
-
-如果希望使用 `启动外网手机网关.command`，请把可执行的 `cloudflared` 放到 `.local/bin/cloudflared`。Homebrew 安装后也可以创建链接：
-
-```sh
-mkdir -p .local/bin
-ln -s "$(command -v cloudflared)" .local/bin/cloudflared
-```
-
-上述链接命令适用于该目标尚不存在的情况。
+终端或 `make logs` 会打印随机的 `https://…trycloudflare.com` 地址，同时写入 `.local/外网地址.txt`。手机使用同一套网关账号密码登录，无需登录 Cloudflare。
 
 临时隧道的使用边界：
 
@@ -411,13 +401,7 @@ ln -s "$(command -v cloudflared)" .local/bin/cloudflared
 
 ## 自有 HTTPS 入口
 
-将自己的隧道或反向代理指向 `http://127.0.0.1:8787`，保留外部 `Host`，然后启动：
-
-```sh
-python3 -B "$PWD/run.py" --origin https://codex.try2love.com
-```
-
-可与 `--lan` 一起使用。允许多个入口时重复传入 `--origin`，或者写入 `.local/config.json` 的 `origins` 数组。值必须是完整 HTTPS 源，不带路径和末尾 `/`。
+将自己的隧道或反向代理指向 `http://127.0.0.1:8787`，保留外部 `Host`；HTTPS 源写入 `.local/config.json` 的 `origins` 数组（或经桌面 App 的连接管理配置）后 `make serve` / `make start`。值必须是完整 HTTPS 源，不带路径和末尾 `/`。
 
 反向代理读取超时建议不少于 300 秒。局域网网页使用增量 SSE，反代需放行并不缓冲 `text/event-stream`；Cloudflare 临时隧道等入口回退为最长等待 12 秒的增量长轮询。HTTPS 入口的登录 Cookie 带 `Secure` 属性。
 
@@ -505,22 +489,11 @@ Fast 会增加额度消耗，具体以[官方速度说明](https://learn.chatgpt
 
 ### 修改密码
 
-停止网关后执行：
-
-```sh
-python3 -B run.py --set-password
-python3 -B "$PWD/run.py" --lan
-```
-
-密码至少 12 位。账号名可修改 `.local/config.json` 中的 `auth.username`。
+停止网关（`make stop`）后，按 `.local/config.json` 中 `auth` 的格式写入新的 `salt`/`hash`（PBKDF2-SHA256，至少 12 位密码），或通过桌面 App 修改；然后 `make start`。账号名可修改配置中的 `auth.username`。
 
 ### 显式免密
 
-```sh
-python3 -B "$PWD/run.py" --lan --no-auth
-```
-
-也可将配置中的 `auth.mode` 设置为 `none`。免密页面仍需点击连接，以建立会话和 CSRF 令牌。**免密时，任何能访问网关的人都能读取聊天并控制对应 Codex 会话**，仅适合受控网络。
+将 `.local/config.json` 中的 `auth.mode` 设置为 `none` 后启动。免密页面仍需点击连接，以建立会话和 CSRF 令牌。**免密时，任何能访问网关的人都能读取聊天并控制对应 Codex 会话**，仅适合受控网络。
 
 默认密码以独立随机 salt 和 PBKDF2-HMAC-SHA256 保存，普通登录有效期默认 12 小时（网页勾选“记住密码”时固定为 7 天），可在桌面 App 设置为 0–87600 的整数小时；0 表示网关不设到期时间。有限时长从登录时算起，访问不会延长到期时间。HTTP API、SSE 和长轮询都需要登录，并校验 Host、Origin；写操作另校验 CSRF。该网关面向个人使用，没有多用户角色隔离，不应共享账号。
 
