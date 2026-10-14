@@ -471,7 +471,7 @@ func (h *handler) handleMigrate(threadID string) {
 			sendErr = session.Prompt(message, 3600*time.Second)
 		}
 	} else {
-		_, sendErr = h.server.Codex.StartTurnWithOptions(createdID, submissionID, message, "send", "", nil)
+		_, sendErr = h.server.Codex.StartTurnWithOptions(createdID, submissionID, message, "send", "", nil, nil)
 	}
 	if sendErr != nil {
 		result.Set("warning", sendErr.Error())

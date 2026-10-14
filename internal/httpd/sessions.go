@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -368,9 +369,25 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			id, _ := body.(*jsoncompat.Object).MustGet("id").(string)
 			mode, _ := body.(*jsoncompat.Object).MustGet("mode").(string)
 			workMode, _ := body.(*jsoncompat.Object).MustGet("workMode").(string)
-			if attachments, ok := body.(*jsoncompat.Object).MustGet("attachments").(*jsoncompat.Array); ok && len(attachments.Items) > 0 {
-				h.fail(http.StatusConflict, errorBody("当前 Go 网关暂不支持 Codex 原生附件发送"))
-				return true
+			var attachments []codex.AttachmentInput
+			if raw, ok := body.(*jsoncompat.Object).MustGet("attachments").(*jsoncompat.Array); ok {
+				for _, value := range raw.Items {
+					entry, ok := value.(*jsoncompat.Object)
+					if !ok {
+						h.fail(http.StatusBadRequest, errorBody("附件记录无效"))
+						return true
+					}
+					attachmentID, _ := entry.MustGet("id").(string)
+					file, getErr := h.server.Uploads.Get(threadID, attachmentID)
+					if getErr != nil {
+						h.fail(http.StatusBadRequest, errorBody(getErr.Error()))
+						return true
+					}
+					path, _ := file.MustGet("localPath").(string)
+					name, _ := file.MustGet("name").(string)
+					image, _ := file.MustGet("image").(string)
+					attachments = append(attachments, codex.AttachmentInput{Name: name, Path: path, Image: image != ""})
+				}
 			}
 			var skills []codex.SkillInput
 			if raw := bodyList(body, "skills"); len(raw) > 0 {
@@ -383,7 +400,7 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 					skills = append(skills, codex.SkillInput{Name: entry["name"], Path: entry["path"]})
 				}
 			}
-			result, callErr := h.server.Codex.StartTurnWithOptions(threadID, id, text, mode, workMode, skills)
+			result, callErr := h.server.Codex.StartTurnWithOptions(threadID, id, text, mode, workMode, skills, attachments)
 			if callErr != nil {
 				h.fail(http.StatusConflict, errorBody(callErr.Error()))
 			} else {
@@ -557,6 +574,31 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			h.fail(http.StatusBadRequest, errorBody("当前 Agent 不支持目标模式"))
 			return true
 		}
+		var attachmentFiles []acpadapter.FileSpec
+		if raw, ok := object.MustGet("attachments").(*jsoncompat.Array); ok {
+			for _, value := range raw.Items {
+				entry, ok := value.(*jsoncompat.Object)
+				if !ok {
+					h.fail(http.StatusBadRequest, errorBody("附件记录无效"))
+					return true
+				}
+				attachmentID, _ := entry.MustGet("id").(string)
+				file, getErr := h.server.Uploads.Get(threadID, attachmentID)
+				if getErr != nil {
+					h.fail(http.StatusBadRequest, errorBody(getErr.Error()))
+					return true
+				}
+				path, _ := file.MustGet("localPath").(string)
+				name, _ := file.MustGet("name").(string)
+				image, _ := file.MustGet("image").(string)
+				attachmentFiles = append(attachmentFiles, acpadapter.FileSpec{Name: name, Path: path, Image: image != ""})
+			}
+		}
+		blocks, blockErr := acpadapter.AttachmentBlocks(session.Process.Capabilities, attachmentFiles)
+		if blockErr != nil {
+			h.fail(http.StatusBadRequest, errorBody(blockErr.Error()))
+			return true
+		}
 		// ACP has no native skill block: kimi activates a skill from a
 		// leading slash command in the first text block.
 		if raw := bodyList(body, "skills"); len(raw) > 0 {
@@ -600,7 +642,13 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				return true
 			}
 		}
-		if callErr := session.Prompt(text, 3600*time.Second); callErr != nil {
+		var extra []*jsoncompat.Object
+		for _, value := range blocks.Items {
+			if block, ok := value.(*jsoncompat.Object); ok {
+				extra = append(extra, block)
+			}
+		}
+		if callErr := session.PromptWithBlocks(text, extra, 3600*time.Second); callErr != nil {
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		} else {
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")

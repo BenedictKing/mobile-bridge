@@ -70,7 +70,7 @@ class MigrateControl {
     try{
       const body={agent:kind,scope,id:(typeof crypto.randomUUID==='function'?crypto.randomUUID():String(Date.now())),uiLocale:this.locale()};
       const result=await this.request(body);
-      this.onMigrated(result,label);
+      this.onMigrated(result,label,body);
     }catch(error){
       this.onError(error);
     }finally{

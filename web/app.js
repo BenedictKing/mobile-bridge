@@ -41,9 +41,17 @@ $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.ref
 const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),
   request:body=>api(sessionUrl(currentId,'migrate',currentHost),body),
   confirm:message=>window.confirm(message),
-  onMigrated:(result,label)=>{$('chat-details-dialog').close();
+  onMigrated:async(result,label,body)=>{$('chat-details-dialog').close();
+    if(!result.sent){
+      try{
+        const sourceId=currentId,sourceHost=currentHost;
+        await openChat(result.id,result.host||'local');
+        await new Promise(resolve=>setTimeout(resolve,800));
+        result=await api(sessionUrl(sourceId,'migrate',sourceHost),body);
+      }catch(error){result.warning=error.message;}
+    }
     toast(result.sent?t('已迁移到 ')+label+t('，正在打开新会话'):t('新会话已创建，但上下文注入失败：')+(result.warning||''));
-    openChat(result.id,result.host||'local').catch(e=>toast(e.message));},
+    if(currentId!==result.id)openChat(result.id,result.host||'local').catch(e=>toast(e.message));},
   onError:e=>toast(e.message)});
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}

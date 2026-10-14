@@ -5,6 +5,7 @@ package codex
 
 import (
 	"errors"
+	"net/url"
 	"sync"
 	"time"
 
@@ -315,7 +316,7 @@ func (s *Session) ErrorOr(fallback string) string {
 }
 
 func (b *Bridge) StartTurn(id, submissionID, text string) (*jsoncompat.Object, error) {
-	return b.StartTurnWithOptions(id, submissionID, text, "send", "", nil)
+	return b.StartTurnWithOptions(id, submissionID, text, "send", "", nil, nil)
 }
 
 // StartTurnWithOptions preserves the mobile mode contract for native Codex
@@ -327,7 +328,13 @@ type SkillInput struct {
 	Path string
 }
 
-func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode string, skills []SkillInput) (*jsoncompat.Object, error) {
+type AttachmentInput struct {
+	Name  string
+	Path  string
+	Image bool
+}
+
+func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode string, skills []SkillInput, attachments []AttachmentInput) (*jsoncompat.Object, error) {
 	input := jsoncompat.NewObject()
 	input.Set("type", "text")
 	input.Set("text", text)
@@ -338,6 +345,18 @@ func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode str
 		block.Set("type", "skill")
 		block.Set("name", skill.Name)
 		block.Set("path", skill.Path)
+		inputs.Items = append(inputs.Items, block)
+	}
+	for _, attachment := range attachments {
+		block := jsoncompat.NewObject()
+		if attachment.Image {
+			block.Set("type", "localImage")
+			block.Set("path", attachment.Path)
+		} else {
+			block.Set("type", "resource_link")
+			block.Set("name", attachment.Name)
+			block.Set("uri", (&url.URL{Scheme: "file", Path: attachment.Path}).String())
+		}
 		inputs.Items = append(inputs.Items, block)
 	}
 	if mode == "steer" {

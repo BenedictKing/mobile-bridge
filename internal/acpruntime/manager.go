@@ -433,6 +433,10 @@ func (s *Session) ConfigOptions() *jsoncompat.Array {
 }
 
 func (s *Session) Prompt(text string, idleTimeout time.Duration) error {
+	return s.PromptWithBlocks(text, nil, idleTimeout)
+}
+
+func (s *Session) PromptWithBlocks(text string, extra []*jsoncompat.Object, idleTimeout time.Duration) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -450,9 +454,15 @@ func (s *Session) Prompt(text string, idleTimeout time.Duration) error {
 	block := jsoncompat.NewObject()
 	block.Set("type", "text")
 	block.Set("text", text)
+	items := []any{block}
+	for _, extraBlock := range extra {
+		if extraBlock != nil {
+			items = append(items, extraBlock)
+		}
+	}
 	params := jsoncompat.NewObject()
 	params.Set("sessionId", s.ID)
-	params.Set("prompt", &jsoncompat.Array{Items: []any{block}})
+	params.Set("prompt", &jsoncompat.Array{Items: items})
 	ident, channel, submitErr := s.Process.Submit("session/prompt", params)
 	if submitErr != nil {
 		s.mu.Lock()
