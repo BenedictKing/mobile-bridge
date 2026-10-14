@@ -172,9 +172,24 @@ func (b *scriptedSessionBridge) TimelineRead(threadID, mode string) any {
 
 func (b *scriptedSessionBridge) Closed() <-chan struct{} { return b.closed }
 
-// withTimelineAgents mirrors httpd.with_timeline_agents: without a registry
-// the result passes through untouched.
-func (h *handler) withTimelineAgents(result any) any { return result }
+// withTimelineAgents mirrors httpd.with_timeline_agents: expose the agent
+// roster in timeline meta so live views keep it. Without configured ACP
+// agents the result passes through untouched (golden parity).
+func (h *handler) withTimelineAgents(result any) any {
+	if len(h.server.acpAgentSet()) == 0 {
+		return result
+	}
+	object, ok := result.(*jsoncompat.Object)
+	if !ok {
+		return result
+	}
+	meta, ok := object.MustGet("meta").(*jsoncompat.Object)
+	if !ok {
+		return result
+	}
+	meta.Set("agents", h.server.agentRoster())
+	return object
+}
 
 func (h *handler) writeRaw(text string) {
 	_, _ = h.writer.Write([]byte(text))
@@ -238,12 +253,29 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		}
 		return true
 	}
-	if manager := h.server.ACPManager(queryValue(query, "agent", "")); manager != nil && strings.HasPrefix(threadID, "sess_") {
-		if h.handleACPRoute(manager, threadID, action, write, query) {
+	// ACP dispatch mirrors Python's registry routing: an explicit agent param
+	// forces that agent (unknown kinds are rejected), otherwise the thread is
+	// routed by ownership — live sessions, cached list rows and lazy
+	// placeholders alike, no sess_ prefix requirement.
+	acpKind, acpManager := "", (*acpruntime.Manager)(nil)
+	if agentParam := queryValue(query, "agent", ""); agentParam != "" {
+		if agentParam != "codex" {
+			agents := h.server.acpAgentSet()
+			acpManager = agents[agentParam]
+			if acpManager == nil {
+				h.fail(http.StatusBadRequest, errorBody("未知的 Agent 类型"))
+				return true
+			}
+			acpKind = agentParam
+		}
+	} else if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
+		acpKind, acpManager = resolution.kind, resolution.manager
+	}
+	if acpManager != nil {
+		if h.handleACPRoute(acpKind, acpManager, threadID, action, write, query) {
 			return true
 		}
-	}
-	// Catalog and permission panels are capability-driven. Until a provider
+	}	// Catalog and permission panels are capability-driven. Until a provider
 	// exposes a native catalog/permission preset, return an explicit empty
 	// capability response so the mobile client can keep the controls hidden
 	// instead of treating a valid session as a missing route.
@@ -399,13 +431,16 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			// Preview/thumb routes are handled below by their fixed path parser.
 		}
 	}
-	if !write && action == "" && h.server.Codex != nil {
-		if view, ok := h.liveView(threadID); ok {
+	if !write && action == "" {
+		if view, _, ok := h.liveView(threadID); ok {
+			if len(h.server.acpAgentSet()) > 0 {
+				view.Set("agents", h.server.agentRoster())
+			}
 			h.output(http.StatusOK, view, contentTypeJSON, "")
 			return true
 		}
 	}
-	if !write && h.server.Codex != nil && (action == "timeline" || action == "changes" || action == "detail") {
+	if !write && (action == "timeline" || action == "changes" || action == "detail") {
 		if result, handled, err := h.liveTimeline(threadID, action, query); handled {
 			if err != nil {
 				h.fail(http.StatusConflict, errorBody(err.Error()))
@@ -447,33 +482,20 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	return true
 }
 
-func (h *handler) handleACPRoute(manager *acpruntime.Manager, threadID, action string, write bool, query map[string][]string) bool {
-	session, err := manager.Open(threadID, queryValue(query, "cwd", "."), 10*time.Second)
+// handleACPRoute serves the ACP-specific write surface (send/stop/respond/
+// input/settings) plus the model catalog. Reads (view/timeline/changes/poll/
+// events) return false here and flow through the same live-projection paths
+// codex uses, so cursors and SSE semantics stay uniform across agents.
+func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threadID, action string, write bool, query map[string][]string) bool {
+	session, err := manager.Open(threadID, queryValue(query, "cwd", "."), manager.InitializeTimeout)
 	if err != nil {
 		h.fail(http.StatusConflict, errorBody(err.Error()))
 		return true
 	}
 	if !write {
-		if action == "" {
-			h.output(http.StatusOK, session.Snapshot(), contentTypeJSON, "")
-			return true
-		}
-		if action == "timeline" {
-			view := session.Snapshot()
-			view.Set("sequence", jsoncompat.Num(1))
-			h.server.historyMu.Lock()
-			projection := h.server.historyTL[threadID]
-			if projection == nil {
-				projection = timeline.New(nil)
-				h.server.historyTL[threadID] = projection
-			}
-			projection.Update(view)
-			result := projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", ""))
-			projection.Meta().Set("host", "local")
-			projection.Meta().Set("agent", "acp")
-			projection.Meta().Set("hostLabel", "ACP Agent")
-			h.server.historyMu.Unlock()
-			h.output(http.StatusOK, result, contentTypeJSON, "")
+		if action == "catalog" {
+			h.output(http.StatusOK, manager.Catalog(session, queryValue(query, "kind", "models")),
+				contentTypeJSON, "")
 			return true
 		}
 		return false
@@ -512,6 +534,23 @@ func (h *handler) handleACPRoute(manager *acpruntime.Manager, threadID, action s
 			response = raw
 		}
 		if callErr := session.Respond(requestID, response); callErr != nil {
+			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		} else {
+			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+		}
+	case "settings":
+		modelName, _ := object.MustGet("model").(string)
+		effort, _ := object.MustGet("effort").(string)
+		var fastMode *bool
+		if value, exists := object.Get("fastMode"); exists {
+			flag, valid := value.(bool)
+			if !valid {
+				h.fail(http.StatusBadRequest, errorBody("Fast 模式开关无效"))
+				return true
+			}
+			fastMode = &flag
+		}
+		if callErr := manager.UpdateSettings(session, modelName, effort, fastMode); callErr != nil {
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		} else {
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
@@ -670,14 +709,22 @@ func (h *handler) handleUploadHTTP(write bool, path string, query map[string][]s
 	return true
 }
 
-func (h *handler) liveView(threadID string) (*jsoncompat.Object, bool) {
+// liveView resolves the live chat-screen state for one thread, ACP threads
+// first, then codex followers. kind is the owning ACP agent ("" for codex).
+func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
+	if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
+		if resolution.session == nil {
+			return nil, resolution.kind, false
+		}
+		return h.server.acpViewState(resolution.kind, resolution.manager, resolution.session), resolution.kind, true
+	}
 	if h.server.Codex == nil {
-		return nil, false
+		return nil, "", false
 	}
 	_, _ = h.server.Codex.Watch(threadID, 1500*time.Millisecond)
 	state, sequence, connected, connectionError := h.server.Codex.Snapshot(threadID)
 	if state == nil {
-		return nil, false
+		return nil, "", false
 	}
 	view := model.NormalizeState(state, connected)
 	view.Set("sequence", jsoncompat.Num(sequence))
@@ -685,11 +732,13 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, bool) {
 	view.Set("connecting", false)
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)
-	return view, true
+	return view, "", true
 }
 
+// liveTimeline projects a live view (codex follower or ACP snapshot) through
+// the shared per-thread projection so HTTP cursors stay valid.
 func (h *handler) liveTimeline(threadID, action string, query map[string][]string) (any, bool, error) {
-	view, ok := h.liveView(threadID)
+	view, kind, ok := h.liveView(threadID)
 	if !ok {
 		return nil, false, nil
 	}
@@ -703,8 +752,13 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 	projection.Update(view)
 	meta := projection.Meta()
 	meta.Set("host", "local")
-	meta.Set("agent", "codex")
-	meta.Set("hostLabel", "此电脑")
+	if kind != "" {
+		meta.Set("agent", kind)
+		meta.Set("hostLabel", "此电脑")
+	} else {
+		meta.Set("agent", "codex")
+		meta.Set("hostLabel", "此电脑")
+	}
 	meta.Set("capabilities", &jsoncompat.Array{})
 	meta.Set("goalRuntimeAvailable", false)
 	if action == "detail" {

@@ -15,7 +15,7 @@ func TestRequestTimeoutDiscardsPendingCall(t *testing.T) {
 	}
 	defer reader.Close()
 	defer writer.Close()
-	process := &Process{stdin: writer, pending: map[string]chan delivery{}, done: make(chan struct{})}
+	process := &Process{stdin: writer, pending: map[string]chan Delivery{}, done: make(chan struct{})}
 	_, err = process.Request("session/prompt", jsoncompat.NewObject(), time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout")

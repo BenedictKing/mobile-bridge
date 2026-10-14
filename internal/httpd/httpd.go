@@ -68,6 +68,7 @@ func (stubBridge) AccountsPublic() any {
 // Server mirrors GatewayServer's request-facing behavior.
 type Server struct {
 	Auth            *auth.Auth
+	Creations       *creations
 	WebFS           fs.FS
 	InstanceID      string
 	Port            int
@@ -405,67 +406,91 @@ func (h *handler) handleMethod(write bool) {
 		}
 		body := value.(*jsoncompat.Object)
 		agent, _ := body.MustGet("agent").(string)
-		manager := h.server.ACPManager(agent)
-		if manager == nil {
-			if h.server.Codex == nil || (agent != "" && agent != "codex") {
-				h.fail(http.StatusBadRequest, errorBody("未知的 Agent 类型或当前网关未启用创建服务"))
-				return
-			}
-			cwd, _ := body.MustGet("cwd").(string)
-			if cwd == "" {
-				cwd = h.resolveProjectCwd(body.MustGet("project"))
-			}
-			title, _ := body.MustGet("title").(string)
-			if cwd == "" || strings.TrimSpace(title) == "" {
-				h.fail(http.StatusBadRequest, errorBody("请选择项目并填写聊天名称"))
-				return
-			}
-			id, createErr := h.server.Codex.CreateConversation(cwd, strings.TrimSpace(title))
-			if createErr != nil {
-				h.fail(http.StatusConflict, errorBody(createErr.Error()))
-				return
-			}
-			result := jsoncompat.NewObject()
-			result.Set("id", id)
-			result.Set("title", strings.TrimSpace(title))
-			result.Set("cwd", cwd)
-			result.Set("host", "local")
-			result.Set("agent", "codex")
-			// The desktop App takes over execution via its codex:// scheme;
-			// without it the phone cannot attach to the new thread.
-			if codex.OpenInDesktop(id) == nil {
-				result.Set("opened", true)
-				result.Set("message", "已创建，正在连接桌面 App")
-			} else {
-				result.Set("opened", false)
-				result.Set("message", "聊天已创建，请在电脑 App 打开后重新连接")
-			}
-			h.output(http.StatusOK, result, contentTypeJSON, "")
+		// Validation mirrors service.Bridge.create_chat: the request id is a
+		// UUID, the title is 1–120 chars, the project must resolve to a real
+		// directory (explicit cwd or a known project key).
+		requestID, _ := body.MustGet("id").(string)
+		if _, parseErr := uuid.Parse(requestID); parseErr != nil {
+			h.fail(http.StatusBadRequest, errorBody("创建请求标识无效"))
 			return
 		}
+		title, _ := body.MustGet("title").(string)
+		title = strings.TrimSpace(title)
+		if title == "" || len([]rune(title)) > 120 {
+			h.fail(http.StatusBadRequest, errorBody("请输入 1–120 字的聊天名称"))
+			return
+		}
+		project, _ := body.MustGet("project").(string)
 		cwd, _ := body.MustGet("cwd").(string)
 		if cwd == "" {
 			cwd = h.resolveProjectCwd(body.MustGet("project"))
 		}
 		if cwd == "" {
-			cwd = "."
-		}
-		id, _ := body.MustGet("id").(string)
-		if id == "" {
-			id = "sess_" + uuid.NewString()
-		}
-		title, _ := body.MustGet("title").(string)
-		session, createErr := manager.Create(id, cwd, 60*time.Second)
-		if createErr != nil {
-			h.fail(http.StatusConflict, errorBody(createErr.Error()))
+			h.fail(http.StatusBadRequest, errorBody("请选择电脑 App 中已保存的项目"))
 			return
 		}
-		result := jsoncompat.NewObject()
-		result.Set("id", session.ID)
-		result.Set("title", title)
-		result.Set("cwd", cwd)
-		result.Set("agent", "acp")
-		h.output(http.StatusOK, result, contentTypeJSON, "")
+		if project == "" {
+			project = cwd
+		}
+		kind := agent
+		var manager *acpruntime.Manager
+		if agent != "" && agent != "codex" {
+			manager = h.server.acpAgentSet()[agent]
+			if manager == nil {
+				h.fail(http.StatusBadRequest, errorBody("未知的 Agent 类型或当前网关未启用创建服务"))
+				return
+			}
+		} else if agent == "" && h.server.Codex == nil {
+			// Legacy agent-less configuration: a single generic ACP manager
+			// (GATEWAY_ACP_BIN) serves creation when codex is unavailable.
+			manager = h.server.ACPManager("")
+			kind = "acp"
+		} else if h.server.Codex == nil {
+			h.fail(http.StatusBadRequest, errorBody("未知的 Agent 类型或当前网关未启用创建服务"))
+			return
+		}
+		// Idempotency ledger: the same phone request retried after a network
+		// hiccup must return the same chat, never a duplicate.
+		ledger := h.server.Creations
+		if ledger != nil {
+			if entry := ledger.lookup(requestID); entry != nil {
+				if entry.Agent != agent || entry.Project != project || entry.Title != title {
+					h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
+					return
+				}
+				if entry.ID == "" {
+					h.fail(http.StatusConflict, errorBody("上次创建结果尚不确定，请先刷新聊天列表并检查电脑 App，避免重复创建"))
+					return
+				}
+				h.output(http.StatusOK, h.createResponse(entry.ID, kind, title, cwd), contentTypeJSON, "")
+				return
+			}
+			ledger.begin(requestID, &creationEntry{Agent: agent, Project: project, Title: title,
+				Host: "local", At: ledger.now()})
+		}
+		created := ""
+		if manager != nil {
+			// ACP creation keeps the creating process as the session handle
+			// (zcode's lazy placeholder can only be served by the process
+			// that minted it).
+			session, createErr := manager.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
+			if createErr != nil {
+				h.fail(http.StatusConflict, errorBody(createErr.Error()))
+				return
+			}
+			created = session.ID
+		} else {
+			id, createErr := h.server.Codex.CreateConversation(cwd, title)
+			if createErr != nil {
+				h.fail(http.StatusConflict, errorBody(createErr.Error()))
+				return
+			}
+			created = id
+		}
+		if ledger != nil {
+			ledger.complete(requestID, created)
+		}
+		h.output(http.StatusOK, h.createResponse(created, kind, title, cwd), contentTypeJSON, "")
 	case write && path == "/api/activity":
 		if h.session(write) == nil {
 			return
@@ -504,14 +529,13 @@ func (h *handler) handleMethod(write bool) {
 					rows.Items = append(rows.Items, row)
 				}
 			}
-			for kind, manager := range h.server.ACPAgents {
+			for kind, manager := range h.server.acpAgentSet() {
 				if manager == nil {
 					continue
 				}
 				for _, id := range ids {
-					if !strings.HasPrefix(id, "sess_") {
-						continue
-					}
+					// Ownership follows the live session, not an id prefix:
+					// zcode placeholders are bare UUIDs until materialized.
 					session := manager.Get(id)
 					if session == nil {
 						continue
@@ -724,6 +748,14 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 			if err != nil {
 				unavailable.Items = append(unavailable.Items, err.Error())
 			} else {
+				// Merge sessions created here that the agent's own list does
+				// not cover yet (zcode's lazy placeholder before the first
+				// prompt) so a fresh chat is visible immediately.
+				rows = manager.MergePending(rows)
+				capabilities := &jsoncompat.Array{}
+				for _, capability := range manager.Capabilities {
+					capabilities.Items = append(capabilities.Items, capability)
+				}
 				for _, row := range rows {
 					id, _ := row.MustGet("sessionId").(string)
 					title, _ := row.MustGet("title").(string)
@@ -742,6 +774,7 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 					item.Set("host", "local")
 					item.Set("hostLabel", "此电脑")
 					item.Set("agent", kind)
+					item.Set("capabilities", capabilities)
 					projectName := projectBaseName(cwd)
 					if projectName == "" {
 						projectName = "未归类"
@@ -764,6 +797,32 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 	result.Set("sessions", sessions)
 	result.Set("unavailableHosts", unavailable)
 	return result, nil
+}
+
+// createResponse builds the POST /api/sessions reply: for codex the desktop
+// App takes over execution via its codex:// scheme — without it the phone
+// cannot attach to the new thread.
+func (h *handler) createResponse(id, kind, title, cwd string) *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	result.Set("id", id)
+	result.Set("title", title)
+	result.Set("cwd", cwd)
+	result.Set("host", "local")
+	if kind == "" || kind == "codex" {
+		result.Set("agent", "codex")
+		if codex.OpenInDesktop(id) == nil {
+			result.Set("opened", true)
+			result.Set("message", "已创建，正在连接桌面 App")
+		} else {
+			result.Set("opened", false)
+			result.Set("message", "聊天已创建，请在电脑 App 打开后重新连接")
+		}
+		return result
+	}
+	result.Set("agent", kind)
+	result.Set("opened", true)
+	result.Set("message", "已创建，正在连接桌面 App")
+	return result
 }
 
 // resolveProjectCwd maps a /api/projects key ("codex:<hash>", "acp:<hash>")
@@ -846,7 +905,10 @@ func (h *handler) projectList() *jsoncompat.Object {
 	}
 	result := jsoncompat.NewObject()
 	result.Set("projects", projects)
-	result.Set("agents", &jsoncompat.Array{})
+	// The new-chat agent picker is capability-driven: with no ACP agents
+	// configured the roster stays empty (single-agent codex UX); otherwise it
+	// mirrors Python's registry.kinds() — every enabled agent plus codex.
+	result.Set("agents", h.server.agentRoster())
 	return result
 }
 

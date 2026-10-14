@@ -1,12 +1,16 @@
 package httpd
 
 import (
+	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
+	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 )
 
@@ -40,23 +44,166 @@ func (s *Server) ForHost(host string) (SessionBridge, error) {
 
 func (s *Server) Session(threadID string) *ScriptedSession {
 	epoch, sequence := "go-"+threadID, 0
-	if s.Codex != nil {
-		if liveEpoch, liveSequence, ok := s.refreshLiveProjection(threadID); ok {
-			epoch, sequence = liveEpoch, liveSequence
-		}
+	if liveEpoch, liveSequence, ok := s.refreshLiveProjection(threadID); ok {
+		epoch, sequence = liveEpoch, liveSequence
 	}
 	session := &ScriptedSession{Epoch: epoch, Sequence: sequence}
-	if s.Codex != nil {
-		server := s
-		session.Live = func() (string, int, bool) { return server.refreshLiveProjection(threadID) }
-	}
+	server := s
+	session.Live = func() (string, int, bool) { return server.refreshLiveProjection(threadID) }
 	return session
+}
+
+// acpAgentSet returns the configured per-kind ACP managers, folding the
+// generic GATEWAY_ACP_BIN manager in as "acp" when no kinds were wired.
+func (s *Server) acpAgentSet() map[string]*acpruntime.Manager {
+	if len(s.ACPAgents) > 0 {
+		return s.ACPAgents
+	}
+	if s.ACP != nil {
+		return map[string]*acpruntime.Manager{"acp": s.ACP}
+	}
+	return nil
+}
+
+// acpResolution describes one thread's ACP ownership: manager != nil means
+// the id belongs to this ACP agent (session nil when it cannot be opened).
+type acpResolution struct {
+	kind    string
+	manager *acpruntime.Manager
+	session *acpruntime.Session
+	err     error
+}
+
+// resolveACP mirrors Python's Registry.bridge_for: a live session wins, then
+// the cached session/list rows (including lazy-placeholder canonical ids),
+// then one cold list probe for managers that have never been listed. It never
+// spawns for codex ids beyond that single probe per manager.
+func (s *Server) resolveACP(threadID string) acpResolution {
+	agents := s.acpAgentSet()
+	if len(agents) == 0 || threadID == "" {
+		return acpResolution{}
+	}
+	kinds := make([]string, 0, len(agents))
+	for kind := range agents {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	for _, kind := range kinds {
+		manager := agents[kind]
+		if manager == nil {
+			continue
+		}
+		if session := manager.Get(threadID); session != nil {
+			return acpResolution{kind: kind, manager: manager, session: session}
+		}
+	}
+	for _, kind := range kinds {
+		manager := agents[kind]
+		if manager == nil || !manager.Knows(threadID) {
+			continue
+		}
+		return s.openACP(kind, manager, threadID)
+	}
+	for _, kind := range kinds {
+		manager := agents[kind]
+		if manager == nil || manager.HasListCache() {
+			continue
+		}
+		if _, err := manager.List(15 * time.Second); err != nil {
+			continue
+		}
+		if manager.Knows(threadID) {
+			return s.openACP(kind, manager, threadID)
+		}
+	}
+	return acpResolution{}
+}
+
+func (s *Server) openACP(kind string, manager *acpruntime.Manager, threadID string) acpResolution {
+	cwd := manager.CwdFor(threadID)
+	if cwd == "" {
+		return acpResolution{kind: kind, manager: manager,
+			err: errors.New("找不到这个会话的工作目录，请稍后刷新列表")}
+	}
+	session, err := manager.Open(threadID, cwd, manager.InitializeTimeout)
+	if err != nil {
+		return acpResolution{kind: kind, manager: manager, err: err}
+	}
+	return acpResolution{kind: kind, manager: manager, session: session}
+}
+
+// acpViewState shapes one ACP snapshot into the chat-screen view contract:
+// the snapshot plus host/agent/capabilities and the liveness flags the web
+// app renders (mirrors service.Bridge.view's ACP annotations). On-disk
+// child agents decorate the view when the agent has a subagent store; a
+// roster change bumps the session sequence so projections rebuild.
+func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session *acpruntime.Session) *jsoncompat.Object {
+	var activity subagents.Activity
+	if manager.Subagents != nil {
+		activity = manager.Subagents.Activity(session.ID)
+		session.NoteSubagents(activity.Revision)
+	}
+	view := session.Snapshot()
+	view.Set("sequence", jsoncompat.Num(session.Sequence()))
+	if manager.Subagents != nil {
+		subagents.Inject(view, activity)
+	}
+	view.Set("host", "local")
+	view.Set("hostLabel", "此电脑")
+	view.Set("agent", kind)
+	capabilities := &jsoncompat.Array{}
+	for _, capability := range manager.Capabilities {
+		capabilities.Items = append(capabilities.Items, capability)
+	}
+	view.Set("capabilities", capabilities)
+	view.Set("connecting", false)
+	view.Set("activating", false)
+	view.Set("loadingHistory", false)
+	return view
+}
+
+// agentRoster mirrors Registry.kinds(): every enabled agent including codex,
+// sorted, as {kind,label} descriptors for /api/projects and timeline meta.
+func (s *Server) agentRoster() *jsoncompat.Array {
+	entries := []struct{ kind, label string }{}
+	agents := s.acpAgentSet()
+	if len(agents) == 0 {
+		return &jsoncompat.Array{}
+	}
+	for kind, manager := range agents {
+		if manager == nil {
+			continue
+		}
+		label := manager.Label
+		if label == "" {
+			label = kind
+		}
+		entries = append(entries, struct{ kind, label string }{kind, label})
+	}
+	entries = append(entries, struct{ kind, label string }{"codex", "Codex"})
+	sort.Slice(entries, func(i, j int) bool { return entries[i].kind < entries[j].kind })
+	roster := &jsoncompat.Array{}
+	for _, entry := range entries {
+		item := jsoncompat.NewObject()
+		item.Set("kind", entry.kind)
+		item.Set("label", entry.label)
+		roster.Items = append(roster.Items, item)
+	}
+	return roster
 }
 
 // refreshLiveProjection mirrors liveTimeline's read path for the SSE loop:
 // attach the follower, fold the latest snapshot into the shared per-thread
-// projection, and report the projection's epoch/sequence.
+// projection, and report the projection's epoch/sequence. ACP threads fold
+// their acpview snapshot through the same shared projection.
 func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
+	if resolution := s.resolveACP(threadID); resolution.manager != nil {
+		if resolution.session == nil {
+			return s.projectionState(threadID)
+		}
+		view := s.acpViewState(resolution.kind, resolution.manager, resolution.session)
+		return s.foldProjection(threadID, view)
+	}
 	if s.Codex == nil {
 		return "", 0, false
 	}
@@ -89,7 +236,39 @@ func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
 	return current.Epoch, parsed, true
 }
 
+// foldProjection updates the shared per-thread timeline projection under the
+// history lock and reports its epoch/sequence.
+func (s *Server) foldProjection(threadID string, view *jsoncompat.Object) (string, int, bool) {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	projection := s.historyTL[threadID]
+	if projection == nil {
+		projection = timeline.New(nil)
+		s.historyTL[threadID] = projection
+	}
+	projection.Update(view)
+	current := projection.State()
+	parsed, _ := strconv.Atoi(current.Sequence)
+	return current.Epoch, parsed, true
+}
+
+// projectionState reports the existing projection without folding a new view
+// (used when an ACP thread is owned but temporarily unopenable).
+func (s *Server) projectionState(threadID string) (string, int, bool) {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	if projection := s.historyTL[threadID]; projection != nil {
+		current := projection.State()
+		parsed, _ := strconv.Atoi(current.Sequence)
+		return current.Epoch, parsed, true
+	}
+	return "", 0, false
+}
+
 func (s *Server) View(threadID string) any {
+	if resolution := s.resolveACP(threadID); resolution.manager != nil && resolution.session != nil {
+		return s.acpViewState(resolution.kind, resolution.manager, resolution.session)
+	}
 	if s.Codex != nil {
 		if state, ok := s.liveViewForBridge(threadID); ok {
 			return state
@@ -113,6 +292,27 @@ func (s *Server) View(threadID string) any {
 }
 
 func (s *Server) TimelineRead(threadID, mode string) any {
+	if resolution := s.resolveACP(threadID); resolution.manager != nil && resolution.session != nil {
+		view := s.acpViewState(resolution.kind, resolution.manager, resolution.session)
+		projection := timeline.New(nil)
+		projection.Update(view)
+		meta := projection.Meta()
+		meta.Set("host", "local")
+		meta.Set("agent", resolution.kind)
+		meta.Set("hostLabel", "此电脑")
+		meta.Set("capabilities", &jsoncompat.Array{})
+		switch mode {
+		case "detail":
+			if result, err := projection.Detail("", 0, nil); err == nil {
+				return result
+			}
+		case "changes":
+			return projection.Changes("-1", "", "")
+		default:
+			return projection.Page(20, "")
+		}
+		return projection.Page(20, "")
+	}
 	view, _ := s.View(threadID).(*jsoncompat.Object)
 	if view == nil {
 		view = jsoncompat.NewObject()

@@ -157,7 +157,7 @@ view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门�
 
 ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）。
 
-多 Agent 通过 `GATEWAY_ACP_BINS` JSON 映射启用；Wails 桌面服务继承网关进程的 Agent 配置。
+多 Agent 启用（Go 网关，`cmd/gateway/main.go` + `internal/acpagents`）：默认像 Python 网关的 `--agents auto` 一样自动探测本机已安装的 agent（kimi/mcode 走 env 覆盖→`~/.<dir>/bin/<name>`→PATH；zcode/claude/dsh 走 env 覆盖→PATH 二进制→`npx -y` 回退，`~/.zcode`、`~/.dsh` 目录或对应 CLI 在 PATH 也算已安装）。`GATEWAY_AGENTS`（或沿用 `MOBILE_BRIDGE_AGENTS`）可显式指定逗号列表或 `auto`；`GATEWAY_ACP_BIN`/`GATEWAY_ACP_BINS` JSON 映射仍然优先（多词值按完整 argv 启动，单词值保留旧 `acp` 子命令语义）。会话路由按「归属」而非 id 前缀：活跃子进程、缓存的 `session/list` 行（30 秒 TTL）与 zcode 惰性占位（经 `~/.zcode/v2/acp-lazy-sessions.json` 解析到后端 `sess_*`）都能命中 ACP 分支，与 codex 共用同一套持久时间线投影（视图/时间线/变更/轮询/SSE）。新建会话在首条消息物化后端会话前由网关的 pending 集合兜底显示。zcode 自动启用时同步拉起 coding-plan 凭据自愈（`internal/acpagents/zcodecreds.go`，原生 AES-256-GCM 解密 `enc:v1:`，含模型阵容同步与幽灵套餐禁用，2 秒轮询重愈）。Wails 桌面服务继承网关进程的 Agent 配置；脚本化对拍模式（`GATEWAY_DISABLE_STORE=1` 且 `GATEWAY_DISABLE_IPC=1`）不探测本机，保持 golden 确定。
 
 ### 会话迁移
 

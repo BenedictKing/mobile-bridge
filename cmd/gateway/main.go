@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +35,7 @@ import (
 
 	gateway "github.com/BenedictKing/mobile-bridge"
 	"github.com/BenedictKing/mobile-bridge/internal/account"
+	"github.com/BenedictKing/mobile-bridge/internal/acpagents"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
@@ -44,6 +46,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
+	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/tunnel"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
@@ -296,6 +299,27 @@ func workerSnapshot(dataDir string) *jsoncompat.Object {
 // the stored config.json origins plus the publicUrl of every enabled
 // server/nas/cloudflare connection. config.json carries server-deployment
 // connections (run.py --lan); desktop.json carries desktop-managed ones.
+// subagentStoreFor wires the on-disk child-agent readers (Python's
+// native_subagents) for the agents that archive spawned children as their
+// own sessions. dsh stays undiscoverable (zstd event logs).
+func subagentStoreFor(kind, home string) acpruntime.Subagents {
+	var store subagents.Store
+	switch kind {
+	case "zcode":
+		store = subagents.NewZcodeStore(filepath.Join(home, ".zcode"))
+	case "kimi":
+		store = subagents.NewKimiStore(filepath.Join(home, ".kimi-code"))
+	case "claude":
+		store = subagents.NewClaudeStore(filepath.Join(home, ".claude"))
+	default:
+		return nil
+	}
+	if store == nil {
+		return nil
+	}
+	return subagents.NewFlattener(store)
+}
+
 func trustedOrigins(dataDir string, preferences *jsoncompat.Object) []string {
 	seen := map[string]bool{}
 	var origins []string
@@ -599,6 +623,24 @@ func runGateway(args []string) {
 	}
 	server.Account = account.NewWithData(codexHome, dataDir, os.Getenv("GATEWAY_CODEX_BIN"))
 	server.Goal = goal.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))
+	// ACP agent wiring. Explicit env (GATEWAY_ACP_BIN / GATEWAY_ACP_BINS)
+	// wins; otherwise the gateway auto-detects locally installed agents the
+	// way the Python gateway's --agents auto did, so a plain
+	// `gateway serve` keeps exposing zcode/claude/… sessions on the phone.
+	// The scripted parity mode (both disables set) must stay deterministic:
+	// never probe the machine from the conformance harness.
+	scriptedMode := os.Getenv("GATEWAY_DISABLE_STORE") == "1" && os.Getenv("GATEWAY_DISABLE_IPC") == "1"
+	agentsValue := os.Getenv("GATEWAY_AGENTS")
+	if agentsValue == "" {
+		agentsValue = os.Getenv("MOBILE_BRIDGE_AGENTS")
+	}
+	if agentsValue == "" {
+		agentsValue = "auto"
+	}
+	agentKinds, agentKindsErr := acpagents.ParseKinds(agentsValue)
+	if agentKindsErr != nil {
+		log.Fatalf("GATEWAY_AGENTS: %v", agentKindsErr)
+	}
 	if executable := os.Getenv("GATEWAY_ACP_BIN"); executable != "" {
 		server.ACP = acpruntime.New(executable)
 		server.ACPAgents = map[string]*acpruntime.Manager{"acp": server.ACP}
@@ -612,7 +654,14 @@ func runGateway(args []string) {
 			server.ACPAgents = map[string]*acpruntime.Manager{}
 		}
 		for kind, executable := range bins {
-			if strings.TrimSpace(kind) != "" && executable != "" {
+			if strings.TrimSpace(kind) == "" || executable == "" {
+				continue
+			}
+			// Multi-word values are full argv (wrappers that speak ACP
+			// directly); single tokens keep the legacy "acp" subcommand.
+			if argv := acpagents.SplitArgv(executable); len(argv) > 1 {
+				server.ACPAgents[kind] = acpruntime.NewCommand(argv)
+			} else {
 				server.ACPAgents[kind] = acpruntime.New(executable)
 			}
 		}
@@ -622,6 +671,66 @@ func runGateway(args []string) {
 			}
 		}
 	}
+	home := ""
+	if userHome, homeErr := os.UserHomeDir(); homeErr == nil {
+		home = userHome
+	}
+	autoKinds := map[string]bool{}
+	if agentKinds == nil {
+		for _, profile := range acpagents.Discover(os.Getenv, home) {
+			autoKinds[profile.Kind] = true
+		}
+	} else {
+		for _, kind := range agentKinds {
+			autoKinds[kind] = true
+		}
+	}
+	enabled := []string{"codex"}
+	for _, profile := range acpagents.Discover(os.Getenv, home) {
+		if scriptedMode || !autoKinds[profile.Kind] || profile.Command == nil {
+			continue
+		}
+		if server.ACPAgents[profile.Kind] != nil {
+			// An explicit env manager keeps its own launch command.
+			continue
+		}
+		manager := acpruntime.NewCommand(profile.Command)
+		manager.Label = profile.Label
+		manager.Capabilities = profile.Capabilities
+		manager.EffortMap = profile.EffortMap
+		manager.InitializeTimeout = profile.InitializeTimeout
+		manager.Canonical = profile.Canonical
+		manager.Subagents = subagentStoreFor(profile.Kind, home)
+		if server.ACPAgents == nil {
+			server.ACPAgents = map[string]*acpruntime.Manager{}
+		}
+		server.ACPAgents[profile.Kind] = manager
+		enabled = append(enabled, profile.Kind)
+		if profile.Kind == "zcode" {
+			// Real launches (auto-discovered, not env-forced argv) keep the
+			// coding-plan key slot healed, mirroring zcode.py's
+			// ensure_and_watch(); explicit argv must not touch real state.
+			go acpagents.EnsureAndWatch(os.Getenv, home, log.Printf)
+		}
+	}
+	if len(server.ACPAgents) > 0 {
+		sort.Strings(enabled)
+		log.Printf("agents enabled: %s", strings.Join(enabled, ", "))
+		// Idle ACP sessions hold one child process each; sweep them like the
+		// Python maintain loop's 300s eviction once nobody is reading them.
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				for _, manager := range server.ACPAgents {
+					if manager != nil {
+						manager.SweepIdle(5 * time.Minute)
+					}
+				}
+			}
+		}()
+	}
+	server.Creations = httpd.LoadCreations(filepath.Join(dataDir, "creations.json"))
 	controller, controlErr := lifecycle.NewController(dataDir, os.Getpid(), instanceID)
 	if controlErr != nil {
 		log.Fatalf("control file: %v", controlErr)

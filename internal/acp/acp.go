@@ -51,9 +51,11 @@ func unavailable() *Error {
 	return &Error{Message: "Agent 进程已退出；操作结果未知", Kind: KindUnavailable}
 }
 
-type delivery struct {
-	value any
-	err   *Error
+// Delivery is the outcome of one submitted request: either a Value or an
+// Err. Exported so idle-timeout owners can wait on the channel in slices.
+type Delivery struct {
+	Value any
+	Err   *Error
 }
 
 // Process mirrors AcpProcess: one ACP agent subprocess with serialized
@@ -71,7 +73,7 @@ type Process struct {
 	stdout io.ReadCloser
 
 	mu      sync.Mutex
-	pending map[string]chan delivery
+	pending map[string]chan Delivery
 	nextID  int
 	closed  bool
 	writeMu sync.Mutex
@@ -81,7 +83,7 @@ type Process struct {
 
 // Start launches the agent process and its reader loop.
 func Start(argv []string) (*Process, error) {
-	process := &Process{pending: map[string]chan delivery{}, done: make(chan struct{})}
+	process := &Process{pending: map[string]chan Delivery{}, done: make(chan struct{})}
 	process.cmd = exec.Command(argv[0], argv[1:]...)
 	stdin, err := process.cmd.StdinPipe()
 	if err != nil {
@@ -120,7 +122,7 @@ func (p *Process) send(message *jsoncompat.Object) error {
 
 // Submit mirrors submit: register and send; returns the id lexeme and a
 // channel delivering the outcome.
-func (p *Process) Submit(method string, params *jsoncompat.Object) (string, <-chan delivery, error) {
+func (p *Process) Submit(method string, params *jsoncompat.Object) (string, <-chan Delivery, error) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -128,7 +130,7 @@ func (p *Process) Submit(method string, params *jsoncompat.Object) (string, <-ch
 	}
 	ident := jsoncompat.Num(p.nextID)
 	p.nextID++
-	channel := make(chan delivery, 1)
+	channel := make(chan Delivery, 1)
 	p.pending[ident.String()] = channel
 	p.mu.Unlock()
 	message := jsoncompat.NewObject()
@@ -153,10 +155,10 @@ func (p *Process) Request(method string, params *jsoncompat.Object, timeout time
 	}
 	select {
 	case outcome := <-channel:
-		if outcome.err != nil {
-			return nil, outcome.err
+		if outcome.Err != nil {
+			return nil, outcome.Err
 		}
-		return outcome.value, nil
+		return outcome.Value, nil
 	case <-time.After(timeout):
 		p.discard(ident)
 		return nil, &Error{Message: "Agent 请求超时：" + method, Kind: KindTimeout}
@@ -271,6 +273,10 @@ func (p *Process) discard(ident string) {
 	p.mu.Unlock()
 }
 
+// Discard exposes the timed-out request cleanup to idle-timeout owners that
+// abandon a prompt without waiting for its answer.
+func (p *Process) Discard(ident string) { p.discard(ident) }
+
 // finishUnavailable wakes every waiter exactly once. Reader EOF and explicit
 // Close can race when an Agent exits while the gateway is shutting down.
 func (p *Process) finishUnavailable() {
@@ -286,10 +292,10 @@ func (p *Process) finishUnavailable() {
 func (p *Process) failAll(failure *Error) {
 	p.mu.Lock()
 	pending := p.pending
-	p.pending = map[string]chan delivery{}
+	p.pending = map[string]chan Delivery{}
 	p.mu.Unlock()
 	for _, channel := range pending {
-		channel <- delivery{err: failure}
+		channel <- Delivery{Err: failure}
 	}
 }
 
@@ -364,12 +370,12 @@ func (p *Process) dispatch(message *jsoncompat.Object) {
 					kind = KindAuthRequired
 				}
 			}
-			channel <- delivery{err: &Error{Message: text, Code: code,
+			channel <- Delivery{Err: &Error{Message: text, Code: code,
 				Data: failure.MustGet("data"), Kind: kind}}
 			return
 		}
 		result, _ := message.Get("result")
-		channel <- delivery{value: result}
+		channel <- Delivery{Value: result}
 		return
 	}
 	if hasMethod && p.OnNotification != nil {
