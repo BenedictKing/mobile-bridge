@@ -413,7 +413,7 @@ func (h *handler) handleMethod(write bool) {
 			}
 			cwd, _ := body.MustGet("cwd").(string)
 			if cwd == "" {
-				cwd, _ = body.MustGet("project").(string)
+				cwd = h.resolveProjectCwd(body.MustGet("project"))
 			}
 			title, _ := body.MustGet("title").(string)
 			if cwd == "" || strings.TrimSpace(title) == "" {
@@ -431,12 +431,21 @@ func (h *handler) handleMethod(write bool) {
 			result.Set("cwd", cwd)
 			result.Set("host", "local")
 			result.Set("agent", "codex")
+			// The desktop App takes over execution via its codex:// scheme;
+			// without it the phone cannot attach to the new thread.
+			if codex.OpenInDesktop(id) == nil {
+				result.Set("opened", true)
+				result.Set("message", "已创建，正在连接桌面 App")
+			} else {
+				result.Set("opened", false)
+				result.Set("message", "聊天已创建，请在电脑 App 打开后重新连接")
+			}
 			h.output(http.StatusOK, result, contentTypeJSON, "")
 			return
 		}
 		cwd, _ := body.MustGet("cwd").(string)
 		if cwd == "" {
-			cwd, _ = body.MustGet("project").(string)
+			cwd = h.resolveProjectCwd(body.MustGet("project"))
 		}
 		if cwd == "" {
 			cwd = "."
@@ -755,6 +764,31 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 	result.Set("sessions", sessions)
 	result.Set("unavailableHosts", unavailable)
 	return result, nil
+}
+
+// resolveProjectCwd maps a /api/projects key ("codex:<hash>", "acp:<hash>")
+// back to its working directory, mirroring Python's project resolution before
+// create_chat. Unknown keys resolve to "" so callers reject them.
+func (h *handler) resolveProjectCwd(key any) string {
+	text, _ := key.(string)
+	if text == "" {
+		return ""
+	}
+	projects, _ := h.projectList().MustGet("projects").(*jsoncompat.Array)
+	if projects == nil {
+		return ""
+	}
+	for _, item := range projects.Items {
+		project, ok := item.(*jsoncompat.Object)
+		if !ok {
+			continue
+		}
+		if candidate, _ := project.MustGet("key").(string); candidate == text {
+			cwd, _ := project.MustGet("cwd").(string)
+			return cwd
+		}
+	}
+	return ""
 }
 
 func (h *handler) projectList() *jsoncompat.Object {
