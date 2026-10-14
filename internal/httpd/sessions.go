@@ -901,13 +901,24 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 		if changed {
 			// The same persistent projection the HTTP routes read from,
 			// fed the connection's own cursor (stream_incremental parity).
+			// The scripted conformance bridge has no live projection; it
+			// keeps serving through TimelineRead like it always did.
+			var payload *jsoncompat.Object
 			payloadAny, handled, err := h.liveTimeline(threadID, "changes", map[string][]string{
 				"after": {strconv.Itoa(sequence)},
 				"epoch": {epoch},
 				"start": {""},
 			})
-			payload, _ := payloadAny.(*jsoncompat.Object)
-			if err != nil || !handled || payload == nil {
+			if handled {
+				payload, _ = payloadAny.(*jsoncompat.Object)
+				if err != nil {
+					payload = nil
+				}
+			} else {
+				payload, _ = h.withTimelineAgents(
+					bridge.TimelineRead(threadID, "changes")).(*jsoncompat.Object)
+			}
+			if payload == nil {
 				h.writeRaw(": heartbeat\n\n")
 			} else {
 				epochValue, _ := payload.MustGet("epoch").(string)
