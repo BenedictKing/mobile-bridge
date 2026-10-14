@@ -230,6 +230,9 @@ func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
 	view.Set("connecting", false)
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)
+	view.Set("host", "local")
+	view.Set("hostLabel", "此电脑")
+	view.Set("agent", "codex")
 	s.codexSubagentView(threadID, view)
 	projection.Update(view)
 	current := projection.State()
@@ -301,6 +304,9 @@ func (s *Server) View(threadID string) any {
 				state.Set("turnsPagination", value)
 			}
 			view := model.NormalizeState(state, false)
+			view.Set("host", "local")
+			view.Set("hostLabel", "此电脑")
+			view.Set("agent", "codex")
 			s.codexSubagentView(threadID, view)
 			return view
 		}
@@ -364,5 +370,8 @@ func (s *Server) liveViewForBridge(threadID string) (any, bool) {
 	view.Set("connecting", false)
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)
+	view.Set("host", "local")
+	view.Set("hostLabel", "此电脑")
+	view.Set("agent", "codex")
 	return view, true
 }

@@ -527,31 +527,42 @@ func (h *handler) handleMethod(write bool) {
 				}
 				ids = append(ids, id)
 			}
+			// Split the ids by owning agent first (Python's registry split):
+			// ACP-owned ids must not reach the Codex activity probe, whose
+			// unknown-row shape would shadow the agent's real status.
+			agents := h.server.acpAgentSet()
+			owned, remaining := splitACPOwned(agents, ids)
 			if h.server.Codex != nil {
-				for _, row := range h.server.Codex.Activity(ids) {
+				for _, row := range h.server.Codex.Activity(remaining) {
 					rows.Items = append(rows.Items, row)
 				}
 			}
-			for kind, manager := range h.server.acpAgentSet() {
+			for kind, manager := range agents {
 				if manager == nil {
 					continue
 				}
-				for _, id := range ids {
-					// Ownership follows the live session, not an id prefix:
-					// zcode placeholders are bare UUIDs until materialized.
-					session := manager.Get(id)
-					if session == nil {
+				for _, id := range owned {
+					if !manager.Knows(id) {
 						continue
 					}
+					// Ownership follows the agent's roster, not an id prefix:
+					// zcode placeholders are bare UUIDs until materialized.
+					// Without a live handle the row reports offline (Python's
+					// detached shape) so the phone clears stale dots instead
+					// of resurrecting them.
 					row := jsoncompat.NewObject()
 					row.Set("id", id)
 					row.Set("host", "local")
 					row.Set("agent", kind)
-					row.Set("connected", true)
-					row.Set("status", "idle")
-					snapshot := session.Snapshot()
-					if snapshot.MustGet("status") == "active" {
-						row.Set("status", "active")
+					row.Set("connected", false)
+					row.Set("status", "unknown")
+					if session := manager.Get(id); session != nil {
+						row.Set("connected", true)
+						row.Set("status", "idle")
+						snapshot := session.Snapshot()
+						if snapshot.MustGet("status") == "active" {
+							row.Set("status", "active")
+						}
 					}
 					rows.Items = append(rows.Items, row)
 				}
@@ -707,6 +718,30 @@ func (h *handler) handleMethod(write bool) {
 	}
 }
 
+// splitACPOwned partitions ids by ACP ownership: agent-owned ids and the
+// remainder routed to codex.
+func splitACPOwned(agents map[string]*acpruntime.Manager, ids []string) (owned, remaining []string) {
+	ownedSet := map[string]bool{}
+	for _, id := range ids {
+		for _, manager := range agents {
+			if manager != nil && manager.Knows(id) {
+				ownedSet[id] = true
+				break
+			}
+		}
+	}
+	owned = []string{}
+	remaining = []string{}
+	for _, id := range ids {
+		if ownedSet[id] {
+			owned = append(owned, id)
+		} else {
+			remaining = append(remaining, id)
+		}
+	}
+	return owned, remaining
+}
+
 func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, error) {
 	text := queryValue(query, "q", "")
 	if len([]rune(text)) > 200 {
@@ -720,7 +755,7 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 	sessions := &jsoncompat.Array{}
 	agent := queryValue(query, "agent", "")
 	if h.server.Store != nil && (agent == "" || agent == "codex") {
-		rows, err := h.server.Store.List(text, 100, offset, archived)
+		rows, err := h.server.Store.List(text, 100+offset, 0, archived)
 		if err != nil {
 			return nil, err
 		}
@@ -796,6 +831,15 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 		}
 	}
 	sortSessionRows(sessions.Items)
+	// Python slices the merged, sorted rows: one page of 100 from offset.
+	if offset >= len(sessions.Items) {
+		sessions.Items = nil
+	} else {
+		sessions.Items = sessions.Items[offset:]
+		if len(sessions.Items) > 100 {
+			sessions.Items = sessions.Items[:100]
+		}
+	}
 	result := jsoncompat.NewObject()
 	result.Set("sessions", sessions)
 	result.Set("unavailableHosts", unavailable)

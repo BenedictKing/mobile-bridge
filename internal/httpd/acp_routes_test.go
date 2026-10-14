@@ -12,6 +12,7 @@ import (
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
 // fakeACPAgent is a stateless python ACP agent: one listed session, lazy
@@ -232,4 +233,103 @@ for line in sys.stdin:
 	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "创建请求标识无效") {
 		t.Fatalf("bad id status=%d body=%s", bad.Code, bad.Body.String())
 	}
+}
+
+func TestSplitACPOwnedRoutesIdsByOwnership(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/list": result={"sessions":[{"sessionId":"sess-owned","title":"x","cwd":"/w","updatedAt":1}]}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := acpruntime.NewCommand([]string{python, "-u", path})
+	// Warm the list cache so Knows resolves without the cold probe.
+	if _, err := manager.List(3 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	owned, remaining := splitACPOwned(map[string]*acpruntime.Manager{"zcode": manager},
+		[]string{"sess-owned", "codex-uuid-1"})
+	if len(owned) != 1 || owned[0] != "sess-owned" {
+		t.Fatalf("owned=%v", owned)
+	}
+	if len(remaining) != 1 || remaining[0] != "codex-uuid-1" {
+		t.Fatalf("remaining=%v", remaining)
+	}
+}
+
+func TestSessionListPaginatesMergedRows(t *testing.T) {
+	cwd := t.TempDir()
+	manager := acpruntime.NewCommand(fakeACPAgent(t, cwd))
+	manager.Label = "ZCode"
+	defer manager.Close()
+
+	authenticator := auth.NewAuth(auth.Config{Mode: "none"})
+	token, session, err := authenticator.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf, _ := session.MustGet("csrf").(string)
+	server := New(authenticator, fsys{}, 8790, "instance")
+	server.ACPAgents = map[string]*acpruntime.Manager{"zcode": manager}
+	request := func(target string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790"+target, nil)
+		request.Host = "127.0.0.1:8790"
+		request.Header.Set("Origin", "http://127.0.0.1:8790")
+		request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		return response
+	}
+	// One listed row plus one bridge-created pending row gives the merged
+	// list two entries to paginate.
+	create := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8790/api/sessions",
+		strings.NewReader(`{"agent":"zcode","cwd":`+jsonText(cwd)+`,"title":"分页夹具","id":"5aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`))
+	create.Host = "127.0.0.1:8790"
+	create.Header.Set("Origin", "http://127.0.0.1:8790")
+	create.Header.Set("Content-Type", "application/json")
+	create.Header.Set("X-CSRF-Token", csrf)
+	create.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	createResponse := httptest.NewRecorder()
+	server.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+
+	full := request("/api/sessions?agent=zcode")
+	if full.Code != http.StatusOK {
+		t.Fatalf("status=%d", full.Code)
+	}
+	page := request("/api/sessions?agent=zcode&offset=1")
+	if page.Code != http.StatusOK {
+		t.Fatalf("status=%d", page.Code)
+	}
+	count := func(body string) int {
+		value, err := jsoncompat.Unmarshal([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, _ := value.(*jsoncompat.Object).MustGet("sessions").(*jsoncompat.Array)
+		return len(rows.Items)
+	}
+	total := count(full.Body.String())
+	if total < 2 {
+		t.Fatalf("fixture rows=%d", total)
+	}
+	if paged := count(page.Body.String()); paged != total-1 {
+		t.Fatalf("offset page=%d total=%d", paged, total)
+	}
+	if beyond := count(request("/api/sessions?agent=zcode&offset=99").Body.String()); beyond != 0 {
+		t.Fatalf("offset beyond end=%d", beyond)
+	}
+	_ = csrf
 }

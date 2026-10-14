@@ -732,6 +732,9 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 	view.Set("connecting", false)
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)
+	view.Set("host", "local")
+	view.Set("hostLabel", "此电脑")
+	view.Set("agent", "codex")
 	h.server.codexSubagentView(threadID, view)
 	return view, "", true
 }
