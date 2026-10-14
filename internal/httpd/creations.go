@@ -8,7 +8,9 @@ import (
 )
 
 // creationEntry is one idempotent create request (Python service.Bridge's
-// creations ledger, persisted across restarts).
+// creations ledger, persisted across restarts). Sent marks a migration whose
+// transcript injection already dispatched, so a retried migrate request
+// never re-sends it.
 type creationEntry struct {
 	Agent   string  `json:"agent,omitempty"`
 	Project string  `json:"project"`
@@ -16,6 +18,7 @@ type creationEntry struct {
 	Host    string  `json:"host"`
 	At      float64 `json:"at"`
 	ID      string  `json:"id,omitempty"`
+	Sent    bool    `json:"sent,omitempty"`
 }
 
 // creations deduplicates create retries by the phone's request id: the same
@@ -60,6 +63,17 @@ func (c *creations) complete(requestID, id string) {
 	defer c.mu.Unlock()
 	if entry := c.entries[requestID]; entry != nil {
 		entry.ID = id
+		c.saveLocked()
+	}
+}
+
+// markSent records that a migration's transcript injection dispatched, so a
+// retry of the same request reports "sent" without prompting again.
+func (c *creations) markSent(requestID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.entries[requestID]; entry != nil {
+		entry.Sent = true
 		c.saveLocked()
 	}
 }

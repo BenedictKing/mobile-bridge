@@ -253,6 +253,13 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		}
 		return true
 	}
+	// Cross-agent migration owns its routing: it reads the source view (any
+	// agent) and dispatches to an explicit target, so it must not fall into
+	// the ownership-based ACP dispatch below.
+	if write && action == "migrate" {
+		h.handleMigrate(threadID)
+		return true
+	}
 	// ACP dispatch mirrors Python's registry routing: an explicit agent param
 	// forces that agent (unknown kinds are rejected), otherwise the thread is
 	// routed by ownership — live sessions, cached list rows and lazy
@@ -765,6 +772,12 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 	}
 	meta.Set("capabilities", &jsoncompat.Array{})
 	meta.Set("goalRuntimeAvailable", false)
+	// Live timelines keep the agent roster in meta (with_timeline_agents):
+	// the chat screen renders from timeline pages/changes, and the migrate
+	// control loses its target list without it.
+	if len(h.server.acpAgentSet()) > 0 {
+		meta.Set("agents", h.server.agentRoster())
+	}
 	if action == "detail" {
 		var version any
 		if value := queryValue(query, "version", ""); value != "" {
@@ -819,6 +832,11 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	meta.Set("hostLabel", "此电脑")
 	meta.Set("capabilities", &jsoncompat.Array{})
 	meta.Set("goalRuntimeAvailable", false)
+	// Saved-rollout timelines carry the roster too (with_timeline_agents
+	// applied to every timeline_read in Python).
+	if len(h.server.acpAgentSet()) > 0 {
+		meta.Set("agents", h.server.agentRoster())
+	}
 	if action == "detail" {
 		version := any(nil)
 		if raw := queryValue(query, "version", ""); raw != "" {
