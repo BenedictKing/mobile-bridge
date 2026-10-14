@@ -584,6 +584,7 @@ func runGateway(args []string) {
 			codexHome = filepath.Join(home, ".codex")
 		}
 	}
+	server.CodexHome = codexHome
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_STORE") != "1" {
 		server.Store = store.NewSessionStore(codexHome)
 	}

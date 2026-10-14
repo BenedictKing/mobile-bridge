@@ -78,6 +78,7 @@ type Server struct {
 	Pairing         *pairing.Pairing
 	Store           *store.SessionStore
 	Codex           *codex.Bridge
+	CodexHome       string
 	Uploads         *uploads.Manager
 	ACP             *acpruntime.Manager
 	ACPAgents       map[string]*acpruntime.Manager
@@ -685,6 +686,7 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 		if err != nil {
 			return nil, err
 		}
+		projects := readLocalProjects(h.server.CodexHome)
 		for _, row := range rows {
 			if _, ok := row.Get("host"); !ok {
 				row.Set("host", "local")
@@ -692,6 +694,8 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 			if _, ok := row.Get("agent"); !ok {
 				row.Set("agent", "codex")
 			}
+			decorateCodexRow(projects, row)
+			row.Set("connected", false)
 			sessions.Items = append(sessions.Items, row)
 		}
 	}
@@ -716,6 +720,9 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 					if id == "" || (text != "" && !strings.Contains(strings.ToLower(title+" "+cwd), strings.ToLower(text))) {
 						continue
 					}
+					if title == "" {
+						title = "未命名聊天"
+					}
 					item := jsoncompat.NewObject()
 					item.Set("id", id)
 					item.Set("title", title)
@@ -724,11 +731,24 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 					item.Set("host", "local")
 					item.Set("hostLabel", "此电脑")
 					item.Set("agent", kind)
+					projectName := projectBaseName(cwd)
+					if projectName == "" {
+						projectName = "未归类"
+					}
+					projectKey := cwd
+					if projectKey == "" {
+						projectKey = "unassigned"
+					}
+					item.Set("projectKey", "local|"+projectKey)
+					item.Set("projectName", projectName)
+					item.Set("recency", acpRecencyOf(row))
+					item.Set("connected", false)
 					sessions.Items = append(sessions.Items, item)
 				}
 			}
 		}
 	}
+	sortSessionRows(sessions.Items)
 	result := jsoncompat.NewObject()
 	result.Set("sessions", sessions)
 	result.Set("unavailableHosts", unavailable)
