@@ -732,6 +732,7 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 	view.Set("connecting", false)
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)
+	h.server.codexSubagentView(threadID, view)
 	return view, "", true
 }
 
@@ -799,6 +800,7 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	state.Set("sequence", sequence)
 	view := model.NormalizeState(state, false)
 	view.Set("sequence", sequence)
+	h.server.codexSubagentView(threadID, view)
 
 	h.server.historyMu.Lock()
 	defer h.server.historyMu.Unlock()

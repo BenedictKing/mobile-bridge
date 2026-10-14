@@ -215,31 +215,10 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 // Get returns one desktop-owned thread row, rejecting subagent rows that are
 // not user-facing chats.
 func (s *SessionStore) Get(threadID string) (*jsoncompat.Object, error) {
-	db, err := s.open()
+	object, err := s.getAny(threadID)
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
-	fields := []string{}
-	rows, err := db.Query("SELECT * FROM threads WHERE id = ?", threadID)
-	if err != nil {
-		return nil, ErrUnavailable
-	}
-	// Query column order is the table declaration order and therefore matches
-	// the values returned by SELECT *. Keep it instead of rebuilding a map.
-	fields, err = rows.Columns()
-	if err != nil {
-		_ = rows.Close()
-		return nil, ErrUnavailable
-	}
-	objects, err := scanObjects(rows, fields)
-	if err != nil {
-		return nil, err
-	}
-	if len(objects) == 0 {
-		return nil, errors.New("找不到这个桌面会话")
-	}
-	object := objects[0]
 	originator, _ := object.MustGet("originator").(string)
 	source, _ := object.MustGet("source").(string)
 	if originator != "Codex Desktop" && originator != "codex_work_desktop" &&
@@ -255,10 +234,90 @@ func (s *SessionStore) Get(threadID string) (*jsoncompat.Object, error) {
 	return object, nil
 }
 
+// getAny mirrors Python's get_any: one thread row without the desktop-owner
+// whitelist — subagent children of a parent thread are readable histories.
+func (s *SessionStore) getAny(threadID string) (*jsoncompat.Object, error) {
+	db, err := s.open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT * FROM threads WHERE id = ?", threadID)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	fields, err := rows.Columns()
+	if err != nil {
+		_ = rows.Close()
+		return nil, ErrUnavailable
+	}
+	objects, err := scanObjects(rows, fields)
+	if err != nil {
+		return nil, err
+	}
+	if len(objects) == 0 {
+		return nil, errors.New("找不到这个桌面会话")
+	}
+	return objects[0], nil
+}
+
+// ChildThreads returns the spawned-child thread rows for one parent via the
+// thread_spawn_edges table (missing table → no children, like Python).
+func (s *SessionStore) ChildThreads(parentID string) ([]*jsoncompat.Object, error) {
+	db, err := s.open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	tables, err := db.Query("SELECT name FROM sqlite_master WHERE type='table'")
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	hasEdges := false
+	for tables.Next() {
+		var name string
+		if err := tables.Scan(&name); err == nil && name == "thread_spawn_edges" {
+			hasEdges = true
+		}
+	}
+	_ = tables.Close()
+	if !hasEdges {
+		return []*jsoncompat.Object{}, nil
+	}
+	rows, err := db.Query("SELECT c.*, e.status AS spawn_status FROM thread_spawn_edges e " +
+		"JOIN threads c ON c.id = e.child_thread_id WHERE e.parent_thread_id = ? " +
+		"ORDER BY c.created_at_ms, c.created_at, c.id", parentID)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	fields, err := rows.Columns()
+	if err != nil {
+		_ = rows.Close()
+		return nil, ErrUnavailable
+	}
+	return scanObjects(rows, fields)
+}
+
 // HistoryFor loads and parses a rollout belonging to the configured Codex
 // home. The path guard prevents a database row from escaping the home folder.
 func (s *SessionStore) HistoryFor(threadID string, turnLimit *int) (*jsoncompat.Object, error) {
-	meta, err := s.Get(threadID)
+	return s.historyFor(threadID, turnLimit, false)
+}
+
+// HistoryForAny is HistoryFor without the desktop-owner whitelist, for
+// spawned-child threads (Python's allow_subagent history path).
+func (s *SessionStore) HistoryForAny(threadID string, turnLimit *int) (*jsoncompat.Object, error) {
+	return s.historyFor(threadID, turnLimit, true)
+}
+
+func (s *SessionStore) historyFor(threadID string, turnLimit *int, allowSubagent bool) (*jsoncompat.Object, error) {
+	var meta *jsoncompat.Object
+	var err error
+	if allowSubagent {
+		meta, err = s.getAny(threadID)
+	} else {
+		meta, err = s.Get(threadID)
+	}
 	if err != nil {
 		return nil, err
 	}

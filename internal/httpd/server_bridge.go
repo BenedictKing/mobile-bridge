@@ -230,6 +230,7 @@ func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
 	view.Set("connecting", false)
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)
+	s.codexSubagentView(threadID, view)
 	projection.Update(view)
 	current := projection.State()
 	parsed, _ := strconv.Atoi(current.Sequence)
@@ -265,6 +266,20 @@ func (s *Server) projectionState(threadID string) (string, int, bool) {
 	return "", 0, false
 }
 
+// codexSubagentView decorates a codex view with on-disk child agents
+// (thread_spawn_edges via the store), mirroring service.Bridge._add_subagents.
+// No sequence bump: the codex IPC sequence stays authoritative, rows land on
+// the next natural rebuild — same as Python.
+func (s *Server) codexSubagentView(threadID string, view *jsoncompat.Object) {
+	if s.Store == nil {
+		return
+	}
+	s.subagentOnce.Do(func() {
+		s.codexSubagents = subagents.NewFlattener(s.Store.Subagents())
+	})
+	subagents.Inject(view, s.codexSubagents.Activity(threadID))
+}
+
 func (s *Server) View(threadID string) any {
 	if resolution := s.resolveACP(threadID); resolution.manager != nil && resolution.session != nil {
 		return s.acpViewState(resolution.kind, resolution.manager, resolution.session)
@@ -285,7 +300,9 @@ func (s *Server) View(threadID string) any {
 			if value, exists := history.Get("turnsPagination"); exists {
 				state.Set("turnsPagination", value)
 			}
-			return model.NormalizeState(state, false)
+			view := model.NormalizeState(state, false)
+			s.codexSubagentView(threadID, view)
+			return view
 		}
 	}
 	return jsoncompat.NewObject()

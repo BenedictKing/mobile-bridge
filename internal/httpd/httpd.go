@@ -32,6 +32,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
+	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
@@ -90,6 +91,8 @@ type Server struct {
 	Goal            *goal.Manager
 	historyMu       sync.Mutex
 	historyTL       map[string]*timeline.Timeline
+	subagentOnce    sync.Once
+	codexSubagents  *subagents.Flattener
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
