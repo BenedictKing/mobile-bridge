@@ -79,6 +79,7 @@ type Server struct {
 	Store           *store.SessionStore
 	Codex           *codex.Bridge
 	CodexHome       string
+	SecureHosts     map[string]bool // netloc of trusted HTTPS origins (secure_hosts)
 	Uploads         *uploads.Manager
 	ACP             *acpruntime.Manager
 	ACPAgents       map[string]*acpruntime.Manager
@@ -98,7 +99,8 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"localhost:" + strconv.Itoa(port): true},
 		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
 			"http://localhost:" + strconv.Itoa(port): true},
-		Pairing: pairing.New(nil), historyTL: map[string]*timeline.Timeline{}}
+		SecureHosts: map[string]bool{},
+		Pairing:     pairing.New(nil), historyTL: map[string]*timeline.Timeline{}}
 	server.Bridge = server
 	return server
 }
@@ -231,7 +233,7 @@ func (h *handler) cookieToken() string {
 }
 
 func (h *handler) session(write bool) *jsoncompat.Object {
-	session := h.server.Auth.Get(h.cookieToken())
+	session := h.server.Auth.GetForClient(h.cookieToken(), h.client(), h.request.UserAgent())
 	if session == nil {
 		h.fail(http.StatusUnauthorized, unauthenticatedBody())
 		return nil
@@ -381,7 +383,7 @@ func (h *handler) handleMethod(write bool) {
 		h.server.Auth.Logout(h.cookieToken())
 		result := jsoncompat.NewObject()
 		result.Set("ok", true)
-		h.output(http.StatusOK, result, contentTypeJSON, h.server.Auth.CookieValue(""))
+		h.output(http.StatusOK, result, contentTypeJSON, h.cookieValue(""))
 	case !write && path == "/api/sessions":
 		if h.session(write) == nil {
 			return
@@ -851,7 +853,7 @@ func (h *handler) handlePair() {
 		return
 	}
 	issued, err := h.server.Pairing.Exchange(token, origin, clientIP(h.request), float64(time.Now().Unix()), func(address string) any {
-		sessionToken, session, issueErr := h.server.Auth.NewSession(address, h.request.UserAgent(), true)
+		sessionToken, session, issueErr := h.server.Auth.NewSessionWithClient(h.client(), h.request.UserAgent(), true)
 		if issueErr != nil {
 			return issueErr
 		}
@@ -874,13 +876,13 @@ func (h *handler) handlePair() {
 	}
 	result := jsoncompat.NewObject()
 	result.Set("csrf", session.MustGet("csrf"))
-	h.output(http.StatusOK, result, contentTypeJSON, h.server.Auth.CookieValue(sessionToken))
+	h.output(http.StatusOK, result, contentTypeJSON, h.cookieValue(sessionToken))
 }
 
 func (h *handler) handleAuth() {
 	token := h.cookieToken()
-	session := h.server.Auth.Get(token)
-	address := clientIP(h.request)
+	session := h.server.Auth.GetForClient(token, h.client(), h.request.UserAgent())
+	address, _ := h.client().MustGet("ip").(string)
 	body := jsoncompat.NewObject()
 	body.Set("authenticated", session != nil)
 	if session != nil {
@@ -899,7 +901,7 @@ func (h *handler) handleAuth() {
 	body.Set("transport", transport)
 	cookie := ""
 	if session != nil {
-		cookie = h.server.Auth.CookieValue(token)
+		cookie = h.cookieValue(token)
 	}
 	h.output(http.StatusOK, body, contentTypeJSON, cookie)
 }
@@ -921,7 +923,7 @@ func (h *handler) handleLogin() {
 	if raw, ok := body.Get("remember"); ok {
 		remember = raw
 	}
-	token, session, loginErr := h.server.Auth.Login(username, password, clientIP(h.request), remember)
+	token, session, loginErr := h.server.Auth.LoginClient(username, password, h.client(), h.request.UserAgent(), remember)
 	if loginErr != nil {
 		rejected := loginErr.(*auth.LoginRejected)
 		status := jsoncompat.NewObject()
@@ -934,7 +936,7 @@ func (h *handler) handleLogin() {
 	h.server.Auth.Logout(h.cookieToken())
 	result := jsoncompat.NewObject()
 	result.Set("csrf", session.MustGet("csrf"))
-	h.output(http.StatusOK, result, contentTypeJSON, h.server.Auth.CookieValue(token))
+	h.output(http.StatusOK, result, contentTypeJSON, h.cookieValue(token))
 }
 
 func clientIP(request *http.Request) string {
@@ -942,6 +944,21 @@ func clientIP(request *http.Request) string {
 		return host
 	}
 	return request.RemoteAddr
+}
+
+// client mirrors httpd.py's client(): the resolved client record, trusting
+// forwarded IPs only on a secure HTTPS-tunnel host via a trusted proxy.
+func (h *handler) client() *jsoncompat.Object {
+	secure := h.server.SecureHosts[h.request.Host]
+	return h.server.Auth.Client(clientIP(h.request), h.request.Host,
+		h.request.Header.Get("X-Forwarded-For"),
+		h.request.Header.Get("CF-Connecting-IP"), secure)
+}
+
+// cookieValue mirrors httpd.py's cookie(): the Secure attribute rides along
+// when the Host is an HTTPS tunnel origin.
+func (h *handler) cookieValue(token string) string {
+	return h.server.Auth.CookieValueForHost(token, h.server.SecureHosts[h.request.Host])
 }
 
 var _ = json.Marshal

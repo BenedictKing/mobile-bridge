@@ -122,6 +122,21 @@ func (a *Auth) loginStatusLocked(address string) *jsoncompat.Object {
 // the derived digest and the username, failure accounting with auto-block at
 // MaxFailures, and failure clearing on success.
 func (a *Auth) Login(username, password, address string, remember any) (string, *jsoncompat.Object, error) {
+	return a.login(username, password, address, "", nil, remember)
+}
+
+// LoginClient is Login with the resolved client record: the client's
+// ip/peer/source land in the session (Python spreads the client dict) and the
+// failure accounting keys on the client's ip.
+func (a *Auth) LoginClient(username, password string, client *jsoncompat.Object, userAgent string, remember any) (string, *jsoncompat.Object, error) {
+	address := ""
+	if client != nil {
+		address, _ = client.MustGet("ip").(string)
+	}
+	return a.login(username, password, address, userAgent, client, remember)
+}
+
+func (a *Auth) login(username, password, address, userAgent string, client *jsoncompat.Object, remember any) (string, *jsoncompat.Object, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.blockedIP[address] {
@@ -156,7 +171,7 @@ func (a *Auth) Login(username, password, address string, remember any) (string, 
 		}
 	}
 	delete(a.failures, address)
-	return a.newSessionLocked(address, "", remember)
+	return a.newSessionLocked(address, userAgent, remember, client)
 }
 
 func (a *Auth) passwordMatches(password string) bool {
@@ -172,10 +187,22 @@ func (a *Auth) passwordMatches(password string) bool {
 func (a *Auth) NewSession(address, userAgent string, remember any) (string, *jsoncompat.Object, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.newSessionLocked(address, userAgent, remember)
+	return a.newSessionLocked(address, userAgent, remember, nil)
 }
 
-func (a *Auth) newSessionLocked(address, userAgent string, remember any) (string, *jsoncompat.Object, error) {
+// NewSessionWithClient is NewSession carrying the resolved client record into
+// the session, as the pairing path does.
+func (a *Auth) NewSessionWithClient(client *jsoncompat.Object, userAgent string, remember any) (string, *jsoncompat.Object, error) {
+	address := ""
+	if client != nil {
+		address, _ = client.MustGet("ip").(string)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.newSessionLocked(address, userAgent, remember, client)
+}
+
+func (a *Auth) newSessionLocked(address, userAgent string, remember any, client *jsoncompat.Object) (string, *jsoncompat.Object, error) {
 	if address != "" && a.blockedIP[address] {
 		return "", nil, errors.New("此 IP 已被访问规则禁止")
 	}
@@ -203,6 +230,15 @@ func (a *Auth) newSessionLocked(address, userAgent string, remember any) (string
 	session.Set("ip", address)
 	session.Set("peer", address)
 	session.Set("source", "direct")
+	if client != nil {
+		// Python spreads **client over the defaults: ip/peer/source reflect
+		// the resolved client, not the raw peer.
+		for _, field := range []string{"ip", "peer", "source"} {
+			if value, exists := client.Get(field); exists {
+				session.Set(field, value)
+			}
+		}
+	}
 	a.sessions[a.sessionKey(token)] = session
 	a.persistLocked()
 	return token, session, nil
@@ -210,6 +246,13 @@ func (a *Auth) newSessionLocked(address, userAgent string, remember any) (string
 
 // Get mirrors Auth.get: validity check and lastSeen refresh (60s throttle).
 func (a *Auth) Get(token string) *jsoncompat.Object {
+	return a.GetForClient(token, nil, "")
+}
+
+// GetForClient is Get with the resolved client: the session's ip/peer/source
+// follow the client and lastSeen refreshes when anything changed (Python
+// persists exactly then).
+func (a *Auth) GetForClient(token string, client *jsoncompat.Object, userAgent string) *jsoncompat.Object {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	session, ok := a.sessions[a.sessionKey(token)]
@@ -226,7 +269,23 @@ func (a *Auth) Get(token string) *jsoncompat.Object {
 	now := a.Now()
 	lastSeen, _ := session.MustGet("lastSeen").(json.Number)
 	seen, _ := strconv.ParseFloat(lastSeen.String(), 64)
-	if now-seen >= 60 {
+	changed := now-seen >= 60
+	if client != nil {
+		ip, _ := client.MustGet("ip").(string)
+		currentIP, _ := session.MustGet("ip").(string)
+		if ip != currentIP {
+			changed = true
+		}
+		for _, field := range []string{"ip", "peer", "source"} {
+			if value, exists := client.Get(field); exists {
+				session.Set(field, value)
+			}
+		}
+	}
+	if userAgent != "" {
+		session.Set("userAgent", truncateRunes(userAgent, 512))
+	}
+	if changed {
 		session.Set("lastSeen", json.Number(numberText(now)))
 		a.persistLocked()
 	}
@@ -257,6 +316,16 @@ func (a *Auth) CookieValue(token string) string {
 		return cookie + "; Max-Age=" + strconv.Itoa(*age)
 	}
 	return cookie
+}
+
+// CookieValueForHost appends the Secure attribute when the request's Host is
+// an HTTPS tunnel origin (secure_hosts), matching httpd.py's cookie().
+func (a *Auth) CookieValueForHost(token string, secure bool) string {
+	value := a.CookieValue(token)
+	if secure {
+		return value + "; Secure"
+	}
+	return value
 }
 
 func numberText(value float64) string {

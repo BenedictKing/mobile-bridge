@@ -549,6 +549,9 @@ func runGateway(args []string) {
 		}
 		server.Origins[origin] = true
 		server.Hosts[parsed.Host] = true
+		if parsed.Scheme == "https" {
+			server.SecureHosts[parsed.Host] = true
+		}
 	}
 	if enabled, _ := preferences.MustGet("tunnel").(bool); enabled {
 		cloudflared, _ := preferences.MustGet("cloudflared").(string)
