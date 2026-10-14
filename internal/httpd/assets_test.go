@@ -28,3 +28,36 @@ func TestVendorAssetsAreServedBeforeAuthentication(t *testing.T) {
 		t.Fatalf("vendor traversal unexpectedly served: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
+	files := map[string]string{
+		"web/account.js":           "window.account=true;",
+		"web/account.css":          "body{}",
+		"web/style.css":            "body{}",
+		"web/presentation.css":     "body{}",
+		"web/manifest.webmanifest": `{"name":"Mobile / Bridge"}`,
+		"web/icon.png":             "\x89PNG",
+	}
+	web := fstest.MapFS{}
+	for name, data := range files {
+		web[name] = &fstest.MapFile{Data: []byte(data)}
+	}
+	server := New(auth.NewAuth(auth.Config{Mode: "password"}), web, 8790, "instance")
+	expected := map[string]string{
+		"/account.js":           "text/javascript; charset=utf-8",
+		"/account.css":          "text/css; charset=utf-8",
+		"/style.css":            "text/css; charset=utf-8",
+		"/presentation.css":     "text/css; charset=utf-8",
+		"/manifest.webmanifest": "application/manifest+json",
+		"/icon.png":             "image/png",
+	}
+	for path, contentType := range expected {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790"+path, nil)
+		request.Host = "127.0.0.1:8790"
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != contentType {
+			t.Fatalf("%s status=%d type=%q", path, response.Code, response.Header().Get("Content-Type"))
+		}
+	}
+}

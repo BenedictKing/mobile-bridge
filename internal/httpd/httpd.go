@@ -263,13 +263,38 @@ func (h *handler) checkRequest(write bool) bool {
 	return true
 }
 
-var staticRoutes = map[string]string{ // path -> file name under web/ (bridge/httpd.py STATIC)
-	"/": "index.html", "/i18n.js": "i18n.js", "/app.js": "app.js", "/modes.js": "modes.js",
-	"/attachments.js": "attachments.js", "/activity.js": "activity.js",
-	"/fast-mode.js": "fast-mode.js", "/accounts.js": "accounts.js",
-	"/timeline.js": "timeline.js", "/markdown.js": "markdown.js",
-	"/transport.js": "transport.js", "/presentation.js": "presentation.js",
-	"/message-actions.js": "message-actions.js", "/migrate.js": "migrate.js",
+type staticRoute struct {
+	file        string
+	contentType string
+}
+
+// staticRoutes mirrors bridge/httpd.py's STATIC table exactly, content types
+// included: the pre-login shell needs every one of these without a session.
+var staticRoutes = map[string]staticRoute{
+	"/":                           {"index.html", "text/html; charset=utf-8"},
+	"/i18n.js":                    {"i18n.js", "text/javascript; charset=utf-8"},
+	"/app.js":                     {"app.js", "text/javascript; charset=utf-8"},
+	"/modes.js":                   {"modes.js", "text/javascript; charset=utf-8"},
+	"/attachments.js":             {"attachments.js", "text/javascript; charset=utf-8"},
+	"/activity.js":                {"activity.js", "text/javascript; charset=utf-8"},
+	"/fast-mode.js":               {"fast-mode.js", "text/javascript; charset=utf-8"},
+	"/accounts.js":                {"accounts.js", "text/javascript; charset=utf-8"},
+	"/migrate.js":                 {"migrate.js", "text/javascript; charset=utf-8"},
+	"/account.js":                 {"account.js", "text/javascript; charset=utf-8"},
+	"/account.css":                {"account.css", "text/css; charset=utf-8"},
+	"/presentation.js":            {"presentation.js", "text/javascript; charset=utf-8"},
+	"/presentation.css":           {"presentation.css", "text/css; charset=utf-8"},
+	"/markdown.js":                {"markdown.js", "text/javascript; charset=utf-8"},
+	"/message-actions.js":         {"message-actions.js", "text/javascript; charset=utf-8"},
+	"/timeline.js":                {"timeline.js", "text/javascript; charset=utf-8"},
+	"/transport.js":               {"transport.js", "text/javascript; charset=utf-8"},
+	"/vendor/markdown-it.min.js":  {"vendor/markdown-it.min.js", "text/javascript; charset=utf-8"},
+	"/vendor/texmath.js":          {"vendor/texmath.js", "text/javascript; charset=utf-8"},
+	"/vendor/katex/katex.min.js":  {"vendor/katex/katex.min.js", "text/javascript; charset=utf-8"},
+	"/vendor/katex/katex.min.css": {"vendor/katex/katex.min.css", "text/css; charset=utf-8"},
+	"/style.css":                  {"style.css", "text/css; charset=utf-8"},
+	"/manifest.webmanifest":       {"manifest.webmanifest", "application/manifest+json"},
+	"/icon.png":                   {"icon.png", "image/png"},
 }
 
 func (h *handler) readJSON() (any, error) {
@@ -314,13 +339,9 @@ func (h *handler) handleMethod(write bool) {
 	}
 	path := h.request.URL.Path
 	if !write {
-		if name, ok := staticRoutes[path]; ok {
-			if data, err := fs.ReadFile(h.server.WebFS, "web/"+name); err == nil {
-				contentType := "text/html; charset=utf-8"
-				if strings.HasSuffix(name, ".js") {
-					contentType = "text/javascript; charset=utf-8"
-				}
-				h.output(http.StatusOK, data, contentType, "")
+		if route, ok := staticRoutes[path]; ok {
+			if data, err := fs.ReadFile(h.server.WebFS, "web/"+route.file); err == nil {
+				h.output(http.StatusOK, data, route.contentType, "")
 				return
 			}
 		}
