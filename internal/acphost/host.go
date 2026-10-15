@@ -29,6 +29,7 @@ type Host struct {
 	mu          sync.Mutex
 	connections map[net.Conn]struct{}
 	lastConn    net.Conn
+	sessions    map[string]net.Conn
 	initialized *jsoncompat.Object
 	buffered    []*jsoncompat.Object
 	nextID      int
@@ -47,7 +48,7 @@ type pendingRequest struct {
 }
 
 func New(socket string, command []string) *Host {
-	return &Host{Socket: socket, Command: append([]string{}, command...), connections: map[net.Conn]struct{}{}, pending: map[string]pendingRequest{}, reverse: map[string]net.Conn{}}
+	return &Host{Socket: socket, Command: append([]string{}, command...), connections: map[net.Conn]struct{}{}, sessions: map[string]net.Conn{}, pending: map[string]pendingRequest{}, reverse: map[string]net.Conn{}}
 }
 
 // Run starts the child and accepts gateway connections until ctx is canceled.
@@ -147,6 +148,11 @@ func (h *Host) clearConnection(conn net.Conn) {
 	if h.lastConn == conn {
 		h.lastConn = nil
 	}
+	for sessionID, sessionConn := range h.sessions {
+		if sessionConn == conn {
+			delete(h.sessions, sessionID)
+		}
+	}
 	h.mu.Unlock()
 	_ = conn.Close()
 }
@@ -172,6 +178,13 @@ func (h *Host) readGateway(conn net.Conn) {
 
 func (h *Host) forwardGateway(conn net.Conn, message *jsoncompat.Object) {
 	method, _ := message.MustGet("method").(string)
+	if params, ok := message.MustGet("params").(*jsoncompat.Object); ok {
+		if sessionID, ok := params.MustGet("sessionId").(string); ok && sessionID != "" {
+			h.mu.Lock()
+			h.sessions[sessionID] = conn
+			h.mu.Unlock()
+		}
+	}
 	if method == "" {
 		if id, ok := message.Get("id"); ok {
 			key := jsoncompat.PyStr(id)
@@ -238,6 +251,13 @@ func (h *Host) forwardChild(message *jsoncompat.Object) {
 		if id, hasID := message.Get("id"); hasID {
 			h.mu.Lock()
 			conn := h.lastConn
+			if params, ok := message.MustGet("params").(*jsoncompat.Object); ok {
+				if sessionID, ok := params.MustGet("sessionId").(string); ok && sessionID != "" {
+					if sessionConn := h.sessions[sessionID]; sessionConn != nil {
+						conn = sessionConn
+					}
+				}
+			}
 			h.reverse[jsoncompat.PyStr(id)] = conn
 			h.mu.Unlock()
 			if conn != nil {
