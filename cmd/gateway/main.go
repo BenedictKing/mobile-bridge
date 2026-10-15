@@ -627,7 +627,7 @@ func runGateway(args []string) {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
 		server.Codex.Executable = os.Getenv("GATEWAY_CODEX_BIN")
 		if server.Jev != nil {
-			server.Codex.AutoApprove = server.Jev.AutoResponse
+			server.Codex.AutoApprove = jevApprovalHook(server.Jev, "codex")
 		}
 	}
 	server.Account = account.NewWithData(codexHome, dataDir, os.Getenv("GATEWAY_CODEX_BIN"))
@@ -740,9 +740,10 @@ func runGateway(args []string) {
 		}
 	}
 	if len(server.ACPAgents) > 0 {
-		for _, manager := range server.ACPAgents {
+		for kind, manager := range server.ACPAgents {
 			if manager != nil && server.Jev != nil {
-				manager.AutoApprove = server.Jev.AutoResponse
+				manager.AutoApprove = jevApprovalHook(server.Jev, kind)
+				manager.AutoContinue = jevContinueHook(server.Jev, kind)
 			}
 		}
 		sort.Strings(enabled)

@@ -27,13 +27,15 @@ type Session struct {
 }
 
 type Bridge struct {
-	Host        string
-	Home        string
-	Executable  string
-	IPC         *ipc.Desktop
-	mu          sync.Mutex
-	sessions    map[string]*Session
-	AutoApprove func(method string, params *jsoncompat.Object) *jsoncompat.Object
+	Host       string
+	Home       string
+	Executable string
+	IPC        *ipc.Desktop
+	mu         sync.Mutex
+	sessions   map[string]*Session
+	// AutoApprove, when set, evaluates one pending approval request and may
+	// answer it natively; the session/request identifiers feed the audit log.
+	AutoApprove func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
 	autoPending map[string]bool
 	catalogOnce sync.Once
 	catalog     *Catalog
@@ -297,7 +299,7 @@ func (b *Bridge) autoApprovePending(id string) {
 			continue
 		}
 		params, _ := request.MustGet("params").(*jsoncompat.Object)
-		if response := b.AutoApprove(method, params); response != nil {
+		if response := b.AutoApprove(id, jsoncompat.PyStr(request.MustGet("id")), method, params); response != nil {
 			_, _ = b.Respond(id, jsoncompat.PyStr(request.MustGet("id")), response)
 		} else {
 			b.mu.Lock()

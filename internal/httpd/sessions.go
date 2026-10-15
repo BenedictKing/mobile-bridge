@@ -699,6 +699,8 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		if callErr := session.Respond(requestID, response); callErr != nil {
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		} else {
+			// A human answered a card; the auto-continue budget re-arms.
+			session.NoteHumanAction()
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
 		}
 	case "settings":

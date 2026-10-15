@@ -47,8 +47,17 @@ type Session struct {
 	// default matches, tests shrink it.
 	activitySlice        time.Duration
 	lastSubagentRevision int64
-	autoApprove          func(method string, params *jsoncompat.Object) *jsoncompat.Object
+	autoApprove          func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
+	// autoContinue runs asynchronously once a live turn settles; the gateway
+	// installs it to resume unfinished work. autoContinueRuns is the
+	// consecutive-resume budget any human action re-arms.
+	autoContinue     func(*Session)
+	autoContinueRuns int
 }
+
+// MaxAutoContinue bounds consecutive automatic "继续" sends without an
+// intervening human message, answer or steer.
+const MaxAutoContinue = 5
 
 // Subagents is the on-disk child-agent source decorating an agent's views
 // (Python's native_subagents stores). Nil disables decoration.
@@ -62,7 +71,13 @@ type Manager struct {
 	Executable  string
 	Command     []string
 	HostSocket  string
-	AutoApprove func(method string, params *jsoncompat.Object) *jsoncompat.Object
+	AutoApprove func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
+
+	// AutoContinue, when set, is invoked (in its own goroutine) every time a
+	// live turn settles — completion, failure or idle timeout — so the
+	// gateway can judge whether unfinished work should resume. The hook must
+	// re-check liveness itself; turns settle while the session stays open.
+	AutoContinue func(*Session)
 
 	// Label, Capabilities and EffortMap mirror the Python adapter profile
 	// (bridge/agents/*.py): list rows, views and the settings validator all
@@ -326,6 +341,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 	session := &Session{ID: id, Cwd: cwd, Process: process,
 		View: acpview.NewView(id, nil, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
+	session.autoContinue = m.AutoContinue
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
 	process.OnClose = session.markProcessClosed
@@ -410,6 +426,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	session := &Session{ID: id, Cwd: cwd, Title: title, CreatedAtMs: createdAt, Process: process,
 		View: acpview.NewView(id, title, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
+	session.autoContinue = m.AutoContinue
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
 	process.OnClose = session.markProcessClosed
@@ -489,6 +506,17 @@ func (s *Session) Prompt(text string, idleTimeout time.Duration) error {
 }
 
 func (s *Session) PromptWithBlocks(text string, extra []*jsoncompat.Object, idleTimeout time.Duration) error {
+	return s.prompt(text, extra, idleTimeout, false)
+}
+
+// AutoContinuePrompt sends the automatic resume message: the same prompt
+// path, but it consumes instead of re-arming the consecutive auto-continue
+// budget and never resets what a human action armed.
+func (s *Session) AutoContinuePrompt(text string, idleTimeout time.Duration) error {
+	return s.prompt(text, nil, idleTimeout, true)
+}
+
+func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, auto bool) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -497,6 +525,16 @@ func (s *Session) PromptWithBlocks(text string, extra []*jsoncompat.Object, idle
 	if s.promptRunning {
 		s.mu.Unlock()
 		return errors.New("当前已有任务正在运行")
+	}
+	if auto {
+		if s.autoContinueRuns >= MaxAutoContinue {
+			s.mu.Unlock()
+			return errors.New("连续自动继续已达上限")
+		}
+		s.autoContinueRuns++
+	} else {
+		// Any human message re-arms the budget.
+		s.autoContinueRuns = 0
 	}
 	s.promptRunning = true
 	s.View.BeginTurn(text)
@@ -541,6 +579,9 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 	if idleTimeout <= 0 {
 		idleTimeout = 3600 * time.Second
 	}
+	// Every exit below is a settled turn (answered, errored or timed out):
+	// give the auto-continue hook its edge after the final state lands.
+	defer s.fireAutoContinue()
 	for {
 		select {
 		case outcome := <-channel:
@@ -578,6 +619,14 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 			s.mu.Unlock()
 			return
 		}
+	}
+}
+
+// fireAutoContinue launches the installed settle hook off the turn's
+// goroutine so a slow Jev assessment never blocks the reader loops.
+func (s *Session) fireAutoContinue() {
+	if s.autoContinue != nil {
+		go s.autoContinue(s)
 	}
 }
 
@@ -647,7 +696,20 @@ func (s *Session) Steer(method, text string) (injected bool, err error) {
 	if object, ok := result.(*jsoncompat.Object); ok {
 		outcome, _ = object.MustGet("outcome").(string)
 	}
+	if outcome == "injected" {
+		// A human steered the running turn; re-arm the auto-continue budget.
+		s.NoteHumanAction()
+	}
 	return outcome == "injected", nil
+}
+
+// NoteHumanAction re-arms the consecutive auto-continue budget. The HTTP
+// layer calls it for human approval answers and form replies; Jev's own
+// automatic responses deliberately do not (they are not human intent).
+func (s *Session) NoteHumanAction() {
+	s.mu.Lock()
+	s.autoContinueRuns = 0
+	s.mu.Unlock()
 }
 
 // SetMode switches the session's work mode (AcpAdapter._set_mode port):
@@ -1199,7 +1261,7 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 	s.mu.Unlock()
 	if s.autoApprove != nil && (method == "session/request_permission" || method == "session/requestPermission") {
 		go func() {
-			if response := s.autoApprove(method, params); response != nil {
+			if response := s.autoApprove(s.ID, requestID, method, params); response != nil {
 				_ = s.Respond(requestID, response)
 			}
 		}()
