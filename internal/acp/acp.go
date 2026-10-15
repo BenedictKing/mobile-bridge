@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os/exec"
 	"strings"
 	"sync"
@@ -104,6 +105,18 @@ func Start(argv []string) (*Process, error) {
 	}
 	// Drain stderr so a chatty agent cannot block.
 	go func() { _, _ = io.Copy(io.Discard, stderr) }()
+	go process.readLoop()
+	return process, nil
+}
+
+// StartSocket connects to an external ACP host. The host owns the agent
+// process, so closing this Process only disconnects the gateway transport.
+func StartSocket(path string) (*Process, error) {
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		return nil, &Error{Message: fmt.Sprintf("无法连接 Agent Host：%s", err), Kind: KindUnavailable}
+	}
+	process := &Process{pending: map[string]chan Delivery{}, done: make(chan struct{}), stdin: conn, stdout: conn}
 	go process.readLoop()
 	return process, nil
 }
@@ -252,7 +265,7 @@ func (p *Process) Close() {
 	p.closed = true
 	p.mu.Unlock()
 	_ = p.stdin.Close()
-	if p.cmd.Process != nil {
+	if p.cmd != nil && p.cmd.Process != nil {
 		_ = p.cmd.Process.Signal(syscall.SIGTERM)
 		done := make(chan struct{})
 		go func() { _ = p.cmd.Wait(); close(done) }()
@@ -263,7 +276,9 @@ func (p *Process) Close() {
 		}
 	}
 	p.finishUnavailable()
-	_ = p.stdout.Close()
+	if p.stdout != nil {
+		_ = p.stdout.Close()
+	}
 }
 
 // discard removes a timed-out request so a late response cannot retain a

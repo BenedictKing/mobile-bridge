@@ -7,6 +7,8 @@
 //	GATEWAY_PORT          listen port (default 8787)
 //	GATEWAY_AUTH          JSON: {"username","salt","hash","iterations"} (pbkdf2 record)
 //	GATEWAY_INSTANCE_ID   deterministic instance id for tests
+//	GATEWAY_ACP_HOST_SOCKET   optional Unix socket for the generic external ACP Host
+//	GATEWAY_ACP_HOST_SOCKETS  JSON map of agent kind to external ACP Host socket
 package main
 
 import (
@@ -105,6 +107,10 @@ serve 参数：
   --codex-home DIR Codex 主目录（CODEX_HOME）
   --ipc-path PATH  桌面 IPC 端点（GATEWAY_IPC_PATH）
   --codex-bin PATH Codex 可执行文件（GATEWAY_CODEX_BIN）
+
+ACP Host 可选环境变量：
+  GATEWAY_ACP_HOST_SOCKET   通用 ACP Host Unix socket
+  GATEWAY_ACP_HOST_SOCKETS  按 Agent 映射的 JSON socket 配置
 `)
 }
 
@@ -671,6 +677,20 @@ func runGateway(args []string) {
 			}
 		}
 	}
+	hostSockets := map[string]string{}
+	if raw := os.Getenv("GATEWAY_ACP_HOST_SOCKETS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &hostSockets); err != nil {
+			log.Fatalf("GATEWAY_ACP_HOST_SOCKETS: %v", err)
+		}
+	}
+	if socket := os.Getenv("GATEWAY_ACP_HOST_SOCKET"); socket != "" {
+		hostSockets["acp"] = socket
+	}
+	for kind, socket := range hostSockets {
+		if manager := server.ACPAgents[kind]; manager != nil {
+			manager.HostSocket = socket
+		}
+	}
 	home := ""
 	if userHome, homeErr := os.UserHomeDir(); homeErr == nil {
 		home = userHome
@@ -695,6 +715,7 @@ func runGateway(args []string) {
 			continue
 		}
 		manager := acpruntime.NewCommand(profile.Command)
+		manager.HostSocket = hostSockets[profile.Kind]
 		manager.Label = profile.Label
 		manager.Capabilities = profile.Capabilities
 		manager.EffortMap = profile.EffortMap

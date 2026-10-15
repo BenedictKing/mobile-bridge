@@ -60,6 +60,7 @@ type Subagents interface {
 type Manager struct {
 	Executable string
 	Command    []string
+	HostSocket string
 
 	// Label, Capabilities and EffortMap mirror the Python adapter profile
 	// (bridge/agents/*.py): list rows, views and the settings validator all
@@ -126,6 +127,9 @@ func (m *Manager) listTTL() time.Duration {
 }
 
 func (m *Manager) start() (*acp.Process, error) {
+	if m.HostSocket != "" {
+		return acp.StartSocket(m.HostSocket)
+	}
 	if len(m.Command) > 0 {
 		return acp.Start(m.Command)
 	}
