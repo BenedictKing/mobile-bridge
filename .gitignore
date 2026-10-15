@@ -25,3 +25,5 @@ dist/
 
 # Wails 目录内误入的构建产物
 wails/wails
+.codegraph/
+.gocache/
