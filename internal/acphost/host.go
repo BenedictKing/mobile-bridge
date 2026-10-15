@@ -27,12 +27,13 @@ type Host struct {
 	Command []string
 
 	mu          sync.Mutex
-	conn        net.Conn
+	connections map[net.Conn]struct{}
+	lastConn    net.Conn
 	initialized *jsoncompat.Object
 	buffered    []*jsoncompat.Object
 	nextID      int
 	pending     map[string]pendingRequest
-	reverse     map[string]bool
+	reverse     map[string]net.Conn
 	childIn     io.WriteCloser
 	childOut    io.ReadCloser
 	childWrite  sync.Mutex
@@ -42,10 +43,11 @@ type Host struct {
 type pendingRequest struct {
 	gatewayID any
 	method    string
+	conn      net.Conn
 }
 
 func New(socket string, command []string) *Host {
-	return &Host{Socket: socket, Command: append([]string{}, command...), pending: map[string]pendingRequest{}, reverse: map[string]bool{}}
+	return &Host{Socket: socket, Command: append([]string{}, command...), connections: map[net.Conn]struct{}{}, pending: map[string]pendingRequest{}, reverse: map[string]net.Conn{}}
 }
 
 // Run starts the child and accepts gateway connections until ctx is canceled.
@@ -86,9 +88,12 @@ func (h *Host) Run(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		h.mu.Lock()
-		conn := h.conn
+		connections := make([]net.Conn, 0, len(h.connections))
+		for conn := range h.connections {
+			connections = append(connections, conn)
+		}
 		h.mu.Unlock()
-		if conn != nil {
+		for _, conn := range connections {
 			_ = conn.Close()
 		}
 		_ = h.childIn.Close()
@@ -116,10 +121,9 @@ func (h *Host) Run(ctx context.Context) error {
 			}
 			return acceptErr
 		}
-		h.replaceConnection(conn)
-		h.flushBuffered()
-		h.readGateway(conn)
-		h.clearConnection(conn)
+		h.addConnection(conn)
+		h.flushBuffered(conn)
+		go h.readGateway(conn)
 	}
 }
 
@@ -130,26 +134,25 @@ func deadline(ctx context.Context) (deadlineTime time.Time) {
 	return time.Now().Add(250 * time.Millisecond)
 }
 
-func (h *Host) replaceConnection(conn net.Conn) {
+func (h *Host) addConnection(conn net.Conn) {
 	h.mu.Lock()
-	old := h.conn
-	h.conn = conn
+	h.connections[conn] = struct{}{}
+	h.lastConn = conn
 	h.mu.Unlock()
-	if old != nil {
-		_ = old.Close()
-	}
 }
 
 func (h *Host) clearConnection(conn net.Conn) {
 	h.mu.Lock()
-	if h.conn == conn {
-		h.conn = nil
+	delete(h.connections, conn)
+	if h.lastConn == conn {
+		h.lastConn = nil
 	}
 	h.mu.Unlock()
 	_ = conn.Close()
 }
 
 func (h *Host) readGateway(conn net.Conn) {
+	defer h.clearConnection(conn)
 	reader := bufio.NewReaderSize(conn, 64*1024)
 	for {
 		line, err := reader.ReadString('\n')
@@ -162,22 +165,24 @@ func (h *Host) readGateway(conn net.Conn) {
 		}
 		message, ok := value.(*jsoncompat.Object)
 		if ok {
-			h.forwardGateway(message)
+			h.forwardGateway(conn, message)
 		}
 	}
 }
 
-func (h *Host) forwardGateway(message *jsoncompat.Object) {
+func (h *Host) forwardGateway(conn net.Conn, message *jsoncompat.Object) {
 	method, _ := message.MustGet("method").(string)
 	if method == "" {
 		if id, ok := message.Get("id"); ok {
 			key := jsoncompat.PyStr(id)
 			h.mu.Lock()
-			isReverse := h.reverse[key]
+			reverseConn, isReverse := h.reverse[key]
 			delete(h.reverse, key)
 			h.mu.Unlock()
 			if isReverse {
-				h.sendChild(message)
+				if reverseConn == conn {
+					h.sendChild(message)
+				}
 				return
 			}
 		}
@@ -192,7 +197,7 @@ func (h *Host) forwardGateway(message *jsoncompat.Object) {
 		if cached != nil {
 			response := cached.(*jsoncompat.Object)
 			response.Set("id", message.MustGet("id"))
-			_ = h.sendGateway(response)
+			_ = h.sendGateway(conn, response)
 			return
 		}
 	}
@@ -200,7 +205,7 @@ func (h *Host) forwardGateway(message *jsoncompat.Object) {
 		h.mu.Lock()
 		h.nextID++
 		hostID := fmt.Sprintf("host-%d", h.nextID)
-		h.pending[hostID] = pendingRequest{gatewayID: id, method: method}
+		h.pending[hostID] = pendingRequest{gatewayID: id, method: method, conn: conn}
 		h.mu.Unlock()
 		forwarded, _ := jsoncompat.Clone(message).(*jsoncompat.Object)
 		forwarded.Set("id", hostID)
@@ -232,9 +237,14 @@ func (h *Host) forwardChild(message *jsoncompat.Object) {
 	if method, hasMethod := message.Get("method"); hasMethod {
 		if id, hasID := message.Get("id"); hasID {
 			h.mu.Lock()
-			h.reverse[jsoncompat.PyStr(id)] = true
+			conn := h.lastConn
+			h.reverse[jsoncompat.PyStr(id)] = conn
 			h.mu.Unlock()
+			if conn != nil {
+				_ = h.sendGateway(conn, message)
+			}
 			_ = method
+			return
 		}
 	}
 	if id, ok := message.Get("id"); ok {
@@ -253,11 +263,11 @@ func (h *Host) forwardChild(message *jsoncompat.Object) {
 				h.mu.Unlock()
 			}
 			response.Set("id", request.gatewayID)
-			_ = h.sendGateway(response)
+			_ = h.sendGateway(request.conn, response)
 			return
 		}
 	}
-	if err := h.sendGateway(message); err != nil {
+	if err := h.broadcastGateway(message); err != nil {
 		h.mu.Lock()
 		if len(h.buffered) >= maxBufferedMessages {
 			copy(h.buffered, h.buffered[1:])
@@ -268,26 +278,24 @@ func (h *Host) forwardChild(message *jsoncompat.Object) {
 	}
 }
 
-func (h *Host) flushBuffered() {
+func (h *Host) flushBuffered(conn net.Conn) {
 	h.mu.Lock()
 	buffered := h.buffered
 	h.buffered = nil
 	h.mu.Unlock()
 	for _, message := range buffered {
-		_ = h.sendGateway(message)
+		_ = h.sendGateway(conn, message)
 	}
 }
 
 func (h *Host) sendChild(message *jsoncompat.Object) {
 	h.childWrite.Lock()
 	defer h.childWrite.Unlock()
-	_, _ = h.childIn.Write(append(jsoncompat.EncodePythonDefault(message), '\n'))
+	_, err := h.childIn.Write(append(jsoncompat.EncodePythonDefault(message), '\n'))
+	_ = err
 }
 
-func (h *Host) sendGateway(message *jsoncompat.Object) error {
-	h.mu.Lock()
-	conn := h.conn
-	h.mu.Unlock()
+func (h *Host) sendGateway(conn net.Conn, message *jsoncompat.Object) error {
 	if conn == nil {
 		return errors.New("gateway disconnected")
 	}
@@ -295,4 +303,23 @@ func (h *Host) sendGateway(message *jsoncompat.Object) error {
 	defer h.connWrite.Unlock()
 	_, err := conn.Write(append(jsoncompat.EncodePythonDefault(message), '\n'))
 	return err
+}
+
+func (h *Host) broadcastGateway(message *jsoncompat.Object) error {
+	h.mu.Lock()
+	connections := make([]net.Conn, 0, len(h.connections))
+	for conn := range h.connections {
+		connections = append(connections, conn)
+	}
+	h.mu.Unlock()
+	var firstErr error
+	for _, conn := range connections {
+		if err := h.sendGateway(conn, message); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if len(connections) == 0 {
+		return errors.New("gateway disconnected")
+	}
+	return firstErr
 }
