@@ -47,6 +47,7 @@ type Session struct {
 	// default matches, tests shrink it.
 	activitySlice        time.Duration
 	lastSubagentRevision int64
+	autoApprove          func(method string, params *jsoncompat.Object) *jsoncompat.Object
 }
 
 // Subagents is the on-disk child-agent source decorating an agent's views
@@ -58,9 +59,10 @@ type Subagents interface {
 }
 
 type Manager struct {
-	Executable string
-	Command    []string
-	HostSocket string
+	Executable  string
+	Command     []string
+	HostSocket  string
+	AutoApprove func(method string, params *jsoncompat.Object) *jsoncompat.Object
 
 	// Label, Capabilities and EffortMap mirror the Python adapter profile
 	// (bridge/agents/*.py): list rows, views and the settings validator all
@@ -323,6 +325,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 	}
 	session := &Session{ID: id, Cwd: cwd, Process: process,
 		View: acpview.NewView(id, nil, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+	session.autoApprove = m.AutoApprove
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
 	process.OnClose = session.markProcessClosed
@@ -406,6 +409,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	createdAt := int64(m.now() * 1000)
 	session := &Session{ID: id, Cwd: cwd, Title: title, CreatedAtMs: createdAt, Process: process,
 		View: acpview.NewView(id, title, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+	session.autoApprove = m.AutoApprove
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
 	process.OnClose = session.markProcessClosed
@@ -1193,6 +1197,13 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 	}
 	s.signalLocked()
 	s.mu.Unlock()
+	if s.autoApprove != nil && (method == "session/request_permission" || method == "session/requestPermission") {
+		go func() {
+			if response := s.autoApprove(method, params); response != nil {
+				_ = s.Respond(requestID, response)
+			}
+		}()
+	}
 }
 
 func (s *Session) signalLocked() {

@@ -323,6 +323,16 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				h.fail(http.StatusConflict, errorBody(watchErr.Error()))
 				return true
 			}
+			if h.server.Creations != nil {
+				if requestID, pending := h.server.Creations.pendingForTarget(threadID); pending != nil {
+					submissionID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:migrate:"+requestID)).String()
+					if _, retryErr := h.server.Codex.StartTurnWithOptions(threadID, submissionID, pending.Message, "send", "", nil, nil); retryErr == nil {
+						h.server.Creations.markSent(requestID)
+					} else {
+						h.server.Creations.markWaiting(requestID, retryErr.Error())
+					}
+				}
+			}
 		}
 		result := jsoncompat.NewObject()
 		result.Set("ok", true)
@@ -591,12 +601,16 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		var attachmentFiles []acpadapter.FileSpec
 		if raw, ok := object.MustGet("attachments").(*jsoncompat.Array); ok {
 			for _, value := range raw.Items {
-				entry, ok := value.(*jsoncompat.Object)
-				if !ok {
+				attachmentID := ""
+				if entry, ok := value.(*jsoncompat.Object); ok {
+					attachmentID, _ = entry.MustGet("id").(string)
+				} else if legacyID, ok := value.(string); ok {
+					attachmentID = legacyID
+				}
+				if attachmentID == "" {
 					h.fail(http.StatusBadRequest, errorBody("附件记录无效"))
 					return true
 				}
-				attachmentID, _ := entry.MustGet("id").(string)
 				file, getErr := h.server.Uploads.Get(threadID, attachmentID)
 				if getErr != nil {
 					h.fail(http.StatusBadRequest, errorBody(getErr.Error()))

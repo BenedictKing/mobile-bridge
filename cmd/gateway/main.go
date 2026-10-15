@@ -737,6 +737,11 @@ func runGateway(args []string) {
 		}
 	}
 	if len(server.ACPAgents) > 0 {
+		for _, manager := range server.ACPAgents {
+			if manager != nil && server.Jev != nil {
+				manager.AutoApprove = server.Jev.AutoResponse
+			}
+		}
 		sort.Strings(enabled)
 		log.Printf("agents enabled: %s", strings.Join(enabled, ", "))
 		// Idle ACP sessions hold one child process each; sweep them like the
