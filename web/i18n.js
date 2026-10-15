@@ -787,6 +787,7 @@ const en={
   "已配置": "Configured",
   "未配置": "Not configured",
   "已配置，留空保持不变": "Configured; leave blank to keep",
+  "输入新密钥替换": "Type a new key to replace it",
   "清除密钥": "Clear key",
   "Jev 更改即时保存到网关。": "Jev changes save to the gateway immediately.",
   "Jev 设置已保存": "Jev settings saved",

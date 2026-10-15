@@ -15,6 +15,7 @@
 
 ### Changed / Fixed
 
+- The Jev API key field now shows the configured key as a capsule chip sitting on the input (masked text, × badge on its top-right corner that clears the key with one tap); the separate 清除密钥 button and the "已配置 · …" status line are gone. Saving stays immediate: typing a new key into the field replaces the capsule once saved, and an empty field keeps the current key.
 - AgentHost now multiplexes concurrent gateway connections instead of letting each new ACP socket replace the previous one: opening a Kimi chat fires `initialize`, `session/load` and `session/list` on parallel connections, and responses are routed back to the originating connection by per-connection request-id maps, so none of them time out anymore. Reverse agent requests (e.g. `session/request_permission`) are bound to the gateway connection that owns the session, keeping permission answers on the right wire.
 - Collapsed activity rows (commands, tool calls, thought summaries) now keep a three-line preview instead of hiding or flooding the timeline; expanding still shows the full text with lazy loading.
 - The phone now preselects 完成后发送（排队） in the composer while an agent without steering support is working, so one tap on 发送 queues the message instead of showing the busy error; the choice reverts when the session goes idle and a manual override wins. The busy error itself names the actual agent instead of always saying "Codex".

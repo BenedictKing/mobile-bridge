@@ -375,8 +375,9 @@ window.loadJevSettings=async()=>{
   try{
     const result=await api('/api/jev');if(request!==jevSettingsRequest)return;
     $('jev-key').value='';
-    $('jev-key-status').textContent=result.configured?t('已配置')+' · '+result.apiKeyMasked:'';
-    $('jev-key').placeholder=result.configured?t('已配置，留空保持不变'):t('未配置');
+    $('jev-key-pill').hidden=!result.configured;
+    $('jev-key-pill-text').textContent=result.apiKeyMasked||t('已配置');
+    $('jev-key').placeholder=result.configured?t('输入新密钥替换'):t('未配置');
     $('jev-base-url').value=result.baseUrl;$('jev-model').value=result.model;$('jev-proxy').value=result.proxy||'';
     $('jev-auto-approve').checked=Boolean(result.autoApprove);
     $('jev-auto-continue').checked=Boolean(result.autoContinue);
@@ -390,13 +391,13 @@ async function saveJevSettings(clear){
   const body={baseUrl:$('jev-base-url').value.trim(),model:$('jev-model').value.trim(),proxy:$('jev-proxy').value.trim(),autoApprove:$('jev-auto-approve').checked,autoContinue:$('jev-auto-continue').checked};
   if(clear)body.clearApiKey=true;
   else{const key=$('jev-key').value.trim();if(key)body.apiKey=key;}
-  $('jev-clear').disabled=true;$('jev-settings-error').textContent='';
+  $('jev-key-remove').disabled=true;$('jev-settings-error').textContent='';
   try{await api('/api/jev',body);}
   catch(error){$('jev-settings-error').textContent=t(error.message);return;}
-  finally{$('jev-clear').disabled=false;}
+  finally{$('jev-key-remove').disabled=false;}
   await window.loadJevSettings();toast(t('Jev 设置已保存'));
 }
-$('jev-clear').onclick=()=>saveJevSettings(true);
+$('jev-key-remove').onclick=()=>saveJevSettings(true);
 ['jev-auto-approve','jev-auto-continue','jev-base-url','jev-model','jev-proxy'].forEach(id=>$(id).onchange=()=>saveJevSettings(false));
 $('jev-key').onchange=()=>{if($('jev-key').value.trim())saveJevSettings(false);};
 $('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);syncDocumentTitle();loadList(true).catch(e=>toast(e.message));};
