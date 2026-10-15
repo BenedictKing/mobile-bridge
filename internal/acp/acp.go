@@ -63,6 +63,7 @@ type Delivery struct {
 type Process struct {
 	OnNotification func(*jsoncompat.Object)
 	OnRequest      func(message *jsoncompat.Object, respond func(any))
+	OnClose        func()
 
 	Capabilities *jsoncompat.Object
 	AgentInfo    *jsoncompat.Object
@@ -283,9 +284,13 @@ func (p *Process) finishUnavailable() {
 	p.finish.Do(func() {
 		p.mu.Lock()
 		p.closed = true
+		onClose := p.OnClose
 		p.mu.Unlock()
 		p.failAll(unavailable())
 		close(p.done)
+		if onClose != nil {
+			onClose()
+		}
 	})
 }
 

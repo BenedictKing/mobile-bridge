@@ -213,7 +213,7 @@ func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, session := range m.sessions {
-		if session == nil || session.closed || session.Title == "" {
+		if session == nil || session.IsClosed() || session.Title == "" {
 			// Only bridge-created sessions count as pending (Python's
 			// _pending_created); opened ones come from the list anyway.
 			continue
@@ -321,6 +321,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		View: acpview.NewView(id, nil, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
+	process.OnClose = session.markProcessClosed
 	value, err := process.Initialize(timeout)
 	if err != nil {
 		session.Close()
@@ -341,7 +342,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 
 func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) {
 	m.mu.Lock()
-	if session := m.sessions[id]; session != nil && !session.closed {
+	if session := m.sessions[id]; session != nil && !session.IsClosed() {
 		m.mu.Unlock()
 		return session, nil
 	}
@@ -351,7 +352,7 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 		return nil, err
 	}
 	m.mu.Lock()
-	if session := m.sessions[id]; session != nil && !session.closed {
+	if session := m.sessions[id]; session != nil && !session.IsClosed() {
 		m.mu.Unlock()
 		fresh.Close()
 		return session, nil
@@ -403,6 +404,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 		View: acpview.NewView(id, title, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
+	process.OnClose = session.markProcessClosed
 	m.mu.Lock()
 	m.sessions[id] = session
 	m.mu.Unlock()
@@ -1077,6 +1079,24 @@ func (s *Session) Close() {
 	process := s.Process
 	s.mu.Unlock()
 	process.Close()
+}
+
+func (s *Session) markProcessClosed() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	s.active = false
+	s.signalLocked()
+	s.mu.Unlock()
+}
+
+func (s *Session) IsClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func (s *Session) onNotification(message *jsoncompat.Object) {

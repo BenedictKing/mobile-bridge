@@ -151,6 +151,46 @@ for line in sys.stdin:
 	}
 }
 
+func TestManagerReopensAfterAgentExit(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/load": result={"sessionId":m.get("params",{}).get("sessionId")}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+ if method == "session/load": sys.exit(0)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	first, err := manager.Open("sess-exit", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for !first.IsClosed() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !first.IsClosed() {
+		t.Fatal("agent exit did not invalidate the session")
+	}
+	second, err := manager.Open("sess-exit", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("Open reused the exited session")
+	}
+}
+
 func TestSessionFoldsUpdatesAndRequests(t *testing.T) {
 	session := &Session{ID: "sess-1", View: acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, changed: make(chan struct{})}
 	update := jsoncompat.NewObject()
