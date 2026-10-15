@@ -8,9 +8,19 @@ LAUNCHD_PLIST := $(HOME)/Library/LaunchAgents/$(LAUNCHD_LABEL).plist
 LAUNCHD_LOG := $(HOME)/Library/Logs/mobile-bridge-gateway.log
 GATEWAY_DATA_DIR ?= $(CURDIR)/.local
 GATEWAY_PORT ?= 8787
+INSTALL_BIN := $(HOME)/.local/bin/mobile-bridge-gateway
+ACP_HOST_KIND ?= kimi
+ACP_HOST_BIN ?= kimi
+ACP_HOST_ARG ?= acp
+ACP_HOST_SOCKET ?= $(GATEWAY_DATA_DIR)/$(ACP_HOST_KIND).sock
+ACP_HOST_LABEL := com.mobile-bridge.agent-host.$(ACP_HOST_KIND)
+ACP_HOST_PLIST := $(HOME)/Library/LaunchAgents/$(ACP_HOST_LABEL).plist
+ACP_HOST_LOG := $(HOME)/Library/Logs/mobile-bridge-agent-host-$(ACP_HOST_KIND).log
+ACP_HOST_INSTALL_BIN := $(HOME)/.local/bin/mobile-bridge-agent-host
+ACP_HOST_SOCKETS_JSON := {"$(ACP_HOST_KIND)":"$(ACP_HOST_SOCKET)"}
 
-.PHONY: build-matrix build-gateway-package build-wails serve \
-	start stop restart status logs uninstall conformance
+.PHONY: build-matrix build-gateway-package build-agent-host build-wails serve \
+	start start-agent-host stop stop-agent-host restart status logs uninstall conformance
 
 build-matrix:
 	@mkdir -p dist
@@ -33,6 +43,26 @@ build-gateway-package:
 	@chmod 755 dist/gateway/codex-mobile-gateway
 	@ls -lh dist/gateway/codex-mobile-gateway
 
+build-agent-host:
+	@mkdir -p dist/gateway
+	@go build -trimpath -ldflags='-s -w' -o dist/gateway/mobile-bridge-agent-host ./cmd/agent-host
+	@chmod 755 dist/gateway/mobile-bridge-agent-host
+	@ls -lh dist/gateway/mobile-bridge-agent-host
+
+start-agent-host: build-agent-host
+	@mkdir -p $(dir $(ACP_HOST_INSTALL_BIN)) $(HOME)/Library/LaunchAgents $(HOME)/Library/Logs
+	@cp dist/gateway/mobile-bridge-agent-host $(ACP_HOST_INSTALL_BIN)
+	@chmod 755 $(ACP_HOST_INSTALL_BIN)
+	@sed -e "s|@HOME@|$(HOME)|g" -e "s|@ACP_HOST_LABEL@|$(ACP_HOST_LABEL)|g" \
+		-e "s|@ACP_HOST_SOCKET@|$(ACP_HOST_SOCKET)|g" -e "s|@ACP_HOST_BIN@|$(ACP_HOST_BIN)|g" \
+		-e "s|@ACP_HOST_ARG@|$(ACP_HOST_ARG)|g" -e "s|@ACP_HOST_LOG@|$(ACP_HOST_LOG)|g" \
+		deploy/launchd/agent-host.plist.template > $(ACP_HOST_PLIST)
+	@launchctl bootout gui/$$(id -u)/$(ACP_HOST_LABEL) 2>/dev/null || true
+	@launchctl bootstrap gui/$$(id -u) $(ACP_HOST_PLIST)
+	@launchctl kickstart gui/$$(id -u)/$(ACP_HOST_LABEL)
+	@sleep 1
+	@echo "$(ACP_HOST_LABEL) 已启动（socket $(ACP_HOST_SOCKET)）"
+
 # Wails is the Go desktop shell. It embeds wails/frontend and calls the Go
 # gateway action protocol directly.
 build-wails:
@@ -47,7 +77,7 @@ serve: build-gateway-package
 
 # launchd 常驻：写入 plist、加载并启动（KeepAlive 自动拉活）。
 # 幂等——已加载时先卸载再以当前二进制重启。
-start: build-gateway-package
+start: build-gateway-package start-agent-host
 	@mkdir -p $(HOME)/Library/LaunchAgents $(HOME)/Library/Logs
 	@sed -e "s|@CURDIR@|$(CURDIR)|g" -e "s|@HOME@|$(HOME)|g" \
 		deploy/launchd/gateway.plist.template > $(LAUNCHD_PLIST)
@@ -60,7 +90,11 @@ start: build-gateway-package
 		echo "日志: make logs   状态: make status"
 
 # 彻底停止：bootout 卸载服务，KeepAlive 不会复活；下次 make start 再拉起。
-stop:
+stop-agent-host:
+	@launchctl bootout gui/$$(id -u)/$(ACP_HOST_LABEL) 2>/dev/null || true
+	@pkill -f "mobile-bridge-agent-host --socket" 2>/dev/null || true
+
+stop: stop-agent-host
 	@launchctl bootout gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null && echo "$(LAUNCHD_LABEL) 已停止并卸载" || echo "$(LAUNCHD_LABEL) 未在运行"
 	@pkill -f "codex-mobile-gateway serve" 2>/dev/null || true
 

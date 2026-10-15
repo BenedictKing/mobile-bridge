@@ -19,6 +19,8 @@
 		     npx 回退）；注入 fnm 稳定安装路径，launchd 无 shell 钩子。 -->
 		<key>PATH</key>
 		<string>@HOME@/.local/bin:@HOME@/.local/share/fnm/node-versions/v24.18.0/installation/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>GATEWAY_ACP_HOST_SOCKETS</key>
+		<string>@ACP_HOST_SOCKETS@</string>
 	</dict>
 	<key>KeepAlive</key>
 	<true/>
