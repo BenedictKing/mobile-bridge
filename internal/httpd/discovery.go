@@ -30,7 +30,7 @@ type listDiscovery struct {
 func newListDiscovery(server *Server) *listDiscovery {
 	return &listDiscovery{
 		server:    server,
-		interval:  30 * time.Second,
+		interval:  10 * time.Second,
 		idleAfter: 120 * time.Second,
 		watchedAt: time.Now(),
 		stop:      make(chan struct{}),
