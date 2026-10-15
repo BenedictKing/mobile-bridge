@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
+	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/google/uuid"
@@ -423,7 +424,7 @@ func (h *handler) handleMigrate(threadID string) {
 	if createdID == "" {
 		if ledger != nil {
 			ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
-				Title: title, Host: "local", At: ledger.now()})
+				Title: title, Host: "local", At: ledger.now(), State: "creating"})
 		}
 		if target != nil {
 			session, createErr := target.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
@@ -445,6 +446,10 @@ func (h *handler) handleMigrate(threadID string) {
 		}
 	}
 
+	message := migrationMessage(sourceLabel, view, uiLocale, scope)
+	if ledger != nil {
+		ledger.setMessage(requestID, message)
+	}
 	result := jsoncompat.NewObject()
 	result.Set("id", createdID)
 	result.Set("host", "local")
@@ -453,6 +458,7 @@ func (h *handler) handleMigrate(threadID string) {
 	result.Set("status", "created")
 	result.Set("sent", false)
 	result.Set("projectCreated", projectCreated)
+	result.Set("state", "created")
 
 	if alreadySent {
 		result.Set("status", "sent")
@@ -460,7 +466,49 @@ func (h *handler) handleMigrate(threadID string) {
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 		return
 	}
-	message := migrationMessage(sourceLabel, view, uiLocale, scope)
+	// Codex creates the thread through a short-lived app-server, but the
+	// desktop App must own it before follower IPC can inject the transcript.
+	// Open it first and return promptly; the frontend retries after the target
+	// chat has been opened instead of holding the tunnel request for 90s.
+	if target == nil {
+		entryState := ""
+		if ledger != nil {
+			if entry := ledger.lookup(requestID); entry != nil {
+				entryState = entry.State
+			}
+		}
+		if entryState != "opened" {
+			if err := codex.OpenInDesktop(createdID); err != nil {
+				if ledger != nil {
+					ledger.markWaiting(requestID, err.Error())
+				}
+				result.Set("warning", err.Error())
+				result.Set("state", "waiting_for_target")
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+				return
+			}
+			if ledger != nil {
+				ledger.markOpened(requestID)
+			}
+			result.Set("state", "opening")
+			result.Set("warning", "请等待桌面 App 接管此聊天")
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return
+		}
+		if session, watchErr := h.server.Codex.Watch(createdID, 1500*time.Millisecond); watchErr != nil || session == nil || session.Owner == "" {
+			warning := "请先在桌面 App 打开此聊天"
+			if watchErr != nil {
+				warning = watchErr.Error()
+			}
+			if ledger != nil {
+				ledger.markWaiting(requestID, warning)
+			}
+			result.Set("warning", warning)
+			result.Set("state", "waiting_for_target")
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return
+		}
+	}
 	submissionID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:migrate:"+requestID)).String()
 	sendErr := error(nil)
 	if target != nil {
@@ -474,7 +522,11 @@ func (h *handler) handleMigrate(threadID string) {
 		_, sendErr = h.server.Codex.StartTurnWithOptions(createdID, submissionID, message, "send", "", nil, nil)
 	}
 	if sendErr != nil {
+		if ledger != nil {
+			ledger.markWaiting(requestID, sendErr.Error())
+		}
 		result.Set("warning", sendErr.Error())
+		result.Set("state", "waiting_for_target")
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 		return
 	}

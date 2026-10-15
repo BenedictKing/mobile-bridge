@@ -12,13 +12,17 @@ import (
 // transcript injection already dispatched, so a retried migrate request
 // never re-sends it.
 type creationEntry struct {
-	Agent   string  `json:"agent,omitempty"`
-	Project string  `json:"project"`
-	Title   string  `json:"title"`
-	Host    string  `json:"host"`
-	At      float64 `json:"at"`
-	ID      string  `json:"id,omitempty"`
-	Sent    bool    `json:"sent,omitempty"`
+	Agent    string  `json:"agent,omitempty"`
+	Project  string  `json:"project"`
+	Title    string  `json:"title"`
+	Host     string  `json:"host"`
+	At       float64 `json:"at"`
+	ID       string  `json:"id,omitempty"`
+	Sent     bool    `json:"sent,omitempty"`
+	State    string  `json:"state,omitempty"`
+	Warning  string  `json:"warning,omitempty"`
+	Attempts int     `json:"attempts,omitempty"`
+	Message  string  `json:"message,omitempty"`
 }
 
 // creations deduplicates create retries by the phone's request id: the same
@@ -74,8 +78,52 @@ func (c *creations) markSent(requestID string) {
 	defer c.mu.Unlock()
 	if entry := c.entries[requestID]; entry != nil {
 		entry.Sent = true
+		entry.State = "sent"
+		entry.Warning = ""
 		c.saveLocked()
 	}
+}
+
+func (c *creations) markWaiting(requestID, warning string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.entries[requestID]; entry != nil {
+		entry.State = "waiting_for_target"
+		entry.Warning = warning
+		entry.Attempts++
+		c.saveLocked()
+	}
+}
+
+func (c *creations) markOpened(requestID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.entries[requestID]; entry != nil {
+		entry.State = "opened"
+		entry.Warning = "请等待桌面 App 接管此聊天"
+		c.saveLocked()
+	}
+}
+
+func (c *creations) setMessage(requestID, message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.entries[requestID]; entry != nil {
+		entry.Message = message
+		c.saveLocked()
+	}
+}
+
+func (c *creations) pendingForTarget(targetID string) (string, *creationEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for requestID, entry := range c.entries {
+		if entry.ID == targetID && !entry.Sent && entry.Message != "" {
+			copy := *entry
+			return requestID, &copy
+		}
+	}
+	return "", nil
 }
 
 func (c *creations) saveLocked() {
