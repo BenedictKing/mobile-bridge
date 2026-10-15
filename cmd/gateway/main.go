@@ -738,6 +738,7 @@ func runGateway(args []string) {
 		log.Fatalf("control file: %v", controlErr)
 	}
 	outcomeWorker := notifications.NewOutcomeLedger(dataDir).StartPublisher(time.Minute, notifications.NewPublisher(nil), nil)
+	server.StartDiscovery()
 	httpServer := &http.Server{Handler: server}
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
@@ -769,6 +770,7 @@ func runGateway(args []string) {
 		_ = httpServer.Shutdown(context.Background())
 	}
 	outcomeWorker.Close()
+	server.StopDiscovery()
 	if quickTunnel != nil {
 		quickTunnel.Close()
 	}

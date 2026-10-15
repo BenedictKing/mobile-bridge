@@ -30,7 +30,7 @@ SSH 参数包含非交互认证、严格主机指纹检查和禁用额外转发�
 
 本地与远端列表在合并后按最近交互时间排序、分页。项目优先采用显式归属，其次按最长工作目录前缀匹配。项目键带主机 ID，避免同名项目相互混淆。
 
-`bridge/discovery.py` 提供定时发现：后台线程每 30 秒重读各 Agent 的本机会话列表（Codex 直读 SQLite，ACP 强制刷新 `session/list` 读缓存），把身份、标题或项目的变化折叠成单调递增的 `listRevision`。`/api/activity` 响应随行携带该值，网页的 activity 轮询发现版本变化即自动重载列表，因此在终端或桌面 App 中新开的会话约一个发现周期内自行出现，无需手动刷新；空列表同样轮询。发现只读取各 bridge 自己的原生主机，SSH 远端列表仍由显式请求驱动；没有任何客户端轮询 activity 超过 120 秒时循环暂停，不再为无人观看的列表反复 spawn Agent 进程。新会话 ID 由此进入各 bridge 的 `listed` 路由集合，深链打开也无需逐个探测。
+`internal/httpd/discovery.go` 提供定时发现：后台协程每 30 秒重读各 Agent 的本机会话列表（Codex 直读 SQLite，ACP 强制刷新 `session/list` 读缓存），把身份、标题或项目的变化折叠成单调递增的 `listRevision`。`/api/activity` 响应随行携带该值，网页的 activity 轮询发现版本变化即自动重载列表，因此在终端或桌面 App 中新开的会话约一个发现周期内自行出现，无需手动刷新；空列表同样轮询。发现只读取本网关自己的原生来源，SSH 远端列表仍由显式请求驱动；没有任何客户端轮询 activity 超过 120 秒时循环暂停，不再为无人观看的列表反复 spawn Agent 进程。新会话 ID 由此进入 ACP manager 的列表缓存路由集合，深链打开也无需逐个探测。
 
 ## 新建聊天
 
@@ -114,7 +114,7 @@ Wails 桌面服务管理托盘状态、手机地址和退出动作；仅显式�
 | `bridge/transport.py` | Unix socket / Windows 命名管道字节流 |
 | `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
 | `bridge/service.py` | 会话同步、操作路由、去重和队列 |
-| `bridge/discovery.py` | 定时会话发现与列表版本信号（`listRevision`） |
+| `internal/httpd/discovery.go` | 定时会话发现与列表版本信号（`listRevision`） |
 | `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode/claude/dsh/zcode 方言 |
 | `bridge/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
 | `bridge/model.py` | 历史和请求的规范化 |

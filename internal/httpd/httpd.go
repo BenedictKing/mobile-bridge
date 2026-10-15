@@ -93,6 +93,7 @@ type Server struct {
 	historyTL       map[string]*timeline.Timeline
 	subagentOnce    sync.Once
 	codexSubagents  *subagents.Flattener
+	discovery       *listDiscovery
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
@@ -126,6 +127,23 @@ func (s *Server) ACPManager(kind string) *acpruntime.Manager {
 		return s.ACPAgents[kind]
 	}
 	return s.ACP
+}
+
+// StartDiscovery 启动定时会话发现循环（listRevision 的来源）；重复调用无
+// 副作用。发现只读本网关自己的原生来源，SSH 远端列表仍由显式请求驱动。
+func (s *Server) StartDiscovery() {
+	if s.discovery != nil {
+		return
+	}
+	s.discovery = newListDiscovery(s)
+	go s.discovery.run()
+}
+
+// StopDiscovery 停止定时会话发现循环。
+func (s *Server) StopDiscovery() {
+	if s.discovery != nil {
+		s.discovery.close()
+	}
 }
 
 var acceptsGzip = regexp.MustCompile(`(?:^|,)\s*gzip\s*(?:;\s*q=([01](?:\.\d+)?))?\s*(?:,|$)`)
@@ -570,6 +588,10 @@ func (h *handler) handleMethod(write bool) {
 		}
 		result := jsoncompat.NewObject()
 		result.Set("sessions", rows)
+		if discovery := h.server.discovery; discovery != nil {
+			discovery.touch()
+			result.Set("listRevision", discovery.Revision())
+		}
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case !write && path == "/api/projects":
 		if h.session(write) == nil {
