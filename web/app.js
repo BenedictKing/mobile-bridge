@@ -367,9 +367,10 @@ async function saveNotificationDefaults(){
   await window.loadNotificationDefaults();
 }
 $('notification-requests').onchange=$('notification-completions').onchange=saveNotificationDefaults;
-let jevSettingsRequest=0;
+let jevSettingsRequest=0,jevFormReady=false;
 window.loadJevSettings=async()=>{
   const request=++jevSettingsRequest;
+  jevFormReady=false;
   $('jev-settings-error').textContent='';
   try{
     const result=await api('/api/jev');if(request!==jevSettingsRequest)return;
@@ -379,20 +380,25 @@ window.loadJevSettings=async()=>{
     $('jev-base-url').value=result.baseUrl;$('jev-model').value=result.model;$('jev-proxy').value=result.proxy||'';
     $('jev-auto-approve').checked=Boolean(result.autoApprove);
     $('jev-auto-continue').checked=Boolean(result.autoContinue);
+    jevFormReady=true;
   }catch(error){if(request===jevSettingsRequest)$('jev-settings-error').textContent=t(error.message);}
 };
 async function saveJevSettings(clear){
+  // Auto-saves fire on every change; a half-loaded form must never overwrite
+  // the persisted settings with blanks.
+  if(!jevFormReady&&!clear)return;
   const body={baseUrl:$('jev-base-url').value.trim(),model:$('jev-model').value.trim(),proxy:$('jev-proxy').value.trim(),autoApprove:$('jev-auto-approve').checked,autoContinue:$('jev-auto-continue').checked};
   if(clear)body.clearApiKey=true;
   else{const key=$('jev-key').value.trim();if(key)body.apiKey=key;}
-  $('jev-save').disabled=$('jev-clear').disabled=true;$('jev-settings-error').textContent='';
+  $('jev-clear').disabled=true;$('jev-settings-error').textContent='';
   try{await api('/api/jev',body);}
   catch(error){$('jev-settings-error').textContent=t(error.message);return;}
-  finally{$('jev-save').disabled=$('jev-clear').disabled=false;}
+  finally{$('jev-clear').disabled=false;}
   await window.loadJevSettings();toast(t('Jev 设置已保存'));
 }
-$('jev-save').onclick=()=>saveJevSettings(false);
 $('jev-clear').onclick=()=>saveJevSettings(true);
+['jev-auto-approve','jev-auto-continue','jev-base-url','jev-model','jev-proxy'].forEach(id=>$(id).onchange=()=>saveJevSettings(false));
+$('jev-key').onchange=()=>{if($('jev-key').value.trim())saveJevSettings(false);};
 $('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);syncDocumentTitle();loadList(true).catch(e=>toast(e.message));};
 function renderState(view){state=view;const caps=new Set(view.capabilities||[]);const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){sessionActivity.read(chatKey());renderActivity();}$('execution-host').textContent=t('在 ')+(view.host==='local'?t('电脑'):view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');$('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?(view.agent==='codex'?t('正在加载桌面聊天…'):t('正在加载会话…')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');$('status').classList.toggle('offline',!view.connected);$('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(view.agent==='codex'?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');const workingSpan=$('working').querySelector('span');if(workingSpan)workingSpan.textContent=agentName+t(' 正在工作…');$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected;syncSendButton();const steerOption=$('send-mode').querySelector('[value=steer]');steerOption.hidden=!caps.has('steer');steerOption.disabled=!caps.has('steer')||view.status!=='active';if((!caps.has('steer')||view.status!=='active')&&$('send-mode').value==='steer')$('send-mode').value='send';
   // Agents without steering only have queueing while busy: preselect it once

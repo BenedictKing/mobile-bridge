@@ -1,7 +1,7 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
+  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
     return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
@@ -9,6 +9,7 @@ const ChatAppearance=(()=>{
       fontSize:Number.isInteger(value.fontSize)&&value.fontSize>=14&&value.fontSize<=20?value.fontSize:defaults.fontSize,
       codeSize:Number.isInteger(value.codeSize)&&value.codeSize>=11&&value.codeSize<=17?value.codeSize:defaults.codeSize,
       density:['compact','standard','relaxed'].includes(value.density)?value.density:defaults.density,
+      enterMode:['newline','send'].includes(value.enterMode)?value.enterMode:defaults.enterMode,
       showReasoning:typeof value.showReasoning==='boolean'?value.showReasoning:defaults.showReasoning,
       showProcess:typeof value.showProcess==='boolean'?value.showProcess:defaults.showProcess,
       showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts,
@@ -51,6 +52,7 @@ if(typeof document!=='undefined')(()=>{
     root.dataset.theme=dark?'dark':'light';root.dataset.density=settings.density;
     root.dataset.showActivity=String(settings.showActivity);
     root.dataset.showAccounts=String(settings.showAccounts);
+    root.dataset.enterMode=settings.enterMode;
     get('appearance-accounts').checked=settings.showAccounts;
     root.dataset.showReasoning=String(settings.showReasoning);root.dataset.showProcess=String(settings.showProcess);
     if(typeof chatTimeline!=='undefined')chatTimeline?.setVisibility(settings);
@@ -64,6 +66,7 @@ if(typeof document!=='undefined')(()=>{
     for(const [id,value] of Object.entries({theme:settings.theme,accent:settings.accent,font:settings.fontSize,code:settings.codeSize,density:settings.density}))get('appearance-'+id).value=value;
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';
     get('appearance-activity').checked=settings.showActivity;get('appearance-reasoning').checked=settings.showReasoning;get('appearance-process').checked=settings.showProcess;
+    get('appearance-enter-mode').value=settings.enterMode;updateSendHint();
     document.querySelectorAll('[data-accent]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.accent===settings.accent.toLowerCase())));
   }
   function change(values){preserveReading(()=>{settings=ChatAppearance.normalize({...settings,...values});apply();save();});}
@@ -71,6 +74,12 @@ if(typeof document!=='undefined')(()=>{
     const text=BridgeI18n.t(collapsed?'展开输入区':'收起输入区');
     toggle.setAttribute('aria-label',text);toggle.title=text;
     toggle.setAttribute('aria-expanded',String(!collapsed));
+  }
+  function updateSendHint(){
+    const hint=get('send-shortcut');if(!hint)return;
+    hint.textContent=settings.enterMode==='send'?'↵':'⇧↵';
+    const label=settings.enterMode==='send'?'Enter 发送':'Shift+Enter 发送';
+    hint.setAttribute('data-i18n-title',label);hint.title=BridgeI18n.t(label);
   }
   function resizeMessage(){
     if(body.hidden)return;
@@ -98,6 +107,7 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-font').oninput=()=>change({fontSize:Number(get('appearance-font').value)});
   get('appearance-code').oninput=()=>change({codeSize:Number(get('appearance-code').value)});
   get('appearance-density').onchange=()=>change({density:get('appearance-density').value});
+  get('appearance-enter-mode').onchange=()=>change({enterMode:get('appearance-enter-mode').value});
   get('appearance-reasoning').onchange=()=>change({showReasoning:get('appearance-reasoning').checked});
   get('appearance-activity').onchange=()=>change({showActivity:get('appearance-activity').checked});
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
