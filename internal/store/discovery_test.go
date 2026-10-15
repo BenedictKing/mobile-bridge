@@ -27,6 +27,8 @@ func TestSessionStoreListReadsNewestDesktopRows(t *testing.T) {
 	_, err = db.Exec(`INSERT INTO threads
 		(id,name,title,cwd,updated_at,archived,originator,source,rollout_path)
 		VALUES ('desktop-1','First',NULL,'/work',20,0,'Codex Desktop','desktop','/work/rollout.jsonl'),
+		       ('cli-1','CLI',NULL,'/work',25,0,'codex-tui','cli','/work/cli.jsonl'),
+		       ('legacy-cli-1','LegacyCLI',NULL,'/work',24,0,NULL,'cli','/work/legacy.jsonl'),
 		       ('other-1','Other',NULL,'/other',30,0,'other','desktop','/other.jsonl'),
 		       ('archived-1','Old',NULL,'/old',40,1,'Codex Desktop','desktop','/old.jsonl')`)
 	if err != nil {
@@ -40,7 +42,8 @@ func TestSessionStoreListReadsNewestDesktopRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].MustGet("id") != "desktop-1" {
+	if len(rows) != 3 || rows[0].MustGet("id") != "cli-1" ||
+		rows[1].MustGet("id") != "legacy-cli-1" || rows[2].MustGet("id") != "desktop-1" {
 		t.Fatalf("unexpected rows: %v", rows)
 	}
 }

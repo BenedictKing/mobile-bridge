@@ -159,9 +159,9 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 		args = append(args, boolInt(archived))
 	}
 	if columns["originator"] {
-		owner := "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge', 'mobile_bridge_go')"
+		owner := "originator IN (" + userFacingOriginators + ")"
 		if columns["source"] {
-			owner += " OR (originator IS NULL AND source = 'vscode')"
+			owner += " OR (originator IS NULL AND source IN (" + userFacingSources + "))"
 		}
 		where = append(where, "("+owner+")")
 	}
@@ -212,7 +212,7 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 	return scanObjects(rows, fields)
 }
 
-// Get returns one desktop-owned thread row, rejecting subagent rows that are
+// Get returns one user-facing thread row, rejecting subagent rows that are
 // not user-facing chats.
 func (s *SessionStore) Get(threadID string) (*jsoncompat.Object, error) {
 	object, err := s.getAny(threadID)
@@ -221,18 +221,33 @@ func (s *SessionStore) Get(threadID string) (*jsoncompat.Object, error) {
 	}
 	originator, _ := object.MustGet("originator").(string)
 	source, _ := object.MustGet("source").(string)
-	if originator != "Codex Desktop" && originator != "codex_work_desktop" &&
-		originator != "codex_mobile_bridge" && originator != "mobile_bridge_go" &&
-		!(originator == "" && source == "vscode") {
-		return nil, errors.New("不是桌面 App 会话")
+	if !userFacingThread(originator, source) {
+		return nil, errors.New("不是用户会话")
 	}
 	if sourceText, ok := object.MustGet("source").(string); ok && strings.Contains(sourceText, `"subagent"`) {
-		return nil, errors.New("不是桌面 App 会话")
+		return nil, errors.New("不是用户会话")
 	}
 	if threadSource, ok := object.MustGet("thread_source").(string); ok && threadSource == "subagent" {
-		return nil, errors.New("不是桌面 App 会话")
+		return nil, errors.New("不是用户会话")
 	}
 	return object, nil
+}
+
+// userFacingOriginators 是会话列表与单会话读取共用的来源白名单：桌面 App、
+// 网关自身（含 Go 版）以及 CLI（tui/exec/旧版 codex_cli_rs）。
+const userFacingOriginators = "'Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge', 'mobile_bridge_go', 'codex_cli_rs', 'codex-tui', 'codex_exec'"
+
+// userFacingSources 是 originator 为空（旧记录）时放行的 source 取值。
+const userFacingSources = "'vscode', 'cli', 'exec'"
+
+// userFacingThread 与 List 的 owner 条件保持一致。
+func userFacingThread(originator, source string) bool {
+	switch originator {
+	case "Codex Desktop", "codex_work_desktop", "codex_mobile_bridge",
+		"mobile_bridge_go", "codex_cli_rs", "codex-tui", "codex_exec":
+		return true
+	}
+	return originator == "" && (source == "vscode" || source == "cli" || source == "exec")
 }
 
 // getAny mirrors Python's get_any: one thread row without the desktop-owner
