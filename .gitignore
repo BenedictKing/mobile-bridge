@@ -22,3 +22,6 @@ __pycache__/
 node_modules/
 dist/
 *.spec
+
+# Wails 目录内误入的构建产物
+wails/wails

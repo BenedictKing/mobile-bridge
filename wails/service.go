@@ -63,6 +63,12 @@ func resolveGateway(configured string) string {
 			}
 		}
 	}
+	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+		installed := filepath.Join(home, ".local", "bin", "mobile-bridge-gateway")
+		if info, statErr := os.Stat(installed); statErr == nil && !info.IsDir() {
+			return installed
+		}
+	}
 	return filepath.Join("dist", "gateway", "codex-mobile-gateway")
 }
 
