@@ -40,13 +40,14 @@ func Discover(env func(string) string, home string) []Profile {
 		claudeProfile(env, home),
 		dshProfile(env, home),
 		zcodeProfile(env, home),
+		opencodeProfile(env, home),
 	}
 }
 
 // KnownKind reports whether kind is a recognized agent kind (codex included).
 func KnownKind(kind string) bool {
 	switch kind {
-	case "codex", "kimi", "mcode", "claude", "dsh", "zcode":
+	case "codex", "kimi", "mcode", "claude", "dsh", "zcode", "opencode":
 		return true
 	}
 	return false
@@ -79,7 +80,7 @@ func ParseKinds(value string) ([]string, error) {
 type agentsError struct{}
 
 func (agentsError) Error() string {
-	return "agents 支持 codex、kimi、mcode、claude、dsh、zcode，或 auto（自动探测本机已安装的）"
+	return "agents 支持 codex、kimi、mcode、claude、dsh、zcode、opencode，或 auto（自动探测本机已安装的）"
 }
 
 func errAgents() error { return agentsError{} }
@@ -231,8 +232,27 @@ func zcodeProfile(env func(string) string, home string) Profile {
 	}
 }
 
+// opencodeProfile launches OpenCode's built-in ACP server (`opencode acp`).
+// Only a real install enables auto-discovery: the CLI itself is the server,
+// so no npx fallback and no data-directory marker — a leftover
+// ~/.local/share/opencode from a removed install must not auto-enable it.
+func opencodeProfile(env func(string) string, home string) Profile {
+	return Profile{
+		Kind: "opencode", Label: "OpenCode",
+		Command:           subcommandArgv(discoverExecutable(env, home, "OPENCODE_BIN", ".opencode/bin", "opencode")),
+		InitializeTimeout: 30 * time.Second,
+		Capabilities:      []string{"skills"},
+		// OpenCode advertises per-model effort variants ("default" always,
+		// low/medium/high commonly, minimal/xhigh on some models); the bridge
+		// ladder folds onto the shared set and the catalog only lists the
+		// variants the current model actually offers.
+		EffortMap: map[string]string{"none": "low", "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "high", "ultra": "high"},
+		ModeMap:   map[string]string{"plan": "plan", "default": "build"},
+	}
+}
+
 // subcommandArgv builds the [executable, "acp"] launch used by the CLIs that
-// expose ACP behind a subcommand (kimi/mcode).
+// expose ACP behind a subcommand (kimi/mcode/opencode).
 func subcommandArgv(executable string) []string {
 	if executable == "" {
 		return nil

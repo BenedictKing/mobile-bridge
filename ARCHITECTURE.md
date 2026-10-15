@@ -157,7 +157,7 @@ view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门�
 
 ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）。
 
-多 Agent 启用（Go 网关，`cmd/gateway/main.go` + `internal/acpagents`）：默认像 Python 网关的 `--agents auto` 一样自动探测本机已安装的 agent（kimi/mcode 走 env 覆盖→`~/.<dir>/bin/<name>`→PATH；zcode/claude/dsh 走 env 覆盖→PATH 二进制→`npx -y` 回退，`~/.zcode`、`~/.dsh` 目录或对应 CLI 在 PATH 也算已安装）。`GATEWAY_AGENTS`（或沿用 `MOBILE_BRIDGE_AGENTS`）可显式指定逗号列表或 `auto`；`GATEWAY_ACP_BIN`/`GATEWAY_ACP_BINS` JSON 映射仍然优先（多词值按完整 argv 启动，单词值保留旧 `acp` 子命令语义）。会话路由按「归属」而非 id 前缀：活跃子进程、缓存的 `session/list` 行（30 秒 TTL）与 zcode 惰性占位（经 `~/.zcode/v2/acp-lazy-sessions.json` 解析到后端 `sess_*`）都能命中 ACP 分支，与 codex 共用同一套持久时间线投影（视图/时间线/变更/轮询/SSE）。新建会话在首条消息物化后端会话前由网关的 pending 集合兜底显示。zcode 自动启用时同步拉起 coding-plan 凭据自愈（`internal/acpagents/zcodecreds.go`，原生 AES-256-GCM 解密 `enc:v1:`，含模型阵容同步与幽灵套餐禁用，2 秒轮询重愈）。Wails 桌面服务继承网关进程的 Agent 配置；脚本化对拍模式（`GATEWAY_DISABLE_STORE=1` 且 `GATEWAY_DISABLE_IPC=1`）不探测本机，保持 golden 确定。
+多 Agent 启用（Go 网关，`cmd/gateway/main.go` + `internal/acpagents`）：默认像 Python 网关的 `--agents auto` 一样自动探测本机已安装的 agent（kimi/mcode/opencode 走 env 覆盖→`~/.<dir>/bin/<name>`→PATH，CLI 自带 `acp` 子命令，OpenCode 的 `OPENCODE_BIN` 覆盖也走此路径且不以数据目录为已安装凭据；zcode/claude/dsh 走 env 覆盖→PATH 二进制→`npx -y` 回退，`~/.zcode`、`~/.dsh` 目录或对应 CLI 在 PATH 也算已安装）。`GATEWAY_AGENTS`（或沿用 `MOBILE_BRIDGE_AGENTS`）可显式指定逗号列表或 `auto`；`GATEWAY_ACP_BIN`/`GATEWAY_ACP_BINS` JSON 映射仍然优先（多词值按完整 argv 启动，单词值保留旧 `acp` 子命令语义）。会话路由按「归属」而非 id 前缀：活跃子进程、缓存的 `session/list` 行（30 秒 TTL）与 zcode 惰性占位（经 `~/.zcode/v2/acp-lazy-sessions.json` 解析到后端 `sess_*`）都能命中 ACP 分支，与 codex 共用同一套持久时间线投影（视图/时间线/变更/轮询/SSE）。新建会话在首条消息物化后端会话前由网关的 pending 集合兜底显示。opencode 不发 legacy `modes` 字段而以 `mode` 配置项（build/plan/自定义 agent）广播，`Session.SetMode` 对无 modes 对象的 agent 回退走 `session/set_config_option`，桥接层 default/plan 映射为 build/plan。zcode 自动启用时同步拉起 coding-plan 凭据自愈（`internal/acpagents/zcodecreds.go`，原生 AES-256-GCM 解密 `enc:v1:`，含模型阵容同步与幽灵套餐禁用，2 秒轮询重愈）。Wails 桌面服务继承网关进程的 Agent 配置；脚本化对拍模式（`GATEWAY_DISABLE_STORE=1` 且 `GATEWAY_DISABLE_IPC=1`）不探测本机，保持 golden 确定。
 
 ### 会话迁移
 
@@ -179,17 +179,17 @@ ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent
 
 ### 能力矩阵
 
-| 能力 | Codex | Kimi | MiniMax | Claude | DeepSeek | ZCode |
-| --- | --- | --- | --- | --- | --- | --- |
-| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） | ✓（configOptions：model + effort，off/low/high/max） | ✓（configOptions：model + thought，词表按模型变化） |
-| 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ | ✓（创建进程保活至首条消息，惰性占位） |
-| 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） | ✓（default 映射为 yolo） |
-| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） |
-| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） |
-| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） |
-| Skill 选择 | ✓ | ✓（available_commands 斜杠命令，每次一条） | ✗ | ✗ | ✗ | ✗ |
-| Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| 能力 | Codex | Kimi | MiniMax | Claude | DeepSeek | ZCode | OpenCode |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） | ✓（configOptions：model + effort，off/low/high/max） | ✓（configOptions：model + thought，词表按模型变化） | ✓（configOptions：`provider/model` + 按模型 effort 变体） |
+| 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ | ✓（创建进程保活至首条消息，惰性占位） | ✓ |
+| 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） | ✓（default 映射为 yolo） | ✓（`mode` 配置项走 set_config_option 回退，default 映射为 build） |
+| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） | ✗（无扩展 RPC） |
+| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） |
+| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） |
+| Skill 选择 | ✓ | ✓（available_commands 斜杠命令，每次一条） | ✗ | ✗ | ✗ | ✗ | ✓（available_commands_update 斜杠命令，每次一条） |
+| Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 
 ## 固定 HTTPS 入口
 

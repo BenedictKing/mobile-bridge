@@ -35,6 +35,9 @@ func TestParseKinds(t *testing.T) {
 	if kinds, err := ParseKinds(" codex, zcode "); err != nil || len(kinds) != 2 || kinds[0] != "codex" {
 		t.Fatalf("list=%v err=%v", kinds, err)
 	}
+	if kinds, err := ParseKinds("codex,opencode"); err != nil || len(kinds) != 2 || kinds[1] != "opencode" {
+		t.Fatalf("opencode=%v err=%v", kinds, err)
+	}
 	if _, err := ParseKinds("codex,nope"); err == nil {
 		t.Fatal("unknown kind accepted")
 	}
@@ -160,5 +163,68 @@ func TestDiscoverKimiViaHomeDirectoryLayout(t *testing.T) {
 	}
 	if found == nil || found.Command == nil || found.Command[0] != kimi {
 		t.Fatalf("kimi command=%v", found)
+	}
+}
+
+func TestDiscoverOpencode(t *testing.T) {
+	// No binary anywhere: auto-discovery must stay off even though a stale
+	// data directory exists (only the CLI itself can serve ACP).
+	home := t.TempDir()
+	var opencode *Profile
+	for _, profile := range Discover(emptyEnv, home) {
+		if profile.Kind == "opencode" {
+			copy := profile
+			opencode = &copy
+		}
+	}
+	if opencode == nil {
+		t.Fatal("opencode missing from Discover roster")
+	}
+	// With no env override, no local install and nothing on PATH the profile
+	// must stay disabled (a stale data directory alone never enables it —
+	// unlike zcode there is no home-marker gate). Machines that do carry
+	// opencode on PATH naturally discover it.
+	if lookupPath("opencode") == "" && opencode.Command != nil {
+		t.Fatalf("opencode discovered without install: %v", opencode.Command)
+	}
+	if opencode.Label != "OpenCode" || opencode.InitializeTimeout <= 0 {
+		t.Fatalf("profile constants: %+v", opencode)
+	}
+
+	// ~/.opencode/bin/opencode enables the [bin, acp] launch.
+	bin := filepath.Join(home, ".opencode", "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(bin, "opencode")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range Discover(emptyEnv, home) {
+		if profile.Kind == "opencode" {
+			copy := profile
+			opencode = &copy
+		}
+	}
+	if opencode.Command == nil || len(opencode.Command) != 2 ||
+		opencode.Command[0] != executable || opencode.Command[1] != "acp" {
+		t.Fatalf("opencode argv=%v", opencode.Command)
+	}
+
+	// OPENCODE_BIN overrides both probes and keeps the acp subcommand.
+	env := func(key string) string {
+		if key == "OPENCODE_BIN" {
+			return "/opt/opencode/bin/opencode"
+		}
+		return ""
+	}
+	for _, profile := range Discover(env, home) {
+		if profile.Kind == "opencode" {
+			copy := profile
+			opencode = &copy
+		}
+	}
+	if opencode.Command == nil || len(opencode.Command) != 2 || opencode.Command[0] != "/opt/opencode/bin/opencode" {
+		t.Fatalf("env argv=%v", opencode.Command)
 	}
 }

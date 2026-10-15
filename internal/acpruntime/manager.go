@@ -648,6 +648,8 @@ func (s *Session) Steer(method, text string) (injected bool, err error) {
 
 // SetMode switches the session's work mode (AcpAdapter._set_mode port):
 // the requested id must be advertised, and a no-op when already current.
+// Agents that skip the legacy modes object (opencode advertises modes as a
+// "mode" config option) fall back to session/set_config_option.
 func (s *Session) SetMode(modeID string) error {
 	s.mu.Lock()
 	if s.closed {
@@ -655,8 +657,12 @@ func (s *Session) SetMode(modeID string) error {
 		return errors.New("Agent 进程已退出；操作结果未知")
 	}
 	modes := s.modes
+	configOptions := s.configOptions
 	s.mu.Unlock()
 	if modes == nil {
+		if option := findCategory(configOptions, "mode"); option != nil {
+			return s.setModeOption(option, modeID)
+		}
 		return errors.New("当前 Agent 不支持此工作模式")
 	}
 	available, _ := modes.MustGet("availableModes").(*jsoncompat.Array)
@@ -689,6 +695,22 @@ func (s *Session) SetMode(modeID string) error {
 	s.signalLocked()
 	s.mu.Unlock()
 	return nil
+}
+
+// setModeOption switches modes through the "mode" config option for agents
+// without the legacy modes object. The requested id must be advertised.
+func (s *Session) setModeOption(option *jsoncompat.Object, modeID string) error {
+	values := optionValues(option)
+	if len(values) > 0 && !values[modeID] {
+		return errors.New("当前 Agent 不支持此工作模式")
+	}
+	if configID, _ := option.MustGet("id").(string); configID == "" {
+		return errors.New("当前 Agent 不支持此工作模式")
+	}
+	if current, _ := option.MustGet("currentValue").(string); current == modeID {
+		return nil
+	}
+	return s.setConfigOption(option, modeID)
 }
 
 func (s *Session) Cancel() error {
@@ -776,32 +798,38 @@ func (m *Manager) UpdateSettings(session *Session, model, effort string, fastMod
 }
 
 func (m *Manager) setConfig(session *Session, option *jsoncompat.Object, value string) error {
+	return session.setConfigOption(option, value)
+}
+
+// setConfigOption applies one advertised config option change through
+// session/set_config_option; UpdateSettings and the mode fallback share it.
+func (s *Session) setConfigOption(option *jsoncompat.Object, value string) error {
 	configID, _ := option.MustGet("id").(string)
 	if configID == "" {
 		return errors.New("当前 Agent 不支持切换模型")
 	}
 	params := jsoncompat.NewObject()
-	params.Set("sessionId", session.ID)
+	params.Set("sessionId", s.ID)
 	params.Set("configId", configID)
 	params.Set("value", value)
-	result, err := session.Process.Request("session/set_config_option", params, 30*time.Second)
+	result, err := s.Process.Request("session/set_config_option", params, 30*time.Second)
 	if err != nil {
 		return err
 	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	// The response is authoritative: mcode drops thought_level for models
 	// without reasoning support and that must propagate. Without a usable
 	// configOptions array, patch the local copy like Python does.
 	replaced := false
 	if object, ok := result.(*jsoncompat.Object); ok {
 		if updated, ok := object.MustGet("configOptions").(*jsoncompat.Array); ok && len(updated.Items) > 0 {
-			session.configOptions = updated
+			s.configOptions = updated
 			replaced = true
 		}
 	}
-	if !replaced && session.configOptions != nil {
-		for _, item := range session.configOptions.Items {
+	if !replaced && s.configOptions != nil {
+		for _, item := range s.configOptions.Items {
 			if candidate, ok := item.(*jsoncompat.Object); ok {
 				if id, _ := candidate.MustGet("id").(string); id == configID {
 					candidate.Set("currentValue", value)
@@ -809,8 +837,8 @@ func (m *Manager) setConfig(session *Session, option *jsoncompat.Object, value s
 			}
 		}
 	}
-	session.View.ApplyConfig(session.configOptions, session.modes)
-	session.signalLocked()
+	s.View.ApplyConfig(s.configOptions, s.modes)
+	s.signalLocked()
 	return nil
 }
 

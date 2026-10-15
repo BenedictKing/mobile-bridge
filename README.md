@@ -343,15 +343,15 @@ launchd 托管（`make start`）开机自启、崩溃自动拉活；登录会话
 
 ### 多 Agent（源码运行）
 
-默认 `auto` 会自动探测本机已安装的 Agent（Codex 始终启用；Kimi Code CLI、MiniMax mcode、Claude Code、DeepSeek Harness dsh、ZCode 按本机安装情况启用，仅有 npx 兜底下载的不算已安装）。也可以用 `GATEWAY_AGENTS` 环境变量显式声明，多个类型用逗号分隔：
+默认 `auto` 会自动探测本机已安装的 Agent（Codex 始终启用；Kimi Code CLI、MiniMax mcode、Claude Code、DeepSeek Harness dsh、ZCode、OpenCode 按本机安装情况启用，仅有 npx 兜底下载的不算已安装）。也可以用 `GATEWAY_AGENTS` 环境变量显式声明，多个类型用逗号分隔：
 
 ```sh
-GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode make serve
+GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode,opencode make serve
 ```
 
-前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
+前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+；OpenCode 自带 ACP 子命令，经 `opencode acp` 接入，可用 `OPENCODE_BIN` 指定其他启动命令，须先用 `opencode auth login` 登录），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
 
-注意：Kimi/MiniMax/Claude/DeepSeek/ZCode 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
+注意：Kimi/MiniMax/Claude/DeepSeek/ZCode/OpenCode 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
 
 聊天详情里可以把当前会话“迁移到”另一个已启用的 Agent：在目标 Agent 上按同目录创建新会话，并把标题与最近消息转录作为首条消息注入，源会话保持不变；目标没有同目录项目时会直接按源目录创建本机项目。远端源会话的目录无法在本机目标上创建，仍需显式选择目标项目。
 

@@ -191,6 +191,50 @@ for line in sys.stdin:
 	}
 }
 
+// An opencode-style agent (no legacy modes object, "mode" advertised as a
+// config option) must switch modes through session/set_config_option.
+func TestSetModeFallsBackToModeConfigOption(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	options := `[{"id":"mode","category":"mode","currentValue":"build","options":[{"value":"build","name":"Build"},{"value":"plan","name":"Plan"}]}]`
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new": result={"sessionId":"sess-mode","configOptions":` + options + `}
+ elif method == "session/set_config_option":
+  option=json.loads('` + options + `')[0]
+  option["currentValue"]=m.get("params",{}).get("value")
+  result={"configOptions":[option]}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	session, err := manager.Create("seed", "/work", "模式会话", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := session.Snapshot().MustGet("collaborationMode"); mode != "build" {
+		t.Fatalf("initial mode=%v", mode)
+	}
+	if err := session.SetMode("plan"); err != nil {
+		t.Fatalf("set mode via config option: %v", err)
+	}
+	if mode := session.Snapshot().MustGet("collaborationMode"); mode != "plan" {
+		t.Fatalf("mode after switch=%v", mode)
+	}
+	if err := session.SetMode("nope"); err == nil {
+		t.Fatal("unadvertised mode accepted")
+	}
+}
+
 func TestSessionFoldsUpdatesAndRequests(t *testing.T) {
 	session := &Session{ID: "sess-1", View: acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, changed: make(chan struct{})}
 	update := jsoncompat.NewObject()
