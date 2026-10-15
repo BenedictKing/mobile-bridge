@@ -182,7 +182,7 @@ func (h *handler) withTimelineAgents(result any) any {
 	if len(h.server.acpAgentSet()) == 0 {
 		return result
 	}
-	object, ok := result.(*jsoncompat.Object)
+	object, ok := jsoncompat.Clone(result).(*jsoncompat.Object)
 	if !ok {
 		return result
 	}
@@ -540,6 +540,20 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 // events) return false here and flow through the same live-projection paths
 // codex uses, so cursors and SSE semantics stay uniform across agents.
 func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threadID, action string, write bool, query map[string][]string) bool {
+	if write && action == "reconnect" {
+		cwd := queryValue(query, "cwd", manager.CwdFor(threadID))
+		if cwd == "" {
+			cwd = "."
+		}
+		if _, err := manager.Reconcile(threadID, cwd, manager.InitializeTimeout); err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
+			return true
+		}
+		result := jsoncompat.NewObject()
+		result.Set("ok", true)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return true
+	}
 	session, err := manager.Open(threadID, queryValue(query, "cwd", "."), manager.InitializeTimeout)
 	if err != nil {
 		h.fail(http.StatusConflict, errorBody(err.Error()))
@@ -890,25 +904,24 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 		h.server.historyTL[threadID] = projection
 	}
 	projection.Update(view)
-	meta := projection.Meta()
-	meta.Set("host", "local")
+	projection.SetMeta("host", "local")
 	if kind != "" {
-		meta.Set("agent", kind)
-		meta.Set("hostLabel", "此电脑")
+		projection.SetMeta("agent", kind)
+		projection.SetMeta("hostLabel", "此电脑")
 	} else {
-		meta.Set("agent", "codex")
-		meta.Set("hostLabel", "此电脑")
+		projection.SetMeta("agent", "codex")
+		projection.SetMeta("hostLabel", "此电脑")
 	}
 	// Views carry their own capabilities (codex set, per-agent ACP set);
 	// only a view that shipped without any gets the empty default.
-	if _, ok := meta.Get("capabilities"); !ok {
-		meta.Set("capabilities", &jsoncompat.Array{})
+	if _, ok := projection.MetaSnapshot().Get("capabilities"); !ok {
+		projection.SetMeta("capabilities", &jsoncompat.Array{})
 	}
 	// Live timelines keep the agent roster in meta (with_timeline_agents):
 	// the chat screen renders from timeline pages/changes, and the migrate
 	// control loses its target list without it.
 	if len(h.server.acpAgentSet()) > 0 {
-		meta.Set("agents", h.server.agentRoster())
+		projection.SetMeta("agents", h.server.agentRoster())
 	}
 	if action == "detail" {
 		var version any
@@ -962,17 +975,16 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 		h.server.historyTL[threadID] = projection
 	}
 	projection.Update(view)
-	meta := projection.Meta()
-	meta.Set("host", "local")
-	meta.Set("agent", "codex")
-	meta.Set("hostLabel", "此电脑")
-	if _, ok := meta.Get("capabilities"); !ok {
-		meta.Set("capabilities", &jsoncompat.Array{})
+	projection.SetMeta("host", "local")
+	projection.SetMeta("agent", "codex")
+	projection.SetMeta("hostLabel", "此电脑")
+	if _, ok := projection.MetaSnapshot().Get("capabilities"); !ok {
+		projection.SetMeta("capabilities", &jsoncompat.Array{})
 	}
 	// Saved-rollout timelines carry the roster too (with_timeline_agents
 	// applied to every timeline_read in Python).
 	if len(h.server.acpAgentSet()) > 0 {
-		meta.Set("agents", h.server.agentRoster())
+		projection.SetMeta("agents", h.server.agentRoster())
 	}
 	if action == "detail" {
 		version := any(nil)

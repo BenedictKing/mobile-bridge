@@ -110,6 +110,47 @@ for line in sys.stdin:
 	manager.Close()
 }
 
+func TestManagerReconcileSwapsLoadedHandle(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/load": result={"sessionId":m.get("params",{}).get("sessionId")}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	old, err := manager.Open("sess-reconcile", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := manager.Reconcile("sess-reconcile", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	if old == fresh {
+		t.Fatal("reconcile reused the old session handle")
+	}
+	if got := manager.Get("sess-reconcile"); got != fresh {
+		t.Fatal("manager did not publish the new session atomically")
+	}
+	old.mu.Lock()
+	closed := old.closed
+	old.mu.Unlock()
+	if !closed {
+		t.Fatal("old session handle was not closed")
+	}
+}
+
 func TestSessionFoldsUpdatesAndRequests(t *testing.T) {
 	session := &Session{ID: "sess-1", View: acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, changed: make(chan struct{})}
 	update := jsoncompat.NewObject()

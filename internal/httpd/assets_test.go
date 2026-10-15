@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -64,9 +65,10 @@ func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
 }
 
 func TestScriptedSessionLiveSequenceWakesWaits(t *testing.T) {
-	current := 3
-	session := &ScriptedSession{Epoch: "go-x", Sequence: current, Live: func() (string, int, bool) {
-		return "go-x", current, true
+	var current atomic.Int64
+	current.Store(3)
+	session := &ScriptedSession{Epoch: "go-x", Sequence: 3, Live: func() (string, int, bool) {
+		return "go-x", int(current.Load()), true
 	}}
 	done := make(chan bool, 1)
 	go func() {
@@ -74,7 +76,7 @@ func TestScriptedSessionLiveSequenceWakesWaits(t *testing.T) {
 		done <- changed
 	}()
 	time.Sleep(300 * time.Millisecond)
-	current = 4
+	current.Store(4)
 	select {
 	case changed := <-done:
 		if !changed || session.Sequence != 4 {

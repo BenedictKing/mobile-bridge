@@ -340,11 +340,10 @@ func (s *Server) TimelineRead(threadID, mode string) any {
 		view := s.acpViewState(resolution.kind, resolution.manager, resolution.session)
 		projection := timeline.New(nil)
 		projection.Update(view)
-		meta := projection.Meta()
-		meta.Set("host", "local")
-		meta.Set("agent", resolution.kind)
-		meta.Set("hostLabel", "此电脑")
-		meta.Set("capabilities", &jsoncompat.Array{})
+		projection.SetMeta("host", "local")
+		projection.SetMeta("agent", resolution.kind)
+		projection.SetMeta("hostLabel", "此电脑")
+		projection.SetMeta("capabilities", &jsoncompat.Array{})
 		switch mode {
 		case "detail":
 			if result, err := projection.Detail("", 0, nil); err == nil {

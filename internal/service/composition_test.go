@@ -114,7 +114,7 @@ func runProjection(t *testing.T, nextEpoch func() string,
 				session.Changed()
 			case "project":
 				view := session.View()
-				meta := projection.Meta()
+				meta := projection.MetaSnapshot()
 				stale := projection.State().Sequence == jsoncompat.Num(session.Sequence).String() &&
 					valueEqual(meta.MustGet("goal"), view.MustGet("goal")) &&
 					valueEqual(meta.MustGet("subagentRevision"), view.MustGet("subagentRevision"))

@@ -70,8 +70,8 @@ func (b *Bridge) TimelineRead(mode string, session *LiveSession, options ReadOpt
 
 	projection := session.Timeline
 	stale := projection.State().Sequence == jsoncompat.Num(session.Sequence).String() &&
-		valueEqual(projection.Meta().MustGet("goal"), view.MustGet("goal")) &&
-		valueEqual(projection.Meta().MustGet("subagentRevision"), view.MustGet("subagentRevision"))
+		valueEqual(projection.MetaSnapshot().MustGet("goal"), view.MustGet("goal")) &&
+		valueEqual(projection.MetaSnapshot().MustGet("subagentRevision"), view.MustGet("subagentRevision"))
 	if !stale {
 		projection.Update(view)
 	}

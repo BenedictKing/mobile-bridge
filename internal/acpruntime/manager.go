@@ -32,6 +32,8 @@ type Session struct {
 	pendingKinds  map[string]string
 	changed       chan struct{}
 	closed        bool
+	active        bool
+	generation    uint64
 	sequence      int
 	configOptions *jsoncompat.Array
 	modes         *jsoncompat.Object
@@ -88,9 +90,10 @@ type Manager struct {
 	// Python's LIST_CACHE_SECONDS (30s).
 	ListTTL time.Duration
 
-	mu       sync.Mutex
-	sessions map[string]*Session
-	now      func() float64
+	mu         sync.Mutex
+	sessions   map[string]*Session
+	generation uint64
+	now        func() float64
 
 	listMu   sync.Mutex
 	listRows []*jsoncompat.Object
@@ -309,24 +312,15 @@ func (m *Manager) canonicalUnlocked(id string) string {
 	return m.Canonical(id)
 }
 
-func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) {
-	m.mu.Lock()
-	if session := m.sessions[id]; session != nil && !session.closed {
-		m.mu.Unlock()
-		return session, nil
-	}
-	m.mu.Unlock()
+func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, error) {
 	process, err := m.start()
 	if err != nil {
 		return nil, err
 	}
 	session := &Session{ID: id, Cwd: cwd, Process: process,
-		View: acpview.NewView(id, nil, cwd, m.now), pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: acpview.NewView(id, nil, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
-	m.mu.Lock()
-	m.sessions[id] = session
-	m.mu.Unlock()
 	value, err := process.Initialize(timeout)
 	if err != nil {
 		session.Close()
@@ -345,6 +339,54 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 	return session, nil
 }
 
+func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) {
+	m.mu.Lock()
+	if session := m.sessions[id]; session != nil && !session.closed {
+		m.mu.Unlock()
+		return session, nil
+	}
+	m.mu.Unlock()
+	fresh, err := m.openFresh(id, cwd, timeout)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	if session := m.sessions[id]; session != nil && !session.closed {
+		m.mu.Unlock()
+		fresh.Close()
+		return session, nil
+	}
+	m.generation++
+	fresh.generation = m.generation
+	m.sessions[id] = fresh
+	m.mu.Unlock()
+	return fresh, nil
+}
+
+// Reconcile creates and fully loads a new ACP handle before replacing the
+// current one. Readers never observe a half-loaded session.
+func (m *Manager) Reconcile(id, cwd string, timeout time.Duration) (*Session, error) {
+	fresh, err := m.openFresh(id, cwd, timeout)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	old := m.sessions[id]
+	if old != nil {
+		old.mu.Lock()
+		old.active = false
+		old.mu.Unlock()
+	}
+	m.generation++
+	fresh.generation = m.generation
+	m.sessions[id] = fresh
+	m.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	return fresh, nil
+}
+
 // Create is the lifecycle entry for a new ACP conversation. Providers that
 // support session/load use Open for existing ids; creation keeps the same
 // process ownership and sends session/new. The returned session's ID is the
@@ -358,7 +400,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	}
 	createdAt := int64(m.now() * 1000)
 	session := &Session{ID: id, Cwd: cwd, Title: title, CreatedAtMs: createdAt, Process: process,
-		View: acpview.NewView(id, title, cwd, m.now), pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: acpview.NewView(id, title, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
 	m.mu.Lock()
@@ -567,7 +609,7 @@ func (s *Session) flushResponders() {
 // window and the caller should fall back to a normal prompt.
 func (s *Session) Steer(method, text string) (injected bool, err error) {
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || (s.Process != nil && !s.active) {
 		s.mu.Unlock()
 		return false, errors.New("Agent 进程已退出；操作结果未知")
 	}
@@ -1031,6 +1073,7 @@ func (s *Session) Close() {
 		return
 	}
 	s.closed = true
+	s.active = false
 	process := s.Process
 	s.mu.Unlock()
 	process.Close()
@@ -1049,6 +1092,10 @@ func (s *Session) onNotification(message *jsoncompat.Object) {
 		params = update
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	s.View.OnUpdate(params)
 	s.signalLocked()
 	s.mu.Unlock()
@@ -1062,6 +1109,11 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 		params = jsoncompat.NewObject()
 	}
 	s.mu.Lock()
+	if s.closed || (s.Process != nil && !s.active) {
+		s.mu.Unlock()
+		respond(nil)
+		return
+	}
 	if s.pending == nil {
 		s.pending = map[string]*jsoncompat.Object{}
 	}

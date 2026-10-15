@@ -282,7 +282,7 @@ func validateMessageEdit(projection *timeline.Timeline, version, key string) (*j
 	if turnStatus, _ := row.MustGet("turnStatus").(string); turnStatus == "inProgress" {
 		return nil, "请先停止当前任务，再编辑或分支"
 	}
-	if row.MustGet("turnId") != projection.Meta().MustGet("latestUserTurnId") {
+	if row.MustGet("turnId") != projection.MetaSnapshot().MustGet("latestUserTurnId") {
 		return nil, "只有最近一条消息可原地编辑，请使用编辑并新建分支"
 	}
 	return row, ""

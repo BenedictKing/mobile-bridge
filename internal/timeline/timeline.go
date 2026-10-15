@@ -125,6 +125,9 @@ func clamp(value, low, high int) int {
 
 // Update rebuilds the projection from a normalized view.
 func (t *Timeline) Update(view *jsoncompat.Object) {
+	// Timeline owns every value it retains. Callers are free to reuse or
+	// mutate their live view after this method returns.
+	view, _ = jsoncompat.Clone(view).(*jsoncompat.Object)
 	sequence, _ := view.MustGet("sequence").(json.Number)
 	lexeme := sequence.String()
 	if lexeme == t.sequence {
@@ -458,7 +461,7 @@ func (t *Timeline) Page(limit int, before string) *jsoncompat.Object {
 	result.Set("sequence", json.Number(t.sequence))
 	rowValues := &jsoncompat.Array{}
 	for _, record := range selected {
-		rowValues.Items = append(rowValues.Items, record.obj)
+		rowValues.Items = append(rowValues.Items, jsoncompat.Clone(record.obj))
 	}
 	result.Set("rows", rowValues)
 	if len(selected) > 0 {
@@ -467,7 +470,7 @@ func (t *Timeline) Page(limit int, before string) *jsoncompat.Object {
 		result.Set("before", nil)
 	}
 	result.Set("hasMore", startIndex > 0 || jsoncompat.Truthy(t.meta.MustGet("savedHistoryMore")))
-	result.Set("meta", t.meta)
+	result.Set("meta", jsoncompat.Clone(t.meta))
 	return result
 }
 
@@ -499,7 +502,7 @@ func (t *Timeline) Changes(after, epoch, start string) *jsoncompat.Object {
 	for _, record := range t.rows[from:] {
 		previousDigest, existed := previous[record.key]
 		if !existed || previousDigest != current[record.key] {
-			changed.Items = append(changed.Items, record.obj)
+			changed.Items = append(changed.Items, jsoncompat.Clone(record.obj))
 			size += len(record.enc)
 		}
 	}
@@ -510,7 +513,7 @@ func (t *Timeline) Changes(after, epoch, start string) *jsoncompat.Object {
 	result.Set("epoch", t.epoch)
 	result.Set("sequence", json.Number(t.sequence))
 	result.Set("rows", changed)
-	result.Set("meta", t.meta)
+	result.Set("meta", jsoncompat.Clone(t.meta))
 	return result
 }
 
@@ -553,9 +556,16 @@ type State struct {
 	Rows     int
 }
 
-// Meta exposes the current projection meta (timeline_read's trigger
-// compares goal/subagentRevision against the fresh view).
-func (t *Timeline) Meta() *jsoncompat.Object { return t.meta }
+// MetaSnapshot returns a detached copy of the current projection metadata.
+func (t *Timeline) MetaSnapshot() *jsoncompat.Object {
+	return jsoncompat.Clone(t.meta).(*jsoncompat.Object)
+}
+
+// SetMeta updates one projection metadata field while retaining ownership of
+// the value. Callers must serialize this operation with other Timeline calls.
+func (t *Timeline) SetMeta(key string, value any) {
+	t.meta.Set(key, jsoncompat.Clone(value))
+}
 
 func (t *Timeline) State() State {
 	return State{Epoch: t.epoch, Sequence: t.sequence,
@@ -566,7 +576,7 @@ func (t *Timeline) withReset(page *jsoncompat.Object) *jsoncompat.Object {
 	result := jsoncompat.NewObject()
 	for _, key := range page.Keys() {
 		value, _ := page.Get(key)
-		result.Set(key, value)
+		result.Set(key, jsoncompat.Clone(value))
 	}
 	result.Set("reset", true)
 	return result
