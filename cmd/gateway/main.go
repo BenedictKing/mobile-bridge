@@ -626,6 +626,9 @@ func runGateway(args []string) {
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_IPC") != "1" {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
 		server.Codex.Executable = os.Getenv("GATEWAY_CODEX_BIN")
+		if server.Jev != nil {
+			server.Codex.AutoApprove = server.Jev.AutoResponse
+		}
 	}
 	server.Account = account.NewWithData(codexHome, dataDir, os.Getenv("GATEWAY_CODEX_BIN"))
 	server.Goal = goal.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))

@@ -29,7 +29,7 @@ func (s *Settings) AutoResponse(method string, params *jsoncompat.Object) *jsonc
 		return nil
 	}
 	key, _ := config.MustGet("apiKey").(string)
-	if key == "" || method != "session/request_permission" && method != "session/requestPermission" {
+	if key == "" || !isApprovalMethod(method) {
 		return nil
 	}
 	assessment, ok := s.assess(config, key, method, params)
@@ -42,6 +42,14 @@ func (s *Settings) AutoResponse(method string, params *jsoncompat.Object) *jsonc
 		return nil
 	}
 	recommend, _ := assessment.MustGet("recommend").(string)
+	if method != "session/request_permission" && method != "session/requestPermission" {
+		if recommend == "accept_once" || recommend == "accept_session" {
+			result := jsoncompat.NewObject()
+			result.Set("decision", "accept")
+			return result
+		}
+		return nil
+	}
 	for _, value := range arrayValues(params.MustGet("options")) {
 		option, _ := value.(*jsoncompat.Object)
 		if option == nil {
@@ -58,6 +66,16 @@ func (s *Settings) AutoResponse(method string, params *jsoncompat.Object) *jsonc
 		}
 	}
 	return nil
+}
+
+func isApprovalMethod(method string) bool {
+	switch method {
+	case "session/request_permission", "session/requestPermission",
+		"item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+		"item/permissions/requestApproval":
+		return true
+	}
+	return false
 }
 
 func (s *Settings) assess(config *jsoncompat.Object, key, method string, params *jsoncompat.Object) (*jsoncompat.Object, bool) {

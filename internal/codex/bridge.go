@@ -33,6 +33,8 @@ type Bridge struct {
 	IPC         *ipc.Desktop
 	mu          sync.Mutex
 	sessions    map[string]*Session
+	AutoApprove func(method string, params *jsoncompat.Object) *jsoncompat.Object
+	autoPending map[string]bool
 	catalogOnce sync.Once
 	catalog     *Catalog
 }
@@ -41,7 +43,7 @@ func New(home, endpoint string) *Bridge {
 	if endpoint == "" {
 		endpoint = transport.CurrentOSEndpoint(home)
 	}
-	bridge := &Bridge{Host: "local", Home: home, Executable: "", IPC: ipc.NewDesktop(endpoint), sessions: map[string]*Session{}}
+	bridge := &Bridge{Host: "local", Home: home, Executable: "", IPC: ipc.NewDesktop(endpoint), sessions: map[string]*Session{}, autoPending: map[string]bool{}}
 	bridge.IPC.OnEvent = bridge.handleEvent
 	bridge.IPC.OnDisconnect = bridge.handleDisconnect
 	return bridge
@@ -229,8 +231,8 @@ func (b *Bridge) handleEvent(message *jsoncompat.Object) {
 	}
 	session := b.session(id)
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if owner, ok := message.MustGet("sourceClientId").(string); ok && session.Owner != "" && owner != session.Owner {
+		b.mu.Unlock()
 		return
 	}
 	switch change.MustGet("type") {
@@ -264,6 +266,45 @@ func (b *Bridge) handleEvent(message *jsoncompat.Object) {
 	session.Sequence++
 	close(session.Changed)
 	session.Changed = make(chan struct{})
+	b.mu.Unlock()
+	b.autoApprovePending(id)
+}
+
+func (b *Bridge) autoApprovePending(id string) {
+	if b.AutoApprove == nil {
+		return
+	}
+	state, _, _, _ := b.Snapshot(id)
+	view := model.NormalizeState(state, true)
+	requests, _ := view.MustGet("requests").(*jsoncompat.Array)
+	if requests == nil {
+		return
+	}
+	for _, value := range requests.Items {
+		request, _ := value.(*jsoncompat.Object)
+		if request == nil || request.MustGet("supported") != true {
+			continue
+		}
+		method, _ := request.MustGet("method").(string)
+		key := id + ":" + jsoncompat.PyStr(request.MustGet("id"))
+		b.mu.Lock()
+		claimed := b.autoPending[key]
+		if !claimed {
+			b.autoPending[key] = true
+		}
+		b.mu.Unlock()
+		if claimed {
+			continue
+		}
+		params, _ := request.MustGet("params").(*jsoncompat.Object)
+		if response := b.AutoApprove(method, params); response != nil {
+			_, _ = b.Respond(id, jsoncompat.PyStr(request.MustGet("id")), response)
+		} else {
+			b.mu.Lock()
+			delete(b.autoPending, key)
+			b.mu.Unlock()
+		}
+	}
 }
 
 func (b *Bridge) handleDisconnect() {
