@@ -159,7 +159,7 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 		args = append(args, boolInt(archived))
 	}
 	if columns["originator"] {
-		owner := "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge')"
+		owner := "originator IN ('Codex Desktop', 'codex_work_desktop', 'codex_mobile_bridge', 'mobile_bridge_go')"
 		if columns["source"] {
 			owner += " OR (originator IS NULL AND source = 'vscode')"
 		}
@@ -222,7 +222,8 @@ func (s *SessionStore) Get(threadID string) (*jsoncompat.Object, error) {
 	originator, _ := object.MustGet("originator").(string)
 	source, _ := object.MustGet("source").(string)
 	if originator != "Codex Desktop" && originator != "codex_work_desktop" &&
-		originator != "codex_mobile_bridge" && !(originator == "" && source == "vscode") {
+		originator != "codex_mobile_bridge" && originator != "mobile_bridge_go" &&
+		!(originator == "" && source == "vscode") {
 		return nil, errors.New("不是桌面 App 会话")
 	}
 	if sourceText, ok := object.MustGet("source").(string); ok && strings.Contains(sourceText, `"subagent"`) {
