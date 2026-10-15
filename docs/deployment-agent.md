@@ -46,7 +46,7 @@
 
 **Windows 前台方式：** 构建后使用 `start.cmd`（运行 `dist\gateway\codex-mobile-gateway.exe`），停止用 `stop.cmd`。
 
-**后台方式（macOS）：** `make start` 交给 launchd 托管（KeepAlive 崩溃自动拉活、开机自启），日志在 `~/Library/Logs/mobile-bridge-gateway.log`（`make logs` 跟随）。停止与重启用 `make stop` / `make restart`。
+**后台方式（macOS）：** `make start` 交给 launchd 托管（KeepAlive 崩溃自动拉活、开机自启），运行固定二进制 `~/.local/bin/mobile-bridge-gateway`（自动编译安装并签名），日志在 `~/Library/Logs/mobile-bridge-gateway.log`（`make logs` 跟随）。停止与重启用 `make stop` / `make restart`。建议先 `make dev-cert` 一次性生成本机签名证书，macOS 的目录访问授权不会因重编译而重置。
 print("日志:", data_dir / "gateway.log")
 PY
 ```

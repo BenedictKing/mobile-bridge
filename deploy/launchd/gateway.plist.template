@@ -4,9 +4,11 @@
 <dict>
 	<key>Label</key>
 	<string>com.mobile-bridge.gateway</string>
+	<!-- 固定路径 + 稳定签名（make dev-cert / make install）：避免 TCC 因重编译
+	     改变 ad-hoc 哈希而反复弹目录授权。 -->
 	<key>ProgramArguments</key>
 	<array>
-		<string>@CURDIR@/dist/gateway/codex-mobile-gateway</string>
+		<string>@HOME@/.local/bin/mobile-bridge-gateway</string>
 		<string>serve</string>
 		<string>--data-dir</string>
 		<string>@CURDIR@/.local</string>

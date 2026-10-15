@@ -320,12 +320,15 @@ make serve          # 前台运行（自动构建 dist/gateway/codex-mobile-gate
 生产常驻建议改用 launchd 托管（崩溃自动拉活、开机自启）：
 
 ```sh
-make start          # 写入 plist、加载并启动（KeepAlive）
+make dev-cert       # 一次性生成本机签名证书（稳定 TCC 身份，免重复弹目录授权）
+make start          # 编译→安装到 ~/.local/bin/mobile-bridge-gateway→签名→launchd 常驻
 make status         # 查看服务状态与健康探测
 make logs           # 跟随日志（~/Library/Logs/mobile-bridge-gateway.log）
 make stop           # 彻底停止并卸载服务
-make restart        # 重启
+make restart        # 重新编译部署
 ```
+
+launchd 始终运行固定文件 `~/.local/bin/mobile-bridge-gateway`：macOS 按签名身份授予文稿/文件目录访问，重编译会改变 ad-hoc 哈希、导致每次重启重新弹"允许访问文稿文件夹"。`make dev-cert` 生成的 `mobile-bridge-dev` 证书让签名身份跨重编译稳定，此后目录授权只需允许一次。
 
 1. 打开电脑上的 Codex App。
 2. 启动网关，在终端找到局域网地址，例如 `http://192.168.1.10:8787`。
