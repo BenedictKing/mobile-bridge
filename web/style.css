@@ -73,7 +73,9 @@
 .plan-entry.status-completed .plan-mark{color:var(--green)}
 .plan-entry.status-completed .plan-text{text-decoration:line-through;color:#96a098}
 .key-field{position:relative;display:block}
-.key-pill{position:absolute;top:-10px;right:10px;z-index:1;display:inline-flex;align-items:center;background:#e0ecdf;border:1px solid #c9dcc6;border-radius:999px;padding:4px 12px;color:#305b3e;font-size:10px;line-height:1;box-shadow:0 1px 3px #0001}
-.key-pill code{font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em}
-.key-pill button{position:absolute;top:-8px;right:-8px;width:16px;height:16px;padding:0;border:1px solid var(--line);border-radius:50%;background:#fff;color:#a43b31;font-size:11px;line-height:1;display:grid;place-items:center}
-.key-pill button:hover{background:#f4d9d4;border-color:#d8ae9f}
+.key-field input{margin-top:0}
+.key-field.has-pill input{padding-left:116px}
+.key-pill{position:absolute;left:8px;top:0;bottom:0;margin:auto 0;height:24px;display:inline-flex;align-items:center;gap:6px;background:#e0ecdf;border:1px solid #c9dcc6;border-radius:999px;padding:0 6px 0 12px;color:#305b3e;font-size:10px;line-height:1;max-width:calc(100% - 16px);box-sizing:border-box}
+.key-pill code{font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.key-pill button{flex:none;width:16px;height:16px;padding:0;border:0;border-radius:50%;background:#c9dcc6;color:#305b3e;font-size:11px;line-height:1;display:grid;place-items:center}
+.key-pill button:hover{background:#f4d9d4;color:#a43b31}

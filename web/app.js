@@ -347,7 +347,7 @@ $('notify-form').onsubmit=async event=>{
   }catch(e){if(request===notificationRequest&&id===currentId&&host===currentHost)$('notify-error').textContent=t(e.message);}
   finally{if(request===notificationRequest&&id===currentId&&host===currentHost){$('notify-button').disabled=false;$('notify-save').disabled=false;}}
 };
-let notificationDefaultsRequest=0;
+let notificationDefaultsRequest=0,notificationDirty=false;
 window.loadNotificationDefaults=async()=>{
   const request=++notificationDefaultsRequest;
   for(const id of ['notification-requests','notification-completions'])$(id).disabled=true;
@@ -357,17 +357,19 @@ window.loadNotificationDefaults=async()=>{
     const result=await api('/api/notifications/defaults');if(request!==notificationDefaultsRequest)return;
     $('notification-requests').checked=result.requests;$('notification-completions').checked=result.completion;
     for(const id of ['notification-requests','notification-completions'])$(id).disabled=false;
+    notificationDirty=false;
   }catch(error){$('notification-settings-error').textContent=t(error.message);}
 };
 async function saveNotificationDefaults(){
   const body={requests:$('notification-requests').checked,completion:$('notification-completions').checked};
   for(const id of ['notification-requests','notification-completions'])$(id).disabled=true;
   try{await api('/api/notifications/defaults',body);if(currentId)await loadNotificationState();}
-  catch(error){await window.loadNotificationDefaults();$('notification-settings-error').textContent=t(error.message);return;}
+  catch(error){await window.loadNotificationDefaults();$('notification-settings-error').textContent=t(error.message);return false;}
   await window.loadNotificationDefaults();
+  return true;
 }
-$('notification-requests').onchange=$('notification-completions').onchange=saveNotificationDefaults;
-let jevSettingsRequest=0,jevFormReady=false;
+$('notification-requests').onchange=$('notification-completions').onchange=()=>{notificationDirty=true;};
+let jevSettingsRequest=0,jevFormReady=false,jevDirty=false,jevClearPending=false;
 window.loadJevSettings=async()=>{
   const request=++jevSettingsRequest;
   jevFormReady=false;
@@ -375,31 +377,51 @@ window.loadJevSettings=async()=>{
   try{
     const result=await api('/api/jev');if(request!==jevSettingsRequest)return;
     $('jev-key').value='';
-    $('jev-key-pill').hidden=!result.configured;
+    const configured=Boolean(result.configured);
+    // The capsule acts as the field's value: while it shows, the input is
+    // closed for typing; clearing the capsule reopens the empty field.
+    $('jev-key-pill').hidden=!configured;
+    $('jev-key-field').classList.toggle('has-pill',configured);
     $('jev-key-pill-text').textContent=result.apiKeyMasked||t('已配置');
-    $('jev-key').placeholder=result.configured?t('输入新密钥替换'):t('未配置');
+    $('jev-key').placeholder=configured?'':t('未配置');
+    $('jev-key').readOnly=configured;
     $('jev-base-url').value=result.baseUrl;$('jev-model').value=result.model;$('jev-proxy').value=result.proxy||'';
     $('jev-auto-approve').checked=Boolean(result.autoApprove);
     $('jev-auto-continue').checked=Boolean(result.autoContinue);
     jevFormReady=true;
+    jevDirty=false;jevClearPending=false;
   }catch(error){if(request===jevSettingsRequest)$('jev-settings-error').textContent=t(error.message);}
 };
-async function saveJevSettings(clear){
-  // Auto-saves fire on every change; a half-loaded form must never overwrite
-  // the persisted settings with blanks.
-  if(!jevFormReady&&!clear)return;
+// Jev edits stage locally; the dialog's single 保存 button commits them.
+async function saveJevChanges(){
+  if(!jevFormReady||!jevDirty)return true;
   const body={baseUrl:$('jev-base-url').value.trim(),model:$('jev-model').value.trim(),proxy:$('jev-proxy').value.trim(),autoApprove:$('jev-auto-approve').checked,autoContinue:$('jev-auto-continue').checked};
-  if(clear)body.clearApiKey=true;
-  else{const key=$('jev-key').value.trim();if(key)body.apiKey=key;}
-  $('jev-key-remove').disabled=true;$('jev-settings-error').textContent='';
+  const key=$('jev-key').value.trim();
+  if(key)body.apiKey=key;else if(jevClearPending)body.clearApiKey=true;
   try{await api('/api/jev',body);}
-  catch(error){$('jev-settings-error').textContent=t(error.message);return;}
-  finally{$('jev-key-remove').disabled=false;}
-  await window.loadJevSettings();toast(t('Jev 设置已保存'));
+  catch(error){$('jev-settings-error').textContent=t(error.message);return false;}
+  return true;
 }
-$('jev-key-remove').onclick=()=>saveJevSettings(true);
-['jev-auto-approve','jev-auto-continue','jev-base-url','jev-model','jev-proxy'].forEach(id=>$(id).onchange=()=>saveJevSettings(false));
-$('jev-key').onchange=()=>{if($('jev-key').value.trim())saveJevSettings(false);};
+$('jev-key-remove').onclick=()=>{
+  // Local only: reopening the field for a new key; 保存 commits the clear.
+  $('jev-key-pill').hidden=true;
+  $('jev-key-field').classList.remove('has-pill');
+  $('jev-key').readOnly=false;$('jev-key').value='';$('jev-key').placeholder=t('未配置');
+  jevClearPending=true;jevDirty=true;
+};
+['jev-auto-approve','jev-auto-continue','jev-base-url','jev-model','jev-proxy'].forEach(id=>$(id).onchange=()=>{jevDirty=true;});
+$('jev-key').onchange=()=>{if($('jev-key').value.trim())jevDirty=true;};
+// The one save button for every server-persisted setting in this dialog;
+// appearance stays browser-local and immediate.
+$('settings-save').onclick=async()=>{
+  const button=$('settings-save');button.disabled=true;
+  let ok=true;
+  if(await saveJevChanges()){jevDirty=false;jevClearPending=false;await window.loadJevSettings();}
+  else ok=false;
+  if(notificationDirty&&!await saveNotificationDefaults())ok=false;
+  button.disabled=false;
+  toast(ok?t('设置已保存'):t('部分设置保存失败，请检查表单错误'));
+};
 $('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);syncDocumentTitle();loadList(true).catch(e=>toast(e.message));};
 function renderState(view){state=view;const caps=new Set(view.capabilities||[]);const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){sessionActivity.read(chatKey());renderActivity();}$('execution-host').textContent=t('在 ')+(view.host==='local'?t('电脑'):view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');$('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?(view.agent==='codex'?t('正在加载桌面聊天…'):t('正在加载会话…')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');$('status').classList.toggle('offline',!view.connected);$('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(view.agent==='codex'?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');const workingSpan=$('working').querySelector('span');if(workingSpan)workingSpan.textContent=agentName+t(' 正在工作…');$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected;syncSendButton();const steerOption=$('send-mode').querySelector('[value=steer]');steerOption.hidden=!caps.has('steer');steerOption.disabled=!caps.has('steer')||view.status!=='active';if((!caps.has('steer')||view.status!=='active')&&$('send-mode').value==='steer')$('send-mode').value='send';
   // Agents without steering only have queueing while busy: preselect it once
