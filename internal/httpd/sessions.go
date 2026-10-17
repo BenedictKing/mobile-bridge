@@ -29,7 +29,7 @@ import (
 )
 
 var threadRoute = regexp.MustCompile(
-	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|input))?$`)
+	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
 var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status)$`)
@@ -263,6 +263,21 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		h.handleMigrate(threadID)
 		return true
 	}
+	// The queue ledger and session deletion are agent-agnostic: both resolve
+	// ownership themselves and never fall into the per-runtime dispatch.
+	if write && action == "queue" {
+		body, bodyErr := h.readJSON()
+		if bodyErr != nil {
+			h.fail(http.StatusBadRequest, errorBody(bodyErr.Error()))
+			return true
+		}
+		h.handleQueueRoute(threadID, body.(*jsoncompat.Object))
+		return true
+	}
+	if write && action == "delete" {
+		h.handleSessionDelete(threadID)
+		return true
+	}
 	// ACP dispatch mirrors Python's registry routing: an explicit agent param
 	// forces that agent (unknown kinds are rejected), otherwise the thread is
 	// routed by ownership — live sessions, cached list rows and lazy
@@ -379,6 +394,24 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			id, _ := body.(*jsoncompat.Object).MustGet("id").(string)
 			mode, _ := body.(*jsoncompat.Object).MustGet("mode").(string)
 			workMode, _ := body.(*jsoncompat.Object).MustGet("workMode").(string)
+			// Queue semantics (Python send): mode "queue" joins the durable
+			// ledger and returns immediately; a direct send records first so
+			// a retried request is a duplicate, never a double turn.
+			if h.server.Queue != nil {
+				if mode == "queue" {
+					h.handleQueuedSend(threadID, body.(*jsoncompat.Object))
+					return true
+				}
+				duplicate, prior, recordErr := h.recordDirectSend(threadID, readSubmissionPayload(body.(*jsoncompat.Object)))
+				if recordErr != nil {
+					h.fail(http.StatusBadRequest, errorBody(recordErr.Error()))
+					return true
+				}
+				if duplicate {
+					h.output(http.StatusOK, submissionDuplicateResponse(prior), contentTypeJSON, "")
+					return true
+				}
+			}
 			var attachments []codex.AttachmentInput
 			if raw, ok := body.(*jsoncompat.Object).MustGet("attachments").(*jsoncompat.Array); ok {
 				for _, value := range raw.Items {
@@ -414,6 +447,9 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			if callErr != nil {
 				h.fail(http.StatusConflict, errorBody(callErr.Error()))
 			} else {
+				if h.server.Queue != nil {
+					h.server.Queue.setStatus(threadID, id, SubAccepted)
+				}
 				h.output(http.StatusOK, result, contentTypeJSON, "")
 			}
 			return true
@@ -598,6 +634,35 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			h.fail(http.StatusBadRequest, errorBody("当前 Agent 不支持目标模式"))
 			return true
 		}
+		// Queue semantics (Python send): queue joins the durable ledger;
+		// direct sends record first so retries are duplicates. A failure
+		// before the prompt provably left the agent untouched, so the entry
+		// returns to the queue instead of reporting a phantom acceptance.
+		dispatched := false
+		if h.server.Queue != nil {
+			if mode == "queue" {
+				h.handleQueuedSend(threadID, object)
+				return true
+			}
+			duplicate, prior, recordErr := h.recordDirectSend(threadID, readSubmissionPayload(object))
+			if recordErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(recordErr.Error()))
+				return true
+			}
+			if duplicate {
+				h.output(http.StatusOK, submissionDuplicateResponse(prior), contentTypeJSON, "")
+				return true
+			}
+			defer func() {
+				if dispatched {
+					h.server.Queue.setStatus(threadID, prior.ID, SubAccepted)
+					return
+				}
+				if prior.Status == SubUnknown {
+					h.server.Queue.requeueEntry(threadID, prior.ID, "消息未送达，已回到队列")
+				}
+			}()
+		}
 		var attachmentFiles []acpadapter.FileSpec
 		if raw, ok := object.MustGet("attachments").(*jsoncompat.Array); ok {
 			for _, value := range raw.Items {
@@ -652,6 +717,7 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				return true
 			}
 			if injected {
+				dispatched = true
 				result := jsoncompat.NewObject()
 				result.Set("accepted", true)
 				result.Set("steered", true)
@@ -676,10 +742,12 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				extra = append(extra, block)
 			}
 		}
-		if callErr := session.PromptWithBlocks(text, extra, 3600*time.Second); callErr != nil {
-			h.fail(http.StatusConflict, errorBody(callErr.Error()))
-		} else {
+		callErr := session.PromptWithBlocks(text, extra, 3600*time.Second)
+		if callErr == nil {
+			dispatched = true
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+		} else {
+			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		}
 	case "stop":
 		if callErr := session.Cancel(); callErr != nil {
@@ -882,7 +950,11 @@ func (h *handler) handleUploadHTTP(write bool, path string, query map[string][]s
 
 // liveView resolves the live chat-screen state for one thread, ACP threads
 // first, then codex followers. kind is the owning ACP agent ("" for codex).
+// Deleted (hidden) sessions read as missing everywhere.
 func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
+	if h.server.hiddenSession(threadID) {
+		return nil, "", false
+	}
 	if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
 		if resolution.session == nil {
 			return nil, resolution.kind, false
@@ -949,6 +1021,14 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 	if len(h.server.acpAgentSet()) > 0 {
 		projection.SetMeta("agents", h.server.agentRoster())
 	}
+	// Queue cards and the fork-source link ride in meta like Python's
+	// _submission_meta/_fork_origin annotations on every timeline read.
+	if h.server.Queue != nil {
+		projection.SetMeta("submissions", h.server.Queue.meta(threadID))
+	}
+	if h.server.Forks != nil {
+		projection.SetMeta("forkedFrom", h.server.forkedFromMeta(threadID))
+	}
 	if action == "detail" {
 		var version any
 		if value := queryValue(query, "version", ""); value != "" {
@@ -969,6 +1049,9 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 // implementation used for live sessions. The projection is retained per
 // thread so cursors remain valid across HTTP requests.
 func (h *handler) historicalTimeline(threadID, action string, query map[string][]string) (any, error) {
+	if h.server.hiddenSession(threadID) {
+		return nil, errors.New("找不到这个会话")
+	}
 	history, err := h.server.Store.HistoryFor(threadID, nil)
 	if err != nil {
 		return nil, err
@@ -998,6 +1081,13 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	// applied to every timeline_read in Python).
 	if len(h.server.acpAgentSet()) > 0 {
 		projection.SetMeta("agents", h.server.agentRoster())
+	}
+	// Saved threads show the same queue cards and fork-source link.
+	if h.server.Queue != nil {
+		projection.SetMeta("submissions", h.server.Queue.meta(threadID))
+	}
+	if h.server.Forks != nil {
+		projection.SetMeta("forkedFrom", h.server.forkedFromMeta(threadID))
 	}
 	if action == "detail" {
 		version := any(nil)

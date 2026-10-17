@@ -1394,3 +1394,17 @@ func (m *Manager) skillCatalog(session *Session, rawQuery string, wanted []strin
 	result.Set("currentEffort", nil)
 	return result
 }
+
+// Drop closes one live session handle and forgets it (session delete/hide);
+// the agent's own stored session is not touched. A later Open re-reads it.
+func (m *Manager) Drop(id string) {
+	m.mu.Lock()
+	session := m.sessions[id]
+	if session != nil {
+		delete(m.sessions, session.ID)
+	}
+	m.mu.Unlock()
+	if session != nil {
+		session.Close()
+	}
+}

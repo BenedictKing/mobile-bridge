@@ -745,9 +745,19 @@ func runGateway(args []string) {
 				manager.AutoApprove = jevApprovalHook(server.Jev, kind)
 				manager.AutoContinue = jevContinueHook(server.Jev, kind)
 			}
-			// Inline image blocks stream as base64; persisting them under the
-			// data dir gives the phone a previewable path per session.
 			if manager != nil {
+				// Queued sends dispatch the moment a turn settles: chain the
+				// queue hook onto whatever auto-continue hook is installed.
+				prior := manager.AutoContinue
+				managedKind := kind
+				manager.AutoContinue = func(session *acpruntime.Session) {
+					if prior != nil {
+						prior(session)
+					}
+					server.QueueSettleACP(managedKind, session)
+				}
+				// Inline image blocks stream as base64; persisting them under the
+				// data dir gives the phone a previewable path per session.
 				manager.MediaDir = filepath.Join(dataDir, "agent-media")
 			}
 		}
@@ -768,6 +778,12 @@ func runGateway(args []string) {
 		}()
 	}
 	server.Creations = httpd.LoadCreations(filepath.Join(dataDir, "creations.json"))
+	// Durable feature ledgers: queued sends, hidden (deleted) sessions and
+	// fork origins survive restarts like Python's submissions/actions files.
+	server.Queue = httpd.LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
+	server.Hidden = httpd.LoadHiddenSessions(filepath.Join(dataDir, "hidden-sessions.json"))
+	server.Forks = httpd.LoadForks(filepath.Join(dataDir, "forks.json"))
+	server.StartQueueWorker()
 	controller, controlErr := lifecycle.NewController(dataDir, os.Getpid(), instanceID)
 	if controlErr != nil {
 		log.Fatalf("control file: %v", controlErr)

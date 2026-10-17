@@ -70,6 +70,9 @@ func (stubBridge) AccountsPublic() any {
 type Server struct {
 	Auth            *auth.Auth
 	Creations       *creations
+	Queue           *submissions
+	Hidden          *hiddenSessions
+	Forks           *forkLedger
 	WebFS           fs.FS
 	InstanceID      string
 	Port            int
@@ -89,6 +92,7 @@ type Server struct {
 	Jev             *jev.Settings
 	Account         *account.Manager
 	Goal            *goal.Manager
+	queueMu         sync.Mutex // serializes queue dispatch passes
 	historyMu       sync.Mutex
 	historyTL       map[string]*timeline.Timeline
 	artifactMu      sync.Mutex
@@ -554,6 +558,14 @@ func (h *handler) handleMethod(write bool) {
 			// Split the ids by owning agent first (Python's registry split):
 			// ACP-owned ids must not reach the Codex activity probe, whose
 			// unknown-row shape would shadow the agent's real status.
+			// Deleted (hidden) sessions never surface a dot again.
+			visible := ids[:0]
+			for _, id := range ids {
+				if !h.server.hiddenSession(id) {
+					visible = append(visible, id)
+				}
+			}
+			ids = visible
 			agents := h.server.acpAgentSet()
 			owned, remaining := splitACPOwned(agents, ids)
 			if h.server.Codex != nil {
@@ -637,11 +649,31 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
-		if h.server.Account == nil {
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		body := value.(*jsoncompat.Object)
+		// The phone hides an uncertain submission outcome from the queue
+		// cards; the ledger owns that decision, the account panel only
+		// carries the request.
+		if h.server.Queue != nil {
+			threadID, _ := body.MustGet("threadId").(string)
+			submissionID, _ := body.MustGet("submissionId").(string)
+			if err := h.server.Queue.ignore(threadID, submissionID); err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return
+			}
+		} else if h.server.Account == nil {
 			h.fail(http.StatusConflict, errorBody("请启动支持账号管理的新版网关"))
 			return
 		}
-		h.output(http.StatusOK, h.server.Account.AccountsPublic(), contentTypeJSON, "")
+		if h.server.Account != nil {
+			h.output(http.StatusOK, h.server.Account.AccountsPublic(), contentTypeJSON, "")
+		} else {
+			h.output(http.StatusOK, h.server.Bridge.AccountsPublic(), contentTypeJSON, "")
+		}
 	case write && path == "/api/accounts/switch":
 		if h.session(write) == nil {
 			return
@@ -789,6 +821,9 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 		}
 		projects := readLocalProjects(h.server.CodexHome)
 		for _, row := range rows {
+			if id, _ := row.MustGet("id").(string); h.server.hiddenSession(id) {
+				continue
+			}
 			if _, ok := row.Get("host"); !ok {
 				row.Set("host", "local")
 			}
@@ -826,7 +861,7 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 					id, _ := row.MustGet("sessionId").(string)
 					title, _ := row.MustGet("title").(string)
 					cwd, _ := row.MustGet("cwd").(string)
-					if id == "" || (text != "" && !strings.Contains(strings.ToLower(title+" "+cwd), strings.ToLower(text))) {
+					if id == "" || h.server.hiddenSession(id) || (text != "" && !strings.Contains(strings.ToLower(title+" "+cwd), strings.ToLower(text))) {
 						continue
 					}
 					if title == "" {
