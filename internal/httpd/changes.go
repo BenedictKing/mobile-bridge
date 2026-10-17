@@ -148,6 +148,15 @@ func boundedChanges(value any) *jsoncompat.Array {
 					entry.Set("truncated", true)
 				}
 			}
+		} else if oldText, newText, hasText := textPair(change); hasText {
+			// Saved rollouts record added files as full content instead of a
+			// unified diff; the phone renders these through the same
+			// oldText/newText pair channel ACP views already use.
+			entry.Set("oldText", clipRunes(oldText, changesMaxChars))
+			entry.Set("newText", clipRunes(newText, changesMaxChars))
+			if len([]rune(oldText)) > changesMaxChars || len([]rune(newText)) > changesMaxChars {
+				entry.Set("truncated", true)
+			}
 		}
 		converted.Items = append(converted.Items, entry)
 	}
@@ -163,6 +172,17 @@ func clipRunes(text string, limit int) string {
 		return text
 	}
 	return string(runes[:limit])
+}
+
+// textPair reads an ACP-style oldText/newText pair; history rollouts emit
+// additions with newText only, which renders as an empty old side. present
+// is true when either side is a string.
+func textPair(change *jsoncompat.Object) (string, string, bool) {
+	oldValue, hasOld := change.Get("oldText")
+	newValue, hasNew := change.Get("newText")
+	oldText, _ := oldValue.(string)
+	newText, _ := newValue.(string)
+	return oldText, newText, (hasOld && oldValue != nil) || (hasNew && newValue != nil)
 }
 
 func getDefaultObject(object *jsoncompat.Object, key string) any {

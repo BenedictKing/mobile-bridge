@@ -162,6 +162,19 @@ func History(threadID string, meta *jsoncompat.Object, raw []byte, turnLimit *in
 			if item == nil {
 				continue
 			}
+			// Go-side addition (changes.go): FileChange/CommandExecution
+			// payloads become structured change items. Python drops them and
+			// no conformance scenario feeds them, so golden bytes are
+			// untouched.
+			if isChangeItem(item) {
+				if current == nil {
+					historyTurn()
+				}
+				if row := ChangeItemRow(item, len(items.Items)); row != nil {
+					items.Items = append(items.Items, row)
+				}
+				continue
+			}
 			if kind, _ := item.MustGet("type").(string); kind != "ImageView" && kind != "imageView" {
 				continue
 			}

@@ -249,9 +249,10 @@ func buildHistoryView(history *jsoncompat.Object) *jsoncompat.Object {
 	}
 	state.Set("sequence", sequence)
 	view := model.NormalizeState(state, false)
-	// Saved rollouts carry no structured fileChange/commandExecution items
-	// today, so this is a no-op for current history — kept here so saved and
-	// live projections of the same thread annotate identically.
+	// Saved rollouts parsed since the store's change.go carry the same
+	// camelCase fileChange/commandExecution items live feeds do, so the
+	// annotation gives history and live projections of one thread identical
+	// structured rows.
 	annotateViewChanges(view, model.OrderedTurns(state))
 	view.Set("sequence", sequence)
 	return view
