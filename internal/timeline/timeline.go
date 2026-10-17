@@ -26,6 +26,7 @@ const (
 	maxPageLimit    = 100
 	versionWindow   = 16
 	changesMaxRows  = 100
+	deltaMaxAppend  = 4000
 	errStaleCursor  = "这条内容已更新，请重新打开聊天"
 )
 
@@ -35,6 +36,20 @@ var rowWhitelist = [...]string{
 	"subagentId", "subagentType", "subagentDescription", "subagentPrompt", "stopReason",
 }
 
+// rowFingerprint covers every view input a row's record derives from, in
+// comparable form: raw scalars, or the compact encoding for composite JSON
+// (length-prefixed strings and self-delimiting JSON keep the encoding
+// collision-free). Equal fingerprints imply byte-identical records apart
+// from `order`, which Update tracks separately; unequal fingerprints merely
+// force a rebuild, so the encoding may be conservative but is never lossy.
+type rowFingerprint struct {
+	body        string // key, whitelist fields, entries, attachments, turnStatus, editable/forkable inputs
+	textKind    byte   // 's' raw string (textValue), 'o' composite (textValue holds its encoding)
+	textValue   string
+	outputKind  byte // 's' non-empty string output (outputValue), 'z' nothing appended
+	outputValue string
+}
+
 type row struct {
 	obj     *jsoncompat.Object
 	enc     []byte // encoded(row), cached: page budget cost and change digests
@@ -42,21 +57,30 @@ type row struct {
 	key     string
 	version string
 	text    string // details[key]: the untruncated text
+	order   int    // order value currently encoded into enc
+	fp      rowFingerprint
+
+	prevText    string // same key in the previous generation ("" when new)
+	prevVersion string // same key in the previous generation ("" when new)
+	prevOrder   int    // same key in the previous generation (0 when new)
+	appendText  string // pure-append tail vs the previous generation ("" when none)
 }
 
 // Timeline mirrors bridge.timeline.Timeline. sequence is kept as the original
 // number lexeme so serialization and map keys match Python's int handling.
 type Timeline struct {
-	epoch       string
-	sequence    string
-	orderOrigin int
-	rows        []*row
-	positions   map[string]int
-	details     map[string]string
-	versionKeys []string // insertion order of versions
-	versions    map[string]map[string][32]byte
-	meta        *jsoncompat.Object
-	newEpoch    func() string
+	epoch        string
+	sequence     string
+	prevSequence string // sequence of the previous generation; the delta anchor
+	orderOrigin  int
+	rows         []*row
+	prevRows     map[string]*row // previous generation rows, by key: reuse source
+	positions    map[string]int
+	details      map[string]string
+	versionKeys  []string // insertion order of versions
+	versions     map[string]map[string][32]byte
+	meta         *jsoncompat.Object
+	newEpoch     func() string
 }
 
 // New creates a Timeline. epochFn supplies uuid4-hex epochs; inject a
@@ -123,16 +147,20 @@ func clamp(value, low, high int) int {
 	return value
 }
 
-// Update rebuilds the projection from a normalized view.
+// Update rebuilds the projection from a normalized view. Rows whose view
+// inputs are unchanged since the previous generation reuse the previous
+// encoded record wholesale (Update Append fast path), so a streaming append
+// to the last row only rebuilds that row.
 func (t *Timeline) Update(view *jsoncompat.Object) {
-	// Timeline owns every value it retains. Callers are free to reuse or
-	// mutate their live view after this method returns.
-	view, _ = jsoncompat.Clone(view).(*jsoncompat.Object)
+	// Timeline owns every value it retains: each record clones exactly the
+	// view values it stores, so callers are free to reuse or mutate their
+	// live view after this method returns.
 	sequence, _ := view.MustGet("sequence").(json.Number)
 	lexeme := sequence.String()
 	if lexeme == t.sequence {
 		return
 	}
+	previousSequence := t.sequence
 	activation := map[string]bool{}
 	if ids, ok := view.MustGet("goalActivationIds").(*jsoncompat.Array); ok {
 		for _, item := range ids.Items {
@@ -141,6 +169,7 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 			}
 		}
 	}
+	var body strings.Builder
 	rows := []*row{}
 	details := map[string]string{}
 	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
@@ -182,9 +211,23 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 				ordinal := occurrences[base]
 				occurrences[base] = ordinal + 1
 				key := base + "-" + strconv.Itoa(ordinal)
-				text, _ := message.MustGet("text").(string)
-				if output, ok := message.MustGet("output").(string); ok && output != "" {
-					text += "\n\n" + output
+				textKind, textValue := fingerprintTextValue(message.MustGet("text"))
+				outputKind, outputValue := fingerprintOutputValue(message.MustGet("output"))
+				fp := rowFingerprint{body: fingerprintBody(&body, key, turn, message, index == firstUser),
+					textKind: textKind, textValue: textValue,
+					outputKind: outputKind, outputValue: outputValue}
+				// Identical inputs since the previous generation: reuse the
+				// encoded row wholesale — the derived text is equal too.
+				if prev := t.prevRows[key]; prev != nil && prev.fp == fp {
+					rows = append(rows, &row{obj: prev.obj, enc: prev.enc, digest: prev.digest,
+						key: key, version: prev.version, text: prev.text, order: prev.order, fp: fp,
+						prevText: prev.text, prevVersion: prev.version})
+					details[key] = prev.text
+					continue
+				}
+				text := textValue
+				if outputKind == 's' {
+					text += "\n\n" + outputValue
 				}
 				role, _ := message.MustGet("role").(string)
 				activity := role == "activity"
@@ -192,14 +235,14 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 				record := jsoncompat.NewObject()
 				for _, field := range rowWhitelist {
 					if value, ok := message.Get(field); ok {
-						record.Set(field, value)
+						record.Set(field, jsoncompat.Clone(value))
 					}
 				}
 				if entries, ok := message.Get("entries"); ok && jsoncompat.Truthy(entries) {
-					record.Set("entries", entries)
+					record.Set("entries", jsoncompat.Clone(entries))
 				}
 				record.Set("key", key)
-				record.Set("turnId", turnID)
+				record.Set("turnId", jsoncompat.Clone(turnID))
 				record.Set("order", jsoncompat.Num(len(rows)))
 				record.Set("version", version)
 				previewLimit := TextPreview
@@ -207,10 +250,11 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 					previewLimit = activityPreview
 				}
 				record.Set("text", runeSlice(text, 0, previewLimit))
-				record.Set("truncated", (activity && text != "") || runeLen(text) > TextPreview)
-				record.Set("turnStatus", turn.MustGet("status"))
-				record.Set("editable", editableValue(turn, index == firstUser, message))
-				record.Set("forkable", forkableValue(turn, message))
+				truncated := (activity && text != "") || runeLen(text) > TextPreview
+				record.Set("truncated", truncated)
+				record.Set("turnStatus", jsoncompat.Clone(turn.MustGet("status")))
+				record.Set("editable", jsoncompat.Clone(editableValue(turn, index == firstUser, message)))
+				record.Set("forkable", jsoncompat.Clone(forkableValue(turn, message)))
 				if attachments, ok := message.Get("attachments"); ok && jsoncompat.Truthy(attachments) {
 					if source, ok := attachments.(*jsoncompat.Array); ok {
 						converted := &jsoncompat.Array{}
@@ -239,7 +283,7 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 				// render per-round file cards. Only messages carrying the
 				// fields change shape; golden scenarios never set them.
 				if value, ok := message.Get("exitCode"); ok {
-					record.Set("exitCode", value)
+					record.Set("exitCode", jsoncompat.Clone(value))
 				}
 				if value, ok := message.Get("changes"); ok {
 					if source, ok := value.(*jsoncompat.Array); ok {
@@ -248,7 +292,12 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 						}
 					}
 				}
-				rows = append(rows, &row{obj: record, key: key, version: version, text: text})
+				next := &row{obj: record, key: key, version: version, text: text, fp: fp}
+				if prev := t.prevRows[key]; prev != nil {
+					next.prevText, next.prevVersion, next.prevOrder = prev.text, prev.version, prev.order
+					next.appendText = appendDelta(prev, text, version, truncated, activity, fp.body)
+				}
+				rows = append(rows, next)
 				details[key] = text
 			}
 			if failure, ok := turn.Get("error"); ok && jsoncompat.Truthy(failure) {
@@ -258,16 +307,32 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 				}
 				errorIdentity := &jsoncompat.Array{Items: []any{turnID, "error"}}
 				key := hash24(errorIdentity) + "-error"
-				record := jsoncompat.NewObject()
-				record.Set("key", key)
-				record.Set("turnId", turnID)
-				record.Set("order", jsoncompat.Num(len(rows)))
-				record.Set("role", "error")
-				record.Set("text", runeSlice(text, 0, TextPreview))
-				record.Set("truncated", runeLen(text) > TextPreview)
-				record.Set("version", hash24Text(text))
-				rows = append(rows, &row{obj: record, key: key, version: hash24Text(text), text: text})
-				details[key] = text
+				version := hash24Text(text)
+				fp := rowFingerprint{body: fingerprintErrorBody(&body, key, failure),
+					textKind: 's', textValue: text}
+				if prev := t.prevRows[key]; prev != nil && prev.fp == fp {
+					rows = append(rows, &row{obj: prev.obj, enc: prev.enc, digest: prev.digest,
+						key: key, version: prev.version, text: prev.text, order: prev.order, fp: fp,
+						prevText: prev.text, prevVersion: prev.version})
+					details[key] = prev.text
+				} else {
+					record := jsoncompat.NewObject()
+					record.Set("key", key)
+					record.Set("turnId", jsoncompat.Clone(turnID))
+					record.Set("order", jsoncompat.Num(len(rows)))
+					record.Set("role", "error")
+					record.Set("text", runeSlice(text, 0, TextPreview))
+					record.Set("truncated", runeLen(text) > TextPreview)
+					record.Set("version", version)
+					next := &row{obj: record, key: key, version: version, text: text, fp: fp}
+					if prev := t.prevRows[key]; prev != nil {
+						next.prevText, next.prevVersion, next.prevOrder = prev.text, prev.version, prev.order
+						next.appendText = appendDelta(prev, text, version,
+							runeLen(text) > TextPreview, false, fp.body)
+					}
+					rows = append(rows, next)
+					details[key] = text
+				}
 			}
 		}
 	}
@@ -298,20 +363,33 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 			}
 		}
 		if !matches {
-			// Source history was replaced or reordered: invalidate all cursors.
+			// Source history was replaced or reordered: invalidate all cursors
+			// and the delta anchor (clients re-sync through a reset page).
 			t.epoch = t.newEpoch()
 			t.versionKeys = nil
 			t.versions = map[string]map[string][32]byte{}
 			t.orderOrigin = 0
+			t.prevSequence = ""
 		} else {
 			// Prepending saved turns preserves existing row keys and cursors.
 			t.orderOrigin -= first
 		}
 	}
 	for index, record := range rows {
-		record.obj.Set("order", jsoncompat.Num(t.orderOrigin+index))
+		order := t.orderOrigin + index
+		// A pending append dies when the row's order moved since the
+		// previous generation: the client would patch a row at an order the
+		// changes frame re-renders anyway.
+		if record.appendText != "" && order != record.prevOrder {
+			record.appendText = ""
+		}
+		if record.enc != nil && record.order == order {
+			continue
+		}
+		record.obj.Set("order", jsoncompat.Num(order))
 		record.enc = jsoncompat.EncodeCompact(record.obj)
 		record.digest = sha256.Sum256(record.enc)
+		record.order = order
 	}
 
 	t.sequence = lexeme
@@ -327,9 +405,9 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 			continue
 		}
 		value, _ := view.Get(key)
-		meta.Set(key, value)
+		meta.Set(key, jsoncompat.Clone(value))
 	}
-	meta.Set("latestUserTurnId", latestUserTurnID(turns, activation))
+	meta.Set("latestUserTurnId", jsoncompat.Clone(latestUserTurnID(turns, activation)))
 	t.meta = meta
 	digests := make(map[string][32]byte, len(rows))
 	for _, record := range rows {
@@ -343,6 +421,150 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 		delete(t.versions, t.versionKeys[0])
 		t.versionKeys = t.versionKeys[1:]
 	}
+	prevRows := make(map[string]*row, len(rows))
+	for _, record := range rows {
+		prevRows[record.key] = record
+	}
+	t.prevRows = prevRows
+	t.prevSequence = previousSequence
+}
+
+// fingerprintTextValue reduces a raw message text value to comparable form:
+// strings travel raw ("" also covers a missing field — the record cannot
+// tell them apart), composites keep their encoding (conservative).
+func fingerprintTextValue(raw any) (byte, string) {
+	if text, ok := raw.(string); ok {
+		return 's', text
+	}
+	if raw == nil {
+		return 's', ""
+	}
+	return 'o', string(jsoncompat.EncodeCompact(raw))
+}
+
+// fingerprintOutputValue reduces the output field: only a non-empty string
+// ever reaches the derived text, everything else collapses to one token.
+func fingerprintOutputValue(raw any) (byte, string) {
+	if output, ok := raw.(string); ok && output != "" {
+		return 's', output
+	}
+	return 'z', ""
+}
+
+// fingerprintBody renders every record input apart from the text into one
+// comparable string: whitelist fields, entries, raw attachments (the record
+// derives its converted form from them), turnStatus, and the editable/
+// forkable inputs. Slot tags plus length-prefixed strings and self-delimiting
+// JSON keep the encoding collision-free.
+func fingerprintBody(body *strings.Builder, key string, turn *jsoncompat.Object,
+	message *jsoncompat.Object, firstUser bool) string {
+	body.Reset()
+	body.WriteString(key)
+	writeScalar := func(value any) {
+		switch v := value.(type) {
+		case string:
+			body.WriteString("s")
+			body.WriteString(strconv.Itoa(len(v)))
+			body.WriteString(":")
+			body.WriteString(v)
+		case json.Number:
+			body.WriteString("d")
+			body.WriteString(v.String())
+		case bool:
+			if v {
+				body.WriteString("b1")
+			} else {
+				body.WriteString("b0")
+			}
+		case nil:
+			body.WriteString("n")
+		default:
+			body.WriteString("o")
+			body.Write(jsoncompat.EncodeCompact(value))
+		}
+	}
+	for _, field := range rowWhitelist {
+		if value, ok := message.Get(field); ok {
+			body.WriteString("\x00w")
+			writeScalar(value)
+		} else {
+			body.WriteString("\x00-")
+		}
+	}
+	if entries, ok := message.Get("entries"); ok && jsoncompat.Truthy(entries) {
+		body.WriteString("\x00e")
+		body.Write(jsoncompat.EncodeCompact(entries))
+	}
+	if attachments, ok := message.Get("attachments"); ok && jsoncompat.Truthy(attachments) {
+		if _, isArray := attachments.(*jsoncompat.Array); isArray {
+			body.WriteString("\x00a")
+			body.Write(jsoncompat.EncodeCompact(attachments))
+		}
+	}
+	// Structured per-file results ride the fingerprint too: a later
+	// tool_call_update that only adds diff blocks (or a command's final
+	// exitCode) must invalidate row reuse, or the phone keeps stale enc.
+	if value, ok := message.Get("exitCode"); ok {
+		body.WriteString("\x00x")
+		writeScalar(value)
+	}
+	if changes, ok := message.Get("changes"); ok && jsoncompat.Truthy(changes) {
+		body.WriteString("\x00g")
+		body.Write(jsoncompat.EncodeCompact(changes))
+	}
+	body.WriteString("\x00t")
+	writeScalar(turn.MustGet("status"))
+	actionable, ok := turn.Get("actionable")
+	if !ok {
+		actionable = true
+	}
+	body.WriteString("\x00c")
+	writeScalar(actionable)
+	if firstUser {
+		body.WriteString("\x00f1")
+	} else {
+		body.WriteString("\x00f0")
+	}
+	return body.String()
+}
+
+// fingerprintErrorBody covers turn error rows: the key already pins turnID
+// and the error identity; the failure value is the only remaining input.
+func fingerprintErrorBody(body *strings.Builder, key string, failure any) string {
+	body.Reset()
+	body.WriteString(key)
+	body.WriteString("\x00x")
+	if text, ok := failure.(string); ok {
+		body.WriteString("s")
+		body.WriteString(strconv.Itoa(len(text)))
+		body.WriteString(":")
+		body.WriteString(text)
+	} else {
+		body.WriteString("o")
+		body.Write(jsoncompat.EncodeCompact(failure))
+	}
+	return body.String()
+}
+
+// appendDelta reports the appended tail when current continues prev as pure
+// text growth: identical record inputs apart from the text (bodies equal),
+// the old text a strict prefix of the new one, neither side truncated by the
+// preview budget, and the tail within deltaMaxAppend bytes.
+func appendDelta(prev *row, text, version string, truncated, activity bool, fpBody string) string {
+	if activity || truncated || version == prev.version || fpBody != prev.fp.body {
+		return ""
+	}
+	if !strings.HasPrefix(text, prev.text) {
+		return ""
+	}
+	growth := len(text) - len(prev.text)
+	if growth <= 0 || growth > deltaMaxAppend {
+		return ""
+	}
+	if runeLen(prev.text) > TextPreview {
+		return ""
+	}
+	return text[len(text)-growth:]
 }
 
 // boundedChanges bounds one message's structured change entries for the row
