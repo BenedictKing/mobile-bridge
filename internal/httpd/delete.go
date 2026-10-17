@@ -137,9 +137,7 @@ func (h *handler) finishSessionDelete(threadID string, result *jsoncompat.Object
 	if h.server.Queue != nil {
 		h.server.Queue.forgetThread(threadID)
 	}
-	h.server.historyMu.Lock()
-	delete(h.server.historyTL, threadID)
-	h.server.historyMu.Unlock()
+	h.server.dropProjection(threadID)
 	if discovery := h.server.discovery; discovery != nil {
 		go discovery.refresh()
 	}

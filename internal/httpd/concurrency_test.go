@@ -1,6 +1,6 @@
 // Concurrency stress: the production fatal ("concurrent map read and map
 // write") came from one goroutine folding the shared per-thread projection
-// under historyMu while another read Timeline internals without it (SSE
+// under the projection lock while another read Timeline internals without it (SSE
 // incremental readers, message-action validation). This file drives that
 // topology end-to-end over the real HTTP surface — a codex follower snapshot
 // producer racing HTTP timeline/changes/detail readers, message-action probes

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strconv"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
@@ -233,20 +232,8 @@ func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
 	}
 	_, _ = s.Codex.Watch(threadID, 1500*time.Millisecond)
 	state, sequence, connected, connectionError := s.Codex.Snapshot(threadID)
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
-	projection := s.historyTL[threadID]
 	if state == nil {
-		if projection == nil {
-			return "", 0, false
-		}
-		current := projection.State()
-		parsed, _ := strconv.Atoi(current.Sequence)
-		return current.Epoch, parsed, true
-	}
-	if projection == nil {
-		projection = timeline.New(nil)
-		s.historyTL[threadID] = projection
+		return s.projectionState(threadID)
 	}
 	view := model.NormalizeState(state, connected)
 	// Must match liveView's annotation exactly: both fold the same shared
@@ -262,39 +249,7 @@ func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
 	view.Set("agent", "codex")
 	view.Set("capabilities", s.codexCapabilities())
 	s.codexSubagentView(threadID, view)
-	projection.Update(view)
-	current := projection.State()
-	parsed, _ := strconv.Atoi(current.Sequence)
-	return current.Epoch, parsed, true
-}
-
-// foldProjection updates the shared per-thread timeline projection under the
-// history lock and reports its epoch/sequence.
-func (s *Server) foldProjection(threadID string, view *jsoncompat.Object) (string, int, bool) {
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
-	projection := s.historyTL[threadID]
-	if projection == nil {
-		projection = timeline.New(nil)
-		s.historyTL[threadID] = projection
-	}
-	projection.Update(view)
-	current := projection.State()
-	parsed, _ := strconv.Atoi(current.Sequence)
-	return current.Epoch, parsed, true
-}
-
-// projectionState reports the existing projection without folding a new view
-// (used when an ACP thread is owned but temporarily unopenable).
-func (s *Server) projectionState(threadID string) (string, int, bool) {
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
-	if projection := s.historyTL[threadID]; projection != nil {
-		current := projection.State()
-		parsed, _ := strconv.Atoi(current.Sequence)
-		return current.Epoch, parsed, true
-	}
-	return "", 0, false
+	return s.foldProjection(threadID, view)
 }
 
 // codexSubagentView decorates a codex view with on-disk child agents

@@ -33,7 +33,6 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
-	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
 )
@@ -93,8 +92,8 @@ type Server struct {
 	Account         *account.Manager
 	Goal            *goal.Manager
 	queueMu         sync.Mutex // serializes queue dispatch passes
-	historyMu       sync.Mutex
-	historyTL       map[string]*timeline.Timeline
+	projectionsMu   sync.Mutex
+	projections     map[string]*projectionSlot // per-thread timeline + lock
 	artifactMu      sync.Mutex
 	artifactCache   map[string]*artifactMemo
 	desktopMu       sync.Mutex
@@ -113,7 +112,7 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
 			"http://localhost:" + strconv.Itoa(port): true},
 		SecureHosts: map[string]bool{},
-		Pairing:     pairing.New(nil), historyTL: map[string]*timeline.Timeline{},
+		Pairing:     pairing.New(nil), projections: map[string]*projectionSlot{},
 		artifactCache: map[string]*artifactMemo{}, desktopPaths: map[string]map[string]string{}}
 	server.Bridge = server
 	return server

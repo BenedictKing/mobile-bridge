@@ -356,14 +356,19 @@ func (h *handler) handleCodexMessageAction(threadID, acpKind string, body *jsonc
 		return
 	}
 	_, _, _ = h.server.refreshLiveProjection(threadID)
-	// The projection is shared with every other live-timeline reader and the
-	// SSE incremental loop; its internals mutate under historyMu. The
-	// validation must hold the same lock or a concurrent projection rebuild
-	// races the cursor/version reads (a process-fatal map read/write).
-	h.server.historyMu.Lock()
-	row, rowErr := validateMessageEdit(h.server.historyTL[threadID],
-		stringField(body, "version"), key)
-	h.server.historyMu.Unlock()
+	// Read the row under the thread's slot lock: the SSE loop may fold a new
+	// generation concurrently, and Row/MetaSnapshot must observe one. The
+	// lock covers only the validation — the edit RPC below must not stall
+	// this thread's live folds.
+	var row *jsoncompat.Object
+	var rowErr string
+	if slot := h.server.lookupProjection(threadID); slot != nil {
+		slot.mu.Lock()
+		row, rowErr = validateMessageEdit(slot.timeline, stringField(body, "version"), key)
+		slot.mu.Unlock()
+	} else {
+		row, rowErr = validateMessageEdit(nil, stringField(body, "version"), key)
+	}
 	if rowErr != "" {
 		h.fail(http.StatusBadRequest, errorBody(rowErr))
 		return
@@ -502,10 +507,17 @@ func (h *handler) handleCodexForkAction(threadID, action string, body *jsoncompa
 		return
 	}
 	_, _, _ = h.server.refreshLiveProjection(threadID)
-	h.server.historyMu.Lock()
-	projection := h.server.historyTL[threadID]
-	h.server.historyMu.Unlock()
-	row, rowErr := validateMessageFork(projection, stringField(body, "version"), key)
+	// Same discipline as the edit path: validate under the thread's slot
+	// lock, release before the fork RPC.
+	var row *jsoncompat.Object
+	var rowErr string
+	if slot := h.server.lookupProjection(threadID); slot != nil {
+		slot.mu.Lock()
+		row, rowErr = validateMessageFork(slot.timeline, stringField(body, "version"), key)
+		slot.mu.Unlock()
+	} else {
+		row, rowErr = validateMessageFork(nil, stringField(body, "version"), key)
+	}
 	if rowErr != "" {
 		h.fail(http.StatusBadRequest, errorBody(rowErr))
 		return

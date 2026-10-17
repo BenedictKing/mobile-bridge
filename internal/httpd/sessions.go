@@ -23,7 +23,6 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
-	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
 )
@@ -988,19 +987,18 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 }
 
 // liveTimeline projects a live view (codex follower or ACP snapshot) through
-// the shared per-thread projection so HTTP cursors stay valid.
+// the shared per-thread projection so HTTP cursors stay valid. The thread's
+// own slot lock serializes Update/SetMeta with the Page/Changes/Detail/Deltas
+// reads; other threads fold concurrently.
 func (h *handler) liveTimeline(threadID, action string, query map[string][]string) (any, bool, error) {
 	view, kind, ok := h.liveView(threadID)
 	if !ok {
 		return nil, false, nil
 	}
-	h.server.historyMu.Lock()
-	defer h.server.historyMu.Unlock()
-	projection := h.server.historyTL[threadID]
-	if projection == nil {
-		projection = timeline.New(nil)
-		h.server.historyTL[threadID] = projection
-	}
+	slot := h.server.projectionSlotFor(threadID)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	projection := slot.timeline
 	projection.Update(view)
 	projection.SetMeta("host", "local")
 	if kind != "" {
@@ -1063,13 +1061,10 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	view.Set("capabilities", h.server.codexCapabilities())
 	h.server.codexSubagentView(threadID, view)
 
-	h.server.historyMu.Lock()
-	defer h.server.historyMu.Unlock()
-	projection := h.server.historyTL[threadID]
-	if projection == nil {
-		projection = timeline.New(nil)
-		h.server.historyTL[threadID] = projection
-	}
+	slot := h.server.projectionSlotFor(threadID)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	projection := slot.timeline
 	projection.Update(view)
 	projection.SetMeta("host", "local")
 	projection.SetMeta("agent", "codex")

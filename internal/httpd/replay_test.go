@@ -2,7 +2,7 @@
 // interleaving of live view updates — out-of-order tool_call_update, repeated
 // stream chunks, cancelled turns, plan set/clear — against concurrent
 // timeline Page/Changes/Detail readers, replaying exactly the fold/read
-// boundary liveTimeline uses (foldProjection under historyMu, clones out).
+// boundary liveTimeline uses (foldProjection under the per-thread slot lock, clones out).
 // A failing base seed is printed; MOBILE_BRIDGE_RACE_SEED=<n> replays it.
 package httpd
 
@@ -211,35 +211,35 @@ func (h *replayHarness) endTurnCancelled() {
 }
 
 // readPage/readChanges/readDetail replicate the locked tail of liveTimeline:
-// projection methods are only ever called under historyMu.
+// projection methods are only ever called under the thread's slot lock.
 func (h *replayHarness) readPage(limit int, before string) *jsoncompat.Object {
-	h.server.historyMu.Lock()
-	defer h.server.historyMu.Unlock()
-	projection := h.server.historyTL[h.threadID]
-	if projection == nil {
+	slot := h.server.lookupProjection(h.threadID)
+	if slot == nil {
 		return nil
 	}
-	return projection.Page(limit, before)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	return slot.timeline.Page(limit, before)
 }
 
 func (h *replayHarness) readChanges(after, epoch, start string) *jsoncompat.Object {
-	h.server.historyMu.Lock()
-	defer h.server.historyMu.Unlock()
-	projection := h.server.historyTL[h.threadID]
-	if projection == nil {
+	slot := h.server.lookupProjection(h.threadID)
+	if slot == nil {
 		return nil
 	}
-	return projection.Changes(after, epoch, start)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	return slot.timeline.Changes(after, epoch, start)
 }
 
 func (h *replayHarness) readDetail(cursor string, offset int, version any) (*jsoncompat.Object, error) {
-	h.server.historyMu.Lock()
-	defer h.server.historyMu.Unlock()
-	projection := h.server.historyTL[h.threadID]
-	if projection == nil {
+	slot := h.server.lookupProjection(h.threadID)
+	if slot == nil {
 		return nil, nil
 	}
-	return projection.Detail(cursor, offset, version)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	return slot.timeline.Detail(cursor, offset, version)
 }
 
 // TestReplayCursorSemantics pins the deterministic cursor contract before the
