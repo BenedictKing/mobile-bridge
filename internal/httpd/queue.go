@@ -12,8 +12,10 @@ package httpd
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -567,9 +569,21 @@ func (s *Server) StartQueueWorker() {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			s.dispatchQueuedPass()
+			s.safeDispatchQueuedPass()
 		}
 	}()
+}
+
+// safeDispatchQueuedPass keeps one bad dispatch from killing the gateway: a
+// panic in this background loop is process-fatal, so it is recovered and
+// logged — the next tick retries whatever is still queued.
+func (s *Server) safeDispatchQueuedPass() {
+	defer func() {
+		if problem := recover(); problem != nil {
+			log.Printf("排队派发异常（已恢复，下个周期重试）: %v\n%s", problem, debug.Stack())
+		}
+	}()
+	s.dispatchQueuedPass()
 }
 
 func (s *Server) dispatchQueuedPass() {

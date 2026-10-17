@@ -1086,6 +1086,13 @@ func stringField(object *jsoncompat.Object, key string) string {
 }
 
 func findCategory(options *jsoncompat.Array, category string) *jsoncompat.Object {
+	if options == nil {
+		// Agents that advertise neither modes nor config options leave the
+		// session without any mode surface; callers treat nil as "no such
+		// category" instead of dereferencing it (a nil here used to take the
+		// whole gateway down from the queue worker).
+		return nil
+	}
 	for _, item := range options.Items {
 		option, ok := item.(*jsoncompat.Object)
 		if !ok {

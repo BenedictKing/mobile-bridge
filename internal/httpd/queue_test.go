@@ -416,3 +416,11 @@ func recordedFile(dir, name string) string {
 }
 
 var _ = json.Marshal
+
+// A panicking dispatch pass must never take the gateway down: the background
+// worker recovers and the next tick retries (a nil Queue used to be
+// process-fatal from the ticker goroutine).
+func TestSafeDispatchQueuedPassRecovers(t *testing.T) {
+	server := &Server{}
+	server.safeDispatchQueuedPass() // s.Queue is nil: panics inside, recovers
+}
