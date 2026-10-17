@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -304,7 +305,7 @@ var (
 
 // handleCodexMessageAction serves POST message-action. The in-place edit
 // (latest user turn only) replays through the follower IPC; fork and
-// edit-fork need the app-server fork runtime and stay unsupported here.
+// edit-fork copy the thread through the app-server's thread/fork.
 func (h *handler) handleCodexMessageAction(threadID, acpKind string, body *jsoncompat.Object) {
 	action := stringField(body, "action")
 	identifier := stringField(body, "id")
@@ -321,7 +322,7 @@ func (h *handler) handleCodexMessageAction(threadID, acpKind string, body *jsonc
 		return
 	}
 	if action != "edit" {
-		h.fail(http.StatusConflict, errorBody("当前 Go 网关暂不支持分支操作，请在电脑 App 中进行"))
+		h.handleCodexForkAction(threadID, action, body)
 		return
 	}
 	text := stringField(body, "text")
@@ -392,4 +393,186 @@ func (h *handler) handleCodexMessageAction(threadID, acpKind string, body *jsonc
 		version: body.MustGet("version"), source: threadID, text: text, result: result}
 	messageActionMu.Unlock()
 	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// objectOf narrows a JSON value to an object (nil when it is not one).
+func objectOf(value any) *jsoncompat.Object {
+	object, _ := value.(*jsoncompat.Object)
+	return object
+}
+
+// validateMessageFork runs the fork-side row checks from Python's
+// message_action: the cursor row must exist, match the client's version, be
+// a forkable user turn and have finished (thread/fork refuses in-progress
+// turn boundaries).
+func validateMessageFork(projection *timeline.Timeline, version, key string) (*jsoncompat.Object, string) {
+	if projection == nil {
+		return nil, "消息位置已变化，请刷新后重试"
+	}
+	row := projection.Row(key)
+	if row == nil {
+		return nil, "消息位置已变化，请刷新后重试"
+	}
+	if rowVersion, _ := row.MustGet("version").(string); rowVersion != version {
+		return nil, "消息内容已变化，请重新打开编辑"
+	}
+	if forkable, ok := row.MustGet("forkable").(bool); !ok || !forkable {
+		return nil, "此消息不支持该操作"
+	}
+	if turnStatus, _ := row.MustGet("turnStatus").(string); turnStatus == "inProgress" {
+		return nil, "请先停止当前任务，再编辑或分支"
+	}
+	return row, ""
+}
+
+// codexForkSettings mirrors the Codex adapter's fork_settings: the fork
+// carries the source thread's provider, model, reasoning effort, service
+// tier and permission profile so the branch behaves like the original.
+func codexForkSettings(state *jsoncompat.Object) (map[string]any, error) {
+	provider, _ := state.MustGet("modelProvider").(string)
+	modelName, _ := state.MustGet("latestModel").(string)
+	if provider == "" || modelName == "" {
+		return nil, errors.New("尚未取得原会话的模型配置，请重新连接")
+	}
+	settings := map[string]any{"modelProvider": provider, "model": modelName}
+	effort, _ := state.MustGet("latestReasoningEffort").(string)
+	latest := objectOf(state.MustGet("latestThreadSettings"))
+	if effort == "" && latest != nil {
+		effort, _ = latest.MustGet("effort").(string)
+	}
+	if effort != "" {
+		settings["config"] = map[string]any{"model_reasoning_effort": effort}
+	}
+	if latest != nil {
+		if tier, _ := latest.MustGet("serviceTier").(string); tier != "" {
+			settings["serviceTier"] = tier
+		}
+	}
+	permissions := objectOf(state.MustGet("currentPermissions"))
+	if permissions != nil {
+		if profile := objectOf(permissions.MustGet("activePermissionProfile")); profile != nil {
+			if id, _ := profile.MustGet("id").(string); id != "" {
+				settings["permissions"] = id
+			}
+		}
+		for _, key := range []string{"approvalPolicy", "approvalsReviewer", "runtimeWorkspaceRoots"} {
+			if value, ok := permissions.Get(key); ok && value != nil {
+				settings[key] = value
+			}
+		}
+	}
+	return settings, nil
+}
+
+// handleCodexForkAction serves the fork / edit-fork message actions: the
+// app-server copies the thread up to the chosen turn into a new persisted
+// chat; edit-fork then replaces the copy's last user turn through the
+// follower IPC once a desktop owner is attached. An edit that cannot reach a
+// owner yet returns the draft (the phone retries it after opening the chat).
+func (h *handler) handleCodexForkAction(threadID, action string, body *jsoncompat.Object) {
+	if h.server.Codex == nil {
+		h.fail(http.StatusConflict, errorBody("当前网关没有 Codex 会话来源"))
+		return
+	}
+	identifier := stringField(body, "id")
+	key := stringField(body, "key")
+	text := stringField(body, "text")
+	if action != "fork" && (strings.TrimSpace(text) == "" || utf8.RuneCountInString(text) > 100000) {
+		h.fail(http.StatusBadRequest, errorBody("请输入 1–100000 字的消息"))
+		return
+	}
+	messageActionMu.Lock()
+	if prior, known := messageActionKnown[identifier]; known {
+		same := prior.action == action && prior.key == key && prior.version == body.MustGet("version") &&
+			prior.source == threadID && prior.text == text
+		result := prior.result
+		messageActionMu.Unlock()
+		if !same {
+			h.fail(http.StatusBadRequest, errorBody("同一操作标识不能用于不同内容"))
+			return
+		}
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return
+	}
+	messageActionMu.Unlock()
+
+	view, _, ok := h.liveView(threadID)
+	if !ok {
+		h.fail(http.StatusConflict, errorBody("找不到这个会话，请稍后刷新列表"))
+		return
+	}
+	_, _, _ = h.server.refreshLiveProjection(threadID)
+	h.server.historyMu.Lock()
+	projection := h.server.historyTL[threadID]
+	h.server.historyMu.Unlock()
+	row, rowErr := validateMessageFork(projection, stringField(body, "version"), key)
+	if rowErr != "" {
+		h.fail(http.StatusBadRequest, errorBody(rowErr))
+		return
+	}
+	turnID, _ := row.MustGet("turnId").(string)
+	rawState, _, _, _ := h.server.Codex.Snapshot(threadID)
+	if rawState == nil {
+		rawState = jsoncompat.NewObject()
+	}
+	settings, settingsErr := codexForkSettings(rawState)
+	if settingsErr != nil {
+		h.fail(http.StatusConflict, errorBody(settingsErr.Error()))
+		return
+	}
+	cwd, _ := view.MustGet("cwd").(string)
+	sourceTitle := stringField(view, "title")
+	if strings.TrimSpace(sourceTitle) == "" {
+		sourceTitle = "未命名聊天"
+	}
+	childTitle := truncateSubText(sourceTitle, 90) + " · 分支"
+	child, forkErr := h.server.Codex.ForkThread(threadID, turnID, cwd, childTitle, settings)
+	if forkErr != nil {
+		h.fail(http.StatusConflict, errorBody(forkErr.Error()))
+		return
+	}
+	if h.server.Forks != nil {
+		h.server.Forks.Record(child, forkOrigin{ID: threadID, Host: "local", Title: sourceTitle})
+	}
+	source := jsoncompat.NewObject()
+	source.Set("id", threadID)
+	source.Set("title", sourceTitle)
+	source.Set("turnId", turnID)
+	result := jsoncompat.NewObject()
+	result.Set("id", child)
+	result.Set("host", "local")
+	result.Set("action", action)
+	result.Set("source", source)
+	if action == "fork" {
+		result.Set("status", "created")
+		result.Set("draft", nil)
+	} else if _, editErr := h.editForkChildTurn(child, turnID, text); editErr == nil {
+		result.Set("status", "accepted")
+		result.Set("draft", nil)
+	} else {
+		// The branch exists but no desktop owner accepted the replacement
+		// yet; the phone keeps the text as an edit draft on the child.
+		result.Set("status", "unknown")
+		result.Set("draft", text)
+	}
+	messageActionMu.Lock()
+	messageActionKnown[identifier] = &messageActionEntry{action: action, key: key,
+		version: body.MustGet("version"), source: threadID, text: text, result: result}
+	messageActionMu.Unlock()
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// editForkChildTurn pushes the replacement text into the branched thread.
+// The fork was minted by a short-lived app-server, so the desktop App only
+// owns it after the user opens the chat — until then this reports failure
+// and the draft flows back to the phone.
+func (h *handler) editForkChildTurn(childID, turnID, text string) (bool, error) {
+	session, err := h.server.Codex.Watch(childID, 1500*time.Millisecond)
+	if err != nil || session == nil || session.Owner == "" {
+		return false, errors.New("请先在桌面 App 打开此聊天")
+	}
+	if _, callErr := h.server.Codex.EditLastUserTurn(childID, turnID, text, ""); callErr != nil {
+		return false, callErr
+	}
+	return true, nil
 }

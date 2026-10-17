@@ -83,6 +83,11 @@ func (s *Server) resolveACP(threadID string) acpResolution {
 	if len(agents) == 0 || threadID == "" {
 		return acpResolution{}
 	}
+	// A deleted (hidden) session loses ownership: reads fall through and the
+	// agent process is never respawned for it.
+	if s.Hidden.Hidden(threadID) {
+		return acpResolution{}
+	}
 	kinds := make([]string, 0, len(agents))
 	for kind := range agents {
 		kinds = append(kinds, kind)
@@ -168,11 +173,11 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 }
 
 // codexCapabilities mirrors the CodexAdapter capability set minus the
-// surfaces the Go gateway has not ported yet (fork branches and the native
-// goal send path); each entry re-enables a phone control that reads it from
-// the timeline meta.
+// surfaces the Go gateway has not ported yet (the native goal send path);
+// each entry re-enables a phone control that reads it from the timeline
+// meta. Fork branches work through the app-server's thread/fork.
 func (s *Server) codexCapabilities() *jsoncompat.Array {
-	items := []string{"accounts", "editMessage", "fastMode", "fullHistory",
+	items := []string{"accounts", "editMessage", "fastMode", "fork", "fullHistory",
 		"notificationScan", "rename", "serviceTier", "skills", "steer"}
 	array := &jsoncompat.Array{}
 	for _, item := range items {
@@ -307,6 +312,9 @@ func (s *Server) codexSubagentView(threadID string, view *jsoncompat.Object) {
 }
 
 func (s *Server) View(threadID string) any {
+	if s.Hidden.Hidden(threadID) {
+		return jsoncompat.NewObject()
+	}
 	if resolution := s.resolveACP(threadID); resolution.manager != nil && resolution.session != nil {
 		return s.acpViewState(resolution.kind, resolution.manager, resolution.session)
 	}

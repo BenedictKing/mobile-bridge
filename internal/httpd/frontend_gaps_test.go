@@ -183,12 +183,14 @@ func TestCodexCapabilitiesExcludeUnported(t *testing.T) {
 	caps := server.codexCapabilities()
 	body := string(jsoncompat.EncodePythonDefault(caps))
 	for _, needle := range []string{"steer", "skills", "rename", "editMessage", "fastMode",
-		"fullHistory", "serviceTier", "accounts", "notificationScan"} {
+		"fullHistory", "serviceTier", "accounts", "notificationScan", "fork"} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("caps missing %s: %s", needle, body)
 		}
 	}
-	if strings.Contains(body, "goals") || strings.Contains(body, "fork") {
+	// The native goal send path stays unported; fork branches work through
+	// the app-server's thread/fork and are advertised again for codex only.
+	if strings.Contains(body, "goals") {
 		t.Fatalf("unported caps leaked: %s", body)
 	}
 }
