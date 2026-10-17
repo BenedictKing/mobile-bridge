@@ -441,8 +441,8 @@ func (s *Server) dispatchCodexSubmission(threadID string, entry *submissionEntry
 		// No desktop IPC: the turn provably never started.
 		return outcomeRequeue, "请先在桌面 App 打开此聊天"
 	}
-	if session.Owner == "" {
-		return outcomeRequeue, session.ErrorOr("请先在桌面 App 打开此聊天")
+	if s.Codex.Owner(session) == "" {
+		return outcomeRequeue, s.Codex.ErrorOr(session, "请先在桌面 App 打开此聊天")
 	}
 	var skills []codex.SkillInput
 	if len(entry.Skills) > 0 {
@@ -492,7 +492,7 @@ func (s *Server) threadConnected(threadID string, resolution acpResolution) bool
 		return false
 	}
 	session, err := s.Codex.Watch(threadID, 1500*time.Millisecond)
-	return err == nil && session != nil && session.Owner != ""
+	return err == nil && session != nil && s.Codex.Owner(session) != ""
 }
 
 // dispatchQueuedThread sends the thread's first queued entry when the agent
@@ -796,7 +796,7 @@ func (h *handler) queueSendNow(threadID, submissionID string) {
 		message := "会话尚未连接，请重新打开"
 		if resolution.manager == nil && h.server.Codex != nil {
 			if session, watchErr := h.server.Codex.Watch(threadID, 1500*time.Millisecond); watchErr == nil && session != nil {
-				message = session.ErrorOr(message)
+				message = h.server.Codex.ErrorOr(session, message)
 			}
 		}
 		h.fail(http.StatusConflict, errorBody(message))

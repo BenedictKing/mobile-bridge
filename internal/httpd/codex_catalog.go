@@ -568,7 +568,7 @@ func (h *handler) handleCodexForkAction(threadID, action string, body *jsoncompa
 // and the draft flows back to the phone.
 func (h *handler) editForkChildTurn(childID, turnID, text string) (bool, error) {
 	session, err := h.server.Codex.Watch(childID, 1500*time.Millisecond)
-	if err != nil || session == nil || session.Owner == "" {
+	if err != nil || session == nil || h.server.Codex.Owner(session) == "" {
 		return false, errors.New("请先在桌面 App 打开此聊天")
 	}
 	if _, callErr := h.server.Codex.EditLastUserTurn(childID, turnID, text, ""); callErr != nil {

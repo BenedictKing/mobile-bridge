@@ -334,6 +334,17 @@ func (b *Bridge) Owner(session *Session) string {
 	return session.Owner
 }
 
+// ErrorOr returns the followed session's recorded connection error, or
+// fallback when none is set — bridge-lock guarded like Owner.
+func (b *Bridge) ErrorOr(session *Session, fallback string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if session.Error != "" {
+		return session.Error
+	}
+	return fallback
+}
+
 // ownerAndError snapshots the fields Call needs before dispatching an
 // operation; both are bridge-lock guarded.
 func (b *Bridge) ownerAndError(session *Session) (string, string) {
