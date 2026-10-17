@@ -27,8 +27,12 @@ type Profile struct {
 
 	// SteerMethod names the steering RPC (dsh/mcode); ModeMap translates the
 	// bridge's plan/default work modes onto the agent's own mode ids.
-	SteerMethod string
-	ModeMap     map[string]string
+	// ModeOptionID names the dialect whose collaboration surface is the config
+	// option with that id (dsh: collaboration_mode — its modes object is a
+	// permission-preset surface).
+	SteerMethod  string
+	ModeMap      map[string]string
+	ModeOptionID string
 }
 
 // Discover probes the machine like run.py's --agents auto. env abstracts
@@ -206,6 +210,7 @@ func dshProfile(env func(string) string, home string) Profile {
 		Capabilities:      []string{"steer", "fork"},
 		EffortMap:         map[string]string{"none": "off", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},
 		SteerMethod:       "_session/steering",
+		ModeOptionID:      "collaboration_mode",
 	}
 }
 

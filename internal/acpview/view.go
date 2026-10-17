@@ -10,18 +10,24 @@ import (
 )
 
 // View mirrors AcpSessionView. now supplies begin_turn's startedAt ms.
+//
+// ModeOption names the dialect whose collaboration surface is a config
+// option id instead of the modes object (dsh: collaboration_mode). For that
+// dialect the modes object and the "mode" config option are permission
+// presets and must never feed the collaboration slot (DshSessionView).
 type View struct {
-	SessionID string
-	Title     any
-	Cwd       any
-	Model     any
-	Thinking  any
-	Mode      any
-	Status    string
-	Turns     []*jsoncompat.Object
-	Requests  []*jsoncompat.Object
-	Commands  []*jsoncompat.Object
-	Now       func() float64
+	SessionID  string
+	Title      any
+	Cwd        any
+	Model      any
+	Thinking   any
+	Mode       any
+	Status     string
+	Turns      []*jsoncompat.Object
+	Requests   []*jsoncompat.Object
+	Commands   []*jsoncompat.Object
+	Now        func() float64
+	ModeOption string
 
 	ordinal   int
 	toolIndex map[string]*jsoncompat.Object
@@ -276,6 +282,12 @@ func (v *View) ApplyConfig(options *jsoncompat.Array, modes *jsoncompat.Object) 
 	for _, optionValue := range orArray(options).Items {
 		v.applyConfigOption(obj(optionValue))
 	}
+	// ModeOption dialects pass modes as permission presets (Python's
+	// DshSessionView called apply_config with modes=None); currentModeId
+	// must not overwrite the collaboration slot.
+	if v.ModeOption != "" {
+		return
+	}
 	if current := getDefault(modes, "currentModeId", nil); jsoncompat.Truthy(current) {
 		v.Mode = current
 	}
@@ -301,6 +313,16 @@ func (v *View) applyConfigOption(option *jsoncompat.Object) {
 	}
 	slot := truthyOr(option.MustGet("category"), option.MustGet("id"))
 	slotText, _ := slot.(string)
+	if v.ModeOption != "" {
+		switch slotText {
+		case "mode":
+			// Permission preset, not the collaboration surface.
+			return
+		case v.ModeOption:
+			v.Mode = value
+			return
+		}
+	}
 	switch slotText {
 	case "model":
 		v.Model = value
@@ -513,6 +535,10 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			}
 		}
 	case "current_mode_update":
+		if v.ModeOption != "" {
+			// Permission preset change, not a collaboration mode.
+			return
+		}
 		if mode := getDefault(update, "currentModeId", nil); jsoncompat.Truthy(mode) {
 			v.Mode = mode
 		}

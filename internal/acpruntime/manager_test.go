@@ -235,6 +235,103 @@ for line in sys.stdin:
 	}
 }
 
+// dsh-shaped agent: the modes object and the "mode" config option are
+// permission presets; the collaboration surface is the collaboration_mode
+// config option, and session/set_mode must never be called.
+func TestSetModeRoutesToDialectModeOption(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	options := `[{"id":"mode","category":"mode","currentValue":"workspace-write","options":[{"value":"read-only"},{"value":"workspace-write"},{"value":"danger-full-access"}]},` +
+		`{"id":"collaboration_mode","currentValue":"default","options":[{"value":"default"},{"value":"plan"}]}]`
+	modes := `{"currentModeId":"workspace-write","availableModes":[{"id":"read-only"},{"id":"workspace-write"},{"id":"danger-full-access"}]}`
+	script := `import json,sys
+OPTIONS=json.loads('` + options + `')
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new": result={"sessionId":"sess-dsh","modes":json.loads('` + modes + `'),"configOptions":OPTIONS}
+ elif method == "session/set_config_option":
+  if m.get("params",{}).get("configId") != "collaboration_mode":
+   result={"error":{"code":-32602,"message":"unexpected configId"}}
+  else:
+   option={"id":"collaboration_mode","currentValue":m.get("params",{}).get("value"),"options":[{"value":"default"},{"value":"plan"}]}
+   result={"configOptions":[option]}
+ elif method == "session/set_mode":
+  result={"error":{"code":-32601,"message":"session/set_mode must not be called"}}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.ModeOptionID = "collaboration_mode"
+	defer manager.Close()
+	session, err := manager.Create("seed", "/work", "dsh 会话", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := session.Snapshot().MustGet("collaborationMode"); mode != "default" {
+		t.Fatalf("initial collaboration mode=%v (permission preset leaked?)", mode)
+	}
+	// Already current: succeeds without touching the agent.
+	if err := session.SetMode("default"); err != nil {
+		t.Fatalf("no-op set: %v", err)
+	}
+	if err := session.SetMode("plan"); err != nil {
+		t.Fatalf("switch to plan: %v", err)
+	}
+	if mode := session.Snapshot().MustGet("collaborationMode"); mode != "plan" {
+		t.Fatalf("collaboration mode after switch=%v", mode)
+	}
+	if err := session.SetMode("default"); err != nil {
+		t.Fatalf("switch back to default: %v", err)
+	}
+	if mode := session.Snapshot().MustGet("collaborationMode"); mode != "default" {
+		t.Fatalf("collaboration mode after switch back=%v", mode)
+	}
+	if err := session.SetMode("danger-full-access"); err == nil {
+		t.Fatal("permission preset id accepted as a collaboration mode")
+	}
+}
+
+// dsh only advertises collaboration_mode while its runtime carries a plan
+// command; without the option the original refusal stands even though the
+// permission-preset modes object exists.
+func TestSetModeDialectOptionMissingRefused(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	options := `[{"id":"mode","category":"mode","currentValue":"workspace-write","options":[{"value":"read-only"},{"value":"workspace-write"},{"value":"danger-full-access"}]}]`
+	modes := `{"currentModeId":"workspace-write","availableModes":[{"id":"read-only"},{"id":"workspace-write"},{"id":"danger-full-access"}]}`
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new": result={"sessionId":"sess-dsh2","modes":json.loads('` + modes + `'),"configOptions":json.loads('` + options + `')}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.ModeOptionID = "collaboration_mode"
+	defer manager.Close()
+	session, err := manager.Create("seed", "/work", "dsh 会话", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetMode("default"); err == nil || err.Error() != "当前 Agent 不支持此工作模式" {
+		t.Fatalf("missing collaboration_mode must refuse, got %v", err)
+	}
+}
+
 func TestSessionFoldsUpdatesAndRequests(t *testing.T) {
 	session := &Session{ID: "sess-1", View: acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, changed: make(chan struct{})}
 	update := jsoncompat.NewObject()

@@ -37,6 +37,9 @@ type Session struct {
 	sequence      int
 	configOptions *jsoncompat.Array
 	modes         *jsoncompat.Object
+	// modeOptionID mirrors Manager.ModeOptionID: non-empty routes SetMode to
+	// that config option (dsh's collaboration_mode).
+	modeOptionID string
 	// lastActivity moves on every agent signal (streamed updates, reverse
 	// requests); the prompt idle timeout measures against it.
 	lastActivity time.Time
@@ -97,6 +100,14 @@ type Manager struct {
 	// (zcode: default→yolo).
 	SteerMethod string
 	ModeMap     map[string]string
+
+	// ModeOptionID names the dialect whose collaboration surface is the
+	// config option with this id instead of the modes object (dsh:
+	// collaboration_mode — its modes object and "mode" option are permission
+	// presets, and it implements neither session/set_mode nor a mode
+	// category). Sessions stamp it at creation so SetMode and the view fold
+	// onto the right surface.
+	ModeOptionID string
 
 	// Subagents decorates this agent's views with on-disk child agents.
 	Subagents Subagents
@@ -353,6 +364,8 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		View: acpview.NewView(id, nil, cwd, m.now), active: true, mediaDir: m.MediaDir, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
+	session.modeOptionID = m.ModeOptionID
+	session.View.ModeOption = m.ModeOptionID
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
 	process.OnClose = session.markProcessClosed
@@ -438,6 +451,8 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 		View: acpview.NewView(id, title, cwd, m.now), active: true, mediaDir: m.MediaDir, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
+	session.modeOptionID = m.ModeOptionID
+	session.View.ModeOption = m.ModeOptionID
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
 	process.OnClose = session.markProcessClosed
@@ -747,7 +762,10 @@ func (s *Session) NoteHumanAction() {
 // SetMode switches the session's work mode (AcpAdapter._set_mode port):
 // the requested id must be advertised, and a no-op when already current.
 // Agents that skip the legacy modes object (opencode advertises modes as a
-// "mode" config option) fall back to session/set_config_option.
+// "mode" config option) fall back to session/set_config_option. Dialects
+// with ModeOptionID (dsh) always route to that named config option — their
+// modes object is a permission-preset surface session/set_mode would flip
+// (DshAdapter._set_mode).
 func (s *Session) SetMode(modeID string) error {
 	// Snapshot the advertised mode facts under the lock: SetMode's own tail
 	// (and the reader goroutine) rewrite the modes object in place, so the
@@ -759,6 +777,7 @@ func (s *Session) SetMode(modeID string) error {
 	}
 	modes := s.modes
 	configOptions := s.configOptions
+	modeOptionID := s.modeOptionID
 	available := []string{}
 	current := ""
 	if modes != nil {
@@ -774,6 +793,15 @@ func (s *Session) SetMode(modeID string) error {
 		current, _ = modes.MustGet("currentModeId").(string)
 	}
 	s.mu.Unlock()
+	if modeOptionID != "" {
+		// dsh advertises collaboration_mode only while its runtime carries a
+		// plan command; absence keeps the original refusal.
+		option := findOption(configOptions, modeOptionID)
+		if option == nil {
+			return errors.New("当前 Agent 不支持此工作模式")
+		}
+		return s.setModeOption(option, modeID)
+	}
 	if modes == nil {
 		if option := findCategory(configOptions, "mode"); option != nil {
 			return s.setModeOption(option, modeID)
@@ -807,8 +835,10 @@ func (s *Session) SetMode(modeID string) error {
 	return nil
 }
 
-// setModeOption switches modes through the "mode" config option for agents
-// without the legacy modes object. The requested id must be advertised.
+// setModeOption switches modes through a config option: the generic "mode"
+// category fallback for agents without the legacy modes object, and the
+// dialect's ModeOptionID surface (dsh collaboration_mode). The requested id
+// must be advertised.
 func (s *Session) setModeOption(option *jsoncompat.Object, modeID string) error {
 	values := optionValues(option)
 	if len(values) > 0 && !values[modeID] {
@@ -1124,6 +1154,24 @@ func findCategory(options *jsoncompat.Array, category string) *jsoncompat.Object
 			slot, _ = option.MustGet("id").(string)
 		}
 		if slot == category {
+			return option
+		}
+	}
+	return nil
+}
+
+// findOption locates the advertised config option whose id is exactly id
+// (dsh's collaboration_mode carries no category).
+func findOption(options *jsoncompat.Array, id string) *jsoncompat.Object {
+	if options == nil {
+		return nil
+	}
+	for _, item := range options.Items {
+		option, ok := item.(*jsoncompat.Object)
+		if !ok {
+			continue
+		}
+		if optionID, _ := option.MustGet("id").(string); optionID == id {
 			return option
 		}
 	}
