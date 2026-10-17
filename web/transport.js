@@ -10,7 +10,7 @@ var BridgeTransport={
   // instead of waiting out a backoff ladder or a silently stalled socket.
   channels:new Set(),
   wake(){for(const wake of [...BridgeTransport.channels])wake();},
-  subscribe(url,{onChanges,onReset,onStatus,cursor}){
+  subscribe(url,{onChanges,onReset,onDelta,onStatus,cursor}){
     let closed=false,failures=0,source=null,timer=null,polling=null,resume=null,lastId='',connecting=false,pacing=false,pollSession=0;
     function stop(){
       closed=true;BridgeTransport.channels.delete(wake);
@@ -61,7 +61,13 @@ var BridgeTransport={
     function sseHandler(kind){
       return message=>{
         lastId=message.lastEventId||lastId;
-        try{const page=JSON.parse(message.data);(kind==='reset'?onReset:onChanges)?.(page);}
+        try{
+          const page=JSON.parse(message.data);
+          // delta frames patch rows in place (timeline.applyDelta); a frame
+          // the timeline cannot apply falls back to a changes re-read there.
+          if(kind==='delta')onDelta?.(page);
+          else (kind==='reset'?onReset:onChanges)?.(page);
+        }
         catch{/* A malformed frame never reaches apply; the next frame re-syncs. */}
       };
     }
@@ -79,6 +85,7 @@ var BridgeTransport={
       source=new EventSource(target);
       source.addEventListener('ready',()=>{failures=0;});
       source.addEventListener('changes',sseHandler('changes'));
+      source.addEventListener('delta',sseHandler('delta'));
       source.addEventListener('reset',sseHandler('reset'));
       source.addEventListener('logout',unauthorized);
       source.onerror=()=>{if(closed||!source)return;source.close();source=null;probe();};

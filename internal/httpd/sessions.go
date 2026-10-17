@@ -1035,6 +1035,14 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 		result, err := projection.Detail(queryValue(query, "key", ""), intQuery(query, "offset", 0), version)
 		return h.server.enrichTimeline(threadID, view, result), true, err
 	}
+	if action == "deltas" {
+		// Additive SSE channel: nil payload means the move is not a pure
+		// append and the caller falls back to the changes frame.
+		if result, ok := projection.Deltas(queryValue(query, "after", "-1")); ok {
+			return h.server.enrichTimeline(threadID, view, result), true, nil
+		}
+		return nil, true, nil
+	}
 	if action == "changes" {
 		return h.server.enrichTimeline(threadID, view,
 			projection.Changes(queryValue(query, "after", "-1"), queryValue(query, "epoch", ""), queryValue(query, "start", ""))), true, nil
@@ -1228,22 +1236,42 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 		if changed {
 			// The same persistent projection the HTTP routes read from,
 			// fed the connection's own cursor (stream_incremental parity).
-			// The scripted conformance bridge has no live projection; it
-			// keeps serving through TimelineRead like it always did.
+			// Pure text appends try the delta channel first — one small
+			// frame instead of whole rows — and every other move keeps the
+			// byte-identical changes/reset fallback. The scripted
+			// conformance bridge has no live projection; it keeps serving
+			// through TimelineRead like it always did.
 			var payload *jsoncompat.Object
-			payloadAny, handled, err := h.liveTimeline(threadID, "changes", map[string][]string{
+			event := "changes"
+			if deltaAny, handled, err := h.liveTimeline(threadID, "deltas", map[string][]string{
 				"after": {strconv.Itoa(sequence)},
-				"epoch": {epoch},
-				"start": {""},
-			})
-			if handled {
-				payload, _ = payloadAny.(*jsoncompat.Object)
-				if err != nil {
-					payload = nil
+			}); handled && err == nil {
+				if delta, ok := deltaAny.(*jsoncompat.Object); ok {
+					if deltaEpoch, _ := delta.MustGet("epoch").(string); deltaEpoch == epoch {
+						payload, event = delta, "delta"
+					}
 				}
-			} else {
-				payload, _ = h.withTimelineAgents(
-					bridge.TimelineRead(threadID, "changes")).(*jsoncompat.Object)
+			}
+			if payload == nil {
+				payloadAny, handled, err := h.liveTimeline(threadID, "changes", map[string][]string{
+					"after": {strconv.Itoa(sequence)},
+					"epoch": {epoch},
+					"start": {""},
+				})
+				if handled {
+					payload, _ = payloadAny.(*jsoncompat.Object)
+					if err != nil {
+						payload = nil
+					}
+				} else {
+					payload, _ = h.withTimelineAgents(
+						bridge.TimelineRead(threadID, "changes")).(*jsoncompat.Object)
+				}
+				if payload != nil {
+					if _, reset := payload.Get("reset"); reset {
+						event = "reset"
+					}
+				}
 			}
 			if payload == nil {
 				h.writeRaw(": heartbeat\n\n")
@@ -1251,10 +1279,6 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 				epochValue, _ := payload.MustGet("epoch").(string)
 				sequenceNumber, _ := payload.MustGet("sequence").(json.Number)
 				parsed, _ := strconv.Atoi(sequenceNumber.String())
-				event := "changes"
-				if _, reset := payload.Get("reset"); reset {
-					event = "reset"
-				}
 				epoch, sequence = epochValue, parsed
 				h.sseFrame(event, payload, epoch+"."+strconv.Itoa(sequence))
 			}

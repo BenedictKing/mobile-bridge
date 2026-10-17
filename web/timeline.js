@@ -130,6 +130,50 @@ class ChatTimeline {
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
     if(reset)requestAnimationFrame(()=>this.fillRecent());
   }
+  // Pure-append delta frames: patch the streamed rows' text in place instead
+  // of re-reading whole rows. The server only sends a delta when every changed
+  // row appends onto the exact version the phone holds; any other shape (and
+  // any row the phone does not hold at prevVersion) falls back to one changes
+  // re-read, so the merge stays keyed+version safe.
+  applyDelta(frame){
+    const anchor=this.capture(),bottom=this.following;
+    const cursor={after:this.sequence,epoch:this.epoch,start:this.before||''};
+    this.sequence=frame.sequence;
+    if(frame.meta){this.meta=frame.meta;this.renderMeta({...frame.meta,files:[...this.files.values()]});}
+    for(const file of frame.files||[])this.files.set(file.id,file);
+    let changed=false,mismatch=false;
+    for(const delta of frame.rows||[]){
+      const entry=this.rows.get(delta.key);
+      if(!entry||entry.row.version!==delta.prevVersion){mismatch=true;continue;}
+      entry.row.text+=delta.append;entry.row.version=delta.version;
+      if(entry.sequence<frame.sequence)entry.sequence=frame.sequence;
+      const cached=this.details.get(delta.key);
+      if(cached){
+        if(cached.version===delta.prevVersion){
+          cached.version=delta.version;
+          if(cached.next===null)cached.text+=delta.append;
+        }else this.details.delete(delta.key);
+      }
+      const stamp=JSON.stringify(entry.row),old=this.nodes.get(delta.key);
+      if(old?.stamp===stamp)continue;
+      const open=old?.node.tagName==='DETAILS'&&old.node.open;
+      const node=this.renderRow(entry.row,open);node.dataset.key=delta.key;
+      node.hidden=!this.rowVisible(entry.row);changed=changed||!node.hidden;
+      if(old)old.node.replaceWith(node);
+      this.nodes.set(delta.key,{node,stamp});
+    }
+    if(mismatch){
+      // The frame is atomic, so the pre-frame cursor re-reads exactly the
+      // rows this delta could not apply; apply merges by key+version.
+      this.read('changes',cursor).then(page=>{
+        if(this.abort.signal.aborted)return;
+        if(page.reset||page.epoch!==this.epoch)this.apply(page,true);
+        else this.apply(page,false);
+      }).catch(()=>{});
+    }
+    this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
+    if(!bottom&&changed){this.newer.textContent=this.pendingRequests?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
+  }
   renderRow(row,open){
     const activity=row.role==='activity',
           planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
@@ -291,8 +335,11 @@ class ChatTimeline {
     // advertises it, changes long-poll on tunnels). The cursor is re-read
     // per request so history expansion never strands a delta, and rows
     // merge by key+version, so no in-flight generation guard is needed.
+    // Delta frames only ever carry appends onto versions this client holds;
+    // applyDelta re-reads changes itself when one does not line up.
     this.subscription=BridgeTransport.subscribe(this.url,{
       onChanges:page=>{if(this.abort.signal.aborted)return;this.apply(page,false);this.fillRecent();},
+      onDelta:frame=>{if(this.abort.signal.aborted)return;this.applyDelta(frame);},
       onReset:page=>{if(this.abort.signal.aborted)return;this.apply(page,true);this.fillRecent();},
       onStatus:text=>{if(!this.abort.signal.aborted)this.status(text==='reconnecting'?timelineText('重新连接中'):text);},
       cursor:()=>({after:this.sequence,epoch:this.epoch,start:this.before||''})
