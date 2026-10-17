@@ -182,6 +182,16 @@ func (q *submissions) failEntry(threadID, submissionID, message string) {
 
 // meta mirrors _submission_meta: queued/unknown/failed rows in ledger order,
 // shaped for the phone's renderQueue (status/text/error/attachments/editable).
+// markCancelled retires a still-queued entry (goal activation turns whose
+// goal command was confirmed cancelled).
+func (q *submissions) markCancelled(threadID, submissionID string) {
+	q.mutate(threadID, submissionID, func(entry *submissionEntry) {
+		if entry.Status == SubQueued {
+			entry.Status = SubCancelled
+		}
+	})
+}
+
 func (q *submissions) meta(threadID string) *jsoncompat.Array {
 	rows := &jsoncompat.Array{}
 	q.mu.Lock()
@@ -652,6 +662,7 @@ type submissionPayload struct {
 	workMode    string
 	skills      []string
 	attachments []string
+	uiLocale    string
 }
 
 // readSubmissionPayload extracts the composer fields shared by the codex and
@@ -663,6 +674,7 @@ func readSubmissionPayload(body *jsoncompat.Object) submissionPayload {
 		mode:     stringField(body, "mode"),
 		workMode: stringField(body, "workMode"),
 		skills:   bodyList(body, "skills"),
+		uiLocale: stringField(body, "uiLocale"),
 	}
 	// Python's send defaults mode="send"; an omitted mode is a plain send.
 	if payload.mode == "" {

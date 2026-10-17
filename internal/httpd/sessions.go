@@ -20,6 +20,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
+	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
@@ -406,6 +407,13 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			id, _ := body.(*jsoncompat.Object).MustGet("id").(string)
 			mode, _ := body.(*jsoncompat.Object).MustGet("mode").(string)
 			workMode, _ := body.(*jsoncompat.Object).MustGet("workMode").(string)
+			if workMode == "goal" {
+				// Native goals: command ledger + sidecar write + activation
+				// turn, replacing a plain prompt entirely (the activation
+				// itself rides the queue ledger separately).
+				h.handleGoalCreate(threadID, readSubmissionPayload(body.(*jsoncompat.Object)))
+				return true
+			}
 			// Queue semantics (Python send): mode "queue" joins the durable
 			// ledger and returns immediately; a direct send records first so
 			// a retried request is a duplicate, never a double turn.
@@ -855,30 +863,50 @@ func (h *handler) handleGoalHTTP(write bool, path string) bool {
 	}
 	body := value.(*jsoncompat.Object)
 	threadID, action := match[1], match[2]
+	threadPayload := readSubmissionPayload(body)
+	objective, _ := body.MustGet("objective").(string)
+	status, _ := body.MustGet("status").(string)
+	// Control actions reuse the send chain's command machine: plan against
+	// the authoritative goal state, sidecar write, confirm. Deterministic
+	// request ids keep retries idempotent per intent.
+	var actionVerb string
 	switch action {
 	case "cancel":
-		if err := h.server.Goal.Clear(threadID); err != nil {
-			h.fail(http.StatusConflict, errorBody(err.Error()))
-		} else {
-			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
-		}
+		actionVerb = "cancel"
 	case "edit":
-		objective, _ := body.MustGet("objective").(string)
-		result, callErr := h.server.Goal.Set(threadID, objective, "paused")
-		if callErr != nil {
-			h.fail(http.StatusConflict, errorBody(callErr.Error()))
-		} else {
-			h.output(http.StatusOK, result, contentTypeJSON, "")
-		}
+		actionVerb = "edit"
 	case "status":
-		status, _ := body.MustGet("status").(string)
-		result, callErr := h.server.Goal.Set(threadID, "", status)
-		if callErr != nil {
-			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		if status == "paused" {
+			actionVerb = "pause"
 		} else {
-			h.output(http.StatusOK, result, contentTypeJSON, "")
+			actionVerb = "resume"
 		}
 	}
+	if objective == "" {
+		if native := goal.ReadNativeGoal(h.server.Goal.Home, threadID); native != nil {
+			objective, _ = native.MustGet("objective").(string)
+		}
+	}
+	requestID := uuid.NewSHA1(uuid.NameSpaceURL,
+		[]byte("mobile-bridge:goal:"+threadID+":"+actionVerb+":"+objective)).String()
+	outcome, err := h.server.runGoalCommand(threadID, requestID, actionVerb, objective, status, threadPayload.uiLocale)
+	if err != nil && outcome == nil {
+		h.fail(http.StatusConflict, errorBody(err.Error()))
+		return true
+	}
+	if outcome != nil && outcome.confirmed {
+		if actionVerb == "cancel" {
+			h.server.cancelGoalActivationQueues(threadID)
+		}
+		if actionVerb == "resume" {
+			h.server.sendGoalActivation(threadID, outcome, "resume", threadPayload.uiLocale)
+		}
+	}
+	response := jsoncompat.NewObject()
+	if outcome != nil && outcome.response != nil {
+		response = outcome.response
+	}
+	h.output(http.StatusOK, response, contentTypeJSON, "")
 	return true
 }
 
@@ -1005,6 +1033,7 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 	// normalization folds them into text, the timeline whitelist needs the
 	// structured form, and every projection fold must agree on row bytes.
 	annotateViewChanges(view, model.OrderedTurns(state))
+	h.server.applyGoalOverlay(threadID, view)
 	view.Set("sequence", jsoncompat.Num(sequence))
 	view.Set("connectionError", connectionError)
 	view.Set("connecting", false)
@@ -1054,7 +1083,7 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 	// Queue cards and the fork-source link ride in meta like Python's
 	// _submission_meta/_fork_origin annotations on every timeline read.
 	if h.server.Queue != nil {
-		projection.SetMeta("submissions", h.server.Queue.meta(threadID))
+		projection.SetMeta("submissions", h.server.queueMetaExcludingActivations(threadID))
 	}
 	if h.server.Forks != nil {
 		projection.SetMeta("forkedFrom", h.server.forkedFromMeta(threadID))
@@ -1095,6 +1124,7 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 		return nil, err
 	}
 	view := buildHistoryView(history)
+	h.server.applyGoalOverlay(threadID, view)
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
@@ -1119,7 +1149,7 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	}
 	// Saved threads show the same queue cards and fork-source link.
 	if h.server.Queue != nil {
-		projection.SetMeta("submissions", h.server.Queue.meta(threadID))
+		projection.SetMeta("submissions", h.server.queueMetaExcludingActivations(threadID))
 	}
 	if h.server.Forks != nil {
 		projection.SetMeta("forkedFrom", h.server.forkedFromMeta(threadID))

@@ -188,10 +188,11 @@ func TestCodexCapabilitiesExcludeUnported(t *testing.T) {
 			t.Fatalf("caps missing %s: %s", needle, body)
 		}
 	}
-	// The native goal send path stays unported; fork branches work through
-	// the app-server's thread/fork and are advertised again for codex only.
-	if strings.Contains(body, "goals") {
-		t.Fatalf("unported caps leaked: %s", body)
+	// The native goal send chain now rides the command ledger + sidecar RPC
+	// with activation turns; fork branches work through the app-server's
+	// thread/fork. Both are advertised for codex only.
+	if !strings.Contains(body, "goals") {
+		t.Fatalf("goal cap missing now that the send chain is ported: %s", body)
 	}
 }
 

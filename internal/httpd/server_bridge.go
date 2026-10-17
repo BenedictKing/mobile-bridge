@@ -181,7 +181,7 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 // meta. Fork branches work through the app-server's thread/fork.
 func (s *Server) codexCapabilities() *jsoncompat.Array {
 	items := []string{"accounts", "editMessage", "fastMode", "fork", "fullHistory",
-		"notificationScan", "rename", "serviceTier", "skills", "steer"}
+		"goals", "notificationScan", "rename", "serviceTier", "skills", "steer"}
 	array := &jsoncompat.Array{}
 	for _, item := range items {
 		array.Items = append(array.Items, item)

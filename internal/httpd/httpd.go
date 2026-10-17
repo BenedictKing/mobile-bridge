@@ -76,6 +76,7 @@ type Server struct {
 	Auth            *auth.Auth
 	Creations       *creations
 	Queue           *submissions
+	GoalCmds        *goalLedger
 	Hidden          *hiddenSessions
 	Forks           *forkLedger
 	WebFS           fs.FS
