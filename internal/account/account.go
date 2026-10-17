@@ -30,7 +30,10 @@ func (m *Manager) AccountsPublic() *jsoncompat.Object {
 	switchState := jsoncompat.NewObject()
 	switchState.Set("phase", "idle")
 	result.Set("switch", switchState)
-	result.Set("canSwitch", true)
+	// Account switching coordinates a desktop App restart (Python
+	// accounts.py's DesktopApp flow); the Go gateway cannot drive it, so the
+	// phone renders the switch control disabled with the desktop hint.
+	result.Set("canSwitch", false)
 	index := readObject(filepath.Join(m.DataDir, "accounts", "index.json"))
 	if index == nil {
 		return result

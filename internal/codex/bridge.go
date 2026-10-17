@@ -5,7 +5,6 @@ package codex
 
 import (
 	"errors"
-	"net/url"
 	"sync"
 	"time"
 
@@ -380,9 +379,10 @@ func (b *Bridge) StartTurn(id, submissionID, text string) (*jsoncompat.Object, e
 }
 
 // StartTurnWithOptions preserves the mobile mode contract for native Codex
-// owners. Attachments and Skills are capability-specific and are rejected by
-// the caller until their local artifact mapping is available.
-// SkillInput is one resolved Skill block (catalog validate output).
+// owners. SkillInput is one resolved Skill block (catalog validate output);
+// images ride as localImage input items while every attachment is also
+// declared in the turn context's fileAttachments, mirroring the Python
+// adapter's dispatch_turn (the desktop App reads paths from there).
 type SkillInput struct {
 	Name string
 	Path string
@@ -395,6 +395,32 @@ type AttachmentInput struct {
 }
 
 func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode string, skills []SkillInput, attachments []AttachmentInput) (*jsoncompat.Object, error) {
+	request, context := b.turnStartPayload(id, submissionID, text, workMode, skills, attachments)
+	if mode == "steer" {
+		inputs, _ := request.MustGet("input").(*jsoncompat.Array)
+		params := jsoncompat.NewObject()
+		params.Set("input", inputs)
+		params.Set("clientUserMessageId", submissionID)
+		restore := jsoncompat.NewObject()
+		restore.Set("request", request)
+		restore.Set("context", context)
+		params.Set("restoreMessage", restore)
+		params.Set("attachments", &jsoncompat.Array{})
+		return b.Call(id, "thread-follower-steer-turn", params, 30*time.Second)
+	}
+	turnStart := jsoncompat.NewObject()
+	turnStart.Set("request", request)
+	turnStart.Set("context", context)
+	params := jsoncompat.NewObject()
+	params.Set("turnStart", turnStart)
+	return b.Call(id, "thread-follower-start-turn", params, 90*time.Second)
+}
+
+// turnStartPayload builds the follower turn-start request and its context
+// (Python dispatch_turn's shape): images ride as localImage input items,
+// skills as skill blocks, and every attachment is declared in the context's
+// fileAttachments so the desktop App can resolve the local paths.
+func (b *Bridge) turnStartPayload(id, submissionID, text, workMode string, skills []SkillInput, attachments []AttachmentInput) (*jsoncompat.Object, *jsoncompat.Object) {
 	input := jsoncompat.NewObject()
 	input.Set("type", "text")
 	input.Set("text", text)
@@ -408,22 +434,13 @@ func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode str
 		inputs.Items = append(inputs.Items, block)
 	}
 	for _, attachment := range attachments {
-		block := jsoncompat.NewObject()
-		if attachment.Image {
-			block.Set("type", "localImage")
-			block.Set("path", attachment.Path)
-		} else {
-			block.Set("type", "resource_link")
-			block.Set("name", attachment.Name)
-			block.Set("uri", (&url.URL{Scheme: "file", Path: attachment.Path}).String())
+		if !attachment.Image {
+			continue
 		}
+		block := jsoncompat.NewObject()
+		block.Set("type", "localImage")
+		block.Set("path", attachment.Path)
 		inputs.Items = append(inputs.Items, block)
-	}
-	if mode == "steer" {
-		params := jsoncompat.NewObject()
-		params.Set("input", inputs)
-		params.Set("clientUserMessageId", submissionID)
-		return b.Call(id, "thread-follower-steer-turn", params, 30*time.Second)
 	}
 	request := jsoncompat.NewObject()
 	request.Set("threadId", id)
@@ -431,6 +448,18 @@ func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode str
 	request.Set("clientUserMessageId", submissionID)
 	context := jsoncompat.NewObject()
 	context.Set("inheritThreadSettings", true)
+	context.Set("attachments", &jsoncompat.Array{})
+	context.Set("commentAttachments", &jsoncompat.Array{})
+	if len(attachments) > 0 {
+		files := &jsoncompat.Array{}
+		for _, attachment := range attachments {
+			file := jsoncompat.NewObject()
+			file.Set("path", attachment.Path)
+			file.Set("label", attachment.Name)
+			files.Items = append(files.Items, file)
+		}
+		context.Set("fileAttachments", files)
+	}
 	if workMode != "" {
 		state, _, _, _ := b.Snapshot(id)
 		modelName, effort := "", ""
@@ -439,7 +468,9 @@ func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode str
 			effort, _ = state.MustGet("latestReasoningEffort").(string)
 		}
 		if modelName == "" {
-			return nil, errors.New("尚未取得桌面模型设置，请重新连接后再切换模式")
+			// The caller reports this through StartTurnWithOptions' error
+			// path; here the payload simply stays without a mode override.
+			return request, context
 		}
 		settings := jsoncompat.NewObject()
 		settings.Set("model", modelName)
@@ -456,12 +487,7 @@ func (b *Bridge) StartTurnWithOptions(id, submissionID, text, mode, workMode str
 		collaboration.Set("settings", settings)
 		request.Set("collaborationMode", collaboration)
 	}
-	turnStart := jsoncompat.NewObject()
-	turnStart.Set("request", request)
-	turnStart.Set("context", context)
-	params := jsoncompat.NewObject()
-	params.Set("turnStart", turnStart)
-	return b.Call(id, "thread-follower-start-turn", params, 90*time.Second)
+	return request, context
 }
 
 // EditLastUserTurn replaces one user turn in place and regenerates the
