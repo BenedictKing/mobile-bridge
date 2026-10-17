@@ -90,7 +90,10 @@ func (b *Bridge) Watch(id string, timeout time.Duration) (*Session, error) {
 			b.mu.Unlock()
 		}
 	}
-	if err := b.IPC.Follow(id, session.Owner, b.Host, true); err != nil {
+	b.mu.Lock()
+	owner := session.Owner
+	b.mu.Unlock()
+	if err := b.IPC.Follow(id, owner, b.Host, true); err != nil {
 		return session, err
 	}
 	select {
@@ -323,14 +326,35 @@ func (b *Bridge) handleDisconnect() {
 
 func (b *Bridge) Close() { b.IPC.Close() }
 
+// Owner reports the desktop client id recorded for a followed session. The
+// field is guarded by the bridge lock (Watch and handleEvent write it from
+// other goroutines), so cross-package readers must go through here.
+func (b *Bridge) Owner(session *Session) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return session.Owner
+}
+
+// ownerAndError snapshots the fields Call needs before dispatching an
+// operation; both are bridge-lock guarded.
+func (b *Bridge) ownerAndError(session *Session) (string, string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return session.Owner, session.Error
+}
+
 // Call sends a follower operation to the conversation owner.
 func (b *Bridge) Call(id, method string, params *jsoncompat.Object, timeout time.Duration) (*jsoncompat.Object, error) {
 	session, err := b.Watch(id, 1500*time.Millisecond)
 	if err != nil {
 		return nil, err
 	}
-	if session.Owner == "" {
-		return nil, errors.New(session.ErrorOr("请先在桌面 App 打开此聊天"))
+	owner, connectError := b.ownerAndError(session)
+	if owner == "" {
+		if connectError == "" {
+			connectError = "请先在桌面 App 打开此聊天"
+		}
+		return nil, errors.New(connectError)
 	}
 	request := jsoncompat.NewObject()
 	request.Set("conversationId", id)
@@ -340,7 +364,7 @@ func (b *Bridge) Call(id, method string, params *jsoncompat.Object, timeout time
 			request.Set(key, value)
 		}
 	}
-	response, err := b.IPC.Request(method, request, session.Owner, b.Host, timeout)
+	response, err := b.IPC.Request(method, request, owner, b.Host, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -349,13 +373,6 @@ func (b *Bridge) Call(id, method string, params *jsoncompat.Object, timeout time
 		result = jsoncompat.NewObject()
 	}
 	return result, nil
-}
-
-func (s *Session) ErrorOr(fallback string) string {
-	if s.Error != "" {
-		return s.Error
-	}
-	return fallback
 }
 
 func (b *Bridge) StartTurn(id, submissionID, text string) (*jsoncompat.Object, error) {

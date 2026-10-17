@@ -495,7 +495,7 @@ func (h *handler) handleMigrate(threadID string) {
 			h.output(http.StatusOK, result, contentTypeJSON, "")
 			return
 		}
-		if session, watchErr := h.server.Codex.Watch(createdID, 1500*time.Millisecond); watchErr != nil || session == nil || session.Owner == "" {
+		if session, watchErr := h.server.Codex.Watch(createdID, 1500*time.Millisecond); watchErr != nil || session == nil || h.server.Codex.Owner(session) == "" {
 			warning := "请先在桌面 App 打开此聊天"
 			if watchErr != nil {
 				warning = watchErr.Error()
