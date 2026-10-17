@@ -603,9 +603,16 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		if cwd == "" {
 			cwd = "."
 		}
-		if _, err := manager.Reconcile(threadID, cwd, manager.InitializeTimeout); err != nil {
-			h.fail(http.StatusConflict, errorBody(err.Error()))
-			return true
+		// A live handle must survive reconnect-activate: Reconcile spawns a
+		// fresh child process and closes the current one, killing any
+		// in-flight turn — a fork's transcript prompt right after creation,
+		// or an agent turn still streaming when the phone switches back to
+		// the chat. Only closed or missing handles get reconciled.
+		if live := manager.Get(threadID); live == nil || live.IsClosed() {
+			if _, err := manager.Reconcile(threadID, cwd, manager.InitializeTimeout); err != nil {
+				h.fail(http.StatusConflict, errorBody(err.Error()))
+				return true
+			}
 		}
 		result := jsoncompat.NewObject()
 		result.Set("ok", true)

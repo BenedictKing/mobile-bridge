@@ -251,6 +251,13 @@ func (h *handler) handleACPMessageAction(kind string, manager *acpruntime.Manage
 		return
 	}
 	childID := child.ID
+	if childID == threadID {
+		// An agent echoing the source id back from session/new would fork a
+		// session onto itself (the browser E2E caught exactly this shape).
+		child.Close()
+		h.fail(http.StatusConflict, errorBody("Agent 返回了与源会话相同的标识，无法创建分支"))
+		return
+	}
 	if h.server.Forks != nil {
 		h.server.Forks.Record(childID, forkOrigin{ID: threadID, Host: "local", Title: sourceTitle})
 	}
