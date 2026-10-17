@@ -295,6 +295,19 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	} else if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
 		acpKind, acpManager = resolution.kind, resolution.manager
 	}
+	// ACP threads own their message actions: fork/edit-fork branch through a
+	// gateway-synthesized session on the same agent. The body must be read
+	// here — handleACPRoute has no message-action case and would consume it
+	// before falling through.
+	if write && action == "message-action" && acpManager != nil {
+		body, bodyErr := h.readJSON()
+		if bodyErr != nil {
+			h.fail(http.StatusBadRequest, errorBody(bodyErr.Error()))
+			return true
+		}
+		h.handleACPMessageAction(acpKind, acpManager, threadID, body.(*jsoncompat.Object))
+		return true
+	}
 	if acpManager != nil {
 		if h.handleACPRoute(acpKind, acpManager, threadID, action, write, query) {
 			return true

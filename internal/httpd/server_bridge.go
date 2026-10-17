@@ -148,6 +148,9 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 		session.NoteSubagents(activity.Revision)
 	}
 	view := session.Snapshot()
+	// Settled turns become actionable so the shared projection derives
+	// editable/forkable rows (the phone's branch controls) — see acp_fork.go.
+	annotateACPForkability(view)
 	view.Set("sequence", jsoncompat.Num(session.Sequence()))
 	if manager.Subagents != nil {
 		subagents.Inject(view, activity)
@@ -159,7 +162,8 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 	for _, capability := range manager.Capabilities {
 		// The ACP goal send path is not ported; hide the control rather
 		// than offer a goal mode that silently degrades to a plain prompt.
-		if capability == "goals" || capability == "fork" {
+		// Branching IS offered: acp_fork.go synthesizes it on the gateway.
+		if capability == "goals" {
 			continue
 		}
 		capabilities.Items = append(capabilities.Items, capability)

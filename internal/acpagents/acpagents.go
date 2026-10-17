@@ -156,7 +156,7 @@ func kimiProfile(env func(string) string, home string) Profile {
 		Kind: "kimi", Label: "Kimi",
 		Command:           subcommandArgv(discoverExecutable(env, home, "KIMI_BIN", ".kimi-code/bin", "kimi")),
 		InitializeTimeout: 10 * time.Second,
-		Capabilities:      []string{"skills"},
+		Capabilities:      []string{"skills", "fork"},
 		EffortMap:         map[string]string{"none": "low", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},
 	}
 }
@@ -166,7 +166,7 @@ func mcodeProfile(env func(string) string, home string) Profile {
 		Kind: "mcode", Label: "MiniMax",
 		Command:           subcommandArgv(discoverExecutable(env, home, "MCODE_BIN", ".minimax-code/bin", "mcode")),
 		InitializeTimeout: 10 * time.Second,
-		Capabilities:      []string{"goals", "steer"},
+		Capabilities:      []string{"goals", "steer", "fork"},
 		EffortMap:         map[string]string{"none": "default", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},
 		SteerMethod:       "mcode/session/steer",
 	}
@@ -185,6 +185,7 @@ func claudeProfile(env func(string) string, home string) Profile {
 		Kind: "claude", Label: "Claude",
 		Command:           argv,
 		InitializeTimeout: 180 * time.Second,
+		Capabilities:      []string{"fork"},
 		EffortMap:         map[string]string{"none": "default", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "ultra": "max"},
 	}
 }
@@ -202,7 +203,7 @@ func dshProfile(env func(string) string, home string) Profile {
 		Kind: "dsh", Label: "DeepSeek",
 		Command:           argv,
 		InitializeTimeout: 180 * time.Second,
-		Capabilities:      []string{"steer"},
+		Capabilities:      []string{"steer", "fork"},
 		EffortMap:         map[string]string{"none": "off", "minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "ultra": "max"},
 		SteerMethod:       "_session/steering",
 	}
@@ -226,6 +227,7 @@ func zcodeProfile(env func(string) string, home string) Profile {
 		Kind: "zcode", Label: "ZCode",
 		Command:           argv,
 		InitializeTimeout: 180 * time.Second,
+		Capabilities:      []string{"fork"},
 		EffortMap:         map[string]string{"none": "off", "minimal": "enabled", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "ultra": "ultra"},
 		Canonical:         zcodeCanonicalFactory(env, home),
 		ModeMap:           map[string]string{"plan": "plan", "default": "yolo"},
@@ -241,7 +243,7 @@ func opencodeProfile(env func(string) string, home string) Profile {
 		Kind: "opencode", Label: "OpenCode",
 		Command:           subcommandArgv(discoverExecutable(env, home, "OPENCODE_BIN", ".opencode/bin", "opencode")),
 		InitializeTimeout: 30 * time.Second,
-		Capabilities:      []string{"skills"},
+		Capabilities:      []string{"skills", "fork"},
 		// OpenCode advertises per-model effort variants ("default" always,
 		// low/medium/high commonly, minimal/xhigh on some models); the bridge
 		// ladder folds onto the shared set and the catalog only lists the
