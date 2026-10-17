@@ -21,31 +21,52 @@ import (
 type Manager struct {
 	Home, Executable, DataDir string
 	mu                        sync.Mutex
+	// Switch state machine (switch.go): switchMu serializes Switch entries,
+	// phase writes and the persisted state object; proc injects the desktop
+	// App process controller (nil means the real OS controller); the waits
+	// mirror Python's 8s stop-wait, 35s health wait and 500ms poll.
+	switchMu  sync.Mutex
+	state     *jsoncompat.Object
+	proc      ProcessController
+	stopWait  time.Duration
+	readyWait time.Duration
+	poll      time.Duration
+}
+
+func defaultSwitchWaits() (stop, ready, poll time.Duration) {
+	return 8 * time.Second, 35 * time.Second, 500 * time.Millisecond
 }
 
 func (m *Manager) AccountsPublic() *jsoncompat.Object {
+	m.switchMu.Lock()
+	defer m.switchMu.Unlock()
+	return m.publicLocked()
+}
+
+// publicLocked builds the phone's account panel status: index rows, the live
+// switch phase and a real canSwitch (a validated desktop executable and a
+// switch state that accepts new work).
+func (m *Manager) publicLocked() *jsoncompat.Object {
+	state := m.loadStateLocked()
 	result := jsoncompat.NewObject()
 	result.Set("accounts", &jsoncompat.Array{})
 	result.Set("activeId", nil)
-	switchState := jsoncompat.NewObject()
-	switchState.Set("phase", "idle")
-	result.Set("switch", switchState)
-	// Account switching coordinates a desktop App restart (Python
-	// accounts.py's DesktopApp flow); the Go gateway cannot drive it, so the
-	// phone renders the switch control disabled with the desktop hint.
-	result.Set("canSwitch", false)
 	index := readObject(filepath.Join(m.DataDir, "accounts", "index.json"))
-	if index == nil {
-		return result
+	if index != nil {
+		if accounts, ok := index.MustGet("accounts").(*jsoncompat.Array); ok {
+			result.Set("accounts", accounts)
+		}
+		result.Set("activeId", index.MustGet("activeId"))
 	}
-	if accounts, ok := index.MustGet("accounts").(*jsoncompat.Array); ok {
-		result.Set("accounts", accounts)
+	switchState, _ := jsoncompat.Clone(state).(*jsoncompat.Object)
+	result.Set("switch", switchState)
+	executable := m.resolveExecutable()
+	result.Set("desktopExecutable", executable)
+	canSwitch := false
+	if switchReadyPhases[phaseOf(state)] && executable != "" {
+		canSwitch = newDesktopApp(executable, m.Home, m.proc).Validate(m.Executable) == nil
 	}
-	result.Set("activeId", index.MustGet("activeId"))
-	switchState = readObject(filepath.Join(m.DataDir, "accounts", "switch.json"))
-	if switchState != nil {
-		result.Set("switch", switchState)
-	}
+	result.Set("canSwitch", canSwitch)
 	return result
 }
 
@@ -62,10 +83,14 @@ func (m *Manager) AccountDetails(id string) *jsoncompat.Object {
 }
 
 func New(home, executable string) *Manager {
-	return &Manager{Home: home, DataDir: filepath.Join(home, "mobile-bridge"), Executable: executable}
+	stopWait, readyWait, poll := defaultSwitchWaits()
+	return &Manager{Home: home, DataDir: filepath.Join(home, "mobile-bridge"), Executable: executable,
+		stopWait: stopWait, readyWait: readyWait, poll: poll}
 }
 func NewWithData(home, dataDir, executable string) *Manager {
-	return &Manager{Home: home, DataDir: dataDir, Executable: executable}
+	stopWait, readyWait, poll := defaultSwitchWaits()
+	return &Manager{Home: home, DataDir: dataDir, Executable: executable,
+		stopWait: stopWait, readyWait: readyWait, poll: poll}
 }
 
 func (m *Manager) Read(refresh bool) *jsoncompat.Object {
@@ -140,6 +165,11 @@ func (m *Manager) Read(refresh bool) *jsoncompat.Object {
 }
 
 func (m *Manager) Consume(value *jsoncompat.Object) (*jsoncompat.Object, error) {
+	// The reset card is a chat-adjacent mutation: refuse it while a switch is
+	// in flight or awaiting recovery (Python operation()'s check_ready gate).
+	if err := m.CheckReady(); err != nil {
+		return nil, err
+	}
 	confirmed, _ := value.MustGet("confirmed").(bool)
 	if !confirmed {
 		return nil, errors.New("请先确认使用重置卡")
@@ -195,10 +225,14 @@ type rpc struct {
 	next    int
 }
 
-func startRPC(home, executable string) (*rpc, error) {
+func startRPC(home, executable string) (*rpc, error) { return startRPCIn(home, executable) }
+
+// startRPCIn roots one short-lived app-server at dir (CODEX_HOME=dir), which
+// is also how the switch flow probes a prepared account folder.
+func startRPCIn(dir, executable string) (*rpc, error) {
 	cmd := exec.Command(executable, "app-server", "--listen", "stdio://")
-	cmd.Dir = home
-	cmd.Env = append(os.Environ(), "CODEX_HOME="+home)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "CODEX_HOME="+dir)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, errors.New("无法连接 Codex 账号服务")
@@ -221,13 +255,18 @@ func startRPC(home, executable string) (*rpc, error) {
 }
 
 func (r *rpc) Request(method string, params any) (*jsoncompat.Object, error) {
+	return r.requestDeadline(method, params, 15*time.Second)
+}
+
+// requestDeadline carries the switch flow's 30s budget (Python ManagedRPC).
+func (r *rpc) requestDeadline(method string, params any, timeout time.Duration) (*jsoncompat.Object, error) {
 	r.next++
 	id := r.next
 	msg := map[string]any{"id": id, "method": method, "params": params}
 	if err := r.write(msg); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) && r.scanner.Scan() {
 		var value map[string]any
 		if json.Unmarshal(r.scanner.Bytes(), &value) != nil {

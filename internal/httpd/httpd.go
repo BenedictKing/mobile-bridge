@@ -685,7 +685,29 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
-		h.fail(http.StatusConflict, errorBody("账号切换需要桌面端协调，请在电脑端操作"))
+		if h.server.Account == nil {
+			h.fail(http.StatusConflict, errorBody("账号切换需要桌面端协调，请在电脑端操作"))
+			return
+		}
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		// Manager.Switch validates the target, refuses a second concurrent
+		// switch (409) or a blocked desktop (400), and drives the restart in
+		// the background; the response is the fresh panel status either way.
+		result, switchErr := h.server.Account.Switch(value.(*jsoncompat.Object), h.server.accountIdleGate())
+		if switchErr != nil {
+			var conflict *account.ConflictError
+			if errors.As(switchErr, &conflict) {
+				h.fail(http.StatusConflict, errorBody(switchErr.Error()))
+			} else {
+				h.fail(http.StatusBadRequest, errorBody(switchErr.Error()))
+			}
+			return
+		}
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case !write && path == "/api/account":
 		if h.session(write) == nil {
 			return
