@@ -268,6 +268,93 @@ func (m *Manager) failSwitch() {
 	m.setPhaseLocked("failed", message)
 }
 
+// Recover mirrors accounts.py recover(): after an interrupted switch put the
+// recorded pre-switch account back and relaunch the desktop app. The panel's
+// 恢复原接入 control only enables on phase 'interrupted', so anything else
+// is a stale tap; a missing rollback record means nothing was applied.
+func (m *Manager) Recover(value *jsoncompat.Object) (*jsoncompat.Object, error) {
+	if value == nil {
+		value = jsoncompat.NewObject()
+	}
+	if value.MustGet("confirmed") != true {
+		return nil, errors.New("请确认恢复原接入并重启桌面应用")
+	}
+	m.switchMu.Lock()
+	defer m.switchMu.Unlock()
+	if phaseOf(m.loadStateLocked()) != "interrupted" {
+		return nil, errors.New("当前不需要恢复")
+	}
+	parsed, parseErr := jsoncompat.Unmarshal(readFileOrEmpty(m.rollbackPath()))
+	backup, _ := parsed.(*jsoncompat.Object)
+	if parseErr != nil || backup == nil {
+		m.setPhaseLocked("failed", "未修改接入，请重新发起切换")
+		return m.publicLocked(), nil
+	}
+	m.setPhaseLocked("restoring", "")
+	backupCopy, _ := jsoncompat.Clone(backup).(*jsoncompat.Object)
+	go m.runRecover(backupCopy)
+	return m.publicLocked(), nil
+}
+
+// runRecover replays rollback.json: stop, restore the recorded files,
+// relaunch, verify, mark the previous account active. A failure parks back in
+// 'interrupted' (Python keeps the same manual-recovery hint wording).
+func (m *Manager) runRecover(backup *jsoncompat.Object) {
+	restoreErr := func() error {
+		app := newDesktopApp(pyString(backup.MustGet("desktopExecutable")), m.Home, m.proc)
+		if err := app.Validate(m.Executable); err != nil {
+			return err
+		}
+		if err := app.Stop(); err != nil {
+			return err
+		}
+		if err := m.restoreFiles(decodeSnapshot(backup.MustGet("files"))); err != nil {
+			return err
+		}
+		if err := app.Start(); err != nil {
+			return err
+		}
+		return app.WaitReady(m.endpoint(), nil, m.readyWait, m.poll)
+	}()
+	if restoreErr != nil {
+		m.setPhase("interrupted", "恢复未完成，请检查桌面程序路径和运行状态")
+		return
+	}
+	m.switchMu.Lock()
+	m.markActiveLocked(pyString(backup.MustGet("activeId")))
+	m.setPhaseLocked("restored", "")
+	m.switchMu.Unlock()
+	_ = os.Remove(m.rollbackPath())
+}
+
+func readFileOrEmpty(path string) []byte {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// decodeSnapshot turns the rollback record's base64 {name: value | null} map
+// back into the byte snapshot restoreFiles consumes.
+func decodeSnapshot(value any) map[string][]byte {
+	object, _ := value.(*jsoncompat.Object)
+	if object == nil {
+		return nil
+	}
+	snapshot := map[string][]byte{}
+	for _, name := range object.Keys() {
+		encoded, _ := object.MustGet(name).(string)
+		if encoded == "" {
+			continue
+		}
+		if raw, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+			snapshot[name] = raw
+		}
+	}
+	return snapshot
+}
+
 // --- persisted state ------------------------------------------------------
 
 // loadStateLocked returns the in-memory switch state. The first read loads

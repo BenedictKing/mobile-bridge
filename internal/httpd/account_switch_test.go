@@ -261,3 +261,46 @@ func waitForSwitchPhase(t *testing.T, server *Server, token, phase string) {
 	}
 	t.Fatalf("phase %s not reached via /api/accounts: %s", phase, last)
 }
+
+// The panel's 恢复原接入 control rides the switch route with action
+// "recover": an interrupted switch with a rollback record returns the panel
+// status (200) and drives the restore; anything else is a 400.
+func TestSwitchRouteDispatchesRecover(t *testing.T) {
+	server, gui, _ := newSwitchRouteServer(t)
+	authenticator := server.Auth
+	token, session, err := authenticator.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf, _ := session.MustGet("csrf").(string)
+
+	// Park the manager in interrupted with a rollback record before its
+	// state is first read, then recover through the route.
+	accountsRoot := filepath.Join(server.Account.DataDir, "accounts")
+	stale := jsoncompat.NewObject()
+	stale.Set("phase", "verifying")
+	stale.Set("requestId", switchTestRequestID)
+	stale.Set("targetId", switchTestAccountID)
+	stale.Set("error", nil)
+	if err := os.WriteFile(filepath.Join(accountsRoot, "switch.json"), jsoncompat.EncodeCompact(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rollback := jsoncompat.NewObject()
+	rollback.Set("files", jsoncompat.NewObject())
+	rollback.Set("activeId", nil)
+	rollback.Set("desktopExecutable", gui)
+	if err := os.WriteFile(filepath.Join(accountsRoot, "rollback.json"), jsoncompat.EncodeCompact(rollback), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := switchRoutePost(t, server, token, csrf, `{"action":"recover","confirmed":true}`)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"switch"`) {
+		t.Fatalf("recover: status=%d body=%s", response.Code, response.Body.String())
+	}
+	waitForSwitchPhase(t, server, token, "restored")
+
+	// Once restored there is nothing left to recover.
+	response = switchRoutePost(t, server, token, csrf, `{"action":"recover","confirmed":true}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "当前不需要恢复") {
+		t.Fatalf("stale recover: status=%d body=%s", response.Code, response.Body.String())
+	}
+}

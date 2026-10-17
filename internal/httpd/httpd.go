@@ -694,6 +694,18 @@ func (h *handler) handleMethod(write bool) {
 			h.fail(http.StatusBadRequest, errorBody(err.Error()))
 			return
 		}
+		// The panel's 恢复原接入 control rides the same route with
+		// action:"recover" (Python accounts.switch dispatches it the same
+		// way): it replays rollback.json after an interrupted switch.
+		if action, _ := value.(*jsoncompat.Object).MustGet("action").(string); action == "recover" {
+			result, recoverErr := h.server.Account.Recover(value.(*jsoncompat.Object))
+			if recoverErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(recoverErr.Error()))
+				return
+			}
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return
+		}
 		// Manager.Switch validates the target, refuses a second concurrent
 		// switch (409) or a blocked desktop (400), and drives the restart in
 		// the background; the response is the fresh panel status either way.

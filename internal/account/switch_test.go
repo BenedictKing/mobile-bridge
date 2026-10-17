@@ -589,3 +589,128 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// Recover replays rollback.json after an interrupted switch: files return to
+// the pre-switch bytes, the previous account becomes active and the rollback
+// record is removed.
+func TestRecoverRestoresInterruptedSwitch(t *testing.T) {
+	fixture := newSwitchFixture(t, "api")
+	root := filepath.Join(fixture.manager.DataDir, "accounts")
+	original := []byte("model_provider = \"openai\"\n")
+	stale := jsoncompat.NewObject()
+	stale.Set("phase", "verifying")
+	stale.Set("requestId", testRequestID)
+	stale.Set("targetId", testAccountID)
+	stale.Set("error", nil)
+	if err := os.WriteFile(filepath.Join(root, "switch.json"), jsoncompat.EncodeCompact(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rollback := jsoncompat.NewObject()
+	rollback.Set("files", encodeSnapshot(map[string][]byte{"config.toml": original}))
+	rollback.Set("activeId", otherAccountID)
+	rollback.Set("desktopExecutable", fixture.guiPath)
+	if err := os.WriteFile(filepath.Join(root, "rollback.json"), jsoncompat.EncodeCompact(rollback), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.home, "config.toml"), []byte("model_provider = \"switched\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.manager.AccountsPublic().MustGet("switch").(*jsoncompat.Object); err != true {
+		t.Fatal("panel state missing")
+	}
+
+	if _, err := fixture.manager.Recover(jsoncompat.NewObject()); err == nil ||
+		!strings.Contains(err.Error(), "请确认恢复原接入") {
+		t.Fatalf("unconfirmed recover must fail: %v", err)
+	}
+	result, err := fixture.manager.Recover(func() *jsoncompat.Object {
+		body := jsoncompat.NewObject()
+		body.Set("confirmed", true)
+		return body
+	}())
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if result == nil {
+		t.Fatal("recover must return the panel status")
+	}
+	waitForPhase(t, fixture.manager, "restored")
+	if current := readFile(t, filepath.Join(fixture.home, "config.toml")); string(current) != string(original) {
+		t.Fatalf("config.toml not restored: %q", current)
+	}
+	if active := pyString(indexValue(fixture.manager.readIndexFile(), "activeId")); active != otherAccountID {
+		t.Fatalf("activeId must return to the backup account: %q", active)
+	}
+	if _, err := os.Stat(filepath.Join(root, "rollback.json")); !os.IsNotExist(err) {
+		t.Fatal("rollback record must be removed after a successful recover")
+	}
+}
+
+// Guards: nothing to recover outside 'interrupted'; a missing rollback record
+// means nothing was applied and the switch parks in 'failed'.
+func TestRecoverGuards(t *testing.T) {
+	confirmed := jsoncompat.NewObject()
+	confirmed.Set("confirmed", true)
+	if _, err := newSwitchFixture(t, "api").manager.Recover(confirmed); err == nil ||
+		!strings.Contains(err.Error(), "当前不需要恢复") {
+		t.Fatalf("idle recover must be refused: %v", err)
+	}
+
+	// A fresh manager must read the stale switch state before Recover: the
+	// in-memory state only loads once, so the record is written first.
+	fixture := newSwitchFixture(t, "api")
+	root := filepath.Join(fixture.manager.DataDir, "accounts")
+	stale := jsoncompat.NewObject()
+	stale.Set("phase", "applying")
+	stale.Set("requestId", testRequestID)
+	stale.Set("targetId", testAccountID)
+	stale.Set("error", nil)
+	if err := os.WriteFile(filepath.Join(root, "switch.json"), jsoncompat.EncodeCompact(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if phase := fixture.manager.AccountsPublic().MustGet("switch").(*jsoncompat.Object).MustGet("phase"); phase != "interrupted" {
+		t.Fatalf("stale phase must normalize to interrupted, got %v", phase)
+	}
+	if _, err := fixture.manager.Recover(confirmed); err != nil {
+		t.Fatalf("recover without rollback must not error: %v", err)
+	}
+	state := waitForPhase(t, fixture.manager, "failed")
+	if message, _ := state.MustGet("error").(string); !strings.Contains(message, "未修改接入") {
+		t.Fatalf("unexpected failure message: %q", message)
+	}
+}
+
+// A rollback record whose desktop executable cannot launch parks the recover
+// back in 'interrupted' with the manual-recovery hint.
+func TestRecoverFailureParksInterrupted(t *testing.T) {
+	fixture := newSwitchFixture(t, "api")
+	root := filepath.Join(fixture.manager.DataDir, "accounts")
+	stale := jsoncompat.NewObject()
+	stale.Set("phase", "starting")
+	stale.Set("requestId", testRequestID)
+	stale.Set("targetId", testAccountID)
+	stale.Set("error", nil)
+	if err := os.WriteFile(filepath.Join(root, "switch.json"), jsoncompat.EncodeCompact(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "not-an-app")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollback := jsoncompat.NewObject()
+	rollback.Set("files", encodeSnapshot(map[string][]byte{"config.toml": []byte("x")}))
+	rollback.Set("activeId", otherAccountID)
+	rollback.Set("desktopExecutable", script)
+	if err := os.WriteFile(filepath.Join(root, "rollback.json"), jsoncompat.EncodeCompact(rollback), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	confirmed := jsoncompat.NewObject()
+	confirmed.Set("confirmed", true)
+	if _, err := fixture.manager.Recover(confirmed); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	state := waitForPhase(t, fixture.manager, "interrupted")
+	if message, _ := state.MustGet("error").(string); !strings.Contains(message, "恢复未完成") {
+		t.Fatalf("unexpected interrupted message: %q", message)
+	}
+}
