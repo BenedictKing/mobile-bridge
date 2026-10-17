@@ -23,7 +23,8 @@ ACP_HOST_SOCKETS_JSON := {"$(ACP_HOST_KIND)":"$(ACP_HOST_SOCKET)"}
 .DEFAULT_GOAL := help
 
 .PHONY: help build-matrix build-gateway build-gateway-package build-agent-host build-wails serve \
-	install dev-cert start start-agent-host stop stop-agent-host restart status logs uninstall conformance
+	install dev-cert start start-agent-host stop stop-agent-host restart status logs uninstall conformance \
+	test test-race check
 
 # 各目标行内 ## 注释即帮助文案，此处自动汇总。
 help: ## 显示本帮助（make 默认目标）
@@ -190,3 +191,20 @@ uninstall: stop ## 卸载服务并删除 plist（保留数据与二进制）
 # golden 变更需手工维护 conformance/http/golden.jsonl。
 conformance: ## HTTP 差分对拍 golden
 	python3 conformance/http/run.py --verify --target go
+
+test: ## 单元测试（go test ./...）
+	go test ./...
+
+# -race 是进程级崩溃（"concurrent map read and map write" 整进程 fatal）的
+# 门禁：httpd 的并发压力/回放与 acpruntime 的目录并发测试只在 -race 下暴露
+# 数据竞争。首次运行需编译竞态插桩，耗时明显长于 make test。
+test-race: ## 竞态检测回归（go test -race ./...）
+	go test -race -count=1 ./...
+
+# 提交前门禁：编译、vet、单测、竞态一次跑全（HTTP golden 对拍另见
+# make conformance，需要 python3）。
+check: ## 回归门禁（build + vet + test + test-race）
+	go build ./...
+	go vet ./...
+	go test ./...
+	go test -race -count=1 ./...
