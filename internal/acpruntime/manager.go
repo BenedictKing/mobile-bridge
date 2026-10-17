@@ -238,6 +238,10 @@ func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
 			listed[id] = true
 		}
 	}
+	// rows may alias the cached session/list slice returned by List to many
+	// concurrent callers; copy before appending so concurrent MergePending
+	// calls never write into the shared backing array.
+	rows = append(rows[:0:0], rows...)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, session := range m.sessions {
@@ -724,6 +728,9 @@ func (s *Session) NoteHumanAction() {
 // Agents that skip the legacy modes object (opencode advertises modes as a
 // "mode" config option) fall back to session/set_config_option.
 func (s *Session) SetMode(modeID string) error {
+	// Snapshot the advertised mode facts under the lock: SetMode's own tail
+	// (and the reader goroutine) rewrite the modes object in place, so the
+	// validation below must not read it unlocked.
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -731,6 +738,20 @@ func (s *Session) SetMode(modeID string) error {
 	}
 	modes := s.modes
 	configOptions := s.configOptions
+	available := []string{}
+	current := ""
+	if modes != nil {
+		if advertised, _ := modes.MustGet("availableModes").(*jsoncompat.Array); advertised != nil {
+			for _, item := range advertised.Items {
+				if mode, ok := item.(*jsoncompat.Object); ok {
+					if id, _ := mode.MustGet("id").(string); id != "" {
+						available = append(available, id)
+					}
+				}
+			}
+		}
+		current, _ = modes.MustGet("currentModeId").(string)
+	}
 	s.mu.Unlock()
 	if modes == nil {
 		if option := findCategory(configOptions, "mode"); option != nil {
@@ -738,22 +759,17 @@ func (s *Session) SetMode(modeID string) error {
 		}
 		return errors.New("当前 Agent 不支持此工作模式")
 	}
-	available, _ := modes.MustGet("availableModes").(*jsoncompat.Array)
 	found := false
-	if available != nil {
-		for _, item := range available.Items {
-			if mode, ok := item.(*jsoncompat.Object); ok {
-				if id, _ := mode.MustGet("id").(string); id == modeID {
-					found = true
-					break
-				}
-			}
+	for _, id := range available {
+		if id == modeID {
+			found = true
+			break
 		}
 	}
 	if !found {
 		return errors.New("当前 Agent 不支持此工作模式")
 	}
-	if current, _ := modes.MustGet("currentModeId").(string); current == modeID {
+	if current == modeID {
 		return nil
 	}
 	params := jsoncompat.NewObject()
@@ -924,11 +940,25 @@ func (s *Session) setConfigOption(option *jsoncompat.Object, value string) error
 var commandSkillBuiltins = map[string]bool{"compact": true, "status": true, "usage": true,
 	"mcp": true, "tasks": true, "help": true}
 
+// CommandSnapshot returns a detached copy of the session's advertised slash
+// commands. The view's command list is reassigned by session/update
+// notifications on the reader goroutine, so catalog reads must not walk the
+// live slice; the command objects themselves are never mutated in place.
+func (s *Session) CommandSnapshot() []*jsoncompat.Object {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	commands := make([]*jsoncompat.Object, len(s.View.Commands))
+	copy(commands, s.View.Commands)
+	return commands
+}
+
 // CommandSkills maps the session's advertised slash commands to picker rows
-// (AcpAdapter._command_skills port).
+// (AcpAdapter._command_skills port). The advertised list is read through a
+// locked snapshot: the notification reader goroutine reassigns it while
+// catalog requests walk it.
 func (m *Manager) CommandSkills(session *Session) []*jsoncompat.Object {
 	rows := []*jsoncompat.Object{}
-	for _, command := range session.View.Commands {
+	for _, command := range session.CommandSnapshot() {
 		name, _ := command.MustGet("name").(string)
 		if name == "" || commandSkillBuiltins[name] {
 			continue
