@@ -355,10 +355,14 @@ func (h *handler) handleCodexMessageAction(threadID, acpKind string, body *jsonc
 		return
 	}
 	_, _, _ = h.server.refreshLiveProjection(threadID)
+	// The projection is shared with every other live-timeline reader and the
+	// SSE incremental loop; its internals mutate under historyMu. The
+	// validation must hold the same lock or a concurrent projection rebuild
+	// races the cursor/version reads (a process-fatal map read/write).
 	h.server.historyMu.Lock()
-	projection := h.server.historyTL[threadID]
+	row, rowErr := validateMessageEdit(h.server.historyTL[threadID],
+		stringField(body, "version"), key)
 	h.server.historyMu.Unlock()
-	row, rowErr := validateMessageEdit(projection, stringField(body, "version"), key)
 	if rowErr != "" {
 		h.fail(http.StatusBadRequest, errorBody(rowErr))
 		return
