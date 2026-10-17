@@ -18,6 +18,7 @@ import (
 type Manager struct {
 	Home, Executable string
 	mu               sync.Mutex
+	sidecar          *goalSidecar
 }
 
 func New(home, executable string) *Manager { return &Manager{Home: home, Executable: executable} }
@@ -48,12 +49,43 @@ func (m *Manager) Clear(threadID string) error {
 	return err
 }
 
+// request routes one RPC over the persistent sidecar. The connection is
+// lazily started (initialize once) and reused across calls like Python's
+// GoalRPC; any failure — including a timeout, which would desynchronize the
+// response stream — discards it so the next call starts fresh. Idempotent
+// reads get one heal retry (Python retried get_goal twice).
 func (m *Manager) request(method string, params any) (*jsoncompat.Object, error) {
 	if m.Executable == "" {
 		return nil, errors.New("找不到桌面 App 的 Codex 运行时")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	result, err := m.sidecarCall(method, params)
+	if err != nil && method == "thread/goal/get" {
+		result, err = m.sidecarCall(method, params)
+	}
+	return result, err
+}
+
+func (m *Manager) sidecarCall(method string, params any) (*jsoncompat.Object, error) {
+	sidecar, err := m.ensureSidecar()
+	if err != nil {
+		return nil, err
+	}
+	response, callErr := sidecar.call(method, params)
+	if callErr != nil {
+		m.dropSidecar()
+		return nil, callErr
+	}
+	return response, nil
+}
+
+// ensureSidecar returns the live sidecar, starting and initializing one when
+// missing (the caller holds m.mu).
+func (m *Manager) ensureSidecar() (*goalSidecar, error) {
+	if m.sidecar != nil {
+		return m.sidecar, nil
+	}
 	cmd := exec.Command(m.Executable, "app-server", "--listen", "stdio://")
 	cmd.Dir = filepath.Clean(m.Home)
 	cmd.Env = append(os.Environ(), "CODEX_HOME="+m.Home)
@@ -69,31 +101,65 @@ func (m *Manager) request(method string, params any) (*jsoncompat.Object, error)
 	if err := cmd.Start(); err != nil {
 		return nil, errors.New("无法启动 Codex 原生目标服务")
 	}
-	defer func() { _ = stdin.Close(); _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
-	scanner := bufio.NewScanner(stdout)
-	counter := 0
-	send := func(name string, value any) (int, error) {
-		counter++
-		payload := map[string]any{"id": counter, "method": name, "params": value}
-		data, _ := json.Marshal(payload)
-		if _, err := stdin.Write(append(data, '\n')); err != nil {
-			return 0, err
-		}
-		return counter, nil
+	sidecar := &goalSidecar{cmd: cmd, stdin: stdin, scanner: bufio.NewScanner(stdout)}
+	if err := sidecar.initialize(); err != nil {
+		sidecar.close()
+		return nil, err
 	}
-	initializeID, err := send("initialize", map[string]any{"clientInfo": map[string]any{"name": "codex_mobile_goal", "version": "1"}, "capabilities": map[string]any{"experimentalApi": true}})
+	m.sidecar = sidecar
+	return sidecar, nil
+}
+
+func (m *Manager) dropSidecar() {
+	if m.sidecar != nil {
+		m.sidecar.close()
+		m.sidecar = nil
+	}
+}
+
+type goalSidecar struct {
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	scanner *bufio.Scanner
+	counter int
+}
+
+func (s *goalSidecar) initialize() error {
+	id, err := s.send("initialize", map[string]any{
+		"clientInfo":   map[string]any{"name": "codex_mobile_goal", "version": "1"},
+		"capabilities": map[string]any{"experimentalApi": true}})
+	if err != nil {
+		return err
+	}
+	if err := waitResponse(s.scanner, id, 15*time.Second); err != nil {
+		return err
+	}
+	_, err = s.stdin.Write([]byte("{\"method\":\"initialized\"}\n"))
+	return err
+}
+
+func (s *goalSidecar) call(method string, params any) (*jsoncompat.Object, error) {
+	id, err := s.send(method, params)
 	if err != nil {
 		return nil, err
 	}
-	if err := waitResponse(scanner, initializeID, 15*time.Second); err != nil {
-		return nil, err
+	return responseObject(s.scanner, id, 15*time.Second)
+}
+
+func (s *goalSidecar) send(name string, value any) (int, error) {
+	s.counter++
+	payload := map[string]any{"id": s.counter, "method": name, "params": value}
+	data, _ := json.Marshal(payload)
+	if _, err := s.stdin.Write(append(data, '\n')); err != nil {
+		return 0, err
 	}
-	_, _ = stdin.Write([]byte("{\"method\":\"initialized\"}\n"))
-	id, err := send(method, params)
-	if err != nil {
-		return nil, err
-	}
-	return responseObject(scanner, id, 15*time.Second)
+	return s.counter, nil
+}
+
+func (s *goalSidecar) close() {
+	_ = s.stdin.Close()
+	_ = s.cmd.Process.Kill()
+	_, _ = s.cmd.Process.Wait()
 }
 
 func waitResponse(scanner *bufio.Scanner, id int, timeout time.Duration) error {
@@ -161,4 +227,9 @@ func NormalizeRPCGoal(value *jsoncompat.Object) *jsoncompat.Object {
 	value.Set("objective", objective)
 	value.Set("status", status)
 	return value
+}
+
+// requestForTest exposes the raw request path for the sidecar lifecycle test.
+func (m *Manager) requestForTest(method string, params any) (*jsoncompat.Object, error) {
+	return m.request(method, params)
 }
