@@ -244,6 +244,9 @@ func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
 		s.historyTL[threadID] = projection
 	}
 	view := model.NormalizeState(state, connected)
+	// Must match liveView's annotation exactly: both fold the same shared
+	// per-thread projection, and divergent rows would flap row digests.
+	annotateViewChanges(view, model.OrderedTurns(state))
 	view.Set("sequence", jsoncompat.Num(sequence))
 	view.Set("connectionError", connectionError)
 	view.Set("connecting", false)

@@ -45,7 +45,7 @@ class ChatTimeline {
   dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
-  capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
+  capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&!n.dataset.summary&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
   rowVisible(row){
     if(row.role==='user'||row.role==='error')return true;
     if(row.kind==='reasoning')return this.showReasoning;
@@ -125,6 +125,7 @@ class ChatTimeline {
     let position=this.container.firstChild;
     for(const row of ordered){const node=this.nodes.get(row.key).node;if(node===position)position=position.nextSibling;else this.container.insertBefore(node,position);}
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
+    this.renderTurnSummaries(ordered);
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
     if(reset)requestAnimationFrame(()=>this.fillRecent());
@@ -137,7 +138,15 @@ class ChatTimeline {
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
-      heading.textContent=rowLabel(row);node.append(heading);
+      heading.textContent=rowLabel(row);
+      // 命令执行结果徽标:0 成功、非 0 失败,未知(无 exitCode)不标注。
+      if(activity&&typeof row.exitCode==='number'){
+        const exit=document.createElement('span');
+        exit.className='diff-exit '+(row.exitCode===0?'ok':'fail');
+        exit.textContent=row.exitCode===0?'✓':'✗';
+        heading.append(' ',exit);
+      }
+      node.append(heading);
     }
     const body=document.createElement(activity&&!planEntries?'pre':'div');
     body.className=activity?(planEntries?'activity-body plan-body':'activity-body'):'message-body';
@@ -208,8 +217,34 @@ class ChatTimeline {
       attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
       attachments.append(attachment);node.append(attachments);
     }
+    // 本条改动涉及的文件卡片:点开差异审阅面板。
+    if(activity&&row.changes?.length){
+      const cwd=this.meta?.cwd||'';
+      node.append(window.BridgeDiff.fileCards(row.changes,cwd,change=>window.BridgeDiff.open(change,cwd)));
+    }
     if(activity){node.open=!!open;node.ontoggle=()=>{if(node.open&&!this.details.has(row.key)&&!planEntries)load();};}
     return node;
+  }
+  // 每轮「变更文件」汇总卡:按 turnId 聚合各行的 changes(同路径去重、
+  // 取最新),放在该轮最后一行之后。节点不在 this.nodes 里,仅由本方法
+  // 重建;capture() 会跳过它们以保持滚动锚定在真实行上。
+  renderTurnSummaries(ordered){
+    for(const node of this.container.querySelectorAll('[data-summary]'))node.remove();
+    const cwd=this.meta?.cwd||'',byTurn=new Map();
+    for(const row of ordered){
+      if(!row.changes?.length)continue;
+      let map=byTurn.get(row.turnId);
+      if(!map)byTurn.set(row.turnId,map=new Map());
+      for(const change of row.changes)map.set(change.path,change);
+    }
+    for(const [turnId,map] of byTurn){
+      const last=ordered.filter(row=>row.turnId===turnId).pop();
+      const anchor=last&&this.nodes.get(last.key)?.node;
+      if(!anchor)continue;
+      const card=window.BridgeDiff.summaryCard([...map.values()],cwd,change=>window.BridgeDiff.open(change,cwd));
+      card.dataset.summary='1';
+      anchor.after(card);
+    }
   }
   async fullText(row){
     const valid=()=>!this.abort.signal.aborted&&this.rows.get(row.key)?.row.version===row.version;
@@ -248,6 +283,7 @@ class ChatTimeline {
       const attachment=node.querySelector('.timeline-attachments small.muted');
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
+    this.renderTurnSummaries([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order));
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }
   updates(){

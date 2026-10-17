@@ -898,6 +898,10 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 		return nil, "", false
 	}
 	view := model.NormalizeState(state, connected)
+	// Structured file/command results ride on the view (see changes.go):
+	// normalization folds them into text, the timeline whitelist needs the
+	// structured form, and every projection fold must agree on row bytes.
+	annotateViewChanges(view, model.OrderedTurns(state))
 	view.Set("sequence", jsoncompat.Num(sequence))
 	view.Set("connectionError", connectionError)
 	view.Set("connecting", false)

@@ -234,6 +234,20 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 						record.Set("attachments", converted)
 					}
 				}
+				// Structured per-file results (httpd/changes.go annotation,
+				// acpview diff blocks): bounded passthrough so the phone can
+				// render per-round file cards. Only messages carrying the
+				// fields change shape; golden scenarios never set them.
+				if value, ok := message.Get("exitCode"); ok {
+					record.Set("exitCode", value)
+				}
+				if value, ok := message.Get("changes"); ok {
+					if source, ok := value.(*jsoncompat.Array); ok {
+						if converted := boundedChanges(source); converted != nil {
+							record.Set("changes", converted)
+						}
+					}
+				}
 				rows = append(rows, &row{obj: record, key: key, version: version, text: text})
 				details[key] = text
 			}
@@ -329,6 +343,49 @@ func (t *Timeline) Update(view *jsoncompat.Object) {
 		delete(t.versions, t.versionKeys[0])
 		t.versionKeys = t.versionKeys[1:]
 	}
+}
+
+// boundedChanges bounds one message's structured change entries for the row
+// projection: at most 20 files, path capped at 300 chars, and each of
+// oldText/newText (ACP blocks) and diff (codex unified text) capped at
+// DetailChars with a truncated marker. Nil when nothing reviewable remains.
+func boundedChanges(source *jsoncompat.Array) *jsoncompat.Array {
+	limit := len(source.Items)
+	if limit > 20 {
+		limit = 20
+	}
+	converted := &jsoncompat.Array{}
+	for _, item := range source.Items[:limit] {
+		change, _ := item.(*jsoncompat.Object)
+		if change == nil {
+			continue
+		}
+		path, _ := change.MustGet("path").(string)
+		if path == "" {
+			continue
+		}
+		entry := jsoncompat.NewObject()
+		entry.Set("path", runeSlice(path, 0, 300))
+		for _, field := range [...]string{"oldText", "newText", "diff"} {
+			value, ok := change.Get(field)
+			if !ok {
+				continue
+			}
+			text, isString := value.(string)
+			if !isString {
+				continue
+			}
+			entry.Set(field, runeSlice(text, 0, DetailChars))
+			if runeLen(text) > DetailChars {
+				entry.Set("truncated", true)
+			}
+		}
+		converted.Items = append(converted.Items, entry)
+	}
+	if len(converted.Items) == 0 {
+		return nil
+	}
+	return converted
 }
 
 // editableValue reproduces `turn.get('actionable', True) and message is

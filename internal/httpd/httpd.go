@@ -317,6 +317,7 @@ var staticRoutes = map[string]staticRoute{
 	"/markdown.js":                {"markdown.js", "text/javascript; charset=utf-8"},
 	"/message-actions.js":         {"message-actions.js", "text/javascript; charset=utf-8"},
 	"/timeline.js":                {"timeline.js", "text/javascript; charset=utf-8"},
+	"/diff.js":                    {"diff.js", "text/javascript; charset=utf-8"},
 	"/transport.js":               {"transport.js", "text/javascript; charset=utf-8"},
 	"/vendor/markdown-it.min.js":  {"vendor/markdown-it.min.js", "text/javascript; charset=utf-8"},
 	"/vendor/texmath.js":          {"vendor/texmath.js", "text/javascript; charset=utf-8"},

@@ -79,3 +79,37 @@
 .key-pill code{font:10px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .key-pill button{flex:none;width:16px;height:16px;padding:0;border:0;border-radius:50%;background:#c9dcc6;color:#305b3e;font-size:11px;line-height:1;display:grid;place-items:center}
 .key-pill button:hover{background:#f4d9d4;color:#a43b31}
+
+/* 每轮文件结果卡片:路径 + 增删行数,点开差异审阅面板 */
+.diff-cards{display:flex;flex-direction:column;gap:6px;margin:8px 0 2px}
+.diff-card{display:flex;align-items:center;gap:8px;width:100%;max-width:560px;text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 11px;font-size:12px;color:var(--text);min-height:0}
+.diff-card:hover{border-color:var(--accent)}
+.diff-card-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+.diff-stat-add{color:#1d8a4b;font-weight:600;flex:none}
+.diff-stat-del{color:#c8473d;font-weight:600;flex:none}
+.diff-stat-mut{color:var(--muted);font-size:10px;flex:none}
+.diff-exit{font-size:10px;line-height:1;border-radius:8px;padding:3px 6px}
+.diff-exit.ok{color:#1d8a4b;background:rgba(29,138,75,.14)}
+.diff-exit.fail{color:var(--error);background:rgba(200,71,61,.14)}
+
+/* 每轮汇总卡:本轮改动 N 个文件 */
+.turn-diff-summary{margin:12px 0;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;font-size:12px;max-width:560px}
+.turn-diff-title{color:var(--muted);margin-bottom:2px}
+.turn-diff-title strong{color:var(--text)}
+
+/* 差异审阅面板(<dialog class="picker">) */
+.diff-review-title{font:600 13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;min-width:0;overflow-wrap:anywhere}
+.diff-file-head{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;font-size:12px}
+.diff-file-path{font:600 11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.diff-note{color:var(--muted);font-size:11px;margin:10px 0 0}
+.diff-view{--diff-add-bg:rgba(52,168,83,.13);--diff-add-ink:#1d7a3a;--diff-del-bg:rgba(214,69,57,.11);--diff-del-ink:#bb4038;font:11px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:58dvh;margin-top:10px}
+:root[data-theme=dark] .diff-view{--diff-add-bg:rgba(52,168,83,.2);--diff-add-ink:#7fd6a0;--diff-del-bg:rgba(214,69,57,.18);--diff-del-ink:#f19c9c}
+.diff-line{display:flex;white-space:pre}
+.diff-line code{flex:1;min-width:0;white-space:pre-wrap;word-break:break-all}
+.diff-no{flex:none;width:36px;text-align:right;padding-right:8px;color:var(--muted);user-select:none}
+.diff-line.add{background:var(--diff-add-bg)}
+.diff-line.add code{color:var(--diff-add-ink)}
+.diff-line.del{background:var(--diff-del-bg)}
+.diff-line.del code{color:var(--diff-del-ink)}
+.diff-line.hunk{color:var(--muted);background:var(--surface);padding:2px 8px;margin:4px 0}
+.diff-more{display:block;margin:10px auto 2px}

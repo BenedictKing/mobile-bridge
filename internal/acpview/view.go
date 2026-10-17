@@ -388,6 +388,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			message.Set("kind", "subagent")
 		}
 		appendContentAttachments(message, update.MustGet("content"))
+		appendContentChanges(message, update.MustGet("content"), update.MustGet("rawInput"))
 		messages(v.assistantTurn()).Items = append(messages(v.assistantTurn()).Items, message)
 		if callID, ok := update.MustGet("toolCallId").(string); ok && callID != "" {
 			v.toolIndex[callID] = message
@@ -421,6 +422,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			message.Set("output", output)
 		}
 		appendContentAttachments(message, update.MustGet("content"))
+		appendContentChanges(message, update.MustGet("content"), update.MustGet("rawInput"))
 	case "plan":
 		entries := &jsoncompat.Array{}
 		if list := arr(truthyOr(update.MustGet("entries"), any(&jsoncompat.Array{}))); list != nil {
@@ -526,8 +528,9 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 }
 
 // flattenContentText flattens tool content to text while skipping blocks
-// that become attachments: their JSON form is preview noise, and before
-// media persistence their inline base64 flooded the output text.
+// that become attachments or structured change entries: their JSON form is
+// preview noise, and before media persistence their inline base64 flooded
+// the output text.
 func flattenContentText(content any) string {
 	list := arr(content)
 	if list == nil {
@@ -535,7 +538,8 @@ func flattenContentText(content any) string {
 	}
 	kept := &jsoncompat.Array{}
 	for _, item := range list.Items {
-		if blockAttachment(obj(item)) != nil {
+		block := obj(item)
+		if blockAttachment(block) != nil || diffBlock(block) != nil {
 			continue
 		}
 		kept.Items = append(kept.Items, item)
