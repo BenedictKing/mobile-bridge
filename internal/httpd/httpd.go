@@ -91,6 +91,10 @@ type Server struct {
 	Goal            *goal.Manager
 	historyMu       sync.Mutex
 	historyTL       map[string]*timeline.Timeline
+	artifactMu      sync.Mutex
+	artifactCache   map[string]*artifactMemo
+	desktopMu       sync.Mutex
+	desktopPaths    map[string]map[string]string
 	subagentOnce    sync.Once
 	codexSubagents  *subagents.Flattener
 	discovery       *listDiscovery
@@ -105,7 +109,8 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
 			"http://localhost:" + strconv.Itoa(port): true},
 		SecureHosts: map[string]bool{},
-		Pairing:     pairing.New(nil), historyTL: map[string]*timeline.Timeline{}}
+		Pairing:     pairing.New(nil), historyTL: map[string]*timeline.Timeline{},
+		artifactCache: map[string]*artifactMemo{}, desktopPaths: map[string]map[string]string{}}
 	server.Bridge = server
 	return server
 }

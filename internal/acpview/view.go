@@ -3,6 +3,8 @@ package acpview
 
 import (
 	"fmt"
+	"net/url"
+	"path/filepath"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -343,6 +345,15 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			previous, _ := message.MustGet("text").(string)
 			message.Set("text", previous+text)
 		}
+		// Non-text blocks (persisted images, local resource links) become
+		// row attachments the phone can preview; without this they used to
+		// vanish entirely because Text() only reads the text field.
+		if attachment := blockAttachment(obj(update.MustGet("content"))); attachment != nil {
+			message := v.assistantMessage(v.assistantTurn(), "agentMessage",
+				"assistant", update.MustGet("messageId"),
+				func(m *jsoncompat.Object) { m.Set("phase", "final") })
+			appendAttachment(message, attachment)
+		}
 	case "agent_thought_chunk":
 		if text := Text(update.MustGet("content")); text != "" {
 			message := v.assistantMessage(v.assistantTurn(), "agentThought",
@@ -350,6 +361,12 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 				func(m *jsoncompat.Object) { m.Set("title", "思考摘要") })
 			previous, _ := message.MustGet("text").(string)
 			message.Set("text", previous+text)
+		}
+		if attachment := blockAttachment(obj(update.MustGet("content"))); attachment != nil {
+			message := v.assistantMessage(v.assistantTurn(), "agentThought",
+				"activity", update.MustGet("messageId"),
+				func(m *jsoncompat.Object) { m.Set("title", "思考摘要") })
+			appendAttachment(message, attachment)
 		}
 	case "tool_call":
 		titleInput, _ := update.MustGet("title").(string)
@@ -361,7 +378,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		message.Set("title", truthyOr(update.MustGet("title"),
 			truthyOr(update.MustGet("kind"), "工具调用")))
 		message.Set("text", CommandSummary(update.MustGet("rawInput")))
-		message.Set("output", FlattenOutput(update.MustGet("content")))
+		message.Set("output", flattenContentText(update.MustGet("content")))
 		message.Set("status", statusMap(getDefault(update, "status", nil)))
 		if metadata.Len() > 0 {
 			for _, key := range metadata.Keys() {
@@ -370,6 +387,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			}
 			message.Set("kind", "subagent")
 		}
+		appendContentAttachments(message, update.MustGet("content"))
 		messages(v.assistantTurn()).Items = append(messages(v.assistantTurn()).Items, message)
 		if callID, ok := update.MustGet("toolCallId").(string); ok && callID != "" {
 			v.toolIndex[callID] = message
@@ -399,9 +417,10 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		if command := CommandSummary(update.MustGet("rawInput")); command != "" {
 			message.Set("text", command)
 		}
-		if output := FlattenOutput(update.MustGet("content")); output != "" {
+		if output := flattenContentText(update.MustGet("content")); output != "" {
 			message.Set("output", output)
 		}
+		appendContentAttachments(message, update.MustGet("content"))
 	case "plan":
 		entries := &jsoncompat.Array{}
 		if list := arr(truthyOr(update.MustGet("entries"), any(&jsoncompat.Array{}))); list != nil {
@@ -504,6 +523,119 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			v.applyConfigOption(option)
 		}
 	}
+}
+
+// flattenContentText flattens tool content to text while skipping blocks
+// that become attachments: their JSON form is preview noise, and before
+// media persistence their inline base64 flooded the output text.
+func flattenContentText(content any) string {
+	list := arr(content)
+	if list == nil {
+		return FlattenOutput(content)
+	}
+	kept := &jsoncompat.Array{}
+	for _, item := range list.Items {
+		if blockAttachment(obj(item)) != nil {
+			continue
+		}
+		kept.Items = append(kept.Items, item)
+	}
+	return FlattenOutput(kept)
+}
+
+// appendContentAttachments extracts previewable non-text blocks from a
+// tool_call content array onto the tool row's message.
+func appendContentAttachments(message *jsoncompat.Object, content any) {
+	list := arr(content)
+	if list == nil {
+		return
+	}
+	for _, item := range list.Items {
+		if attachment := blockAttachment(obj(item)); attachment != nil {
+			appendAttachment(message, attachment)
+		}
+	}
+}
+
+// blockAttachment converts one non-text content block into a row attachment:
+// image blocks carry a gateway-persisted local path (acpruntime rewrites
+// inline base64 before the view sees them); resource_link blocks reference
+// local files. Text, remote and path-less blocks return nil.
+func blockAttachment(block *jsoncompat.Object) *jsoncompat.Object {
+	if block == nil {
+		return nil
+	}
+	blockType, _ := block.MustGet("type").(string)
+	switch blockType {
+	case "image":
+		path, _ := block.MustGet("path").(string)
+		if path == "" {
+			return nil
+		}
+		attachment := jsoncompat.NewObject()
+		attachment.Set("type", "localImage")
+		attachment.Set("path", path)
+		attachment.Set("name", attachmentName(block, path))
+		return attachment
+	case "resource_link":
+		uri, _ := block.MustGet("uri").(string)
+		if uri == "" {
+			return nil
+		}
+		path := localFilePath(uri)
+		if path == "" {
+			return nil
+		}
+		attachment := jsoncompat.NewObject()
+		attachment.Set("type", "file")
+		attachment.Set("path", path)
+		attachment.Set("name", attachmentName(block, path))
+		return attachment
+	}
+	return nil
+}
+
+func attachmentName(block *jsoncompat.Object, path string) string {
+	if name, _ := block.MustGet("name").(string); name != "" {
+		return name
+	}
+	return filepath.Base(path)
+}
+
+// localFilePath unwraps file:// URIs (the only resource links with a local
+// preview); anything remote returns "".
+func localFilePath(uri string) string {
+	parsed, err := url.Parse(uri)
+	if err != nil || parsed.Scheme != "file" {
+		return ""
+	}
+	if parsed.Host != "" && parsed.Host != "localhost" {
+		return ""
+	}
+	if decoded, err := url.PathUnescape(parsed.Path); err == nil && decoded != "" {
+		return decoded
+	}
+	return ""
+}
+
+// appendAttachment adds one attachment entry unless the message already
+// carries the same path (streamed chunks may repeat a block).
+func appendAttachment(message *jsoncompat.Object, attachment *jsoncompat.Object) {
+	path, _ := attachment.MustGet("path").(string)
+	list, _ := message.MustGet("attachments").(*jsoncompat.Array)
+	if list == nil {
+		list = &jsoncompat.Array{}
+		message.Set("attachments", list)
+	} else if path != "" {
+		for _, item := range list.Items {
+			if existing := obj(item); existing != nil {
+				if existingPath, _ := existing.MustGet("path").(string); existingPath == path {
+					return
+				}
+			}
+		}
+	}
+	list.Items = append(list.Items, attachment)
 }
 
 func stringValue(value any) string {

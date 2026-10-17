@@ -788,10 +788,16 @@ func (h *handler) handleUploadHTTP(write bool, path string, query map[string][]s
 		return false
 	}
 	if !write {
+		if match := desktopImageRoute.FindStringSubmatch(path); match != nil {
+			h.serveDesktopImage(match[1], match[2])
+			return true
+		}
 		if match := fileRoute.FindStringSubmatch(path); match != nil {
 			row, err := h.server.Uploads.Artifact(match[1], match[2])
 			if err != nil {
-				h.fail(http.StatusNotFound, errorBody(err.Error()))
+				// Not one of the phone's uploads: try the chat's workspace
+				// artifacts (screenshots, generated files) next.
+				h.serveWorkspaceArtifact(match[1], match[2])
 				return true
 			}
 			localPath, _ := row.MustGet("localPath").(string)
@@ -945,12 +951,14 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 			version = value
 		}
 		result, err := projection.Detail(queryValue(query, "key", ""), intQuery(query, "offset", 0), version)
-		return result, true, err
+		return h.server.enrichTimeline(threadID, view, result), true, err
 	}
 	if action == "changes" {
-		return projection.Changes(queryValue(query, "after", "-1"), queryValue(query, "epoch", ""), queryValue(query, "start", "")), true, nil
+		return h.server.enrichTimeline(threadID, view,
+			projection.Changes(queryValue(query, "after", "-1"), queryValue(query, "epoch", ""), queryValue(query, "start", ""))), true, nil
 	}
-	return projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", "")), true, nil
+	return h.server.enrichTimeline(threadID, view,
+		projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", ""))), true, nil
 }
 
 // historicalTimeline projects a saved rollout through the same Go timeline
@@ -961,22 +969,7 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	if err != nil {
 		return nil, err
 	}
-	state := jsoncompat.NewObject()
-	for _, key := range []string{"id", "title", "cwd", "latestModel", "modelProvider", "turns"} {
-		if value, ok := history.Get(key); ok {
-			state.Set(key, value)
-		}
-	}
-	state.Set("turnsPagination", history.MustGet("turnsPagination"))
-	var sequence any = jsoncompat.Num(1)
-	if value, ok := history.Get("updated_at_ms"); ok {
-		sequence = value
-	} else if value, ok := history.Get("updated_at"); ok {
-		sequence = value
-	}
-	state.Set("sequence", sequence)
-	view := model.NormalizeState(state, false)
-	view.Set("sequence", sequence)
+	view := buildHistoryView(history)
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
@@ -1007,12 +1000,15 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 		if raw := queryValue(query, "version", ""); raw != "" {
 			version = raw
 		}
-		return projection.Detail(queryValue(query, "key", ""), intQuery(query, "offset", 0), version)
+		result, err := projection.Detail(queryValue(query, "key", ""), intQuery(query, "offset", 0), version)
+		return h.server.enrichTimeline(threadID, view, result), err
 	}
 	if action == "changes" {
-		return projection.Changes(queryValue(query, "after", "-1"), queryValue(query, "epoch", ""), queryValue(query, "start", "")), nil
+		return h.server.enrichTimeline(threadID, view,
+			projection.Changes(queryValue(query, "after", "-1"), queryValue(query, "epoch", ""), queryValue(query, "start", ""))), nil
 	}
-	return projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", "")), nil
+	return h.server.enrichTimeline(threadID, view,
+		projection.Page(intQuery(query, "limit", 20), queryValue(query, "before", ""))), nil
 }
 
 func intQuery(query map[string][]string, key string, fallback int) int {

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/artifacts"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/google/uuid"
 )
@@ -172,6 +173,38 @@ func (m *Manager) Artifact(thread, digest string) (*jsoncompat.Object, error) {
 		}
 	}
 	return nil, errors.New("附件不存在")
+}
+
+// ByPath maps resolved local paths to their public upload rows for one
+// thread, so timeline attachment annotation can attach preview ids to images
+// the phone originally uploaded (Python's uploads.by_path). Keys use the same
+// Identity normalization as the annotation side, so symlinked prefixes
+// (/var vs /private/var) still match.
+func (m *Manager) ByPath(thread string, paths map[string]bool) map[string]*jsoncompat.Object {
+	result := map[string]*jsoncompat.Object{}
+	if len(paths) == 0 || !safeThread.MatchString(thread) {
+		return result
+	}
+	entries, err := os.ReadDir(filepath.Join(m.Root, thread))
+	if err != nil {
+		return result
+	}
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		row, getErr := m.Get(thread, id)
+		if getErr != nil {
+			continue
+		}
+		localPath, _ := row.MustGet("localPath").(string)
+		if !paths[artifacts.Identity(localPath)] {
+			continue
+		}
+		result[artifacts.Identity(localPath)] = public(row)
+	}
+	return result
 }
 
 func (m *Manager) Preview(thread, id, variant string) (*jsoncompat.Object, string, error) {

@@ -745,6 +745,11 @@ func runGateway(args []string) {
 				manager.AutoApprove = jevApprovalHook(server.Jev, kind)
 				manager.AutoContinue = jevContinueHook(server.Jev, kind)
 			}
+			// Inline image blocks stream as base64; persisting them under the
+			// data dir gives the phone a previewable path per session.
+			if manager != nil {
+				manager.MediaDir = filepath.Join(dataDir, "agent-media")
+			}
 		}
 		sort.Strings(enabled)
 		log.Printf("agents enabled: %s", strings.Join(enabled, ", "))

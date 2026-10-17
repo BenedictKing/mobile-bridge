@@ -81,12 +81,15 @@
           const destination = target(token.attrGet('src') || '');
           const label = token.content || destination?.file?.name || '图片';
           if (destination?.file?.image) {
+            // The anchor opens the artifact at full size in a new tab.
+            const anchor = link(destination.url, token.attrGet('title'));
             const image = document.createElement('img');
             image.className = 'artifact-image';
             image.src = destination.url;
             image.alt = label;
             image.loading = 'lazy';
-            parent.append(image);
+            anchor.append(image);
+            parent.append(anchor);
           } else if (destination) {
             // Remote images remain links instead of making background requests.
             const anchor = link(destination.url, token.attrGet('title'));

@@ -47,7 +47,9 @@ type Session struct {
 	// default matches, tests shrink it.
 	activitySlice        time.Duration
 	lastSubagentRevision int64
-	autoApprove          func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
+	// mediaDir (from Manager.MediaDir) receives decoded inline image blocks.
+	mediaDir    string
+	autoApprove func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
 	// autoContinue runs asynchronously once a live turn settles; the gateway
 	// installs it to resume unfinished work. autoContinueRuns is the
 	// consecutive-resume budget any human action re-arms.
@@ -107,6 +109,11 @@ type Manager struct {
 	// ListTTL bounds how long one session/list read is trusted, mirroring
 	// Python's LIST_CACHE_SECONDS (30s).
 	ListTTL time.Duration
+
+	// MediaDir persists decoded inline image blocks (ACP image content with
+	// base64 data) as per-session files so the phone can preview them; empty
+	// disables persistence and the view drops such blocks like before.
+	MediaDir string
 
 	mu         sync.Mutex
 	sessions   map[string]*Session
@@ -339,7 +346,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		return nil, err
 	}
 	session := &Session{ID: id, Cwd: cwd, Process: process,
-		View: acpview.NewView(id, nil, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: acpview.NewView(id, nil, cwd, m.now), active: true, mediaDir: m.MediaDir, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
@@ -424,7 +431,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	}
 	createdAt := int64(m.now() * 1000)
 	session := &Session{ID: id, Cwd: cwd, Title: title, CreatedAtMs: createdAt, Process: process,
-		View: acpview.NewView(id, title, cwd, m.now), active: true, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: acpview.NewView(id, title, cwd, m.now), active: true, mediaDir: m.MediaDir, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
@@ -1209,6 +1216,9 @@ func (s *Session) onNotification(message *jsoncompat.Object) {
 	if update, ok := params.MustGet("update").(*jsoncompat.Object); ok {
 		params = update
 	}
+	// Inline image blocks are decoded to disk before the view folds the
+	// update: snapshots stay small and the phone gets a previewable path.
+	s.prepareMedia(params)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
