@@ -174,12 +174,21 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 	html := request(http.MethodGet, "/api/sessions/km-visual/files/"+htmlID, "")
 	if html.Code != http.StatusOK ||
 		html.Header().Get("Content-Type") != "text/html; charset=utf-8" ||
-		html.Header().Get("Content-Security-Policy") != "sandbox allow-scripts" {
+		html.Header().Get("Content-Security-Policy") != "sandbox allow-scripts; frame-ancestors 'self'" {
 		t.Fatalf("html artifact status=%d headers=%v", html.Code, html.Header())
+	}
+	// Sandboxed documents frame only from gateway pages: XFO must yield to the
+	// response's own frame-ancestors, or the chat's iframe preview is blocked.
+	if html.Header().Get("X-Frame-Options") != "" {
+		t.Fatalf("sandboxed html kept X-Frame-Options: %v", html.Header())
 	}
 	shot := request(http.MethodGet, "/api/sessions/km-visual/files/"+imageID, "")
 	if shot.Code != http.StatusOK || shot.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("image artifact status=%d type=%s", shot.Code, shot.Header().Get("Content-Type"))
+	}
+	// Non-sandboxed media keeps the blanket framing ban.
+	if shot.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("image artifact lost X-Frame-Options: %v", shot.Header())
 	}
 }
 

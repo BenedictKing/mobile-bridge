@@ -741,6 +741,18 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				extra = append(extra, block)
 			}
 		}
+		// Result-visibility convention: when enabled, phone-initiated turns
+		// carry the hint as the FIRST extra block so the agent's output stays
+		// previewable on the phone. The user row keeps the raw text —
+		// Session.prompt records BeginTurn(text) from the original string, the
+		// hint only rides in the prompt block list. Steer supplements skip it
+		// (the convention already rode with the turn it supplements), and so
+		// does codex: its app-server turn contract exposes developer
+		// instructions as a turn-wide replacement, not an additive channel,
+		// so injecting there would clobber desktop-configured instructions.
+		if mode != "steer" {
+			extra = h.server.conventionExtras(extra)
+		}
 		callErr := session.PromptWithBlocks(text, extra, 3600*time.Second)
 		if callErr == nil {
 			dispatched = true
@@ -1177,7 +1189,7 @@ func (h *handler) stream(bridge SessionBridge, threadID string, query map[string
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("X-Frame-Options", "DENY")
-	header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
+	header.Set("Content-Security-Policy", contentSecurityPolicy)
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	header.Set("Content-Type", "text/event-stream; charset=utf-8")
 	header.Set("X-Accel-Buffering", "no")

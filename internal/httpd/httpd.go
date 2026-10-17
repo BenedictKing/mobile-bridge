@@ -26,6 +26,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
+	"github.com/BenedictKing/mobile-bridge/internal/conventions"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -38,6 +39,11 @@ import (
 )
 
 const contentTypeJSON = "application/json; charset=utf-8"
+
+// contentSecurityPolicy is the shell CSP shared by every output() response
+// and the SSE stream: frame-src 'self' admits the same-origin /files iframe
+// previews while frame-ancestors 'none' still blocks third-party framing.
+const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
 
 // Bridge supplies the business responses behind the routes.
 type Bridge interface {
@@ -89,6 +95,7 @@ type Server struct {
 	ACPAgents       map[string]*acpruntime.Manager
 	NotificationDir string
 	Jev             *jev.Settings
+	Conventions     *conventions.Settings
 	Account         *account.Manager
 	Goal            *goal.Manager
 	queueMu         sync.Mutex // serializes queue dispatch passes
@@ -189,7 +196,7 @@ func (h *handler) output(status int, data any, contentType string, cookie string
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("X-Frame-Options", "DENY")
-	header.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
+	header.Set("Content-Security-Policy", contentSecurityPolicy)
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	header.Set("Content-Type", contentType)
 	header.Set("Vary", "Accept-Encoding")
@@ -318,6 +325,7 @@ var staticRoutes = map[string]staticRoute{
 	"/presentation.js":            {"presentation.js", "text/javascript; charset=utf-8"},
 	"/presentation.css":           {"presentation.css", "text/css; charset=utf-8"},
 	"/markdown.js":                {"markdown.js", "text/javascript; charset=utf-8"},
+	"/image-viewer.js":            {"image-viewer.js", "text/javascript; charset=utf-8"},
 	"/message-actions.js":         {"message-actions.js", "text/javascript; charset=utf-8"},
 	"/timeline.js":                {"timeline.js", "text/javascript; charset=utf-8"},
 	"/diff.js":                    {"diff.js", "text/javascript; charset=utf-8"},
@@ -752,6 +760,29 @@ func (h *handler) handleMethod(write bool) {
 			return
 		}
 		h.output(http.StatusOK, h.server.Jev.Public(), contentTypeJSON, "")
+	case path == "/api/conventions":
+		if h.session(write) == nil {
+			return
+		}
+		if h.server.Conventions == nil {
+			h.fail(http.StatusConflict, errorBody("当前网关未启用结果可见设置"))
+			return
+		}
+		if write {
+			value, err := h.readJSON()
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return
+			}
+			result, updateErr := h.server.Conventions.Update(value.(*jsoncompat.Object))
+			if updateErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(updateErr.Error()))
+				return
+			}
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return
+		}
+		h.output(http.StatusOK, h.server.Conventions.Public(), contentTypeJSON, "")
 	default:
 		// The auth gate runs before every unmatched path (Python's
 		// authorized() precedes all remaining routing).

@@ -7,9 +7,11 @@
 
   // Build nodes from parsed tokens; model output never becomes executable HTML.
   window.renderMarkdown = function(node, text, files = [], fileUrl = () => '', options = {}) {
+    const t = x => typeof BridgeI18n === 'undefined' ? x : BridgeI18n.t(x);
     const body = document.createElement('div');
     body.className = 'markdown-body';
     const artifacts = new Map(files.map(file => [markdown.normalizeLink(file.reference), file]));
+    const htmlArtifact = file => /\.html?$/i.test(String(file?.reference || ''));
     function target(reference) {
       const file = artifacts.get(reference);
       if (file) return {url:fileUrl(file), file};
@@ -23,6 +25,27 @@
       anchor.rel = 'noopener noreferrer';
       if (title) anchor.title = title;
       return anchor;
+    }
+    // Collapsed in-chat preview for .html/.htm artifacts: a sandboxed iframe
+    // that only fetches its src when expanded, plus a keep-new-tab link.
+    function htmlPreview(file, url) {
+      const name = file.name || file.reference;
+      const details = document.createElement('details');
+      details.className = 'artifact-preview';
+      const summary = document.createElement('summary');
+      summary.append(t('预览') + ' ' + name + ' · ');
+      const opener = link(url, null);
+      opener.textContent = t('在新标签打开');
+      summary.append(opener);
+      const frame = document.createElement('iframe');
+      frame.className = 'artifact-frame';
+      frame.title = name;
+      frame.setAttribute('sandbox', 'allow-scripts');
+      frame.setAttribute('loading', 'lazy');
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      details.ontoggle = () => { if (details.open && !frame.src) frame.src = url; };
+      details.append(summary, frame);
+      return details;
     }
     let codeIndex=0;
     function appendTokens(tokens, root) {
@@ -80,9 +103,14 @@
         } else if (token.type === 'image') {
           const destination = target(token.attrGet('src') || '');
           const label = token.content || destination?.file?.name || '图片';
-          if (destination?.file?.image) {
-            // The anchor opens the artifact at full size in a new tab.
+          if (destination?.file && htmlArtifact(destination.file)) {
+            parent.append(htmlPreview(destination.file, destination.url));
+          } else if (destination?.file?.image) {
+            // The lightbox opens the image in place; the anchor keeps the
+            // full-size new-tab entry for long-press / modifier clicks.
             const anchor = link(destination.url, token.attrGet('title'));
+            anchor.dataset.imagePreview = destination.url;
+            anchor.dataset.imageName = label;
             const image = document.createElement('img');
             image.className = 'artifact-image';
             image.src = destination.url;
@@ -97,12 +125,24 @@
             parent.append(anchor);
           } else parent.append(document.createTextNode(label));
         } else if (token.nesting === -1) {
-          parents.pop();
+          const closed = parents.pop();
+          // An inline link to an HTML artifact gains its preview right after
+          // the anchor (the anchor is the parent's last child here).
+          if (closed?.dataset?.artifactPreview && closed.parentNode) {
+            closed.parentNode.append(htmlPreview(closed.previewFile, closed.previewUrl));
+          }
         } else {
           let element;
           if (token.type === 'link_open') {
             const destination = target(token.attrGet('href') || '');
-            element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
+            if (destination?.file && htmlArtifact(destination.file)) {
+              element = link(destination.url, token.attrGet('title'));
+              element.dataset.artifactPreview = '1';
+              element.previewFile = destination.file;
+              element.previewUrl = destination.url;
+            } else {
+              element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
+            }
           } else if (tags.has(token.tag)) {
             element = document.createElement(token.tag);
             if (token.tag === 'ol' && token.attrGet('start')) element.start = Number(token.attrGet('start'));

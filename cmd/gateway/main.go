@@ -41,6 +41,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
+	"github.com/BenedictKing/mobile-bridge/internal/conventions"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
@@ -568,6 +569,7 @@ func runGateway(args []string) {
 	server.Uploads = uploads.New(dataDir)
 	server.NotificationDir = dataDir
 	server.Jev = jev.New(filepath.Join(dataDir, "jev.json"))
+	server.Conventions = conventions.New(filepath.Join(dataDir, "conventions.json"))
 	var quickTunnel *tunnel.Quick
 	sshForwards := []*tunnel.SSHForward{}
 	preferences := desktopPreferences(dataDir)

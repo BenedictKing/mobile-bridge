@@ -251,7 +251,10 @@ class ChatTimeline {
           const original=item.uploadId
             ?source+'&variant=original'
             :source;
+          // The anchor keeps target=_blank for long-press/new-tab; a plain
+          // tap is intercepted by the image lightbox via data-image-preview.
           const link=document.createElement('a');link.href=original;link.target='_blank';link.rel='noopener';
+          link.dataset.imagePreview=original;link.dataset.imageName=item.name||timelineText('图片附件');
           const image=document.createElement('img');image.className='attachment-image';image.alt=item.name||timelineText('图片附件');
           image.loading='lazy';image.decoding='async';image.src=source;
           image.onerror=()=>link.remove();link.append(image);attachments.append(link);

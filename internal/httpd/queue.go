@@ -425,6 +425,9 @@ func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution
 			return outcomeFailed, modeErr.Error()
 		}
 	}
+	// Queued messages are phone-initiated turns too: same result-visibility
+	// convention as the direct send path.
+	extra = s.conventionExtras(extra)
 	if promptErr := session.PromptWithBlocks(text, extra, 3600*time.Second); promptErr != nil {
 		if strings.Contains(promptErr.Error(), "当前已有任务正在运行") {
 			// Provably not delivered: the agent refused the prompt.

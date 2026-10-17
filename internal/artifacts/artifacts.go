@@ -301,16 +301,19 @@ type Serve struct {
 
 // ServeType picks the response shape for an artifact. Raster images are
 // sniffed; HTML previews get sandbox allow-scripts; anything unrecognized
-// downloads as octet-stream.
+// downloads as octet-stream. Sandboxed documents also declare frame-ancestors
+// 'self' so only gateway pages (the chat's iframe preview) may frame them —
+// these responses skip X-Frame-Options, which would otherwise block that
+// same-origin preview entirely.
 func ServeType(path string, data []byte) Serve {
 	if mime := SniffImage(data); mime != "" {
 		return Serve{Mime: mime}
 	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".html", ".htm":
-		return Serve{Mime: "text/html; charset=utf-8", Sandbox: "sandbox allow-scripts"}
+		return Serve{Mime: "text/html; charset=utf-8", Sandbox: "sandbox allow-scripts; frame-ancestors 'self'"}
 	case ".svg":
-		return Serve{Mime: "image/svg+xml", Sandbox: "sandbox"}
+		return Serve{Mime: "image/svg+xml", Sandbox: "sandbox; frame-ancestors 'self'"}
 	case ".txt", ".md", ".log":
 		return Serve{Mime: "text/plain; charset=utf-8"}
 	case ".json":

@@ -179,10 +179,10 @@ func TestServeType(t *testing.T) {
 		t.Fatalf("png sniff: %+v", serve)
 	}
 	if serve := ServeType("viz.html", []byte("<html>")); serve.Mime != "text/html; charset=utf-8" ||
-		serve.Sandbox != "sandbox allow-scripts" {
+		serve.Sandbox != "sandbox allow-scripts; frame-ancestors 'self'" {
 		t.Fatalf("html serve: %+v", serve)
 	}
-	if serve := ServeType("pic.svg", []byte("<svg/>")); serve.Sandbox != "sandbox" {
+	if serve := ServeType("pic.svg", []byte("<svg/>")); serve.Sandbox != "sandbox; frame-ancestors 'self'" {
 		t.Fatalf("svg sandbox: %+v", serve)
 	}
 	if serve := ServeType("blob", []byte("junk")); serve.Mime != "application/octet-stream" {

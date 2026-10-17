@@ -411,6 +411,31 @@ $('jev-key-remove').onclick=()=>{
 };
 ['jev-auto-approve','jev-auto-continue','jev-base-url','jev-model','jev-proxy'].forEach(id=>$(id).onchange=()=>{jevDirty=true;});
 $('jev-key').onchange=()=>{if($('jev-key').value.trim())jevDirty=true;};
+let conventionsRequest=0,conventionsDirty=false;
+window.loadConventions=async()=>{
+  const request=++conventionsRequest;
+  $('conventions-artifact-paths').disabled=true;
+  $('conventions-error').textContent='';
+  try{
+    const result=await api('/api/conventions');if(request!==conventionsRequest)return;
+    $('conventions-artifact-paths').checked=Boolean(result.artifactPaths);
+    $('conventions-artifact-paths').disabled=false;
+    conventionsDirty=false;
+  }catch(error){if(request===conventionsRequest)$('conventions-error').textContent=t(error.message);}
+};
+// Conventions stage locally like every server-persisted item in this dialog.
+async function saveConventions(){
+  if(!conventionsDirty)return true;
+  $('conventions-artifact-paths').disabled=true;
+  try{
+    await api('/api/conventions',{artifactPaths:$('conventions-artifact-paths').checked});
+    $('conventions-artifact-paths').disabled=false;
+    conventionsDirty=false;
+    return true;
+  }
+  catch(error){$('conventions-error').textContent=t(error.message);await window.loadConventions();return false;}
+}
+$('conventions-artifact-paths').onchange=()=>{conventionsDirty=true;};
 // The one save button for every server-persisted setting in this dialog;
 // appearance stays browser-local and immediate.
 $('settings-save').onclick=async()=>{
@@ -419,6 +444,8 @@ $('settings-save').onclick=async()=>{
   if(await saveJevChanges()){jevDirty=false;jevClearPending=false;await window.loadJevSettings();}
   else ok=false;
   if(notificationDirty&&!await saveNotificationDefaults())ok=false;
+  if(await saveConventions()){await window.loadConventions();}
+  else ok=false;
   button.disabled=false;
   toast(ok?t('设置已保存'):t('部分设置保存失败，请检查表单错误'));
 };

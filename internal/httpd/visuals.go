@@ -312,14 +312,18 @@ func readServableFile(path string) ([]byte, string, bool) {
 
 // writeMedia emits one media response with revalidation caching. Sandbox, when
 // non-empty, becomes the Content-Security-Policy so agent-authored documents
-// render their scripts without inheriting the gateway's origin.
+// render their scripts without inheriting the gateway's origin — those
+// responses declare frame-ancestors 'self' instead of X-Frame-Options, whose
+// DENY would veto the chat's own same-origin iframe preview.
 func (h *handler) writeMedia(status int, data []byte, mime, name, sandbox string) {
 	etag := `"` + contentHash(data) + `"`
 	header := h.writer.Header()
 	header.Set("Cache-Control", "private, no-cache")
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
-	header.Set("X-Frame-Options", "DENY")
+	if sandbox == "" {
+		header.Set("X-Frame-Options", "DENY")
+	}
 	if sandbox != "" {
 		header.Set("Content-Security-Policy", sandbox)
 	}
