@@ -241,7 +241,10 @@ func (a *Auth) newSessionLocked(address, userAgent string, remember any, client 
 	}
 	a.sessions[a.sessionKey(token)] = session
 	a.persistLocked()
-	return token, session, nil
+	// The session lives in the shared map; the caller (login/pairing) reads
+	// it unlocked, so hand back a detached copy like GetForClient does.
+	snapshot, _ := jsoncompat.Clone(session).(*jsoncompat.Object)
+	return token, snapshot, nil
 }
 
 // Get mirrors Auth.get: validity check and lastSeen refresh (60s throttle).
@@ -289,7 +292,11 @@ func (a *Auth) GetForClient(token string, client *jsoncompat.Object, userAgent s
 		session.Set("lastSeen", json.Number(numberText(now)))
 		a.persistLocked()
 	}
-	return session
+	// The stored record stays shared with every concurrent request (and keeps
+	// being refreshed here); hand out a detached snapshot so the caller's
+	// unlocked reads (csrf, ip, …) never race the next refresh.
+	snapshot, _ := jsoncompat.Clone(session).(*jsoncompat.Object)
+	return snapshot
 }
 
 func (a *Auth) Logout(token string) {
