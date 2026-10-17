@@ -104,7 +104,7 @@ func (d *listDiscovery) refresh() {
 		}
 		for _, row := range rows {
 			id, _ := row.MustGet("sessionId").(string)
-			if id == "" {
+			if id == "" || d.server.hiddenSession(id) {
 				continue
 			}
 			title, _ := row.MustGet("title").(string)
