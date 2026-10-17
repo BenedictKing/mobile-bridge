@@ -421,6 +421,11 @@ func (h *handler) handleMigrate(threadID string) {
 			alreadySent = entry.Sent
 		}
 	}
+	// A migrated chat keeps a link back to its source (Python's fork origin
+	// ledger; the phone renders it as 来源会话 in the details sheet).
+	if h.server.Forks != nil && createdID != "" && threadID != createdID {
+		h.server.Forks.Record(createdID, forkOrigin{ID: threadID, Host: "local", Title: title})
+	}
 	if createdID == "" {
 		if ledger != nil {
 			ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
