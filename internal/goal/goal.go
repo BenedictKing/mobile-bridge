@@ -27,7 +27,7 @@ func (m *Manager) Get(threadID string) (*jsoncompat.Object, error) {
 	if err != nil {
 		return nil, err
 	}
-	return normalize(result), nil
+	return NormalizeRPCGoal(result), nil
 }
 func (m *Manager) Set(threadID, objective, status string) (*jsoncompat.Object, error) {
 	if status != "active" && status != "paused" {
@@ -41,7 +41,7 @@ func (m *Manager) Set(threadID, objective, status string) (*jsoncompat.Object, e
 	if err != nil {
 		return nil, err
 	}
-	return normalize(result), nil
+	return NormalizeRPCGoal(result), nil
 }
 func (m *Manager) Clear(threadID string) error {
 	_, err := m.request("thread/goal/clear", map[string]any{"threadId": threadID})
@@ -142,7 +142,11 @@ func number(value any) int {
 	}
 	return -1
 }
-func normalize(value *jsoncompat.Object) *jsoncompat.Object {
+
+// NormalizeRPCGoal folds a goal RPC result (either {"goal": {...}} or a bare
+// goal row) into the panel shape. The row only counts when objective and
+// status are both set, so an empty result reads as "no goal".
+func NormalizeRPCGoal(value *jsoncompat.Object) *jsoncompat.Object {
 	if value == nil {
 		return nil
 	}

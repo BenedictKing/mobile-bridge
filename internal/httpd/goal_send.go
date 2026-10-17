@@ -1,10 +1,13 @@
 // Goal-mode send chain (the last unported Python surface): phone-initiated
-// native goals for codex chats. Mirrors service.py's _goal_command /
-// _send_goal_activation: a durable command ledger plans every intent against
-// the authoritative sqlite goal state, the write rides the goal sidecar RPC,
-// and a confirmed create/resume fans out a bridge-sent activation turn whose
-// request id both hides its user row from the timeline and keeps it out of
-// the visible queue.
+// native goals. Mirrors service.py's _goal_command / _send_goal_activation: a
+// durable command ledger plans every intent against the authoritative goal
+// state, the write rides the owning transport, and a confirmed create/resume
+// fans out a bridge-sent activation turn whose request id both hides its user
+// row from the timeline and keeps it out of the visible queue. Two transports
+// implement the read/write wire: codex reads goals_1.sqlite and writes the
+// app-server sidecar RPC; mcode speaks its custom mcode/session/goal/* ACP
+// methods on the session process (reads never spawn, its goal/create kicks
+// the turn off by itself so no activation turn may ride along).
 package httpd
 
 import (
@@ -14,11 +17,14 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acp"
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/google/uuid"
@@ -113,6 +119,190 @@ func (g *goalLedger) forThread(threadID string) []*jsoncompat.Object {
 		}
 	}
 	return found
+}
+
+// --- transports ---------------------------------------------------------------
+
+// goalTransport abstracts the read/write wires behind the command machine
+// (Python's adapter goal methods): where the authoritative row lives and how
+// intents reach it.
+type goalTransport interface {
+	// Read returns the authoritative goal row (normalized) or nil. It must
+	// never spawn a process: absent/unready handles read as no goal.
+	Read(threadID string) *jsoncompat.Object
+	// Absent proves the thread has no goal ("no goal" vs "unreadable").
+	Absent(threadID string) bool
+	// Write applies one intent (create/pause/resume/edit/cancel). Error
+	// classification decides failed vs unknown — see goalWriteUnknown.
+	Write(threadID, action, objective, status string) error
+	// NeedsActivation reports whether a confirmed create/resume must fan out
+	// the bridge activation turn (mcode's goal/create starts the turn itself;
+	// a bridge turn would double-start the goal).
+	NeedsActivation() bool
+	// Available reports whether the transport can operate at all.
+	Available() bool
+}
+
+// codexGoalTransport reads goals_1.sqlite directly (view reads never spin an
+// app-server) and writes through the goal sidecar RPC — the exact wiring the
+// codex send chain has always used.
+type codexGoalTransport struct{ goal *goal.Manager }
+
+func (t codexGoalTransport) Read(threadID string) *jsoncompat.Object {
+	return goal.ReadNativeGoal(t.goal.Home, threadID)
+}
+
+func (t codexGoalTransport) Absent(threadID string) bool { return goal.Absent(t.goal.Home, threadID) }
+
+func (t codexGoalTransport) Write(threadID, action, objective, status string) error {
+	if action == "cancel" {
+		return t.goal.Clear(threadID)
+	}
+	if status == "" || action == "create" {
+		status = "active"
+	}
+	_, err := t.goal.Set(threadID, objective, status)
+	return err
+}
+
+func (t codexGoalTransport) NeedsActivation() bool { return true }
+
+func (t codexGoalTransport) Available() bool { return t.goal != nil && t.goal.Executable != "" }
+
+// mcodeGoalTransport speaks mcode's custom goal methods on the session
+// process (bridge/agents/mcode.py): reads touch only an already-live handle
+// and return nil otherwise, writes attach the session on demand.
+type mcodeGoalTransport struct{ manager *acpruntime.Manager }
+
+func (t *mcodeGoalTransport) Read(threadID string) *jsoncompat.Object {
+	session := t.manager.Get(threadID)
+	if session == nil || session.IsClosed() {
+		return nil
+	}
+	result, err := session.Request("mcode/session/goal/get", goalSessionParams(threadID), 5*time.Second)
+	if err != nil {
+		return nil
+	}
+	return goal.NormalizeRPCGoal(result)
+}
+
+func (t *mcodeGoalTransport) Absent(threadID string) bool { return t.Read(threadID) == nil }
+
+func (t *mcodeGoalTransport) Write(threadID, action, objective, status string) error {
+	// Writes may activate: the goal RPCs need the session loaded in a live
+	// process (mcode.py's _goal_handle → bridge.activate).
+	cwd := t.manager.CwdFor(threadID)
+	if cwd == "" {
+		return errors.New("找不到这个会话的工作目录，请稍后刷新列表")
+	}
+	session, err := t.manager.Open(threadID, cwd, t.manager.InitializeTimeout)
+	if err != nil {
+		return err
+	}
+	method, extra := "", ""
+	switch action {
+	case "cancel":
+		method = "mcode/session/goal/clear"
+	case "create":
+		method, extra = "mcode/session/goal/create", objective
+	case "edit":
+		method, extra = "mcode/session/goal/patch", objective
+	case "pause", "resume":
+		method = "mcode/session/goal/patch"
+	default:
+		return errors.New("目标操作无效")
+	}
+	params := goalSessionParams(threadID)
+	if action == "pause" || action == "resume" {
+		params.Set("status", status)
+	} else if extra != "" {
+		params.Set("objective", extra)
+	}
+	_, err = session.Request(method, params, 30*time.Second)
+	return err
+}
+
+// goalSessionParams mirrors mcode.py's {"sessionId": thread_id, **extra}.
+func goalSessionParams(threadID string) *jsoncompat.Object {
+	params := jsoncompat.NewObject()
+	params.Set("sessionId", threadID)
+	return params
+}
+
+func (t *mcodeGoalTransport) NeedsActivation() bool { return false }
+
+func (t *mcodeGoalTransport) Available() bool { return t.manager != nil }
+
+// goalWriteUnknown splits the failure classes Python's GoalUnavailable vs
+// GoalError produce: a typed ACP timeout/disconnect never proved the write
+// reached the agent (unknown), an agent-side AcpError did (failed). Codex
+// sidecar errors keep the string classification.
+func goalWriteUnknown(err error) bool {
+	var acpErr *acp.Error
+	if errors.As(err, &acpErr) {
+		return acpErr.Kind == acp.KindTimeout || acpErr.Kind == acp.KindUnavailable
+	}
+	return strings.Contains(err.Error(), "超时") || strings.Contains(err.Error(), "timeout")
+}
+
+// acpGoalOwner finds the ACP manager owning threadID without ever spawning:
+// a live session wins, then the cached session/list roster — resolveACP
+// minus the cold list probe, so goal reads never bring an agent up.
+func (s *Server) acpGoalOwner(threadID string) (string, *acpruntime.Manager, bool) {
+	agents := s.acpAgentSet()
+	if len(agents) == 0 || threadID == "" {
+		return "", nil, false
+	}
+	kinds := make([]string, 0, len(agents))
+	for kind := range agents {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	for _, kind := range kinds {
+		if manager := agents[kind]; manager != nil && manager.Get(threadID) != nil {
+			return kind, manager, true
+		}
+	}
+	for _, kind := range kinds {
+		if manager := agents[kind]; manager != nil && manager.Knows(threadID) {
+			return kind, manager, true
+		}
+	}
+	return "", nil, false
+}
+
+// acpGoalTransport builds the ACP goal transport (mcode's session-process
+// RPC methods) for a manager whose kind is mcode or that declares the goals
+// capability; nil means the agent has no goal surface.
+func (s *Server) acpGoalTransport(kind string, manager *acpruntime.Manager) goalTransport {
+	if manager == nil {
+		return nil
+	}
+	if kind != "mcode" {
+		declared := false
+		for _, capability := range manager.Capabilities {
+			if capability == "goals" {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return nil
+		}
+	}
+	return &mcodeGoalTransport{manager: manager}
+}
+
+// goalTransportFor picks the transport owning threadID: the owning ACP
+// manager's goal RPC when it carries a goal surface, else the codex sidecar.
+func (s *Server) goalTransportFor(threadID string) goalTransport {
+	if kind, manager, owned := s.acpGoalOwner(threadID); owned {
+		return s.acpGoalTransport(kind, manager)
+	}
+	if s.Goal != nil {
+		return codexGoalTransport{goal: s.Goal}
+	}
+	return nil
 }
 
 // --- planning (plan_goal_command) -------------------------------------------
@@ -240,12 +430,12 @@ type goalCommandOutcome struct {
 }
 
 // runGoalCommand mirrors _goal_command: ledger replay, plan against the
-// authoritative sqlite state, sidecar write, re-read, confirm. The returned
+// authoritative goal state, transport write, re-read, confirm. The returned
 // response is what both the send route and /goal/* hand the phone
 // ({status, confirmed, result, duplicate?, transitionId?}).
-func (s *Server) runGoalCommand(threadID, requestID, action, objective, status, uiLocale string) (*goalCommandOutcome, error) {
+func (s *Server) runGoalCommand(transport goalTransport, threadID, requestID, action, objective, status, uiLocale string) (*goalCommandOutcome, error) {
 	key := threadID + ":" + requestID
-	if s.GoalCmds == nil || s.Goal == nil {
+	if s.GoalCmds == nil || transport == nil {
 		return nil, errors.New("目标模式暂不可用")
 	}
 	if prior := s.GoalCmds.get(key); prior != nil {
@@ -267,7 +457,7 @@ func (s *Server) runGoalCommand(threadID, requestID, action, objective, status, 
 		return &goalCommandOutcome{response: result}, nil
 	}
 
-	native := goal.ReadNativeGoal(s.Goal.Home, threadID)
+	native := transport.Read(threadID)
 	decision, message, expectedStatus := planGoalCommand(action, objective, native)
 	if decision == goalInvalid {
 		s.GoalCmds.record(key, failedGoalCommand(action, objective, message, expectedStatus))
@@ -305,20 +495,10 @@ func (s *Server) runGoalCommand(threadID, requestID, action, objective, status, 
 	command.Set("at", json.Number(strconv.FormatFloat(float64(time.Now().UnixMilli())/1000, 'f', 3, 64)))
 	s.GoalCmds.record(key, command)
 
-	// Sidecar write. Create/resume target active; edit keeps paused.
-	writeErr := error(nil)
-	switch action {
-	case "cancel":
-		writeErr = s.Goal.Clear(threadID)
-	default:
-		writeStatus := expectedStatus
-		if action == "create" {
-			writeStatus = "active"
-		}
-		_, writeErr = s.Goal.Set(threadID, strings.TrimSpace(objective), writeStatus)
-	}
+	// Transport write. Create/resume target active; edit keeps paused.
+	writeErr := transport.Write(threadID, action, strings.TrimSpace(objective), expectedStatus)
 	if writeErr != nil {
-		unknown := strings.Contains(writeErr.Error(), "超时") || strings.Contains(writeErr.Error(), "timeout")
+		unknown := goalWriteUnknown(writeErr)
 		state := "failed"
 		status := firstNonEmpty(expectedStatus, "cancelled")
 		if unknown {
@@ -336,7 +516,7 @@ func (s *Server) runGoalCommand(threadID, requestID, action, objective, status, 
 		return nil, writeErr
 	}
 
-	fresh := goal.ReadNativeGoal(s.Goal.Home, threadID)
+	fresh := transport.Read(threadID)
 	// Cancel confirms by absence; every other verb by the matching row.
 	confirmed := expectedStatus == "cancelled" && fresh == nil ||
 		expectedStatus != "cancelled" && fresh != nil && fresh.MustGet("status") == expectedStatus
@@ -402,8 +582,12 @@ func firstNonEmpty(values ...string) string {
 // sendGoalActivation mirrors _send_goal_activation: only confirmed
 // create/resume with an active goal fans out the activation turn. The turn
 // rides the queue ledger so an in-flight reply finishes first; the request id
-// hides the row from both the timeline and the visible queue.
+// hides the row from both the timeline and the visible queue. Transports
+// whose agent starts the turn itself (mcode) never fan one out.
 func (s *Server) sendGoalActivation(threadID string, outcome *goalCommandOutcome, action, uiLocale string) *jsoncompat.Object {
+	if transport := s.goalTransportFor(threadID); transport == nil || !transport.NeedsActivation() {
+		return nil
+	}
 	if outcome == nil || !outcome.confirmed || action != "create" && action != "resume" {
 		return nil
 	}
@@ -440,9 +624,13 @@ func (s *Server) sendGoalActivation(threadID string, outcome *goalCommandOutcome
 
 // goalActivationIDs lists the activation request ids whose user rows the
 // timeline projection hides (timeline.Update consumes view.goalActivationIds).
+// Only transports that fan activation turns out ever produce ids.
 func (s *Server) goalActivationIDs(threadID string) []string {
 	if s.GoalCmds == nil {
 		return nil
+	}
+	if transport := s.goalTransportFor(threadID); transport == nil || !transport.NeedsActivation() {
+		return []string{}
 	}
 	ids := []string{}
 	for _, command := range s.GoalCmds.forThread(threadID) {
@@ -484,6 +672,7 @@ func (s *Server) goalSubmissionFor(threadID string) *jsoncompat.Object {
 	if s.GoalCmds == nil {
 		return nil
 	}
+	transport := s.goalTransportFor(threadID)
 	commands := s.GoalCmds.forThread(threadID)
 	if len(commands) == 0 {
 		return nil
@@ -502,7 +691,7 @@ func (s *Server) goalSubmissionFor(threadID string) *jsoncompat.Object {
 		status = "unknown"
 	case "confirmed":
 		// Confirmed but the native row vanished: unconfirmed, not a dead end.
-		if s.Goal != nil && goal.Absent(s.Goal.Home, threadID) {
+		if transport == nil || transport.Absent(threadID) {
 			return nil
 		}
 		response, _ := latest.MustGet("response").(*jsoncompat.Object)
@@ -524,23 +713,34 @@ func (s *Server) goalSubmissionFor(threadID string) *jsoncompat.Object {
 // applyGoalOverlay enriches a codex view (live or historical) with the goal
 // fields modes.js renders. The view is request-private, safe to mutate.
 func (s *Server) applyGoalOverlay(threadID string, view *jsoncompat.Object) {
-	if s.Goal == nil {
+	transport := s.goalTransportFor(threadID)
+	if transport == nil {
 		return
 	}
-	runtime := s.Goal.Executable != ""
+	s.applyGoalOverlayWith(transport, threadID, view)
+}
+
+// applyGoalOverlayWith is the transport-parameterized overlay, shared by the
+// codex view paths and the ACP (mcode) view builder.
+func (s *Server) applyGoalOverlayWith(transport goalTransport, threadID string, view *jsoncompat.Object) {
+	runtime := transport.Available()
 	view.Set("goalRuntimeAvailable", runtime)
-	// nil unless native storage proves a live row; a stale desktop snapshot
-	// behind a confirmed create is suppressed by the absence check below.
-	var native *jsoncompat.Object
+	// nil unless the authoritative store proves a live row; a stale desktop
+	// snapshot behind a confirmed create is suppressed by the absence check
+	// in goalSubmissionFor. The absent value is an untyped nil — a typed nil
+	// *Object would panic Clone/encode in the timeline projection.
+	var native any
 	if runtime {
-		if fresh := goal.ReadNativeGoal(s.Goal.Home, threadID); fresh != nil {
+		if fresh := transport.Read(threadID); fresh != nil {
 			native = fresh
 		}
 	}
 	view.Set("goal", native)
 	ids := &jsoncompat.Array{}
-	for _, id := range s.goalActivationIDs(threadID) {
-		ids.Items = append(ids.Items, id)
+	if transport.NeedsActivation() {
+		for _, id := range s.goalActivationIDs(threadID) {
+			ids.Items = append(ids.Items, id)
+		}
 	}
 	view.Set("goalActivationIds", ids)
 	if submission := s.goalSubmissionFor(threadID); submission != nil {
@@ -551,19 +751,31 @@ func (s *Server) applyGoalOverlay(threadID string, view *jsoncompat.Object) {
 }
 
 func (s *Server) goalAbsentWithConfirmedCreate(threadID string) bool {
+	if s.GoalCmds == nil {
+		return false
+	}
+	transport := s.goalTransportFor(threadID)
+	if transport == nil {
+		return false
+	}
 	for _, command := range s.GoalCmds.forThread(threadID) {
 		if action, _ := command.MustGet("action").(string); action != "create" {
 			continue
 		}
 		if state, _ := command.MustGet("state").(string); state == "confirmed" {
-			return goal.Absent(s.Goal.Home, threadID)
+			return transport.Absent(threadID)
 		}
 	}
 	return false
 }
 
-// handleGoalCreate is the send route's workMode=="goal" branch for codex.
-func (h *handler) handleGoalCreate(threadID string, payload submissionPayload) {
+// handleGoalCreate is the send route's workMode=="goal" branch, shared by the
+// codex sidecar and the mcode ACP transport.
+func (h *handler) handleGoalCreate(transport goalTransport, threadID string, payload submissionPayload) {
+	if transport == nil {
+		h.fail(http.StatusConflict, errorBody("目标模式暂不可用"))
+		return
+	}
 	if payload.mode != "send" {
 		h.fail(http.StatusBadRequest, errorBody("目标需在当前任务结束后直接发送"))
 		return
@@ -581,7 +793,7 @@ func (h *handler) handleGoalCreate(threadID string, payload submissionPayload) {
 		h.fail(http.StatusBadRequest, errorBody("目标模式只接受纯文本目标"))
 		return
 	}
-	outcome, err := h.server.runGoalCommand(threadID, payload.id, "create", text, "", payload.uiLocale)
+	outcome, err := h.server.runGoalCommand(transport, threadID, payload.id, "create", text, "", payload.uiLocale)
 	if err != nil && outcome == nil {
 		h.fail(http.StatusConflict, errorBody(err.Error()))
 		return

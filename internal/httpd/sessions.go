@@ -20,7 +20,6 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
-	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
@@ -408,10 +407,10 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			mode, _ := body.(*jsoncompat.Object).MustGet("mode").(string)
 			workMode, _ := body.(*jsoncompat.Object).MustGet("workMode").(string)
 			if workMode == "goal" {
-				// Native goals: command ledger + sidecar write + activation
+				// Native goals: command ledger + transport write + activation
 				// turn, replacing a plain prompt entirely (the activation
 				// itself rides the queue ledger separately).
-				h.handleGoalCreate(threadID, readSubmissionPayload(body.(*jsoncompat.Object)))
+				h.handleGoalCreate(h.server.goalTransportFor(threadID), threadID, readSubmissionPayload(body.(*jsoncompat.Object)))
 				return true
 			}
 			// Queue semantics (Python send): mode "queue" joins the durable
@@ -658,7 +657,15 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		mode, _ := object.MustGet("mode").(string)
 		workMode, _ := object.MustGet("workMode").(string)
 		if workMode == "goal" {
-			h.fail(http.StatusBadRequest, errorBody("当前 Agent 不支持目标模式"))
+			// Goal-mode sends ride the shared command machine when the owning
+			// agent carries a goal transport (mcode); every other ACP agent is
+			// refused instead of silently degrading to a plain prompt.
+			transport := h.server.acpGoalTransport(kind, manager)
+			if transport == nil {
+				h.fail(http.StatusBadRequest, errorBody("当前 Agent 不支持目标模式"))
+				return true
+			}
+			h.handleGoalCreate(transport, threadID, readSubmissionPayload(object))
 			return true
 		}
 		// Queue semantics (Python send): queue joins the durable ledger;
@@ -852,8 +859,17 @@ func (h *handler) handleGoalHTTP(write bool, path string) bool {
 	if match == nil {
 		return false
 	}
-	if h.server.Goal == nil {
-		h.fail(http.StatusConflict, errorBody("请启动支持目标模式的新版网关"))
+	threadID := match[1]
+	// Any usable transport qualifies: the codex sidecar or the owning ACP
+	// agent's own goal RPC (mcode). An ACP-owned thread without a goal
+	// surface answers the agent-specific refusal.
+	transport := h.server.goalTransportFor(threadID)
+	if transport == nil {
+		if _, manager, owned := h.server.acpGoalOwner(threadID); owned && manager != nil {
+			h.fail(http.StatusConflict, errorBody("当前 Agent 不支持目标模式"))
+		} else {
+			h.fail(http.StatusConflict, errorBody("请启动支持目标模式的新版网关"))
+		}
 		return true
 	}
 	value, err := h.readJSON()
@@ -862,12 +878,12 @@ func (h *handler) handleGoalHTTP(write bool, path string) bool {
 		return true
 	}
 	body := value.(*jsoncompat.Object)
-	threadID, action := match[1], match[2]
+	action := match[2]
 	threadPayload := readSubmissionPayload(body)
 	objective, _ := body.MustGet("objective").(string)
 	status, _ := body.MustGet("status").(string)
 	// Control actions reuse the send chain's command machine: plan against
-	// the authoritative goal state, sidecar write, confirm. Deterministic
+	// the authoritative goal state, transport write, confirm. Deterministic
 	// request ids keep retries idempotent per intent.
 	var actionVerb string
 	switch action {
@@ -883,13 +899,13 @@ func (h *handler) handleGoalHTTP(write bool, path string) bool {
 		}
 	}
 	if objective == "" {
-		if native := goal.ReadNativeGoal(h.server.Goal.Home, threadID); native != nil {
+		if native := transport.Read(threadID); native != nil {
 			objective, _ = native.MustGet("objective").(string)
 		}
 	}
 	requestID := uuid.NewSHA1(uuid.NameSpaceURL,
 		[]byte("mobile-bridge:goal:"+threadID+":"+actionVerb+":"+objective)).String()
-	outcome, err := h.server.runGoalCommand(threadID, requestID, actionVerb, objective, status, threadPayload.uiLocale)
+	outcome, err := h.server.runGoalCommand(transport, threadID, requestID, actionVerb, objective, status, threadPayload.uiLocale)
 	if err != nil && outcome == nil {
 		h.fail(http.StatusConflict, errorBody(err.Error()))
 		return true

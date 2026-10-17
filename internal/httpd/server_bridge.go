@@ -158,17 +158,26 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", kind)
+	transport := s.acpGoalTransport(kind, manager)
 	capabilities := &jsoncompat.Array{}
 	for _, capability := range manager.Capabilities {
-		// The ACP goal send path is not ported; hide the control rather
-		// than offer a goal mode that silently degrades to a plain prompt.
-		// Branching IS offered: acp_fork.go synthesizes it on the gateway.
-		if capability == "goals" {
+		// The goals capability is only advertised when this gateway actually
+		// serves the agent's goal transport (mcode); otherwise hide the
+		// control rather than offer a goal mode that silently degrades to a
+		// plain prompt. Branching IS offered: acp_fork.go synthesizes it on
+		// the gateway.
+		if capability == "goals" && transport == nil {
 			continue
 		}
 		capabilities.Items = append(capabilities.Items, capability)
 	}
 	view.Set("capabilities", capabilities)
+	if transport != nil {
+		// The panel fields modes.js render ride the view like codex's
+		// overlay; the goal row itself comes from the agent's own RPC read
+		// (never a spawn — absent sessions read as no goal).
+		s.applyGoalOverlayWith(transport, session.ID, view)
+	}
 	view.Set("connecting", false)
 	view.Set("activating", false)
 	view.Set("loadingHistory", false)

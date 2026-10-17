@@ -714,6 +714,27 @@ func (s *Session) Steer(method, text string) (injected bool, err error) {
 	return outcome == "injected", nil
 }
 
+// Request sends one generic agent RPC on the session process — the custom
+// extension methods (mcode's mcode/session/goal/*) that live outside the ACP
+// core. It mirrors SetMode/Steer's request style and deliberately never
+// touches the prompt lock: control RPCs are legal in any turn state (Python
+// calls process.request straight from the adapter). Returns the response
+// object, nil when the agent answered with a non-object result.
+func (s *Session) Request(method string, params *jsoncompat.Object, timeout time.Duration) (*jsoncompat.Object, error) {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return nil, errors.New("Agent 进程已退出；操作结果未知")
+	}
+	result, err := s.Process.Request(method, params, timeout)
+	if err != nil {
+		return nil, err
+	}
+	object, _ := result.(*jsoncompat.Object)
+	return object, nil
+}
+
 // NoteHumanAction re-arms the consecutive auto-continue budget. The HTTP
 // layer calls it for human approval answers and form replies; Jev's own
 // automatic responses deliberately do not (they are not human intent).
