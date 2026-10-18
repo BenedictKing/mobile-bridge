@@ -58,6 +58,10 @@ type Session struct {
 	// consecutive-resume budget any human action re-arms.
 	autoContinue     func(*Session)
 	autoContinueRuns int
+	// switchResumeRuns is the account-pool switch-resume budget: a turn that
+	// died on an exhausted quota may be resumed after a credential swap at
+	// most MaxSwitchResume times in a row, re-armed by any human action.
+	switchResumeRuns int
 	// native loads the agent's own persisted conversation (ZCode's SQLite
 	// store) for turns the desktop app drives, so the phone follows them
 	// instead of showing only the ACP replay. nativeStop ends the poller.
@@ -85,6 +89,11 @@ type Session struct {
 // MaxAutoContinue bounds consecutive automatic "继续" sends without an
 // intervening human message, answer or steer.
 const MaxAutoContinue = 5
+
+// MaxSwitchResume bounds consecutive post-switch resume sends per session:
+// enough to survive a switch cascade, small enough to stop a loop where every
+// account is already exhausted.
+const MaxSwitchResume = 3
 
 // nativeStoreLagGrace bounds how long a settled ACP tip may hold off a store
 // copy that still reports the same prompt running before the store wins.
@@ -622,17 +631,34 @@ func (s *Session) Prompt(text string, idleTimeout time.Duration) error {
 }
 
 func (s *Session) PromptWithBlocks(text string, extra []*jsoncompat.Object, idleTimeout time.Duration) error {
-	return s.prompt(text, extra, idleTimeout, false)
+	return s.prompt(text, extra, idleTimeout, budgetHuman)
 }
 
 // AutoContinuePrompt sends the automatic resume message: the same prompt
 // path, but it consumes instead of re-arming the consecutive auto-continue
 // budget and never resets what a human action armed.
 func (s *Session) AutoContinuePrompt(text string, idleTimeout time.Duration) error {
-	return s.prompt(text, nil, idleTimeout, true)
+	return s.prompt(text, nil, idleTimeout, budgetAutoContinue)
 }
 
-func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, auto bool) error {
+// ResumeAfterSwitchPrompt resumes a session whose turn died on an exhausted
+// quota after the account pool swapped credentials. It draws on its own
+// switch-resume budget (MaxSwitchResume) so the accidental-interruption
+// budget stays intact for genuine stalls.
+func (s *Session) ResumeAfterSwitchPrompt(text string, idleTimeout time.Duration) error {
+	return s.prompt(text, nil, idleTimeout, budgetSwitchResume)
+}
+
+// promptBudget selects which consecutive-send budget a prompt draws on.
+type promptBudget int
+
+const (
+	budgetHuman promptBudget = iota
+	budgetAutoContinue
+	budgetSwitchResume
+)
+
+func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -646,15 +672,23 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.mu.Unlock()
 		return errors.New("当前已有任务正在运行")
 	}
-	if auto {
+	switch budget {
+	case budgetAutoContinue:
 		if s.autoContinueRuns >= MaxAutoContinue {
 			s.mu.Unlock()
 			return errors.New("连续自动继续已达上限")
 		}
 		s.autoContinueRuns++
-	} else {
-		// Any human message re-arms the budget.
+	case budgetSwitchResume:
+		if s.switchResumeRuns >= MaxSwitchResume {
+			s.mu.Unlock()
+			return errors.New("切换后自动继续已达上限")
+		}
+		s.switchResumeRuns++
+	default:
+		// Any human message re-arms both budgets.
 		s.autoContinueRuns = 0
+		s.switchResumeRuns = 0
 	}
 	s.promptRunning = true
 	s.View.BeginTurn(text)
@@ -857,6 +891,7 @@ func (s *Session) Request(method string, params *jsoncompat.Object, timeout time
 func (s *Session) NoteHumanAction() {
 	s.mu.Lock()
 	s.autoContinueRuns = 0
+	s.switchResumeRuns = 0
 	s.mu.Unlock()
 }
 

@@ -79,13 +79,29 @@ func (h *handler) handlePool(write bool) {
 		if manager := h.server.ACPAgents[kind]; manager != nil {
 			sessions = manager
 		}
-		if err := pool.Switch(h.request.Context(), kind, id, "manual", sessions); err != nil {
+		if err := pool.Switch(h.request.Context(), kind, id, "manual", sessions, nil); err != nil {
 			var busy *accpool.BusyError
 			if errors.As(err, &busy) {
 				h.fail(http.StatusConflict, errorBody(err.Error()))
 			} else {
 				h.fail(http.StatusBadRequest, errorBody(err.Error()))
 			}
+			return
+		}
+		detail, err := pool.Detail(kind)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		h.output(http.StatusOK, detail, contentTypeJSON, "")
+	case "settings":
+		enabled, ok := body.MustGet("autoSwitch").(bool)
+		if !ok {
+			h.fail(http.StatusBadRequest, errorBody("缺少 autoSwitch 开关值"))
+			return
+		}
+		if err := pool.SetAutoSwitch(kind, enabled); err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
 			return
 		}
 		detail, err := pool.Detail(kind)

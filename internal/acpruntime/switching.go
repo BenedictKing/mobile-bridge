@@ -25,6 +25,13 @@ func (m *Manager) LiveSessions() map[string]string {
 // flight and unanswered permission/question prompts. Switching mid-turn would
 // kill the process the turn is streaming from.
 func (m *Manager) BusyReasons() []string {
+	return m.BusyReasonsExcept(nil)
+}
+
+// BusyReasonsExcept is BusyReasons with sessions to ignore — the quota
+// failover path excludes the session whose turn just failed (its leftover
+// pending requests are dead letters, not a reason to keep the dead account).
+func (m *Manager) BusyReasonsExcept(ignore map[string]bool) []string {
 	m.mu.Lock()
 	sessions := make(map[string]*Session, len(m.sessions))
 	for id, session := range m.sessions {
@@ -33,7 +40,7 @@ func (m *Manager) BusyReasons() []string {
 	m.mu.Unlock()
 	var reasons []string
 	for id, session := range sessions {
-		if session.IsClosed() {
+		if ignore[id] || session.IsClosed() {
 			continue
 		}
 		if session.PromptRunning() {

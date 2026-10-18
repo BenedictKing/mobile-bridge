@@ -75,11 +75,17 @@ class PoolPanel {
     const importBtn=this.button(t('从 zcode-switcher 导入'),()=>{
       if(window.confirm(t('从 zcode-switcher 的账号库导入 Kimi 账号快照，并捕获当前登录态？')))this.perform('import');
     });importBtn.disabled=this.busy||this.loading;
-    controls.append(refresh,importBtn);root.append(controls);
+    const autoLabel=this.node('label',undefined,'notification-option');
+    this.autoSwitch=document.createElement('input');this.autoSwitch.type='checkbox';
+    this.autoSwitch.onchange=()=>{this.autoSwitch.disabled=true;this.perform('settings',{autoSwitch:this.autoSwitch.checked});};
+    autoLabel.append(this.autoSwitch,this.node('strong',t('额度用尽时自动切换并继续')));
+    controls.append(refresh,importBtn,autoLabel);root.append(controls);
     if(this.error)root.append(this.node('p',this.error,'error'));
     if(this.loading&&!this.value){root.append(this.node('p',t('正在读取账号池…'),'account-muted'));return;}
     const value=this.value;
     if(!value)return;
+    this.autoSwitch.checked=value.autoSwitch!==false;
+    this.autoSwitch.disabled=this.busy||this.loading;
     if(value.imported||value.skipped?.length){
       const note=this.node('p',t('导入完成：新增 ')+(value.imported||[]).length+t(' 个，跳过 ')+(value.skipped||[]).length+t(' 个'),'account-muted');
       root.append(note);

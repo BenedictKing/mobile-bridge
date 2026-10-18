@@ -18,7 +18,7 @@ import (
 // to re-attach one session under fresh credentials.
 type SessionManager interface {
 	LiveSessions() map[string]string
-	BusyReasons() []string
+	BusyReasonsExcept(ignore map[string]bool) []string
 	Reattach(id, cwd string, timeout time.Duration) error
 }
 
@@ -52,8 +52,10 @@ const reattachTimeout = 60 * time.Second
 //	section) → Reconcile every live session → on any reattach failure,
 //	restore the previous slot and re-attach back.
 //
-// Every step is recorded in history.jsonl under the pool directory.
-func (m *Manager) Switch(ctx context.Context, kind, targetID, trigger string, sessions SessionManager) error {
+// ignoreBusy exempts sessions from the busy gate (the quota failover path
+// excludes the session whose turn just failed). Every step is recorded in
+// history.jsonl under the pool directory.
+func (m *Manager) Switch(ctx context.Context, kind, targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
 	if kind != "kimi" {
 		return fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
 	}
@@ -81,7 +83,7 @@ func (m *Manager) Switch(ctx context.Context, kind, targetID, trigger string, se
 	}
 
 	if sessions != nil {
-		if reasons := sessions.BusyReasons(); len(reasons) > 0 {
+		if reasons := sessions.BusyReasonsExcept(ignoreBusy); len(reasons) > 0 {
 			return fail(&BusyError{Reasons: reasons})
 		}
 	}

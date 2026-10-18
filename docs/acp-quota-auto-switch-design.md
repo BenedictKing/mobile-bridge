@@ -1,6 +1,6 @@
 # ACP Agent 额度自动切换与自动继续设计
 
-> 状态：阶段 1（只读额度池）与阶段 2（手动切换）已实现（2026-10-18）
+> 状态：阶段 1（只读额度池）、阶段 2（手动切换）与阶段 3（自动切换 + 自动继续）已实现（2026-10-18）
 > 日期：2026-10-18
 > 背景：把 zcode-switcher（/Users/petaflops/works/unsorted/zcode-switcher）的账号快照管理与额度查询能力集成进 mobile-bridge，实现"agent 额度（如 5 小时窗口限额）用尽后自动切换其他可用账号，必要时自动发送继续"。
 
@@ -259,9 +259,17 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - 重挂失败自动回滚槽位并反向重挂；每次切换（含失败/拒绝）记录 `history.jsonl`，随 `GET /api/pool/{kind}` 返回近 50 条；
   - Agent 未启用 ACP 时仍可切换（仅换凭证，供 CLI 使用）。
 
-**阶段 3：自动切换 + 自动继续（kimi）**
+**阶段 3：自动切换 + 自动继续（kimi）** ✅ 已实现（2026-10-18）
 - Decider、被动事件分类器、会话恢复检测、`switchResumeRuns` 预算、通知接入。
 - 验收：模拟限额耗尽（注入 `quota_exhausted` 事件）→ 自动切换 → 被打断会话收到"继续"并续跑。
+- 落地说明：
+  - 编排器为 `internal/accpool/auto.go` 的 `AutoSwitcher`；入口有两条：**被动钩子**（`cmd/gateway/poolhooks.go` 的 `poolQuotaHook`，挂在 AutoContinue 链首位，用 `jev.ContinueContext`+`jev.QuotaStop` 初筛疑似额度故障）与**轮询预警**（`poller.go` 刷新当前账号后越过 95% 阈值即回调 `OnExhausted`）；
+  - 误报防护（开放问题 3 的当前方案）：被动事件先用 jev 规则初筛，再 `RefreshQuota` 复确认——只有额度数据确实越过阈值才真正切换，瞬时 429 不误切；真实语料校准仍待收集；
+  - 门控全部基于 `history.jsonl`（重启不丢）：切换冷却 10 分钟、每小时最多 6 次、24h 内切走 3 次即放弃该账号、最紧窗口距重置不足 5 分钟时宁可等待；无可用账号时发通知而不动作；
+  - 目标选择（`decide.go` 的 `ChooseTarget`）：逐候选刷新额度，选最紧窗口余量最大者，并列取最久未用；
+  - 切换续跑走 `ResumeAfterSwitchPrompt` 独立预算 `MaxSwitchResume = 3`（不占用 `MaxAutoContinue`），人为操作同时重置两个计数；切换时 `ignoreBusy` 放行被打断的失败会话本身；
+  - 开关持久化在 `<dataDir>/pool/settings.json`（默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），`POST /api/pool/{kind}/settings` + 前端 checkbox；
+  - 通知复用 `internal/notifications` 的渠道配置。
 
 **阶段 4：zcode 接入**
 - zcode QuotaProvider + 快照格式（`enc:v1:` 整体搬运）+ 阶段 2/3 等价能力。

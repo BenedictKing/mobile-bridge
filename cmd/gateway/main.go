@@ -640,7 +640,29 @@ func runGateway(args []string) {
 	// quota polled in the background for whichever account occupies the
 	// official slot. GATEWAY_ZCAS_DIR points at the zcode-switcher data dir.
 	server.Pool = accpool.New(dataDir, os.Getenv("GATEWAY_ZCAS_DIR"))
+	poolAuto := accpool.NewAutoSwitcher(server.Pool)
+	poolAuto.Notify = func(title, body string) {
+		config := notifications.ReadSettings(dataDir)
+		publisher := notifications.NewPublisher(nil)
+		for _, channel := range notifications.Channels(config).Keys() {
+			if err := publisher.Publish(config, channel, title, body, ""); err != nil {
+				log.Printf("账号池通知发送失败（%s）: %v", channel, err)
+			}
+		}
+	}
+	poolAuto.Sessions = func(kind string) accpool.SessionManager {
+		if manager := server.ACPAgents[kind]; manager != nil {
+			return manager
+		}
+		return nil
+	}
 	poolPoller := accpool.NewPoller(server.Pool)
+	poolPoller.Threshold = poolAuto.Threshold
+	poolPoller.OnExhausted = func(kind string) {
+		if _, err := poolAuto.HandleQuotaExhaustion(context.Background(), kind, ""); err != nil {
+			log.Printf("账号池: %s 预防性切换失败: %v", kind, err)
+		}
+	}
 	poolPoller.Start()
 	server.Goal = goal.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))
 	// ACP agent wiring. Explicit env (GATEWAY_ACP_BIN / GATEWAY_ACP_BINS)
@@ -819,7 +841,13 @@ func runGateway(args []string) {
 				// queue hook onto whatever auto-continue hook is installed.
 				prior := manager.AutoContinue
 				managedKind := kind
+				quotaHook := poolQuotaHook(server.Pool, poolAuto, managedKind, manager)
 				manager.AutoContinue = func(session *acpruntime.Session) {
+					// Quota failover owns the settle edge when it fired: the
+					// resumed turn's next settle re-enters the chain.
+					if quotaHook(session) {
+						return
+					}
 					if prior != nil {
 						prior(session)
 					}

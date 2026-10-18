@@ -15,6 +15,12 @@ import (
 type Poller struct {
 	Manager  *Manager
 	Interval time.Duration
+	// Threshold is the used/limit ratio that counts as exhausted for the
+	// preventive-switch check (0 disables the check).
+	Threshold float64
+	// OnExhausted fires (on the poll goroutine) when the active account
+	// crosses Threshold; the auto-switcher owns the reaction.
+	OnExhausted func(kind string)
 
 	mu     sync.Mutex
 	cancel context.CancelFunc
@@ -93,6 +99,10 @@ func (p *Poller) tick(ctx context.Context) {
 		}
 		// A failed refresh (network, auth) is recorded on the account by
 		// RefreshQuota itself; the loop keeps going either way.
-		_, _ = p.Manager.RefreshQuota(ctx, kind, active)
+		account, _ := p.Manager.RefreshQuota(ctx, kind, active)
+		if account != nil && p.OnExhausted != nil && p.Threshold > 0 &&
+			len(ExhaustedWindows(account.Quota, p.Threshold)) > 0 {
+			p.OnExhausted(kind)
+		}
 	}
 }

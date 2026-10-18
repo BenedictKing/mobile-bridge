@@ -660,6 +660,7 @@ func (m *Manager) Detail(kind string) (*jsoncompat.Object, error) {
 	detail := jsoncompat.NewObject()
 	detail.Set("kind", kind)
 	detail.Set("activeId", active)
+	detail.Set("autoSwitch", m.AutoSwitchEnabled(kind))
 	detail.Set("accounts", accounts)
 	detail.Set("history", historyView(m.History(kind, 50)))
 	return detail, nil
