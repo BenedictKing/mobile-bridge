@@ -369,6 +369,8 @@ const en={
   "发送新消息": "Send new message",
   "完成后发送": "Send when complete",
 "Agent 需要你的回复":"The agent needs your answer",
+"Agent 提问你":"The agent is asking you",
+"跳过":"Skip",
 "提交回答":"Submit answers",
 "请填写所有必填项":"Please fill in every required field",
 " 正在执行。":" is working. ",

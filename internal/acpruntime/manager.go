@@ -1027,9 +1027,17 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 		return errors.New(ReadOnlySessionMessage)
 	}
 	rawID, exists := s.pendingIDs[requestID]
-	if _, ok := s.pending[requestID]; !ok || !exists {
+	params, ok := s.pending[requestID]
+	if !ok || !exists {
 		s.mu.Unlock()
 		return errors.New("请求已过期，请刷新聊天")
+	}
+	wire, invalid := respondWire(s.pendingKinds[requestID], params, response)
+	if invalid != nil {
+		// The reply is malformed but the request is still live: keep the card
+		// answerable instead of consuming it (Python acp_adapter.respond).
+		s.mu.Unlock()
+		return invalid
 	}
 	delete(s.pending, requestID)
 	delete(s.pendingIDs, requestID)
@@ -1037,7 +1045,67 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 	s.View.RemovePermission(requestID)
 	s.signalLocked()
 	s.mu.Unlock()
-	return s.Process.Respond(rawID, response)
+	return s.Process.Respond(rawID, wire)
+}
+
+// respondWire normalizes a phone-side reply into the wire shape the reverse
+// request expects. The permission card answers {optionId}/{cancel} while
+// ACP session/request_permission results are nested {outcome:{outcome,
+// optionId}} — spec agents (kimi at least) read only the nested form and
+// treat anything else as rejected/dismissed. Elicitation input replies keep
+// their {action,content} shape verbatim.
+func respondWire(kind string, params, response *jsoncompat.Object) (*jsoncompat.Object, error) {
+	if kind == "input" {
+		for _, key := range response.Keys() {
+			if key != "action" && key != "content" {
+				return nil, errors.New("请求回应格式不正确")
+			}
+		}
+		switch action, _ := response.MustGet("action").(string); action {
+		case "accept", "decline", "cancel":
+			return response, nil
+		}
+		return nil, errors.New("请求回应格式不正确")
+	}
+	for _, key := range response.Keys() {
+		if key != "optionId" && key != "cancel" {
+			return nil, errors.New("请求回应格式不正确")
+		}
+	}
+	if cancel, _ := response.MustGet("cancel").(bool); cancel {
+		outcome := jsoncompat.NewObject()
+		outcome.Set("outcome", "cancelled")
+		result := jsoncompat.NewObject()
+		result.Set("outcome", outcome)
+		return result, nil
+	}
+	optionID, _ := response.MustGet("optionId").(string)
+	if optionID == "" || !validOptionID(params, optionID) {
+		return nil, errors.New("请选择有效的选项")
+	}
+	outcome := jsoncompat.NewObject()
+	outcome.Set("outcome", "selected")
+	outcome.Set("optionId", optionID)
+	result := jsoncompat.NewObject()
+	result.Set("outcome", outcome)
+	return result, nil
+}
+
+func validOptionID(params *jsoncompat.Object, optionID string) bool {
+	options, _ := params.MustGet("options").(*jsoncompat.Array)
+	if options == nil {
+		return false
+	}
+	for _, value := range options.Items {
+		option, _ := value.(*jsoncompat.Object)
+		if option == nil {
+			continue
+		}
+		if id, _ := option.MustGet("optionId").(string); id == optionID {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateSettings mirrors AcpAdapter.update_settings: validate model and

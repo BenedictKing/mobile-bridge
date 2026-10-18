@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -223,8 +224,19 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 		}
 	}
 	entryParams := jsoncompat.NewObject()
-	entryParams.Set("title", truthyOr(toolCall.MustGet("title"), "权限请求"))
+	titleText, _ := truthyOr(toolCall.MustGet("title"), "权限请求").(string)
+	entryParams.Set("title", titleText)
 	entryParams.Set("command", CommandSummary(toolCall.MustGet("rawInput")))
+	// kimi bridges its AskUserQuestion tool onto session/request_permission:
+	// the question text rides in toolCall.content while the options are the
+	// answer choices (plus a reject_once "Skip"). Flag it so the phone draws
+	// a question card instead of a permission prompt.
+	if strings.EqualFold(titleText, "AskUserQuestion") {
+		entryParams.Set("question", true)
+	}
+	if text := flattenContentText(toolCall.MustGet("content")); text != "" {
+		entryParams.Set("text", text)
+	}
 	entryParams.Set("options", options)
 	entry := jsoncompat.NewObject()
 	entry.Set("id", requestID)
@@ -399,7 +411,11 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		message.Set("role", "activity")
 		message.Set("title", truthyOr(update.MustGet("title"),
 			truthyOr(update.MustGet("kind"), "工具调用")))
-		message.Set("text", CommandSummary(update.MustGet("rawInput")))
+		text := QuestionSummary(update.MustGet("rawInput"))
+		if text == "" {
+			text = CommandSummary(update.MustGet("rawInput"))
+		}
+		message.Set("text", text)
 		message.Set("output", flattenContentText(update.MustGet("content")))
 		message.Set("status", statusMap(getDefault(update, "status", nil)))
 		if metadata.Len() > 0 {
@@ -437,7 +453,9 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		if id, ok := message.MustGet("subagentId").(string); ok && id != "" {
 			message.Set("kind", "subagent")
 		}
-		if command := CommandSummary(update.MustGet("rawInput")); command != "" {
+		if summary := QuestionSummary(update.MustGet("rawInput")); summary != "" {
+			message.Set("text", summary)
+		} else if command := CommandSummary(update.MustGet("rawInput")); command != "" {
 			message.Set("text", command)
 		}
 		if output := flattenContentText(update.MustGet("content")); output != "" {

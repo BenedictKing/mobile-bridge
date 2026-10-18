@@ -414,6 +414,48 @@ func CommandSummary(rawInput any) string {
 	}
 }
 
+// QuestionSummary renders an AskUserQuestion rawInput (questions with labelled
+// options) as a readable question-plus-choices block; empty for every other
+// tool input, which keeps the CommandSummary path untouched.
+func QuestionSummary(rawInput any) string {
+	root := obj(rawInput)
+	if root == nil {
+		return ""
+	}
+	questions := arr(root.MustGet("questions"))
+	if questions == nil || len(questions.Items) == 0 {
+		return ""
+	}
+	var body strings.Builder
+	for _, value := range questions.Items {
+		question := obj(value)
+		if question == nil {
+			continue
+		}
+		title := strings.TrimSpace(jsoncompat.PyStr(truthyOr(
+			question.MustGet("question"), question.MustGet("header"))))
+		if title == "" {
+			continue
+		}
+		if body.Len() > 0 {
+			body.WriteString("\n\n")
+		}
+		body.WriteString(title)
+		if list := arr(question.MustGet("options")); list != nil {
+			for _, optionValue := range list.Items {
+				option := obj(optionValue)
+				if option == nil {
+					continue
+				}
+				if label := strings.TrimSpace(jsoncompat.PyStr(option.MustGet("label"))); label != "" {
+					body.WriteString("\n· " + label)
+				}
+			}
+		}
+	}
+	return body.String()
+}
+
 var subagentKeys = [...]struct{ source, target string }{
 	{"agent_id", "subagentId"}, {"agentId", "subagentId"}, {"subagent_id", "subagentId"},
 	{"actual_subagent_type", "subagentType"}, {"actualSubagentType", "subagentType"},

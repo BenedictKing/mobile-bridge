@@ -121,8 +121,14 @@ func approvalResponse(method string, params *jsoncompat.Object, recommend string
 			if recommend == "accept_session" && !strings.Contains(kind, "session") {
 				continue
 			}
+			// ACP options carry optionId on the wire; "id" only survives in
+			// already-normalized views, so prefer the wire key.
+			optionID := option.MustGet("optionId")
+			if optionID == nil {
+				optionID = option.MustGet("id")
+			}
 			result := jsoncompat.NewObject()
-			result.Set("optionId", option.MustGet("id"))
+			result.Set("optionId", optionID)
 			return result
 		}
 	}

@@ -363,3 +363,60 @@ func TestSessionFoldsUpdatesAndRequests(t *testing.T) {
 		t.Fatal("permission request was not exposed")
 	}
 }
+
+func TestRespondWireTranslatesPermissionReplies(t *testing.T) {
+	params := jsoncompat.NewObject()
+	options := &jsoncompat.Array{}
+	for _, id := range []string{"q0_opt_0", "q0_opt_1", "q0_skip"} {
+		option := jsoncompat.NewObject()
+		option.Set("optionId", id)
+		option.Set("kind", "allow_once")
+		options.Items = append(options.Items, option)
+	}
+	params.Set("options", options)
+
+	reply := func(pairs ...any) *jsoncompat.Object {
+		object := jsoncompat.NewObject()
+		for i := 0; i+1 < len(pairs); i += 2 {
+			object.Set(pairs[i].(string), pairs[i+1])
+		}
+		return object
+	}
+
+	wire, err := respondWire("permission", params, reply("optionId", "q0_opt_1"))
+	if err != nil {
+		t.Fatalf("valid selection rejected: %v", err)
+	}
+	outcome, _ := wire.MustGet("outcome").(*jsoncompat.Object)
+	if outcome == nil || outcome.MustGet("outcome") != "selected" || outcome.MustGet("optionId") != "q0_opt_1" {
+		t.Fatalf("selection was not wrapped as ACP outcome: %s", jsoncompat.EncodeCompact(wire))
+	}
+
+	wire, err = respondWire("permission", params, reply("cancel", true))
+	if err != nil {
+		t.Fatalf("cancel rejected: %v", err)
+	}
+	outcome, _ = wire.MustGet("outcome").(*jsoncompat.Object)
+	if outcome == nil || outcome.MustGet("outcome") != "cancelled" {
+		t.Fatalf("cancel was not wrapped as ACP outcome: %s", jsoncompat.EncodeCompact(wire))
+	}
+
+	if _, err = respondWire("permission", params, reply("optionId", "unknown")); err == nil ||
+		err.Error() != "请选择有效的选项" {
+		t.Fatalf("unknown option must be refused, got %v", err)
+	}
+	if _, err = respondWire("permission", params, reply("decision", "accept")); err == nil ||
+		err.Error() != "请求回应格式不正确" {
+		t.Fatalf("extra keys must be refused, got %v", err)
+	}
+
+	accepted := reply("action", "accept")
+	accepted.Set("content", reply("q0", "选项 A"))
+	wire, err = respondWire("input", params, accepted)
+	if err != nil || wire != accepted {
+		t.Fatalf("elicitation reply must pass through verbatim: %v %v", wire, err)
+	}
+	if _, err = respondWire("input", params, reply("action", "maybe")); err == nil {
+		t.Fatal("unknown elicitation action must be refused")
+	}
+}
