@@ -1,6 +1,6 @@
 # ACP Agent 额度自动切换与自动继续设计
 
-> 状态：阶段 1（只读额度池）、阶段 2（手动切换）与阶段 3（自动切换 + 自动继续）已实现（2026-10-18）
+> 状态：阶段 1（只读额度池）、阶段 2（手动切换）、阶段 3（自动切换 + 自动继续）与阶段 4（zcode 接入）已实现（2026-10-18）
 > 日期：2026-10-18
 > 背景：把 zcode-switcher（/Users/petaflops/works/unsorted/zcode-switcher）的账号快照管理与额度查询能力集成进 mobile-bridge，实现"agent 额度（如 5 小时窗口限额）用尽后自动切换其他可用账号，必要时自动发送继续"。
 
@@ -271,8 +271,17 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - 开关持久化在 `<dataDir>/pool/settings.json`（默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），`POST /api/pool/{kind}/settings` + 前端 checkbox；
   - 通知复用 `internal/notifications` 的渠道配置。
 
-**阶段 4：zcode 接入**
+**阶段 4：zcode 接入** ✅ 已实现（2026-10-18）
 - zcode QuotaProvider + 快照格式（`enc:v1:` 整体搬运）+ 阶段 2/3 等价能力。
+- 落地说明：
+  - `internal/accpool/zcode.go`：enc:v1 加解密（AES-256-GCM，key=sha256(secret)，与 zcode-switcher 的 zcodeCrypto.js 交叉验证——JS 生成的密文 Go 可解）、账号指纹（config provider apiKey 的 JWT payload → userId/shortId，邮箱 → `em-<djb2>` 去重 id）、候选 token 收集（zcodejwttoken → oauth access_token → config apiKey，加密值解密失败即跳过）；
+  - 额度查询（`queryZcodeQuota`）：billing/current+balance（Bearer、app_version/platform 参数、429 退避 0.5/1.5/4s、全 401 等 1.5s 重试一次），全灭后兜底 BigModel monitor（authorization 裸 token、code==200 校验）；归一化为池内 `Quota.Limits`（balance.balances 逐项成窗，无明细时聚合总数合成单窗；monitor 的 TOKENS_LIMIT/TIME_LIMIT → "Token 用量"/"MCP 用量"）；resetTime 统一归一为 RFC3339 供自动切换门控解析；
+  - 池内 zcode 账号仍用单文件 `<id>.json`（Account 增加 `credentials`/`config`/`provider` 字段，与 §4.1 的 snap+meta 对设计有出入——导入时折叠，池内格式保持统一）；
+  - 切换（`switchZcode`）：镜像 zcode-switcher 的安全策略——**ZCode 桌面端运行时会回写 slot 文件，切换前先 SIGTERM 关闭（8s 超时则拒绝），切换完成后 best-effort 重启**（darwin `open`）；回读漂移 slot、原子写双文件、重挂失败回滚与 kimi 路径一致；
+  - 无 token 刷新流程（provider apiKey 为 JWT）：全 401 直接标记 `reauth_required`；
+  - `Kinds()` 加入 zcode 后，轮询预警、`poolQuotaHook` 自动切换续跑、settings 开关、通知全部自动生效（阶段 3 的链路本来就是 kind 参数化的）；
+  - 前端 pool.js 参数化为双面板（Kimi/ZCode），app.js/index.html 各挂一个实例；
+  - 冒烟：JS 端加密夹具 → Go 导入/捕获/切换/回切全通过；假 token 打真实 zcode.z.ai 正确走 401→monitor 兜底→`reauth_required` 路径。
 
 **阶段 5（可选）**：Codex 纳入统一池视图（只读展示 + 跳转现有切换流程）；MiniMax/WorkBuddy 视 ACP 支持情况再议。
 

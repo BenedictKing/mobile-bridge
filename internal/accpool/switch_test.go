@@ -44,7 +44,7 @@ type fakeSM struct {
 	reattached []string
 }
 
-func (f *fakeSM) LiveSessions() map[string]string { return f.live }
+func (f *fakeSM) LiveSessions() map[string]string            { return f.live }
 func (f *fakeSM) BusyReasonsExcept(map[string]bool) []string { return f.busy }
 func (f *fakeSM) Reattach(id, cwd string, _ time.Duration) error {
 	if f.failOn[id] {

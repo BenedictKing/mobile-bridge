@@ -30,22 +30,28 @@ const (
 // zcode-switcher's kimiManager format so snapshot files can be imported
 // verbatim.
 type Account struct {
-	ID             string `json:"id"`
-	Label          string `json:"label,omitempty"`
-	Note           string `json:"note,omitempty"`
-	Email          string `json:"email,omitempty"`
-	Nickname       string `json:"nickname,omitempty"`
-	UserID         string `json:"userId,omitempty"`
-	Avatar         string `json:"avatar,omitempty"`
-	LevelName      string `json:"levelName,omitempty"`
-	Region         string `json:"region,omitempty"`
-	AccessToken    string `json:"accessToken,omitempty"`
-	RefreshToken   string `json:"refreshToken,omitempty"`
-	TokenType      string `json:"tokenType,omitempty"`
-	Scope          string `json:"scope,omitempty"`
-	ExpiresAt      int64  `json:"expiresAt,omitempty"`
-	ExpiresIn      int64  `json:"expiresIn,omitempty"`
-	DeviceID       string `json:"deviceId,omitempty"`
+	ID           string `json:"id"`
+	Label        string `json:"label,omitempty"`
+	Note         string `json:"note,omitempty"`
+	Email        string `json:"email,omitempty"`
+	Nickname     string `json:"nickname,omitempty"`
+	UserID       string `json:"userId,omitempty"`
+	Avatar       string `json:"avatar,omitempty"`
+	LevelName    string `json:"levelName,omitempty"`
+	Region       string `json:"region,omitempty"`
+	AccessToken  string `json:"accessToken,omitempty"`
+	RefreshToken string `json:"refreshToken,omitempty"`
+	TokenType    string `json:"tokenType,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	ExpiresAt    int64  `json:"expiresAt,omitempty"`
+	ExpiresIn    int64  `json:"expiresIn,omitempty"`
+	DeviceID     string `json:"deviceId,omitempty"`
+	// Credentials/Config carry zcode's raw slot file texts (machine-bound
+	// enc:v1 fields included); Provider is the active provider id from the
+	// fingerprint. kimi accounts leave all three empty.
+	Credentials    string `json:"credentials,omitempty"`
+	Config         string `json:"config,omitempty"`
+	Provider       string `json:"provider,omitempty"`
 	Status         string `json:"status,omitempty"`
 	StatusReason   string `json:"statusReason,omitempty"`
 	Quota          *Quota `json:"quota,omitempty"`
@@ -73,7 +79,7 @@ func New(dataDir, zcasDir string) *Manager {
 
 // Kinds lists the agents with pool support; the HTTP layer validates route
 // parameters against it.
-func (m *Manager) Kinds() []string { return []string{"kimi"} }
+func (m *Manager) Kinds() []string { return []string{"kimi", "zcode"} }
 
 func (m *Manager) supports(kind string) bool {
 	for _, k := range m.Kinds() {
@@ -225,6 +231,15 @@ func (m *Manager) upsert(kind string, candidate *Account) (*Account, bool, error
 		if candidate.Region != "" {
 			merged.Region = candidate.Region
 		}
+		if candidate.Credentials != "" {
+			merged.Credentials = candidate.Credentials
+		}
+		if candidate.Config != "" {
+			merged.Config = candidate.Config
+		}
+		if candidate.Provider != "" {
+			merged.Provider = candidate.Provider
+		}
 		if candidate.Label != "" {
 			merged.Label = candidate.Label
 		}
@@ -313,22 +328,25 @@ func readKimiCredentials() *kimiCredentials {
 }
 
 // activeID identifies which pooled account currently occupies the official
-// slot, matching refresh_token first then access_token (kimiManager.current).
+// slot (kimi: slot token match; zcode: slot fingerprint match).
 func (m *Manager) activeID(kind string) string {
-	if kind != "kimi" {
-		return ""
-	}
-	creds := readKimiCredentials()
-	if creds == nil {
-		return ""
-	}
-	if creds.RefreshToken != "" {
-		if match := m.findAccount(kind, func(a *Account) bool { return a.RefreshToken == creds.RefreshToken }); match != nil {
+	switch kind {
+	case "kimi":
+		creds := readKimiCredentials()
+		if creds == nil {
+			return ""
+		}
+		if creds.RefreshToken != "" {
+			if match := m.findAccount(kind, func(a *Account) bool { return a.RefreshToken == creds.RefreshToken }); match != nil {
+				return match.ID
+			}
+		}
+		if match := m.findAccount(kind, func(a *Account) bool { return a.AccessToken != "" && a.AccessToken == creds.AccessToken }); match != nil {
 			return match.ID
 		}
-	}
-	if match := m.findAccount(kind, func(a *Account) bool { return a.AccessToken != "" && a.AccessToken == creds.AccessToken }); match != nil {
-		return match.ID
+		return ""
+	case "zcode":
+		return m.activeIDZcode()
 	}
 	return ""
 }
@@ -356,6 +374,9 @@ func (m *Manager) Import(kind, source string) (imported []string, skipped []Impo
 	dir := source
 	if !strings.HasSuffix(filepath.Base(dir), "accounts-"+kind) {
 		dir = filepath.Join(dir, "accounts-"+kind)
+	}
+	if kind == "zcode" {
+		return m.importZcode(dir)
 	}
 	entries, readErr := os.ReadDir(dir)
 	if readErr != nil {
@@ -392,9 +413,11 @@ func (m *Manager) Import(kind, source string) (imported []string, skipped []Impo
 }
 
 // CaptureCurrent snapshots the official slot's current login state into the
-// pool (kimiManager.captureCurrent): identity is fetched best-effort, with a
-// token refresh first when the access token is near expiry.
+// pool (kimiManager.captureCurrent / zcode manager.capture).
 func (m *Manager) CaptureCurrent(ctx context.Context, kind string) (*Account, bool, error) {
+	if kind == "zcode" {
+		return m.captureZcodeCurrent()
+	}
 	if kind != "kimi" {
 		return nil, false, fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
 	}
@@ -441,13 +464,13 @@ func applyTokenSet(acc *Account, tokens *tokenSet) {
 	acc.ExpiresAt = tokens.ExpiresAt
 }
 
-// RefreshQuota renews the account token when due, refreshes identity and
-// quota, and persists everything (kimiManager.refreshQuota). When the account
-// occupies the official slot, the refreshed token is written back so the CLI
-// does not keep a rotated-out refresh_token.
+// RefreshQuota renews the account's quota (and the kimi token when due),
+// persists everything, and — when the account occupies the official slot —
+// writes refreshed kimi tokens back so the CLI does not keep a rotated-out
+// refresh_token.
 func (m *Manager) RefreshQuota(ctx context.Context, kind, id string) (*Account, error) {
-	if kind != "kimi" {
-		return nil, fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
+	if !m.supports(kind) {
+		return nil, errUnsupported(kind)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -455,6 +478,15 @@ func (m *Manager) RefreshQuota(ctx context.Context, kind, id string) (*Account, 
 	if err != nil {
 		return nil, err
 	}
+	if kind == "zcode" {
+		return m.refreshZcodeQuota(ctx, acc)
+	}
+	return m.refreshKimiQuota(ctx, acc)
+}
+
+// refreshKimiQuota is the kimi branch of RefreshQuota (kimiManager.refreshQuota).
+func (m *Manager) refreshKimiQuota(ctx context.Context, acc *Account) (*Account, error) {
+	kind := "kimi"
 	slotCreds := readKimiCredentials()
 	slotIsThis := slotCreds != nil &&
 		((slotCreds.RefreshToken != "" && slotCreds.RefreshToken == acc.RefreshToken) ||
@@ -573,6 +605,7 @@ func (m *Manager) view(acc *Account, activeID string) *jsoncompat.Object {
 	row.Set("email", acc.Email)
 	row.Set("nickname", acc.Nickname)
 	row.Set("userId", acc.UserID)
+	row.Set("provider", acc.Provider)
 	row.Set("levelName", acc.LevelName)
 	row.Set("region", acc.Region)
 	row.Set("status", acc.Status)

@@ -1,9 +1,9 @@
 'use strict';
-/* ACP 账号池只读面板（阶段 1）：展示 kimi 池内账号与窗口额度，
-   支持从 zcode-switcher 导入与手动刷新额度。切换能力在后续阶段提供。 */
+/* ACP 账号池面板：展示池内账号与窗口额度，支持从 zcode-switcher 导入、
+   手动刷新额度、切换账号与自动切换开关。kimi/zcode 各实例化一个。 */
 class PoolPanel {
-  constructor({root,read,request}){
-    Object.assign(this,{root,read,request});
+  constructor({root,read,request,kind,label}){
+    Object.assign(this,{root,read,request,kind,label});
     this.value=null;this.loading=false;this.busy=false;this.error='';
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
@@ -18,7 +18,8 @@ class PoolPanel {
       if(mins%60===0)return mins/60+t(' 小时');
       return mins+t(' 分钟');
     }
-    return ({minute:t('分钟'),hour:t('小时'),day:t('天'),week:t('周')})[w.windowUnit]||t('额度窗口');
+    if(!w.windowUnit)return '';
+    return ({minute:t('分钟'),hour:t('小时'),day:t('天'),week:t('周')})[w.windowUnit]||'';
   }
   async refresh(){
     if(this.loading||this.busy)return;
@@ -36,7 +37,7 @@ class PoolPanel {
   }
   async switchTo(row){
     const t=BridgeI18n.t;
-    if(!window.confirm(t('确认切换 Kimi 账号？进行中的回合会被拒绝，已打开的会话将以新账号重连。')+'\n'+(row.label||row.id)))return;
+    if(!window.confirm(t('确认切换账号？进行中的回合会被拒绝，已打开的会话将以新账号重连。')+'\n'+(row.label||row.id)))return;
     await this.perform('switch',{id:row.id,confirmed:true});
   }
   quotaRows(card,row){
@@ -69,11 +70,11 @@ class PoolPanel {
   }
   render(){
     const t=BridgeI18n.t,root=this.root;root.replaceChildren();
-    root.append(this.node('h3',t('ACP 账号池（Kimi）')));
+    root.append(this.node('h3',t('ACP 账号池')+'（'+this.label+'）'));
     const controls=this.node('div',undefined,'pool-controls');
     const refresh=this.button(t('刷新额度'),()=>this.perform('refresh'));refresh.disabled=this.busy||this.loading;
     const importBtn=this.button(t('从 zcode-switcher 导入'),()=>{
-      if(window.confirm(t('从 zcode-switcher 的账号库导入 Kimi 账号快照，并捕获当前登录态？')))this.perform('import');
+      if(window.confirm(t('从 zcode-switcher 的账号库导入账号快照，并捕获当前登录态？')))this.perform('import');
     });importBtn.disabled=this.busy||this.loading;
     const autoLabel=this.node('label',undefined,'notification-option');
     this.autoSwitch=document.createElement('input');this.autoSwitch.type='checkbox';
@@ -94,7 +95,7 @@ class PoolPanel {
     if(value.captureError)root.append(this.node('p',t('当前登录态捕获失败：')+value.captureError,'account-muted'));
     if(value.refreshErrors)for(const[id,msg]of Object.entries(value.refreshErrors))root.append(this.node('p',id+' · '+msg,'error'));
     const accounts=value.accounts||[];
-    if(!accounts.length){root.append(this.node('p',t('账号池为空。点击上方按钮从 zcode-switcher 导入，或捕获当前 Kimi 登录态。'),'account-muted'));return;}
+    if(!accounts.length){root.append(this.node('p',t('账号池为空。点击上方按钮从 zcode-switcher 导入，或捕获当前登录态。'),'account-muted'));return;}
     for(const row of [...accounts].sort((a,b)=>Number(b.active)-Number(a.active))){
       const card=this.node('section',undefined,'account-bucket');
       const identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name');
@@ -102,7 +103,7 @@ class PoolPanel {
       const title=this.node('div',undefined,'accounts-name-heading');title.append(heading);
       if(row.active)title.append(this.node('span',t('当前使用'),'accounts-credit'));
       if(row.status&&row.status!=='active')title.append(this.node('span',({reauth_required:t('需重新登录'),disabled:t('已停用'),cooling_down:t('冷却中')})[row.status]||row.status,'error'));
-      name.append(title,this.node('p',row.email||row.nickname||row.userId||row.id,'account-muted'));
+      name.append(title,this.node('p',row.email||row.nickname||row.userId||row.provider||row.id,'account-muted'));
       identity.append(name);this.quotaRows(identity,row);card.append(identity);
       const choose=this.button(row.active?t('当前账号'):t('切换到此账号'),()=>this.switchTo(row));
       choose.disabled=this.busy||this.loading||row.active||(row.status&&row.status!=='active');

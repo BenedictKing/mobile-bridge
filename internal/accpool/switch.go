@@ -45,7 +45,7 @@ const reattachTimeout = 60 * time.Second
 
 // Switch moves the agent's official credential slot to the target account and
 // re-attaches every live session. The sequence mirrors zcode-switcher's
-// kimiManager.use plus the ACP-specific process restart:
+// kimiManager.use / manager.use plus the ACP-specific process restart:
 //
 //	gate → read back the current slot into its snapshot → refresh the target
 //	token when due → atomically replace the slot (+ ensure the CLI provider
@@ -56,12 +56,19 @@ const reattachTimeout = 60 * time.Second
 // excludes the session whose turn just failed). Every step is recorded in
 // history.jsonl under the pool directory.
 func (m *Manager) Switch(ctx context.Context, kind, targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
-	if kind != "kimi" {
-		return fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
+	if !m.supports(kind) {
+		return errUnsupported(kind)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if kind == "zcode" {
+		return m.switchZcode(targetID, trigger, sessions, ignoreBusy)
+	}
+	return m.switchKimi(ctx, targetID, trigger, sessions, ignoreBusy)
+}
 
+func (m *Manager) switchKimi(ctx context.Context, targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
+	kind := "kimi"
 	target, err := m.loadAccount(kind, targetID)
 	if err != nil {
 		return err
@@ -279,4 +286,111 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, raw, 0o600)
+}
+
+// switchZcode swaps the ~/.zcode/v2 login state. Differences from kimi: no
+// token refresh flow exists (provider apiKeys are JWTs the server renews),
+// and the ZCode desktop app rewrites both slot files while running, so —
+// mirroring zcode-switcher's switchTo — it is stopped before the swap and
+// relaunched afterwards (best effort).
+func (m *Manager) switchZcode(targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
+	kind := "zcode"
+	target, err := m.loadAccount(kind, targetID)
+	if err != nil {
+		return err
+	}
+	if target.Status == StatusReauthRequired || target.Status == StatusDisabled {
+		return fmt.Errorf("账号 %s 不可用（%s），请先重新登录", target.Label, target.Status)
+	}
+	if target.Credentials == "" || target.Config == "" {
+		return fmt.Errorf("账号 %s 的快照不完整（缺少 credentials/config）", target.Label)
+	}
+	previous := readZcodeSlot()
+	fromID := m.activeID(kind)
+	if fromID == target.ID {
+		return errors.New("该账号已是当前账号")
+	}
+	record := SwitchRecord{At: m.now().UnixMilli(), Kind: kind, From: fromID, To: target.ID, Trigger: trigger}
+
+	fail := func(cause error) error {
+		record.Error = cause.Error()
+		m.appendHistory(&record)
+		return cause
+	}
+
+	if sessions != nil {
+		if reasons := sessions.BusyReasonsExcept(ignoreBusy); len(reasons) > 0 {
+			return fail(&BusyError{Reasons: reasons})
+		}
+	}
+
+	// The desktop app holds and rewrites the slot files; switching underneath
+	// it is unreliable (zcode-switcher forces the same stop).
+	desktopWasRunning := zcodeDesktopRunning()
+	if desktopWasRunning && !zcodeDesktopStop(8*time.Second) {
+		return fail(errors.New("关闭 ZCode 桌面端超时，已取消切换（避免登录态损坏）"))
+	}
+
+	// Read the slot back into the outgoing snapshot when the app/CLI rewrote
+	// it since the snapshot was taken.
+	if previous != nil && fromID != "" {
+		if outgoing, loadErr := m.loadAccount(kind, fromID); loadErr == nil &&
+			(outgoing.Credentials != previous.Credentials || outgoing.Config != previous.Config) {
+			outgoing.Credentials = previous.Credentials
+			outgoing.Config = previous.Config
+			if saveErr := m.saveAccount(kind, outgoing); saveErr != nil {
+				return fail(fmt.Errorf("回读当前账号快照失败: %w", saveErr))
+			}
+		}
+	}
+
+	if err := writeZcodeSlot(&zcodeSlot{Credentials: target.Credentials, Config: target.Config}); err != nil {
+		restoreZcodeSlot(previous)
+		return fail(err)
+	}
+
+	if sessions != nil {
+		failed := []string{}
+		for id, cwd := range sessions.LiveSessions() {
+			if reattachErr := sessions.Reattach(id, cwd, reattachTimeout); reattachErr != nil {
+				failed = append(failed, id+": "+reattachErr.Error())
+			}
+		}
+		if len(failed) > 0 {
+			restoreZcodeSlot(previous)
+			for id, cwd := range sessions.LiveSessions() {
+				_ = sessions.Reattach(id, cwd, reattachTimeout)
+			}
+			if desktopWasRunning {
+				zcodeDesktopRelaunch()
+			}
+			return fail(errors.New("会话重连失败，已恢复原账号：" + strings.Join(failed, "；")))
+		}
+	}
+
+	if desktopWasRunning {
+		zcodeDesktopRelaunch()
+	}
+	target.LastUsedAt = m.now().UnixMilli()
+	if err := m.saveAccount(kind, target); err != nil {
+		return fail(err)
+	}
+	record.OK = true
+	m.appendHistory(&record)
+	return nil
+}
+
+// restoreZcodeSlot puts the previous slot files back; nil means the slot was
+// empty before the switch.
+func restoreZcodeSlot(previous *zcodeSlot) {
+	if previous == nil {
+		if path := zcodeCredentialsPath(); path != "" {
+			_ = os.Remove(path)
+		}
+		if path := zcodeConfigPath(); path != "" {
+			_ = os.Remove(path)
+		}
+		return
+	}
+	_ = writeZcodeSlot(previous)
 }

@@ -28,9 +28,16 @@ func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
 
 // availableForSwitch reports whether the account can absorb work right now:
 // no window at or over the switch threshold and the quota snapshot fresh
-// enough to trust.
-func availableForSwitch(acc *Account, threshold float64) bool {
-	if acc.Status != StatusActive || acc.RefreshToken == "" {
+// enough to trust. kimi accounts need a refresh token to be renewable; zcode
+// accounts need their snapshot pair.
+func availableForSwitch(kind string, acc *Account, threshold float64) bool {
+	if acc.Status != StatusActive {
+		return false
+	}
+	if kind == "kimi" && acc.RefreshToken == "" {
+		return false
+	}
+	if kind == "zcode" && (acc.Credentials == "" || acc.Config == "") {
 		return false
 	}
 	if acc.Quota == nil || acc.QuotaUpdatedAt == 0 {
@@ -61,7 +68,7 @@ func (m *Manager) ChooseTarget(ctx context.Context, kind, currentID string, thre
 		if err != nil && fresh.Quota == nil {
 			continue
 		}
-		if !availableForSwitch(fresh, threshold) {
+		if !availableForSwitch(kind, fresh, threshold) {
 			continue
 		}
 		headroom := 1.0
