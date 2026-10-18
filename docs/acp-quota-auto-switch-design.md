@@ -1,6 +1,6 @@
 # ACP Agent 额度自动切换与自动继续设计
 
-> 状态：草案
+> 状态：阶段 1 已实现（kimi 只读额度池 + 导入 + 轮询 + Web 展示）
 > 日期：2026-10-18
 > 背景：把 zcode-switcher（/Users/petaflops/works/unsorted/zcode-switcher）的账号快照管理与额度查询能力集成进 mobile-bridge，实现"agent 额度（如 5 小时窗口限额）用尽后自动切换其他可用账号，必要时自动发送继续"。
 
@@ -240,10 +240,15 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
 
 ## 10. 分阶段实施计划
 
-**阶段 1：只读额度池（kimi）**
+**阶段 1：只读额度池（kimi）** ✅ 已实现（2026-10-18）
 - `internal/accpool`：存储布局、QuotaProvider 接口、kimi usages API 移植（含退避/重试）。
 - `GET /api/pool`、`/api/pool/kimi`；前端只读展示。
 - 验收：池中账号额度数据与 zcode-switcher 桌面版显示一致。
+- 落地说明：
+  - 实现为 `internal/accpool/{kimi,pool,poller}.go` + `internal/httpd/pool.go` + `web/pool.js`；
+  - 导入走 `POST /api/pool/kimi/import`（登录态 + CSRF 保护，网关本机运行，未单独做"仅桌面端"限制——Web 端同样可操作，见 §9 的偏差记录）；
+  - 额度轮询策略采用开放问题 4 的建议方案：**仅当前槽位账号按周期轮询（默认 5 分钟，`GATEWAY_POOL_POLL_SECONDS` 可调，负值关闭），备用账号用时再查**；
+  - 导入源目录由 `GATEWAY_ZCAS_DIR` 指定，指向 zcode-switcher 数据目录（含 `accounts-kimi/`）。
 
 **阶段 2：手动切换（kimi）**
 - Switcher（回读/替换/重启/核验/回滚/记账）+ `POST /api/pool/kimi/switch` + 前端按钮。
@@ -263,5 +268,5 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
 1. **kimi ACP 会话恢复能力**：kimi CLI 的 ACP 实现是否支持 `session/load` 或等价恢复？需实测——这是"切换后自动继续"的前置条件。若不支持，阶段 3 降级为"切换 + 通知"。
 2. **Agent Host 模式下的进程重启**：经 Unix socket 让 `agent-host` 重启指定 agent 的协议需要新增控制消息，还是直接复用现有断开重连？需看 `internal/acphost` 细节。
 3. **被动事件的误报率**：ACP 错误文本里"额度耗尽"与"瞬时 429 限流"如何区分？前者触发切换，后者应退避重试。需要收集真实报错语料校准分类器。
-4. **轮询频次与账号封禁风险**：多账号 × 5 分钟轮询官方额度 API 是否有风控风险？是否改为"仅当前账号高频轮询 + 备用账号低频/用时再查"？
+4. ~~**轮询频次与账号封禁风险**~~（已决策，阶段 1 落地）：仅当前槽位账号高频轮询（默认 5 分钟，可调/可关），备用账号在手动刷新或切换时才查询。
 5. **zcode-switcher 的代码复用方式**：把其额度/凭证逻辑移植为 Go（推荐，与网关同进程同语言），还是把 zcode-switcher CLI 作为外部命令调用（快但多一层进程依赖与版本耦合）？本文档默认前者。

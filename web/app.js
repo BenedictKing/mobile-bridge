@@ -564,9 +564,12 @@ function renderComputerApproval(request){
 }
 function renderAcpApproval(request){
   const id=currentId,host=currentHost,card=el('section','approval'),params=request.params||{};
-  card.dataset.request=String(request.id);card.append(el('h3','',t('权限请求')),el('p','',params.title||''));
-  const badge=riskBadge(request,params);if(badge)card.append(badge);
-  if(params.command){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
+  // kimi's AskUserQuestion arrives as a permission request whose options are
+  // the answer choices: draw it as a question card, not a risk prompt.
+  const question=!!params.question;
+  card.dataset.request=String(request.id);card.append(el('h3','',question?t('Agent 提问你'):t('权限请求')),el('p','',params.text||(params.title||'')));
+  const badge=question?null:riskBadge(request,params);if(badge)card.append(badge);
+  if(!question&&params.command){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
   const actions=el('div','actions'),error=el('p','error');card.append(actions,error);
   let busy=submittedRequestIds.has(request.id);
   async function submit(response){
@@ -577,7 +580,9 @@ function renderAcpApproval(request){
   }
   let firstAllow=true;
   for(const option of params.options||[]){
-    const allow=String(option.kind||'').includes('allow'),button=el('button',allow&&firstAllow?'primary':'secondary',option.label||option.id);
+    const allow=String(option.kind||'').includes('allow');
+    const label=question&&!allow&&/^skip$/i.test(option.label||'')?t('跳过'):(option.label||option.id);
+    const button=el('button',allow&&firstAllow?'primary':'secondary',label);
     if(allow)firstAllow=false;
     markRecommendation(button,option.id,request.recommend);
     button.type='button';button.disabled=busy;button.onclick=()=>submit({optionId:option.id});actions.append(button);
@@ -1037,4 +1042,5 @@ $('delete-chat').onclick=async()=>{
 };
 
 const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
-if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();};
+const poolPanel=typeof PoolPanel==='undefined'?null:new PoolPanel({root:$('pool-content'),read:()=>api('/api/pool/kimi'),request:action=>api('/api/pool/kimi/'+action,{})});
+if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();if(poolPanel)poolPanel.refresh();};

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/account"
+	"github.com/BenedictKing/mobile-bridge/internal/accpool"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
@@ -99,6 +100,7 @@ type Server struct {
 	Jev             *jev.Settings
 	Conventions     *conventions.Settings
 	Account         *account.Manager
+	Pool            *accpool.Manager
 	Goal            *goal.Manager
 	queueMu         sync.Mutex // serializes queue dispatch passes
 	projectionsMu   sync.Mutex
@@ -321,6 +323,7 @@ var staticRoutes = map[string]staticRoute{
 	"/activity.js":                {"activity.js", "text/javascript; charset=utf-8"},
 	"/fast-mode.js":               {"fast-mode.js", "text/javascript; charset=utf-8"},
 	"/accounts.js":                {"accounts.js", "text/javascript; charset=utf-8"},
+	"/pool.js":                    {"pool.js", "text/javascript; charset=utf-8"},
 	"/migrate.js":                 {"migrate.js", "text/javascript; charset=utf-8"},
 	"/account.js":                 {"account.js", "text/javascript; charset=utf-8"},
 	"/account.css":                {"account.css", "text/css; charset=utf-8"},
@@ -643,6 +646,16 @@ func (h *handler) handleMethod(write bool) {
 		} else {
 			h.output(http.StatusOK, h.server.Bridge.AccountsPublic(), contentTypeJSON, "")
 		}
+	case !write && (path == "/api/pool" || strings.HasPrefix(path, "/api/pool/")):
+		if h.session(write) == nil {
+			return
+		}
+		h.handlePool(false)
+	case write && strings.HasPrefix(path, "/api/pool/"):
+		if h.session(write) == nil {
+			return
+		}
+		h.handlePool(true)
 	case write && path == "/api/accounts/details":
 		if h.session(write) == nil {
 			return

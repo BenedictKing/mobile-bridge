@@ -37,6 +37,7 @@ import (
 
 	gateway "github.com/BenedictKing/mobile-bridge"
 	"github.com/BenedictKing/mobile-bridge/internal/account"
+	"github.com/BenedictKing/mobile-bridge/internal/accpool"
 	"github.com/BenedictKing/mobile-bridge/internal/acpagents"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
@@ -635,6 +636,12 @@ func runGateway(args []string) {
 		}
 	}
 	server.Account = account.NewWithData(codexHome, dataDir, os.Getenv("GATEWAY_CODEX_BIN"))
+	// ACP account pools (kimi first): snapshots imported from zcode-switcher,
+	// quota polled in the background for whichever account occupies the
+	// official slot. GATEWAY_ZCAS_DIR points at the zcode-switcher data dir.
+	server.Pool = accpool.New(dataDir, os.Getenv("GATEWAY_ZCAS_DIR"))
+	poolPoller := accpool.NewPoller(server.Pool)
+	poolPoller.Start()
 	server.Goal = goal.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))
 	// ACP agent wiring. Explicit env (GATEWAY_ACP_BIN / GATEWAY_ACP_BINS)
 	// wins; otherwise the gateway auto-detects locally installed agents the
@@ -884,6 +891,7 @@ func runGateway(args []string) {
 		_ = httpServer.Shutdown(context.Background())
 	}
 	outcomeWorker.Close()
+	poolPoller.Stop()
 	server.StopDiscovery()
 	if quickTunnel != nil {
 		quickTunnel.Close()
