@@ -32,6 +32,7 @@
 
 ### Changed / Fixed
 
+- A cellular/Wi-Fi handoff no longer leaves the phone on a silently dead SSE: an `online` event now wakes the transport, refreshes activity, and retries a failed recent-window fill (`ChatTimeline.refill`), so the timeline recovers without a reload. The same refill runs on a foreground return.
 - The list's 最近交互 timestamp now refreshes with the 5s activity poll for native-followed agents. `/api/activity` rows carry the native recency (zcode `session.time_updated`, dsh transcript mtime), and the sidebar updates the affected row's timestamp in place when its sort position is unchanged, so an active chat no longer waits for a full list reload to show a fresh time — and the 5s bumps do not re-render (or scroll-jump) the whole list.
 - The read-only upgrade copy now spells out the desktop contention: the hint says to close the desktop session before 尝试接入, the disabled button explains that the desktop turn is still running, and a successful upgrade toasts that the session should not be continued in the desktop app at the same time.
 - ACP branches can now be created from an already-settled turn while a newer turn is still running. The message-action handler refused every branch whenever the session's view was `active`, even though the target row's own `turnStatus` is validated later; the session-wide check is gone and the per-row rule (an in-progress target turn is still refused) remains. This is what lets the phone branch out of a long desktop-driven turn instead of staying trapped in the read-only view until it ends.

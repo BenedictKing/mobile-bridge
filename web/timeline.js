@@ -89,6 +89,10 @@ class ChatTimeline {
     const count=filtered?[...this.nodes.values()].filter(({node})=>!node.hidden).length:this.rows.size;
     if(!this.abort.signal.aborted&&this.rows.size>0&&count<target&&!this.retryCount)this.loadOlder(filtered?100:target-count);
   }
+  // A network restore or foreground return retries a failed recent-window
+  // fill; the retry counter otherwise stays armed until the user taps
+  // "load older", which is invisible on a phone after a socket blip.
+  refill(){this.retryCount=0;this.historyStatus();this.fillRecent();}
   historyStatus(){this.older.hidden=!this.hasMore;this.older.disabled=this.busy;this.older.textContent=this.busy?timelineText('正在读取更早内容…'):this.retryCount?timelineText('历史加载失败，点击重试'):timelineText('查看更早内容');}
   async loadOlder(count){
     if(this.busy||!this.hasMore||this.abort.signal.aborted)return;

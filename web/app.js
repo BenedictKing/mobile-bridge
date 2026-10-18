@@ -113,8 +113,12 @@ function wakeForeground(){
   foregroundWakeAt=now;
   refreshActivity();
   BridgeTransport.wake?.();
+  chatTimeline?.refill?.();
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)wakeForeground();});
+// Cellular/Wi-Fi handoffs recover without a visibility change; the SSE can
+// stay silently dead, so an online event must also wake the channel.
+window.addEventListener('online',wakeForeground);
 let loginStatus={attemptsRemaining:5,attemptLimit:5,blocked:false};
 function renderLoginStatus(status=loginStatus){
   loginStatus=status||loginStatus;

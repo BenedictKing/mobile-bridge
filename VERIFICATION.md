@@ -1,3 +1,12 @@
+## 网络恢复实测（2026-10-18）
+
+- 场景：只读会话页面在视口内，CDP `Network.emulateNetworkConditions` 断网 4–6 秒再恢复；断网期间页面停留在 100 行，在线事件触发后 `navigator.onLine=true`、页面收到 1 次 `online`。
+- 修复前复现：断网时服务端 reset 页（20 行）落地，`fillRecent` 的 80 行请求失败 → `retryCount=80`，之后即使在线，页面仍停在 20 行/`Could not load history. Click to retry`，SSE 也不再有帧（seq 卡住）；手动 `BridgeTransport.wake()` 后恢复 100 行、retry 0、seq 前进。
+- 修复：`wakeForeground` 增加 `chatTimeline.refill()`（清 retry 并重试最近窗口）；新增 `online` 监听走同一唤醒路径（refreshActivity + transport wake + refill）。
+- 修复后实测：断网 6s → 在线，页面自动收到 online（1 次），保持 100 行、retry 0（该次未复现 20 行 reset 状态）；修复前的 20 行/retry 80 状态由同一条 wake 路径手动恢复，本次把该路径接到 online 事件。
+- 未覆盖：服务端无 SSE 心跳，因此长时间「在线但 socket 静默死亡」仍依赖 focus/visibility/online 唤醒；没有做周期 watchdog（会误杀健康的长连接）。
+- 移动视口：430×932 下只读提示/按钮/附件图/图片查看器均无横向溢出；英文文案换行正常。
+
 ## 列表时间随活动刷新 + 只读升级文案（2026-10-18）
 
 - 后端：`/api/activity` 的 ACP 行在原生跟随的 agent（dsh/zcode）上补 `recency`——dsh 取转录 mtime，zcode 新增 `Source.Meta` 读 `session.time_updated`；zcode 的 `Manager.NativeMeta` 同时用于列表标题/时间折叠。
