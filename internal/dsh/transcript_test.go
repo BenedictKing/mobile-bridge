@@ -218,3 +218,52 @@ func TestTranscriptReaderStaleOpenTurn(t *testing.T) {
 		t.Fatal("stale rebuild repeated")
 	}
 }
+
+func TestTranscriptReaderToleratesTruncatedTail(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sessions", "--work--", fixtureSession)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	firstFrame := encodeLines(t, []string{
+		`{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}`,
+		`{"type":"user/message","seq":2,"time":1100,"data":{"id":"u1","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"第一问"}]}}`,
+		`{"type":"turn/end","seq":3,"time":1200,"data":{"turn":1,"reason":{"kind":"completed"}}}`,
+	})
+	secondFrame := encodeLines(t, []string{
+		`{"type":"turn/start","seq":4,"time":2000,"data":{"turn":2}}`,
+		`{"type":"user/message","seq":5,"time":2100,"data":{"id":"u2","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"第二问"}]}}`,
+	})
+	// Simulate a read while the app is appending: the newest frame is cut.
+	path := filepath.Join(dir, "session.v4.jsonl.zstd")
+	if err := os.WriteFile(path, append(firstFrame, secondFrame[:len(secondFrame)-3]...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := newReader(root).Load(fixtureSession)
+	if err != nil {
+		t.Fatalf("truncated tail must keep the decoded prefix: %v", err)
+	}
+	if snapshot == nil || len(snapshot.Turns) == 0 {
+		t.Fatalf("snapshot = %v", snapshot)
+	}
+	if text, _ := turnMessages(t, snapshot.Turns[0])[0].MustGet("text").(string); text != "第一问" {
+		t.Fatalf("first user text = %q", text)
+	}
+}
+
+func TestTranscriptReaderIgnoresTraversalAttachment(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, []string{
+		`{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}`,
+		`{"type":"user/message","seq":2,"time":1100,"data":{"id":"u1","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"看图"},{"type":"image","attachment":{"attachmentId":"sha256:../../../../etc/passwd","name":"evil.png"}}]}}`,
+		`{"type":"turn/end","seq":3,"time":1200,"data":{"turn":1,"reason":{"kind":"completed"}}}`,
+	})
+	snapshot, err := newReader(root).Load(fixtureSession)
+	if err != nil || snapshot == nil {
+		t.Fatalf("load = %v/%v", snapshot, err)
+	}
+	user := turnMessages(t, snapshot.Turns[0])[0]
+	if attachments, _ := user.MustGet("attachments").(*jsoncompat.Array); attachments != nil && len(attachments.Items) > 0 {
+		t.Fatalf("traversal attachment was mapped: %v", attachments)
+	}
+}

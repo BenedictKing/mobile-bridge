@@ -1,3 +1,13 @@
+## 深度验证：鉴权、只读边界、分支、真实数据、重启恢复（2026-10-18）
+
+- 图片路由边界：无 cookie → 401；未知 64-hex id → 404；把 DSH 会话的 desktopId 用到 zcode 会话 → 404（按 thread 注册）；路径穿越 id（`..%2F..%2Fetc%2Fpasswd`）→ 404。
+- 只读写边界：对只读 dsh 会话 `stop`/`settings`/`respond`/`input` 全部 409「此会话正在桌面 App 中运行，手机端只读…」；`catalog` 200（models/skills 空、currentModel/effort 来自转录）；`permissions` 200 supported=false。
+- 分支脱身：桌面回合 active 时，用一条已结算 forkable 行 + 故意过期的 version 发 message-action，返回 400「消息位置已变化，请刷新后重试」而不是「请先停止当前任务」——证明会话级 active 拒绝已移除，且请求走到行校验、未创建会话。真实分支未提交（会创建会话）。
+- 真实数据 stale：把当前 DSH 转录复制到临时目录并把 mtime 设为 1 小时前；第一次 Load（2.9MB 压缩）76ms、tip inProgress，第二次 Load 76ms 后 tip interrupted（pending→stale 只触发一次）。zcode 单会话副本 184 messages/670 parts：首次 Load 11ms、二次命中签名 0.3ms（该副本 tip 已 completed，未触发 stale；stale 由单测覆盖）。
+- 重启恢复：浏览器停在只读 dsh 会话（seq 17），`make restart` 后不刷新页面，8s 内 SSE 自动重连，标题/「只读」/提示/输入禁用/「DeepSeek 正在工作…」全部保留，timeline 以新 epoch 重置到 100 行（seq 0）；页面无应用级错误。
+- 新增单测：截断的 zstd 尾部（两帧，第二帧截 3 字节）仍解析出第一轮；路径穿越的 DSH 图片 attachmentId 不产生附件。`go test ./internal/dsh` 通过。
+- 剩余未覆盖：桌面回合结束后的「尝试接入」成功路径（进行中按钮禁用，仅验证 active 时服务端 hint）；真实 fork 提交；Windows。
+
 ## 浏览器自测（2026-10-18）
 
 - 范围：ego-browser（Chromium）在 8787 上实际走读：dsh 只读当前会话、dsh 可写旧会话（Go 迁移推荐）、zcode 会话；覆盖列表、滚动加载、附件图、图片查看器、语言切换、只读/可写输入区、升级按钮状态、控制台错误。
