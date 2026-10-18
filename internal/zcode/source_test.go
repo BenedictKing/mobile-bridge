@@ -2,8 +2,12 @@ package zcode
 
 import (
 	"database/sql"
+	"encoding/base64"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -14,7 +18,10 @@ const testSession = "sess-test"
 
 func openFixture(t *testing.T) (*sql.DB, string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "db.sqlite")
+	path := filepath.Join(t.TempDir(), "cli", "db", "db.sqlite")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -34,6 +41,8 @@ func openFixture(t *testing.T) (*sql.DB, string) {
 	return db, path
 }
 
+func jsonText(value int64) string { return strconv.FormatInt(value, 10) }
+
 func insertRow(t *testing.T, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
@@ -41,45 +50,47 @@ func insertRow(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
-func seed(t *testing.T, db *sql.DB) {
+func seed(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
-	insertRow(t, db, `INSERT INTO session VALUES (?, ?, ?, ?)`, testSession, "真实标题", 500, 2400)
+	now := time.Now().UnixMilli()
+	insertRow(t, db, `INSERT INTO session VALUES (?, ?, ?, ?)`, testSession, "真实标题", now-120000, now-1000)
 	insertRow(t, db, `INSERT INTO message VALUES (?, ?, ?, ?, ?, ?)`,
-		"m1", testSession, 1000, 1000, `{"role":"user","time":{"created":1000},"anchor":{"turnId":"t1"}}`, 1)
+		"m1", testSession, now-1000, now-1000, `{"role":"user","time":{"created":`+jsonText(now-1000)+`},"anchor":{"turnId":"t1"}}`, 1)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"p1", "m1", testSession, 1000, 1000, `{"type":"text","text":"第一问"}`, 0)
+		"p1", "m1", testSession, now-1000, now-1000, `{"type":"text","text":"第一问"}`, 0)
 	insertRow(t, db, `INSERT INTO message VALUES (?, ?, ?, ?, ?, ?)`,
-		"m2", testSession, 1001, 2000, `{"role":"assistant","time":{"created":1001,"completed":2000},"anchor":{"turnId":"t1"},"finish":"stop"}`, 2)
+		"m2", testSession, now-900, now-500, `{"role":"assistant","time":{"created":`+jsonText(now-900)+`,"completed":`+jsonText(now-500)+`},"anchor":{"turnId":"t1"},"finish":"stop"}`, 2)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"p2", "m2", testSession, 1001, 2000, `{"type":"reasoning","text":"想了想"}`, 0)
+		"p2", "m2", testSession, now-900, now-500, `{"type":"reasoning","text":"想了想"}`, 0)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"p3", "m2", testSession, 1001, 2000, `{"type":"text","text":"答一"}`, 1)
+		"p3", "m2", testSession, now-900, now-500, `{"type":"text","text":"答一"}`, 1)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"p4", "m2", testSession, 1001, 2000,
+		"p4", "m2", testSession, now-900, now-500,
 		`{"type":"tool","callID":"c1","tool":"Bash","state":{"status":"completed","title":"Bash","input":{"command":"echo hi"},"output":"hi\n"}}`, 2)
 	// A model-only reminder must never become a phone bubble.
 	insertRow(t, db, `INSERT INTO message VALUES (?, ?, ?, ?, ?, ?)`,
-		"m3", testSession, 3000, 3000,
+		"m3", testSession, now-400, now-400,
 		`{"role":"user","time":{"created":3000},"anchor":{"turnId":"t2"},"synthetic":true,"semantics":{"uiVisibility":"hidden"}}`, 3)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"p5", "m3", testSession, 3000, 3000, `{"type":"text","text":"隐藏提醒"}`, 0)
+		"p5", "m3", testSession, now-400, now-400, `{"type":"text","text":"隐藏提醒"}`, 0)
 	insertRow(t, db, `INSERT INTO message VALUES (?, ?, ?, ?, ?, ?)`,
-		"m4", testSession, 3500, 3500, `{"role":"user","time":{"created":3500},"anchor":{"turnId":"t2"}}`, 4)
+		"m4", testSession, now-300, now-300, `{"role":"user","time":{"created":`+jsonText(now-300)+`},"anchor":{"turnId":"t2"}}`, 4)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"p6", "m4", testSession, 3500, 3500, `{"type":"text","text":"第二问"}`, 0)
+		"p6", "m4", testSession, now-300, now-300, `{"type":"text","text":"第二问"}`, 0)
 	insertRow(t, db, `INSERT INTO message VALUES (?, ?, ?, ?, ?, ?)`,
-		"m5", testSession, 3600, 3600, `{"role":"assistant","time":{"created":3600},"anchor":{"turnId":"t2"}}`, 5)
+		"m5", testSession, now-200, now-200, `{"role":"assistant","time":{"created":`+jsonText(now-200)+`},"anchor":{"turnId":"t2"}}`, 5)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		"p7", "m5", testSession, 3600, 3600,
+		"p7", "m5", testSession, now-200, now-200,
 		`{"type":"tool","callID":"c2","tool":"Read","state":{"status":"running","title":"Read","input":{"file_path":"/tmp/x"}}}`, 1)
-	insertRow(t, db, `INSERT INTO turn_usage VALUES (?, ?, ?, ?, ?, ?)`, testSession, "t1", "completed", 0, 2000, nil)
-	insertRow(t, db, `INSERT INTO todo VALUES (?, ?, ?, ?, ?, ?, ?)`, testSession, "写测试", "completed", 1, 0, 1000, 1000)
-	insertRow(t, db, `INSERT INTO todo VALUES (?, ?, ?, ?, ?, ?, ?)`, testSession, "跑测试", "in_progress", 1, 1, 1000, 1000)
+	insertRow(t, db, `INSERT INTO turn_usage VALUES (?, ?, ?, ?, ?, ?)`, testSession, "t1", "completed", 0, now-500, nil)
+	insertRow(t, db, `INSERT INTO todo VALUES (?, ?, ?, ?, ?, ?, ?)`, testSession, "写测试", "completed", 1, 0, now-1000, now-1000)
+	insertRow(t, db, `INSERT INTO todo VALUES (?, ?, ?, ?, ?, ?, ?)`, testSession, "跑测试", "in_progress", 1, 1, now-1000, now-1000)
+	return now
 }
 
 func TestSourceFollowsPersistedTurns(t *testing.T) {
 	db, path := openFixture(t)
-	seed(t, db)
+	now := seed(t, db)
 	source, err := OpenSource(path)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +158,7 @@ func TestSourceFollowsPersistedTurns(t *testing.T) {
 		"m6", testSession, 3700, 3700, `{"role":"assistant","time":{"created":3700,"completed":3800},"anchor":{"turnId":"t2"},"finish":"stop"}`, 6)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		"p8", "m6", testSession, 3700, 3800, `{"type":"text","text":"第二答"}`, 0)
-	insertRow(t, db, `UPDATE session SET time_updated = 3800 WHERE id = ?`, testSession)
+	insertRow(t, db, `UPDATE session SET time_updated = ? WHERE id = ?`, now, testSession)
 	updated, err := source.Load(testSession)
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +191,89 @@ func TestSourceUnknownSessionIsNil(t *testing.T) {
 	defer source.Close()
 	if snapshot, err := source.Load("sess-missing"); err != nil || snapshot != nil {
 		t.Fatalf("unknown session = %v, %v", snapshot, err)
+	}
+}
+
+func TestSourceUserAttachments(t *testing.T) {
+	db, path := openFixture(t)
+	seed(t, db)
+	existing := filepath.Join(t.TempDir(), "pasted.txt")
+	if err := os.WriteFile(existing, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"p-file", "m1", testSession, 1000, 1000,
+		`{"type":"file","mime":"text/plain","filename":"pasted.txt","source":{"type":"file","path":`+jsonQuote(existing)+`}}`, 1)
+	artifactDir := filepath.Join(filepath.Dir(filepath.Dir(path)), "artifacts", testSession)
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("png-bytes"))
+	if err := os.WriteFile(filepath.Join(artifactDir, "attachment-1-tool-result-abc.txt"),
+		[]byte("data:image/png;base64,"+encoded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"p-image", "m1", testSession, 1000, 1000,
+		`{"type":"file","mime":"image/png","filename":"shot.png","source":{"type":"file","path":"/does/not/exist"},"url":"zcode-artifact://`+testSession+`/tool-result-abc"}`, 2)
+	source, err := OpenSource(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	source.SetMediaDir(t.TempDir())
+	snapshot, err := source.Load(testSession)
+	if err != nil || snapshot == nil {
+		t.Fatalf("load = %v/%v", snapshot, err)
+	}
+	messages := turnMessages(t, snapshot.Turns[0])
+	attachments, _ := messages[0].MustGet("attachments").(*jsoncompat.Array)
+	if attachments == nil || len(attachments.Items) != 2 {
+		t.Fatalf("attachments = %v", attachments)
+	}
+	first, _ := attachments.Items[0].(*jsoncompat.Object)
+	if kind, _ := first.MustGet("type").(string); kind != "file" {
+		t.Fatalf("first attachment = %v", first)
+	}
+	second, _ := attachments.Items[1].(*jsoncompat.Object)
+	imagePath, _ := second.MustGet("path").(string)
+	if kind, _ := second.MustGet("type").(string); kind != "localImage" || imagePath == "" {
+		t.Fatalf("second attachment = %v", second)
+	}
+	if data, err := os.ReadFile(imagePath); err != nil || string(data) != "png-bytes" {
+		t.Fatalf("decoded artifact = %q/%v", data, err)
+	}
+}
+
+func jsonQuote(value string) string {
+	return string(jsoncompat.EncodePythonDefault(value))
+}
+
+func TestSourceStaleOpenTurn(t *testing.T) {
+	db, path := openFixture(t)
+	now := seed(t, db)
+	source, err := OpenSource(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	first, err := source.Load(testSession)
+	if err != nil || first == nil {
+		t.Fatalf("first = %v/%v", first, err)
+	}
+	if status, _ := first.Turns[len(first.Turns)-1].MustGet("status").(string); status != "inProgress" {
+		t.Fatalf("fresh status = %q", status)
+	}
+	source.now = func() time.Time { return time.UnixMilli(now).Add(16 * time.Minute) }
+	stale, err := source.Load(testSession)
+	if err != nil || stale == nil {
+		t.Fatalf("stale = %v/%v", stale, err)
+	}
+	if status, _ := stale.Turns[len(stale.Turns)-1].MustGet("status").(string); status != "interrupted" {
+		t.Fatalf("stale status = %q", status)
+	}
+	if again, _ := source.Load(testSession); again != nil {
+		t.Fatal("stale rebuild repeated")
 	}
 }
 

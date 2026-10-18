@@ -773,14 +773,23 @@ func runGateway(args []string) {
 	// mtime carry the truth. Read-only, never touches the app.
 	if manager := server.ACPAgents["dsh"]; manager != nil && !scriptedMode {
 		dshHome := acpagents.DshHome(os.Getenv, home)
+		reader := dsh.NewTranscriptReader(dshHome)
 		manager.NativeMeta = dsh.MetaReader(dshHome)
-		// A session the desktop app holds cannot be loaded through ACP; the
-		// transcript gives the phone a read-only, live view instead.
-		manager.NativeTranscript = dsh.TranscriptReader(dshHome)
+		// Follow the transcript even when an ACP handle opened successfully:
+		// the desktop app can keep driving the same session outside that
+		// handle. A session the app owns outright falls back to the same
+		// reader through NativeTranscript (read-only view).
+		manager.Native = reader.Load
+		manager.NativeReset = reader.Reset
+		manager.NativeTranscript = reader.Load
 		manager.NativeInterval = 1500 * time.Millisecond
+		manager.NativeSettle = func(session *acpruntime.Session) {
+			server.QueueSettleACP("dsh", session)
+		}
 	}
 	if manager := server.ACPAgents["zcode"]; manager != nil && !scriptedMode {
 		if source, err := zcode.OpenSource(acpagents.ZcodeDBPath(os.Getenv, home)); err == nil {
+			source.SetMediaDir(filepath.Join(dataDir, "agent-media"))
 			manager.Native = source.Load
 			manager.NativeReset = source.Reset
 			manager.NativeClose = source.Close

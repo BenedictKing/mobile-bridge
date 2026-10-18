@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -188,4 +189,32 @@ func turnMessages(t *testing.T, turn *jsoncompat.Object) []*jsoncompat.Object {
 		}
 	}
 	return messages
+}
+
+func TestTranscriptReaderStaleOpenTurn(t *testing.T) {
+	root := t.TempDir()
+	writeFixture(t, root, []string{
+		`{"type":"turn/start","seq":1,"time":1000,"data":{"turn":1}}`,
+		`{"type":"user/message","seq":2,"time":1100,"data":{"id":"u1","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"第一问"}]}}`,
+		`{"type":"assistant/message","seq":3,"time":1200,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"reasoning","text":"还在想"}]}}}`,
+	})
+	reader := newReader(root)
+	first, err := reader.Load(fixtureSession)
+	if err != nil || first == nil {
+		t.Fatalf("first = %v/%v", first, err)
+	}
+	if status, _ := first.Turns[0].MustGet("status").(string); status != "inProgress" {
+		t.Fatalf("fresh status = %q", status)
+	}
+	reader.now = func() time.Time { return time.Now().Add(16 * time.Minute) }
+	stale, err := reader.Load(fixtureSession)
+	if err != nil || stale == nil {
+		t.Fatalf("stale = %v/%v", stale, err)
+	}
+	if status, _ := stale.Turns[0].MustGet("status").(string); status != "interrupted" {
+		t.Fatalf("stale status = %q", status)
+	}
+	if again, _ := reader.Load(fixtureSession); again != nil {
+		t.Fatal("stale rebuild repeated")
+	}
 }

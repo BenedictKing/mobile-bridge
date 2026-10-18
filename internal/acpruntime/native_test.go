@@ -36,6 +36,7 @@ func TestShouldApplyNativeKeepsSettledTip(t *testing.T) {
 	if !session.View.ApplyNative(settled) {
 		t.Fatal("seed apply failed")
 	}
+	session.nativeBootstrapped = true
 	if session.shouldApplyNative(&acpview.NativeSnapshot{Turns: []*jsoncompat.Object{
 		nativeTurn("t1", "completed", "同一个问题"),
 	}}) {
@@ -68,6 +69,7 @@ func TestShouldApplyNativeNeverRollsBackToAnOlderStore(t *testing.T) {
 	session := nativeSession()
 	current := &acpview.NativeSnapshot{Turns: []*jsoncompat.Object{nativeTurn("t1", "completed", "旧问题")}}
 	session.View.ApplyNative(current)
+	session.nativeBootstrapped = true
 	session.View.BeginTurn("电话刚发的问题")
 	older := &acpview.NativeSnapshot{Turns: []*jsoncompat.Object{nativeTurn("t1", "completed", "旧问题")}}
 	if session.shouldApplyNative(older) {

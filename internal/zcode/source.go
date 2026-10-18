@@ -10,19 +10,28 @@
 package zcode
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
+
+// staleTurnAfter bounds how long an in-progress turn may go without a store
+// write before the view calls it interrupted (desktop app quit/crashed).
+const staleTurnAfter = 15 * time.Minute
 
 // Source is a read-only handle on one ZCode session database. It is safe for
 // concurrent Load calls; max one connection is enough for the sub-ms polls.
@@ -31,6 +40,13 @@ type Source struct {
 
 	mu         sync.Mutex
 	signatures map[string]string
+	pending    map[string]bool
+	now        func() time.Time
+	staleAfter time.Duration
+	// artifactDir is <zcode-home>/cli/artifacts; mediaDir receives decoded
+	// artifact images for the phone's desktop-image route.
+	artifactDir string
+	mediaDir    string
 }
 
 // OpenSource opens path read-only. A missing database is an error for the
@@ -48,7 +64,20 @@ func OpenSource(path string) (*Source, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	return &Source{db: db, signatures: map[string]string{}}, nil
+	return &Source{db: db, signatures: map[string]string{}, pending: map[string]bool{},
+		now: time.Now, staleAfter: staleTurnAfter,
+		artifactDir: filepath.Join(filepath.Dir(filepath.Dir(path)), "artifacts")}, nil
+}
+
+// SetMediaDir enables decoding zcode-artifact image attachments into files the
+// phone can preview. Empty keeps only attachments whose source path exists.
+func (s *Source) SetMediaDir(dir string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.mediaDir = dir
+	s.mu.Unlock()
 }
 
 // Reset forgets the cached change signature for sessionID so the next Load
@@ -60,6 +89,7 @@ func (s *Source) Reset(sessionID string) {
 	}
 	s.mu.Lock()
 	delete(s.signatures, sessionID)
+	delete(s.pending, sessionID)
 	s.mu.Unlock()
 }
 
@@ -79,28 +109,36 @@ func (s *Source) Load(sessionID string) (*acpview.NativeSnapshot, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	signature, found, err := s.signature(sessionID)
+	signature, updated, found, err := s.signature(sessionID)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
 		return nil, nil
 	}
+	stale := false
 	if previous, ok := s.signatures[sessionID]; ok && previous == signature {
-		return nil, nil
+		if !s.pending[sessionID] {
+			return nil, nil
+		}
+		if s.now().Sub(time.UnixMilli(updated)) < s.staleAfter {
+			return nil, nil
+		}
+		stale = true
 	}
-	snapshot, err := s.snapshot(sessionID)
+	snapshot, err := s.snapshot(sessionID, stale)
 	if err != nil {
 		return nil, err
 	}
 	s.signatures[sessionID] = signature
+	s.pending[sessionID] = lastTurnInProgress(snapshot)
 	return snapshot, nil
 }
 
 // signature covers every column a rendered turn depends on: message ordering
 // and completion, part text/tool state, turn settlements, the session title
 // and the todo plan.
-func (s *Source) signature(sessionID string) (string, bool, error) {
+func (s *Source) signature(sessionID string) (string, int64, bool, error) {
 	var title string
 	var updated, lastMessage, lastMessageUpdate, lastPart, lastTurn, lastTodo int64
 	err := s.db.QueryRow(`
@@ -113,13 +151,13 @@ func (s *Source) signature(sessionID string) (string, bool, error) {
 		FROM session s WHERE s.id = ?`, sessionID).
 		Scan(&title, &updated, &lastMessage, &lastMessageUpdate, &lastPart, &lastTurn, &lastTodo)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
 	return fmt.Sprintf("%s|%d|%d|%d|%d|%d|%d", title, updated, lastMessage,
-		lastMessageUpdate, lastPart, lastTurn, lastTodo), true, nil
+		lastMessageUpdate, lastPart, lastTurn, lastTodo), updated, true, nil
 }
 
 type storedMessage struct {
@@ -150,7 +188,7 @@ type storedTodo struct {
 
 // snapshot rebuilds the whole visible conversation from the store. Message
 // and part ids are kept stable so timeline row keys survive each poll.
-func (s *Source) snapshot(sessionID string) (*acpview.NativeSnapshot, error) {
+func (s *Source) snapshot(sessionID string, stale bool) (*acpview.NativeSnapshot, error) {
 	var title string
 	var created, updated int64
 	if err := s.db.QueryRow(`SELECT title, time_created, time_updated FROM session WHERE id = ?`,
@@ -174,7 +212,7 @@ func (s *Source) snapshot(sessionID string) (*acpview.NativeSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildSnapshot(title, messages, parts, usage, todos), nil
+	return s.buildSnapshot(sessionID, title, messages, parts, usage, todos, stale), nil
 }
 
 func (s *Source) messages(sessionID string) ([]storedMessage, error) {
@@ -280,8 +318,9 @@ type nativeTurn struct {
 	lastFinish string // finish reason of the last assistant message
 }
 
-func buildSnapshot(title string, messages []storedMessage, parts map[string][]storedPart,
-	usages map[string]turnUsage, todos []storedTodo) *acpview.NativeSnapshot {
+func (s *Source) buildSnapshot(sessionID, title string, messages []storedMessage,
+	parts map[string][]storedPart, usages map[string]turnUsage, todos []storedTodo,
+	stale bool) *acpview.NativeSnapshot {
 	turns := []*nativeTurn{}
 	for _, message := range messages {
 		if !visibleMessage(message.data) {
@@ -299,7 +338,7 @@ func buildSnapshot(title string, messages []storedMessage, parts map[string][]st
 		}
 		if role == "user" {
 			if text := userText(parts[message.id]); text != "" {
-				turn.messages.Items = append(turn.messages.Items, userRow(message.id, text))
+				turn.messages.Items = append(turn.messages.Items, userRow(message.id, text, s.userAttachments(sessionID, parts[message.id])))
 			}
 			turn.lastDone = 0
 			turn.lastRole = "user"
@@ -321,6 +360,11 @@ func buildSnapshot(title string, messages []storedMessage, parts map[string][]st
 		status := turnStatus(turn, usages[turn.id], index == len(turns)-1)
 		snapshot.Turns = append(snapshot.Turns, turnObject(turn, status))
 	}
+	if stale && len(snapshot.Turns) > 0 {
+		if last := snapshot.Turns[len(snapshot.Turns)-1]; turnStatusOf(last) == "inProgress" {
+			last.Set("status", "interrupted")
+		}
+	}
 	if len(snapshot.Turns) > 0 {
 		if plan := planRow(todos); plan != nil {
 			last, _ := snapshot.Turns[len(snapshot.Turns)-1].MustGet("messages").(*jsoncompat.Array)
@@ -330,6 +374,21 @@ func buildSnapshot(title string, messages []storedMessage, parts map[string][]st
 		}
 	}
 	return snapshot
+}
+
+func turnStatusOf(turn *jsoncompat.Object) string {
+	if turn == nil {
+		return ""
+	}
+	status, _ := turn.MustGet("status").(string)
+	return status
+}
+
+func lastTurnInProgress(snapshot *acpview.NativeSnapshot) bool {
+	if snapshot == nil || len(snapshot.Turns) == 0 {
+		return false
+	}
+	return turnStatusOf(snapshot.Turns[len(snapshot.Turns)-1]) == "inProgress"
 }
 
 func currentTurn(turns []*nativeTurn, turnID string) *nativeTurn {
@@ -447,13 +506,194 @@ func userText(parts []storedPart) string {
 	return builder.String()
 }
 
-func userRow(id, text string) *jsoncompat.Object {
+func userRow(id, text string, attachments *jsoncompat.Array) *jsoncompat.Object {
 	row := jsoncompat.NewObject()
 	row.Set("id", "zcode-"+id)
 	row.Set("kind", "userMessage")
 	row.Set("role", "user")
 	row.Set("text", text)
+	if attachments != nil && len(attachments.Items) > 0 {
+		row.Set("attachments", attachments)
+	}
 	return row
+}
+
+// userAttachments turns the user message's file parts into phone attachments.
+// Existing local files keep their path (served by /desktop-images); images
+// whose temp file is gone are decoded from the zcode-artifact store.
+func (s *Source) userAttachments(sessionID string, parts []storedPart) *jsoncompat.Array {
+	list := &jsoncompat.Array{}
+	for _, part := range parts {
+		if part.data == nil {
+			continue
+		}
+		if kind, _ := part.data.MustGet("type").(string); kind != "file" {
+			continue
+		}
+		name, _ := part.data.MustGet("filename").(string)
+		mime, _ := part.data.MustGet("mime").(string)
+		path := ""
+		if strings.HasPrefix(mime, "image/") {
+			sourcePath := ""
+			if source, _ := part.data.MustGet("source").(*jsoncompat.Object); source != nil {
+				if candidate, _ := source.MustGet("path").(string); candidate != "" && regularFile(candidate) {
+					sourcePath = candidate
+					path = s.cacheImage(sessionID, candidate)
+				}
+			}
+			if path == "" {
+				if url, _ := part.data.MustGet("url").(string); url != "" {
+					path = s.artifactImage(sessionID, url)
+				}
+			}
+			// The app's temp screenshots can be unreadable under TCC; the
+			// artifact copy above is the durable path. Last resort keeps the
+			// original so a permission-enabled gateway can still serve it.
+			if path == "" {
+				path = sourcePath
+			}
+		}
+		if path == "" {
+			if name != "" {
+				row := jsoncompat.NewObject()
+				row.Set("type", "file")
+				row.Set("name", name)
+				list.Items = append(list.Items, row)
+			}
+			continue
+		}
+		row := jsoncompat.NewObject()
+		row.Set("type", "localImage")
+		row.Set("path", path)
+		if name != "" {
+			row.Set("name", name)
+		}
+		list.Items = append(list.Items, row)
+	}
+	return list
+}
+
+// artifactImage resolves a zcode-artifact URL to its persisted image. The
+// artifact store keeps a data URL in a .txt file named after the URL token;
+// the decoded bytes are cached under mediaDir so /desktop-images can serve
+// them without touching zcode's store on every poll.
+func (s *Source) artifactImage(sessionID, rawURL string) string {
+	rest := strings.TrimPrefix(rawURL, "zcode-artifact://")
+	if rest == rawURL {
+		return ""
+	}
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return ""
+	}
+	artifactSession, token := rest[:slash], rest[slash+1:]
+	if artifactSession != sessionID || token == "" || strings.ContainsAny(token, `/\`) {
+		return ""
+	}
+	// Load holds s.mu for the whole build; read the fields directly.
+	artifactDir, mediaDir := s.artifactDir, s.mediaDir
+	if mediaDir == "" || !safeName(sessionID) {
+		return ""
+	}
+	matches, _ := filepath.Glob(filepath.Join(artifactDir, sessionID, "*"+token+"*"))
+	for _, match := range matches {
+		info, err := os.Stat(match)
+		if err != nil || info.IsDir() || info.Size() > 32<<20 {
+			continue
+		}
+		raw, err := os.ReadFile(match)
+		if err != nil {
+			continue
+		}
+		decoded := decodeDataURL(strings.TrimSpace(string(raw)))
+		if len(decoded) == 0 {
+			continue
+		}
+		sum := sha256.Sum256(decoded)
+		dir := filepath.Join(mediaDir, "zcode-native", sessionID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return ""
+		}
+		path := filepath.Join(dir, hex.EncodeToString(sum[:])+".bin")
+		if _, err := os.Stat(path); err != nil {
+			if err := os.WriteFile(path, decoded, 0o600); err != nil {
+				return ""
+			}
+		}
+		return path
+	}
+	return ""
+}
+
+// cacheImage copies an existing temp screenshot into the gateway's media
+// directory once, so the attachment keeps working after macOS cleans
+// /var/folders. Empty mediaDir keeps the original path.
+func (s *Source) cacheImage(sessionID, path string) string {
+	mediaDir := s.mediaDir
+	if mediaDir == "" {
+		return path
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > 32<<20 || !safeName(sessionID) {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	dir := filepath.Join(mediaDir, "zcode-native", sessionID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	extension := filepath.Ext(path)
+	if len(extension) > 8 {
+		extension = ""
+	}
+	target := filepath.Join(dir, hex.EncodeToString(sum[:])+extension)
+	if _, err := os.Stat(target); err == nil {
+		return target
+	}
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		return ""
+	}
+	return target
+}
+
+func decodeDataURL(text string) []byte {
+	if !strings.HasPrefix(text, "data:") {
+		return nil
+	}
+	comma := strings.IndexByte(text, ',')
+	if comma < 0 {
+		return nil
+	}
+	header := text[:comma]
+	if !strings.Contains(header, ";base64") {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(text[comma+1:])
+	if err != nil {
+		return nil
+	}
+	return decoded
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func safeName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 func partRow(part storedPart) *jsoncompat.Object {

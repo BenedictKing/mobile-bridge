@@ -194,10 +194,10 @@ func (h *handler) handleACPMessageAction(kind string, manager *acpruntime.Manage
 		h.fail(http.StatusConflict, errorBody("找不到这个会话，请稍后刷新列表"))
 		return
 	}
-	if status, _ := view.MustGet("status").(string); status == "active" {
-		h.fail(http.StatusConflict, errorBody("请先停止当前任务，再编辑或分支"))
-		return
-	}
+	// The target row decides whether a branch is legal: an in-progress turn
+	// is refused by validateACPMessageFork below, but settled older turns stay
+	// forkable while a newer turn runs (desktop-driven turns can be long; a
+	// session-wide active check would trap the phone in the read-only view).
 	_, _, _ = h.server.refreshLiveProjection(threadID)
 	// Validate the cursor row under the thread's slot lock (the SSE loop may
 	// fold a new generation concurrently) and release before the create/prompt

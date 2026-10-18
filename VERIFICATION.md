@@ -1,3 +1,14 @@
+## 桌面跟随收尾：分支脱身、只读升级、stale 回合、zcode 附件（2026-10-18，未发布）
+
+- 分支：`handleACPMessageAction` 删除了会话级 `status=active` 拒绝，目标行的 `turnStatus` 校验保留——桌面长回合期间可以从更早的已结算轮次「从这里分支」；当前轮次本身仍拒绝。
+- 只读升级：只读提示新增「尝试接入」，`reconnect?upgrade=1` 在**视图 idle** 时尝试真实 `Reconcile`（成功换可写并重开；失败保留只读并回 hint）；桌面回合进行中服务端直接回「桌面端正在运行回合；结束后再试」，前端按钮同时禁用。自动 openChat 的 activate 不带 upgrade，不会每次打开都拉进程。
+- stale：dsh Reader / zcode Source 在最后一轮 inProgress 且 15 分钟无存储写入（transcript mtime / session.time_updated）时把该轮标为 interrupted；`pending` 标记让「文件没变但时间越过阈值」也能触发一次重建，之后不再重复；App 恢复写入时重新变回 inProgress。
+- zcode 附件：`file` part（全部出现在用户消息）解析为附件——本地 `source.path` 存在则复制到 `agent-media/zcode-native/<sid>/<sha256>.<ext>`，读失败（TCC）时解码 `zcode-artifact://` 的 data URL 落盘；非图片保留 name-only。`/desktop-images` 实测返回 200 PNG。
+- dsh 跟随扩展：dsh 管理器同时设置 `Native`（带 ACP 句柄的会话也跟随转录）与 `NativeTranscript`（只读回落），共享一个 Reader；首个 native 快照在打开时替换 ACP 回放一次（`nativeBootstrapped`），之后保持 settled-tip 去重。这样升级为可写后 App 继续驱动的新回合仍会实时上屏。
+- 自动检查：zcode 新增附件用例（本地复制 + artifact 解码 + 非图片 name-only）、stale 用例；dsh 新增 stale 用例、Reader Reset；acpruntime 的 bootstrap 标志更新既有 dedupe 用例；`make check`（build + vet + test + -race）全绿。
+- 实测：当前 dsh 会话通过 `reconnect?upgrade=1` 成功换成可写（说明 App 当时已释放句柄）；zcode `sess_fc8a…` 首个用户消息附件变为 `agent-media/zcode-native/.../588f….bin`，`/desktop-images/c5ec…` 返回 200 image/png 68873B；dsh 只读视图仍在 active 时 upgrade 返回 hint（代码守护，未在真机重复触发）。
+- 未覆盖：「尝试接入」在桌面回合结束后的真机成功路径未再跑（测试中已成功一次）；分支脱身只在代码/行级校验层验证，未创建真实分支会话；15 分钟阈值对超长模型调用的误判未做压力测试；非图片 zcode 附件仅显示名称、不可预览。
+
 ## 桌面占用的 DSH 会话：手机只读跟随（2026-10-18，未发布）
 
 - 问题：当前 DSH 对话在桌面 App 里打开，dsh-acp 的 `session/load` 报 `already owned by an active write handle`，手机端连视图都拿不到；此前只在列表里显示「未命名聊天」（见上一条），打开会报错的 cwd 提示。

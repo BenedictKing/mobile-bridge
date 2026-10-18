@@ -619,8 +619,30 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		// fresh child process and closes the current one, killing any
 		// in-flight turn — a fork's transcript prompt right after creation,
 		// or an agent turn still streaming when the phone switches back to
-		// the chat. Only closed or missing handles get reconciled.
-		if live := manager.Get(threadID); live == nil || live.IsClosed() {
+		// the chat. Only closed or missing handles get reconciled, except an
+		// explicit upgrade request on a transcript-backed read-only session:
+		// if the desktop app has released it, the real handle replaces the
+		// read-only view; if it has not, the read-only view stays.
+		upgrade := queryValue(query, "upgrade", "") == "1"
+		live := manager.Get(threadID)
+		if upgrade && live != nil && !live.IsClosed() && live.ReadOnly() {
+			if status, _ := live.Snapshot().MustGet("status").(string); status == "active" {
+				result := jsoncompat.NewObject()
+				result.Set("ok", true)
+				result.Set("readOnly", true)
+				result.Set("hint", "桌面端正在运行回合；结束后再试")
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+				return true
+			}
+			if _, err := manager.Reconcile(threadID, cwd, manager.InitializeTimeout); err != nil {
+				result := jsoncompat.NewObject()
+				result.Set("ok", true)
+				result.Set("readOnly", true)
+				result.Set("hint", "桌面端仍在占用此会话；关闭或切换桌面会话后再试")
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+				return true
+			}
+		} else if live == nil || live.IsClosed() {
 			if _, err := manager.Reconcile(threadID, cwd, manager.InitializeTimeout); err != nil {
 				h.fail(http.StatusConflict, errorBody(acpSessionMessage(err)))
 				return true

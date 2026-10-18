@@ -75,6 +75,11 @@ type Session struct {
 	// readOnly marks a view built from the agent's own transcript because the
 	// desktop app owns the write handle. Reads work; mutations are refused.
 	readOnly bool
+	// nativeBootstrapped marks the first native fold of a handle. That fold
+	// always applies so the native store (with its attachments and stable
+	// ids) becomes the view; later folds keep the settled-tip dedupe so
+	// ordinary gateway turns do not re-key the timeline.
+	nativeBootstrapped bool
 }
 
 // MaxAutoContinue bounds consecutive automatic "继续" sends without an
@@ -1515,6 +1520,7 @@ func (s *Session) syncNative() {
 		changed = true
 	}
 	if s.shouldApplyNative(snapshot) && s.View.ApplyNative(snapshot) {
+		s.nativeBootstrapped = true
 		changed = true
 	}
 	if changed {
@@ -1541,8 +1547,10 @@ func (s *Session) shouldApplyNative(snapshot *acpview.NativeSnapshot) bool {
 	if candidate == nil {
 		return false
 	}
-	if s.readOnly {
-		// The transcript is the only source for this view; always fold it.
+	if s.readOnly || !s.nativeBootstrapped {
+		// The transcript is the only source for a read-only view, and the
+		// first native fold replaces the ACP replay so native attachments and
+		// ids land exactly once.
 		return true
 	}
 	tip := s.View.TipTurn()

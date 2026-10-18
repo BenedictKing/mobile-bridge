@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -32,6 +33,10 @@ const (
 	maxEvents          = 200000
 	maxToolOutput      = 200 << 10
 	maxLineBytes       = 16 << 20
+	// A turn with no turn/end and no transcript writes for this long is
+	// treated as interrupted: the desktop app quit or crashed mid-turn and
+	// the phone must not stay on "working" forever.
+	staleTurnAfter = 15 * time.Minute
 )
 
 var errTranscriptTooLarge = errors.New("dsh transcript too large for the native reader")
@@ -44,6 +49,9 @@ type Reader struct {
 
 	mu         sync.Mutex
 	signatures map[string]fileSignature
+	pending    map[string]bool
+	now        func() time.Time
+	staleAfter time.Duration
 }
 
 type fileSignature struct {
@@ -54,8 +62,31 @@ type fileSignature struct {
 // TranscriptReader returns the loader the acpruntime manager polls for
 // desktop-owned DSH sessions.
 func TranscriptReader(root string) func(sessionID string) (*acpview.NativeSnapshot, error) {
-	reader := &Reader{root: root, signatures: map[string]fileSignature{}}
-	return reader.Load
+	return newReader(root).Load
+}
+
+// NewTranscriptReader exposes the reader so the gateway can share one change
+// cache between the live follower and the read-only fallback, and reset it
+// when a fresh ACP handle attaches.
+func NewTranscriptReader(root string) *Reader {
+	return newReader(root)
+}
+
+// Reset forgets the cached signature so the next Load rebuilds after a new
+// handle attaches.
+func (r *Reader) Reset(sessionID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	delete(r.signatures, sessionID)
+	delete(r.pending, sessionID)
+	r.mu.Unlock()
+}
+
+func newReader(root string) *Reader {
+	return &Reader{root: root, signatures: map[string]fileSignature{}, pending: map[string]bool{},
+		now: time.Now, staleAfter: staleTurnAfter}
 }
 
 // Load parses the session's transcript when its file signature changed.
@@ -69,16 +100,25 @@ func (r *Reader) Load(sessionID string) (*acpview.NativeSnapshot, error) {
 	}
 	r.mu.Lock()
 	previous, seen := r.signatures[sessionID]
+	pending := r.pending[sessionID]
 	r.mu.Unlock()
+	stale := false
 	if seen && previous == signature {
-		return nil, nil
+		if !pending {
+			return nil, nil
+		}
+		if r.now().Sub(time.UnixMilli(signature.updated)) < r.staleAfter {
+			return nil, nil
+		}
+		stale = true
 	}
-	snapshot, err := r.read(sessionID, path)
+	snapshot, err := r.read(sessionID, path, stale)
 	if err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
 	r.signatures[sessionID] = signature
+	r.pending[sessionID] = lastTurnInProgress(snapshot)
 	r.mu.Unlock()
 	return snapshot, nil
 }
@@ -105,7 +145,7 @@ func (r *Reader) transcript(sessionID string) (string, fileSignature, bool) {
 	return newest, signature, newest != ""
 }
 
-func (r *Reader) read(sessionID, path string) (*acpview.NativeSnapshot, error) {
+func (r *Reader) read(sessionID, path string, stale bool) (*acpview.NativeSnapshot, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -127,7 +167,7 @@ func (r *Reader) read(sessionID, path string) (*acpview.NativeSnapshot, error) {
 	if decodeErr != nil && len(decoded) == 0 {
 		return nil, decodeErr
 	}
-	return parseTranscript(sessionID, r.root, decoded), nil
+	return parseTranscript(sessionID, r.root, decoded, stale), nil
 }
 
 type transcriptTurn struct {
@@ -149,7 +189,7 @@ type transcriptParser struct {
 	lastTurnNo int
 }
 
-func parseTranscript(sessionID, root string, raw []byte) *acpview.NativeSnapshot {
+func parseTranscript(sessionID, root string, raw []byte, stale bool) *acpview.NativeSnapshot {
 	parser := &transcriptParser{root: root, tools: map[string]*jsoncompat.Object{}}
 	scanner := bufio.NewScanner(bytes.NewReader(raw))
 	scanner.Buffer(make([]byte, 0, 64<<10), maxLineBytes)
@@ -174,6 +214,11 @@ func parseTranscript(sessionID, root string, raw []byte) *acpview.NativeSnapshot
 	}
 	if len(parser.turns) == 0 {
 		return nil
+	}
+	if stale {
+		if last := parser.turns[len(parser.turns)-1]; last.status == "inProgress" {
+			last.status = "interrupted"
+		}
 	}
 	// Only visible turns reach the phone.
 	turns := make([]*jsoncompat.Object, 0, len(parser.turns))
@@ -474,6 +519,14 @@ func attachmentPath(root, attachmentID string) string {
 		return ""
 	}
 	return path
+}
+
+func lastTurnInProgress(snapshot *acpview.NativeSnapshot) bool {
+	if snapshot == nil || len(snapshot.Turns) == 0 {
+		return false
+	}
+	status, _ := snapshot.Turns[len(snapshot.Turns)-1].MustGet("status").(string)
+	return status == "inProgress"
 }
 
 func nativeTurn(turn *transcriptTurn, status string) *jsoncompat.Object {
