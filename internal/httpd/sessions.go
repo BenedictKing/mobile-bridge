@@ -294,6 +294,10 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		}
 	} else if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
 		acpKind, acpManager = resolution.kind, resolution.manager
+		if resolution.err != nil {
+			h.fail(http.StatusConflict, errorBody(acpSessionMessage(resolution.err)))
+			return true
+		}
 	}
 	// ACP threads own their message actions: fork/edit-fork branch through a
 	// gateway-synthesized session on the same agent. The body must be read
@@ -608,7 +612,8 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	if write && action == "reconnect" {
 		cwd := queryValue(query, "cwd", manager.CwdFor(threadID))
 		if cwd == "" {
-			cwd = "."
+			h.fail(http.StatusConflict, errorBody("找不到这个会话的工作目录，请稍后刷新列表"))
+			return true
 		}
 		// A live handle must survive reconnect-activate: Reconcile spawns a
 		// fresh child process and closes the current one, killing any
@@ -617,7 +622,7 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		// the chat. Only closed or missing handles get reconciled.
 		if live := manager.Get(threadID); live == nil || live.IsClosed() {
 			if _, err := manager.Reconcile(threadID, cwd, manager.InitializeTimeout); err != nil {
-				h.fail(http.StatusConflict, errorBody(err.Error()))
+				h.fail(http.StatusConflict, errorBody(acpSessionMessage(err)))
 				return true
 			}
 		}
@@ -626,9 +631,14 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 		return true
 	}
-	session, err := manager.Open(threadID, queryValue(query, "cwd", "."), manager.InitializeTimeout)
+	cwd := queryValue(query, "cwd", manager.CwdFor(threadID))
+	if cwd == "" {
+		h.fail(http.StatusConflict, errorBody("找不到这个会话的工作目录，请稍后刷新列表"))
+		return true
+	}
+	session, err := manager.Open(threadID, cwd, manager.InitializeTimeout)
 	if err != nil {
-		h.fail(http.StatusConflict, errorBody(err.Error()))
+		h.fail(http.StatusConflict, errorBody(acpSessionMessage(err)))
 		return true
 	}
 	if !write {

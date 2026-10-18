@@ -146,6 +146,10 @@ type Manager struct {
 	// gateway chains the queue dispatcher here; auto-continue deliberately
 	// stays off — a turn the user drives on the desktop is not ours to resume.
 	NativeSettle func(*Session)
+	// NativeMeta fills list-row facts the agent wrapper omits: DSH sessions
+	// the desktop app owns carry no title in dsh-acp's session/list and a
+	// creation-time updatedAt. It returns (title, last activity ms).
+	NativeMeta func(sessionID string) (string, int64)
 
 	// Canonical resolves a session/new placeholder to the backend session id
 	// once the agent materializes it under a different id (zcode's lazy
@@ -266,6 +270,23 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 			if id, ok := row.MustGet("sessionId").(string); ok && id != "" {
 				cwd, _ := row.MustGet("cwd").(string)
 				ids[id] = cwd
+			}
+		}
+	}
+	if m.NativeMeta != nil {
+		for _, row := range output {
+			id, _ := row.MustGet("sessionId").(string)
+			if id == "" {
+				continue
+			}
+			title, updated := m.NativeMeta(id)
+			if title != "" {
+				if current, _ := row.MustGet("title").(string); strings.TrimSpace(current) == "" {
+					row.Set("title", title)
+				}
+			}
+			if updated > 0 {
+				row.Set("updatedAt", jsoncompat.Num(int(updated)))
 			}
 		}
 	}
@@ -419,6 +440,12 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		return nil, err
 	}
 	session.applySessionResult(value, result)
+	if m.NativeMeta != nil {
+		if title, _ := m.NativeMeta(id); title != "" {
+			session.Title = title
+			session.View.Title = title
+		}
+	}
 	m.startNative(session)
 	return session, nil
 }

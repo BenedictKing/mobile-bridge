@@ -199,7 +199,7 @@ func dshProfile(env func(string) string, home string) Profile {
 	// A ~/.dsh directory counts: dsh may only ever have run via npx yet
 	// still leave its credentials and config there.
 	available := env("DSH_ACP_BIN") != "" || lookupPath("dsh-acp") != "" ||
-		lookupPath("dsh") != "" || dirExists(filepath.Join(home, ".dsh"))
+		lookupPath("dsh") != "" || dirExists(DshHome(env, home))
 	if !available {
 		argv = nil
 	}
@@ -285,6 +285,15 @@ func wrapperArgv(env func(string) string, envVar, binary, npmPackage string) []s
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// DshHome is the DeepSeek Harness data directory (credentials, session
+// transcripts and the app's projection cache).
+func DshHome(env func(string) string, home string) string {
+	if explicit := env("DSH_HOME"); explicit != "" {
+		return explicit
+	}
+	return filepath.Join(home, ".dsh")
 }
 
 func zcodeHome(env func(string) string, home string) string {

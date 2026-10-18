@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
@@ -134,6 +135,20 @@ func (s *Server) openACP(kind string, manager *acpruntime.Manager, threadID stri
 		return acpResolution{kind: kind, manager: manager, err: err}
 	}
 	return acpResolution{kind: kind, manager: manager, session: session}
+}
+
+// acpSessionMessage turns the wrapper's ownership rejection into an
+// actionable phone message; every other error passes through unchanged.
+func acpSessionMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := err.Error()
+	if strings.Contains(text, "already owned by an active write handle") ||
+		strings.Contains(text, "already owned") {
+		return "此会话正在桌面 App 中打开，手机端暂不能接入；请先在桌面端切换到其他会话（或退出桌面 App）后重试"
+	}
+	return text
 }
 
 // acpViewState shapes one ACP snapshot into the chat-screen view contract:

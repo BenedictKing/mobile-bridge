@@ -42,6 +42,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/conventions"
+	"github.com/BenedictKing/mobile-bridge/internal/dsh"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
@@ -767,6 +768,12 @@ func runGateway(args []string) {
 	// persists every turn to a shared SQLite store; following it keeps the
 	// phone's live view in step with desktop-driven work. Scripted parity
 	// mode never touches the machine.
+	// DSH sessions the desktop app owns have no title in dsh-acp's list and a
+	// creation-time updatedAt; the app's projection cache and transcript
+	// mtime carry the truth. Read-only, never touches the app.
+	if manager := server.ACPAgents["dsh"]; manager != nil && !scriptedMode {
+		manager.NativeMeta = dsh.MetaReader(acpagents.DshHome(os.Getenv, home))
+	}
 	if manager := server.ACPAgents["zcode"]; manager != nil && !scriptedMode {
 		if source, err := zcode.OpenSource(acpagents.ZcodeDBPath(os.Getenv, home)); err == nil {
 			manager.Native = source.Load

@@ -1,3 +1,11 @@
+## DSH 桌面会话在手机列表的标题/活跃时间（2026-10-18，未发布）
+
+- 问题：DSH 当前对话在桥接列表里显示为「未命名聊天」，时间停在创建时刻（07:51），被更晚的会话压到下面；点开还会报 `Invalid params: cwd must be an absolute path: .`。原因是 dsh-acp 对**桌面 App 正在持有写句柄**的会话不返回 title（`session/list` 行只有 sessionId/cwd/创建时 updatedAt），而桥接的 ACP 路由在打开失败后回退用 `cwd: "."` 重开，掩盖了真实错误。
+- 实现：新增 `internal/dsh` 只读读取 DSH App 自己的状态——`storages/session_projcache/sessions/<id>.json` 的 `record.rows.title.val`（缺省回退首个用户消息）与 `sessions/*/<id>/session.*` transcript 的 mtime（忽略 `.lock`）；`Manager.NativeMeta` 在 `session/list` 折叠时补 title、覆盖 updatedAt（仅 dsh 接线），`openFresh` 同时把 title 写进视图，打开旧会话不再显示「未命名聊天」。`handleACPRoute` 的打开路径改用 `manager.CwdFor`（找不到就明确报错，不再传 `.`），`resolveACP` 的打开错误在路由层直接回给客户端，`acpSessionMessage` 把 dsh-acp 的 `already owned by an active write handle` 翻成「此会话正在桌面 App 中打开…」。
+- 自动检查：`internal/dsh` 新增 title/回退/mtime（忽略 lock）/非法 id/缺文件用例；`internal/acpruntime` 新增 fake agent 的 NativeMeta 列表补全与打开标题用例；`internal/httpd` 新增所有权错误翻译用例；`make check`（build + vet + test + -race）全绿。
+- 实测：重启后 `/api/sessions?agent=dsh` 第一条为「实况差别未体现」（08:21，当前对话），打开返回上述中文提示；`Go 迁移推荐` 等旧会话标题正确。
+- 未覆盖：桌面 App 持有写句柄期间仍无法从手机接入（dsh-acp 的单写者限制）；只读浏览该会话的原生 transcript 需要 zstd 解压与 DSH 事件解析，本轮未做（zcode 的 SQLite follower 不适用于 DSH 的 zstd 事件流）。
+
 ## ZCode 桌面端回合实时跟随（2026-10-18，未发布）
 
 - 问题：同一 zcode 会话在桌面 ZCode App 里继续时，手机端只显示到用户那句「修复」——`zcode-acp` 只为它自己发出的 prompt 推 `session/update`，桌面回合只落进共享的 `~/.zcode/cli/db/db.sqlite`，网关只有 `session/load` 回放，导致手机端看不到「工作中」和后续思考/工具步骤，标题还停在「未命名聊天」。

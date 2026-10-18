@@ -1,6 +1,10 @@
 package acpruntime
 
 import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -142,4 +146,44 @@ func TestSyncNativeClosedSessionIsSilent(t *testing.T) {
 		return nil, nil
 	}
 	session.syncNative()
+}
+
+func TestManagerFillsNativeMetaIntoListAndOpen(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/list": result={"sessions":[{"sessionId":"session-x","cwd":"/work","updatedAt":"2020-01-01T00:00:00Z"}]}
+ elif method == "session/load": result={"sessionId":m.get("params",{}).get("sessionId")}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.NativeMeta = func(string) (string, int64) { return "实况差别未体现", 1792283000000 }
+	rows, err := manager.List(3 * time.Second)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list rows=%v err=%v", rows, err)
+	}
+	if title, _ := rows[0].MustGet("title").(string); title != "实况差别未体现" {
+		t.Fatalf("title = %q", title)
+	}
+	if updated, _ := rows[0].MustGet("updatedAt").(json.Number).Int64(); updated != 1792283000000 {
+		t.Fatalf("updatedAt = %d", updated)
+	}
+	session, err := manager.Open("session-x", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.View.Title != "实况差别未体现" {
+		t.Fatalf("view title = %v", session.View.Title)
+	}
+	manager.Close()
 }
