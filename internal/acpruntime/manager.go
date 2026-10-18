@@ -58,11 +58,29 @@ type Session struct {
 	// consecutive-resume budget any human action re-arms.
 	autoContinue     func(*Session)
 	autoContinueRuns int
+	// native loads the agent's own persisted conversation (ZCode's SQLite
+	// store) for turns the desktop app drives, so the phone follows them
+	// instead of showing only the ACP replay. nativeStop ends the poller.
+	native         func(sessionID string) (*acpview.NativeSnapshot, error)
+	nativeStop     chan struct{}
+	nativeInterval time.Duration
+	// nativeSettle runs when a desktop-driven turn stops running, so queued
+	// phone messages dispatch exactly like after a gateway-sent turn.
+	nativeSettle func(*Session)
+	// nativeLagSince debounces a settled ACP tip against a store that still
+	// reports the same prompt running: the store may merely lag the final
+	// response, but a turn that really keeps running reclaims the view after
+	// nativeStoreLagGrace.
+	nativeLagSince time.Time
 }
 
 // MaxAutoContinue bounds consecutive automatic "继续" sends without an
 // intervening human message, answer or steer.
 const MaxAutoContinue = 5
+
+// nativeStoreLagGrace bounds how long a settled ACP tip may hold off a store
+// copy that still reports the same prompt running before the store wins.
+const nativeStoreLagGrace = 5 * time.Second
 
 // Subagents is the on-disk child-agent source decorating an agent's views
 // (Python's native_subagents stores). Nil disables decoration.
@@ -111,6 +129,23 @@ type Manager struct {
 
 	// Subagents decorates this agent's views with on-disk child agents.
 	Subagents Subagents
+
+	// Native, when set, loads the agent's own persisted conversation (ZCode's
+	// SQLite store). The ACP wrapper only streams turns it runs itself; a turn
+	// started in the desktop app must be followed from this store or the phone
+	// sees it minutes late. Nil disables native following.
+	Native func(sessionID string) (*acpview.NativeSnapshot, error)
+	// NativeReset drops the store's per-session change cache so a freshly
+	// attached handle always rebuilds once.
+	NativeReset func(sessionID string)
+	// NativeInterval is the poll cadence; zero means 800ms.
+	NativeInterval time.Duration
+	// NativeClose releases the native store when the manager shuts down.
+	NativeClose func() error
+	// NativeSettle runs when a desktop-driven native turn settles. The
+	// gateway chains the queue dispatcher here; auto-continue deliberately
+	// stays off — a turn the user drives on the desktop is not ours to resume.
+	NativeSettle func(*Session)
 
 	// Canonical resolves a session/new placeholder to the backend session id
 	// once the agent materializes it under a different id (zcode's lazy
@@ -384,6 +419,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		return nil, err
 	}
 	session.applySessionResult(value, result)
+	m.startNative(session)
 	return session, nil
 }
 
@@ -485,6 +521,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	session.mu.Lock()
 	session.signalLocked()
 	session.mu.Unlock()
+	m.startNative(session)
 	return session, nil
 }
 
@@ -859,8 +896,14 @@ func (s *Session) Cancel() error {
 		s.mu.Unlock()
 		return errors.New("Agent 进程已退出；操作结果未知")
 	}
+	// Only a turn this gateway prompted owns the view. A desktop-driven turn
+	// is followed from the store; marking it cancelled locally would leave
+	// the phone showing 已停止 while the desktop keeps working.
+	running := s.promptRunning
 	s.promptRunning = false
-	s.View.EndTurn("cancelled")
+	if running {
+		s.View.EndTurn("cancelled")
+	}
 	s.signalLocked()
 	s.mu.Unlock()
 	return s.Process.Notify("session/cancel", sessionParams(s.ID))
@@ -1252,6 +1295,9 @@ func (m *Manager) Close() {
 	for _, session := range sessions {
 		session.Close()
 	}
+	if m.NativeClose != nil {
+		_ = m.NativeClose()
+	}
 }
 
 // Snapshot returns the session's current view.
@@ -1279,6 +1325,202 @@ func (s *Session) Wait(timeout time.Duration) {
 	}
 }
 
+// startNative wires the optional persisted-store poller. It runs for the
+// session's whole life: a desktop turn can start at any moment, and the ACP
+// handle never learns about it.
+func (m *Manager) startNative(session *Session) {
+	if m == nil || m.Native == nil || session == nil {
+		return
+	}
+	session.native = m.Native
+	session.nativeInterval = m.NativeInterval
+	session.nativeSettle = m.NativeSettle
+	if session.nativeInterval <= 0 {
+		session.nativeInterval = 800 * time.Millisecond
+	}
+	if m.NativeReset != nil {
+		m.NativeReset(session.ID)
+	}
+	session.nativeStop = make(chan struct{})
+	// First fold before the view is exposed so the phone's first paint is the
+	// native conversation (title and settled tip included), not a replay.
+	session.syncNative()
+	go session.followNative()
+}
+
+func (s *Session) followNative() {
+	stop := s.nativeStop
+	if stop == nil {
+		return
+	}
+	timer := time.NewTimer(s.nativeInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-timer.C:
+		}
+		s.syncNative()
+		timer.Reset(s.nativeInterval)
+	}
+}
+
+// syncNative folds one native snapshot into the view. The ACP view stays
+// authoritative while a prompt this gateway sent is running; the store is
+// only consulted for turns the desktop drives.
+func (s *Session) syncNative() {
+	loader := s.native
+	if loader == nil {
+		return
+	}
+	s.mu.Lock()
+	paused := s.closed || s.promptRunning
+	s.mu.Unlock()
+	if paused {
+		return
+	}
+	snapshot, err := loader(s.ID)
+	if err != nil || snapshot == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.closed || s.promptRunning {
+		s.mu.Unlock()
+		return
+	}
+	wasActive := s.View.Status == "active"
+	changed := false
+	if title := strings.TrimSpace(snapshot.Title); title != "" && s.View.Title != title {
+		s.View.Title = title
+		if s.Title == "" {
+			s.Title = title
+		}
+		changed = true
+	}
+	if s.shouldApplyNative(snapshot) && s.View.ApplyNative(snapshot) {
+		changed = true
+	}
+	if changed {
+		s.signalLocked()
+	}
+	settled := wasActive && s.View.Status != "active"
+	hook := s.nativeSettle
+	s.mu.Unlock()
+	if settled && hook != nil {
+		go hook(s)
+	}
+}
+
+// shouldApplyNative keeps the ACP-built tip when both sides describe the
+// same settled prompt (re-keying it would reset every timeline cursor), and
+// when the ACP tip is settled while the store still reports that prompt as
+// running (the store lags the agent's final response). A new prompt, a
+// running tip, or a snapshot ahead of a settled ACP turn applies.
+func (s *Session) shouldApplyNative(snapshot *acpview.NativeSnapshot) bool {
+	if snapshot == nil || len(snapshot.Turns) == 0 {
+		return false
+	}
+	candidate := snapshot.Turns[len(snapshot.Turns)-1]
+	if candidate == nil {
+		return false
+	}
+	tip := s.View.TipTurn()
+	if tip == nil {
+		s.nativeLagSince = time.Time{}
+		return true
+	}
+	viewText, nativeText := firstUserText(tip), firstUserText(candidate)
+	// The store is append-only: a snapshot that does not contain the prompt
+	// the phone's view ends with is behind (the agent has not flushed it
+	// yet) and must never roll the view back.
+	if viewText != "" && !snapshotHasUserText(snapshot, viewText) {
+		return false
+	}
+	if viewText == "" || viewText != nativeText {
+		s.nativeLagSince = time.Time{}
+		return true
+	}
+	if turnStatusOf(tip) == "inProgress" {
+		s.nativeLagSince = time.Time{}
+		return true
+	}
+	if turnStatusOf(candidate) == "inProgress" {
+		// Same prompt, settled ACP copy, running store copy: usually the
+		// store has not flushed the final response yet. A turn the ACP side
+		// wrongly settled (a cancel aimed at a desktop turn) reclaims the
+		// view once the mismatch persists.
+		if s.nativeLagSince.IsZero() {
+			s.nativeLagSince = time.Now()
+		}
+		if time.Since(s.nativeLagSince) < nativeStoreLagGrace {
+			return false
+		}
+		s.nativeLagSince = time.Time{}
+		return true
+	}
+	s.nativeLagSince = time.Time{}
+	return false
+}
+
+func snapshotHasUserText(snapshot *acpview.NativeSnapshot, text string) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, turn := range snapshot.Turns {
+		if turn == nil {
+			continue
+		}
+		messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+		if messages == nil {
+			continue
+		}
+		for _, item := range messages.Items {
+			message, _ := item.(*jsoncompat.Object)
+			if message == nil {
+				continue
+			}
+			if role, _ := message.MustGet("role").(string); role != "user" {
+				continue
+			}
+			if candidate, _ := message.MustGet("text").(string); candidate == text {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func turnStatusOf(turn *jsoncompat.Object) string {
+	if turn == nil {
+		return ""
+	}
+	status, _ := turn.MustGet("status").(string)
+	return status
+}
+
+func firstUserText(turn *jsoncompat.Object) string {
+	if turn == nil {
+		return ""
+	}
+	messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+	if messages == nil {
+		return ""
+	}
+	for _, item := range messages.Items {
+		message, _ := item.(*jsoncompat.Object)
+		if message == nil {
+			continue
+		}
+		if role, _ := message.MustGet("role").(string); role == "user" {
+			if text, _ := message.MustGet("text").(string); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
 func (s *Session) Close() {
 	s.mu.Lock()
 	if s.closed {
@@ -1287,6 +1529,10 @@ func (s *Session) Close() {
 	}
 	s.closed = true
 	s.active = false
+	if s.nativeStop != nil {
+		close(s.nativeStop)
+		s.nativeStop = nil
+	}
 	process := s.Process
 	s.mu.Unlock()
 	process.Close()
@@ -1300,6 +1546,10 @@ func (s *Session) markProcessClosed() {
 	}
 	s.closed = true
 	s.active = false
+	if s.nativeStop != nil {
+		close(s.nativeStop)
+		s.nativeStop = nil
+	}
 	s.signalLocked()
 	s.mu.Unlock()
 }

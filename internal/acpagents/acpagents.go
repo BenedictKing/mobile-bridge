@@ -294,6 +294,13 @@ func zcodeHome(env func(string) string, home string) string {
 	return filepath.Join(home, ".zcode")
 }
 
+// ZcodeDBPath is the SQLite database the ZCode desktop app and the zcode-acp
+// wrapper share for sessions, messages and parts. The gateway reads it
+// read-only to follow turns the desktop app drives.
+func ZcodeDBPath(env func(string) string, home string) string {
+	return filepath.Join(zcodeHome(env, home), "cli", "db", "db.sqlite")
+}
+
 // zcodeCanonicalFactory resolves zcode's lazy session placeholders: the
 // wrapper records placeholder → backend sess_* in
 // <zcode-home>/v2/acp-lazy-sessions.json once the first prompt materializes

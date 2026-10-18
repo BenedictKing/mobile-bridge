@@ -1,3 +1,12 @@
+## ZCode 桌面端回合实时跟随（2026-10-18，未发布）
+
+- 问题：同一 zcode 会话在桌面 ZCode App 里继续时，手机端只显示到用户那句「修复」——`zcode-acp` 只为它自己发出的 prompt 推 `session/update`，桌面回合只落进共享的 `~/.zcode/cli/db/db.sqlite`，网关只有 `session/load` 回放，导致手机端看不到「工作中」和后续思考/工具步骤，标题还停在「未命名聊天」。
+- 实现：新增 `internal/zcode` 只读打开该 SQLite（`mode=ro`，单连接，`busy_timeout`），用变更签名（`session.time_updated`、消息序列/更新时间、part 更新时间、回合结算时间、todo 更新时间、标题）判断是否需要重建；重建时按 `message`→`part` 顺序把可见消息（过滤 `synthetic`、`semantics.uiVisibility=hidden`、`metadata.visibility=model-only`、`todo_reminder`）映射成 view 行：用户消息、`agentThought`、`agentMessage`、`toolCall`（状态/标题/命令摘要/输出），`todo` 作为计划行，标题一并带回；消息/part id 稳定，时间线继续走增量。`acpview.ApplyNative` 整体替换轮次并按末轮状态设置 active/idle。`acpruntime` 为每个 zcode 会话挂 800ms 轮询（`Manager.Native/NativeReset/NativeInterval`），网关进程按 `zcode` 管理器接线（含 `GATEWAY_ACP_BINS` 建的），`Manager.NativeClose` 随管理器关闭释放连接。
+- 边界：bridge 自己发的回合仍以 ACP 视图为准（`promptRunning` 时跳过轮询）；同一句提示词的已结算视图不被 store 的旧副本覆盖，store 落后到不含视图末尾提示词时也不回滚；若 store 持续报同一提示词在跑而 ACP 已结算超过 5s，则以 store 为准（防止对桌面回合误点停止后的假 idle）。桌面回合结算调用 `NativeSettle` 只派发排队消息，不触发自动继续。`Cancel` 只在自己拥有 prompt 时结束视图回合，避免「手机点停止把桌面回合显示成已停止」。
+- 自动检查：`internal/zcode` 新增快照/签名/Reset/未知会话用例（完成回合、进行中回合、隐藏提醒过滤、工具状态与输出、计划行、变更签名与重置）；`internal/acpview` 新增 `ApplyNative` 替换/标题/状态/空快照用例；`internal/acpruntime` 新增 tip 去重、store 落后不回滚、5s 后回收、settle 钩子、prompt-running/closed 跳过用例。`go test ./...`、`go vet ./...` 全绿。
+- 实测：真实库 `sess_fc8a4d2e-…` 上独立 watcher 于 08:10:46 读到 tip inProgress（52 条），08:11:01 读到 completed（54 条，含最终答复）；`make start` 重启后网关该会话标题恢复为「询问Agent不支持的工作模式问题」，视图 3 轮（146/104/54 条）与库一致，`/timeline` 正常返回新行。
+- 未覆盖：重启后没有赶上下一个桌面进行中回合，网关侧「运行中」到结算的完整 UI 链路只由单元测试与独立 watcher 覆盖（部署后尚未在真机页面观察到进行中态）；桌面回合里的 `file` part（图片/附件）暂未映射成手机附件；ZCode 未来若改表结构，跟随会静默退回 ACP 回放（无告警日志）；桌面回合的自动继续按设计不触发。
+
 ## 计划面板完成态展示（2026-10-13，未发布）
 
 - 问题：ACP `plan` 更新（TodoWrite 类快照）在 `acp_view` 展平时丢弃每条 entry 的 `status`，一律渲染成 `• ` 圆点，且每次快照追加一个独立面板；对话结束后既看不出哪些条目已完成，时间线还堆积多份过期快照。

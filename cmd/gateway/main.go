@@ -772,6 +772,9 @@ func runGateway(args []string) {
 			manager.Native = source.Load
 			manager.NativeReset = source.Reset
 			manager.NativeClose = source.Close
+			manager.NativeSettle = func(session *acpruntime.Session) {
+				server.QueueSettleACP("zcode", session)
+			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("zcode native store: %v", err)
 		}

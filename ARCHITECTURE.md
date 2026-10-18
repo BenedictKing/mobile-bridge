@@ -149,6 +149,8 @@ dsh 的语义与 kimi 相反方向地不同：modes 与 `mode` 配置项是权�
 
 zcode（经 `zcode-acp-server` 接入 ZCode CLI 的 app-server）的方言：`session/new` 返回惰性占位 id，后端会话在首次 prompt 前不存在，占位因此从不入列——与 claude 同因走 `KEEP_CREATED_PROCESS=True`（创建进程保活为 handle）。实体化后 `session/list` 只出现后端 `sess_*` id（映射记录在 `~/.zcode/v2/acp-lazy-sessions.json`），占位 id 永不原样入列，`ZcodeAdapter._canonical_id` 按该映射把占位解析到已入列的后端 id 后撤销占位，避免列表重复。ZCode 3.3.0 的会话模式是 plan/build/edit/yolo/auto，没有桥接层的 `default`：`ZcodeAdapter._set_mode` 把 plan 原样透传、default 映射为包装层建会话时硬编码的 `yolo`，统一走标准 `session/set_mode`（zcode 的 `mode` 配置项与 modes 是同一状态，无需 dsh 式的视图隔离）。推理强度词表按模型变化（GLM-5.3 为 low/high/max 恒等映射；GLM-5-Turbo 只有 enabled/off，折叠到桥接层 minimal/none 两档），模型值形如 `providerId\modelId`（服务层模型 ID 校验因此放行反斜杠）。上游 ZCode CLI ≥0.16 删除了 steer/rewind，zcode 不声明 STEER 能力。
 
+同一个 zcode 会话也可能被桌面 ZCode App 直接驱动：zcode-acp 只为它自己发出的 prompt 推送 `session/update`，桌面回合只落到两者共享的 `~/.zcode/cli/db/db.sqlite`。网关因此对该库做只读跟随（`internal/zcode`）：按变更签名轮询会话的 `message`/`part`/`turn_usage`/`todo`，把可见的用户消息、思考、正文、工具状态/输出、计划与会话标题重建成 `acpview.ApplyNative` 的轮次列表；桌面端回合在手机端一秒内显示「运行中」与步骤，回合结束把状态收回 idle 并触发排队派发（不触发自动继续）。ACP 仍是唯一控制面；原生库缺席或不可读时静默退回 ACP 回放，脚本化对拍模式不读该库。
+
 ### Capability 门控
 
 view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门控：无 `steer` 隐藏"补充当前任务"选项；无 `goals` 隐藏目标模式；无 `skills` 隐藏 Skill 按钮；fork/edit 按钮依赖每行 `forkable`/`editable`（ACP 会话天然为假）；Fast 模式与额度档位随目录 `fastMode.allowed` 隐藏；`fullHistory` 由快照 `historyComplete` 决定。审批卡片对 `acp/requestPermission` 按 agent 返回的 `options` 动态渲染，响应只回传 `optionId`（或 `cancel`）。状态文案与会话行标题按 `BridgeI18n.agentLabel(view.agent)` 显示 Agent 名称。通知路由见 `bridge/notifications.py`：watch/policy 接受非 UUID 会话标识，经 Registry 路由到对应 bridge；推送标题使用 adapter 的 `label`；`notification_candidates` 的 SQLite 全局发现仍是 codex-only，ACP 会话依赖显式关注。
