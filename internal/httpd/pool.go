@@ -11,11 +11,16 @@ import (
 
 // handlePool serves the ACP account-pool routes:
 //
-//	GET  /api/pool                 overview of every supported agent
+//	GET  /api/pool                 overview of every supported agent (+ a
+//	                               read-only Codex row when its account
+//	                               manager is enabled)
 //	GET  /api/pool/{kind}          one agent's accounts (redacted) + activeId
 //	POST /api/pool/{kind}/refresh  refresh quotas for every pooled account
 //	POST /api/pool/{kind}/import   import zcode-switcher snapshots + capture
 //	                               the current official slot
+//
+// kind "codex" is a read-only view over the existing Codex account manager
+// (its heavy switch state machine stays the only Codex switching path).
 func (h *handler) handlePool(write bool) {
 	pool := h.server.Pool
 	if pool == nil {
@@ -29,13 +34,22 @@ func (h *handler) handlePool(write bool) {
 			h.fail(http.StatusNotFound, errorBody("未知的账号池操作"))
 			return
 		}
-		h.output(http.StatusOK, pool.Overview(), contentTypeJSON, "")
+		overview := pool.Overview()
+		if row := h.codexOverviewRow(); row != nil {
+			agents, _ := overview.MustGet("agents").(*jsoncompat.Array)
+			agents.Items = append(agents.Items, row)
+		}
+		h.output(http.StatusOK, overview, contentTypeJSON, "")
 		return
 	}
 	kind := parts[0]
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
+	}
+	if kind == "codex" {
+		h.handlePoolCodex(write, action)
+		return
 	}
 	if !write {
 		if action != "" {
@@ -166,4 +180,54 @@ func (h *handler) handlePool(write bool) {
 	default:
 		h.fail(http.StatusNotFound, errorBody("未知的账号池操作"))
 	}
+}
+
+// codexOverviewRow summarizes the Codex account manager for the pool overview;
+// nil when Codex account management is not enabled.
+func (h *handler) codexOverviewRow() *jsoncompat.Object {
+	if h.server.Account == nil {
+		return nil
+	}
+	public := h.server.Account.AccountsPublic()
+	accounts, _ := public.MustGet("accounts").(*jsoncompat.Array)
+	count := int64(0)
+	if accounts != nil {
+		count = int64(len(accounts.Items))
+	}
+	row := jsoncompat.NewObject()
+	row.Set("kind", "codex")
+	row.Set("activeId", public.MustGet("activeId"))
+	row.Set("accountCount", count)
+	row.Set("readOnly", true)
+	return row
+}
+
+// handlePoolCodex is the read-only Codex branch: detail for the unified view,
+// every write redirected to the dedicated Codex switch flow.
+func (h *handler) handlePoolCodex(write bool, action string) {
+	if h.server.Account == nil {
+		h.fail(http.StatusConflict, errorBody("当前网关未启用 Codex 账号管理"))
+		return
+	}
+	if write {
+		h.fail(http.StatusBadRequest, errorBody("Codex 账号请使用上方「账号与接入」面板的切换流程"))
+		return
+	}
+	if action != "" {
+		h.fail(http.StatusNotFound, errorBody("未知的账号池操作"))
+		return
+	}
+	public := h.server.Account.AccountsPublic()
+	accounts, _ := public.MustGet("accounts").(*jsoncompat.Array)
+	if accounts == nil {
+		accounts = &jsoncompat.Array{}
+	}
+	detail := jsoncompat.NewObject()
+	detail.Set("kind", "codex")
+	detail.Set("readOnly", true)
+	detail.Set("activeId", public.MustGet("activeId"))
+	detail.Set("autoSwitch", false)
+	detail.Set("accounts", accounts)
+	detail.Set("history", &jsoncompat.Array{})
+	h.output(http.StatusOK, detail, contentTypeJSON, "")
 }

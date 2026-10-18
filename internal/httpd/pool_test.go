@@ -1,0 +1,143 @@
+package httpd
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/BenedictKing/mobile-bridge/internal/account"
+	"github.com/BenedictKing/mobile-bridge/internal/accpool"
+	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+)
+
+// newPoolRouteServer builds a server with the account pool and a Codex
+// account manager holding one saved account.
+func newPoolRouteServer(t *testing.T) *Server {
+	t.Helper()
+	home := t.TempDir()
+	dataDir := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	t.Setenv("ZCODE_HOME", t.TempDir())
+	root := filepath.Join(dataDir, "accounts")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index := jsoncompat.NewObject()
+	accounts := &jsoncompat.Array{}
+	row := jsoncompat.NewObject()
+	row.Set("id", "acc-1")
+	row.Set("kind", "chatgpt")
+	row.Set("name", "主账号")
+	row.Set("email", "a@example.com")
+	accounts.Items = append(accounts.Items, row)
+	index.Set("accounts", accounts)
+	index.Set("activeId", "acc-1")
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte(jsoncompat.EncodeCompact(index)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := New(auth.NewAuth(auth.Config{Mode: "none"}), fsys{}, 8790, "instance")
+	server.Account = account.NewWithData(home, dataDir, "")
+	server.Pool = accpool.New(dataDir, "")
+	return server
+}
+
+func poolRoute(t *testing.T, server *Server, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *strings.Reader
+	if body == "" {
+		reader = strings.NewReader("")
+	} else {
+		reader = strings.NewReader(body)
+	}
+	request := httptest.NewRequest(method, "http://127.0.0.1:8790"+path, reader)
+	request.Host = "127.0.0.1:8790"
+	request.Header.Set("Origin", "http://127.0.0.1:8790")
+	token, session, err := server.Auth.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	if method == http.MethodPost {
+		csrf, _ := session.MustGet("csrf").(string)
+		request.Header.Set("X-CSRF-Token", csrf)
+	}
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	return response
+}
+
+func TestPoolOverviewIncludesReadOnlyCodex(t *testing.T) {
+	server := newPoolRouteServer(t)
+	response := poolRoute(t, server, http.MethodGet, "/api/pool", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	overview := jsonObject(t, response.Body.String())
+	agents, _ := overview.MustGet("agents").(*jsoncompat.Array)
+	if agents == nil {
+		t.Fatalf("agents missing: %s", response.Body.String())
+	}
+	byKind := map[string]*jsoncompat.Object{}
+	for _, value := range agents.Items {
+		if row, ok := value.(*jsoncompat.Object); ok {
+			if kind, _ := row.MustGet("kind").(string); kind != "" {
+				byKind[kind] = row
+			}
+		}
+	}
+	for _, kind := range []string{"kimi", "zcode", "codex"} {
+		if byKind[kind] == nil {
+			t.Fatalf("overview missing %s: %s", kind, response.Body.String())
+		}
+	}
+	codex := byKind["codex"]
+	if readOnly, _ := codex.MustGet("readOnly").(bool); !readOnly {
+		t.Fatalf("codex row must be read-only: %s", jsoncompat.EncodeCompact(codex))
+	}
+	if active, _ := codex.MustGet("activeId").(string); active != "acc-1" {
+		t.Fatalf("codex activeId: %s", jsoncompat.EncodeCompact(codex))
+	}
+}
+
+func TestPoolCodexDetailIsReadOnly(t *testing.T) {
+	server := newPoolRouteServer(t)
+	response := poolRoute(t, server, http.MethodGet, "/api/pool/codex", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	detail := jsonObject(t, response.Body.String())
+	if readOnly, _ := detail.MustGet("readOnly").(bool); !readOnly {
+		t.Fatalf("detail must be read-only: %s", response.Body.String())
+	}
+	accounts, _ := detail.MustGet("accounts").(*jsoncompat.Array)
+	if accounts == nil || len(accounts.Items) != 1 {
+		t.Fatalf("accounts: %s", response.Body.String())
+	}
+
+	// Writes are redirected to the dedicated Codex switch flow.
+	for _, action := range []string{"switch", "settings", "refresh", "import"} {
+		response = poolRoute(t, server, http.MethodPost, "/api/pool/codex/"+action, `{}`)
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "Codex") {
+			t.Fatalf("%s: status=%d body=%s", action, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestPoolCodexRequiresAccountManager(t *testing.T) {
+	server := New(auth.NewAuth(auth.Config{Mode: "none"}), fsys{}, 8790, "instance")
+	server.Pool = accpool.New(t.TempDir(), "")
+	response := poolRoute(t, server, http.MethodGet, "/api/pool/codex", "")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	// The overview simply omits the codex row when the manager is absent.
+	response = poolRoute(t, server, http.MethodGet, "/api/pool", "")
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "codex") {
+		t.Fatalf("overview must omit codex: status=%d body=%s", response.Code, response.Body.String())
+	}
+}

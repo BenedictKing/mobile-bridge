@@ -1,6 +1,6 @@
 # ACP Agent 额度自动切换与自动继续设计
 
-> 状态：阶段 1（只读额度池）、阶段 2（手动切换）、阶段 3（自动切换 + 自动继续）与阶段 4（zcode 接入）已实现（2026-10-18）
+> 状态：阶段 1–5 已全部实现（2026-10-18）
 > 日期：2026-10-18
 > 背景：把 zcode-switcher（/Users/petaflops/works/unsorted/zcode-switcher）的账号快照管理与额度查询能力集成进 mobile-bridge，实现"agent 额度（如 5 小时窗口限额）用尽后自动切换其他可用账号，必要时自动发送继续"。
 
@@ -283,7 +283,11 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - 前端 pool.js 参数化为双面板（Kimi/ZCode），app.js/index.html 各挂一个实例；
   - 冒烟：JS 端加密夹具 → Go 导入/捕获/切换/回切全通过；假 token 打真实 zcode.z.ai 正确走 401→monitor 兜底→`reauth_required` 路径。
 
-**阶段 5（可选）**：Codex 纳入统一池视图（只读展示 + 跳转现有切换流程）；MiniMax/WorkBuddy 视 ACP 支持情况再议。
+**阶段 5（可选）**：~~Codex 纳入统一池视图（只读展示 + 跳转现有切换流程）~~ ✅ 已实现（2026-10-18）；MiniMax/WorkBuddy 视 ACP 支持情况再议。
+- 落地说明：
+  - Codex 的重型切换状态机（`internal/account`）保持不变；`/api/pool` 概览追加 codex 只读行（activeId/accountCount），`GET /api/pool/codex` 返回只读详情（`readOnly: true`），所有写操作 400 并指向「账号与接入」面板的既有切换流程；
+  - 前端账号对话框新增 Codex 只读面板（无导入/刷新/切换按钮，带指引文案）；
+  - MiniMax（mcode）已有 ACP 接入但 zcode-switcher 的 minimax 快照/额度格式未移植，留待有真实需求时再做。
 
 ## 11. 开放问题
 

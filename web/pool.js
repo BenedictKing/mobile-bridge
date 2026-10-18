@@ -71,6 +71,27 @@ class PoolPanel {
   render(){
     const t=BridgeI18n.t,root=this.root;root.replaceChildren();
     root.append(this.node('h3',t('ACP 账号池')+'（'+this.label+'）'));
+    if(this.error)root.append(this.node('p',this.error,'error'));
+    if(this.loading&&!this.value){root.append(this.node('p',t('正在读取账号池…'),'account-muted'));return;}
+    const value=this.value;
+    if(!value)return;
+    if(value.readOnly){
+      // Codex 等只读视图：展示当前账号，写操作指向既有管理面板。
+      const accounts=value.accounts||[];
+      root.append(this.node('p',t('只读视图。Codex 账号的切换与本面板上方的「账号与接入」管理流程一致。'),'account-muted'));
+      for(const row of accounts){
+        const card=this.node('section',undefined,'account-bucket');
+        const identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name');
+        const heading=this.node('h3');heading.textContent=row.name||row.label||row.id;
+        const title=this.node('div',undefined,'accounts-name-heading');title.append(heading);
+        if(row.id===value.activeId)title.append(this.node('span',t('当前使用'),'accounts-credit'));
+        name.append(title,this.node('p',row.email||[row.baseUrl,row.model].filter(Boolean).join(' · ')||row.id,'account-muted'));
+        identity.append(name);card.append(identity);
+        root.append(card);
+      }
+      if(!accounts.length)root.append(this.node('p',t('暂无已保存的账号。'),'account-muted'));
+      return;
+    }
     const controls=this.node('div',undefined,'pool-controls');
     const refresh=this.button(t('刷新额度'),()=>this.perform('refresh'));refresh.disabled=this.busy||this.loading;
     const importBtn=this.button(t('从 zcode-switcher 导入'),()=>{
@@ -81,10 +102,6 @@ class PoolPanel {
     this.autoSwitch.onchange=()=>{this.autoSwitch.disabled=true;this.perform('settings',{autoSwitch:this.autoSwitch.checked});};
     autoLabel.append(this.autoSwitch,this.node('strong',t('额度用尽时自动切换并继续')));
     controls.append(refresh,importBtn,autoLabel);root.append(controls);
-    if(this.error)root.append(this.node('p',this.error,'error'));
-    if(this.loading&&!this.value){root.append(this.node('p',t('正在读取账号池…'),'account-muted'));return;}
-    const value=this.value;
-    if(!value)return;
     this.autoSwitch.checked=value.autoSwitch!==false;
     this.autoSwitch.disabled=this.busy||this.loading;
     if(value.imported||value.skipped?.length){
