@@ -253,6 +253,7 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 | 模型设置 | 更改当前聊天的模型与推理强度，支持自定义模型 ID；符合条件的官方账号可开关 Fast 模式 |
 | 计划与目标模式 | 从网页开启计划或原生目标；计划完成后可直接执行或继续修改 |
 | Skill | Codex 按会话所在主机与工作目录读取已安装技能，随消息发送原生 Skill 引用；Kimi 列出会话广告的技能，每条消息限选一个 |
+| ACP 账号池 | Kimi / ZCode 多账号池：导入账号、查看各账号窗口额度、手动切换；窗口限额（如 Kimi 5 小时窗口）耗尽时自动切到可用账号并续跑中断会话，可在面板关闭；Codex 账号只读展示，切换走「账号与接入」 |
 | 登录方式 | 独立账号密码；可配置免密 |
 | 连接方式 | 局域网、临时 Cloudflare 与多个固定 HTTPS 入口可并行；配置可添加、命名、启停和删除 |
 | 双语界面 | 电脑 App 与手机网页支持简体中文 / English 切换 |
@@ -353,6 +354,8 @@ GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode,opencode make serve
 ```
 
 前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+；OpenCode 自带 ACP 子命令，经 `opencode acp` 接入，可用 `OPENCODE_BIN` 指定其他启动命令，须先用 `opencode auth login` 登录），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
+
+Kimi 与 ZCode 另有多账号池：网页账号对话框可导入多个账号、查看各账号窗口额度并手动切换；当窗口限额（如 Kimi 的 5 小时窗口）耗尽时，网关自动切到池内可用账号并让中断的会话自动续跑（面板可按 Agent 关闭自动切换）。Codex 账号在该对话框中只读展示，切换仍走「账号与接入」面板的既有流程。
 
 注意：Kimi/MiniMax/Claude/DeepSeek/ZCode/OpenCode 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
 

@@ -85,6 +85,14 @@ App 的异步问题通过原生 questionItemId 格式回答。若原任务仍在
 
 Jev 设置中的 `autoContinue` 开关让网关在回合结束后自动补发一条「继续」。维护循环按「活跃→空闲」的边沿触发（派发时写入时间戳锚点，因此短于一个维护周期的回合也能被察觉结束），触发后先跑确定性的额度关键词扫描，再由 Jev 以选择题判断任务是否完成与停止原因；无密钥时仅对意外中断（超时、进程退出、`max_tokens` 截断）恢复。额度或账单耗尽、用户手动停止、有待回答请求、原生 Goal 运行中或存在排队消息时一律不继续；任何人工消息、队列操作、审批或表单回应都会重置连续自动继续计数（上限 5 次）。自动继续本身是一条带 `autoContinue` 标记、确定性 ID 的普通提交记录，手机端可见且幂等。
 
+## 账号池与额度自动切换
+
+`internal/accpool` 为 ACP agent（kimi、zcode）维护多账号池：账号快照存于 `<dataDir>/pool/<kind>/`（kimi 单文件凭证；zcode `enc:v1:` 加密快照，Go 侧 AES-256-GCM 解密与 zcode-switcher 的 JS 实现交叉验证），`QuotaProvider` 接口按 agent 适配官方额度 API（kimi `usages`；zcode billing + BigModel monitor 兜底，429 渐进退避、全 401 重试一次）。仅当前槽位账号按周期轮询（默认 5 分钟，`GATEWAY_POOL_POLL_SECONDS` 可调，负值关闭），备用账号用时再查。
+
+切换器（`switch.go`）拒绝在回合进行中或有待答审批时切换（409，列出来源会话）；切走前回读槽位漂移（官方 CLI 会轮换 refresh token），原子写入后通过 `Reconcile`/`session/load` 重挂存活会话，重挂失败自动回滚槽位并反向重挂。zcode 桌面端运行时会回写 slot 文件，切换前先 SIGTERM 关闭（8s 超时拒绝）、完成后 best-effort 重启。每次切换（含失败与拒绝）记入 `history.jsonl`，重启不丢。
+
+自动切换（`auto.go`）有两条入口：`poolQuotaHook` 挂在自动继续钩子链首位，对疑似额度故障先用 jev 规则初筛、再实时刷新额度复确认（瞬时 429 不误切）；轮询越过 95% 阈值走同一路径。门控从 `history.jsonl` 派生：10 分钟冷却、每小时至多 6 次、24h 内切走 3 次即弃用该账号、最紧窗口距重置不足 5 分钟宁可等待。目标选最紧窗口余量最大的账号，并列取最久未用。切换后被打断的会话按 `ResumeAfterSwitchPrompt` 自动续跑，独立预算 `MaxSwitchResume=3` 不占自动继续的 5 次额度；人为操作同时重置两个计数。开关持久化于 `pool/settings.json`（默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），切换结果走既有通知渠道。HTTP 面为 `/api/pool` 与 `/api/pool/{kind}` 系列路由（`internal/httpd/pool.go`），前端 `web/pool.js` 参数化为 Kimi/ZCode 双面板；Codex 在统一视图中只读，写操作 400 并指向「账号与接入」的既有切换流程。
+
 ## 模型与 Skill
 
 Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX 包及 PATH；`--codex-bin` 可明确选择桌面对应版本。仅本机辅助运行时（目录、Goal、账号、新建）使用该覆盖，SSH 目录仍由远端运行时读取。
@@ -115,6 +123,7 @@ Wails 桌面服务管理托盘状态、手机地址和退出动作；仅显式�
 | `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
 | `bridge/service.py` | 会话同步、操作路由、去重和队列 |
 | `internal/httpd/discovery.go` | 定时会话发现与列表版本信号（`listRevision`） |
+| `internal/accpool/` | ACP agent 账号池：额度轮询、手动/自动切换、切换续跑与通知（详见「账号池与额度自动切换」节） |
 | `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode/claude/dsh/zcode 方言 |
 | `bridge/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
 | `bridge/model.py` | 历史和请求的规范化 |
