@@ -22,7 +22,18 @@ const recentInteractions=new Map();
 function bumpRecency(id,host,at=Date.now()){
   const key=chatKey(id,host);recentInteractions.set(key,Math.max(at,recentInteractions.get(key)||0));
   const row=listRows.find(row=>row.id===id&&row.host===host);
-  if(row&&at>row.recency){row.recency=at;listRows.sort((a,b)=>b.recency-a.recency);renderList();}
+  if(!row||at<=row.recency)return;
+  const before=listRows.indexOf(row);
+  row.recency=at;
+  const sorted=[...listRows].sort((a,b)=>b.recency-a.recency);
+  if(sorted[before]===row){
+    // The row keeps its position: refresh just its timestamp so an active
+    // chat does not re-render (and scroll-jump) the sidebar every 5s.
+    const time=document.querySelector('.session[data-id="'+id+'"][data-host="'+host+'"] time');
+    if(time)time.textContent=dateText(at/1000);
+    return;
+  }
+  listRows=sorted;renderList();
 }
 let activityBusy=false,listRevision=null;
 const fastModeControl=new FastModeControl({root:$('fast-mode-control'),input:$('fast-mode-enabled'),status:$('fast-mode-status')});
@@ -454,7 +465,7 @@ function renderState(view){state=view;const caps=new Set(view.capabilities||[]);
   // Agents without steering only have queueing while busy: preselect it once
   // per run so one tap on 发送 queues the message instead of erroring out.
   if(view.status==='active'&&!caps.has('steer')&&$('send-mode').value==='send'&&!autoQueueArmed){autoQueueArmed=true;$('send-mode').value='queue';}
-  if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续'):'';$('send-mode').hidden=readOnly;$('work-mode').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderApprovals(view.requests);renderQueue(view.submissions||[]);syncDocumentTitle();}
+  if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('send-mode').hidden=readOnly;$('work-mode').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderApprovals(view.requests);renderQueue(view.submissions||[]);syncDocumentTitle();}
 $('send-mode').onchange=()=>{autoQueueArmed=false;workModes.render(state,$('send-mode').value,sending);};
 function jsonPretty(value){return typeof value==='string'?value:JSON.stringify(value,null,2);}
 function approvalRisk(params){
@@ -763,7 +774,7 @@ $('message').onkeydown=event=>{
 $('stop').onclick=async()=>{try{await api('/api/sessions/'+currentId+'/stop',{});toast('已请求停止');}catch(e){toast(e.message);}};
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
 $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
-$('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};
+$('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话；请勿同时在桌面端继续此会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
 async function loadCatalogKind(kind,refresh=false){
   if(kind!=='models')throw Error(t('未知目录类型'));

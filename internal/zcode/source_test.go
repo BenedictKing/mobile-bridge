@@ -106,6 +106,9 @@ func TestSourceFollowsPersistedTurns(t *testing.T) {
 	if snapshot.Title != "真实标题" {
 		t.Fatalf("title = %q", snapshot.Title)
 	}
+	if title, updated := source.Meta(testSession); title != "真实标题" || updated != now-1000 {
+		t.Fatalf("meta = %q/%d", title, updated)
+	}
 	if len(snapshot.Turns) != 2 {
 		t.Fatalf("turns = %d, want 2", len(snapshot.Turns))
 	}

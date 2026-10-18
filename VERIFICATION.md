@@ -1,3 +1,12 @@
+## 列表时间随活动刷新 + 只读升级文案（2026-10-18）
+
+- 后端：`/api/activity` 的 ACP 行在原生跟随的 agent（dsh/zcode）上补 `recency`——dsh 取转录 mtime，zcode 新增 `Source.Meta` 读 `session.time_updated`；zcode 的 `Manager.NativeMeta` 同时用于列表标题/时间折叠。
+- 前端：`bumpRecency` 在行的排序位置不变时只更新该行 `<time>` 文本，不整表重渲染；位置变化才 `renderList`。
+- 实测：页面滚动到列表 300px 后等待 12s，滚动位置保持 300（无重渲染）；dsh 行时间从 14:15 随 activity 轮询更新到 14:16；手动 `bumpRecency(+1h)` 时间变 15:16、scrollTop 仍 300；activity 响应 dsh active recency 14:16:18、zcode idle recency 08:19:06。
+- 文案：只读提示追加「「尝试接入」前请先关闭桌面端该会话」；按钮 title 在 active 时为「桌面端正在运行回合；结束后再试」；升级成功 toast 改为「已切换为可写会话；请勿同时在桌面端继续此会话」。
+- 自动检查：zcode `Source.Meta` 新增断言；`make check` 全绿（本轮）。
+- 未覆盖：重排场景（位置变化）的滚动保持（整表重渲染属预期）；升级成功路径仍未实测。
+
 ## 深度验证：鉴权、只读边界、分支、真实数据、重启恢复（2026-10-18）
 
 - 图片路由边界：无 cookie → 401；未知 64-hex id → 404；把 DSH 会话的 desktopId 用到 zcode 会话 → 404（按 thread 注册）；路径穿越 id（`..%2F..%2Fetc%2Fpasswd`）→ 404。

@@ -608,6 +608,15 @@ func (h *handler) handleMethod(write bool) {
 							row.Set("status", "active")
 						}
 					}
+					// Native-followed agents carry the real last-activity
+					// time in their own store; include it so the list's
+					// recency/time refreshes with the 5s activity poll
+					// instead of waiting for a full list reload.
+					if manager.NativeMeta != nil {
+						if _, updated := manager.NativeMeta(id); updated > 0 {
+							row.Set("recency", jsoncompat.Num(int(updated)))
+						}
+					}
 					rows.Items = append(rows.Items, row)
 				}
 			}

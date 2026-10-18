@@ -93,6 +93,21 @@ func (s *Source) Reset(sessionID string) {
 	s.mu.Unlock()
 }
 
+// Meta returns the session's title and last-updated time without loading the
+// conversation; list and activity rows use it as the native recency.
+func (s *Source) Meta(sessionID string) (string, int64) {
+	if s == nil || s.db == nil || sessionID == "" {
+		return "", 0
+	}
+	var title string
+	var updated int64
+	if err := s.db.QueryRow(`SELECT title, time_updated FROM session WHERE id = ?`,
+		sessionID).Scan(&title, &updated); err != nil {
+		return "", 0
+	}
+	return strings.TrimSpace(title), updated
+}
+
 // Close releases the read-only connection.
 func (s *Source) Close() error {
 	if s == nil || s.db == nil {
