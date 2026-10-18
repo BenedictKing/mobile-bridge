@@ -51,7 +51,11 @@ type Session struct {
 	activitySlice        time.Duration
 	lastSubagentRevision int64
 	// mediaDir (from Manager.MediaDir) receives decoded inline image blocks.
-	mediaDir    string
+	mediaDir string
+	// canonical (from Manager.Canonical) maps a lazy placeholder id to the
+	// materialized backend id; ownsUpdate consults it so zcode's first-prompt
+	// stream — which may already carry the backend id — is not dropped.
+	canonical   func(id string) string
 	autoApprove func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
 	// autoContinue runs asynchronously once a live turn settles; the gateway
 	// installs it to resume unfinished work. autoContinueRuns is the
@@ -448,6 +452,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
 	session.modeOptionID = m.ModeOptionID
+	session.canonical = m.Canonical
 	session.View.ModeOption = m.ModeOptionID
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
@@ -550,6 +555,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
 	session.modeOptionID = m.ModeOptionID
+	session.canonical = m.Canonical
 	session.View.ModeOption = m.ModeOptionID
 	process.OnNotification = func(message *jsoncompat.Object) { session.onNotification(message) }
 	process.OnRequest = func(message *jsoncompat.Object, respond func(any)) { session.onRequest(message, respond) }
@@ -1793,6 +1799,19 @@ func (s *Session) IsClosed() bool {
 	return s.closed
 }
 
+// ownsUpdate reports whether a session-scoped message (params.sessionId)
+// belongs to this session. A shared agent host fans child notifications out
+// to every gateway connection, so each session must drop traffic addressed
+// to a sibling; zcode's first-prompt stream may already carry the
+// materialized backend id, which Canonical maps back to the placeholder.
+func (s *Session) ownsUpdate(params *jsoncompat.Object) bool {
+	sid, _ := params.MustGet("sessionId").(string)
+	if sid == "" || sid == s.ID {
+		return true
+	}
+	return s.canonical != nil && s.canonical(s.ID) == sid
+}
+
 func (s *Session) onNotification(message *jsoncompat.Object) {
 	method, _ := message.MustGet("method").(string)
 	if method != "session/update" {
@@ -1800,6 +1819,9 @@ func (s *Session) onNotification(message *jsoncompat.Object) {
 	}
 	params, _ := message.MustGet("params").(*jsoncompat.Object)
 	if params == nil {
+		return
+	}
+	if !s.ownsUpdate(params) {
 		return
 	}
 	if update, ok := params.MustGet("update").(*jsoncompat.Object); ok {
@@ -1824,6 +1846,13 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 	params, _ := message.MustGet("params").(*jsoncompat.Object)
 	if params == nil {
 		params = jsoncompat.NewObject()
+	}
+	if !s.ownsUpdate(params) {
+		// A reverse request addressed to a sibling session (misrouted by the
+		// shared host) must not surface in this chat; answer null so the
+		// agent is not left waiting.
+		respond(nil)
+		return
 	}
 	s.mu.Lock()
 	if s.closed || (s.Process != nil && !s.active) {

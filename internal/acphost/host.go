@@ -266,6 +266,21 @@ func (h *Host) forwardChild(message *jsoncompat.Object) {
 			_ = method
 			return
 		}
+		// A session-scoped notification goes only to the connection that owns
+		// the session; broadcasting it would fold one chat's stream into every
+		// other open chat. Unknown sessions keep the broadcast fallback — the
+		// gateway side filters by sessionId.
+		if params, ok := message.MustGet("params").(*jsoncompat.Object); ok {
+			if sessionID, ok := params.MustGet("sessionId").(string); ok && sessionID != "" {
+				h.mu.Lock()
+				conn := h.sessions[sessionID]
+				h.mu.Unlock()
+				if conn != nil {
+					_ = h.sendGateway(conn, message)
+					return
+				}
+			}
+		}
 	}
 	if id, ok := message.Get("id"); ok {
 		key := jsoncompat.PyStr(id)
@@ -276,6 +291,18 @@ func (h *Host) forwardChild(message *jsoncompat.Object) {
 		}
 		h.mu.Unlock()
 		if pending {
+			// session/new carries no sessionId in its params, so forwardGateway
+			// never registers the fresh session; adopt the id from the result
+			// or its notifications would fall back to the broadcast path.
+			if request.method == "session/new" {
+				if result, ok := message.MustGet("result").(*jsoncompat.Object); ok {
+					if sessionID, ok := result.MustGet("sessionId").(string); ok && sessionID != "" {
+						h.mu.Lock()
+						h.sessions[sessionID] = request.conn
+						h.mu.Unlock()
+					}
+				}
+			}
 			response, _ := jsoncompat.Clone(message).(*jsoncompat.Object)
 			if request.method == "initialize" {
 				h.mu.Lock()

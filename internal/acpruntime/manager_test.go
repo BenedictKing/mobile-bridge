@@ -420,3 +420,64 @@ func TestRespondWireTranslatesPermissionReplies(t *testing.T) {
 		t.Fatal("unknown elicitation action must be refused")
 	}
 }
+
+func TestSessionDropsSiblingSessionTraffic(t *testing.T) {
+	session := &Session{ID: "sess-1", View: acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{})}
+	chunk := func(sid string) *jsoncompat.Object {
+		update := jsoncompat.NewObject()
+		update.Set("method", "session/update")
+		params := jsoncompat.NewObject()
+		if sid != "" {
+			params.Set("sessionId", sid)
+		}
+		params.Set("sessionUpdate", "agent_message_chunk")
+		content := jsoncompat.NewObject()
+		content.Set("text", "hello")
+		params.Set("content", content)
+		update.Set("params", params)
+		return update
+	}
+	// A shared agent host broadcasts every child's notifications to all
+	// gateway connections; updates addressed to a sibling must not fold.
+	session.onNotification(chunk("sess-2"))
+	if turns := session.Snapshot().MustGet("turns").(*jsoncompat.Array); len(turns.Items) != 0 {
+		t.Fatal("sibling session update folded into this view")
+	}
+	session.onNotification(chunk("sess-1"))
+	if turns := session.Snapshot().MustGet("turns").(*jsoncompat.Array); len(turns.Items) != 1 {
+		t.Fatal("own session update was dropped")
+	}
+	// A reverse request for another session is answered null and never shown.
+	responded := false
+	request := jsoncompat.NewObject()
+	request.Set("id", "permission-foreign")
+	request.Set("method", "session/request_permission")
+	params := jsoncompat.NewObject()
+	params.Set("sessionId", "sess-2")
+	request.Set("params", params)
+	session.onRequest(request, func(any) { responded = true })
+	if !responded {
+		t.Fatal("foreign request left unanswered")
+	}
+	if len(session.Snapshot().MustGet("requests").(*jsoncompat.Array).Items) != 0 {
+		t.Fatal("foreign permission request surfaced in this chat")
+	}
+}
+
+func TestOwnsUpdateAcceptsCanonicalBackendID(t *testing.T) {
+	session := &Session{ID: "placeholder-1", canonical: func(id string) string {
+		if id == "placeholder-1" {
+			return "sess-backend"
+		}
+		return ""
+	}}
+	params := jsoncompat.NewObject()
+	params.Set("sessionId", "sess-backend")
+	if !session.ownsUpdate(params) {
+		t.Fatal("canonical backend id rejected")
+	}
+	params.Set("sessionId", "sess-other")
+	if session.ownsUpdate(params) {
+		t.Fatal("unrelated session id accepted")
+	}
+}
