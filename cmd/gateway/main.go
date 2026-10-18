@@ -52,6 +52,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/tunnel"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
+	"github.com/BenedictKing/mobile-bridge/internal/zcode"
 )
 
 func main() {
@@ -656,6 +657,15 @@ func runGateway(args []string) {
 		server.ACP = acpruntime.New(executable)
 		server.ACPAgents = map[string]*acpruntime.Manager{"acp": server.ACP}
 	}
+	home := ""
+	if userHome, homeErr := os.UserHomeDir(); homeErr == nil {
+		home = userHome
+	}
+	profiles := acpagents.Discover(os.Getenv, home)
+	profileByKind := map[string]*acpagents.Profile{}
+	for _, profile := range profiles {
+		profileByKind[profile.Kind] = &profile
+	}
 	if raw := os.Getenv("GATEWAY_ACP_BINS"); raw != "" {
 		var bins map[string]string
 		if err := json.Unmarshal([]byte(raw), &bins); err != nil {
@@ -670,11 +680,26 @@ func runGateway(args []string) {
 			}
 			// Multi-word values are full argv (wrappers that speak ACP
 			// directly); single tokens keep the legacy "acp" subcommand.
+			var manager *acpruntime.Manager
 			if argv := acpagents.SplitArgv(executable); len(argv) > 1 {
-				server.ACPAgents[kind] = acpruntime.NewCommand(argv)
+				manager = acpruntime.NewCommand(argv)
 			} else {
-				server.ACPAgents[kind] = acpruntime.New(executable)
+				manager = acpruntime.New(executable)
 			}
+			// Env managers keep the env's launch command but inherit the
+			// kind's dialect constants (effort ladder, steer RPC, mode
+			// mapping) — without them an env-configured dsh still refuses
+			// every send and zcode/opencode lose their mode ids.
+			if profile := profileByKind[kind]; profile != nil {
+				manager.Label = profile.Label
+				manager.Capabilities = profile.Capabilities
+				manager.EffortMap = profile.EffortMap
+				manager.InitializeTimeout = profile.InitializeTimeout
+				manager.SteerMethod = profile.SteerMethod
+				manager.ModeMap = profile.ModeMap
+				manager.ModeOptionID = profile.ModeOptionID
+			}
+			server.ACPAgents[kind] = manager
 		}
 		if server.ACP == nil {
 			if manager := server.ACPAgents["acp"]; manager != nil {
@@ -696,13 +721,9 @@ func runGateway(args []string) {
 			manager.HostSocket = socket
 		}
 	}
-	home := ""
-	if userHome, homeErr := os.UserHomeDir(); homeErr == nil {
-		home = userHome
-	}
 	autoKinds := map[string]bool{}
 	if agentKinds == nil {
-		for _, profile := range acpagents.Discover(os.Getenv, home) {
+		for _, profile := range profiles {
 			autoKinds[profile.Kind] = true
 		}
 	} else {
@@ -711,7 +732,7 @@ func runGateway(args []string) {
 		}
 	}
 	enabled := []string{"codex"}
-	for _, profile := range acpagents.Discover(os.Getenv, home) {
+	for _, profile := range profiles {
 		if scriptedMode || !autoKinds[profile.Kind] || profile.Command == nil {
 			continue
 		}
@@ -740,6 +761,19 @@ func runGateway(args []string) {
 			// coding-plan key slot healed, mirroring zcode.py's
 			// ensure_and_watch(); explicit argv must not touch real state.
 			go acpagents.EnsureAndWatch(os.Getenv, home, log.Printf)
+		}
+	}
+	// ZCode's ACP wrapper only streams turns it runs itself. The desktop app
+	// persists every turn to a shared SQLite store; following it keeps the
+	// phone's live view in step with desktop-driven work. Scripted parity
+	// mode never touches the machine.
+	if manager := server.ACPAgents["zcode"]; manager != nil && !scriptedMode {
+		if source, err := zcode.OpenSource(acpagents.ZcodeDBPath(os.Getenv, home)); err == nil {
+			manager.Native = source.Load
+			manager.NativeReset = source.Reset
+			manager.NativeClose = source.Close
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("zcode native store: %v", err)
 		}
 	}
 	if len(server.ACPAgents) > 0 {
