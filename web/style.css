@@ -133,3 +133,5 @@
 #image-preview-status{margin:0;padding:0 16px 16px;text-align:center;font-size:12px;color:#fffa}
 
 .readonly-hint{margin:0 0 8px;font-size:12px;line-height:1.6}
+
+.composer.read-only textarea{background:#eef0ea;color:#7d857e;cursor:not-allowed}

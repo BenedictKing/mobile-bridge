@@ -1,3 +1,11 @@
+## 浏览器自测（2026-10-18）
+
+- 范围：ego-browser（Chromium）在 8787 上实际走读：dsh 只读当前会话、dsh 可写旧会话（Go 迁移推荐）、zcode 会话；覆盖列表、滚动加载、附件图、图片查看器、语言切换、只读/可写输入区、升级按钮状态、控制台错误。
+- 结果：dsh 只读视图标题/「只读」/提示/禁用输入/隐藏附件·模式·模型·Skill·停止均正确；当前回合实时出现「DeepSeek 正在工作…」；滚动到首轮时两张截图附件与 DSH 图片查看器正常（`/desktop-images` 200 image/webp）；zcode 首轮附件（缓存后的 `agent-media/.../588f….bin`）在进入视口后加载，图片查看器返回 1724×392、200 image/png；`Go 迁移推荐` 可写：标题/模型/effort 正确、输入框可编辑、发送随内容启停、附件/模式/模型可见；语言切到中文后提示/按钮/状态全部中文。控制台只有浏览器扩展的 `Cannot redefine property: ethereum`，无应用错误。
+- 修复：英文界面下「尝试接入」原为硬编码中文 → 加 `data-i18n`；只读输入框与正常输入框外观相同 → `.composer.read-only textarea` 灰底+`not-allowed`；资产版本 bump。
+- 说明：附件 `<img loading="lazy">`，不在视口时 `complete=false/naturalWidth=0` 属预期，滚入视口后正常加载；不是坏图。
+- 未覆盖：桌面回合结束后的「尝试接入」成功路径（当前回合进行中按钮禁用，仅验证了 active 时的服务端 hint）；分支提交会创建真实会话，只验证到对话框层面。
+
 ## 桌面跟随收尾：分支脱身、只读升级、stale 回合、zcode 附件（2026-10-18，未发布）
 
 - 分支：`handleACPMessageAction` 删除了会话级 `status=active` 拒绝，目标行的 `turnStatus` 校验保留——桌面长回合期间可以从更早的已结算轮次「从这里分支」；当前轮次本身仍拒绝。
