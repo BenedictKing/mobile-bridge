@@ -17,6 +17,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -632,7 +633,7 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
-		h.output(http.StatusOK, h.projectList(), contentTypeJSON, "")
+		h.output(http.StatusOK, h.projectList(projectListLimit), contentTypeJSON, "")
 	case !write && path == "/api/accounts":
 		if h.session(write) == nil {
 			return
@@ -1017,7 +1018,7 @@ func (h *handler) resolveProjectCwd(key any) string {
 	if text == "" {
 		return ""
 	}
-	projects, _ := h.projectList().MustGet("projects").(*jsoncompat.Array)
+	projects, _ := h.projectList(0).MustGet("projects").(*jsoncompat.Array)
 	if projects == nil {
 		return ""
 	}
@@ -1034,8 +1035,49 @@ func (h *handler) resolveProjectCwd(key any) string {
 	return ""
 }
 
-func (h *handler) projectList() *jsoncompat.Object {
-	projects := &jsoncompat.Array{}
+// projectListLimit caps how many projects /api/projects returns. Internal
+// callers (resolveProjectCwd, migration targets) pass 0 for the full list so
+// projects that aged out of the recent window still resolve by key.
+const projectListLimit = 30
+
+type projectEntry struct {
+	item    *jsoncompat.Object
+	recency int64
+}
+
+// rowMillis reads the first available timestamp from a session list row as
+// milliseconds; second-precision fields are scaled up.
+func rowMillis(row *jsoncompat.Object, fields ...string) int64 {
+	for _, field := range fields {
+		number, ok := row.MustGet(field).(json.Number)
+		if !ok {
+			continue
+		}
+		value, err := number.Int64()
+		if err != nil || value <= 0 {
+			continue
+		}
+		if !strings.HasSuffix(field, "_ms") && field != "updatedAt" {
+			value *= 1000
+		}
+		return value
+	}
+	return 0
+}
+
+func newProjectEntry(key, cwd, agent string, recency int64) *projectEntry {
+	item := jsoncompat.NewObject()
+	item.Set("key", key)
+	item.Set("host", "local")
+	item.Set("hostLabel", "此电脑")
+	item.Set("name", filepath.Base(filepath.Clean(cwd)))
+	item.Set("cwd", cwd)
+	item.Set("agent", agent)
+	return &projectEntry{item: item, recency: recency}
+}
+
+func (h *handler) projectList(limit int) *jsoncompat.Object {
+	entries := []*projectEntry{}
 	seen := map[string]bool{}
 	if h.server.Store != nil {
 		if rows, err := h.server.Store.List("", 200, 0, false); err == nil {
@@ -1049,14 +1091,7 @@ func (h *handler) projectList() *jsoncompat.Object {
 					continue
 				}
 				seen[key] = true
-				item := jsoncompat.NewObject()
-				item.Set("key", key)
-				item.Set("host", "local")
-				item.Set("hostLabel", "此电脑")
-				item.Set("name", filepath.Base(filepath.Clean(cwd)))
-				item.Set("cwd", cwd)
-				item.Set("agent", "codex")
-				projects.Items = append(projects.Items, item)
+				entries = append(entries, newProjectEntry(key, cwd, "codex", rowMillis(row, "updated_at_ms", "updated_at", "recency_at_ms", "recency_at")))
 			}
 		}
 	}
@@ -1076,16 +1111,17 @@ func (h *handler) projectList() *jsoncompat.Object {
 					continue
 				}
 				seen[key] = true
-				item := jsoncompat.NewObject()
-				item.Set("key", key)
-				item.Set("host", "local")
-				item.Set("hostLabel", "此电脑")
-				item.Set("name", filepath.Base(filepath.Clean(cwd)))
-				item.Set("cwd", cwd)
-				item.Set("agent", kind)
-				projects.Items = append(projects.Items, item)
+				entries = append(entries, newProjectEntry(key, cwd, kind, rowMillis(row, "updatedAt")))
 			}
 		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].recency > entries[j].recency })
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
+	}
+	projects := &jsoncompat.Array{}
+	for _, entry := range entries {
+		projects.Items = append(projects.Items, entry.item)
 	}
 	result := jsoncompat.NewObject()
 	result.Set("projects", projects)

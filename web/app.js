@@ -202,6 +202,38 @@ $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
 let newChatProjects=[],newChatAgents=[],creatingChat=false,approvalBusy=0;
 function projectLabel(project){const kind=project.agent||(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
 function dirLabel(project){const base=(project.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||project.name;return base+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
+// 置顶项目存在 localStorage（按 host+cwd 识别，上限 20 个），渲染时排在最前并带 ★。
+function newChatPins(){try{const pins=JSON.parse(localStorage.getItem('new-chat-pins')||'[]');return Array.isArray(pins)?pins:[];}catch{return[];}}
+function saveNewChatPins(pins){localStorage.setItem('new-chat-pins',JSON.stringify(pins.slice(0,20)));}
+function projectPinned(project){return newChatPins().some(pin=>pin.cwd===project.cwd&&pin.host===project.host);}
+function newChatOptionLabel(project){return newChatAgents.length>1?dirLabel(project):projectLabel(project);}
+function renderNewChatProjects(){
+  const select=$('new-chat-project'),previous=select.value,filter=$('new-chat-filter').value.trim().toLowerCase();
+  select.replaceChildren();
+  const pinned=[],rest=[];
+  for(const project of newChatProjects){
+    if(filter&&!(newChatOptionLabel(project)+' '+(project.cwd||'')).toLowerCase().includes(filter))continue;
+    (projectPinned(project)?pinned:rest).push(project);
+  }
+  for(const project of pinned)select.append(new Option('★ '+newChatOptionLabel(project),project.key));
+  for(const project of rest)select.append(new Option(newChatOptionLabel(project),project.key));
+  if([...select.options].some(o=>o.value===previous))select.value=previous;
+  updateNewChatPin();
+}
+function updateNewChatPin(){
+  const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
+  const pinned=!!project&&projectPinned(project);
+  $('new-chat-pin').textContent=pinned?'★':'☆';$('new-chat-pin').classList.toggle('active',pinned);
+  $('new-chat-pin').title=t(pinned?'取消置顶此项目':'置顶此项目');
+}
+$('new-chat-filter').oninput=renderNewChatProjects;
+$('new-chat-pin').onclick=()=>{
+  const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);if(!project)return;
+  let pins=newChatPins();
+  if(projectPinned(project))pins=pins.filter(pin=>!(pin.cwd===project.cwd&&pin.host===project.host));
+  else pins.unshift({key:project.key,cwd:project.cwd,name:project.name,host:project.host,hostLabel:project.hostLabel,agent:project.agent});
+  saveNewChatPins(pins);renderNewChatProjects();
+};
 // Codex chats open in the desktop App; ACP agents are spawned by the gateway.
 function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'在电脑 App 的已有项目中创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。':'在已有项目目录中创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
 $('new-chat-title').value=t('新聊天');
@@ -224,9 +256,17 @@ $('new-chat').onclick=async()=>{
       if(multi){const cwd=project.cwd||'';if(seen.has(cwd))continue;seen.add(cwd);}
       options.push(project);
     }
-    newChatProjects=options;
-    for(const project of options)$('new-chat-project').append(new Option(multi?dirLabel(project):projectLabel(project),project.key));
     const current=listRows.find(row=>row.id===currentId&&row.host===currentHost);
+    // 置顶项目和当前聊天项目即使掉出最近列表也保留入口
+    const pins=newChatPins();
+    for(let i=pins.length-1;i>=0;i--){
+      const pin=pins[i];
+      if(pin?.cwd&&!options.some(p=>p.cwd===pin.cwd&&p.host===pin.host))options.unshift(pin);
+    }
+    if(current?.projectKey&&current?.cwd&&!options.some(p=>p.key===current.projectKey||p.cwd===current.cwd))
+      options.unshift({key:current.projectKey,cwd:current.cwd,name:current.projectName||(current.cwd.replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||''),host:current.host,hostLabel:current.hostLabel,agent:current.agent});
+    newChatProjects=options;
+    $('new-chat-filter').value='';renderNewChatProjects();
     if(multi){
       if(newChatAgents.some(a=>a.kind===current?.agent))agentSelect.value=current.agent;
       else if(newChatAgents.some(a=>a.kind==='codex'))agentSelect.value='codex';
@@ -248,7 +288,7 @@ function updateWorktreeRow(){
   if(!local)$('new-chat-worktree').checked=false;  // SSH 项目不支持 worktree，隐藏并取消勾选
   $('new-chat-worktree-base-row').hidden=!local||!$('new-chat-worktree').checked;
 }
-$('new-chat-project').onchange=()=>{$('new-chat-path').textContent=newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'';updateWorktreeRow();};
+$('new-chat-project').onchange=()=>{$('new-chat-path').textContent=newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'';updateWorktreeRow();updateNewChatPin();};
 $('new-chat-worktree').onchange=()=>{localStorage.setItem('new-chat-worktree',$('new-chat-worktree').checked?'1':'0');updateWorktreeRow();};
 $('new-chat-worktree-base').onchange=()=>localStorage.setItem('new-chat-worktree-base',$('new-chat-worktree-base').value);
 $('new-chat-agent').onchange=updateNewChatDesc;
@@ -940,7 +980,7 @@ $('phone-language').onchange=()=>{
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   renderLoginStatus();
   for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','toast'])$(id).textContent=t($(id).textContent);
-  for(const option of $('new-chat-project').options){const project=newChatProjects.find(p=>p.key===option.value);if(project)option.textContent=newChatAgents.length>1?dirLabel(project):projectLabel(project);}
+  renderNewChatProjects();
   updateNewChatDesc();
   if($('model-select').querySelector('[value=__custom__]'))$('model-select').querySelector('[value=__custom__]').textContent=t('自定义模型…');
   if(state){approvalStamp='';renderState(state);[...$('approvals').querySelectorAll('input,textarea,select')].forEach((node,i)=>{if(replies[i]){node.value=replies[i].value;node.checked=replies[i].checked;if(node.tagName==='SELECT')node.dispatchEvent(new Event('change'));}});}

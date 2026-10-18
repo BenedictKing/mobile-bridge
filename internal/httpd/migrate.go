@@ -256,7 +256,7 @@ func stringField(object *jsoncompat.Object, key string) string {
 // (Python adapters expose projects() per agent; Go builds them per kind).
 func (h *handler) targetProjects(kind string) []*jsoncompat.Object {
 	rows := []*jsoncompat.Object{}
-	projects, _ := h.projectList().MustGet("projects").(*jsoncompat.Array)
+	projects, _ := h.projectList(0).MustGet("projects").(*jsoncompat.Array)
 	if projects == nil {
 		return rows
 	}
