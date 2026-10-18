@@ -641,6 +641,12 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		h.fail(http.StatusConflict, errorBody(acpSessionMessage(err)))
 		return true
 	}
+	if session.ReadOnly() && write {
+		// Desktop-owned sessions are followed from their transcript: the
+		// phone reads them, it cannot prompt/answer/switch settings.
+		h.fail(http.StatusConflict, errorBody(acpruntime.ReadOnlySessionMessage))
+		return true
+	}
 	if !write {
 		if action == "catalog" {
 			result := manager.Catalog(session, queryValue(query, "kind", "models"),

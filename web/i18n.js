@@ -809,6 +809,8 @@ const en={
   "已有 SSH 别名，或 try2love@server.try2love.com": "Existing SSH alias, or try2love@server.try2love.com",
   "已请求停止": "Stop requested",
   "已连接": "Connected",
+  "只读": "Read-only",
+  "此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续": "This session is running in the desktop app; the phone view is read-only. Branch from a message to continue here.",
   "已选 Skill": "Selected Skill",
   "应用到当前聊天，正在运行的任务从下一轮使用。": "Applies to this chat. An active task uses the new settings from the next turn.",
   "应用到此聊天": "Apply to this chat",

@@ -1,3 +1,12 @@
+## 桌面占用的 DSH 会话：手机只读跟随（2026-10-18，未发布）
+
+- 问题：当前 DSH 对话在桌面 App 里打开，dsh-acp 的 `session/load` 报 `already owned by an active write handle`，手机端连视图都拿不到；此前只在列表里显示「未命名聊天」（见上一条），打开会报错的 cwd 提示。
+- 实现：新增 `internal/dsh/transcript.go`，只读解析 App 的 zstd 会话转录（`session.v4.jsonl.zstd`，走 `klauspost/compress/zstd`），把可见事件映射成 `acpview.NativeSnapshot`：`user/message`（只认 `source.kind=user`，运行上下文/技能目录/时间上下文过滤；图片按 `attachments/v1/objects/<ff>/<hash>` 解析成本地 `localImage`，沿用 `/desktop-images` 服务）、`assistant/message`（reasoning/text/tool-call 块）、`tool/result`（输出、`isError`→failed）、`turn/start|end`（inProgress/completed/interrupted/failed）、`todo/write`（计划行）、`session/title`、`request/header`（model/effort）。读取按 size+mtime 签名缓存，未变化返回 nil；尾部未写完的 zstd 帧保留已解出的前缀；上限 64MB 压缩/256MB 解压/20 万事件/200KB 工具输出。
+- 回落：`acpruntime.Manager.NativeTranscript` 在 `openFresh` 因 `already owned` 失败时构造只读 `Session`（`readOnly`，`Process=nil`，视图由转录快照构建并 1.5s 轮询），`acpViewState` 标记 `readOnly` 且能力只留 `fork`；`handleACPRoute` 对只读会话的所有写操作返回 409「此会话正在桌面 App 中运行，手机端只读…」，`Session.prompt/Steer/Cancel/Respond/SetMode/Request/UpdateSettings` 同样拒绝；`Close` 兼容无进程。前端 `renderState` 读 `readOnly`：状态「只读」、输入框 readOnly、发送禁用、发送方式/工作模式/附件/模型/Skill 控件隐藏、只读提示行（i18n zh/en）。
+- 自动检查：`internal/dsh` 新增转录用例（title、两轮状态、隐藏上下文过滤、图片附件路径、工具输出/状态、计划、追加 zstd 帧、缺失文件）；`internal/acpruntime` 新增 fake agent 的所有权失败 → 只读回落、标题/状态、prompt/SetMode/Cancel 拒绝、Close 无进程；`internal/acpruntime` 的 list title/updatedAt 用例沿用。`make check`（build + vet + test + -race）全绿。
+- 实测：`session-3ff1021e-…`（当前对话）打开返回 `title=实况差别未体现, status=active, readOnly=true, model=deepseek-account::deepseek-flash, effort=high, caps=['fork']`，timeline 行包含当前轮工具/思考/计划且 sequence 随转录更新；`/send` 返回只读 409；ego-browser 以 430px 移动视口打开：状态「Read-only」、只读提示、输入框只读、发送禁用、附件/模式/模型/Skill/停止均隐藏、「DeepSeek is working…」实时状态正常。
+- 未覆盖：仍是步骤级（App 在一步结束时才落 `assistant/message`，不是逐 token）；图片附件虽解析并注册，但未在真机滚动到首轮做视觉核对；从只读视图「从这里分支」后的新会话端到端未跑（分支走既有 ACP 路径）；桌面 App 释放写句柄后，已缓存的只读会话不会自动升级为可写（需等空闲淘汰或网关重启）；转录格式若在 DSH 版本间变化会静默退回打开失败（有 64MB 等上限保护）。
+
 ## DSH 桌面会话在手机列表的标题/活跃时间（2026-10-18，未发布）
 
 - 问题：DSH 当前对话在桥接列表里显示为「未命名聊天」，时间停在创建时刻（07:51），被更晚的会话压到下面；点开还会报 `Invalid params: cwd must be an absolute path: .`。原因是 dsh-acp 对**桌面 App 正在持有写句柄**的会话不返回 title（`session/list` 行只有 sessionId/cwd/创建时 updatedAt），而桥接的 ACP 路由在打开失败后回退用 `cwd: "."` 重开，掩盖了真实错误。

@@ -149,6 +149,8 @@ dsh 的语义与 kimi 相反方向地不同：modes 与 `mode` 配置项是权�
 
 zcode（经 `zcode-acp-server` 接入 ZCode CLI 的 app-server）的方言：`session/new` 返回惰性占位 id，后端会话在首次 prompt 前不存在，占位因此从不入列——与 claude 同因走 `KEEP_CREATED_PROCESS=True`（创建进程保活为 handle）。实体化后 `session/list` 只出现后端 `sess_*` id（映射记录在 `~/.zcode/v2/acp-lazy-sessions.json`），占位 id 永不原样入列，`ZcodeAdapter._canonical_id` 按该映射把占位解析到已入列的后端 id 后撤销占位，避免列表重复。ZCode 3.3.0 的会话模式是 plan/build/edit/yolo/auto，没有桥接层的 `default`：`ZcodeAdapter._set_mode` 把 plan 原样透传、default 映射为包装层建会话时硬编码的 `yolo`，统一走标准 `session/set_mode`（zcode 的 `mode` 配置项与 modes 是同一状态，无需 dsh 式的视图隔离）。推理强度词表按模型变化（GLM-5.3 为 low/high/max 恒等映射；GLM-5-Turbo 只有 enabled/off，折叠到桥接层 minimal/none 两档），模型值形如 `providerId\modelId`（服务层模型 ID 校验因此放行反斜杠）。上游 ZCode CLI ≥0.16 删除了 steer/rewind，zcode 不声明 STEER 能力。
 
+dsh 会话被桌面 App 持有时（dsh-acp 报 `already owned by an active write handle`）没有第二写者：网关改读 App 自己的 zstd 会话转录（`~/.dsh/sessions/*/<id>/session.v4.jsonl.zstd`，`internal/dsh` 用 `klauspost/compress/zstd` 解压），把可见的 user/assistant/tool/todo 事件映射成 `acpview.NativeSnapshot` 并 1.5s 轮询，作为**只读**视图返回（`readOnly`、能力只留 fork，写操作 409）；App 未持有该会话时仍走 dsh-acp 的可读写路径。
+
 同一个 zcode 会话也可能被桌面 ZCode App 直接驱动：zcode-acp 只为它自己发出的 prompt 推送 `session/update`，桌面回合只落到两者共享的 `~/.zcode/cli/db/db.sqlite`。网关因此对该库做只读跟随（`internal/zcode`）：按变更签名轮询会话的 `message`/`part`/`turn_usage`/`todo`，把可见的用户消息、思考、正文、工具状态/输出、计划与会话标题重建成 `acpview.ApplyNative` 的轮次列表；桌面端回合在手机端一秒内显示「运行中」与步骤，回合结束把状态收回 idle 并触发排队派发（不触发自动继续）。ACP 仍是唯一控制面；原生库缺席或不可读时静默退回 ACP 回放，脚本化对拍模式不读该库。
 
 ### Capability 门控

@@ -72,6 +72,9 @@ type Session struct {
 	// response, but a turn that really keeps running reclaims the view after
 	// nativeStoreLagGrace.
 	nativeLagSince time.Time
+	// readOnly marks a view built from the agent's own transcript because the
+	// desktop app owns the write handle. Reads work; mutations are refused.
+	readOnly bool
 }
 
 // MaxAutoContinue bounds consecutive automatic "继续" sends without an
@@ -81,6 +84,11 @@ const MaxAutoContinue = 5
 // nativeStoreLagGrace bounds how long a settled ACP tip may hold off a store
 // copy that still reports the same prompt running before the store wins.
 const nativeStoreLagGrace = 5 * time.Second
+
+// ReadOnlySessionMessage refuses mutations on a session the desktop app owns:
+// the phone can read the native transcript but cannot prompt, steer, answer
+// approvals or change settings while the app holds the write handle.
+const ReadOnlySessionMessage = "此会话正在桌面 App 中运行，手机端只读；可先对消息「从这里分支」再在手机继续"
 
 // Subagents is the on-disk child-agent source decorating an agent's views
 // (Python's native_subagents stores). Nil disables decoration.
@@ -150,6 +158,11 @@ type Manager struct {
 	// the desktop app owns carry no title in dsh-acp's session/list and a
 	// creation-time updatedAt. It returns (title, last activity ms).
 	NativeMeta func(sessionID string) (string, int64)
+	// NativeTranscript loads a session's read-only conversation from the
+	// agent's own store. When the desktop app owns the live write handle and
+	// session/load is refused, the gateway falls back to this view instead of
+	// failing the open (DSH: the zstd transcript).
+	NativeTranscript func(sessionID string) (*acpview.NativeSnapshot, error)
 
 	// Canonical resolves a session/new placeholder to the backend session id
 	// once the agent materializes it under a different id (zcode's lazy
@@ -459,7 +472,11 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 	m.mu.Unlock()
 	fresh, err := m.openFresh(id, cwd, timeout)
 	if err != nil {
-		return nil, err
+		if native := m.openNative(id, cwd, err); native != nil {
+			fresh = native
+		} else {
+			return nil, err
+		}
 	}
 	m.mu.Lock()
 	if session := m.sessions[id]; session != nil && !session.IsClosed() {
@@ -479,7 +496,11 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 func (m *Manager) Reconcile(id, cwd string, timeout time.Duration) (*Session, error) {
 	fresh, err := m.openFresh(id, cwd, timeout)
 	if err != nil {
-		return nil, err
+		if native := m.openNative(id, cwd, err); native != nil {
+			fresh = native
+		} else {
+			return nil, err
+		}
 	}
 	m.mu.Lock()
 	old := m.sessions[id]
@@ -611,6 +632,10 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 	if s.closed {
 		s.mu.Unlock()
 		return errors.New("Agent 进程已退出；操作结果未知")
+	}
+	if s.readOnly {
+		s.mu.Unlock()
+		return errors.New(ReadOnlySessionMessage)
 	}
 	if s.promptRunning {
 		s.mu.Unlock()
@@ -762,6 +787,10 @@ func (s *Session) Steer(method, text string) (injected bool, err error) {
 		s.mu.Unlock()
 		return false, errors.New("Agent 进程已退出；操作结果未知")
 	}
+	if s.readOnly {
+		s.mu.Unlock()
+		return false, errors.New(ReadOnlySessionMessage)
+	}
 	s.mu.Unlock()
 	block := jsoncompat.NewObject()
 	block.Set("type", "text")
@@ -801,10 +830,13 @@ func (s *Session) Steer(method, text string) (injected bool, err error) {
 // object, nil when the agent answered with a non-object result.
 func (s *Session) Request(method string, params *jsoncompat.Object, timeout time.Duration) (*jsoncompat.Object, error) {
 	s.mu.Lock()
-	closed := s.closed
+	closed, readOnly := s.closed, s.readOnly
 	s.mu.Unlock()
 	if closed {
 		return nil, errors.New("Agent 进程已退出；操作结果未知")
+	}
+	if readOnly {
+		return nil, errors.New(ReadOnlySessionMessage)
 	}
 	result, err := s.Process.Request(method, params, timeout)
 	if err != nil {
@@ -838,6 +870,10 @@ func (s *Session) SetMode(modeID string) error {
 	if s.closed {
 		s.mu.Unlock()
 		return errors.New("Agent 进程已退出；操作结果未知")
+	}
+	if s.readOnly {
+		s.mu.Unlock()
+		return errors.New(ReadOnlySessionMessage)
 	}
 	modes := s.modes
 	configOptions := s.configOptions
@@ -923,6 +959,10 @@ func (s *Session) Cancel() error {
 		s.mu.Unlock()
 		return errors.New("Agent 进程已退出；操作结果未知")
 	}
+	if s.readOnly {
+		s.mu.Unlock()
+		return errors.New(ReadOnlySessionMessage)
+	}
 	// Only a turn this gateway prompted owns the view. A desktop-driven turn
 	// is followed from the store; marking it cancelled locally would leave
 	// the phone showing 已停止 while the desktop keeps working.
@@ -942,6 +982,10 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 		s.mu.Unlock()
 		return errors.New("Agent 进程已退出；操作结果未知")
 	}
+	if s.readOnly {
+		s.mu.Unlock()
+		return errors.New(ReadOnlySessionMessage)
+	}
 	rawID, exists := s.pendingIDs[requestID]
 	if _, ok := s.pending[requestID]; !ok || !exists {
 		s.mu.Unlock()
@@ -960,6 +1004,9 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 // effort against the advertised config options, then apply each change with
 // session/set_config_option. fastMode is rejected like Python.
 func (m *Manager) UpdateSettings(session *Session, model, effort string, fastMode *bool) error {
+	if session.ReadOnly() {
+		return errors.New(ReadOnlySessionMessage)
+	}
 	if fastMode != nil {
 		return errors.New("当前 Agent 不支持 Fast 模式")
 	}
@@ -1334,6 +1381,14 @@ func (s *Session) Snapshot() *jsoncompat.Object {
 	return s.View.Snapshot()
 }
 
+// ReadOnly reports whether this view is a native transcript of a session the
+// desktop app owns, so prompts and settings must be refused.
+func (s *Session) ReadOnly() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readOnly
+}
+
 // Sequence returns the change counter used as the projection sequence: every
 // view mutation (prompt, notification, request, config change) bumps it.
 func (s *Session) Sequence() int {
@@ -1360,26 +1415,60 @@ func (m *Manager) startNative(session *Session) {
 		return
 	}
 	session.native = m.Native
-	session.nativeInterval = m.NativeInterval
 	session.nativeSettle = m.NativeSettle
+	m.startPoller(session)
+}
+
+// openNative builds a read-only session from the agent's own transcript when
+// the live handle is refused because the desktop app owns the session. The
+// view keeps following the transcript, so the phone sees the app's work.
+func (m *Manager) openNative(id, cwd string, cause error) *Session {
+	if m.NativeTranscript == nil || !desktopOwned(cause) {
+		return nil
+	}
+	snapshot, err := m.NativeTranscript(id)
+	if err != nil || snapshot == nil {
+		return nil
+	}
+	session := &Session{
+		ID: id, Cwd: cwd, active: true, readOnly: true,
+		View:    acpview.NewView(id, nil, cwd, m.now),
+		changed: make(chan struct{}),
+		pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{},
+		touched: time.Now(), lastActivity: time.Now(),
+		native: m.NativeTranscript,
+	}
+	if snapshot.Title != "" {
+		session.Title = snapshot.Title
+	}
+	session.View.ApplyNative(snapshot)
+	m.startPoller(session)
+	return session
+}
+
+func (m *Manager) startPoller(session *Session) {
+	session.nativeInterval = m.NativeInterval
 	if session.nativeInterval <= 0 {
 		session.nativeInterval = 800 * time.Millisecond
 	}
-	if m.NativeReset != nil {
+	if m.NativeReset != nil && !session.readOnly {
 		m.NativeReset(session.ID)
 	}
-	session.nativeStop = make(chan struct{})
+	stop := make(chan struct{})
+	session.nativeStop = stop
 	// First fold before the view is exposed so the phone's first paint is the
 	// native conversation (title and settled tip included), not a replay.
 	session.syncNative()
-	go session.followNative()
+	go session.followNative(stop)
 }
 
-func (s *Session) followNative() {
-	stop := s.nativeStop
-	if stop == nil {
-		return
-	}
+// desktopOwned reports the wrapper's refusal to load a session the desktop
+// app is actively writing.
+func desktopOwned(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "already owned")
+}
+
+func (s *Session) followNative(stop <-chan struct{}) {
 	timer := time.NewTimer(s.nativeInterval)
 	defer timer.Stop()
 	for {
@@ -1451,6 +1540,10 @@ func (s *Session) shouldApplyNative(snapshot *acpview.NativeSnapshot) bool {
 	candidate := snapshot.Turns[len(snapshot.Turns)-1]
 	if candidate == nil {
 		return false
+	}
+	if s.readOnly {
+		// The transcript is the only source for this view; always fold it.
+		return true
 	}
 	tip := s.View.TipTurn()
 	if tip == nil {
@@ -1562,7 +1655,9 @@ func (s *Session) Close() {
 	}
 	process := s.Process
 	s.mu.Unlock()
-	process.Close()
+	if process != nil {
+		process.Close()
+	}
 }
 
 func (s *Session) markProcessClosed() {

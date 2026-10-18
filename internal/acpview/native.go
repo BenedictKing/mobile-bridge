@@ -7,8 +7,10 @@ import "github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 // title. It is applied wholesale so the view never has to reconcile two
 // sources by message id.
 type NativeSnapshot struct {
-	Title string
-	Turns []*jsoncompat.Object
+	Title  string
+	Model  any
+	Effort any
+	Turns  []*jsoncompat.Object
 }
 
 // ApplyNative replaces the visible turns with a native snapshot and mirrors
@@ -33,6 +35,12 @@ func (v *View) ApplyNative(snapshot *NativeSnapshot) bool {
 	}
 	if snapshot.Title != "" {
 		v.Title = snapshot.Title
+	}
+	if snapshot.Model != nil && snapshot.Model != "" {
+		v.Model = snapshot.Model
+	}
+	if snapshot.Effort != nil && snapshot.Effort != "" {
+		v.Thinking = snapshot.Effort
 	}
 	v.Turns = turns
 	v.Status = "idle"

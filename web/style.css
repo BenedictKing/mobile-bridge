@@ -131,3 +131,5 @@
 .image-preview-content{display:flex;align-items:center;justify-content:center;height:calc(100dvh - 120px);padding:0 16px 16px;box-sizing:border-box}
 .image-preview-content img{max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
 #image-preview-status{margin:0;padding:0 16px 16px;text-align:center;font-size:12px;color:#fffa}
+
+.readonly-hint{margin:0 0 8px;font-size:12px;line-height:1.6}

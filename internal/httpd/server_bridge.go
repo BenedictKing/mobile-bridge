@@ -186,6 +186,18 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 		}
 		capabilities.Items = append(capabilities.Items, capability)
 	}
+	if session.ReadOnly() {
+		// A transcript-backed view of a desktop-owned session is readable
+		// but cannot steer or answer; branching stays available.
+		filtered := &jsoncompat.Array{}
+		for _, capability := range capabilities.Items {
+			if capability == "fork" {
+				filtered.Items = append(filtered.Items, capability)
+			}
+		}
+		capabilities = filtered
+		view.Set("readOnly", true)
+	}
 	view.Set("capabilities", capabilities)
 	if transport != nil {
 		// The panel fields modes.js render ride the view like codex's

@@ -5,6 +5,7 @@ go 1.27
 require (
 	github.com/Microsoft/go-winio v0.6.3
 	github.com/google/uuid v1.6.0
+	github.com/klauspost/compress v1.18.6
 	golang.org/x/crypto v0.58.0
 	modernc.org/sqlite v1.60.1
 )

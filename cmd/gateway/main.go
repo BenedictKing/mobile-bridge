@@ -772,7 +772,12 @@ func runGateway(args []string) {
 	// creation-time updatedAt; the app's projection cache and transcript
 	// mtime carry the truth. Read-only, never touches the app.
 	if manager := server.ACPAgents["dsh"]; manager != nil && !scriptedMode {
-		manager.NativeMeta = dsh.MetaReader(acpagents.DshHome(os.Getenv, home))
+		dshHome := acpagents.DshHome(os.Getenv, home)
+		manager.NativeMeta = dsh.MetaReader(dshHome)
+		// A session the desktop app holds cannot be loaded through ACP; the
+		// transcript gives the phone a read-only, live view instead.
+		manager.NativeTranscript = dsh.TranscriptReader(dshHome)
+		manager.NativeInterval = 1500 * time.Millisecond
 	}
 	if manager := server.ACPAgents["zcode"]; manager != nil && !scriptedMode {
 		if source, err := zcode.OpenSource(acpagents.ZcodeDBPath(os.Getenv, home)); err == nil {

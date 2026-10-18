@@ -187,3 +187,53 @@ for line in sys.stdin:
 	}
 	manager.Close()
 }
+
+func TestOpenFallsBackToReadOnlyTranscript(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize":
+  result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+  print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+ elif method == "session/load":
+  print(json.dumps({"jsonrpc":"2.0","id":ident,"error":{"code":-32603,"message":"Internal error: cannot restore session: session is already owned by an active write handle"}}),flush=True)
+ else:
+  print(json.dumps({"jsonrpc":"2.0","id":ident,"result":{}}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.NativeTranscript = func(string) (*acpview.NativeSnapshot, error) {
+		return &acpview.NativeSnapshot{Title: "桌面会话", Turns: []*jsoncompat.Object{
+			nativeTurn("turn-1", "inProgress", "桌面问题"),
+		}}, nil
+	}
+	manager.NativeInterval = 20 * time.Millisecond
+	session, err := manager.Open("session-owned", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !session.ReadOnly() {
+		t.Fatal("expected a read-only session")
+	}
+	if session.View.Title != "桌面会话" || session.View.Status != "active" {
+		t.Fatalf("view = %v/%q", session.View.Title, session.View.Status)
+	}
+	if err := session.Prompt("mobile", time.Second); err == nil || err.Error() != ReadOnlySessionMessage {
+		t.Fatalf("prompt err = %v", err)
+	}
+	if err := session.SetMode("plan"); err == nil || err.Error() != ReadOnlySessionMessage {
+		t.Fatalf("set mode err = %v", err)
+	}
+	if err := session.Cancel(); err == nil || err.Error() != ReadOnlySessionMessage {
+		t.Fatalf("cancel err = %v", err)
+	}
+	session.Close()
+	manager.Close()
+}
