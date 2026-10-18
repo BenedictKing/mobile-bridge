@@ -27,12 +27,17 @@ class PoolPanel {
     catch(error){this.error=error.message;}
     finally{this.loading=false;this.render();}
   }
-  async perform(action){
+  async perform(action,payload={}){
     if(this.busy)return;
     this.busy=true;this.error='';this.render();
-    try{this.value=await this.request(action);}
+    try{this.value=await this.request(action,payload);}
     catch(error){this.error=error.message;}
     finally{this.busy=false;this.render();}
+  }
+  async switchTo(row){
+    const t=BridgeI18n.t;
+    if(!window.confirm(t('确认切换 Kimi 账号？进行中的回合会被拒绝，已打开的会话将以新账号重连。')+'\n'+(row.label||row.id)))return;
+    await this.perform('switch',{id:row.id,confirmed:true});
   }
   quotaRows(card,row){
     const t=BridgeI18n.t,box=this.node('div',undefined,'accounts-usage');
@@ -93,7 +98,22 @@ class PoolPanel {
       if(row.status&&row.status!=='active')title.append(this.node('span',({reauth_required:t('需重新登录'),disabled:t('已停用'),cooling_down:t('冷却中')})[row.status]||row.status,'error'));
       name.append(title,this.node('p',row.email||row.nickname||row.userId||row.id,'account-muted'));
       identity.append(name);this.quotaRows(identity,row);card.append(identity);
+      const choose=this.button(row.active?t('当前账号'):t('切换到此账号'),()=>this.switchTo(row));
+      choose.disabled=this.busy||this.loading||row.active||(row.status&&row.status!=='active');
+      card.append(choose);
       root.append(card);
+    }
+    const history=value.history||[];
+    if(history.length){
+      const box=this.node('details',undefined,'pool-history');
+      box.append(this.node('summary',t('切换历史')));
+      for(const record of history){
+        const line=this.node('p',undefined,'account-muted');
+        line.textContent=this.time(record.at)+' · '+(record.from||t('（未登录）'))+' → '+record.to+
+          ' · '+((record.trigger==='manual'?t('手动'):record.trigger)||'')+(record.ok?'':' · '+t('失败：')+(record.error||''));
+        box.append(line);
+      }
+      root.append(box);
     }
   }
 }

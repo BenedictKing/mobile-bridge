@@ -1,9 +1,11 @@
 package httpd
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/BenedictKing/mobile-bridge/internal/accpool"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
@@ -60,6 +62,38 @@ func (h *handler) handlePool(write bool) {
 		body = value.(*jsoncompat.Object)
 	}
 	switch action {
+	case "switch":
+		id, _ := body.MustGet("id").(string)
+		if id == "" {
+			h.fail(http.StatusBadRequest, errorBody("缺少目标账号 id"))
+			return
+		}
+		if confirmed, _ := body.MustGet("confirmed").(bool); !confirmed {
+			h.fail(http.StatusBadRequest, errorBody("请先确认切换"))
+			return
+		}
+		// The ACP runtime manager doubles as the switcher's session gate and
+		// re-attacher; when the agent kind is not enabled the credential swap
+		// still runs (it governs CLI usage) with no sessions to re-attach.
+		var sessions accpool.SessionManager
+		if manager := h.server.ACPAgents[kind]; manager != nil {
+			sessions = manager
+		}
+		if err := pool.Switch(h.request.Context(), kind, id, "manual", sessions); err != nil {
+			var busy *accpool.BusyError
+			if errors.As(err, &busy) {
+				h.fail(http.StatusConflict, errorBody(err.Error()))
+			} else {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			}
+			return
+		}
+		detail, err := pool.Detail(kind)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		h.output(http.StatusOK, detail, contentTypeJSON, "")
 	case "refresh":
 		ctx := h.request.Context()
 		failures := pool.RefreshAllQuotas(ctx, kind)

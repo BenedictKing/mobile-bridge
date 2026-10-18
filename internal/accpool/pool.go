@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -61,6 +62,9 @@ type Manager struct {
 	// accounts-kimi/) used as the import source; empty disables that source.
 	ZcasDir string
 	now     func() time.Time
+	// mu serializes credential-slot mutations: a quota refresh that writes the
+	// slot back must not interleave with a switch replacing it.
+	mu sync.Mutex
 }
 
 func New(dataDir, zcasDir string) *Manager {
@@ -445,6 +449,8 @@ func (m *Manager) RefreshQuota(ctx context.Context, kind, id string) (*Account, 
 	if kind != "kimi" {
 		return nil, fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	acc, err := m.loadAccount(kind, id)
 	if err != nil {
 		return nil, err
@@ -655,6 +661,7 @@ func (m *Manager) Detail(kind string) (*jsoncompat.Object, error) {
 	detail.Set("kind", kind)
 	detail.Set("activeId", active)
 	detail.Set("accounts", accounts)
+	detail.Set("history", historyView(m.History(kind, 50)))
 	return detail, nil
 }
 

@@ -1,6 +1,6 @@
 # ACP Agent 额度自动切换与自动继续设计
 
-> 状态：阶段 1 已实现（kimi 只读额度池 + 导入 + 轮询 + Web 展示）
+> 状态：阶段 1（只读额度池）与阶段 2（手动切换）已实现（2026-10-18）
 > 日期：2026-10-18
 > 背景：把 zcode-switcher（/Users/petaflops/works/unsorted/zcode-switcher）的账号快照管理与额度查询能力集成进 mobile-bridge，实现"agent 额度（如 5 小时窗口限额）用尽后自动切换其他可用账号，必要时自动发送继续"。
 
@@ -250,9 +250,14 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - 额度轮询策略采用开放问题 4 的建议方案：**仅当前槽位账号按周期轮询（默认 5 分钟，`GATEWAY_POOL_POLL_SECONDS` 可调，负值关闭），备用账号用时再查**；
   - 导入源目录由 `GATEWAY_ZCAS_DIR` 指定，指向 zcode-switcher 数据目录（含 `accounts-kimi/`）。
 
-**阶段 2：手动切换（kimi）**
+**阶段 2：手动切换（kimi）** ✅ 已实现（2026-10-18）
 - Switcher（回读/替换/重启/核验/回滚/记账）+ `POST /api/pool/kimi/switch` + 前端按钮。
 - 验收：手动切换后新会话走新账号；旧快照 token 被正确回读更新。
+- 落地说明：
+  - 切换器在 `internal/accpool/switch.go`；`acpruntime.Manager` 新增 `LiveSessions`/`BusyReasons`/`Reattach`（`internal/acpruntime/switching.go`），`Reattach` 复用现成的 `Reconcile`（新进程 + `session/load` 成功后才替换旧句柄）——kimi 的 ACP 会话恢复能力因此得到确认（开放问题 1 关闭）；
+  - 门控：回合进行中或有待答审批时拒绝切换（409，列出来源会话）；切换与额度刷新共用 `Manager.mu` 互斥，防槽位写回竞争；
+  - 重挂失败自动回滚槽位并反向重挂；每次切换（含失败/拒绝）记录 `history.jsonl`，随 `GET /api/pool/{kind}` 返回近 50 条；
+  - Agent 未启用 ACP 时仍可切换（仅换凭证，供 CLI 使用）。
 
 **阶段 3：自动切换 + 自动继续（kimi）**
 - Decider、被动事件分类器、会话恢复检测、`switchResumeRuns` 预算、通知接入。
@@ -265,7 +270,7 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
 
 ## 11. 开放问题
 
-1. **kimi ACP 会话恢复能力**：kimi CLI 的 ACP 实现是否支持 `session/load` 或等价恢复？需实测——这是"切换后自动继续"的前置条件。若不支持，阶段 3 降级为"切换 + 通知"。
+1. ~~**kimi ACP 会话恢复能力**~~（已关闭，阶段 2 落地）：切换后的会话重挂复用 `Manager.Reconcile` → `openFresh` → `session/load`，与手机端打开既有 kimi 会话是同一路径，架构上已确认可用；冒烟中重挂调用链按预期执行。
 2. **Agent Host 模式下的进程重启**：经 Unix socket 让 `agent-host` 重启指定 agent 的协议需要新增控制消息，还是直接复用现有断开重连？需看 `internal/acphost` 细节。
 3. **被动事件的误报率**：ACP 错误文本里"额度耗尽"与"瞬时 429 限流"如何区分？前者触发切换，后者应退避重试。需要收集真实报错语料校准分类器。
 4. ~~**轮询频次与账号封禁风险**~~（已决策，阶段 1 落地）：仅当前槽位账号高频轮询（默认 5 分钟，可调/可关），备用账号在手动刷新或切换时才查询。

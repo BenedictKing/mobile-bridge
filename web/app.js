@@ -1042,5 +1042,5 @@ $('delete-chat').onclick=async()=>{
 };
 
 const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
-const poolPanel=typeof PoolPanel==='undefined'?null:new PoolPanel({root:$('pool-content'),read:()=>api('/api/pool/kimi'),request:action=>api('/api/pool/kimi/'+action,{})});
+const poolPanel=typeof PoolPanel==='undefined'?null:new PoolPanel({root:$('pool-content'),read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{})});
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();if(poolPanel)poolPanel.refresh();};
