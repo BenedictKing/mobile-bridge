@@ -63,6 +63,35 @@ for line in sys.stdin:
 	manager.Close()
 }
 
+func TestManagerTreatsMissingSessionListAsUnsupported(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "session/list":
+  print(json.dumps({"jsonrpc":"2.0","id":ident,"error":{"code":-32601,"message":"Method not found: session/list"}}),flush=True)
+  continue
+ result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	rows, err := manager.List(3 * time.Second)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("list rows=%v err=%v", rows, err)
+	}
+	if !manager.HasListCache() {
+		t.Fatal("unsupported session/list should still cache an empty snapshot")
+	}
+	manager.Close()
+}
+
 func TestManagerResolvesLazyPlaceholderThroughCanonical(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

@@ -3,6 +3,7 @@
 package acpruntime
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -285,6 +286,14 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 	}
 	value, err := process.Request("session/list", jsoncompat.NewObject(), timeout)
 	if err != nil {
+		var acpErr *acp.Error
+		if errors.As(err, &acpErr) && methodNotFound(acpErr) {
+			// session/list is optional in ACP; agents without it (older
+			// claude-agent-acp) answer -32601. Cache an empty list instead
+			// of failing so the phone list does not nag on every refresh.
+			m.listRows, m.listIDs, m.listAt = []*jsoncompat.Object{}, map[string]string{}, time.Now()
+			return m.listRows, nil
+		}
 		return nil, err
 	}
 	result, _ := value.(*jsoncompat.Object)
@@ -323,6 +332,18 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 	}
 	m.listRows, m.listIDs, m.listAt = output, ids, time.Now()
 	return output, nil
+}
+
+// methodNotFound reports whether the agent answered a request with the
+// JSON-RPC -32601 code, i.e. it does not implement the method at all.
+func methodNotFound(err *acp.Error) bool {
+	switch code := err.Code.(type) {
+	case json.Number:
+		return code.String() == "-32601"
+	case float64:
+		return code == -32601
+	}
+	return false
 }
 
 // MergePending appends rows for sessions created through this manager that
