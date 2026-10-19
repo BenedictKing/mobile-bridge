@@ -62,6 +62,21 @@ func registerLoginDriver(kind string, fn loginStart) {
 	loginDrivers[kind] = fn
 }
 
+// RegisterLoginDriverForTest overrides the driver for kind and returns a
+// restore function. It lets tests in other packages (httpd) stub a provider
+// login instead of hitting the real network.
+func RegisterLoginDriverForTest(kind string, fn func(ctx context.Context, m *Manager, opts LoginOptions) (*LoginChallenge, func(ctx context.Context) (*Account, error), error)) func() {
+	prev, had := loginDrivers[kind]
+	loginDrivers[kind] = loginStart(fn)
+	return func() {
+		if had {
+			loginDrivers[kind] = prev
+		} else {
+			delete(loginDrivers, kind)
+		}
+	}
+}
+
 // Login session statuses.
 const (
 	LoginPending   = "pending"

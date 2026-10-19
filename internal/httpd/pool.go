@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -8,6 +9,20 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/accpool"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
+
+// poolJSONValue converts a plain struct (LoginSession, LoginChallenge) into
+// an ordered jsoncompat tree by round-tripping through JSON.
+func poolJSONValue(value any) any {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	parsed, err := jsoncompat.Unmarshal(raw)
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
 
 // handlePool serves the ACP account-pool routes:
 //
@@ -18,6 +33,10 @@ import (
 //	POST /api/pool/{kind}/refresh  refresh quotas for every pooled account
 //	POST /api/pool/{kind}/import   import zcode-switcher snapshots + capture
 //	                               the current official slot
+//	POST /api/pool/{kind}/login    start an in-gateway login ({provider?,
+//	                               reauthId?}) → {login, challenge}
+//	GET  /api/pool/{kind}/login    current/last login session status
+//	POST /api/pool/{kind}/login/cancel  cancel the in-flight login
 //
 // kind "codex" is a read-only view over the existing Codex account manager
 // (its heavy switch state machine stays the only Codex switching path).
@@ -52,6 +71,17 @@ func (h *handler) handlePool(write bool) {
 		return
 	}
 	if !write {
+		if action == "login" {
+			session, err := pool.LoginStatus(kind)
+			if err != nil {
+				h.fail(http.StatusNotFound, errorBody(err.Error()))
+				return
+			}
+			out := jsoncompat.NewObject()
+			out.Set("login", poolJSONValue(session))
+			h.output(http.StatusOK, out, contentTypeJSON, "")
+			return
+		}
 		if action != "" {
 			h.fail(http.StatusNotFound, errorBody("未知的账号池操作"))
 			return
@@ -76,6 +106,32 @@ func (h *handler) handlePool(write bool) {
 		body = value.(*jsoncompat.Object)
 	}
 	switch action {
+	case "login":
+		if len(parts) > 2 && parts[2] == "cancel" {
+			session, err := pool.CancelLogin(kind)
+			if err != nil {
+				h.fail(http.StatusNotFound, errorBody(err.Error()))
+				return
+			}
+			out := jsoncompat.NewObject()
+			out.Set("login", poolJSONValue(session))
+			h.output(http.StatusOK, out, contentTypeJSON, "")
+			return
+		}
+		provider, _ := body.MustGet("provider").(string)
+		reauthID, _ := body.MustGet("reauthId").(string)
+		session, challenge, err := pool.StartLogin(h.request.Context(), kind, accpool.LoginOptions{
+			Provider: provider,
+			ReauthID: reauthID,
+		})
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		out := jsoncompat.NewObject()
+		out.Set("login", poolJSONValue(session))
+		out.Set("challenge", poolJSONValue(challenge))
+		h.output(http.StatusOK, out, contentTypeJSON, "")
 	case "switch":
 		id, _ := body.MustGet("id").(string)
 		if id == "" {

@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -139,5 +140,58 @@ func TestPoolCodexRequiresAccountManager(t *testing.T) {
 	response = poolRoute(t, server, http.MethodGet, "/api/pool", "")
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "codex") {
 		t.Fatalf("overview must omit codex: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestPoolLoginRoutes(t *testing.T) {
+	server := newPoolRouteServer(t)
+	// Provider drivers hit the real network; stub kimi's with a flow that
+	// stays pending until cancelled.
+	restore := accpool.RegisterLoginDriverForTest("kimi", func(ctx context.Context, m *accpool.Manager, opts accpool.LoginOptions) (*accpool.LoginChallenge, func(ctx context.Context) (*accpool.Account, error), error) {
+		return &accpool.LoginChallenge{UserCode: "ABCD-1234", URL: "https://example.com/device", ExpiresIn: 600},
+			func(ctx context.Context) (*accpool.Account, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}, nil
+	})
+	defer restore()
+
+	// Start → pending session plus the user-facing challenge.
+	response := poolRoute(t, server, http.MethodPost, "/api/pool/kimi/login", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("start: status=%d body=%s", response.Code, response.Body.String())
+	}
+	started := jsonObject(t, response.Body.String())
+	if login, _ := started.MustGet("login").(*jsoncompat.Object); login == nil {
+		t.Fatalf("start: login missing: %s", response.Body.String())
+	} else if status, _ := login.MustGet("status").(string); status != "pending" {
+		t.Fatalf("start: status=%s", status)
+	}
+	if challenge, _ := started.MustGet("challenge").(*jsoncompat.Object); challenge == nil {
+		t.Fatalf("start: challenge missing: %s", response.Body.String())
+	} else if code, _ := challenge.MustGet("userCode").(string); code != "ABCD-1234" {
+		t.Fatalf("start: userCode=%s", code)
+	}
+
+	// Status polls the in-flight session.
+	response = poolRoute(t, server, http.MethodGet, "/api/pool/kimi/login", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "pending") {
+		t.Fatalf("status: %d body=%s", response.Code, response.Body.String())
+	}
+
+	// Cancel → cancelled, and the cancelled snapshot stays readable.
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/kimi/login/cancel", `{}`)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "cancelled") {
+		t.Fatalf("cancel: %d body=%s", response.Code, response.Body.String())
+	}
+	response = poolRoute(t, server, http.MethodGet, "/api/pool/kimi/login", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "cancelled") {
+		t.Fatalf("status after cancel: %d body=%s", response.Code, response.Body.String())
+	}
+
+	// Codex stays read-only: login writes redirect to the switch flow.
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/codex/login", `{}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Codex") {
+		t.Fatalf("codex login: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
