@@ -1,10 +1,22 @@
 'use strict';
 /* ACP 账号池面板：展示池内账号与窗口额度，支持从 zcode-switcher 导入、
-   手动刷新额度、切换账号与自动切换开关。kimi/zcode 各实例化一个。 */
+   网关内登录（device flow / 扫码 / OAuth 轮询）、手动刷新额度、切换账号
+   与自动切换开关。kimi/zcode/minimax/workbuddy 各实例化一个。 */
+
+/* 各 kind 的登录配置：providers 非空时登录前先选择（minimax/workbuddy 的
+   区域/档位、zcode 的 OAuth provider）。 */
+const POOL_LOGIN={
+  kimi:{},
+  minimax:{providers:[{value:'cn',label:'国内版'},{value:'en',label:'国际版'}]},
+  workbuddy:{providers:[{value:'cn',label:'国内版（CodeBuddy）'},{value:'ai',label:'国际版（WorkBuddy AI）'}]},
+  zcode:{providers:[{value:'zai',label:'z.ai'},{value:'bigmodel',label:'BigModel（智谱）'}]},
+};
+
 class PoolPanel {
-  constructor({root,read,request,kind,label}){
-    Object.assign(this,{root,read,request,kind,label});
-    this.value=null;this.loading=false;this.busy=false;this.error='';
+  constructor({root,read,request,readLogin,kind,label}){
+    Object.assign(this,{root,read,request,readLogin,kind,label});
+    this.value=null;this.loading=false;this.busy=false;this.error='';this.notice='';
+    this.login=null; // {session, challenge, provider, reauthId, timer, deadline}
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
@@ -39,6 +51,105 @@ class PoolPanel {
     const t=BridgeI18n.t;
     if(!window.confirm(t('确认切换账号？进行中的回合会被拒绝，已打开的会话将以新账号重连。')+'\n'+(row.label||row.id)))return;
     await this.perform('switch',{id:row.id,confirmed:true});
+  }
+  stopLoginPolling(){
+    if(this.login&&this.login.timer){clearInterval(this.login.timer);}
+    if(this.login)this.login.timer=null;
+  }
+  openLogin(reauthId){
+    const t=BridgeI18n.t;
+    const config=POOL_LOGIN[this.kind];
+    if(!config)return;
+    this.stopLoginPolling();
+    this.login={session:null,challenge:null,reauthId:reauthId||'',provider:config.providers?config.providers[0].value:'',phase:'pick',error:''};
+    if(!config.providers)this.startLogin();
+    this.render();
+  }
+  async startLogin(){
+    const t=BridgeI18n.t,login=this.login;
+    if(!login)return;
+    login.phase='waiting';login.error='';this.render();
+    try{
+      const result=await this.request('login',{provider:login.provider,reauthId:login.reauthId});
+      login.session=result.login;login.challenge=result.challenge||{};
+      login.deadline=Date.now()+(login.challenge.expiresIn||600)*1000;
+      this.render();
+      this.stopLoginPolling();
+      login.timer=setInterval(()=>this.pollLogin(),2000);
+    }catch(error){login.phase='pick';login.error=error.message;this.render();}
+  }
+  async pollLogin(){
+    const login=this.login;
+    if(!login||!this.readLogin)return;
+    try{
+      const result=await this.readLogin();
+      const session=result.login;
+      if(!session)return;
+      login.session=session;
+      if(session.status==='done'){
+        this.stopLoginPolling();
+        const accountId=session.accountId||'';
+        this.login=null;
+        await this.refresh();
+        this.notice=t('登录成功')+(accountId?'：'+accountId:'');
+        this.render();
+        return;
+      }
+      if(session.status==='failed'||session.status==='cancelled'){
+        this.stopLoginPolling();
+        login.phase='pick';
+        login.error=session.error||t('登录未完成');
+        login.session=null;this.render();
+        return;
+      }
+      if(login.deadline&&Date.now()>login.deadline)this.render();
+    }catch(error){/* 会话已被取代或网关重启：保持等待，下轮再试 */}
+  }
+  async cancelLogin(){
+    const login=this.login;
+    this.stopLoginPolling();
+    try{await this.request('login/cancel');}catch(error){/* 忽略 */}
+    this.login=null;this.render();
+  }
+  loginBox(){
+    const t=BridgeI18n.t,login=this.login;
+    const box=this.node('section',undefined,'account-bucket pool-login');
+    const config=POOL_LOGIN[this.kind];
+    if(login.phase==='pick'){
+      box.append(this.node('h3',login.reauthId?t('重新登录'):t('添加账号')));
+      if(config.providers){
+        const label=this.node('label',undefined,'pool-login-provider');
+        const select=document.createElement('select');
+        for(const p of config.providers){const option=document.createElement('option');option.value=p.value;option.textContent=t(p.label);select.append(option);}
+        select.value=login.provider;select.onchange=()=>{login.provider=select.value;};
+        label.append(select);box.append(label);
+      }
+      if(login.error)box.append(this.node('p',login.error,'error'));
+      const start=this.button(t('开始登录'),()=>this.startLogin());
+      const cancel=this.button(t('取消'),()=>{this.login=null;this.render();});
+      box.append(start,cancel);
+      return box;
+    }
+    const challenge=login.challenge||{};
+    box.append(this.node('h3',t('等待完成登录…')));
+    if(challenge.userCode){
+      const code=this.node('p',undefined,'pool-login-code');
+      code.append(this.node('strong',challenge.userCode));
+      box.append(code);
+    }
+    if(challenge.url){
+      const link=this.node('a',challenge.url);link.href=challenge.url;link.target='_blank';link.rel='noopener noreferrer';
+      const line=this.node('p');line.append(link);box.append(line);
+      const copy=this.button(t('复制链接'),()=>{navigator.clipboard?.writeText(challenge.url);});
+      box.append(copy);
+    }
+    if(login.deadline){
+      const left=Math.max(0,Math.round((login.deadline-Date.now())/1000));
+      box.append(this.node('p',t('请在有效期内完成授权，剩余约 ')+Math.floor(left/60)+t(' 分钟'),'account-muted'));
+    }
+    const cancel=this.button(t('取消登录'),()=>this.cancelLogin());
+    box.append(cancel);
+    return box;
   }
   quotaRows(card,row){
     const t=BridgeI18n.t,box=this.node('div',undefined,'accounts-usage');
@@ -119,13 +230,21 @@ class PoolPanel {
     const importBtn=this.button(t('从 zcode-switcher 导入'),()=>{
       if(window.confirm(t('从 zcode-switcher 的账号库导入账号快照，并捕获当前登录态？')))this.perform('import');
     });importBtn.disabled=this.busy||this.loading;
+    controls.append(refresh,importBtn);
+    if(POOL_LOGIN[this.kind]){
+      const addBtn=this.button(t('添加账号'),()=>this.openLogin(''));
+      addBtn.disabled=this.busy||this.loading;
+      controls.append(addBtn);
+    }
     const autoLabel=this.node('label',undefined,'notification-option');
     this.autoSwitch=document.createElement('input');this.autoSwitch.type='checkbox';
     this.autoSwitch.onchange=()=>{this.autoSwitch.disabled=true;this.perform('settings',{autoSwitch:this.autoSwitch.checked});};
     autoLabel.append(this.autoSwitch,this.node('strong',t('额度用尽时自动切换并继续')));
-    controls.append(refresh,importBtn,autoLabel);root.append(controls);
+    controls.append(autoLabel);root.append(controls);
     this.autoSwitch.checked=value.autoSwitch!==false;
     this.autoSwitch.disabled=this.busy||this.loading;
+    if(this.notice){root.append(this.node('p',this.notice,'accounts-credit'));this.notice='';}
+    if(this.login)root.append(this.loginBox());
     if(value.imported||value.skipped?.length){
       const note=this.node('p',t('导入完成：新增 ')+(value.imported||[]).length+t(' 个，跳过 ')+(value.skipped||[]).length+t(' 个'),'account-muted');
       root.append(note);
@@ -149,6 +268,11 @@ class PoolPanel {
       const choose=this.button(row.active?t('当前账号'):t('切换到此账号'),()=>this.switchTo(row));
       choose.disabled=this.busy||this.loading||row.active||(row.status&&row.status!=='active');
       card.append(choose);
+      if(row.status==='reauth_required'&&POOL_LOGIN[this.kind]){
+        const reauth=this.button(t('重新登录'),()=>this.openLogin(row.id));
+        reauth.disabled=this.busy||this.loading;
+        card.append(reauth);
+      }
       root.append(card);
     }
     const history=value.history||[];

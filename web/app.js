@@ -1043,10 +1043,10 @@ $('delete-chat').onclick=async()=>{
 
 const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
 const poolPanels=typeof PoolPanel==='undefined'?[]:[
-  new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{})}),
-  new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{})}),
-  new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{})}),
-  new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{})}),
+  new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{}),readLogin:()=>api('/api/pool/kimi/login')}),
+  new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{}),readLogin:()=>api('/api/pool/zcode/login')}),
+  new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{}),readLogin:()=>api('/api/pool/minimax/login')}),
+  new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
   new PoolPanel({root:$('pool-content-codex'),kind:'codex',label:'Codex',read:()=>api('/api/pool/codex'),request:()=>Promise.reject(new Error('只读视图'))}),
 ];
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();for(const panel of poolPanels)panel.refresh();};
