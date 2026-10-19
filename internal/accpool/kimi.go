@@ -138,6 +138,10 @@ type WindowQuota struct {
 	Used           int64  `json:"used"`
 	Limit          int64  `json:"limit"`
 	ResetAt        string `json:"resetAt,omitempty"`
+	// Auxiliary marks side quotas that never gate AI work (zcode's MCP 用量
+	// covers built-in tool calls, not model tokens): exhaustion checks and
+	// switch-target ranking skip auxiliary windows; the UI still shows them.
+	Auxiliary bool `json:"auxiliary,omitempty"`
 }
 
 // UnmarshalJSON tolerates zcode-switcher snapshots, which serialize whole
@@ -150,6 +154,7 @@ func (w *WindowQuota) UnmarshalJSON(data []byte) error {
 		Used           any    `json:"used"`
 		Limit          any    `json:"limit"`
 		ResetAt        string `json:"resetAt"`
+		Auxiliary      bool   `json:"auxiliary"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -164,6 +169,7 @@ func (w *WindowQuota) UnmarshalJSON(data []byte) error {
 		w.Limit = *v
 	}
 	w.ResetAt = raw.ResetAt
+	w.Auxiliary = raw.Auxiliary
 	return nil
 }
 

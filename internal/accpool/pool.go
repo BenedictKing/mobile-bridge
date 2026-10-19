@@ -643,6 +643,9 @@ func windowView(w *WindowQuota) *jsoncompat.Object {
 	row.Set("used", w.Used)
 	row.Set("limit", w.Limit)
 	row.Set("resetAt", w.ResetAt)
+	if w.Auxiliary {
+		row.Set("auxiliary", true)
+	}
 	return row
 }
 

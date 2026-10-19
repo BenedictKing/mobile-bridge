@@ -1190,6 +1190,7 @@ const en={
   " 分钟": " minutes",
   "剩余 ": "Remaining ",
   "剩余额度": "Remaining quota",
+  "辅助，不影响切换": "auxiliary, does not gate switching",
   "恢复时间：": "Resets at: ",
   "约 ": "About ",
   "后恢复": " until reset",

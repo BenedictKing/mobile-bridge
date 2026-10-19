@@ -67,6 +67,15 @@ func TestExhaustedWindows(t *testing.T) {
 	if got := ExhaustedWindows(nil, 0.95); got != nil {
 		t.Fatalf("nil quota: %v", got)
 	}
+	// Auxiliary side quotas (zcode MCP 用量) never count as exhausted, even
+	// over 100% — AI availability is judged by the primary windows only.
+	aux := parseKimiUsages(map[string]any{
+		"usage": map[string]any{"used": 10.0, "limit": 100.0},
+	})
+	aux.Limits = []*WindowQuota{{Name: "MCP 用量", Used: 101, Limit: 100, Auxiliary: true}}
+	if got := ExhaustedWindows(aux, 0.95); len(got) != 0 {
+		t.Fatalf("auxiliary window must not exhaust: %v", got)
+	}
 }
 
 // setupAutoFixture: slot holds u_a (exhausted 5h window), u_b healthy, u_c

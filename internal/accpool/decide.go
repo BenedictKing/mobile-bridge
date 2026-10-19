@@ -4,19 +4,30 @@ import (
 	"context"
 )
 
-// ExhaustedWindows returns the quota windows at or over the threshold
-// (used/limit >= threshold). Windows without a usable limit carry no signal.
-func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
+// primaryWindows lists the windows that gate AI work: the regular limits plus
+// the weekly window, minus auxiliary side quotas (see WindowQuota.Auxiliary).
+func primaryWindows(quota *Quota) []*WindowQuota {
 	if quota == nil {
 		return nil
 	}
 	var out []*WindowQuota
-	windows := quota.Limits
-	if quota.Weekly != nil {
-		windows = append(append([]*WindowQuota{}, quota.Limits...), quota.Weekly)
+	for _, window := range quota.Limits {
+		if window != nil && !window.Auxiliary {
+			out = append(out, window)
+		}
 	}
-	for _, window := range windows {
-		if window == nil || window.Limit <= 0 {
+	if quota.Weekly != nil && !quota.Weekly.Auxiliary {
+		out = append(out, quota.Weekly)
+	}
+	return out
+}
+
+// ExhaustedWindows returns the quota windows at or over the threshold
+// (used/limit >= threshold). Windows without a usable limit carry no signal.
+func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
+	var out []*WindowQuota
+	for _, window := range primaryWindows(quota) {
+		if window.Limit <= 0 {
 			continue
 		}
 		if float64(window.Used)/float64(window.Limit) >= threshold {
@@ -73,12 +84,8 @@ func (m *Manager) ChooseTarget(ctx context.Context, kind, currentID string, thre
 		}
 		headroom := 1.0
 		if fresh.Quota != nil {
-			windows := fresh.Quota.Limits
-			if fresh.Quota.Weekly != nil {
-				windows = append(append([]*WindowQuota{}, fresh.Quota.Limits...), fresh.Quota.Weekly)
-			}
-			for _, window := range windows {
-				if window == nil || window.Limit <= 0 {
+			for _, window := range primaryWindows(fresh.Quota) {
+				if window.Limit <= 0 {
 					continue
 				}
 				remaining := 1.0 - float64(window.Used)/float64(window.Limit)

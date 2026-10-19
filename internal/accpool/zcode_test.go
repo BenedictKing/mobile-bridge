@@ -445,11 +445,24 @@ func TestZcodeMonitorNormalize(t *testing.T) {
 	if len(quota.Limits) != 2 || quota.Limits[0].Name != "Token 用量" || quota.Limits[1].Name != "MCP 用量" {
 		t.Fatalf("limits: %+v", quota.Limits)
 	}
+	if quota.Limits[0].Auxiliary || !quota.Limits[1].Auxiliary {
+		t.Fatalf("auxiliary flags: %+v", quota.Limits)
+	}
 	if quota.Limits[1].ResetAt != "2027-01-01T00:00:00Z" {
 		t.Fatalf("epoch reset time: %q", quota.Limits[1].ResetAt)
 	}
 	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0].Name != "Token 用量" {
 		t.Fatalf("exhausted: %+v", got)
+	}
+	// Even with MCP 用量 over 100%, the account stays available: only the AI
+	// token window gates exhaustion.
+	quota.Limits[1].Used = 1010
+	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0].Name != "Token 用量" {
+		t.Fatalf("exhausted with MCP over 100%%: %+v", got)
+	}
+	quota.Limits[0].Used = 0
+	if got := ExhaustedWindows(quota, 0.95); len(got) != 0 {
+		t.Fatalf("auxiliary-only exhaustion must not trigger: %+v", got)
 	}
 }
 

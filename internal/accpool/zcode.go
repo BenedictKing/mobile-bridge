@@ -849,7 +849,13 @@ func normalizeZcodeMonitor(body map[string]any) *Quota {
 		}
 		total, _ := toFloat(row["usage"])
 		used, _ := toFloat(row["currentValue"])
-		quota.Limits = append(quota.Limits, quotaWindow(name, used, total, row["nextResetTime"]))
+		window := quotaWindow(name, used, total, row["nextResetTime"])
+		if kind == "TIME_LIMIT" {
+			// MCP 用量 covers built-in tool calls, not model tokens; it never
+			// gates account availability.
+			window.Auxiliary = true
+		}
+		quota.Limits = append(quota.Limits, window)
 	}
 	switch strings.ToLower(stringValue(data, "level")) {
 	case "max":

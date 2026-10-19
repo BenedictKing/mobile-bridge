@@ -49,7 +49,7 @@ class PoolPanel {
       for(const w of quota.limits||[]){
         const line=this.node('div',undefined,'accounts-window');
         const pct=w.limit>0?Math.max(0,100-Math.round(w.used/w.limit*1000)/10):null;
-        line.append(this.node('span',(w.name||'')+this.windowLabel(w)),
+        line.append(this.node('span',(w.name||'')+this.windowLabel(w)+(w.auxiliary?' · '+t('辅助，不影响切换'):'')),
           this.node('strong',pct==null?t('暂未提供'):t('剩余 ')+pct+'%'));
         if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('剩余额度'));line.append(progress);}
         if(w.resetAt)line.title=t('恢复时间：')+this.resetTime(w.resetAt);
