@@ -84,6 +84,10 @@ type Manager struct {
 	// mu serializes credential-slot mutations: a quota refresh that writes the
 	// slot back must not interleave with a switch replacing it.
 	mu sync.Mutex
+	// loginsMu guards the in-flight login sessions (login.go); separate from
+	// mu because logins never touch credential slots until they complete.
+	loginsMu sync.Mutex
+	logins   map[string]*loginEntry
 }
 
 func New(dataDir, zcasDir string) *Manager {
