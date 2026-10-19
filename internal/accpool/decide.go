@@ -45,7 +45,7 @@ func availableForSwitch(kind string, acc *Account, threshold float64) bool {
 	if acc.Status != StatusActive {
 		return false
 	}
-	if kind == "kimi" && acc.RefreshToken == "" {
+	if (kind == "kimi" || kind == "minimax") && acc.RefreshToken == "" {
 		return false
 	}
 	if kind == "zcode" && (acc.Credentials == "" || acc.Config == "") {

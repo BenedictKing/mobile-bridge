@@ -46,6 +46,9 @@ class PoolPanel {
     const quota=row.quota;
     if(!quota){box.append(this.node('span',row.quotaError?t('额度读取失败'):t('尚未读取额度'),'account-muted'));}
     else{
+      const membership=quota.membership;
+      if(membership&&membership.hasTokenPlan===false)box.append(this.node('span',t('未订阅 Coding Plan'),'error'));
+      else if(membership&&membership.tier)box.append(this.node('span',membership.tier,'account-muted'));
       for(const w of quota.limits||[]){
         const line=this.node('div',undefined,'accounts-window');
         const pct=w.limit>0?Math.max(0,100-Math.round(w.used/w.limit*1000)/10):null;
@@ -120,6 +123,7 @@ class PoolPanel {
       const title=this.node('div',undefined,'accounts-name-heading');title.append(heading);
       if(row.active)title.append(this.node('span',t('当前使用'),'accounts-credit'));
       if(row.status&&row.status!=='active')title.append(this.node('span',({reauth_required:t('需重新登录'),disabled:t('已停用'),cooling_down:t('冷却中')})[row.status]||row.status,'error'));
+      if(row.region)title.append(this.node('span',String(row.region).toUpperCase(),'account-muted'));
       name.append(title,this.node('p',row.email||row.nickname||row.userId||row.provider||row.id,'account-muted'));
       identity.append(name);this.quotaRows(identity,row);card.append(identity);
       const choose=this.button(row.active?t('当前账号'):t('切换到此账号'),()=>this.switchTo(row));

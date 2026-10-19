@@ -89,8 +89,9 @@ func (h *handler) handlePool(write bool) {
 		// The ACP runtime manager doubles as the switcher's session gate and
 		// re-attacher; when the agent kind is not enabled the credential swap
 		// still runs (it governs CLI usage) with no sessions to re-attach.
+		// Pool kinds map to agent kinds (minimax pool -> mcode agent).
 		var sessions accpool.SessionManager
-		if manager := h.server.ACPAgents[kind]; manager != nil {
+		if manager := h.server.ACPAgents[accpool.AgentKind(kind)]; manager != nil {
 			sessions = manager
 		}
 		if err := pool.Switch(h.request.Context(), kind, id, "manual", sessions, nil); err != nil {

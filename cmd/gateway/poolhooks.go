@@ -20,7 +20,10 @@ import (
 
 func poolQuotaHook(pool *accpool.Manager, auto *accpool.AutoSwitcher, kind string, manager *acpruntime.Manager) func(*acpruntime.Session) bool {
 	return func(session *acpruntime.Session) bool {
-		if pool == nil || auto == nil || !pool.AutoSwitchEnabled(kind) {
+		// kind is the ACP agent kind; the pool speaks its own kind names
+		// (minimax pool vs mcode agent).
+		poolKind := accpool.PoolKind(kind)
+		if pool == nil || auto == nil || !pool.AutoSwitchEnabled(poolKind) {
 			return false
 		}
 		snapshot := session.Snapshot()
@@ -33,10 +36,10 @@ func poolQuotaHook(pool *accpool.Manager, auto *accpool.AutoSwitcher, kind strin
 		if !jev.QuotaStop(stopReason, errorText) {
 			return false
 		}
-		log.Printf("账号池: %s 会话 %s 回合因疑似额度问题结束，确认额度状态", kind, session.ID)
-		switched, err := auto.HandleQuotaExhaustion(context.Background(), kind, session.ID)
+		log.Printf("账号池: %s 会话 %s 回合因疑似额度问题结束，确认额度状态", poolKind, session.ID)
+		switched, err := auto.HandleQuotaExhaustion(context.Background(), poolKind, session.ID)
 		if err != nil {
-			log.Printf("账号池: %s 自动切换失败: %v", kind, err)
+			log.Printf("账号池: %s 自动切换失败: %v", poolKind, err)
 		}
 		if !switched {
 			return false
@@ -44,14 +47,14 @@ func poolQuotaHook(pool *accpool.Manager, auto *accpool.AutoSwitcher, kind strin
 		// Switch re-attached every live session; resume on the fresh handle.
 		fresh := manager.Get(session.ID)
 		if fresh == nil {
-			log.Printf("账号池: %s 会话 %s 切换后无活跃句柄，跳过续跑", kind, session.ID)
+			log.Printf("账号池: %s 会话 %s 切换后无活跃句柄，跳过续跑", poolKind, session.ID)
 			return true
 		}
 		if resumeErr := fresh.ResumeAfterSwitchPrompt("继续", time.Hour); resumeErr != nil {
-			log.Printf("账号池: %s 会话 %s 切换后续跑失败: %v", kind, session.ID, resumeErr)
+			log.Printf("账号池: %s 会话 %s 切换后续跑失败: %v", poolKind, session.ID, resumeErr)
 			return true
 		}
-		log.Printf("账号池: %s 会话 %s 已在新账号上自动继续", kind, session.ID)
+		log.Printf("账号池: %s 会话 %s 已在新账号上自动继续", poolKind, session.ID)
 		return true
 	}
 }

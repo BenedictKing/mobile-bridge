@@ -39,6 +39,7 @@ type Account struct {
 	Avatar       string `json:"avatar,omitempty"`
 	LevelName    string `json:"levelName,omitempty"`
 	Region       string `json:"region,omitempty"`
+	SubUserName  string `json:"subUserName,omitempty"` // MiniMax child-account name
 	AccessToken  string `json:"accessToken,omitempty"`
 	RefreshToken string `json:"refreshToken,omitempty"`
 	TokenType    string `json:"tokenType,omitempty"`
@@ -79,7 +80,26 @@ func New(dataDir, zcasDir string) *Manager {
 
 // Kinds lists the agents with pool support; the HTTP layer validates route
 // parameters against it.
-func (m *Manager) Kinds() []string { return []string{"kimi", "zcode"} }
+func (m *Manager) Kinds() []string { return []string{"kimi", "zcode", "minimax"} }
+
+// AgentKind maps a pool kind to the ACP agent kind that runs its sessions.
+// The MiniMax pool backs mcode sessions — the pool kind ("minimax", matching
+// zcode-switcher's store name) differs from the agent kind ("mcode").
+func AgentKind(kind string) string {
+	if kind == "minimax" {
+		return "mcode"
+	}
+	return kind
+}
+
+// PoolKind is the inverse of AgentKind: the account pool backing one ACP
+// agent kind.
+func PoolKind(agent string) string {
+	if agent == "mcode" {
+		return "minimax"
+	}
+	return agent
+}
 
 func (m *Manager) supports(kind string) bool {
 	for _, k := range m.Kinds() {
@@ -219,6 +239,9 @@ func (m *Manager) upsert(kind string, candidate *Account) (*Account, bool, error
 		if candidate.Nickname != "" {
 			merged.Nickname = candidate.Nickname
 		}
+		if candidate.SubUserName != "" {
+			merged.SubUserName = candidate.SubUserName
+		}
 		if candidate.UserID != "" {
 			merged.UserID = candidate.UserID
 		}
@@ -328,7 +351,8 @@ func readKimiCredentials() *kimiCredentials {
 }
 
 // activeID identifies which pooled account currently occupies the official
-// slot (kimi: slot token match; zcode: slot fingerprint match).
+// slot (kimi: slot token match; zcode: slot fingerprint match; minimax:
+// slot auth.json record token match).
 func (m *Manager) activeID(kind string) string {
 	switch kind {
 	case "kimi":
@@ -347,6 +371,8 @@ func (m *Manager) activeID(kind string) string {
 		return ""
 	case "zcode":
 		return m.activeIDZcode()
+	case "minimax":
+		return m.activeIDMinimax()
 	}
 	return ""
 }
@@ -418,6 +444,9 @@ func (m *Manager) CaptureCurrent(ctx context.Context, kind string) (*Account, bo
 	if kind == "zcode" {
 		return m.captureZcodeCurrent()
 	}
+	if kind == "minimax" {
+		return m.captureMinimaxCurrent(ctx)
+	}
 	if kind != "kimi" {
 		return nil, false, fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
 	}
@@ -480,6 +509,9 @@ func (m *Manager) RefreshQuota(ctx context.Context, kind, id string) (*Account, 
 	}
 	if kind == "zcode" {
 		return m.refreshZcodeQuota(ctx, acc)
+	}
+	if kind == "minimax" {
+		return m.refreshMinimaxQuota(ctx, acc)
 	}
 	return m.refreshKimiQuota(ctx, acc)
 }
@@ -677,6 +709,20 @@ func quotaView(q *Quota) *jsoncompat.Object {
 		row.Set("booster", booster)
 	} else {
 		row.Set("booster", nil)
+	}
+	if q.Membership != nil {
+		membership := jsoncompat.NewObject()
+		if q.Membership.HasTokenPlan != nil {
+			membership.Set("hasTokenPlan", *q.Membership.HasTokenPlan)
+		} else {
+			membership.Set("hasTokenPlan", nil)
+		}
+		membership.Set("opGroupId", q.Membership.OpGroupID)
+		membership.Set("tier", q.Membership.Tier)
+		membership.Set("creditBalance", q.Membership.CreditBalance)
+		row.Set("membership", membership)
+	} else {
+		row.Set("membership", nil)
 	}
 	row.Set("levelName", q.LevelName)
 	row.Set("region", q.Region)

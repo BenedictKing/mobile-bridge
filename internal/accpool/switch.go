@@ -64,6 +64,9 @@ func (m *Manager) Switch(ctx context.Context, kind, targetID, trigger string, se
 	if kind == "zcode" {
 		return m.switchZcode(targetID, trigger, sessions, ignoreBusy)
 	}
+	if kind == "minimax" {
+		return m.switchMinimax(ctx, targetID, trigger, sessions, ignoreBusy)
+	}
 	return m.switchKimi(ctx, targetID, trigger, sessions, ignoreBusy)
 }
 
@@ -393,4 +396,163 @@ func restoreZcodeSlot(previous *zcodeSlot) {
 		return
 	}
 	_ = writeZcodeSlot(previous)
+}
+
+// --- MiniMax (mod.rs use_account + write_official) ------------------------------
+
+// minimaxSlotBackup captures the whole six-file slot set (both regions, so a
+// cross-region switch restores whatever was there) for rollback; a nil entry
+// means the file did not exist and must stay deleted on restore.
+type minimaxSlotBackup struct {
+	files map[string][]byte
+}
+
+func backupMinimaxSlot() *minimaxSlotBackup {
+	backup := &minimaxSlotBackup{files: map[string][]byte{}}
+	var paths []string
+	for _, region := range minimaxRegions {
+		paths = append(paths,
+			filepath.Join(minimaxNSHome(region), "auth.json"),
+			minimaxAuthStatePath(region),
+			filepath.Join(minimaxCliAuthScopeDir(region), "local-runtime.auth.json"),
+			filepath.Join(minimaxCliAuthScopeDir(region), "cli-auth.scope.json"),
+		)
+	}
+	paths = append(paths,
+		minimaxSharedProjectionPath(),
+		minimaxRootProjectionPath(),
+		minimaxRegionPrefPath(),
+	)
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			backup.files[path] = nil
+			continue
+		}
+		content := make([]byte, len(raw))
+		copy(content, raw)
+		backup.files[path] = content
+	}
+	return backup
+}
+
+func (backup *minimaxSlotBackup) restore() {
+	for path, content := range backup.files {
+		if content == nil {
+			_ = os.Remove(path)
+			continue
+		}
+		_ = atomicWrite(path, content, 0o600)
+	}
+}
+
+// switchMinimax swaps the ~/.minimax slot set. Compared to kimi: the slot is
+// six files written with a fixed-key-order projection whose fingerprint mcode
+// cross-checks, the generation/loginEpoch pair replaces the plain credentials
+// file, and no process needs restarting (mcode re-reads auth.json per
+// request and watches auth-state.json).
+func (m *Manager) switchMinimax(ctx context.Context, targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
+	kind := "minimax"
+	target, err := m.loadAccount(kind, targetID)
+	if err != nil {
+		return err
+	}
+	if target.Status == StatusReauthRequired || target.Status == StatusDisabled {
+		return fmt.Errorf("账号 %s 不可用（%s），请先重新登录", target.Label, target.Status)
+	}
+	if target.AccessToken == "" || target.RefreshToken == "" {
+		return fmt.Errorf("账号 %s 的快照不完整（缺少 accessToken/refreshToken）", target.Label)
+	}
+	previous := backupMinimaxSlot()
+	fromID := m.activeID(kind)
+	if fromID == target.ID {
+		return errors.New("该账号已是当前账号")
+	}
+	record := SwitchRecord{At: m.now().UnixMilli(), Kind: kind, From: fromID, To: target.ID, Trigger: trigger}
+
+	fail := func(cause error) error {
+		record.Error = cause.Error()
+		m.appendHistory(&record)
+		return cause
+	}
+
+	if sessions != nil {
+		if reasons := sessions.BusyReasonsExcept(ignoreBusy); len(reasons) > 0 {
+			return fail(&BusyError{Reasons: reasons})
+		}
+	}
+
+	// 1. Read the slot back into the outgoing account's snapshot when its
+	// tokens drifted (mcode rotates refresh_token on its own).
+	if _, slotRecord, ok := scanMinimaxSlot(); ok {
+		slotAccess, slotRefresh, slotExpires := minimaxSlotTokens(slotRecord)
+		if slotAccess != "" {
+			outgoing := m.findAccount(kind, func(a *Account) bool {
+				return (slotRefresh != "" && a.RefreshToken != "" && a.RefreshToken == slotRefresh) ||
+					(a.AccessToken != "" && a.AccessToken == slotAccess)
+			})
+			if outgoing != nil && outgoing.ID != target.ID && outgoing.AccessToken != slotAccess {
+				outgoing.AccessToken = slotAccess
+				if slotRefresh != "" {
+					outgoing.RefreshToken = slotRefresh
+				}
+				if slotExpires > 0 {
+					outgoing.ExpiresAt = slotExpires
+				}
+				if saveErr := m.saveAccount(kind, outgoing); saveErr != nil {
+					return fail(fmt.Errorf("回读当前账号快照失败: %w", saveErr))
+				}
+			}
+		}
+	}
+
+	// 2. Renew the target token when due. An auth failure marks the snapshot
+	// dead and refuses; a transient failure falls through with the old token,
+	// mcode renews on its own at startup (mod.rs use_account).
+	if target.RefreshToken != "" && needsMinimaxRefresh(target.ExpiresAt, target.ExpiresIn, m.now()) {
+		tokens, refreshErr := refreshMinimaxToken(ctx, target.Region, target.RefreshToken, m.now())
+		if refreshErr != nil {
+			if isAuthFailed(refreshErr) {
+				target.Status = StatusReauthRequired
+				target.StatusReason = refreshErr.Error()
+				_ = m.saveAccount(kind, target)
+				return fail(fmt.Errorf("目标账号 Token 已失效，请重新登录（reauth）"))
+			}
+		} else {
+			applyTokenSet(target, tokens)
+			target.Status = StatusActive
+			target.StatusReason = ""
+		}
+	}
+
+	// 3. Apply the six-file slot (a real account switch: new loginEpoch).
+	if err := m.writeMinimaxSlot(target, true); err != nil {
+		previous.restore()
+		return fail(err)
+	}
+
+	// 4. Re-attach live sessions; any failure restores the previous slot.
+	if sessions != nil {
+		failed := []string{}
+		for id, cwd := range sessions.LiveSessions() {
+			if reattachErr := sessions.Reattach(id, cwd, reattachTimeout); reattachErr != nil {
+				failed = append(failed, id+": "+reattachErr.Error())
+			}
+		}
+		if len(failed) > 0 {
+			previous.restore()
+			for id, cwd := range sessions.LiveSessions() {
+				_ = sessions.Reattach(id, cwd, reattachTimeout)
+			}
+			return fail(errors.New("会话重连失败，已恢复原账号：" + strings.Join(failed, "；")))
+		}
+	}
+
+	target.LastUsedAt = m.now().UnixMilli()
+	if err := m.saveAccount(kind, target); err != nil {
+		return fail(err)
+	}
+	record.OK = true
+	m.appendHistory(&record)
+	return nil
 }

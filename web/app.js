@@ -1045,6 +1045,7 @@ const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({r
 const poolPanels=typeof PoolPanel==='undefined'?[]:[
   new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{})}),
   new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{})}),
+  new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{})}),
   new PoolPanel({root:$('pool-content-codex'),kind:'codex',label:'Codex',read:()=>api('/api/pool/codex'),request:()=>Promise.reject(new Error('只读视图'))}),
 ];
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();for(const panel of poolPanels)panel.refresh();};

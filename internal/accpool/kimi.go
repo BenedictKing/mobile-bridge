@@ -198,13 +198,17 @@ func (b *BoosterQuota) UnmarshalJSON(data []byte) error {
 }
 
 // Quota is the parsed /usages payload; field names match zcode-switcher's
-// parseUsages output so imported snapshots round-trip unchanged.
+// parseUsages output so imported snapshots round-trip unchanged. MiniMax
+// accounts carry the Coding Plan membership block under Membership (the
+// zcode-switcher minimax snapshot shape {windows, membership} imports with
+// windows folded into Limits/Weekly by refresh and membership kept verbatim).
 type Quota struct {
-	Weekly    *WindowQuota   `json:"weekly,omitempty"`
-	Limits    []*WindowQuota `json:"limits"`
-	Booster   *BoosterQuota  `json:"booster,omitempty"`
-	LevelName string         `json:"levelName,omitempty"`
-	Region    string         `json:"region,omitempty"`
+	Weekly     *WindowQuota     `json:"weekly,omitempty"`
+	Limits     []*WindowQuota   `json:"limits"`
+	Booster    *BoosterQuota    `json:"booster,omitempty"`
+	Membership *QuotaMembership `json:"membership,omitempty"`
+	LevelName  string           `json:"levelName,omitempty"`
+	Region     string           `json:"region,omitempty"`
 }
 
 var windowUnitMap = map[string]string{

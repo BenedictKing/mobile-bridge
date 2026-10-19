@@ -651,7 +651,7 @@ func runGateway(args []string) {
 		}
 	}
 	poolAuto.Sessions = func(kind string) accpool.SessionManager {
-		if manager := server.ACPAgents[kind]; manager != nil {
+		if manager := server.ACPAgents[accpool.AgentKind(kind)]; manager != nil {
 			return manager
 		}
 		return nil
