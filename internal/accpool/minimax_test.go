@@ -160,7 +160,7 @@ func remainsPayload(model map[string]any) map[string]any {
 
 func TestMinimaxRemainsPercentToWindows(t *testing.T) {
 	payload := remainsPayload(map[string]any{
-		"model_name": "m2",
+		"model_name":                         "m2",
 		"current_interval_remaining_percent": 4.0,
 		"end_time":                           1700003600000.0,
 		"current_weekly_remaining_percent":   80.0,

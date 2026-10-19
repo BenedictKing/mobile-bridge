@@ -48,6 +48,12 @@ func availableForSwitch(kind string, acc *Account, threshold float64) bool {
 	if (kind == "kimi" || kind == "minimax") && acc.RefreshToken == "" {
 		return false
 	}
+	// WorkBuddy needs plain tokens: the CLI helper prints the access token
+	// and the refresh flow cannot use an encrypted envelope.
+	if kind == "workbuddy" &&
+		(workbuddyPlainToken(acc.AccessToken) == "" || acc.RefreshToken == "" || workbuddyEnvelope(acc.RefreshToken)) {
+		return false
+	}
 	if kind == "zcode" && (acc.Credentials == "" || acc.Config == "") {
 		return false
 	}

@@ -207,8 +207,12 @@ type Quota struct {
 	Limits     []*WindowQuota   `json:"limits"`
 	Booster    *BoosterQuota    `json:"booster,omitempty"`
 	Membership *QuotaMembership `json:"membership,omitempty"`
-	LevelName  string           `json:"levelName,omitempty"`
-	Region     string           `json:"region,omitempty"`
+	// Credits is the WorkBuddy credit summary (points-based quota with
+	// per-package expiry); the gating window is the synthetic single
+	// "积分" row in Limits.
+	Credits   *CreditsQuota `json:"credits,omitempty"`
+	LevelName string        `json:"levelName,omitempty"`
+	Region    string        `json:"region,omitempty"`
 }
 
 var windowUnitMap = map[string]string{

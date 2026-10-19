@@ -49,6 +49,25 @@ class PoolPanel {
       const membership=quota.membership;
       if(membership&&membership.hasTokenPlan===false)box.append(this.node('span',t('未订阅 Coding Plan'),'error'));
       else if(membership&&membership.tier)box.append(this.node('span',membership.tier,'account-muted'));
+      const credits=quota.credits;
+      if(credits){
+        const line=this.node('div',undefined,'accounts-window');
+        const pct=credits.totalCapacity>0?Math.max(0,100-Math.round(credits.totalRemaining/credits.totalCapacity*1000)/10):null;
+        line.append(this.node('span',t('积分')+(credits.expired?' · '+t('已到期'):'')+(credits.expiringSoon?' · '+t('7 天内到期'):'')),
+          this.node('strong',pct==null?t('暂未提供'):t('剩余 ')+pct+'%'));
+        if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('剩余额度'));line.append(progress);}
+        if(credits.soonestExpireAt)line.title=t('恢复时间：')+this.time(credits.soonestExpireAt);
+        box.append(line);
+        for(const r of credits.resources||[]){
+          if(!r.packageName&&!r.packageCode)continue;
+          const item=this.node('div',undefined,'accounts-window');
+          const remain=r.total>0?Math.round(r.remaining/r.total*1000)/10:null;
+          item.append(this.node('span',(r.packageName||r.packageCode)+(r.expiringSoon?' · '+t('7 天内到期'):'')+(r.expired?' · '+t('已到期'):'')),
+            this.node('strong',remain==null?t('暂未提供'):t('剩余 ')+remain+'%'));
+          if(r.expireAt)item.title=t('恢复时间：')+this.time(r.expireAt);
+          box.append(item);
+        }
+      }
       for(const w of quota.limits||[]){
         const line=this.node('div',undefined,'accounts-window');
         const pct=w.limit>0?Math.max(0,100-Math.round(w.used/w.limit*1000)/10):null;
@@ -124,6 +143,7 @@ class PoolPanel {
       if(row.active)title.append(this.node('span',t('当前使用'),'accounts-credit'));
       if(row.status&&row.status!=='active')title.append(this.node('span',({reauth_required:t('需重新登录'),disabled:t('已停用'),cooling_down:t('冷却中')})[row.status]||row.status,'error'));
       if(row.region)title.append(this.node('span',String(row.region).toUpperCase(),'account-muted'));
+      if(row.tokenEnvelope)title.append(this.node('span',t('信封态'),'error'));
       name.append(title,this.node('p',row.email||row.nickname||row.userId||row.provider||row.id,'account-muted'));
       identity.append(name);this.quotaRows(identity,row);card.append(identity);
       const choose=this.button(row.active?t('当前账号'):t('切换到此账号'),()=>this.switchTo(row));

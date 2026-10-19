@@ -67,6 +67,9 @@ func (m *Manager) Switch(ctx context.Context, kind, targetID, trigger string, se
 	if kind == "minimax" {
 		return m.switchMinimax(ctx, targetID, trigger, sessions, ignoreBusy)
 	}
+	if kind == "workbuddy" {
+		return m.switchWorkbuddy(ctx, targetID, trigger, sessions, ignoreBusy)
+	}
 	return m.switchKimi(ctx, targetID, trigger, sessions, ignoreBusy)
 }
 
@@ -552,6 +555,163 @@ func (m *Manager) switchMinimax(ctx context.Context, targetID, trigger string, s
 	if err := m.saveAccount(kind, target); err != nil {
 		return fail(err)
 	}
+	record.OK = true
+	m.appendHistory(&record)
+	return nil
+}
+
+// --- WorkBuddy (mod.rs use_account + cli.rs switch_active_account) ----------------
+
+// switchWorkbuddy swaps the desktop app's four-segment slot and points the
+// CodeBuddy CLI (apiKeyHelper mode) at the target. Sequence: refresh the
+// token when stale → conservative auto-switch gate → graceful app shutdown →
+// slot backup + write → relaunch when it was running → CLI state/env/cache →
+// re-attach sessions (any failure after the write rolls slot + CLI state
+// back).
+func (m *Manager) switchWorkbuddy(ctx context.Context, targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
+	kind := "workbuddy"
+	target, err := m.loadAccount(kind, targetID)
+	if err != nil {
+		return err
+	}
+	if target.Status == StatusReauthRequired || target.Status == StatusDisabled {
+		return fmt.Errorf("账号 %s 不可用（%s），请先重新登录", target.Label, target.Status)
+	}
+	if workbuddyPlainToken(target.AccessToken) == "" || target.RefreshToken == "" {
+		return fmt.Errorf("账号 %s 的凭据不完整或处于加密信封态，无法切换（请扫码重新添加）", target.Label)
+	}
+	variant := workbuddyVariantFromAccount(target)
+	fromID := m.activeID(kind)
+	if fromID == target.ID {
+		return errors.New("该账号已是当前账号")
+	}
+	record := SwitchRecord{At: m.now().UnixMilli(), Kind: kind, From: fromID, To: target.ID, Trigger: trigger}
+
+	fail := func(cause error) error {
+		record.Error = cause.Error()
+		m.appendHistory(&record)
+		return cause
+	}
+
+	if sessions != nil {
+		if reasons := sessions.BusyReasonsExcept(ignoreBusy); len(reasons) > 0 {
+			return fail(&BusyError{Reasons: reasons})
+		}
+	}
+
+	// Conservative gate (stricter than zcode-switcher): the desktop app is
+	// running AND the CLI holds live sessions — an auto switch would not take
+	// effect on the live process and would break its key invariant, so it is
+	// refused with a notification (the auto-switcher notifies on errors).
+	if trigger == "auto-quota" && workbuddyAppRunning(variant) && workbuddyHasLiveSession(m.now()) {
+		return fail(errors.New("WorkBuddy 运行中且 CodeBuddy CLI 有活跃会话，自动切换已跳过（重启 CLI 后新账号才会生效）"))
+	}
+
+	// 1. Renew the token inside the lazy 24h window; on failure keep the old
+	// token (mod.rs use_account), only an auth failure refuses the switch.
+	if needsWorkbuddyRefresh(target.ExpiresAt, m.now()) {
+		if refreshErr := refreshWorkbuddyToken(ctx, target, m.now()); refreshErr != nil {
+			if isAuthFailed(refreshErr) {
+				_ = m.saveAccount(kind, target)
+				return fail(fmt.Errorf("目标账号 Token 已失效，请重新登录（reauth）"))
+			}
+		} else {
+			if saveErr := m.saveAccount(kind, target); saveErr != nil {
+				return fail(saveErr)
+			}
+		}
+	}
+
+	// 2. Graceful desktop shutdown first (it rewrites the slot while
+	// running); only an app that was running gets relaunched afterwards.
+	wasRunning := workbuddyAppRunning(variant)
+	if wasRunning {
+		if closeErr := workbuddyCloseApp(variant, 20*time.Second); closeErr != nil {
+			return fail(fmt.Errorf("关闭 WorkBuddy 超时，已取消切换（避免登录态损坏）：%w", closeErr))
+		}
+	}
+	m.backupWorkbuddyAuthFile(variant, m.now())
+
+	// In-memory copy of the previous slot + CLI state for rollback.
+	slotPath := workbuddyAuthFilePath(variant)
+	previousSlot, _ := os.ReadFile(slotPath)
+	previousState, _ := os.ReadFile(workbuddyCLIStatePath())
+
+	restore := func() {
+		if previousSlot == nil {
+			_ = os.Remove(slotPath)
+		} else {
+			_ = atomicWrite(slotPath, previousSlot, 0o600)
+		}
+		if previousState == nil {
+			_ = os.Remove(workbuddyCLIStatePath())
+		} else {
+			_ = atomicWrite(workbuddyCLIStatePath(), previousState, 0o600)
+		}
+	}
+
+	// 3. Write the four-segment slot.
+	if err := writeWorkbuddyAuthFile(target, variant, m.now()); err != nil {
+		restore()
+		if wasRunning {
+			_ = workbuddyLaunchApp(variant)
+		}
+		return fail(err)
+	}
+
+	// 4. Relaunch only when the app was running before the switch.
+	if wasRunning {
+		if launchErr := workbuddyLaunchApp(variant); launchErr != nil {
+			restore()
+			return fail(launchErr)
+		}
+	}
+
+	// 5. CLI side: take over the apiKeyHelper on first use (journaled), then
+	// point state.json at the target and sync the region env + caches.
+	takeover, err := m.setupWorkbuddyHelper(m.now())
+	if err != nil {
+		restore()
+		return fail(err)
+	}
+	if takeover {
+		m.appendHistory(&SwitchRecord{
+			At: m.now().UnixMilli(), Kind: kind, From: fromID, To: target.ID,
+			Trigger: "cli-takeover", OK: true,
+		})
+	}
+	if err := m.writeWorkbuddyCLIState(target, m.now()); err != nil {
+		restore()
+		return fail(err)
+	}
+	if err := m.applyWorkbuddyRegionEnv(variant); err != nil {
+		restore()
+		return fail(err)
+	}
+
+	// 6. Re-attach live sessions; any failure rolls slot + CLI state back.
+	if sessions != nil {
+		failed := []string{}
+		for id, cwd := range sessions.LiveSessions() {
+			if reattachErr := sessions.Reattach(id, cwd, reattachTimeout); reattachErr != nil {
+				failed = append(failed, id+": "+reattachErr.Error())
+			}
+		}
+		if len(failed) > 0 {
+			restore()
+			for id, cwd := range sessions.LiveSessions() {
+				_ = sessions.Reattach(id, cwd, reattachTimeout)
+			}
+			return fail(errors.New("会话重连失败，已恢复原账号：" + strings.Join(failed, "；")))
+		}
+	}
+
+	// 7. Marker + bookkeeping.
+	target.LastUsedAt = m.now().UnixMilli()
+	if err := m.saveAccount(kind, target); err != nil {
+		return fail(err)
+	}
+	_ = atomicWrite(m.workbuddyCurrentMarkerPath(), []byte(target.ID+"\n"), 0o600)
 	record.OK = true
 	m.appendHistory(&record)
 	return nil

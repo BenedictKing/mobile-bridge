@@ -779,10 +779,10 @@ type QuotaMembership struct {
 // UnmarshalJSON tolerates zcode-switcher snapshots (floats, nulls).
 func (q *QuotaMembership) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		HasTokenPlan  any    `json:"hasTokenPlan"`
-		OpGroupID     any    `json:"opGroupId"`
-		Tier          any    `json:"tier"`
-		CreditBalance any    `json:"creditBalance"`
+		HasTokenPlan  any `json:"hasTokenPlan"`
+		OpGroupID     any `json:"opGroupId"`
+		Tier          any `json:"tier"`
+		CreditBalance any `json:"creditBalance"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err

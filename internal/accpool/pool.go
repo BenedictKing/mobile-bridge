@@ -50,16 +50,28 @@ type Account struct {
 	// Credentials/Config carry zcode's raw slot file texts (machine-bound
 	// enc:v1 fields included); Provider is the active provider id from the
 	// fingerprint. kimi accounts leave all three empty.
-	Credentials    string `json:"credentials,omitempty"`
-	Config         string `json:"config,omitempty"`
-	Provider       string `json:"provider,omitempty"`
-	Status         string `json:"status,omitempty"`
-	StatusReason   string `json:"statusReason,omitempty"`
-	Quota          *Quota `json:"quota,omitempty"`
-	QuotaUpdatedAt int64  `json:"quotaUpdatedAt,omitempty"`
-	QuotaError     string `json:"quotaError,omitempty"`
-	CreatedAt      int64  `json:"createdAt,omitempty"`
-	LastUsedAt     int64  `json:"lastUsedAt,omitempty"`
+	Credentials string `json:"credentials,omitempty"`
+	Config      string `json:"config,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	// WorkBuddy extras: Variant is the desktop tier (cn | ai), Domain the
+	// account domain, EnterpriseID/EnterpriseName the org identity, and
+	// AuthRaw/ProfileRaw the official four-segment/account JSON the desktop
+	// slot write is based on. RefreshExpiresAt is Unix milliseconds, as is
+	// ExpiresAt for workbuddy accounts.
+	Variant          string `json:"variant,omitempty"`
+	Domain           string `json:"domain,omitempty"`
+	EnterpriseID     string `json:"enterpriseId,omitempty"`
+	EnterpriseName   string `json:"enterpriseName,omitempty"`
+	RefreshExpiresAt int64  `json:"refreshExpiresAt,omitempty"`
+	AuthRaw          string `json:"authRaw,omitempty"`
+	ProfileRaw       string `json:"profileRaw,omitempty"`
+	Status           string `json:"status,omitempty"`
+	StatusReason     string `json:"statusReason,omitempty"`
+	Quota            *Quota `json:"quota,omitempty"`
+	QuotaUpdatedAt   int64  `json:"quotaUpdatedAt,omitempty"`
+	QuotaError       string `json:"quotaError,omitempty"`
+	CreatedAt        int64  `json:"createdAt,omitempty"`
+	LastUsedAt       int64  `json:"lastUsedAt,omitempty"`
 }
 
 // Manager owns the per-agent account pools under <dataDir>/pool/<kind>/.
@@ -80,11 +92,12 @@ func New(dataDir, zcasDir string) *Manager {
 
 // Kinds lists the agents with pool support; the HTTP layer validates route
 // parameters against it.
-func (m *Manager) Kinds() []string { return []string{"kimi", "zcode", "minimax"} }
+func (m *Manager) Kinds() []string { return []string{"kimi", "zcode", "minimax", "workbuddy"} }
 
 // AgentKind maps a pool kind to the ACP agent kind that runs its sessions.
 // The MiniMax pool backs mcode sessions — the pool kind ("minimax", matching
 // zcode-switcher's store name) differs from the agent kind ("mcode").
+// WorkBuddy's pool and agent are both "workbuddy" (identity mapping).
 func AgentKind(kind string) string {
 	if kind == "minimax" {
 		return "mcode"
@@ -263,6 +276,27 @@ func (m *Manager) upsert(kind string, candidate *Account) (*Account, bool, error
 		if candidate.Provider != "" {
 			merged.Provider = candidate.Provider
 		}
+		if candidate.Variant != "" {
+			merged.Variant = candidate.Variant
+		}
+		if candidate.Domain != "" {
+			merged.Domain = candidate.Domain
+		}
+		if candidate.EnterpriseID != "" {
+			merged.EnterpriseID = candidate.EnterpriseID
+		}
+		if candidate.EnterpriseName != "" {
+			merged.EnterpriseName = candidate.EnterpriseName
+		}
+		if candidate.RefreshExpiresAt != 0 {
+			merged.RefreshExpiresAt = candidate.RefreshExpiresAt
+		}
+		if candidate.AuthRaw != "" {
+			merged.AuthRaw = candidate.AuthRaw
+		}
+		if candidate.ProfileRaw != "" {
+			merged.ProfileRaw = candidate.ProfileRaw
+		}
 		if candidate.Label != "" {
 			merged.Label = candidate.Label
 		}
@@ -373,6 +407,8 @@ func (m *Manager) activeID(kind string) string {
 		return m.activeIDZcode()
 	case "minimax":
 		return m.activeIDMinimax()
+	case "workbuddy":
+		return m.activeIDWorkbuddy()
 	}
 	return ""
 }
@@ -403,6 +439,9 @@ func (m *Manager) Import(kind, source string) (imported []string, skipped []Impo
 	}
 	if kind == "zcode" {
 		return m.importZcode(dir)
+	}
+	if kind == "workbuddy" {
+		return m.importWorkbuddy(dir)
 	}
 	entries, readErr := os.ReadDir(dir)
 	if readErr != nil {
@@ -446,6 +485,9 @@ func (m *Manager) CaptureCurrent(ctx context.Context, kind string) (*Account, bo
 	}
 	if kind == "minimax" {
 		return m.captureMinimaxCurrent(ctx)
+	}
+	if kind == "workbuddy" {
+		return m.captureWorkbuddyCurrent(ctx)
 	}
 	if kind != "kimi" {
 		return nil, false, fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
@@ -512,6 +554,9 @@ func (m *Manager) RefreshQuota(ctx context.Context, kind, id string) (*Account, 
 	}
 	if kind == "minimax" {
 		return m.refreshMinimaxQuota(ctx, acc)
+	}
+	if kind == "workbuddy" {
+		return m.refreshWorkbuddyQuota(ctx, acc)
 	}
 	return m.refreshKimiQuota(ctx, acc)
 }
@@ -639,8 +684,11 @@ func (m *Manager) view(acc *Account, activeID string) *jsoncompat.Object {
 	row.Set("userId", acc.UserID)
 	row.Set("provider", acc.Provider)
 	row.Set("levelName", acc.LevelName)
-	row.Set("region", acc.Region)
+	// WorkBuddy keeps its tier in Variant; fall back to Region for display.
+	row.Set("region", firstNonEmpty(acc.Region, acc.Variant))
 	row.Set("status", acc.Status)
+	// WorkBuddy 5.6 envelope tokens cannot call the APIs; flag them for the UI.
+	row.Set("tokenEnvelope", workbuddyEnvelope(acc.AccessToken))
 	row.Set("active", acc.ID == activeID)
 	row.Set("createdAt", acc.CreatedAt)
 	row.Set("lastUsedAt", acc.LastUsedAt)
@@ -726,6 +774,45 @@ func quotaView(q *Quota) *jsoncompat.Object {
 	}
 	row.Set("levelName", q.LevelName)
 	row.Set("region", q.Region)
+	if q.Credits != nil {
+		row.Set("credits", creditsView(q.Credits))
+	} else {
+		row.Set("credits", nil)
+	}
+	return row
+}
+
+// creditsView renders the WorkBuddy credit summary for the API.
+func creditsView(c *CreditsQuota) *jsoncompat.Object {
+	row := jsoncompat.NewObject()
+	row.Set("totalCapacity", c.TotalCapacity)
+	row.Set("totalRemaining", c.TotalRemaining)
+	row.Set("expiringSoonRemaining", c.ExpiringSoonRemaining)
+	if c.SoonestExpireAt > 0 {
+		row.Set("soonestExpireAt", c.SoonestExpireAt)
+	} else {
+		row.Set("soonestExpireAt", nil)
+	}
+	row.Set("expiringSoon", c.ExpiringSoon)
+	row.Set("expired", c.Expired)
+	resources := &jsoncompat.Array{}
+	for _, resource := range c.Resources {
+		item := jsoncompat.NewObject()
+		item.Set("packageCode", resource.PackageCode)
+		item.Set("packageName", resource.PackageName)
+		item.Set("total", resource.Total)
+		item.Set("remaining", resource.Remaining)
+		item.Set("used", resource.Used)
+		if resource.ExpireAt > 0 {
+			item.Set("expireAt", resource.ExpireAt)
+		} else {
+			item.Set("expireAt", nil)
+		}
+		item.Set("expired", resource.Expired)
+		item.Set("expiringSoon", resource.ExpiringSoon)
+		resources.Items = append(resources.Items, item)
+	}
+	row.Set("resources", resources)
 	return row
 }
 
