@@ -1022,6 +1022,316 @@ func refreshMinimaxToken(ctx context.Context, region, refreshToken string, now t
 	}, nil
 }
 
+// --- device flow 登录（api.rs start_device_login / poll_device_login） -------------
+
+const (
+	minimaxDeviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+	// minimaxMaxLoginSeconds is the device flow ceiling (api.rs MAX_LOGIN_MS).
+	minimaxMaxLoginSeconds = int64(15 * 60)
+	// minimaxMaxTransportErrors: consecutive network failures abort the poll
+	// (api.rs MAX_TRANSPORT_ERRORS).
+	minimaxMaxTransportErrors = 3
+)
+
+// minimaxSlowDownStep is added to the poll interval on slow_down (api.rs
+// poll_device_login); a package variable so tests can shrink it.
+var minimaxSlowDownStep = 5 * time.Second
+
+// minimaxDeviceLogin is the in-flight device flow state (api.rs DeviceLogin).
+type minimaxDeviceLogin struct {
+	DeviceCode              string // 轮询参数；account 变体时为 user_code 的值
+	UserCode                string
+	VerificationURI         string
+	VerificationURIComplete string
+	Interval                time.Duration
+	Deadline                time.Time // 真实时钟过期点（总超时 15 分钟兜底）
+	PollWithUserCode        bool      // account 变体：无 device_code，轮询改用 user_code 参数
+	CodeVerifier            string
+}
+
+func init() { registerLoginDriver("minimax", startMinimaxLogin) }
+
+// newMinimaxCodeVerifier mints the PKCE verifier: 32 random bytes, base64url
+// without padding (api.rs random_verifier).
+func newMinimaxCodeVerifier() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("生成 PKCE verifier 失败: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// minimaxPostForm posts one application/x-www-form-urlencoded request and
+// returns the status plus raw body; err is only non-nil for transport/read
+// failures, which the device flow counts separately from HTTP error payloads.
+func minimaxPostForm(ctx context.Context, endpoint string, form url.Values) (int, []byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Accept", "application/json")
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return 0, nil, fmt.Errorf("请求失败（网络）：%w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return response.StatusCode, nil, fmt.Errorf("读取响应失败：%w", err)
+	}
+	return response.StatusCode, body, nil
+}
+
+// startMinimaxDeviceLogin is api.rs start_device_login: POST
+// {account}/oauth2/device/code with PKCE S256. The response has two shapes —
+// standard RFC 8628 (device_code, expires_in, interval in seconds) and the
+// account variant (no device_code, expired_in, interval in milliseconds,
+// poll with user_code instead).
+func startMinimaxDeviceLogin(ctx context.Context, region, verifier string) (*minimaxDeviceLogin, int64, error) {
+	challengeSum := sha256.Sum256([]byte(verifier))
+	form := url.Values{
+		"client_id":             {minimaxClientID},
+		"scope":                 {minimaxScopes},
+		"audience":              {minimaxAudience},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challengeSum[:])},
+		"code_challenge_method": {"S256"},
+	}
+	endpoint := minimaxOrigin(minimaxAccountOrigins, region) + "/oauth2/device/code"
+	status, body, err := minimaxPostForm(ctx, endpoint, form)
+	if err != nil {
+		return nil, 0, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, 0, fmt.Errorf("MiniMax device flow 发起失败（HTTP %d）：%s", status, headString(string(body), 200))
+	}
+	var data map[string]any
+	if json.Unmarshal(body, &data) != nil {
+		return nil, 0, errors.New("MiniMax device flow 响应不是有效 JSON")
+	}
+	str := func(key string) string { return strings.TrimSpace(stringValue(data, key)) }
+	userCode := str("user_code")
+	if userCode == "" {
+		return nil, 0, errors.New("MiniMax device flow 响应缺少 user_code")
+	}
+	deviceCode := str("device_code")
+	accountExpiredIn, hasAccountExpiry := toFloat(data["expired_in"])
+	hasAccountExpiry = hasAccountExpiry && accountExpiredIn > 0
+	usesAccountPolling := deviceCode == "" && hasAccountExpiry
+	if deviceCode == "" && !usesAccountPolling {
+		return nil, 0, errors.New("MiniMax device flow 响应缺少 device_code")
+	}
+	verificationURIComplete := str("verification_uri_complete")
+	verificationURI := str("verification_uri")
+	if verificationURI == "" {
+		verificationURI = str("verification_url")
+	}
+	if verificationURI == "" {
+		verificationURI = verificationURIComplete
+	}
+	if verificationURI == "" {
+		return nil, 0, errors.New("MiniMax device flow 响应缺少 verification_uri")
+	}
+
+	expiresIn := int64Or(data["expires_in"], 0)
+	if expiresIn <= 0 && hasAccountExpiry {
+		// account 变体的 expired_in 可能是绝对毫秒时间戳，换算剩余秒。
+		if accountExpiredIn < 1_000_000_000_000 {
+			expiresIn = int64(accountExpiredIn)
+		} else if remain := int64(accountExpiredIn) - time.Now().UnixMilli(); remain > 0 {
+			expiresIn = (remain + 999) / 1000
+		}
+	}
+	if expiresIn <= 0 {
+		expiresIn = minimaxMaxLoginSeconds
+	}
+	if expiresIn > minimaxMaxLoginSeconds {
+		expiresIn = minimaxMaxLoginSeconds
+	}
+	interval, _ := toFloat(data["interval"])
+	intervalSeconds := int64(interval)
+	if usesAccountPolling && interval > 0 {
+		// account 变体的 interval 单位是毫秒。
+		intervalSeconds = int64(interval/1000 + 0.999999)
+	}
+	if intervalSeconds < 1 {
+		intervalSeconds = 1
+	}
+
+	login := &minimaxDeviceLogin{
+		DeviceCode:              deviceCode,
+		UserCode:                userCode,
+		VerificationURI:         verificationURI,
+		VerificationURIComplete: verificationURIComplete,
+		Interval:                time.Duration(intervalSeconds) * time.Second,
+		Deadline:                time.Now().Add(time.Duration(expiresIn) * time.Second),
+		PollWithUserCode:        usesAccountPolling,
+		CodeVerifier:            verifier,
+	}
+	if usesAccountPolling {
+		login.DeviceCode = userCode
+	}
+	return login, expiresIn, nil
+}
+
+// parseMinimaxLoginGrant is api.rs parse_token_grant applied to the device
+// flow result (no previous refresh token to fall back on). expiresAt is Unix
+// SECONDS like every other minimax credential.
+func parseMinimaxLoginGrant(data map[string]any, now time.Time) (*tokenSet, error) {
+	access := strings.TrimSpace(stringValue(data, "access_token"))
+	refresh := strings.TrimSpace(stringValue(data, "refresh_token"))
+	if access == "" || refresh == "" {
+		return nil, errors.New("MiniMax token 端点响应缺少必要字段")
+	}
+	expiresIn := int64Or(data["expires_in"], minimaxDefaultExpireIn)
+	if expiresIn <= 0 {
+		expiresIn = minimaxDefaultExpireIn
+	}
+	return &tokenSet{
+		AccessToken:  access,
+		RefreshToken: refresh,
+		TokenType:    "Bearer",
+		Scope:        minimaxScopes,
+		ExpiresIn:    expiresIn,
+		ExpiresAt:    now.Unix() + expiresIn,
+	}, nil
+}
+
+// pollMinimaxDeviceLogin is api.rs poll_device_login: sleep interval → POST
+// {account}/oauth2/token → interpret the dual pending/slow_down/denied/expired
+// signalling (status field or standard error field) until the grant lands.
+func pollMinimaxDeviceLogin(ctx context.Context, login *minimaxDeviceLogin, region string) (*tokenSet, error) {
+	interval := login.Interval
+	transportErrors := 0
+	endpoint := minimaxOrigin(minimaxAccountOrigins, region) + "/oauth2/token"
+	for {
+		if !time.Now().Before(login.Deadline) {
+			return nil, errors.New("登录超时（验证码已过期），请重试")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+
+		form := url.Values{
+			"grant_type":    {minimaxDeviceGrantType},
+			"client_id":     {minimaxClientID},
+			"code_verifier": {login.CodeVerifier},
+		}
+		if login.PollWithUserCode {
+			form.Set("user_code", login.UserCode)
+		} else {
+			form.Set("device_code", login.DeviceCode)
+		}
+		status, body, err := minimaxPostForm(ctx, endpoint, form)
+		if err != nil {
+			transportErrors++
+			if transportErrors >= minimaxMaxTransportErrors {
+				return nil, fmt.Errorf("轮询登录状态失败（网络）：%w", err)
+			}
+			continue
+		}
+		transportErrors = 0
+
+		var data map[string]any
+		_ = json.Unmarshal(body, &data)
+		errorField := stringValue(data, "error")
+		pollingStatus := stringValue(data, "status")
+		if status >= 200 && status < 300 && errorField == "" {
+			switch pollingStatus {
+			case "pending":
+				continue
+			case "slow_down":
+				interval += minimaxSlowDownStep
+				continue
+			case "denied", "access_denied":
+				return nil, errors.New("授权已被拒绝")
+			case "expired", "expired_token":
+				return nil, errors.New("验证码已过期，请重试")
+			default:
+				return parseMinimaxLoginGrant(data, time.Now())
+			}
+		}
+		switch {
+		case errorField == "authorization_pending" ||
+			(errorField == "" && strings.Contains(string(body), "authorization_pending")):
+			continue
+		case errorField == "slow_down":
+			interval += minimaxSlowDownStep
+			continue
+		case errorField == "access_denied":
+			return nil, errors.New("授权已被拒绝")
+		case errorField == "expired_token":
+			return nil, errors.New("验证码已过期，请重试")
+		case errorField != "":
+			description := stringValue(data, "error_description")
+			if description != "" {
+				description = "（" + description + "）"
+			}
+			return nil, fmt.Errorf("MiniMax 登录失败: %s%s", errorField, description)
+		default:
+			return nil, fmt.Errorf("MiniMax token 端点返回异常（HTTP %d）：%s", status, headString(string(body), 200))
+		}
+	}
+}
+
+// headString truncates a payload preview like api.rs's chars().take(N).
+func headString(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	return text[:limit]
+}
+
+// startMinimaxLogin is the minimax loginStart driver: device flow + PKCE S256
+// (Provider = region, cn 默认 / en)，授权完成后尽力补身份并返回 candidate
+// 账号（不落盘，由 login.go 状态机统一持久化）。
+func startMinimaxLogin(ctx context.Context, m *Manager, opts LoginOptions) (*LoginChallenge, func(ctx context.Context) (*Account, error), error) {
+	region := opts.Provider
+	if !validMinimaxRegion(region) {
+		region = "cn"
+	}
+	verifier, err := newMinimaxCodeVerifier()
+	if err != nil {
+		return nil, nil, err
+	}
+	login, expiresIn, err := startMinimaxDeviceLogin(ctx, region, verifier)
+	if err != nil {
+		return nil, nil, err
+	}
+	page := login.VerificationURIComplete
+	if page == "" {
+		page = login.VerificationURI
+	}
+	challenge := &LoginChallenge{UserCode: login.UserCode, URL: page, ExpiresIn: expiresIn}
+	wait := func(ctx context.Context) (*Account, error) {
+		tokens, err := pollMinimaxDeviceLogin(ctx, login, region)
+		if err != nil {
+			return nil, err
+		}
+		candidate := &Account{
+			AccessToken:  tokens.AccessToken,
+			RefreshToken: tokens.RefreshToken,
+			TokenType:    tokens.TokenType,
+			Scope:        tokens.Scope,
+			ExpiresIn:    tokens.ExpiresIn,
+			ExpiresAt:    tokens.ExpiresAt,
+			Region:       region,
+		}
+		// 补身份（尽力而为，api.rs complete_login）。
+		if payload, err := minimaxFetchUserInfo(ctx, region, candidate.AccessToken, candidate.UserID, m.now()); err == nil {
+			profile := parseMinimaxProfile(payload)
+			candidate.UserID = profile.UserID
+			candidate.Nickname = profile.Nickname
+			candidate.Email = profile.Email
+			candidate.SubUserName = profile.SubUserName
+		}
+		return candidate, nil
+	}
+	return challenge, wait, nil
+}
+
 // --- pool integration --------------------------------------------------------------
 
 // activeIDMinimax matches the slot's current record against pooled accounts
