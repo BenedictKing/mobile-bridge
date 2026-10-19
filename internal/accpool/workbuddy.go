@@ -1525,6 +1525,208 @@ func workbuddyHasLiveSession(now time.Time) bool {
 	return false
 }
 
+// --- gateway scan login (api.rs start_scan_login / poll_scan_login /
+// wait_scan_complete / fetch_profile) ------------------------------------------------
+
+func init() { registerLoginDriver("workbuddy", startWorkbuddyLogin) }
+
+// workbuddyScanPollInterval is the scan-status poll cadence (api.rs
+// wait_scan_complete sleeps 2s between polls); a package variable so tests
+// can shrink it.
+var workbuddyScanPollInterval = 2 * time.Second
+
+// workbuddyScanMaxWait bounds one login attempt at 10 minutes (the QR itself
+// lives 600s; the slack covers a slow final poll); a package variable so
+// tests can shrink it.
+var workbuddyScanMaxWait = 10 * time.Minute
+
+// workbuddyScanLogin mirrors api.rs ScanLogin: the state handle of one scan
+// login attempt.
+type workbuddyScanLogin struct {
+	variant   string
+	state     string
+	authURL   string
+	expiresAt time.Time // QR lifetime, on the Manager clock
+}
+
+// startWorkbuddyLogin is the workbuddy loginStart (registered in init): POST
+// /v2/plugin/auth/state mints the scan state; the challenge carries the scan
+// URL; the wait closure polls until the user confirms and returns the
+// candidate only — the shared state machine in login.go persists it.
+func startWorkbuddyLogin(ctx context.Context, m *Manager, opts LoginOptions) (*LoginChallenge, func(ctx context.Context) (*Account, error), error) {
+	variant := strings.ToLower(strings.TrimSpace(opts.Provider))
+	if variant == "" {
+		variant = "cn"
+	}
+	if !validWorkbuddyVariant(variant) {
+		return nil, nil, fmt.Errorf("不支持的 WorkBuddy 档位: %s", opts.Provider)
+	}
+	platform := "workbuddy"
+	if variant == "ai" {
+		platform = "workbuddy-ai"
+	}
+	endpoint := workbuddyEndpoint(variant)
+	response := workbuddyPostJSON(ctx, endpoint+"/v2/plugin/auth/state?platform="+platform, http.MethodPost, nil, map[string]any{})
+	data := objectValue(response, "data")
+	if data == nil {
+		code, _ := workbuddyResponseCode(response)
+		message, _ := response["message"].(string)
+		if message == "" {
+			message, _ = response["msg"].(string)
+		}
+		if message == "" {
+			message = "未知错误"
+		}
+		return nil, nil, fmt.Errorf("发起扫码登录失败（code=%d）：%s", code, message)
+	}
+	state := strings.TrimSpace(stringValue(data, "state"))
+	if state == "" {
+		return nil, nil, errors.New("发起扫码登录失败：auth/state 响应缺少 state")
+	}
+	authURL := firstNonEmpty(stringValue(data, "authUrl", "auth_url", "url"),
+		endpoint+"/login?state="+state)
+	login := &workbuddyScanLogin{
+		variant:   variant,
+		state:     state,
+		authURL:   authURL,
+		expiresAt: m.now().Add(600 * time.Second),
+	}
+	return &LoginChallenge{URL: authURL, ExpiresIn: 600},
+		func(ctx context.Context) (*Account, error) { return m.workbuddyWaitScan(ctx, login) },
+		nil
+}
+
+// workbuddyWaitScan mirrors wait_scan_complete: poll every 2s until the token
+// arrives, the QR/attempt budget runs out, or ctx is done.
+func (m *Manager) workbuddyWaitScan(ctx context.Context, login *workbuddyScanLogin) (*Account, error) {
+	deadline := m.now().Add(workbuddyScanMaxWait)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !m.now().Before(login.expiresAt) {
+			return nil, errors.New("登录超时（二维码已过期），请重试")
+		}
+		if !m.now().Before(deadline) {
+			return nil, errors.New("扫码登录超时，请重试")
+		}
+		data, err := m.workbuddyPollScan(ctx, login)
+		if err != nil {
+			return nil, err
+		}
+		if data != nil {
+			return m.workbuddyCompleteScan(ctx, login, data)
+		}
+		timer := time.NewTimer(workbuddyScanPollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// workbuddyPollScan mirrors poll_scan_login one round: (nil, nil) = not
+// scanned yet (any code other than 0/200 — including transport failures —
+// just means keep waiting); (data, nil) = scanned; (nil, err) = terminal
+// error (domain/tier mismatch).
+func (m *Manager) workbuddyPollScan(ctx context.Context, login *workbuddyScanLogin) (map[string]any, error) {
+	endpoint := workbuddyEndpoint(login.variant)
+	response := workbuddyPostJSON(ctx, fmt.Sprintf("%s/v2/plugin/auth/token?state=%s", endpoint, login.state), http.MethodGet, nil, nil)
+	code, _ := workbuddyResponseCode(response)
+	if code != 0 && code != 200 {
+		return nil, nil
+	}
+	data := objectValue(response, "data")
+	if data == nil || workbuddyPlainToken(workbuddySecretText(data, "accessToken")) == "" {
+		return nil, nil
+	}
+	// 档位一致性校验：拿 cn 的 state 换 ai 的 token（或反之）会让网关一直
+	// 拒绝，直接报错不入库（api.rs poll_scan_login）。
+	domain := strings.TrimSpace(stringValue(data, "domain"))
+	if !workbuddyVariantMatchesDomain(login.variant, domain) {
+		tier := "国内版"
+		if login.variant == "ai" {
+			tier = "国际版"
+		}
+		return nil, fmt.Errorf("登录响应的 domain（%s）与%s档位不符，已拒绝入库", domain, tier)
+	}
+	return data, nil
+}
+
+// workbuddyVariantMatchesDomain mirrors Variant::matches_domain.
+func workbuddyVariantMatchesDomain(variant, domain string) bool {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return true
+	}
+	isAI := strings.HasSuffix(strings.ToLower(domain), ".workbuddy.ai")
+	if variant == "ai" {
+		return isAI
+	}
+	return !isAI
+}
+
+// workbuddyCompleteScan turns the token payload into the account candidate
+// (plain tokens — a scan login never produces the encrypted envelope) and
+// best-effort enriches it with the login/account profile (api.rs
+// fetch_profile + complete_login).
+func (m *Manager) workbuddyCompleteScan(ctx context.Context, login *workbuddyScanLogin, data map[string]any) (*Account, error) {
+	nowMS := m.now().UnixMilli()
+	expiresAt := workbuddyNormTsMS(data["expiresAt"])
+	if expiresAt == 0 {
+		if seconds := int64Or(data["expiresIn"], 0); seconds > 0 {
+			expiresAt = nowMS + seconds*1000
+		}
+	}
+	refreshExpiresAt := workbuddyNormTsMS(data["refreshExpiresAt"])
+	if refreshExpiresAt == 0 {
+		if seconds := int64Or(data["refreshExpiresIn"], 0); seconds > 0 {
+			refreshExpiresAt = nowMS + seconds*1000
+		}
+	}
+	candidate := &Account{
+		Variant:          login.variant,
+		AccessToken:      workbuddyPlainToken(workbuddySecretText(data, "accessToken")),
+		RefreshToken:     workbuddySecretText(data, "refreshToken"),
+		TokenType:        firstNonEmpty(stringValue(data, "tokenType"), "Bearer"),
+		Domain:           strings.TrimSpace(stringValue(data, "domain")),
+		ExpiresAt:        expiresAt,
+		RefreshExpiresAt: refreshExpiresAt,
+		AuthRaw:          jsonRaw(data),
+		Status:           StatusActive,
+	}
+	if profile := m.workbuddyFetchScanProfile(ctx, login, candidate); profile != nil {
+		candidate.UserID = firstNonEmpty(stringValue(profile, "uid"), stringValue(profile, "id"))
+		candidate.Nickname = stringValue(profile, "nickname")
+		candidate.Email = stringValue(profile, "email")
+		candidate.EnterpriseID = stringValue(profile, "enterpriseId")
+		candidate.EnterpriseName = stringValue(profile, "enterpriseName")
+		candidate.ProfileRaw = jsonRaw(profile)
+		if candidate.UserID != "" {
+			candidate.ID = "w_" + candidate.UserID
+		}
+	}
+	return candidate, nil
+}
+
+// workbuddyFetchScanProfile mirrors fetch_profile: GET /v2/plugin/login/
+// account with the fresh Bearer + X-Domain. Best-effort — a missing profile
+// must not fail a login that already holds tokens.
+func (m *Manager) workbuddyFetchScanProfile(ctx context.Context, login *workbuddyScanLogin, candidate *Account) map[string]any {
+	if candidate.AccessToken == "" {
+		return nil
+	}
+	endpoint := workbuddyEndpoint(login.variant)
+	response := workbuddyPostJSON(ctx, fmt.Sprintf("%s/v2/plugin/login/account?state=%s", endpoint, login.state),
+		http.MethodGet, workbuddyAuthHeaders(candidate, candidate.AccessToken), nil)
+	if !workbuddySuccess(response) {
+		return nil
+	}
+	return objectValue(response, "data")
+}
+
 // --- pool integration --------------------------------------------------------------------
 
 // candidateFromWorkbuddyAuthRoot extracts the account candidate from the
