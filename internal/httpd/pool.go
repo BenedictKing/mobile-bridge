@@ -33,6 +33,9 @@ func poolJSONValue(value any) any {
 //	POST /api/pool/{kind}/refresh  refresh quotas for every pooled account
 //	POST /api/pool/{kind}/import   import zcode-switcher snapshots + capture
 //	                               the current official slot
+//	POST /api/pool/{kind}/capture  capture the current official slot into the
+//	                               pool (upsert: import new / update existing)
+//	POST /api/pool/{kind}/remove   delete one pooled snapshot ({id, confirmed})
 //	POST /api/pool/{kind}/login    start an in-gateway login ({provider?,
 //	                               reauthId?}) → {login, challenge}
 //	GET  /api/pool/{kind}/login    current/last login session status
@@ -195,6 +198,42 @@ func (h *handler) handlePool(write bool) {
 				errs.Set(id, failure.Error())
 			}
 			detail.Set("refreshErrors", errs)
+		}
+		h.output(http.StatusOK, detail, contentTypeJSON, "")
+	case "capture":
+		acc, created, err := pool.CaptureCurrent(h.request.Context(), kind)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		detail, err := pool.Detail(kind)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		captured := jsoncompat.NewObject()
+		captured.Set("id", acc.ID)
+		captured.Set("created", created)
+		detail.Set("captured", captured)
+		h.output(http.StatusOK, detail, contentTypeJSON, "")
+	case "remove":
+		id, _ := body.MustGet("id").(string)
+		if id == "" {
+			h.fail(http.StatusBadRequest, errorBody("缺少目标账号 id"))
+			return
+		}
+		if confirmed, _ := body.MustGet("confirmed").(bool); !confirmed {
+			h.fail(http.StatusBadRequest, errorBody("请先确认删除"))
+			return
+		}
+		if err := pool.Remove(kind, id); err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		detail, err := pool.Detail(kind)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
 		}
 		h.output(http.StatusOK, detail, contentTypeJSON, "")
 	case "import":

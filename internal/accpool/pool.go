@@ -481,6 +481,28 @@ func (m *Manager) Import(kind, source string) (imported []string, skipped []Impo
 	return imported, skipped, nil
 }
 
+// Remove deletes one pooled snapshot file. Like zcode-switcher's delete, it
+// only drops the stored copy — the official CLI's current login slot is left
+// untouched, even when the removed account is the active one.
+func (m *Manager) Remove(kind, id string) error {
+	if !m.supports(kind) {
+		return fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
+	}
+	if _, err := safeID(id); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	path := filepath.Join(m.storeDir(kind), id+".json")
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("找不到账号快照: %s", id)
+		}
+		return err
+	}
+	return nil
+}
+
 // CaptureCurrent snapshots the official slot's current login state into the
 // pool (kimiManager.captureCurrent / zcode manager.capture).
 func (m *Manager) CaptureCurrent(ctx context.Context, kind string) (*Account, bool, error) {

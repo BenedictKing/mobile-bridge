@@ -1,7 +1,8 @@
 'use strict';
-/* ACP 账号池面板：展示池内账号与窗口额度，支持从 zcode-switcher 导入、
-   网关内登录（device flow / 扫码 / OAuth 轮询）、手动刷新额度、切换账号
-   与自动切换开关。kimi/zcode/minimax/workbuddy 各实例化一个。 */
+/* ACP 账号池面板：展示池内账号与窗口额度，支持从 zcode-switcher 导入、捕获本机
+   当前登录态（新账号导入 / 已有账号更新凭证）、删除快照、网关内登录
+   （device flow / 扫码 / OAuth 轮询）、手动刷新额度、切换账号与自动切换开关。
+   kimi/zcode/minimax/workbuddy 各实例化一个。 */
 
 /* 各 kind 的登录配置：providers 非空时登录前先选择（minimax/workbuddy 的
    区域/档位、zcode 的 OAuth provider）。 */
@@ -51,6 +52,20 @@ class PoolPanel {
     const t=BridgeI18n.t;
     if(!window.confirm(t('确认切换账号？进行中的回合会被拒绝，已打开的会话将以新账号重连。')+'\n'+(row.label||row.id)))return;
     await this.perform('switch',{id:row.id,confirmed:true});
+  }
+  removeAccount(row){
+    const t=BridgeI18n.t;
+    if(!window.confirm(t('仅删除池中保存的账号快照，不影响本机当前的登录态。确认删除？')+'\n'+(row.label||row.id)))return;
+    this.perform('remove',{id:row.id,confirmed:true});
+  }
+  async capture(){
+    const t=BridgeI18n.t;
+    await this.perform('capture');
+    const captured=this.value&&this.value.captured;
+    if(captured&&captured.id){
+      this.notice=(captured.created?t('已导入当前登录账号：'):t('已从当前登录态更新账号：'))+captured.id;
+      this.render();
+    }
   }
   stopLoginPolling(){
     if(this.login&&this.login.timer){clearInterval(this.login.timer);}
@@ -230,7 +245,10 @@ class PoolPanel {
     const importBtn=this.button(t('从 zcode-switcher 导入'),()=>{
       if(window.confirm(t('从 zcode-switcher 的账号库导入账号快照，并捕获当前登录态？')))this.perform('import');
     });importBtn.disabled=this.busy||this.loading;
-    controls.append(refresh,importBtn);
+    const captureBtn=this.button(t('捕获当前登录'),()=>this.capture());
+    captureBtn.disabled=this.busy||this.loading;
+    captureBtn.title=t('读取本机 CLI 当前的登录态：新账号直接导入，已有账号则更新其登录凭证');
+    controls.append(refresh,importBtn,captureBtn);
     if(POOL_LOGIN[this.kind]){
       const addBtn=this.button(t('添加账号'),()=>this.openLogin(''));
       addBtn.disabled=this.busy||this.loading;
@@ -253,7 +271,7 @@ class PoolPanel {
     if(value.captureError)root.append(this.node('p',t('当前登录态捕获失败：')+value.captureError,'account-muted'));
     if(value.refreshErrors)for(const[id,msg]of Object.entries(value.refreshErrors))root.append(this.node('p',id+' · '+msg,'error'));
     const accounts=value.accounts||[];
-    if(!accounts.length){root.append(this.node('p',t('账号池为空。点击上方按钮从 zcode-switcher 导入，或捕获当前登录态。'),'account-muted'));return;}
+    if(!accounts.length){root.append(this.node('p',t('账号池为空。点击上方「捕获当前登录」导入本机已登录的账号，或从 zcode-switcher 导入。'),'account-muted'));return;}
     for(const row of [...accounts].sort((a,b)=>Number(b.active)-Number(a.active))){
       const card=this.node('section',undefined,'account-bucket');
       const identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name');
@@ -268,6 +286,9 @@ class PoolPanel {
       const choose=this.button(row.active?t('当前账号'):t('切换到此账号'),()=>this.switchTo(row));
       choose.disabled=this.busy||this.loading||row.active||(row.status&&row.status!=='active');
       card.append(choose);
+      const remove=this.button(t('删除'),()=>this.removeAccount(row));
+      remove.disabled=this.busy||this.loading;
+      card.append(remove);
       if(row.status==='reauth_required'&&POOL_LOGIN[this.kind]){
         const reauth=this.button(t('重新登录'),()=>this.openLogin(row.id));
         reauth.disabled=this.busy||this.loading;

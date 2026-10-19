@@ -120,7 +120,7 @@ func TestPoolCodexDetailIsReadOnly(t *testing.T) {
 	}
 
 	// Writes are redirected to the dedicated Codex switch flow.
-	for _, action := range []string{"switch", "settings", "refresh", "import"} {
+	for _, action := range []string{"switch", "settings", "refresh", "import", "capture", "remove"} {
 		response = poolRoute(t, server, http.MethodPost, "/api/pool/codex/"+action, `{}`)
 		if response.Code != http.StatusBadRequest ||
 			!strings.Contains(response.Body.String(), "Codex") {
@@ -140,6 +140,57 @@ func TestPoolCodexRequiresAccountManager(t *testing.T) {
 	response = poolRoute(t, server, http.MethodGet, "/api/pool", "")
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "codex") {
 		t.Fatalf("overview must omit codex: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestPoolRemoveRoute(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	t.Setenv("ZCODE_HOME", t.TempDir())
+	server := New(auth.NewAuth(auth.Config{Mode: "none"}), fsys{}, 8790, "instance")
+	server.Pool = accpool.New(dataDir, "")
+	storeDir := filepath.Join(dataDir, "pool", "kimi")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, "u_test1.json"), []byte(`{"id":"u_test1","refreshToken":"rt"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Missing id and missing confirmation are both rejected.
+	response := poolRoute(t, server, http.MethodPost, "/api/pool/kimi/remove", `{}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing id: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/kimi/remove", `{"id":"u_test1"}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unconfirmed: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Confirmed remove drops the snapshot and returns the fresh detail.
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/kimi/remove", `{"id":"u_test1","confirmed":true}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("remove: status=%d body=%s", response.Code, response.Body.String())
+	}
+	detail := jsonObject(t, response.Body.String())
+	accounts, _ := detail.MustGet("accounts").(*jsoncompat.Array)
+	if accounts == nil || len(accounts.Items) != 0 {
+		t.Fatalf("accounts after remove: %s", response.Body.String())
+	}
+
+	// Removing it again reports the missing snapshot.
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/kimi/remove", `{"id":"u_test1","confirmed":true}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("re-remove: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestPoolCaptureRouteWithoutCredentials(t *testing.T) {
+	server := newPoolRouteServer(t)
+	// KIMI_CODE_HOME points at an empty temp dir: no local login to capture.
+	response := poolRoute(t, server, http.MethodPost, "/api/pool/kimi/capture", `{}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "凭据") {
+		t.Fatalf("capture: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

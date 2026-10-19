@@ -169,6 +169,29 @@ func TestUpsertHashID(t *testing.T) {
 	}
 }
 
+func TestRemove(t *testing.T) {
+	m := newTestManager(t)
+	acc, _, err := m.upsert("kimi", &Account{UserID: "u1", RefreshToken: "rt1"})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := m.Remove("kimi", acc.ID); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if got := len(m.list("kimi")); got != 0 {
+		t.Fatalf("expected 0 accounts after remove, got %d", got)
+	}
+	if err := m.Remove("kimi", acc.ID); err == nil {
+		t.Fatal("removing a missing snapshot must fail")
+	}
+	if err := m.Remove("kimi", "../escape"); err == nil {
+		t.Fatal("unsafe id must be rejected")
+	}
+	if err := m.Remove("codex", acc.ID); err == nil {
+		t.Fatal("unsupported kind must be rejected")
+	}
+}
+
 func TestImport(t *testing.T) {
 	m := newTestManager(t)
 	source := t.TempDir()
