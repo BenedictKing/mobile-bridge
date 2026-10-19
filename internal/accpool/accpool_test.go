@@ -212,6 +212,52 @@ func TestImport(t *testing.T) {
 	}
 }
 
+func TestImportFloatQuotaSnapshot(t *testing.T) {
+	m := newTestManager(t)
+	source := t.TempDir()
+	storeDir := filepath.Join(source, "accounts-kimi")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// zcode-switcher serializes whole numbers as floats (65.0); a strict
+	// int64 decode used to reject the whole snapshot as 不是有效快照.
+	raw := []byte(`{
+		"id": "u_float", "label": "浮点额度", "refreshToken": "rt", "accessToken": "at",
+		"quota": {
+			"weekly": {"used": 65.0, "limit": 100.0, "resetAt": "2026-08-24T16:13:43Z"},
+			"limits": [{"name": null, "windowUnit": "minute", "windowDuration": 300.0, "used": 1.0, "limit": 100.0, "resetAt": "2026-08-23T05:13:43Z"}],
+			"booster": {"totalCents": 5000.0, "balanceCents": 1826.0, "currency": "CNY"},
+			"levelName": "Allegretto", "region": "REGION_CN"
+		}
+	}`)
+	if err := os.WriteFile(filepath.Join(storeDir, "u_float.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	imported, skipped, err := m.Import("kimi", source)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(imported) != 1 || imported[0] != "u_float" || len(skipped) != 0 {
+		t.Fatalf("imported=%v skipped=%v", imported, skipped)
+	}
+	acc, err := m.loadAccount("kimi", "u_float")
+	if err != nil {
+		t.Fatalf("loadAccount: %v", err)
+	}
+	if acc.Quota == nil || acc.Quota.Weekly == nil || acc.Quota.Weekly.Used != 65 {
+		t.Fatalf("weekly quota: %+v", acc.Quota)
+	}
+	if len(acc.Quota.Limits) != 1 || acc.Quota.Limits[0].Used != 1 || acc.Quota.Limits[0].Limit != 100 {
+		t.Fatalf("limits: %+v", acc.Quota.Limits)
+	}
+	if d := acc.Quota.Limits[0].WindowDuration; d == nil || *d != 300 {
+		t.Fatalf("windowDuration: %v", d)
+	}
+	if b := acc.Quota.Booster; b == nil || b.TotalCents == nil || *b.TotalCents != 5000 || b.BalanceCents == nil || *b.BalanceCents != 1826 {
+		t.Fatalf("booster: %+v", acc.Quota.Booster)
+	}
+}
+
 func TestActiveIDMatchesSlot(t *testing.T) {
 	m := newTestManager(t)
 	home := t.TempDir()

@@ -140,12 +140,55 @@ type WindowQuota struct {
 	ResetAt        string `json:"resetAt,omitempty"`
 }
 
+// UnmarshalJSON tolerates zcode-switcher snapshots, which serialize whole
+// numbers as floats (65.0) that encoding/json refuses into int64 fields.
+func (w *WindowQuota) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Name           string `json:"name"`
+		WindowUnit     string `json:"windowUnit"`
+		WindowDuration any    `json:"windowDuration"`
+		Used           any    `json:"used"`
+		Limit          any    `json:"limit"`
+		ResetAt        string `json:"resetAt"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	w.Name = raw.Name
+	w.WindowUnit = raw.WindowUnit
+	w.WindowDuration = toInt64(raw.WindowDuration)
+	if v := toInt64(raw.Used); v != nil {
+		w.Used = *v
+	}
+	if v := toInt64(raw.Limit); v != nil {
+		w.Limit = *v
+	}
+	w.ResetAt = raw.ResetAt
+	return nil
+}
+
 // BoosterQuota is kimi's booster wallet, converted from the official
 // fixed-point amounts (÷1e6) into cents.
 type BoosterQuota struct {
 	TotalCents   *int64 `json:"totalCents,omitempty"`
 	BalanceCents *int64 `json:"balanceCents,omitempty"`
 	Currency     string `json:"currency,omitempty"`
+}
+
+// UnmarshalJSON tolerates zcode-switcher snapshots; see WindowQuota.
+func (b *BoosterQuota) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		TotalCents   any    `json:"totalCents"`
+		BalanceCents any    `json:"balanceCents"`
+		Currency     string `json:"currency"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	b.TotalCents = toInt64(raw.TotalCents)
+	b.BalanceCents = toInt64(raw.BalanceCents)
+	b.Currency = raw.Currency
+	return nil
 }
 
 // Quota is the parsed /usages payload; field names match zcode-switcher's
