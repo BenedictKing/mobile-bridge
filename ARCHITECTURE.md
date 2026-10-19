@@ -93,6 +93,8 @@ Jev 设置中的 `autoContinue` 开关让网关在回合结束后自动补发一
 
 自动切换（`auto.go`）有两条入口：`poolQuotaHook` 挂在自动继续钩子链首位，对疑似额度故障先用 jev 规则初筛、再实时刷新额度复确认（瞬时 429 不误切）；轮询越过 95% 阈值走同一路径。门控从 `history.jsonl` 派生：10 分钟冷却、每小时至多 6 次、24h 内切走 3 次即弃用该账号、最紧窗口距重置不足 5 分钟宁可等待。目标选最紧窗口余量最大的账号，并列取最久未用。切换后被打断的会话按 `ResumeAfterSwitchPrompt` 自动续跑，独立预算 `MaxSwitchResume=3` 不占自动继续的 5 次额度；人为操作同时重置两个计数。开关持久化于 `pool/settings.json`（默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），切换结果走既有通知渠道。HTTP 面为 `/api/pool` 与 `/api/pool/{kind}` 系列路由（`internal/httpd/pool.go`），前端 `web/pool.js` 参数化为 Kimi/ZCode/MiniMax/WorkBuddy 四面板；Codex 在统一视图中只读，写操作 400 并指向「账号与接入」的既有切换流程。
 
+登录也可以在网关内完成，不再依赖 zcode-switcher 桌面版：`login.go` 的登录状态机（`StartLogin`/`LoginStatus`/`CancelLogin`，新登录取代同 kind 的旧登录、迟到完成不落盘、`reauthId` 原位替换 token）挂载各家驱动——kimi/MiniMax 走 OAuth device flow（MiniMax 带 PKCE S256 与 cn/en 双区域），WorkBuddy 走扫码（重登直接得到明文 token，信封态账号由此恢复），zcode 走代理 OAuth（cli/init → poll，z.ai 专属 business token 交换，enc:v1 落盘与 zcode-switcher 同机互通）。路由挂在 `/api/pool/{kind}/login`（开始/轮询/取消），前端各面板有「添加账号」与 `reauth_required` 行的「重新登录」。
+
 ## 模型与 Skill
 
 Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX 包及 PATH；`--codex-bin` 可明确选择桌面对应版本。仅本机辅助运行时（目录、Goal、账号、新建）使用该覆盖，SSH 目录仍由远端运行时读取。

@@ -1,7 +1,7 @@
 # ACP Agent 额度自动切换与自动继续设计
 
-> 状态：阶段 1–7 已全部实现（2026-10-19）
-> 日期：2026-10-18（阶段 6/7 更新于 2026-10-19）
+> 状态：阶段 1–8 已全部实现（2026-10-19）
+> 日期：2026-10-18（阶段 6/7/8 更新于 2026-10-19）
 > 背景：把 zcode-switcher（/Users/petaflops/works/unsorted/zcode-switcher）的账号快照管理与额度查询能力集成进 mobile-bridge，实现"agent 额度（如 5 小时窗口限额）用尽后自动切换其他可用账号，必要时自动发送继续"。
 
 ## 1. 目标与非目标
@@ -307,6 +307,17 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - **保守门控**：自动切换（`trigger=="auto-quota"`）在 WorkBuddy.app 运行且 CLI 有活会话（`~/.codebuddy/sessions/*.json` 心跳 <120s）时拒绝，仅通知；
   - 冒烟（真实服务）：导入 2 账号成功；额度刷新正确识别两个存量账号均需重登（一个信封态、一个 refresh token 已失效，真实 API 返回 `12153: refresh token is invalid`）——与桌面版现状一致，需扫码重登后可用。
 - 与 Rust 真源的已知偏差：不扫杀 CLI 进程（网关会话经 `Reattach` 重挂，门控覆盖防破坏意图）；cn 三路并发改顺序；信封态目标直接拒绝切换（CLI helper 用不了信封 token）；会话迁移（session.rs）与积分轮换策略（rotate.rs）未移植（后者职责已由池内 quota 自动切换覆盖）。
+
+**阶段 8：网关内原生登录（摆脱 zcode-switcher 依赖）** ✅ 已实现（2026-10-19）
+- 状态机 `internal/accpool/login.go`：`Manager.StartLogin/LoginStatus/CancelLogin`；驱动契约 `loginStart` 由各 kind 文件 `init()` 注册（`registerLoginDriver`）；同 kind 新登录取代旧登录；被取代/取消后的迟到完成**不落盘**；`reauthId` 走原位 token 替换；登录成功后后台 goroutine 刷新额度，不阻塞完成。
+- HTTP：`POST /api/pool/{kind}/login`（`{provider?, reauthId?}` → `{login, challenge}`）、`GET /api/pool/{kind}/login`（状态轮询）、`POST /api/pool/{kind}/login/cancel`；codex 只读，写操作 400。结构体经 `poolJSONValue` 转 jsoncompat 树输出。
+- 前端 `web/pool.js`：各池面板「添加账号」按钮 + `reauth_required` 行「重新登录」；登录弹层支持 provider 选择（minimax cn/en、workbuddy cn/ai、zcode zai/bigmodel）→ 展示 userCode + 授权链接 + 复制 + 剩余分钟，2s 轮询状态，成功/失败/取消均有终态反馈。
+- 各 provider 驱动（协议均对照 zcode-switcher Rust 真源移植）：
+  - **kimi**：OAuth device flow（`auth.kimi.com` device_authorization + token 轮询，全套 X-Msh-* 设备头，device-id 持久化于 `pool/kimi/device-id`），身份走 `coding/v1/me`；pending/slow_down/15 分钟上限。
+  - **minimax**：device flow + PKCE S256（cn=account.minimax.cn / en=account.minimax.io），兼容标准与 account 两种响应变体（后者无 device_code、以 user_code 轮询、毫秒 interval）；身份走 matrix `user/info`（复用 yy/x-timestamp/x-signature 签名头）。
+  - **workbuddy**：扫码登录（`auth/state` → 2s 轮询 `auth/token`，10 分钟上限），直接取得**明文 token**——信封态账号重登即恢复可用；cn/ai domain 档位一致性校验，profile 拉取失败降级不阻断。
+  - **zcode**：代理 OAuth（`zcode.z.ai/api/v1/oauth/cli/init` → 轮询 `poll/{flow_id}`；authorize_url 必须 https 且带非空 state）；zai 专属 business token 交换 + billing 就绪渐进等待（尽力而为）；credentials/config 用既有 enc:v1 加密，与 zcode-switcher 同机互通。
+- 测试：`accpool.RegisterLoginDriverForTest` 供 httpd 等外部包注入假驱动，避免测试触网；四家 httptest 套件覆盖全流程/变体/拒绝/超时/取消。
 
 ## 11. 开放问题
 
