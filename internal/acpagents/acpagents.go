@@ -45,13 +45,14 @@ func Discover(env func(string) string, home string) []Profile {
 		dshProfile(env, home),
 		zcodeProfile(env, home),
 		opencodeProfile(env, home),
+		workbuddyProfile(env, home),
 	}
 }
 
 // KnownKind reports whether kind is a recognized agent kind (codex included).
 func KnownKind(kind string) bool {
 	switch kind {
-	case "codex", "kimi", "mcode", "claude", "dsh", "zcode", "opencode":
+	case "codex", "kimi", "mcode", "claude", "dsh", "zcode", "opencode", "workbuddy":
 		return true
 	}
 	return false
@@ -84,7 +85,7 @@ func ParseKinds(value string) ([]string, error) {
 type agentsError struct{}
 
 func (agentsError) Error() string {
-	return "agents 支持 codex、kimi、mcode、claude、dsh、zcode、opencode，或 auto（自动探测本机已安装的）"
+	return "agents 支持 codex、kimi、mcode、claude、dsh、zcode、opencode、workbuddy，或 auto（自动探测本机已安装的）"
 }
 
 func errAgents() error { return agentsError{} }
@@ -265,6 +266,26 @@ func subcommandArgv(executable string) []string {
 		return nil
 	}
 	return []string{executable, "acp"}
+}
+
+// workbuddyProfile launches CodeBuddy Code's built-in ACP mode
+// (`codebuddy --acp`). The CLI itself is the ACP server — no wrapper and no
+// npx fallback; a leftover ~/.codebuddy alone must not auto-enable it, so
+// only a real binary on PATH (or CODEBUDDY_BIN) counts. Cold session/new
+// takes ~20s (the CLI loads its skill/command catalog before answering),
+// hence the generous handshake budget.
+func workbuddyProfile(env func(string) string, home string) Profile {
+	executable := discoverExecutable(env, home, "CODEBUDDY_BIN", ".codebuddy/bin", "codebuddy")
+	var argv []string
+	if executable != "" {
+		argv = []string{executable, "--acp"}
+	}
+	return Profile{
+		Kind: "workbuddy", Label: "WorkBuddy",
+		Command:           argv,
+		InitializeTimeout: 60 * time.Second,
+		Capabilities:      []string{},
+	}
 }
 
 // wrapperArgv mirrors the zcode/claude/dsh discovery: env override, then a
