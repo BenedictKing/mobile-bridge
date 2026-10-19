@@ -935,7 +935,11 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 			}
 			rows, err := manager.List(15 * time.Second)
 			if err != nil {
-				unavailable.Items = append(unavailable.Items, err.Error())
+				entry := jsoncompat.NewObject()
+				entry.Set("host", "local")
+				entry.Set("label", "此电脑")
+				entry.Set("error", err.Error())
+				unavailable.Items = append(unavailable.Items, entry)
 			} else {
 				// Merge sessions created here that the agent's own list does
 				// not cover yet (zcode's lazy placeholder before the first
