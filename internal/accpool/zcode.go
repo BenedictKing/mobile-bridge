@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1118,4 +1119,522 @@ var zcodeDesktopRelaunch = func() {
 			return
 		}
 	}
+}
+
+// --- in-gateway OAuth login (zcode-switcher zcode/oauth.rs) -------------------
+//
+// Server-proxied OAuth: the gateway POSTs cli/init with a local random
+// pollToken, hands the authorize_url to the user (web UI opens the browser),
+// polls cli/poll until ready, and for zai exchanges the OAuth access_token for
+// the business token that actually goes into the credentials. The wait
+// closure returns an unpersisted candidate; login.go's state machine owns
+// persistence and the slot write happens later, on switch.
+
+var (
+	zcodeOAuthInitURL       = "https://zcode.z.ai/api/v1/oauth/cli/init"
+	zcodeOAuthPollURLPrefix = "https://zcode.z.ai/api/v1/oauth/cli/poll/"
+	zcodeBusinessLoginURL   = "https://api.z.ai/api/auth/z/login"
+	// The login flow's billing-ready probe reports the desktop-arm platform
+	// tag (unlike the quota path's win32-x64).
+	zcodeBillingReadyURL = "https://zcode.z.ai/api/v1/zcode-plan/billing/current?app_version=4.1.10&platform=darwin-arm64"
+	// Progressive billing-ready delays (~4 minutes total), best effort.
+	zcodeBillingReadyDelays = []time.Duration{
+		time.Second, 3 * time.Second, 6 * time.Second, 15 * time.Second,
+		30 * time.Second, time.Minute, 90 * time.Second, 2 * time.Minute,
+	}
+)
+
+// zcodeLoginFlowTimeoutCap mirrors the official 300s per-flow ceiling
+// (ese=300s): the poll loop stops at min(300s, the flow's remaining lifetime).
+const zcodeLoginFlowTimeoutCap = 300 * time.Second
+
+// zcodeBusinessLoginTimeout mirrors ZaiBusinessTokenResolver's 10s timeout.
+const zcodeBusinessLoginTimeout = 10 * time.Second
+
+func init() { registerLoginDriver("zcode", startZcodeLogin) }
+
+// zcodeOAuthFlow is one started login flow (start_oauth_flow's OAuthFlow).
+type zcodeOAuthFlow struct {
+	provider     string // "zai" | "bigmodel"
+	flowID       string
+	pollToken    string // local random 32-byte hex; init/poll Bearer credential
+	pollInterval time.Duration
+	expiresAt    time.Time // flow lifetime claimed by the server
+	deadline     time.Time // min(300s cap, remaining lifetime) from start
+}
+
+// zcodeReadyTokens is the ready response's token set (oauth.rs ReadyTokens):
+// zcodeJWT is the API JWT; accessToken is the provider OAuth access token —
+// for zai it is exchanged for the business token before hitting the disk.
+type zcodeReadyTokens struct {
+	zcodeJWT     string
+	accessToken  string
+	refreshToken string // bigmodel only
+	user         map[string]any
+}
+
+// startZcodeLogin implements loginStart: POST cli/init, validate the response
+// like the official client (https + non-empty state + sane expiry/interval),
+// and hand back the challenge plus a wait closure that polls to completion.
+func startZcodeLogin(ctx context.Context, m *Manager, opts LoginOptions) (*LoginChallenge, func(ctx context.Context) (*Account, error), error) {
+	provider := strings.TrimSpace(opts.Provider)
+	if provider == "" {
+		provider = "zai"
+	}
+	if provider != "zai" && provider != "bigmodel" {
+		return nil, nil, fmt.Errorf("不支持的 provider: %s（仅支持 zai / bigmodel）", provider)
+	}
+	pollTokenBytes := make([]byte, 32)
+	if _, err := rand.Read(pollTokenBytes); err != nil {
+		return nil, nil, fmt.Errorf("生成 pollToken 失败: %w", err)
+	}
+	pollToken := hex.EncodeToString(pollTokenBytes)
+	body, err := zcodePostJSON(ctx, zcodeOAuthInitURL, pollToken, map[string]any{"provider": provider})
+	if err != nil {
+		return nil, nil, fmt.Errorf("OAuth flow 初始化请求失败: %w", err)
+	}
+	flow, challenge, err := parseZcodeInitResponse(body, provider, pollToken, time.Now())
+	if err != nil {
+		return nil, nil, err
+	}
+	return challenge, func(ctx context.Context) (*Account, error) {
+		return finishZcodeLogin(ctx, flow)
+	}, nil
+}
+
+// parseZcodeInitResponse mirrors oauth.rs parse_init_response: code===0,
+// flow_id/authorize_url non-empty, authorize_url must be https and carry a
+// non-empty state, expires_at in the future, poll_interval ∈ [1s, remaining).
+func parseZcodeInitResponse(body []byte, provider, pollToken string, now time.Time) (*zcodeOAuthFlow, *LoginChallenge, error) {
+	decoded := parseJSONObject(string(body))
+	invalid := func() error {
+		if decoded == nil {
+			return errors.New("OAuth flow 初始化响应无效")
+		}
+		if msg := strings.TrimSpace(stringValue(decoded, "msg")); msg != "" {
+			return errors.New(msg)
+		}
+		return errors.New("OAuth flow 初始化响应无效")
+	}
+	if decoded == nil || int64Or(decoded["code"], -1) != 0 {
+		return nil, nil, invalid()
+	}
+	data, _ := decoded["data"].(map[string]any)
+	if data == nil {
+		return nil, nil, invalid()
+	}
+	flowID := strings.TrimSpace(stringValue(data, "flow_id"))
+	authorizeRaw := strings.TrimSpace(stringValue(data, "authorize_url"))
+	expiresRaw, okExpires := data["expires_at"].(float64)
+	pollRaw, okPoll := data["poll_interval_sec"].(float64)
+	if flowID == "" || authorizeRaw == "" || !okExpires || !okPoll {
+		return nil, nil, invalid()
+	}
+	parsed, err := url.Parse(authorizeRaw)
+	if err != nil {
+		return nil, nil, invalid()
+	}
+	state := ""
+	if parsed.Scheme == "https" {
+		if query, queryErr := url.ParseQuery(parsed.RawQuery); queryErr == nil {
+			state = strings.TrimSpace(query.Get("state"))
+		}
+	}
+	expiresAt := time.UnixMilli(int64(expiresRaw * 1000))
+	remaining := expiresAt.Sub(now)
+	pollInterval := time.Duration(pollRaw * float64(time.Second))
+	if parsed.Scheme != "https" || state == "" || remaining <= 0 ||
+		pollInterval < time.Second || pollInterval >= remaining {
+		return nil, nil, invalid()
+	}
+	timeout := zcodeLoginFlowTimeoutCap
+	if remaining < timeout {
+		timeout = remaining
+	}
+	flow := &zcodeOAuthFlow{
+		provider:     provider,
+		flowID:       flowID,
+		pollToken:    pollToken,
+		pollInterval: pollInterval,
+		expiresAt:    expiresAt,
+		deadline:     now.Add(timeout),
+	}
+	challenge := &LoginChallenge{URL: parsed.String(), ExpiresIn: int64(remaining / time.Second)}
+	return flow, challenge, nil
+}
+
+// zcodePostJSON POSTs one JSON body, returning the raw response body like
+// oauth.rs read_json (any HTTP status — the caller's parser validates the
+// envelope). A non-empty bearer sets the Authorization: Bearer header.
+func zcodePostJSON(ctx context.Context, endpoint, bearer string, body any) ([]byte, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(raw)))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("content-type", "application/json")
+	request.Header.Set("accept", "application/json")
+	if bearer != "" {
+		request.Header.Set("authorization", "Bearer "+bearer)
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败（网络）：%w", err)
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败：%w", err)
+	}
+	return payload, nil
+}
+
+// poll runs the cli/poll loop (oauth.rs poll_oauth_flow): pending keeps
+// waiting, failed errors out, ready returns the token set; network errors and
+// 5xx retry next tick, other 4xx are fatal. ctx cancellation wins over the
+// interval sleep.
+func (f *zcodeOAuthFlow) poll(ctx context.Context) (map[string]any, error) {
+	pollURL := zcodeOAuthPollURLPrefix + url.QueryEscape(f.flowID)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		now := time.Now()
+		if !now.Before(f.expiresAt) {
+			return nil, errors.New("OAuth flow 已过期")
+		}
+		if !now.Before(f.deadline) {
+			return nil, errors.New("登录超时，请重试")
+		}
+		body, status, err := zcodeGet(ctx, pollURL, f.pollToken, true)
+		if err != nil {
+			// 4xx（408/429 除外）是致命的；其余（网络抖动、5xx）下一周期重试。
+			if status >= 400 && status < 500 &&
+				status != http.StatusRequestTimeout && status != http.StatusTooManyRequests {
+				return nil, fmt.Errorf("OAuth flow 查询失败 HTTP %d", status)
+			}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if sleepErr := sleepCtx(ctx, f.pollInterval); sleepErr != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		decoded := parseJSONObject(string(body))
+		data, _ := decoded["data"].(map[string]any)
+		if decoded == nil || int64Or(decoded["code"], -1) != 0 || data == nil {
+			if decoded != nil {
+				if msg := strings.TrimSpace(stringValue(decoded, "msg")); msg != "" {
+					return nil, errors.New(msg)
+				}
+			}
+			return nil, errors.New("OAuth flow 查询响应无效")
+		}
+		switch status := strings.TrimSpace(stringValue(data, "status")); status {
+		case "pending":
+			if sleepErr := sleepCtx(ctx, f.pollInterval); sleepErr != nil {
+				return nil, ctx.Err()
+			}
+		case "failed":
+			return nil, errors.New("OAuth flow 授权失败")
+		case "ready":
+			return data, nil
+		default:
+			return nil, errors.New("OAuth flow 查询响应无效")
+		}
+	}
+}
+
+// parseZcodeReady mirrors parse_ready_token_fields: token / provider
+// access_token / user.user_id all required; bigmodel gets snake/camel
+// fallbacks plus the refresh_token.
+func parseZcodeReady(data map[string]any, provider string) (*zcodeReadyTokens, error) {
+	user, _ := data["user"].(map[string]any)
+	token := strings.TrimSpace(stringValue(data, "token"))
+	userID := strings.TrimSpace(stringValue(user, "user_id"))
+	tokens := &zcodeReadyTokens{zcodeJWT: token, user: user}
+	if provider == "bigmodel" {
+		bigmodel, _ := data["bigmodel"].(map[string]any)
+		tokens.accessToken = strings.TrimSpace(stringValue(bigmodel, "access_token", "accessToken"))
+		tokens.refreshToken = strings.TrimSpace(stringValue(bigmodel, "refresh_token", "refreshToken"))
+	} else {
+		zai, _ := data["zai"].(map[string]any)
+		tokens.accessToken = strings.TrimSpace(stringValue(zai, "access_token"))
+	}
+	if token == "" || tokens.accessToken == "" || userID == "" {
+		return nil, errors.New("OAuth flow 查询响应无效")
+	}
+	return tokens, nil
+}
+
+// zcodeBusinessCodeOK mirrors is_successful_business_code: code ∈
+// {null, 0, 200, "0", "200"} and success !== false.
+func zcodeBusinessCodeOK(decoded map[string]any) bool {
+	codeOK := true
+	if code, present := decoded["code"]; present && code != nil {
+		codeOK = false
+		if n, ok := toFloat(code); ok && (n == 0 || n == 200) {
+			codeOK = true
+		}
+		if s, ok := code.(string); ok && (s == "0" || s == "200") {
+			codeOK = true
+		}
+	}
+	if success, ok := decoded["success"].(bool); ok && !success {
+		return false
+	}
+	return codeOK
+}
+
+// exchangeZcodeBusinessToken mirrors exchange_business_token: zai's OAuth
+// access_token only becomes usable after POST api.z.ai/api/auth/z/login, whose
+// access_token (the business token) is what the credentials carry.
+func exchangeZcodeBusinessToken(ctx context.Context, zaiAccessToken string) (string, error) {
+	exchangeCtx, cancel := context.WithTimeout(ctx, zcodeBusinessLoginTimeout)
+	defer cancel()
+	body, err := zcodePostJSON(exchangeCtx, zcodeBusinessLoginURL, "", map[string]any{"token": zaiAccessToken})
+	if err != nil {
+		return "", fmt.Errorf("zai_oauth_required: business token 请求失败: %w", err)
+	}
+	decoded := parseJSONObject(string(body))
+	if decoded == nil {
+		return "", errors.New("zai_oauth_required: business token 响应非 JSON")
+	}
+	if !zcodeBusinessCodeOK(decoded) {
+		reason := strings.TrimSpace(stringValue(decoded, "msg"))
+		if reason == "" {
+			reason = fmt.Sprintf("code=%v", decoded["code"])
+		}
+		return "", fmt.Errorf("zai_oauth_required: business token 被拒绝: %s", reason)
+	}
+	data, _ := decoded["data"].(map[string]any)
+	token := strings.TrimSpace(stringValue(data, "access_token", "accessToken"))
+	if token == "" {
+		return "", errors.New("zai_oauth_required: business token 响应缺少 access_token")
+	}
+	return token, nil
+}
+
+// waitZcodeBillingReady mirrors check_billing_ready: after the business
+// exchange the server initializes the billing plan asynchronously, so the
+// login waits through progressive delays until /data/plans is non-empty.
+// Never fatal: exhausting the delays returns (false, nil); only ctx
+// cancellation surfaces an error.
+func waitZcodeBillingReady(ctx context.Context, jwt string) (bool, error) {
+	if jwt == "" {
+		return false, nil
+	}
+	for _, delay := range zcodeBillingReadyDelays {
+		if err := sleepCtx(ctx, delay); err != nil {
+			return false, ctx.Err()
+		}
+		ready, err := zcodeBillingHasPlans(ctx, jwt)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			continue
+		}
+		if ready {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// zcodeBillingHasPlans probes billing/current once: 2xx with a non-empty
+// /data/plans array counts as ready.
+func zcodeBillingHasPlans(ctx context.Context, jwt string) (bool, error) {
+	body, _, err := zcodeGet(ctx, zcodeBillingReadyURL, jwt, true)
+	if err != nil {
+		return false, err
+	}
+	decoded := parseJSONObject(string(body))
+	data, _ := decoded["data"].(map[string]any)
+	if data == nil {
+		return false, nil
+	}
+	plans, _ := data["plans"].([]any)
+	return len(plans) > 0, nil
+}
+
+// finishZcodeLogin drives one flow to its candidate account: poll → ready →
+// (zai only) business exchange → (zai only) billing-ready wait → build the
+// encrypted credentials/config snapshot. Nothing is persisted here and the
+// ~/.zcode slot is untouched — login.go's state machine owns persistence.
+func finishZcodeLogin(ctx context.Context, flow *zcodeOAuthFlow) (*Account, error) {
+	data, err := flow.poll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tokens, err := parseZcodeReady(data, flow.provider)
+	if err != nil {
+		return nil, err
+	}
+	accessForCredentials := tokens.accessToken
+	if flow.provider == "zai" {
+		business, err := exchangeZcodeBusinessToken(ctx, tokens.accessToken)
+		if err != nil {
+			return nil, err
+		}
+		accessForCredentials = business
+	}
+	if flow.provider == "zai" {
+		// Best effort: a timeout here never blocks the login (the plan keeps
+		// initializing in the background and the quota refresh will see it).
+		if _, err := waitZcodeBillingReady(ctx, tokens.zcodeJWT); err != nil {
+			return nil, err
+		}
+	}
+	return buildZcodeLoginCandidate(flow.provider, tokens, accessForCredentials)
+}
+
+// zcodeLoginSlotIDs mirrors provider_slot_ids: the three official provider
+// slots the OAuth login enables in config.json.
+func zcodeLoginSlotIDs(provider string) []string {
+	if provider == "bigmodel" {
+		return []string{"builtin:bigmodel-start-plan", "builtin:bigmodel-coding-plan", "builtin:bigmodel"}
+	}
+	return []string{"builtin:zai-start-plan", "builtin:zai-coding-plan", "builtin:zai"}
+}
+
+// zcodeLoginSlotAPIKey mirrors slot_api_key: every zai slot carries the zcode
+// JWT; bigmodel start-plan carries the JWT, coding-plan the bigmodel access
+// token (JWT fallback), and the plain bigmodel slot no apiKey at all.
+func zcodeLoginSlotAPIKey(provider, slot string, tokens *zcodeReadyTokens) string {
+	if provider == "bigmodel" {
+		if slot == "builtin:bigmodel" {
+			return ""
+		}
+		if slot == "builtin:bigmodel-coding-plan" && tokens.accessToken != "" {
+			return tokens.accessToken
+		}
+	}
+	return tokens.zcodeJWT
+}
+
+// normalizeZcodeUserInfo mirrors normalize_user_info: fold the provider's user
+// object onto the canonical email/name/avatar/user_id keys.
+func normalizeZcodeUserInfo(user map[string]any) map[string]any {
+	return map[string]any{
+		"email":   stringValue(user, "email", "mail"),
+		"name":    stringValue(user, "name", "username", "nickName", "displayName"),
+		"avatar":  stringValue(user, "avatar", "avatarUrl", "picture"),
+		"user_id": stringValue(user, "user_id", "userId", "id", "customerNumber", "sub"),
+	}
+}
+
+// zcodeOfficialProfile mirrors to_official_profile: the bigmodel branch stores
+// the {id, username, displayName, avatarUrl?} profile the official client
+// writes, while zai stores the server's raw user object.
+func zcodeOfficialProfile(userInfo map[string]any) map[string]any {
+	display := firstNonEmpty(
+		stringValue(userInfo, "name"),
+		stringValue(userInfo, "email"),
+		stringValue(userInfo, "user_id"),
+	)
+	profile := map[string]any{
+		"id":          userInfo["user_id"],
+		"username":    display,
+		"displayName": display,
+	}
+	if avatar := stringValue(userInfo, "avatar"); avatar != "" {
+		profile["avatarUrl"] = avatar
+	}
+	return profile
+}
+
+// buildZcodeLoginCandidate assembles the credentials.json/config.json texts
+// exactly like write_oauth_credentials (enc:v1 values via the shared machine
+// secret), then fingerprints them through the same zcodeFingerprintFrom the
+// capture path uses, so the candidate is shape-compatible with captured
+// accounts.
+func buildZcodeLoginCandidate(provider string, tokens *zcodeReadyTokens, accessForCredentials string) (*Account, error) {
+	secret := zcodeCredentialSecret()
+	encrypt := func(value string) (string, error) {
+		sealed, err := zcodeEncrypt(value, secret)
+		if err != nil {
+			return "", fmt.Errorf("加密登录态失败: %w", err)
+		}
+		return sealed, nil
+	}
+	userInfo := normalizeZcodeUserInfo(tokens.user)
+	storedUser := tokens.user
+	if provider == "bigmodel" {
+		storedUser = zcodeOfficialProfile(userInfo)
+	}
+	storedUserRaw, err := json.Marshal(storedUser)
+	if err != nil {
+		return nil, fmt.Errorf("序列化用户信息失败: %w", err)
+	}
+	credentials := map[string]any{}
+	put := func(key, value string) error {
+		sealed, err := encrypt(value)
+		if err != nil {
+			return err
+		}
+		credentials[key] = sealed
+		return nil
+	}
+	if err := put("oauth:active_provider", provider); err != nil {
+		return nil, err
+	}
+	if accessForCredentials != "" {
+		if err := put("oauth:"+provider+":access_token", accessForCredentials); err != nil {
+			return nil, err
+		}
+	}
+	if tokens.refreshToken != "" {
+		if err := put("oauth:"+provider+":refresh_token", tokens.refreshToken); err != nil {
+			return nil, err
+		}
+	}
+	if tokens.zcodeJWT != "" {
+		if err := put("zcodejwttoken", tokens.zcodeJWT); err != nil {
+			return nil, err
+		}
+	}
+	if err := put("oauth:"+provider+":user_info", string(storedUserRaw)); err != nil {
+		return nil, err
+	}
+
+	providers := map[string]any{}
+	for _, slot := range zcodeLoginSlotIDs(provider) {
+		entry := map[string]any{"enabled": true, "options": map[string]any{}}
+		if apiKey := zcodeLoginSlotAPIKey(provider, slot, tokens); apiKey != "" {
+			entry["options"].(map[string]any)["apiKey"] = apiKey
+		}
+		providers[slot] = entry
+	}
+	config := map[string]any{"provider": providers}
+
+	credentialsText, err := json.MarshalIndent(credentials, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	configText, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	// Identity via the very same fingerprint pipeline captureZcodeCurrent uses.
+	fp := zcodeFingerprintFrom(credentials, config)
+	if fp == nil {
+		return nil, errors.New("无法从登录态确定账号标识（user_id 为空），已放弃保存")
+	}
+	label := firstNonEmpty(fp.Email, fp.Name, "账号-"+fp.ShortID)
+	return &Account{
+		ID:          fp.ID,
+		Label:       label,
+		Email:       fp.Email,
+		Nickname:    fp.Name,
+		UserID:      fp.UserID,
+		Avatar:      fp.Avatar,
+		Provider:    fp.Provider,
+		Credentials: string(credentialsText),
+		Config:      string(configText),
+	}, nil
 }
