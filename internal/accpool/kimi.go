@@ -12,9 +12,15 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Kimi Code endpoints and OAuth constants, aligned with zcode-switcher's
@@ -25,13 +31,106 @@ var (
 	kimiAuthHost = "https://auth.kimi.com"
 	kimiClientID = "17e5f671-d194-4dfb-9706-5516cb48c098"
 	kimiTokenURL = kimiAuthHost + "/api/oauth/token"
+	// kimiDeviceAuthURL is the RFC 8628 device authorization endpoint
+	// (a package variable so tests can point it at a stub server).
+	kimiDeviceAuthURL = kimiAuthHost + "/api/oauth/device_authorization"
 )
 
 const (
 	// refreshLeadSeconds mirrors oauth.needsRefresh's floor: the access token
 	// is renewed max(expires_in/2, 300s) before its expiry.
 	refreshLeadSeconds = 300
+	// kimiDeviceGrantType is RFC 8628's device_code grant type urn.
+	kimiDeviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+	// kimiLoginMaxSeconds caps one device-flow login at 15 minutes, matching
+	// zcode-switcher's MAX_LOGIN_MS.
+	kimiLoginMaxSeconds = int64(15 * 60)
+	// kimiLoginMaxTransportErrors caps consecutive network failures while
+	// polling the token endpoint (zcode-switcher's MAX_TRANSPORT_ERRORS).
+	kimiLoginMaxTransportErrors = 3
+	// kimiClientVersion reports the gateway build in the X-Msh-Version header.
+	kimiClientVersion = "1.0.0"
 )
+
+func init() { registerLoginDriver("kimi", startKimiLogin) }
+
+// kimiDeviceIDFile is where the gateway's per-installation kimi device id
+// lives (zcode-switcher's storeDir("kimi")/device-id).
+const kimiDeviceIDFile = "device-id"
+
+// ensureKimiDeviceID returns the persisted gateway device id, generating and
+// storing a UUID v4 (0600) on first use.
+func ensureKimiDeviceID(m *Manager) (string, error) {
+	path := filepath.Join(m.storeDir("kimi"), kimiDeviceIDFile)
+	if raw, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(raw)); id != "" {
+			return id, nil
+		}
+	}
+	id := uuid.NewString()
+	if err := atomicWrite(path, []byte(id+"\n"), 0o600); err != nil {
+		return "", fmt.Errorf("保存 Kimi 设备 ID 失败：%w", err)
+	}
+	return id, nil
+}
+
+// setKimiDeviceHeaders stamps the X-Msh-* device identity headers
+// (zcode-switcher's device_headers), shared by the refresh and login flows.
+func setKimiDeviceHeaders(request *http.Request, deviceID string) {
+	request.Header.Set("X-Msh-Platform", "mobile-bridge")
+	request.Header.Set("X-Msh-Version", kimiClientVersion)
+	request.Header.Set("X-Msh-Device-Name", kimiHostname())
+	request.Header.Set("X-Msh-Device-Model", runtime.GOOS+"/"+runtime.GOARCH)
+	request.Header.Set("X-Msh-Os-Version", kimiOSRelease())
+	if deviceID != "" {
+		request.Header.Set("X-Msh-Device-Id", deviceID)
+	}
+}
+
+var (
+	kimiHostnameOnce = sync.OnceValue(func() string {
+		if name, err := os.Hostname(); err == nil && strings.TrimSpace(name) != "" {
+			return strings.TrimSpace(name)
+		}
+		return "unknown"
+	})
+	kimiOSReleaseOnce = sync.OnceValue(func() string {
+		// 与 zcode-switcher 的 os_release() 一致：uname -r。
+		if output, err := exec.Command("uname", "-r").Output(); err == nil {
+			if release := strings.TrimSpace(string(output)); release != "" {
+				return release
+			}
+		}
+		return "unknown"
+	})
+)
+
+func kimiHostname() string { return kimiHostnameOnce() }
+
+func kimiOSRelease() string { return kimiOSReleaseOnce() }
+
+// kimiPostForm posts a form to a kimi auth endpoint with the X-Msh-* device
+// headers, returning the status and raw body (transport errors are wrapped
+// with the 请求失败（网络） marker shared with the rest of the pool).
+func kimiPostForm(ctx context.Context, endpoint, deviceID string, form url.Values) (int, []byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, err
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Accept", "application/json")
+	setKimiDeviceHeaders(request, deviceID)
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return 0, nil, fmt.Errorf("请求失败（网络）：%w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return response.StatusCode, nil, fmt.Errorf("读取响应失败：%w", err)
+	}
+	return response.StatusCode, body, nil
+}
 
 // authFailed marks credentials that the server rejected outright (401/403 or
 // invalid_grant/invalid_token): refreshing again will not help, the account
@@ -410,10 +509,7 @@ func refreshKimiToken(ctx context.Context, refreshToken, deviceID string) (*toke
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Accept", "application/json")
-	if deviceID != "" {
-		request.Header.Set("X-Msh-Device-Id", deviceID)
-	}
-	request.Header.Set("X-Msh-Platform", "mobile-bridge")
+	setKimiDeviceHeaders(request, deviceID)
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("请求失败（网络）：%w", err)
@@ -458,6 +554,162 @@ func refreshKimiToken(ctx context.Context, refreshToken, deviceID string) (*toke
 		ExpiresIn:    expiresIn,
 		ExpiresAt:    time.Now().Unix() + expiresIn,
 	}, nil
+}
+
+// ===== device flow 登录（RFC 8628，zcode-switcher kimiOauth.js/api.rs 移植）=====
+
+// startKimiLogin launches the kimi device authorization flow and returns the
+// user-facing challenge plus a wait closure that polls until the user
+// confirms (returning the account candidate for the login state machine to
+// persist — nothing is written here). Mirrors zcode-switcher's
+// start_device_login + poll_device_login.
+func startKimiLogin(ctx context.Context, m *Manager, _ LoginOptions) (*LoginChallenge, func(ctx context.Context) (*Account, error), error) {
+	deviceID, err := ensureKimiDeviceID(m)
+	if err != nil {
+		return nil, nil, err
+	}
+	status, body, err := kimiPostForm(ctx, kimiDeviceAuthURL, deviceID, url.Values{"client_id": {kimiClientID}})
+	if err != nil {
+		return nil, nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, nil, fmt.Errorf("Kimi device flow 发起失败（HTTP %d）：%s", status, truncateString(string(body), 200))
+	}
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, nil, fmt.Errorf("Kimi device flow 响应不是有效 JSON: %w", err)
+	}
+	deviceCode := stringValue(data, "device_code")
+	userCode := stringValue(data, "user_code")
+	if deviceCode == "" || userCode == "" {
+		return nil, nil, errors.New("Kimi device flow 响应缺少 device_code/user_code")
+	}
+	verifyURL := strings.TrimSpace(stringValue(data, "verification_uri_complete"))
+	if verifyURL == "" {
+		verifyURL = strings.TrimSpace(stringValue(data, "verification_uri"))
+	}
+	if verifyURL == "" {
+		return nil, nil, errors.New("Kimi device flow 响应缺少 verification_uri")
+	}
+	expiresIn := int64Or(data["expires_in"], kimiLoginMaxSeconds)
+	if expiresIn < 1 {
+		expiresIn = 1
+	}
+	if expiresIn > kimiLoginMaxSeconds {
+		expiresIn = kimiLoginMaxSeconds
+	}
+	interval := int64Or(data["interval"], 5)
+	if interval < 1 {
+		interval = 1
+	}
+	challenge := &LoginChallenge{UserCode: userCode, URL: verifyURL, ExpiresIn: expiresIn}
+	deadline := time.Now().Add(time.Duration(expiresIn) * time.Second)
+	wait := func(ctx context.Context) (*Account, error) {
+		tokens, err := pollKimiDeviceLogin(ctx, deviceCode, deviceID, interval, deadline)
+		if err != nil {
+			return nil, err
+		}
+		account := &Account{
+			AccessToken:  tokens.AccessToken,
+			RefreshToken: tokens.RefreshToken,
+			TokenType:    tokens.TokenType,
+			Scope:        tokens.Scope,
+			ExpiresIn:    tokens.ExpiresIn,
+			ExpiresAt:    tokens.ExpiresAt, // Unix 秒，与 refreshKimiToken 一致
+			DeviceID:     deviceID,
+		}
+		// 补身份（尽力而为，失败不阻断登录；与 pool.go 导入路径同一 /me 解析）。
+		if payload, err := kimiGet(ctx, kimiAPIBase+"/me", tokens.AccessToken); err == nil {
+			profile := parseKimiProfile(payload)
+			account.UserID = profile.UserID
+			account.Nickname = profile.Nickname
+			account.Email = profile.Email
+			account.Avatar = profile.Avatar
+			account.LevelName = profile.LevelName
+			account.Region = profile.Region
+		}
+		return account, nil
+	}
+	return challenge, wait, nil
+}
+
+// pollKimiDeviceLogin polls the token endpoint until the user confirms the
+// device code (success), the flow fails, or the deadline/ctx gives up.
+func pollKimiDeviceLogin(ctx context.Context, deviceCode, deviceID string, interval int64, deadline time.Time) (*tokenSet, error) {
+	transportErrors := 0
+	for {
+		if !time.Now().Before(deadline) {
+			return nil, errors.New("登录超时（验证码已过期），请重试")
+		}
+		if err := sleepCtx(ctx, time.Duration(interval)*time.Second); err != nil {
+			return nil, err
+		}
+		form := url.Values{
+			"grant_type":  {kimiDeviceGrantType},
+			"device_code": {deviceCode},
+			"client_id":   {kimiClientID},
+		}
+		status, body, err := kimiPostForm(ctx, kimiTokenURL, deviceID, form)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			transportErrors++
+			if transportErrors >= kimiLoginMaxTransportErrors {
+				return nil, fmt.Errorf("轮询登录状态失败（网络）：%w", err)
+			}
+			continue
+		}
+		transportErrors = 0
+		var data map[string]any
+		_ = json.Unmarshal(body, &data)
+		access := stringValue(data, "access_token")
+		refresh := stringValue(data, "refresh_token")
+		if status >= 200 && status < 300 && access != "" && refresh != "" {
+			expiresIn := int64Or(data["expires_in"], 3600)
+			if expiresIn <= 0 {
+				expiresIn = 3600
+			}
+			return &tokenSet{
+				AccessToken:  access,
+				RefreshToken: refresh,
+				TokenType:    stringValue(data, "token_type"),
+				Scope:        stringValue(data, "scope"),
+				ExpiresIn:    expiresIn,
+				ExpiresAt:    time.Now().Unix() + expiresIn,
+			}, nil
+		}
+		text := string(body)
+		code := stringValue(data, "error")
+		switch {
+		case code == "authorization_pending" || (code == "" && strings.Contains(text, "authorization_pending")):
+			continue
+		case code == "slow_down":
+			interval += 5
+			continue
+		case code == "access_denied":
+			return nil, errors.New("授权已被拒绝")
+		case code == "expired_token":
+			return nil, errors.New("验证码已过期，请重试")
+		case code != "":
+			desc := stringValue(data, "error_description")
+			if desc != "" {
+				desc = "（" + desc + "）"
+			}
+			return nil, fmt.Errorf("Kimi 登录失败: %s%s", code, desc)
+		default:
+			return nil, fmt.Errorf("Kimi token 端点返回异常（HTTP %d）：%s", status, truncateString(text, 200))
+		}
+	}
+}
+
+// truncateString caps s at max bytes, for surfacing response previews in
+// user-facing errors (zcode-switcher's chars().take(200)).
+func truncateString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 func envOrHome(key, fallback string) string {
