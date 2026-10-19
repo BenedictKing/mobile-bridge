@@ -23,6 +23,9 @@
 		<string>@HOME@/.local/bin:@HOME@/.local/share/fnm/node-versions/v24.18.0/installation/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<key>GATEWAY_ACP_HOST_SOCKETS</key>
 		<string>@ACP_HOST_SOCKETS@</string>
+		<!-- ACP 账号池导入源：zcode-switcher 数据目录（含 accounts-kimi/ 等）。 -->
+		<key>GATEWAY_ZCAS_DIR</key>
+		<string>@HOME@/works/unsorted/zcode-switcher</string>
 	</dict>
 	<key>KeepAlive</key>
 	<true/>
