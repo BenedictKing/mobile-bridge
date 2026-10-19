@@ -87,11 +87,11 @@ Jev 设置中的 `autoContinue` 开关让网关在回合结束后自动补发一
 
 ## 账号池与额度自动切换
 
-`internal/accpool` 为 ACP agent（kimi、zcode）维护多账号池：账号快照存于 `<dataDir>/pool/<kind>/`（kimi 单文件凭证；zcode `enc:v1:` 加密快照，Go 侧 AES-256-GCM 解密与 zcode-switcher 的 JS 实现交叉验证），`QuotaProvider` 接口按 agent 适配官方额度 API（kimi `usages`；zcode billing + BigModel monitor 兜底，429 渐进退避、全 401 重试一次）。仅当前槽位账号按周期轮询（默认 5 分钟，`GATEWAY_POOL_POLL_SECONDS` 可调，负值关闭），备用账号用时再查。
+`internal/accpool` 为 ACP agent（kimi、zcode、minimax、workbuddy）维护多账号池：账号快照存于 `<dataDir>/pool/<kind>/`（kimi 单文件凭证；zcode `enc:v1:` 加密快照，Go 侧 AES-256-GCM 解密与 zcode-switcher 的 JS 实现交叉验证；minimax/workbuddy 导入 zcode-switcher 数据目录的单文件快照，workbuddy 的 `{$wbEncrypted}` 信封态凭据原样保留但不能调 API、也不能作为切换目标），`QuotaProvider` 接口按 agent 适配官方额度 API（kimi `usages`；zcode billing + BigModel monitor 兜底，429 渐进退避、全 401 重试一次；minimax remains 剩余百分比；workbuddy 积分三路查询合成单窗「积分」并附明细）。仅当前槽位账号按周期轮询（默认 5 分钟，`GATEWAY_POOL_POLL_SECONDS` 可调，负值关闭），备用账号用时再查。标记为 `auxiliary` 的辅助额度窗口（如 zcode 的 MCP 用量）不参与耗尽与自动切换判定——只有主 AI 额度能把账号踢出候选。
 
-切换器（`switch.go`）拒绝在回合进行中或有待答审批时切换（409，列出来源会话）；切走前回读槽位漂移（官方 CLI 会轮换 refresh token），原子写入后通过 `Reconcile`/`session/load` 重挂存活会话，重挂失败自动回滚槽位并反向重挂。zcode 桌面端运行时会回写 slot 文件，切换前先 SIGTERM 关闭（8s 超时拒绝）、完成后 best-effort 重启。每次切换（含失败与拒绝）记入 `history.jsonl`，重启不丢。
+切换器（`switch.go`）拒绝在回合进行中或有待答审批时切换（409，列出来源会话）；切走前回读槽位漂移（官方 CLI 会轮换 refresh token），原子写入后通过 `Reconcile`/`session/load` 重挂存活会话，重挂失败自动回滚槽位并反向重挂。zcode 桌面端运行时会回写 slot 文件，切换前先 SIGTERM 关闭（8s 超时拒绝）、完成后 best-effort 重启；workbuddy 同样先优雅退出桌面 App（osascript → 残留进程 kill），且自动切换有保守门控——桌面 App 运行中且 CLI 有心跳新鲜（120s）的活会话时拒绝仅通知，其 CLI 会话生效路径是 `apiKeyHelper`（`~/.codebuddy-rotate/helper.cjs` 从池里打印当前账号 token，切换即改写 `state.json` 与区域 env，首次切换才接管 `settings.json` 且拒绝覆盖他人 helper）。minimax 的槽位是 `~/.minimax` 六文件登录态（auth token + 投影文件 generation 保持一致、identity 缓存删除、loginEpoch 更换）。每次切换（含失败与拒绝）记入 `history.jsonl`，重启不丢。
 
-自动切换（`auto.go`）有两条入口：`poolQuotaHook` 挂在自动继续钩子链首位，对疑似额度故障先用 jev 规则初筛、再实时刷新额度复确认（瞬时 429 不误切）；轮询越过 95% 阈值走同一路径。门控从 `history.jsonl` 派生：10 分钟冷却、每小时至多 6 次、24h 内切走 3 次即弃用该账号、最紧窗口距重置不足 5 分钟宁可等待。目标选最紧窗口余量最大的账号，并列取最久未用。切换后被打断的会话按 `ResumeAfterSwitchPrompt` 自动续跑，独立预算 `MaxSwitchResume=3` 不占自动继续的 5 次额度；人为操作同时重置两个计数。开关持久化于 `pool/settings.json`（默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），切换结果走既有通知渠道。HTTP 面为 `/api/pool` 与 `/api/pool/{kind}` 系列路由（`internal/httpd/pool.go`），前端 `web/pool.js` 参数化为 Kimi/ZCode 双面板；Codex 在统一视图中只读，写操作 400 并指向「账号与接入」的既有切换流程。
+自动切换（`auto.go`）有两条入口：`poolQuotaHook` 挂在自动继续钩子链首位，对疑似额度故障先用 jev 规则初筛、再实时刷新额度复确认（瞬时 429 不误切）；轮询越过 95% 阈值走同一路径。门控从 `history.jsonl` 派生：10 分钟冷却、每小时至多 6 次、24h 内切走 3 次即弃用该账号、最紧窗口距重置不足 5 分钟宁可等待。目标选最紧窗口余量最大的账号，并列取最久未用。切换后被打断的会话按 `ResumeAfterSwitchPrompt` 自动续跑，独立预算 `MaxSwitchResume=3` 不占自动继续的 5 次额度；人为操作同时重置两个计数。开关持久化于 `pool/settings.json`（默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），切换结果走既有通知渠道。HTTP 面为 `/api/pool` 与 `/api/pool/{kind}` 系列路由（`internal/httpd/pool.go`），前端 `web/pool.js` 参数化为 Kimi/ZCode/MiniMax/WorkBuddy 四面板；Codex 在统一视图中只读，写操作 400 并指向「账号与接入」的既有切换流程。
 
 ## 模型与 Skill
 
@@ -140,7 +140,7 @@ Wails 桌面服务管理托盘状态、手机地址和退出动作；仅显式�
 
 ### 控制模型
 
-Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）与 ZCode（`zcode`，经 `zcode-acp-server` 包装层）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`GATEWAY_AGENTS`（或 `MOBILE_BRIDGE_AGENTS`）环境变量决定注册哪些后端，默认 `auto` 自动探测本机已安装的 Agent。
+Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）、ZCode（`zcode`，经 `zcode-acp-server` 包装层）与 WorkBuddy（`workbuddy`，`codebuddy --acp`，握手超时 60s 以容纳技能目录冷启动）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`GATEWAY_AGENTS`（或 `MOBILE_BRIDGE_AGENTS`）环境变量决定注册哪些后端，默认 `auto` 自动探测本机已安装的 Agent。
 
 ### Adapter 接口与路由
 
@@ -170,7 +170,7 @@ view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门�
 
 ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）；经 Agent Host socket 接入的 ACP Agent（见下节）也不受此限——其子进程由 launchd 托管的 Host 持有，网关重启只断开 socket 连接，进行中的 turn 在 Host 侧继续跑，重连后经 `session/load` 恢复视图。
 
-多 Agent 启用（Go 网关，`cmd/gateway/main.go` + `internal/acpagents`）：默认像 Python 网关的 `--agents auto` 一样自动探测本机已安装的 agent（kimi/mcode/opencode 走 env 覆盖→`~/.<dir>/bin/<name>`→PATH，CLI 自带 `acp` 子命令，OpenCode 的 `OPENCODE_BIN` 覆盖也走此路径且不以数据目录为已安装凭据；zcode/claude/dsh 走 env 覆盖→PATH 二进制→`npx -y` 回退，`~/.zcode`、`~/.dsh` 目录或对应 CLI 在 PATH 也算已安装）。`GATEWAY_AGENTS`（或沿用 `MOBILE_BRIDGE_AGENTS`）可显式指定逗号列表或 `auto`；`GATEWAY_ACP_BIN`/`GATEWAY_ACP_BINS` JSON 映射仍然优先（多词值按完整 argv 启动，单词值保留旧 `acp` 子命令语义）。会话路由按「归属」而非 id 前缀：活跃子进程、缓存的 `session/list` 行（30 秒 TTL）与 zcode 惰性占位（经 `~/.zcode/v2/acp-lazy-sessions.json` 解析到后端 `sess_*`）都能命中 ACP 分支，与 codex 共用同一套持久时间线投影（视图/时间线/变更/轮询/SSE）。新建会话在首条消息物化后端会话前由网关的 pending 集合兜底显示。opencode 不发 legacy `modes` 字段而以 `mode` 配置项（build/plan/自定义 agent）广播，`Session.SetMode` 对无 modes 对象的 agent 回退走 `session/set_config_option`，桥接层 default/plan 映射为 build/plan。zcode 自动启用时同步拉起 coding-plan 凭据自愈（`internal/acpagents/zcodecreds.go`，原生 AES-256-GCM 解密 `enc:v1:`，含模型阵容同步与幽灵套餐禁用，2 秒轮询重愈）。Wails 桌面服务继承网关进程的 Agent 配置；脚本化对拍模式（`GATEWAY_DISABLE_STORE=1` 且 `GATEWAY_DISABLE_IPC=1`）不探测本机，保持 golden 确定。
+多 Agent 启用（Go 网关，`cmd/gateway/main.go` + `internal/acpagents`）：默认像 Python 网关的 `--agents auto` 一样自动探测本机已安装的 agent（kimi/mcode/opencode/workbuddy 走 env 覆盖→`~/.<dir>/bin/<name>`→PATH，CLI 自带 `acp` 子命令，workbuddy 的 `CODEBUDDY_BIN` 覆盖与 OpenCode 的 `OPENCODE_BIN` 一样不以数据目录为已安装凭据；zcode/claude/dsh 走 env 覆盖→PATH 二进制→`npx -y` 回退，`~/.zcode`、`~/.dsh` 目录或对应 CLI 在 PATH 也算已安装）。`GATEWAY_AGENTS`（或沿用 `MOBILE_BRIDGE_AGENTS`）可显式指定逗号列表或 `auto`；`GATEWAY_ACP_BIN`/`GATEWAY_ACP_BINS` JSON 映射仍然优先（多词值按完整 argv 启动，单词值保留旧 `acp` 子命令语义）。会话路由按「归属」而非 id 前缀：活跃子进程、缓存的 `session/list` 行（30 秒 TTL）与 zcode 惰性占位（经 `~/.zcode/v2/acp-lazy-sessions.json` 解析到后端 `sess_*`）都能命中 ACP 分支，与 codex 共用同一套持久时间线投影（视图/时间线/变更/轮询/SSE）。新建会话在首条消息物化后端会话前由网关的 pending 集合兜底显示。opencode 不发 legacy `modes` 字段而以 `mode` 配置项（build/plan/自定义 agent）广播，`Session.SetMode` 对无 modes 对象的 agent 回退走 `session/set_config_option`，桥接层 default/plan 映射为 build/plan。zcode 自动启用时同步拉起 coding-plan 凭据自愈（`internal/acpagents/zcodecreds.go`，原生 AES-256-GCM 解密 `enc:v1:`，含模型阵容同步与幽灵套餐禁用，2 秒轮询重愈）。Wails 桌面服务继承网关进程的 Agent 配置；脚本化对拍模式（`GATEWAY_DISABLE_STORE=1` 且 `GATEWAY_DISABLE_IPC=1`）不探测本机，保持 golden 确定。
 
 Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的子进程从网关进程剥离到独立的常驻 Host 进程，网关经 Unix socket 接入（`acpruntime.Manager.HostSocket` 非空时走 `acp.StartSocket`，否则照旧直接 spawn）。Host 持有 Agent 子进程并复用多条网关连接：页面打开一个会话时网关会并发发起 `initialize`/`session/load`/`session/list` 等多条 ACP 连接，Host 为每条连接维护独立的请求 id 转发映射，响应按来源连接送回原处；Agent 反向请求（如 `session/request_permission`）按会话 id 绑定到发起该会话的网关连接，避免应答串线。配置侧 `GATEWAY_ACP_HOST_SOCKETS` 是 kind→socket 的 JSON 映射（`GATEWAY_ACP_HOST_SOCKET` 是仅 `acp` 一种的简写），每种 Agent 一份 launchd 服务；Makefile 以 `ACP_HOST_KIND`（默认 `kimi`）参数化生成 `make start-agent-host` 的 plist 与 socket 路径。采用 Host 模式的理由是三类：Host 二进制签名身份稳定，macOS TCC 目录授权跨网关重编译不失效；Agent 子进程由 Host 持有，网关重启/崩溃不杀会话；常驻子进程省掉每次 spawn 的冷启动（Kimi 的主要动机）。不满足这些诉求的 Agent 维持网关内直连 spawn，两种路径可混用。
 
@@ -194,17 +194,18 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 ### 能力矩阵
 
-| 能力 | Codex | Kimi | MiniMax | Claude | DeepSeek | ZCode | OpenCode |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） | ✓（configOptions：model + effort，off/low/high/max） | ✓（configOptions：model + thought，词表按模型变化） | ✓（configOptions：`provider/model` + 按模型 effort 变体） |
-| 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ | ✓（创建进程保活至首条消息，惰性占位） | ✓ |
-| 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） | ✓（default 映射为 yolo） | ✓（`mode` 配置项走 set_config_option 回退，default 映射为 build） |
-| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） | ✗（无扩展 RPC） |
-| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） |
-| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） |
-| Skill 选择 | ✓ | ✓（available_commands 斜杠命令，每次一条） | ✗ | ✗ | ✗ | ✗ | ✓（available_commands_update 斜杠命令，每次一条） |
-| Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| 能力 | Codex | Kimi | MiniMax | Claude | DeepSeek | ZCode | OpenCode | WorkBuddy |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 列表/历史/发送/审批/中断/排队/通知 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） | ✓（configOptions：model + effort，off/low/high/max） | ✓（configOptions：model + thought，词表按模型变化） | ✓（configOptions：`provider/model` + 按模型 effort 变体） | ✗（未验证） |
+| 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ | ✓（创建进程保活至首条消息，惰性占位） | ✓ | ✓ |
+| 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） | ✓（default 映射为 yolo） | ✓（`mode` 配置项走 set_config_option 回退，default 映射为 build） | ✗（未验证） |
+| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） | ✗（无扩展 RPC） | ✗（未验证） |
+| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） |
+| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（未验证） |
+| Skill 选择 | ✓ | ✓（available_commands 斜杠命令，每次一条） | ✗ | ✗ | ✗ | ✗ | ✓（available_commands_update 斜杠命令，每次一条） | ✗ |
+| Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| 账号池（多账号切换） | 只读 | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✓（保守门控） |
 
 ## 固定 HTTPS 入口
 

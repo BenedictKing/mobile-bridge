@@ -1,7 +1,7 @@
 # ACP Agent 额度自动切换与自动继续设计
 
-> 状态：阶段 1–5 已全部实现（2026-10-18）
-> 日期：2026-10-18
+> 状态：阶段 1–7 已全部实现（2026-10-19）
+> 日期：2026-10-18（阶段 6/7 更新于 2026-10-19）
 > 背景：把 zcode-switcher（/Users/petaflops/works/unsorted/zcode-switcher）的账号快照管理与额度查询能力集成进 mobile-bridge，实现"agent 额度（如 5 小时窗口限额）用尽后自动切换其他可用账号，必要时自动发送继续"。
 
 ## 1. 目标与非目标
@@ -18,7 +18,7 @@
 - 不改变 **Codex** 的账号切换机制（现有 `internal/account` 重型状态机保持不动；Codex 侧如需纳入，走后续阶段）。
 - 不做跨 agent 的统一额度度量（各 agent 额度语义不同，各自适配）。
 - 不实现登录流程本身（扫码/OAuth 仍在各官方 CLI 或 zcode-switcher 桌面版完成）；本期只做"导入已登录凭证快照 + 轮换"。
-- 不做 MiniMax / WorkBuddy 的集成（zcode-switcher 支持，但 mobile-bridge 的 ACP 列表暂无对应 agent，预留扩展点即可）。
+- ~~不做 MiniMax / WorkBuddy 的集成~~（已于阶段 6/7 落地，见 §10）。
 
 ## 2. 现状盘点
 
@@ -288,6 +288,25 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - Codex 的重型切换状态机（`internal/account`）保持不变；`/api/pool` 概览追加 codex 只读行（activeId/accountCount），`GET /api/pool/codex` 返回只读详情（`readOnly: true`），所有写操作 400 并指向「账号与接入」面板的既有切换流程；
   - 前端账号对话框新增 Codex 只读面板（无导入/刷新/切换按钮，带指引文案）；
   - MiniMax（mcode）已有 ACP 接入但 zcode-switcher 的 minimax 快照/额度格式未移植，留待有真实需求时再做。
+
+**阶段 6：MiniMax 账号池** ✅ 已实现（2026-10-19）
+- `internal/accpool/minimax.go`（池 kind `minimax` ↔ agent kind `mcode`，经 `AgentKind()/PoolKind()` 显式映射）：
+  - 快照导入自 zcode-switcher `accounts-minimax/`（其 Tauri 版真实数据目录为 `~/Library/Application Support/com.zcode.account-switcher.tauri/`，plist 已注入 `GATEWAY_ZCAS_DIR` 指向它）；zcode-switcher 快照的浮点数字段（如 `65.0`）经容错 UnmarshalJSON 收纳；
+  - 额度：官方 remains API 的 `current_interval`/`current_weekly` 剩余百分比归一为窗口模型；未订阅 Coding Plan 的账号无窗口（与桌面版显示一致）；
+  - 切换（`switchMinimax`）：槽位为 `~/.minimax` 六文件登录态——auth token + 投影文件 generation 保持一致、identity 缓存删除、loginEpoch 更换，原子写入、回读校验、失败回滚与 kimi/zcode 同款；
+  - 冒烟（真实数据）：导入 5 账号 → 额度刷新全部 active → 真实切换后 `~/.minimax` 六文件自洽 → 回切还原。
+- 同期修正：`WindowQuota.Auxiliary` 标记——zcode 的 MCP 用量（TIME_LIMIT）是辅助额度，不参与 `ExhaustedWindows`/`ChooseTarget` 判定（只有主 AI 额度能把账号踢出候选），前端标注「辅助，不影响切换」。
+
+**阶段 7：WorkBuddy agent + 账号池** ✅ 已实现（2026-10-19）
+- agent 接入（`internal/acpagents`）：kind `workbuddy`，`codebuddy --acp`（`CODEBUDDY_BIN` → `~/.codebuddy/bin` → PATH），握手超时 60s（技能目录冷启动 ~20s）。已端到端冒烟：网关创建会话 → prompt → completed → 回复正确。
+- 账号池（`internal/accpool/workbuddy.go`，移植自 zcode-switcher 的 Rust `workbuddy` 模块）：
+  - 双档位 cn（www.codebuddy.cn）/ ai（www.workbuddy.ai），`WORKBUDDY_HOME` 沙箱钩子；时间戳为**毫秒**（与 kimi/minimax 的秒不同）；
+  - 信封态凭据（`{$wbEncrypted}`）：导入/捕获/写回全链路原样往返，但不能调 API（额度查询短路报错）、不作为切换目标；信封保护——采集到信封但已有记录持未过期明文时不覆盖；
+  - 额度：cn 三路 billing（summary/paid/free，固定 PackageCodes 码表）+ 全空兜底 `get-user-resource`，合成单窗「积分」+ Credits 明细（到期高亮：>730 天视为长期有效、7 天内到期标记）；401 触发一次刷新重试，刷新失败账号置 `reauth_required` 并带真实原因（不再吞成「接口未返回任何资源数据」）；
+  - 切换（`switchWorkbuddy`）：桌面槽位四段 `{account, auth, accounts, allAccounts}` 写后按值校验 + `.logged-out` 标记清理 + 切前备份；CLI 生效路径为 apiKeyHelper 模式（`~/.codebuddy-rotate/helper.cjs` 打印当前账号 token、`state.json` 记账、区域 env 与 local_storage 缓存改写；首次切换才接管 `settings.json`，拒绝覆盖他人 helper）；桌面 App 优雅退出（osascript → 8s 窗口 → 残留 kill）后 best-effort 重启；
+  - **保守门控**：自动切换（`trigger=="auto-quota"`）在 WorkBuddy.app 运行且 CLI 有活会话（`~/.codebuddy/sessions/*.json` 心跳 <120s）时拒绝，仅通知；
+  - 冒烟（真实服务）：导入 2 账号成功；额度刷新正确识别两个存量账号均需重登（一个信封态、一个 refresh token 已失效，真实 API 返回 `12153: refresh token is invalid`）——与桌面版现状一致，需扫码重登后可用。
+- 与 Rust 真源的已知偏差：不扫杀 CLI 进程（网关会话经 `Reattach` 重挂，门控覆盖防破坏意图）；cn 三路并发改顺序；信封态目标直接拒绝切换（CLI helper 用不了信封 token）；会话迁移（session.rs）与积分轮换策略（rotate.rs）未移植（后者职责已由池内 quota 自动切换覆盖）。
 
 ## 11. 开放问题
 
