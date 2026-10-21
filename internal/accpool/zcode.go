@@ -1,6 +1,7 @@
 package accpool
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -24,6 +25,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ZCode billing endpoints, aligned with zcode-switcher's src/quota.js. They
@@ -37,6 +40,9 @@ var (
 		"https://open.bigmodel.cn/api/monitor/usage/quota/limit",
 		"https://api.z.ai/api/monitor/usage/quota/limit",
 	}
+	// coding-plan reset cards (ZCode's 重置 5 小时额度), a package variable so
+	// tests can point it at a stub server.
+	zcodeResetBaseURL = "https://zcode.z.ai/api/v1/coding-plan/reset"
 )
 
 // The ZCode client sends app_version + platform with billing/current; the
@@ -882,6 +888,150 @@ func normalizeZcodeMonitor(body map[string]any) *Quota {
 		quota.LevelName = "Lite"
 	}
 	return quota
+}
+
+// --- coding-plan reset cards (ZCode 的「重置 5 小时额度」) --------------------
+// 端点契约来自官方 ZCode 桌面端 bigmodelUsageQuotaProvider：
+//   GET  {base}/status  → 已持有的重置卡与最近核销历史
+//   POST {base}/use     → {idempotency_key, reset_type} 核销一张
+// 鉴权双 token：Authorization: Bearer <zcodejwttoken>；X-Bigmodel-Authorization
+// 直传当前 provider family 的 oauth access_token（不套 Bearer）。
+
+// zcodeResetAuth carries the two tokens the reset endpoints require.
+type zcodeResetAuth struct {
+	zcodeJWT  string
+	planToken string
+}
+
+// zcodeResetAuthorization decrypts the reset token pair from a snapshot.
+// Missing either token means the account cannot use reset cards (older
+// snapshots, apiKey-only logins).
+func zcodeResetAuthorization(acc *Account) *zcodeResetAuth {
+	credentials := parseJSONObject(acc.Credentials)
+	if credentials == nil {
+		return nil
+	}
+	jwt := zcodeDecryptSafe(stringValue(credentials, "zcodejwttoken"))
+	if !looksLikeToken(jwt) {
+		return nil
+	}
+	// The plan token must follow the active provider family — the server
+	// rejects cross-family tokens (same rule as the official client).
+	activeProvider := zcodeDecryptSafe(stringValue(credentials, "oauth:active_provider"))
+	if activeProvider == "" {
+		activeProvider = "zai"
+	}
+	if activeProvider != "zai" {
+		activeProvider = "bigmodel"
+	}
+	planToken := zcodeDecryptSafe(stringValue(credentials, "oauth:"+activeProvider+":access_token"))
+	if !looksLikeToken(planToken) {
+		return nil
+	}
+	return &zcodeResetAuth{zcodeJWT: jwt, planToken: planToken}
+}
+
+// zcodeResetRequest performs one authorized call against the reset endpoints;
+// the business envelope is {code, msg, data} with code == 0 meaning success.
+func zcodeResetRequest(ctx context.Context, method, endpoint string, auth *zcodeResetAuth, body []byte) (map[string]any, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("accept", "application/json")
+	request.Header.Set("authorization", "Bearer "+auth.zcodeJWT)
+	request.Header.Set("X-Bigmodel-Authorization", auth.planToken)
+	request.Header.Set("Bigmodel-Target-Type", "PERSONAL")
+	if body != nil {
+		request.Header.Set("content-type", "application/json")
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("请求失败（网络）：%w", err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败：%w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		preview := string(raw)
+		if len(preview) > 180 {
+			preview = preview[:180]
+		}
+		message := fmt.Sprintf("HTTP %d：%s", response.StatusCode, preview)
+		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+			return nil, &authFailedError{message: message}
+		}
+		return nil, errors.New(message)
+	}
+	var envelope struct {
+		Code any            `json:"code"`
+		Msg  string         `json:"msg"`
+		Data map[string]any `json:"data"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil {
+		return nil, errors.New("重置卡接口响应不是有效 JSON")
+	}
+	if code := int64Or(envelope.Code, 0); code != 0 {
+		if envelope.Msg == "" {
+			envelope.Msg = fmt.Sprintf("code=%d", code)
+		}
+		return nil, errors.New(envelope.Msg)
+	}
+	return envelope.Data, nil
+}
+
+// ZcodeResetStatus reports the reset cards an account currently holds.
+type ZcodeResetStatus struct {
+	FiveHourCards int
+	WeekCards     int
+}
+
+// zcodeResetStatus reads the held cards (GET /status).
+func zcodeResetStatus(ctx context.Context, acc *Account) (*ZcodeResetStatus, error) {
+	auth := zcodeResetAuthorization(acc)
+	if auth == nil {
+		return nil, errors.New("账号快照缺少重置卡所需的 token")
+	}
+	data, err := zcodeResetRequest(ctx, http.MethodGet, zcodeResetBaseURL+"/status", auth, nil)
+	if err != nil {
+		return nil, err
+	}
+	status := &ZcodeResetStatus{}
+	if items, ok := data["available_five_hour_resets"].([]any); ok {
+		status.FiveHourCards = len(items)
+	}
+	if items, ok := data["available_week_resets"].([]any); ok {
+		status.WeekCards = len(items)
+	}
+	return status, nil
+}
+
+// useZcodeResetCard spends one card of resetType ("FIVE_HOUR" | "WEEK") and
+// reports whether the server consumed it.
+func useZcodeResetCard(ctx context.Context, acc *Account, resetType string) (bool, error) {
+	auth := zcodeResetAuthorization(acc)
+	if auth == nil {
+		return false, errors.New("账号快照缺少重置卡所需的 token")
+	}
+	body, err := json.Marshal(map[string]string{
+		"idempotency_key": uuid.NewString(),
+		"reset_type":      resetType,
+	})
+	if err != nil {
+		return false, err
+	}
+	data, err := zcodeResetRequest(ctx, http.MethodPost, zcodeResetBaseURL+"/use", auth, body)
+	if err != nil {
+		return false, err
+	}
+	used, _ := data["used"].(bool)
+	return used, nil
 }
 
 // --- pool integration ---------------------------------------------------------

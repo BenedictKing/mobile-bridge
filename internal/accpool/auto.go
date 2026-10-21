@@ -97,6 +97,11 @@ func (a *AutoSwitcher) HandleQuotaExhaustion(ctx context.Context, kind, failedSe
 		log.Printf("账号池: %s 故障疑似限流但额度未耗尽，不切换（账号 %s）", kind, active)
 		return false, nil
 	}
+	// zcode reset cards: a held 重置卡 restores the window without touching
+	// sessions, which always beats switching accounts when available.
+	if kind == "zcode" && a.tryZcodeResetCard(ctx, account, exhausted) {
+		return false, nil
+	}
 	if gate := a.gate(kind, active, exhausted); gate != "" {
 		log.Printf("账号池: %s 自动切换被门控拦下：%s", kind, gate)
 		return false, nil
@@ -129,6 +134,52 @@ func (a *AutoSwitcher) HandleQuotaExhaustion(ctx context.Context, kind, failedSe
 	a.notify("账号池：已自动切换", kind+" 账号 "+active+" 额度用尽，已切换到 "+target.Label)
 	log.Printf("账号池: %s 自动切换 %s -> %s（额度用尽）", kind, active, target.ID)
 	return true, nil
+}
+
+// tryZcodeResetCard spends one held five-hour reset card on the exhausted
+// account. It returns true only when a card was consumed and a fresh quota
+// read confirms the window recovered — the caller then skips the switch (the
+// account keeps serving; sessions stay attached untouched).
+func (a *AutoSwitcher) tryZcodeResetCard(ctx context.Context, account *Account, exhausted []*WindowQuota) bool {
+	var window *WindowQuota
+	for _, candidate := range exhausted {
+		if candidate.Name == "Token 用量" {
+			window = candidate
+			break
+		}
+	}
+	if window == nil {
+		return false
+	}
+	// A window about to reset naturally must not burn a card (ResetGrace).
+	if resetAt, err := time.Parse(time.RFC3339, window.ResetAt); err == nil {
+		if until := resetAt.Sub(a.now()); until > 0 && until <= a.ResetGrace {
+			return false
+		}
+	}
+	status, err := zcodeResetStatus(ctx, account)
+	if err != nil {
+		log.Printf("账号池: zcode 重置卡状态查询失败（账号 %s）：%v", account.ID, err)
+		return false
+	}
+	if status.FiveHourCards < 1 {
+		return false
+	}
+	used, err := useZcodeResetCard(ctx, account, "FIVE_HOUR")
+	if err != nil || !used {
+		log.Printf("账号池: zcode 重置卡核销失败（账号 %s）：used=%v err=%v", account.ID, used, err)
+		return false
+	}
+	refreshed, rErr := a.Pool.RefreshQuota(ctx, "zcode", account.ID)
+	if rErr == nil && refreshed != nil && refreshed.Quota != nil &&
+		len(ExhaustedWindows(refreshed.Quota, a.Threshold)) == 0 {
+		a.notify("账号池：已用重置卡恢复额度",
+			"zcode 账号 "+account.Label+" 的 5 小时额度已用尽，消耗一张重置卡恢复，无需切换账号")
+		log.Printf("账号池: zcode 账号 %s 消耗重置卡恢复 5 小时额度", account.ID)
+		return true
+	}
+	log.Printf("账号池: zcode 账号 %s 重置卡已核销但额度未恢复，继续走切换", account.ID)
+	return false
 }
 
 // gate returns the reason a switch must not happen, or "" when clear. All

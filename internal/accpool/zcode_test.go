@@ -9,8 +9,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const zcodeTestSecret = "test-secret-for-go-port"
@@ -649,5 +652,209 @@ func TestZcodeRefreshQuotaSuccess(t *testing.T) {
 	}
 	if acc.QuotaUpdatedAt == 0 || acc.QuotaError != "" {
 		t.Fatalf("quota bookkeeping: %+v", acc)
+	}
+}
+
+// --- coding-plan reset cards ----------------------------------------------------
+
+// zcodeResetFixture pools zra (slot, exhausted five-hour window) and zrb
+// (healthy) with plaintext credentials that carry the reset token pair
+// (zcodejwttoken + family oauth token).
+func zcodeResetFixture(t *testing.T) (*Manager, string) {
+	t.Helper()
+	m := newTestManager(t)
+	home := t.TempDir()
+	t.Setenv("ZCODE_HOME", home)
+	accounts := []*Account{
+		{
+			ID: "zra", Label: "重置卡A", UserID: "uid-zra-long", Email: "zra@example.com",
+			Provider: "builtin:zai", Status: StatusActive,
+			Credentials: `{"oauth:active_provider":"zai","zcodejwttoken":"jwt-zra-1234567890123456789",` +
+				`"oauth:zai:access_token":"plan-zra-1234567890123456",` +
+				`"oauth:zai:user_info":"{\"user_id\":\"uid-zra-long\",\"email\":\"zra@example.com\"}"}`,
+			Config: `{"provider":{"builtin:zai":{"enabled":true,"options":{"apiKey":"` +
+				makeJWT(map[string]any{"user_id": "uid-zra-long"}) + `"}}}}`,
+		},
+		{
+			ID: "zrb", Label: "重置卡B", UserID: "uid-zrb-long", Email: "zrb@example.com",
+			Provider: "builtin:zai", Status: StatusActive,
+			Credentials: `{"oauth:active_provider":"zai","zcodejwttoken":"jwt-zrb-1234567890123456789",` +
+				`"oauth:zai:access_token":"plan-zrb-1234567890123456",` +
+				`"oauth:zai:user_info":"{\"user_id\":\"uid-zrb-long\",\"email\":\"zrb@example.com\"}"}`,
+			Config: `{"provider":{"builtin:zai":{"enabled":true,"options":{"apiKey":"` +
+				makeJWT(map[string]any{"user_id": "uid-zrb-long"}) + `"}}}}`,
+		},
+	}
+	for _, acc := range accounts {
+		if err := m.saveAccount("zcode", acc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeZcodeSlotFiles(t, home, &zcodeSlot{Credentials: accounts[0].Credentials, Config: accounts[0].Config})
+	restore := zcodeDesktopRunning
+	zcodeDesktopRunning = func() bool { return false }
+	t.Cleanup(func() { zcodeDesktopRunning = restore })
+	return m, home
+}
+
+// stubZcodeResetAPI stubs the billing 401s (monitor is the data source), the
+// per-account monitor keyed on the bare token, and the reset endpoints. The
+// exhausted account recovers once a card is used. Returns the /use hit count.
+func stubZcodeResetAPI(t *testing.T, cards int) *atomic.Int32 {
+	t.Helper()
+	var recovered atomic.Bool
+	useHits := &atomic.Int32{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		path := r.URL.Path
+		switch {
+		case strings.Contains(path, "/zcode-plan/billing/"):
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"unauthorized"}`))
+		case strings.Contains(path, "/monitor/"):
+			percentage := 10
+			switch r.Header.Get("authorization") {
+			case "jwt-zra-1234567890123456789", "plan-zra-1234567890123456":
+				if !recovered.Load() {
+					percentage = 96
+				} else {
+					percentage = 5
+				}
+			}
+			_, _ = w.Write([]byte(`{"code":200,"data":{"level":"lite","limits":[` +
+				`{"type":"TOKENS_LIMIT","percentage":` + strconv.Itoa(percentage) +
+				`,"nextResetTime":4099680000000}]}}`))
+		case strings.HasSuffix(path, "/coding-plan/reset/status"):
+			if cards > 0 {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"available_five_hour_resets":[{"expire_at":4099680000000}],"available_week_resets":[]}}`))
+			} else {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"available_five_hour_resets":[],"available_week_resets":[]}}`))
+			}
+		case strings.HasSuffix(path, "/coding-plan/reset/use"):
+			if r.Header.Get("authorization") != "Bearer jwt-zra-1234567890123456789" {
+				t.Errorf("use authorization: %q", r.Header.Get("authorization"))
+			}
+			if r.Header.Get("X-Bigmodel-Authorization") != "plan-zra-1234567890123456" {
+				t.Errorf("use plan authorization: %q", r.Header.Get("X-Bigmodel-Authorization"))
+			}
+			if r.Header.Get("Bigmodel-Target-Type") != "PERSONAL" {
+				t.Errorf("use target type: %q", r.Header.Get("Bigmodel-Target-Type"))
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["reset_type"] != "FIVE_HOUR" {
+				t.Errorf("use body: %v", body)
+			}
+			if key, _ := body["idempotency_key"].(string); len(key) < 8 {
+				t.Errorf("use idempotency key: %q", key)
+			}
+			useHits.Add(1)
+			recovered.Store(true)
+			_, _ = w.Write([]byte(`{"code":0,"data":{"used":true}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
+	restoreMonitor := zcodeMonitorURLs
+	restoreReset := zcodeResetBaseURL
+	zcodeBillingCurrentURL = server.URL + "/api/v1/zcode-plan/billing/current"
+	zcodeBillingBalanceURL = server.URL + "/api/v1/zcode-plan/billing/balance"
+	zcodeMonitorURLs = []string{server.URL + "/api/monitor/usage/quota/limit"}
+	zcodeResetBaseURL = server.URL + "/api/v1/coding-plan/reset"
+	t.Cleanup(func() {
+		zcodeBillingCurrentURL, zcodeBillingBalanceURL = restoreCurrent, restoreBalance
+		zcodeMonitorURLs, zcodeResetBaseURL = restoreMonitor, restoreReset
+	})
+	return useHits
+}
+
+func TestAutoSwitchUsesZcodeResetCard(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	useHits := stubZcodeResetAPI(t, 1)
+	notes := &[]string{}
+	auto := NewAutoSwitcher(m)
+	auto.now = m.now
+	auto.Notify = func(title, body string) { *notes = append(*notes, title+"|"+body) }
+	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
+
+	switched, err := auto.HandleQuotaExhaustion(context.Background(), "zcode", "")
+	if err != nil || switched {
+		t.Fatalf("card path must continue on the same account: switched=%v err=%v", switched, err)
+	}
+	if useHits.Load() != 1 {
+		t.Fatalf("one card must be spent, hits=%d", useHits.Load())
+	}
+	if got := m.activeID("zcode"); got != "zra" {
+		t.Fatalf("active account must stay: %q", got)
+	}
+	if len(*notes) != 1 || !strings.Contains((*notes)[0], "重置卡") {
+		t.Fatalf("notify: %v", *notes)
+	}
+	if history := m.History("zcode", 10); len(history) != 0 {
+		t.Fatalf("no switch must be journaled: %+v", history)
+	}
+}
+
+func TestAutoSwitchZcodeFallsThroughWithoutCard(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	useHits := stubZcodeResetAPI(t, 0)
+	notes := &[]string{}
+	auto := NewAutoSwitcher(m)
+	auto.now = m.now
+	auto.Notify = func(title, body string) { *notes = append(*notes, title+"|"+body) }
+	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
+
+	switched, _ := auto.HandleQuotaExhaustion(context.Background(), "zcode", "")
+	if useHits.Load() != 0 {
+		t.Fatalf("no card held, nothing to spend: %d", useHits.Load())
+	}
+	if !switched {
+		t.Fatalf("must fall through to a switch")
+	}
+	if got := m.activeID("zcode"); got != "zrb" {
+		t.Fatalf("switch target: %q", got)
+	}
+}
+
+func TestAutoSwitchZcodeResetCardSparedWhenResetImminent(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	// The exhausted window resets two minutes from the (frozen) test clock:
+	// burning a card would waste it.
+	useHits := stubZcodeResetAPI(t, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/monitor/") {
+			_, _ = w.Write([]byte(`{"code":200,"data":{"level":"lite","limits":[` +
+				`{"type":"TOKENS_LIMIT","percentage":96,"nextResetTime":` +
+				strconv.FormatInt(m.now().Add(2*time.Minute).UnixMilli(), 10) + `}]}}`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/zcode-plan/billing/") {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"unauthorized"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	zcodeMonitorURLs = []string{server.URL + "/monitor/"}
+
+	notes := &[]string{}
+	auto := NewAutoSwitcher(m)
+	auto.now = m.now
+	auto.Notify = func(title, body string) { *notes = append(*notes, title+"|"+body) }
+	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
+
+	switched, err := auto.HandleQuotaExhaustion(context.Background(), "zcode", "")
+	if err != nil || switched {
+		t.Fatalf("imminent natural reset must wait, not act: switched=%v err=%v", switched, err)
+	}
+	if useHits.Load() != 0 {
+		t.Fatalf("card must be spared: %d", useHits.Load())
+	}
+	if history := m.History("zcode", 10); len(history) != 0 {
+		t.Fatalf("no switch expected: %+v", history)
 	}
 }
