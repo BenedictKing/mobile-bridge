@@ -1,6 +1,6 @@
 'use strict';
-/* ACP 账号池面板：展示池内账号与窗口额度，支持从 zcode-switcher 导入、捕获本机
-   当前登录态（新账号导入 / 已有账号更新凭证）、删除快照、网关内登录
+/* ACP 账号池面板：展示池内账号与窗口额度，支持捕获本机当前登录态
+   （新账号导入 / 已有账号更新凭证）、删除快照、网关内登录
    （device flow / 扫码 / OAuth 轮询）、手动刷新额度、切换账号与自动切换开关。
    kimi/zcode/minimax/workbuddy 各实例化一个。 */
 
@@ -242,13 +242,10 @@ class PoolPanel {
     }
     const controls=this.node('div',undefined,'pool-controls');
     const refresh=this.button(t('刷新额度'),()=>this.perform('refresh'));refresh.disabled=this.busy||this.loading;
-    const importBtn=this.button(t('从 zcode-switcher 导入'),()=>{
-      if(window.confirm(t('从 zcode-switcher 的账号库导入账号快照，并捕获当前登录态？')))this.perform('import');
-    });importBtn.disabled=this.busy||this.loading;
     const captureBtn=this.button(t('捕获当前登录'),()=>this.capture());
     captureBtn.disabled=this.busy||this.loading;
     captureBtn.title=t('读取本机 CLI 当前的登录态：新账号直接导入，已有账号则更新其登录凭证');
-    controls.append(refresh,importBtn,captureBtn);
+    controls.append(refresh,captureBtn);
     if(POOL_LOGIN[this.kind]){
       const addBtn=this.button(t('添加账号'),()=>this.openLogin(''));
       addBtn.disabled=this.busy||this.loading;
@@ -263,15 +260,10 @@ class PoolPanel {
     this.autoSwitch.disabled=this.busy||this.loading;
     if(this.notice){root.append(this.node('p',this.notice,'accounts-credit'));this.notice='';}
     if(this.login)root.append(this.loginBox());
-    if(value.imported||value.skipped?.length){
-      const note=this.node('p',t('导入完成：新增 ')+(value.imported||[]).length+t(' 个，跳过 ')+(value.skipped||[]).length+t(' 个'),'account-muted');
-      root.append(note);
-      for(const row of value.skipped||[])root.append(this.node('p',row.id+' · '+row.reason,'account-muted'));
-    }
     if(value.captureError)root.append(this.node('p',t('当前登录态捕获失败：')+value.captureError,'account-muted'));
     if(value.refreshErrors)for(const[id,msg]of Object.entries(value.refreshErrors))root.append(this.node('p',id+' · '+msg,'error'));
     const accounts=value.accounts||[];
-    if(!accounts.length){root.append(this.node('p',t('账号池为空。点击上方「捕获当前登录」导入本机已登录的账号，或从 zcode-switcher 导入。'),'account-muted'));return;}
+    if(!accounts.length){root.append(this.node('p',t('账号池为空。点击上方「捕获当前登录」导入本机已登录的账号。'),'account-muted'));return;}
     for(const row of [...accounts].sort((a,b)=>Number(b.active)-Number(a.active))){
       const card=this.node('section',undefined,'account-bucket');
       const identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name');
