@@ -663,6 +663,25 @@ func runGateway(args []string) {
 			log.Printf("账号池: %s 预防性切换失败: %v", kind, err)
 		}
 	}
+	poolPoller.OnActiveChange = func(kind, fromID, toID string) {
+		// An external tool (zcode-switcher) moved the slot. The kimi CLI
+		// processes behind open phone sessions cached the previous account's
+		// OAuth state and would fail with "Stored token rejected"; reload the
+		// idle ones so they pick up the new credentials.
+		log.Printf("账号池: %s 槽位账号变化 %s -> %s", kind, fromID, toID)
+		if kind != "kimi" {
+			return
+		}
+		manager := server.ACPAgents[accpool.AgentKind(kind)]
+		if manager == nil {
+			return
+		}
+		for id, cwd := range manager.IdleSessions() {
+			if err := manager.Reattach(id, cwd, 30*time.Second); err != nil {
+				log.Printf("账号池: kimi 槽位切换后重挂会话 %s 失败: %v", id, err)
+			}
+		}
+	}
 	poolPoller.Start()
 	server.Goal = goal.New(codexHome, os.Getenv("GATEWAY_CODEX_BIN"))
 	// ACP agent wiring. Explicit env (GATEWAY_ACP_BIN / GATEWAY_ACP_BINS)

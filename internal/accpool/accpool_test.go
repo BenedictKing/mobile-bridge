@@ -365,8 +365,47 @@ func TestActiveIDMatchesSlotUserID(t *testing.T) {
 	}
 }
 
-func TestPollerAllIntervalEnv(t *testing.T) {
-	if p := NewPoller(newTestManager(t)); p.AllInterval != defaultPollAllInterval {
+func TestPollerFiresOnActiveChange(t *testing.T) {
+	m, home := setupSwitchFixture(t)
+	t.Setenv("KIMI_CODE_HOME", home)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"user_id":"x","nickname":"n"}`))
+	})
+	mux.HandleFunc("/usages", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	restoreAPI, restoreToken := kimiAPIBase, kimiTokenURL
+	kimiAPIBase, kimiTokenURL = server.URL, server.URL+"/token"
+	defer func() { kimiAPIBase, kimiTokenURL = restoreAPI, restoreToken }()
+
+	var fired []string
+	p := &Poller{Manager: m, OnActiveChange: func(kind, fromID, toID string) {
+		fired = append(fired, kind+":"+fromID+"->"+toID)
+	}}
+	// Slot starts on u_a (exact-token fallback matches at-a).
+	p.tick(context.Background())
+	if len(fired) != 0 {
+		t.Fatalf("first observation must not fire: %v", fired)
+	}
+	// zcode-switcher moves the slot to account b.
+	writeSlot(t, home, &kimiCredentials{AccessToken: testKimiJWT(t, "b"), RefreshToken: "rt-sw", TokenType: "Bearer"})
+	p.tick(context.Background())
+	if len(fired) != 1 || fired[0] != "kimi:u_a->u_b" {
+		t.Fatalf("drift must fire once: %v", fired)
+	}
+	// Same account on the next tick stays quiet.
+	p.tick(context.Background())
+	if len(fired) != 1 {
+		t.Fatalf("no drift, no fire: %v", fired)
+	}
+}
+
+func TestPollerAllIntervalEnv(t *testing.T) {	if p := NewPoller(newTestManager(t)); p.AllInterval != defaultPollAllInterval {
 		t.Fatalf("default all interval: %v", p.AllInterval)
 	}
 	t.Setenv("GATEWAY_POOL_POLL_ALL_SECONDS", "120")

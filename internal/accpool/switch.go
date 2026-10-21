@@ -127,23 +127,31 @@ func (m *Manager) switchKimi(ctx context.Context, targetID, trigger string, sess
 		}
 	}
 
-	// 2. Renew the target token when due. An auth failure means the snapshot
-	// is dead weight: mark it and refuse the switch.
-	if target.RefreshToken != "" && needsKimiRefresh(target.ExpiresAt, target.ExpiresIn, m.now()) {
+	// 2. Always renew the target token before taking the slot: a snapshot can
+	// be clock-valid yet server-side dead (its chain lost a rotation race
+	// with the desktop CLI / zcode-switcher), and writing it would leave the
+	// agent reporting "Stored token rejected". A fresh exchange both proves
+	// the chain and mints a live access token.
+	if target.RefreshToken != "" {
 		tokens, refreshErr := refreshKimiToken(ctx, target.RefreshToken, target.DeviceID)
-		if refreshErr != nil {
-			if isAuthFailed(refreshErr) {
-				target.Status = StatusReauthRequired
-				target.StatusReason = refreshErr.Error()
-				_ = m.saveAccount(kind, target)
-				return fail(fmt.Errorf("目标账号 Token 已失效，请重新登录（reauth）"))
-			}
-			// Transient refresh failure: fall through with the old token, the
-			// CLI renews on its own at startup.
-		} else {
+		if refreshErr == nil {
 			applyTokenSet(target, tokens)
 			target.Status = StatusActive
 			target.StatusReason = ""
+		} else if isAuthFailed(refreshErr) {
+			target.Status = StatusReauthRequired
+			target.StatusReason = refreshErr.Error()
+			_ = m.saveAccount(kind, target)
+			return fail(fmt.Errorf("目标账号 Token 已失效，请重新登录（reauth）"))
+		} else if _, meErr := kimiGet(ctx, kimiAPIBase+"/me", target.AccessToken); meErr != nil {
+			if isAuthFailed(meErr) {
+				target.Status = StatusReauthRequired
+				target.StatusReason = meErr.Error()
+				_ = m.saveAccount(kind, target)
+				return fail(fmt.Errorf("目标账号 Token 已失效，请重新登录（reauth）"))
+			}
+			// Transient network failure with an unverifiable stored token:
+			// proceed like before — the CLI renews on its own at startup.
 		}
 	}
 

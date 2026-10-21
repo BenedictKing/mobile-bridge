@@ -59,6 +59,25 @@ func (s *Session) hasPending() bool {
 	return len(s.pending) > 0
 }
 
+// IdleSessions is LiveSessions minus sessions with a running turn or a
+// pending prompt — the set safe to reload when the underlying credentials
+// changed underneath a live process (kimi slot drift heal). Busy sessions
+// are left to their own failure path.
+func (m *Manager) IdleSessions() map[string]string {
+	m.mu.Lock()
+	sessions := make(map[string]*Session, len(m.sessions))
+	sessions = m.sessions
+	m.mu.Unlock()
+	out := map[string]string{}
+	for id, session := range sessions {
+		if session.IsClosed() || session.PromptRunning() || session.hasPending() {
+			continue
+		}
+		out[id] = session.Cwd
+	}
+	return out
+}
+
 // Reattach reopens one session under the agent's current credentials
 // (Reconcile builds the fresh handle before dropping the old one, so readers
 // never observe a half-loaded session).

@@ -101,12 +101,15 @@ func readSlot(t *testing.T, home string) *kimiCredentials {
 
 func TestSwitchSuccess(t *testing.T) {
 	m, home := setupSwitchFixture(t)
+	stubTokenServer(t, "at-b-minted", "rt-b-minted")
 	sessions := &fakeSM{live: map[string]string{"sess-1": "/tmp/proj"}}
 	if err := m.Switch(context.Background(), "kimi", "u_b", "manual", sessions, nil); err != nil {
 		t.Fatalf("switch: %v", err)
 	}
+	// The switch always mints a fresh pair for the target before taking the
+	// slot, so the slot holds the refreshed tokens, not the stale snapshot.
 	slot := readSlot(t, home)
-	if slot.AccessToken != "at-b" || slot.RefreshToken != "rt-b" {
+	if slot.AccessToken != "at-b-minted" || slot.RefreshToken != "rt-b-minted" {
 		t.Fatalf("slot not switched: %+v", slot)
 	}
 	if len(sessions.reattached) != 1 || sessions.reattached[0] != "sess-1" {
@@ -132,6 +135,7 @@ func TestSwitchSuccess(t *testing.T) {
 
 func TestSwitchReadsBackRotatedTokens(t *testing.T) {
 	m, home := setupSwitchFixture(t)
+	stubTokenServer(t, "at-b-minted", "rt-b-minted")
 	// The CLI rotated A's tokens on its own; the slot no longer matches the
 	// snapshot. Switching away must fold the rotated pair into A's snapshot.
 	writeSlot(t, home, &kimiCredentials{AccessToken: "at-a-rotated", RefreshToken: "rt-a", TokenType: "Bearer", ExpiresAt: 42})
@@ -165,6 +169,7 @@ func TestSwitchBusyGate(t *testing.T) {
 
 func TestSwitchRollbackOnReattachFailure(t *testing.T) {
 	m, home := setupSwitchFixture(t)
+	stubTokenServer(t, "at-b-minted", "rt-b-minted")
 	sessions := &fakeSM{live: map[string]string{"sess-1": "/tmp"}, failOn: map[string]bool{"sess-1": true}}
 	err := m.Switch(context.Background(), "kimi", "u_b", "manual", sessions, nil)
 	if err == nil || !strings.Contains(err.Error(), "已恢复原账号") {
@@ -214,8 +219,36 @@ func TestSwitchRefreshesExpiringTarget(t *testing.T) {
 	}
 }
 
+func TestSwitchRefusesDeadTargetChain(t *testing.T) {
+	m, home := setupSwitchFixture(t)
+	// The chain lost a rotation race elsewhere: the exchange answers
+	// invalid_grant even though the snapshot is clock-valid.
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer stub.Close()
+	restore := kimiTokenURL
+	kimiTokenURL = stub.URL
+	t.Cleanup(func() { kimiTokenURL = restore })
+
+	if err := m.Switch(context.Background(), "kimi", "u_b", "manual", nil, nil); err == nil ||
+		!strings.Contains(err.Error(), "reauth") {
+		t.Fatalf("dead chain must refuse the switch, got %v", err)
+	}
+	if slot := readSlot(t, home); slot.AccessToken != "at-a" {
+		t.Fatalf("slot must be untouched: %+v", slot)
+	}
+	target, _ := m.loadAccount("kimi", "u_b")
+	if target.Status != StatusReauthRequired {
+		t.Fatalf("target status: %+v", target)
+	}
+}
+
 func TestHistoryOrdering(t *testing.T) {
 	m, _ := setupSwitchFixture(t)
+	stubTokenServer(t, "at-minted", "rt-minted")
 	if err := m.Switch(context.Background(), "kimi", "u_b", "manual", nil, nil); err != nil {
 		t.Fatal(err)
 	}

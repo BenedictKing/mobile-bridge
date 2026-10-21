@@ -27,10 +27,17 @@ type Poller struct {
 	// OnExhausted fires (on the poll goroutine) when the active account
 	// crosses Threshold; the auto-switcher owns the reaction.
 	OnExhausted func(kind string)
+	// OnActiveChange fires (on the poll goroutine) when a kind's slot moves
+	// from one pooled account to another between ticks — typically a
+	// zcode-switcher switch the gateway did not perform. Long-lived agent
+	// processes holding the previous account's OAuth state must be reloaded
+	// (Reconcile) or they fail with "Stored token rejected".
+	OnActiveChange func(kind, fromID, toID string)
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu         sync.Mutex
+	cancel     context.CancelFunc
+	done       chan struct{}
+	lastActive map[string]string
 }
 
 const (
@@ -125,6 +132,7 @@ func (p *Poller) loop(ctx context.Context, done chan<- struct{}) {
 func (p *Poller) tick(ctx context.Context) {
 	for _, kind := range p.Manager.Kinds() {
 		active := p.Manager.activeID(kind)
+		p.noteActiveChange(kind, active)
 		if active == "" {
 			continue
 		}
@@ -135,6 +143,24 @@ func (p *Poller) tick(ctx context.Context) {
 			len(ExhaustedWindows(account.Quota, p.Threshold)) > 0 {
 			p.OnExhausted(kind)
 		}
+	}
+}
+
+// noteActiveChange fires OnActiveChange when a kind's active account moved
+// between ticks (empty initial state and returns to empty do not fire).
+func (p *Poller) noteActiveChange(kind, active string) {
+	if p.OnActiveChange == nil {
+		return
+	}
+	p.mu.Lock()
+	if p.lastActive == nil {
+		p.lastActive = map[string]string{}
+	}
+	previous := p.lastActive[kind]
+	p.lastActive[kind] = active
+	p.mu.Unlock()
+	if previous != "" && active != "" && previous != active {
+		p.OnActiveChange(kind, previous, active)
 	}
 }
 
