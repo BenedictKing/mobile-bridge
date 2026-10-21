@@ -247,7 +247,7 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
 - 落地说明：
   - 实现为 `internal/accpool/{kimi,pool,poller}.go` + `internal/httpd/pool.go` + `web/pool.js`；
   - 导入走 `POST /api/pool/kimi/import`（登录态 + CSRF 保护，网关本机运行，未单独做"仅桌面端"限制——Web 端同样可操作，见 §9 的偏差记录）；
-  - 额度轮询策略采用开放问题 4 的建议方案：**仅当前槽位账号按周期轮询（默认 5 分钟，`GATEWAY_POOL_POLL_SECONDS` 可调，负值关闭），备用账号用时再查**；
+  - 额度轮询策略采用开放问题 4 的建议方案：**仅当前槽位账号按周期轮询（默认 5 分钟，`GATEWAY_POOL_POLL_SECONDS` 可调，负值关闭），备用账号用时再查**；（2026-10-21 修订：kimi 槽位识别改按 access token `user_id` claim 匹配、token 链精确匹配兜底——官方 CLI/zcode-switcher 每 15 分钟轮换槽位 token，精确匹配数分钟内失配，轮询曾因此静默跳过整个 kind、额度停在导入当天；另加慢速全量清扫 `GATEWAY_POOL_POLL_ALL_SECONDS`（默认 1 小时，负值关闭）兜底备用账号的额度新鲜度。）
   - 导入源目录由 `GATEWAY_ZCAS_DIR` 指定，指向 zcode-switcher 数据目录（含 `accounts-kimi/`）。
 
 **阶段 2：手动切换（kimi）** ✅ 已实现（2026-10-18）

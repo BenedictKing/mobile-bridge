@@ -2,6 +2,7 @@ package accpool
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -308,6 +309,132 @@ func TestActiveIDMatchesSlot(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(home, "credentials", "kimi-code.json"), raw, 0o600)
 	if got := m.activeID("kimi"); got != "u_u1" {
 		t.Fatalf("active id after rotation: %q", got)
+	}
+}
+
+// testKimiJWT builds an unsigned kimi-style access token carrying user_id.
+func testKimiJWT(t *testing.T, userID string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	payload, err := json.Marshal(map[string]string{"user_id": userID, "sub": userID, "type": "access"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+func TestKimiTokenUserID(t *testing.T) {
+	if got := kimiTokenUserID(testKimiJWT(t, "uid-a")); got != "uid-a" {
+		t.Fatalf("jwt user_id: %q", got)
+	}
+	if got := kimiTokenUserID("not-a-jwt"); got != "" {
+		t.Fatalf("garbage token: %q", got)
+	}
+	// user_id missing → sub fallback.
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"uid-b"}`))
+	if got := kimiTokenUserID(header + "." + payload + ".x"); got != "uid-b" {
+		t.Fatalf("sub fallback: %q", got)
+	}
+}
+
+func TestActiveIDMatchesSlotUserID(t *testing.T) {
+	m := newTestManager(t)
+	home := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", home)
+	// The pool copy's token chain was rotated away long ago; only the slot
+	// token's user_id claim still ties the slot to this account.
+	if _, _, err := m.upsert("kimi", &Account{UserID: "uid-a", AccessToken: "at-pool", RefreshToken: "rt-pool"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "credentials"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	slot, _ := json.Marshal(kimiCredentials{AccessToken: testKimiJWT(t, "uid-a"), RefreshToken: "rt-rotated", TokenType: "Bearer"})
+	if err := os.WriteFile(filepath.Join(home, "credentials", "kimi-code.json"), slot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.activeID("kimi"); got != "u_uid-a" {
+		t.Fatalf("active id via user_id claim: %q", got)
+	}
+	// Non-JWT slot token falls back to the exact token match.
+	fallback, _ := json.Marshal(kimiCredentials{AccessToken: "at-pool", RefreshToken: "rt-pool", TokenType: "Bearer"})
+	_ = os.WriteFile(filepath.Join(home, "credentials", "kimi-code.json"), fallback, 0o600)
+	if got := m.activeID("kimi"); got != "u_uid-a" {
+		t.Fatalf("active id via token fallback: %q", got)
+	}
+}
+
+func TestPollerAllIntervalEnv(t *testing.T) {
+	if p := NewPoller(newTestManager(t)); p.AllInterval != defaultPollAllInterval {
+		t.Fatalf("default all interval: %v", p.AllInterval)
+	}
+	t.Setenv("GATEWAY_POOL_POLL_ALL_SECONDS", "120")
+	if p := NewPoller(newTestManager(t)); p.AllInterval != 2*time.Minute {
+		t.Fatalf("custom all interval: %v", p.AllInterval)
+	}
+	t.Setenv("GATEWAY_POOL_POLL_ALL_SECONDS", "-1")
+	if p := NewPoller(newTestManager(t)); p.AllInterval > 0 {
+		t.Fatalf("negative all interval should disable: %v", p.AllInterval)
+	}
+}
+
+func TestPollerTickAllRefreshesStaleOnly(t *testing.T) {
+	m := newTestManager(t)
+	home := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", home)
+
+	var usages atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"user_id":"stale","nickname":"陈旧"}`))
+	})
+	mux.HandleFunc("/usages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer at-stale" {
+			t.Errorf("usages auth: %q", r.Header.Get("Authorization"))
+		}
+		usages.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"used":9,"limit":100},"limits":[{"window":{"timeUnit":"TIME_UNIT_MINUTE","duration":300},"detail":{"used":10,"limit":100}}]}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	restoreAPI, restoreToken := kimiAPIBase, kimiTokenURL
+	kimiAPIBase, kimiTokenURL = server.URL, server.URL+"/token"
+	defer func() { kimiAPIBase, kimiTokenURL = restoreAPI, restoreToken }()
+
+	future := m.now().Add(time.Hour).Unix()
+	if _, _, err := m.upsert("kimi", &Account{UserID: "stale", AccessToken: "at-stale", RefreshToken: "rt-stale", ExpiresAt: future, ExpiresIn: 3600}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.upsert("kimi", &Account{UserID: "fresh", AccessToken: "at-fresh", RefreshToken: "rt-fresh", ExpiresAt: future, ExpiresIn: 3600, QuotaUpdatedAt: m.now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disabled sweep is a no-op even with a stale account present.
+	(&Poller{Manager: m, AllInterval: -1}).tickAll(context.Background())
+	if usages.Load() != 0 {
+		t.Fatalf("disabled sweep should not fetch, got %d calls", usages.Load())
+	}
+
+	(&Poller{Manager: m, AllInterval: time.Hour}).tickAll(context.Background())
+	if usages.Load() != 1 {
+		t.Fatalf("usages calls: %d", usages.Load())
+	}
+	acc, err := m.loadAccount("kimi", "u_stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acc.Quota == nil || acc.QuotaUpdatedAt != m.now().UnixMilli() || acc.QuotaError != "" {
+		t.Fatalf("stale account after sweep: quota=%+v err=%q at=%d", acc.Quota, acc.QuotaError, acc.QuotaUpdatedAt)
+	}
+	fresh, err := m.loadAccount("kimi", "u_fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Quota != nil {
+		t.Fatalf("fresh account should be skipped: %+v", fresh.Quota)
 	}
 }
 

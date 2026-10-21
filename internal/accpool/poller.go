@@ -9,12 +9,18 @@ import (
 )
 
 // Poller refreshes quotas in the background. To bound requests against the
-// official API (design doc open question 4), only the account occupying the
-// official slot is polled on the interval; backup accounts refresh on demand
-// (explicit refresh or a future switch).
+// official API (design doc open question 4), the fast loop polls only the
+// account occupying the official slot on Interval; the slow loop sweeps every
+// pooled account whose snapshot is older than AllInterval, so backup accounts
+// stay fresh enough to trust (and display) without a manual refresh.
 type Poller struct {
 	Manager  *Manager
 	Interval time.Duration
+	// AllInterval is the slow full-pool sweep cadence; a negative value
+	// disables the sweep (only the active account is polled). Snapshots
+	// younger than AllInterval are skipped, so restarts don't re-hit fresh
+	// accounts.
+	AllInterval time.Duration
 	// Threshold is the used/limit ratio that counts as exhausted for the
 	// preventive-switch check (0 disables the check).
 	Threshold float64
@@ -27,10 +33,14 @@ type Poller struct {
 	done   chan struct{}
 }
 
-const defaultPollInterval = 5 * time.Minute
+const (
+	defaultPollInterval    = 5 * time.Minute
+	defaultPollAllInterval = time.Hour
+)
 
-// NewPoller reads GATEWAY_POOL_POLL_SECONDS (0 or absent = 5 minutes, a
-// negative value disables polling entirely).
+// NewPoller reads GATEWAY_POOL_POLL_SECONDS (0 or absent = 5 minutes; a
+// negative value disables polling entirely) and GATEWAY_POOL_POLL_ALL_SECONDS
+// (0 or absent = 1 hour; a negative value disables the full-pool sweep).
 func NewPoller(m *Manager) *Poller {
 	interval := defaultPollInterval
 	if raw := os.Getenv("GATEWAY_POOL_POLL_SECONDS"); raw != "" {
@@ -42,7 +52,17 @@ func NewPoller(m *Manager) *Poller {
 			}
 		}
 	}
-	return &Poller{Manager: m, Interval: interval}
+	allInterval := defaultPollAllInterval
+	if raw := os.Getenv("GATEWAY_POOL_POLL_ALL_SECONDS"); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil {
+			if seconds < 0 {
+				allInterval = -1
+			} else if seconds > 0 {
+				allInterval = time.Duration(seconds) * time.Second
+			}
+		}
+	}
+	return &Poller{Manager: m, Interval: interval, AllInterval: allInterval}
 }
 
 // Start launches the refresh loop; it is a no-op when polling is disabled.
@@ -78,15 +98,26 @@ func (p *Poller) Stop() {
 func (p *Poller) loop(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
 	p.tick(ctx)
-	timer := time.NewTimer(p.Interval)
-	defer timer.Stop()
+	p.tickAll(ctx)
+	fast := time.NewTimer(p.Interval)
+	defer fast.Stop()
+	var all *time.Timer
+	var allC <-chan time.Time
+	if p.AllInterval > 0 {
+		all = time.NewTimer(p.AllInterval)
+		allC = all.C
+		defer all.Stop()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-fast.C:
 			p.tick(ctx)
-			timer.Reset(p.Interval)
+			fast.Reset(p.Interval)
+		case <-allC:
+			p.tickAll(ctx)
+			all.Reset(p.AllInterval)
 		}
 	}
 }
@@ -103,6 +134,28 @@ func (p *Poller) tick(ctx context.Context) {
 		if account != nil && p.OnExhausted != nil && p.Threshold > 0 &&
 			len(ExhaustedWindows(account.Quota, p.Threshold)) > 0 {
 			p.OnExhausted(kind)
+		}
+	}
+}
+
+// tickAll sweeps every pooled account whose quota snapshot is older than
+// AllInterval (snapshots fresh from the fast loop are skipped). Failures land
+// on the account as quotaError, same as tick; the sweep never fires
+// OnExhausted — the preventive switcher only watches the active account.
+func (p *Poller) tickAll(ctx context.Context) {
+	if p.AllInterval <= 0 {
+		return
+	}
+	cutoff := p.Manager.now().Add(-p.AllInterval)
+	for _, kind := range p.Manager.Kinds() {
+		for _, acc := range p.Manager.list(kind) {
+			if acc.QuotaUpdatedAt > 0 && time.UnixMilli(acc.QuotaUpdatedAt).After(cutoff) {
+				continue
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			_, _ = p.Manager.RefreshQuota(ctx, kind, acc.ID)
 		}
 	}
 }

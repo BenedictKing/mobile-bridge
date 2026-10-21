@@ -3,6 +3,7 @@ package accpool
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -350,6 +351,31 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// kimiTokenUserID reads the user_id claim out of a kimi access token (a JWT
+// whose payload carries user_id and sub). The signature is not verified: the
+// token comes from the local official slot and the claim is only used to
+// identify which pooled account occupies it.
+func kimiTokenUserID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
+			return ""
+		}
+	}
+	var claims struct {
+		UserID string `json:"user_id"`
+		Sub    string `json:"sub"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	return firstNonEmpty(claims.UserID, claims.Sub)
+}
+
 // kimiHome resolves the official CLI state directory (KIMI_CODE_HOME wins,
 // same rule as zcode-switcher's kimiPaths.kimiHome).
 func kimiHome() string {
@@ -389,14 +415,23 @@ func readKimiCredentials() *kimiCredentials {
 }
 
 // activeID identifies which pooled account currently occupies the official
-// slot (kimi: slot token match; zcode: slot fingerprint match; minimax:
-// slot auth.json record token match).
+// slot (kimi: slot token's user_id claim with exact-token fallback; zcode:
+// slot fingerprint match; minimax: slot auth.json record token match).
 func (m *Manager) activeID(kind string) string {
 	switch kind {
 	case "kimi":
 		creds := readKimiCredentials()
 		if creds == nil {
 			return ""
+		}
+		// The CLI (and zcode-switcher) rotate the slot's token chain every
+		// ~15 minutes (expires_in=900), so exact token matching breaks within
+		// minutes of the pool copy diverging; the access token's user_id
+		// claim is the stable identity both sides share.
+		if uid := kimiTokenUserID(creds.AccessToken); uid != "" {
+			if match := m.findAccount(kind, func(a *Account) bool { return a.UserID != "" && a.UserID == uid }); match != nil {
+				return match.ID
+			}
 		}
 		if creds.RefreshToken != "" {
 			if match := m.findAccount(kind, func(a *Account) bool { return a.RefreshToken == creds.RefreshToken }); match != nil {
