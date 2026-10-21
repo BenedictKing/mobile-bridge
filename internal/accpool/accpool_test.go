@@ -405,7 +405,8 @@ func TestPollerFiresOnActiveChange(t *testing.T) {
 	}
 }
 
-func TestPollerAllIntervalEnv(t *testing.T) {	if p := NewPoller(newTestManager(t)); p.AllInterval != defaultPollAllInterval {
+func TestPollerAllIntervalEnv(t *testing.T) {
+	if p := NewPoller(newTestManager(t)); p.AllInterval != defaultPollAllInterval {
 		t.Fatalf("default all interval: %v", p.AllInterval)
 	}
 	t.Setenv("GATEWAY_POOL_POLL_ALL_SECONDS", "120")
