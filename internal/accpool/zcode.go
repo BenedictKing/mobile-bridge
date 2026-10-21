@@ -848,8 +848,23 @@ func normalizeZcodeMonitor(body map[string]any) *Quota {
 		if name == "" {
 			name = "限额"
 		}
-		total, _ := toFloat(row["usage"])
-		used, _ := toFloat(row["currentValue"])
+		total, hasTotal := toFloat(row["usage"])
+		used, hasUsed := toFloat(row["currentValue"])
+		if (!hasTotal || total <= 0) || !hasUsed {
+			// TOKENS_LIMIT rows carry no absolute numbers at all — only
+			// percentage (已用%) and nextResetTime; without this fallback the
+			// window parses as 0/0 and the UI reports 暂未提供 while
+			// zcode-switcher (which reads percentage) shows live numbers.
+			if pct, ok := toFloat(row["percentage"]); ok && pct >= 0 {
+				total, used, hasTotal, hasUsed = 1000, pct*10, true, true
+			}
+		}
+		if !hasTotal {
+			total = 0
+		}
+		if !hasUsed {
+			used = 0
+		}
 		window := quotaWindow(name, used, total, row["nextResetTime"])
 		if kind == "TIME_LIMIT" {
 			// MCP 用量 covers built-in tool calls, not model tokens; it never

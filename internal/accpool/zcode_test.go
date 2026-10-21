@@ -466,6 +466,52 @@ func TestZcodeMonitorNormalize(t *testing.T) {
 	}
 }
 
+// TOKENS_LIMIT rows on Lite accounts carry no usage/currentValue at all —
+// only percentage + nextResetTime (epoch millis); the window must synthesize
+// from percentage or the UI shows 暂未提供 while zcode-switcher shows numbers.
+func TestZcodeMonitorNormalizePercentageOnly(t *testing.T) {
+	body := map[string]any{
+		"code": 200,
+		"data": map[string]any{
+			"level": "lite",
+			"limits": []any{
+				map[string]any{
+					"type": "TIME_LIMIT", "usage": 100.0, "currentValue": 43.0,
+					"percentage": 43.0, "remaining": 57.0,
+					"nextResetTime": 1792688249981.0, "number": 1.0, "unit": 5.0,
+				},
+				map[string]any{
+					"type": "TOKENS_LIMIT", "percentage": 79.0,
+					"nextResetTime": 1792589064319.0, "number": 5.0, "unit": 3.0,
+				},
+			},
+		},
+	}
+	quota := normalizeZcodeMonitor(body)
+	if len(quota.Limits) != 2 {
+		t.Fatalf("limits: %+v", quota.Limits)
+	}
+	token, mcp := quota.Limits[0], quota.Limits[1]
+	if token.Name != "Token 用量" || token.Limit != 1000 || token.Used != 790 {
+		t.Fatalf("token window: %+v", token)
+	}
+	if token.ResetAt == "" || token.Auxiliary {
+		t.Fatalf("token window flags: %+v", token)
+	}
+	if mcp.Name != "MCP 用量" || mcp.Used != 43 || mcp.Limit != 100 {
+		t.Fatalf("mcp keeps absolute numbers: %+v", mcp)
+	}
+	// The synthesized window must gate exhaustion like a real one: 79% is
+	// below the threshold, 99% trips it.
+	if got := ExhaustedWindows(quota, 0.95); len(got) != 0 {
+		t.Fatalf("79%% must not be exhausted: %+v", got)
+	}
+	quota.Limits[0].Used = 990
+	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0].Name != "Token 用量" {
+		t.Fatalf("exhausted at 99%%: %+v", got)
+	}
+}
+
 func TestZcodeQueryQuotaFlow(t *testing.T) {
 	var billingHits, monitorHits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
