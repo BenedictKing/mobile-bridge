@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
 // stubWorkbuddyAPI points both variants at one stub server.
@@ -702,5 +704,59 @@ func TestWorkbuddyEnvelopeProtection(t *testing.T) {
 	}
 	if updated || workbuddyPlainToken(merged.AccessToken) != "at-plain" {
 		t.Fatalf("envelope protection: updated=%v acc=%+v", updated, merged)
+	}
+}
+
+// Envelope-encrypted identity fields must never become display text: the
+// capture derives a friendly label instead, and the view sanitizes accounts
+// stored before the fix.
+func TestWorkbuddyEnvelopeCaptureLabel(t *testing.T) {
+	root := map[string]any{
+		"domain": "www.workbuddy.cn",
+		"account": map[string]any{
+			"uid":      "3dd224ae-786f-4d68-9280-d95efd9dd6c5",
+			"nickname": map[string]any{"$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MSJ9"},
+		},
+		"auth": map[string]any{
+			"accessToken":  map[string]any{"$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MSJ9"},
+			"refreshToken": map[string]any{"$wbEncrypted": 1, "envelope": "eyJzdWl0ZSI6MSJ9"},
+		},
+	}
+	candidate := candidateFromWorkbuddyAuthRoot(root, "cn")
+	if candidate == nil {
+		t.Fatal("candidate missing")
+	}
+	if candidate.Nickname != "" || candidate.Email != "" {
+		t.Fatalf("envelope identity must stay empty: %+v", candidate)
+	}
+	if candidate.Label != "WorkBuddy cn 3dd224ae" {
+		t.Fatalf("derived label: %q", candidate.Label)
+	}
+
+	// Stored-before-fix accounts keep the envelope JSON in the label; the
+	// redacted view must not leak it.
+	m := newTestManager(t)
+	acc := &Account{ID: candidate.ID, UserID: candidate.UserID, Variant: "cn",
+		Label:       `{"$wbEncrypted":1,"envelope":"eyJzdWl0ZSI6MSJ9"}`,
+		Nickname:    `{"$wbEncrypted":1,"envelope":"eyJzdWl0ZSI6MSJ9"}`,
+		AccessToken: `{"$wbEncrypted":1,"envelope":"eyJzdWl0ZSI6MSJ9"}`, Status: StatusActive}
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := m.Detail("workbuddy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := detail.MustGet("accounts").(*jsoncompat.Array)
+	if rows == nil || len(rows.Items) == 0 {
+		t.Fatalf("detail rows: %+v", detail)
+	}
+	first, _ := rows.Items[0].(*jsoncompat.Object)
+	label, _ := first.MustGet("label").(string)
+	if label != "WorkBuddy cn 3dd224ae" {
+		t.Fatalf("view label fallback: %q", label)
+	}
+	if nickname, _ := first.MustGet("nickname").(string); nickname != "" {
+		t.Fatalf("view nickname must be sanitized: %q", nickname)
 	}
 }

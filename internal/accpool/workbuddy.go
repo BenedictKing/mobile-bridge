@@ -177,6 +177,12 @@ func (m *Manager) workbuddyCurrentMarkerPath() string {
 
 // workbuddyEnvelope reports whether a token field holds the encrypted
 // {$wbEncrypted, envelope} object instead of a plain string.
+// IsEnvelopeAccount reports whether the account's credentials are WorkBuddy
+// envelope-state ciphertext (machine-bound, cannot call APIs from the pool).
+func IsEnvelopeAccount(acc *Account) bool {
+	return acc != nil && workbuddyEnvelope(acc.AccessToken)
+}
+
 func workbuddyEnvelope(value string) bool {
 	if !strings.HasPrefix(strings.TrimSpace(value), "{") {
 		return false
@@ -1743,8 +1749,11 @@ func candidateFromWorkbuddyAuthRoot(root map[string]any, variant string) *Accoun
 	}
 	uid := firstNonEmpty(stringValue(accountObj, "uid"), stringValue(accountObj, "id"))
 	candidate := &Account{
-		UserID:           uid,
-		Nickname:         firstNonEmpty(workbuddySecretText(accountObj, "nickname"), workbuddySecretText(accountObj, "label")),
+		UserID:   uid,
+		// Envelope-encrypted identity fields stay empty ({$wbEncrypted} values
+		// are machine-bound ciphertext, not display text); the label is
+		// derived from variant + uid instead.
+		Nickname:         firstNonEmpty(workbuddyPlaintextText(accountObj, "nickname"), workbuddyPlaintextText(accountObj, "label")),
 		Email:            stringValue(accountObj, "email"),
 		Variant:          variant,
 		EnterpriseID:     stringValue(accountObj, "enterpriseId"),
@@ -1758,10 +1767,25 @@ func candidateFromWorkbuddyAuthRoot(root map[string]any, variant string) *Accoun
 		AuthRaw:          jsonRaw(root),
 		ProfileRaw:       jsonRaw(accountObj),
 	}
+	if candidate.Nickname == "" && candidate.Email == "" && uid != "" {
+		short := uid
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		candidate.Label = "WorkBuddy " + variant + " " + short
+	}
 	if uid != "" {
 		candidate.ID = "w_" + uid
 	}
 	return candidate
+}
+
+// workbuddyPlaintextText returns a field only when it is a plain string —
+// envelope maps ({$wbEncrypted}) mean the desktop app encrypted the value and
+// the ciphertext must never leak into display fields.
+func workbuddyPlaintextText(obj map[string]any, key string) string {
+	value, _ := obj[key].(string)
+	return strings.TrimSpace(value)
 }
 
 // findWorkbuddyAccount mirrors the upsert dedupe priority uid > email >

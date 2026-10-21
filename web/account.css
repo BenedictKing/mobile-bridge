@@ -20,3 +20,8 @@
 .sidebar-foot>#accounts-button{flex:0 0 7em}
 
 .accounts-name-heading{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+
+.pool-tabs{display:flex;gap:6px;flex-wrap:wrap;padding:10px 0 4px;border-bottom:1px solid var(--line,#e3e6df);margin-bottom:6px}
+.pool-tabs:empty{display:none;padding:0;border:0;margin:0}
+.pool-tab{border:1px solid var(--line,#dfe3eb);border-radius:999px;padding:6px 14px;background:transparent;color:var(--muted,#65705d);font:inherit;font-size:13px;cursor:pointer}
+.pool-tab.active{border-color:var(--accent,#677c45);color:var(--accent,#677c45);font-weight:650}

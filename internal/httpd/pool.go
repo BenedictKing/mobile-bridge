@@ -214,6 +214,9 @@ func (h *handler) handlePool(write bool) {
 		captured := jsoncompat.NewObject()
 		captured.Set("id", acc.ID)
 		captured.Set("created", created)
+		// WorkBuddy envelope-state credentials cannot call APIs; the phone
+		// notice tells the user a QR re-login is the way to plain tokens.
+		captured.Set("envelope", accpool.IsEnvelopeAccount(acc))
 		detail.Set("captured", captured)
 		h.output(http.StatusOK, detail, contentTypeJSON, "")
 	case "remove":

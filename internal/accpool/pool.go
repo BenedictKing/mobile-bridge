@@ -739,9 +739,26 @@ func (m *Manager) writeKimiSlot(acc *Account) {
 func (m *Manager) view(acc *Account, activeID string) *jsoncompat.Object {
 	row := jsoncompat.NewObject()
 	row.Set("id", acc.ID)
-	row.Set("label", acc.Label)
+	// Envelope ciphertext must never render as the display name (older
+	// workbuddy captures stored the raw {$wbEncrypted} JSON as the label).
+	label := acc.Label
+	if workbuddyEnvelope(label) {
+		label = ""
+	}
+	if label == "" && acc.Variant != "" && acc.UserID != "" {
+		short := acc.UserID
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		label = "WorkBuddy " + acc.Variant + " " + short
+	}
+	row.Set("label", label)
 	row.Set("email", acc.Email)
-	row.Set("nickname", acc.Nickname)
+	nickname := acc.Nickname
+	if workbuddyEnvelope(nickname) {
+		nickname = ""
+	}
+	row.Set("nickname", nickname)
 	row.Set("userId", acc.UserID)
 	row.Set("provider", acc.Provider)
 	row.Set("levelName", acc.LevelName)

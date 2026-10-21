@@ -1049,4 +1049,26 @@ const poolPanels=typeof PoolPanel==='undefined'?[]:[
   new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
   new PoolPanel({root:$('pool-content-codex'),kind:'codex',label:'Codex',read:()=>api('/api/pool/codex'),request:()=>Promise.reject(new Error('只读视图'))}),
 ];
-if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();for(const panel of poolPanels)panel.refresh();};
+// 账号池 tab 切换：一次只渲染/刷新激活的池，避免打开弹窗连打 5 个 API。
+let activePool=0;
+const poolTabSections=poolPanels.map((panel,index)=>({panel,root:panel.root,button:null}));
+{
+  const bar=$('pool-tabs');
+  for(const [index,section] of poolTabSections.entries()){
+    const button=document.createElement('button');
+    button.type='button';
+    button.className='pool-tab';
+    button.textContent=poolPanels[index].label;
+    button.setAttribute('role','tab');
+    button.onclick=()=>{
+      activePool=index;
+      for(const [other,otherSection] of poolTabSections.entries())otherSection.root.hidden=other!==index;
+      for(const [other,otherSection] of poolTabSections.entries())otherSection.button.classList.toggle('active',other===index);
+      section.panel.refresh();
+    };
+    if(index===0)button.classList.add('active');
+    bar.append(button);
+    section.button=button;
+  }
+}
+if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();poolTabSections[activePool]?.panel.refresh();};

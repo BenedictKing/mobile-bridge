@@ -64,6 +64,7 @@ class PoolPanel {
     const captured=this.value&&this.value.captured;
     if(captured&&captured.id){
       this.notice=(captured.created?t('已导入当前登录账号：'):t('已从当前登录态更新账号：'))+captured.id;
+      if(captured.envelope)this.notice+=t('（凭据为加密信封态，请点「添加账号」扫码重新登录获取明文凭据后才能查询额度与切换）');
       this.render();
     }
   }
