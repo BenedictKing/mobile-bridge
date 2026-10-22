@@ -1,4 +1,6 @@
-name: Signed desktop release
+# 网关发布流水线：推送 v* tag 触发，tag 必须与根目录 VERSION 一致。
+# 产物为五平台网关二进制 + SHA256SUMS（Electron 桌面壳已移除，构建走 Go）。
+name: Gateway release
 on:
   push:
     tags: ['v*']
@@ -18,24 +20,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
       - name: Verify release identity
-        env:
-          CMB_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
-          node - <<'JS'
-          const fs=require('fs'),crypto=require('crypto');
-          const expected='refs/tags/v'+require('./package.json').version;
-          if(process.env.GITHUB_REF!==expected)throw Error('Run on the tag matching package.json: '+expected);
-          const key=process.env.CMB_UPDATE_SIGNING_KEY;
-          if(!key)throw Error('Configure the UPDATE_SIGNING_KEY release secret first.');
-          if(crypto.createPublicKey(key).export({type:'spki',format:'pem'})!==fs.readFileSync('desktop/update-public-key.pem','utf8'))throw Error('Release signing identity does not match the app.');
-          JS
+          expected="refs/tags/v$(sed 's/^v//' VERSION)"
+          if [ "$GITHUB_REF" != "$expected" ]; then
+            echo "tag 必须与 VERSION 一致：期望 $expected，实际 $GITHUB_REF" >&2
+            exit 1
+          fi
   build:
     needs: validate
-    uses: ./.github/workflows/desktop.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross-compile gateway binaries
+        run: make build-matrix
+      - name: Generate checksums
+        run: cd dist && sha256sum gateway-* > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gateway-release
+          path: |
+            dist/gateway-*
+            dist/SHA256SUMS.txt
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -43,18 +52,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
       - uses: actions/download-artifact@v4
         with:
-          pattern: desktop-*
+          pattern: gateway-release
           merge-multiple: true
           path: dist/release
-      - name: Sign complete update manifest
-        env:
-          CMB_UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
-        run: node scripts/sign-update.cjs dist/release RELEASE_NOTES.md
       - name: Upload draft then publish complete release
         env:
           GH_TOKEN: ${{ github.token }}
