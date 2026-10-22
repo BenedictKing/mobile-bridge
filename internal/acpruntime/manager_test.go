@@ -225,6 +225,71 @@ for line in sys.stdin:
 	}
 }
 
+// Concurrent Open calls for the same id must single-flight: through a shared
+// Agent Host every open is a new connection that re-registers the sessionId
+// routing, so parallel opens steal the survivor's update stream and leave the
+// opened chat permanently empty (kimi sessions rendered blank).
+func TestManagerOpenSingleFlightsConcurrentLoad(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	dir := t.TempDir()
+	countFile := filepath.Join(dir, "loads")
+	script := `import json,sys,time
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/load":
+  open(sys.argv[1],"a").write("x")
+  time.sleep(0.2)
+  result={"sessionId":m.get("params",{}).get("sessionId")}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(dir, "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path, countFile})
+	defer manager.Close()
+	const callers = 8
+	sessions := make(chan *Session, callers)
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			session, err := manager.Open("sess-shared", "/work", 3*time.Second)
+			if err != nil {
+				errs <- err
+				return
+			}
+			sessions <- session
+		}()
+	}
+	var first *Session
+	for range callers {
+		select {
+		case err := <-errs:
+			t.Fatalf("concurrent open failed: %v", err)
+		case session := <-sessions:
+			if first == nil {
+				first = session
+			} else if session != first {
+				t.Fatal("concurrent opens returned different session handles")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("concurrent open timed out")
+		}
+	}
+	data, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loads := len(data); loads != 1 {
+		t.Fatalf("session/load ran %d times, want 1", loads)
+	}
+}
+
 func TestManagerReopensAfterAgentExit(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

@@ -207,6 +207,12 @@ type Manager struct {
 	sessions   map[string]*Session
 	generation uint64
 	now        func() float64
+	// opening single-flights concurrent Open calls per session id: every
+	// caller used to openFresh on its own, which through a shared Agent Host
+	// connection-per-open steals the session's update routing from the
+	// surviving session (the host routes by sessionId to the last
+	// registrant), leaving the opened chat permanently empty.
+	opening map[string]chan struct{}
 
 	listMu   sync.Mutex
 	listRows []*jsoncompat.Object
@@ -215,12 +221,12 @@ type Manager struct {
 }
 
 func New(executable string) *Manager {
-	return &Manager{Executable: executable, sessions: map[string]*Session{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
+	return &Manager{Executable: executable, sessions: map[string]*Session{}, opening: map[string]chan struct{}{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
 		InitializeTimeout: 10 * time.Second, ListTTL: 30 * time.Second}
 }
 
 func NewCommand(command []string) *Manager {
-	return &Manager{Command: append([]string{}, command...), sessions: map[string]*Session{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
+	return &Manager{Command: append([]string{}, command...), sessions: map[string]*Session{}, opening: map[string]chan struct{}{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
 		InitializeTimeout: 10 * time.Second, ListTTL: 30 * time.Second}
 }
 
@@ -523,31 +529,45 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 }
 
 func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) {
-	m.mu.Lock()
-	if session := m.sessions[id]; session != nil && !session.IsClosed() {
+	for {
+		m.mu.Lock()
+		if session := m.sessions[id]; session != nil && !session.IsClosed() {
+			m.mu.Unlock()
+			return session, nil
+		}
+		if done, ok := m.opening[id]; ok {
+			// Another caller is opening this id; wait and re-check instead of
+			// opening a parallel handle. Through an Agent Host every open is a
+			// new connection that re-registers the sessionId routing, so a
+			// parallel open steals the survivor's update stream.
+			m.mu.Unlock()
+			<-done
+			continue
+		}
+		done := make(chan struct{})
+		m.opening[id] = done
 		m.mu.Unlock()
-		return session, nil
-	}
-	m.mu.Unlock()
-	fresh, err := m.openFresh(id, cwd, timeout)
-	if err != nil {
-		if native := m.openNative(id, cwd, err); native != nil {
-			fresh = native
-		} else {
+
+		fresh, err := m.openFresh(id, cwd, timeout)
+		if err != nil {
+			if native := m.openNative(id, cwd, err); native != nil {
+				fresh = native
+				err = nil
+			}
+		}
+		m.mu.Lock()
+		delete(m.opening, id)
+		close(done)
+		if err != nil {
+			m.mu.Unlock()
 			return nil, err
 		}
-	}
-	m.mu.Lock()
-	if session := m.sessions[id]; session != nil && !session.IsClosed() {
+		m.generation++
+		fresh.generation = m.generation
+		m.sessions[id] = fresh
 		m.mu.Unlock()
-		fresh.Close()
-		return session, nil
+		return fresh, nil
 	}
-	m.generation++
-	fresh.generation = m.generation
-	m.sessions[id] = fresh
-	m.mu.Unlock()
-	return fresh, nil
 }
 
 // Reconcile creates and fully loads a new ACP handle before replacing the

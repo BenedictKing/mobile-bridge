@@ -6,6 +6,8 @@
 
 ### Changed / Fixed
 
+- Kimi chats open with their actual conversation again. Kimi is the only agent reached through the ACP Agent Host, and the browser fires concurrent opens for one chat (the view fetch and the timeline fetch each resolve the session on their own). Every concurrent `Manager.Open` used to run its own `openFresh` — a new host connection re-registering the same sessionId — and the host routes session updates to the last registrant, so the surviving session's replay went to a connection whose handle was discarded and the chat stayed permanently empty (header and composer fine, zero messages). `Manager.Open` is now single-flight per session id: concurrent callers wait for the in-flight open and share its handle instead of racing their own. Verified against the real Agent Host: four concurrent opens that each loaded the session and saw 0 turns now share one load and all see the full replay.
+
 ## [v0.1.1] - 2026-10-22
 
 ### Added
