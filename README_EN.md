@@ -316,7 +316,7 @@ make stop           # stop and unload the gateway and Agent Host
 
 Open the printed LAN URL on a phone on the same network, for example `http://192.168.1.10:8787`. The initial username is `admin`; the generated password is in `.local/首次登录.txt`. Select a chat and wait for **Connected** before sending.
 
-Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a system login service. Normal gateway restarts preserve unexpired logins. If a chat shows saved history only, open it in the desktop App and reconnect on the phone; the gateway does not create a replacement execution owner for an unloaded chat.
+By default the gateway listens on `127.0.0.1` plus every non-link-local address of each active interface. There is no `--lan` flag: the listen scope comes from `lan` (`false` = `127.0.0.1` only), `lanAddresses` (listen only on these) and `localAccess` (`false` = no loopback) in the data directory's `desktop.json`, which the desktop App's network settings edit. `serve` accepts only `--data-dir`, `--port`, `--codex-home`, `--ipc-path` and `--codex-bin`; any other flag exits with an error. `make serve` installs no system service; only `make start` registers launchd jobs. Normal gateway restarts preserve unexpired logins. If a chat shows saved history only, open it in the desktop App and reconnect on the phone; the gateway does not create a replacement execution owner for an unloaded chat.
 
 ### Multiple agents (source runs)
 
@@ -344,7 +344,7 @@ Note: Kimi/MiniMax/Claude/DeepSeek/ZCode/OpenCode/WorkBuddy runs execute inside 
 
 The chat details dialog can migrate the current session to another enabled agent: a new session is created on the same directory, with the title and a transcript of recent messages injected as its first message; the source session stays unchanged. If a local source directory is missing from the target agent, the gateway creates the target session directly from that directory. A remote source directory cannot be created on the local target, so choose an explicit target project.
 
-The packaged desktop App still serves Codex only by default. To enable multiple agents there, inject the environment variable before launching it (same value syntax as `--agents`): on macOS run `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` and then open the App, or start it from a terminal with `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`. An explicit `--agents` argument takes precedence.
+The packaged desktop App launches the same Go gateway, so without an environment variable it also probes installed agents (`auto`). To restrict the set, inject `GATEWAY_AGENTS` (or `MOBILE_BRIDGE_AGENTS`; the former wins) before launching it: on macOS run `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` and then open the App, or start it from a terminal with `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`. The gateway has no `--agents` flag.
 
 ## Temporary HTTPS and existing proxies
 
@@ -398,7 +398,7 @@ The default is independent username/password authentication. To change the passw
 stop the gateway, write a new PBKDF2-SHA256 `salt`/`hash` into `.local/config.json`'s `auth` (or use the desktop App)
 ```
 
-Passwords must contain at least 12 characters. Restart the gateway for login changes to take effect. Passwordless access is explicit through the App or `--no-auth`; anyone who can reach that entry can then operate connected chats. Keep authentication for public access.
+Passwords must contain at least 12 characters. Restart the gateway for login changes to take effect. Passwordless access is explicit through the App or `auth.mode: "none"` in `.local/config.json`; anyone who can reach that entry can then operate connected chats. Keep authentication for public access.
 
 ## Architecture and stored data
 

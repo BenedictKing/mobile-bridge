@@ -341,7 +341,7 @@ launchd 始终运行固定文件 `~/.local/bin/mobile-bridge-gateway`：macOS �
 
 如果聊天只显示历史记录，请先在电脑 App 打开该聊天，再点击手机页面的“重新连接”。网关不会自动为尚未加载的聊天启动新的执行实例。看到“桌面读取超时”表示实时状态尚未取得，不代表已经发送消息；只有发送操作结果不明时才会提示“操作可能已提交”，此时请先查看聊天，避免重复发送。
 
-`make serve` 同时监听本机与局域网地址；仅本机监听可通过 `GATEWAY_PORT` 与防火墙控制。前台运行按 `Ctrl+C` 停止；`make start` 的 launchd 服务用 `make stop` 停止。
+网关默认同时监听 `127.0.0.1` 和所有已启用网卡的非链路本地地址；命令行没有 `--lan` 开关，监听范围读取数据目录 `desktop.json` 中的 `lan`（`false` 时仅监听 `127.0.0.1`）、`lanAddresses`（指定后只监听所列地址）与 `localAccess`（`false` 时不监听本机回环），也可在桌面 App「网络与登录」中修改。`serve` 只接受 `--data-dir`、`--port`、`--codex-home`、`--ipc-path`、`--codex-bin`，其他参数会报错退出。前台运行按 `Ctrl+C` 停止；`make start` 的 launchd 服务用 `make stop` 停止。
 
 launchd 托管（`make start`）开机自启、崩溃自动拉活；登录会话持久化在数据目录，重启网关后手机不掉线。
 
@@ -371,7 +371,7 @@ Codex 账号在该对话框中只读展示，切换仍走「账号与接入」�
 
 聊天详情里可以把当前会话“迁移到”另一个已启用的 Agent：在目标 Agent 上按同目录创建新会话，并把标题与最近消息转录作为首条消息注入，源会话保持不变；目标没有同目录项目时会直接按源目录创建本机项目。远端源会话的目录无法在本机目标上创建，仍需显式选择目标项目。
 
-桌面打包 App 默认仍只接入 Codex；如需多 Agent，在启动 App 前注入环境变量（值与 `--agents` 相同）：macOS 执行 `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` 后再打开 App，或从终端 `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`；显式传 `--agents` 优先级更高。
+桌面打包 App 启动的同样是 Go 网关，未设置环境变量时也按 `auto` 探测本机已安装的 Agent。如需限定范围，在启动 App 前注入 `GATEWAY_AGENTS`（或 `MOBILE_BRIDGE_AGENTS`，前者优先）：macOS 执行 `launchctl setenv MOBILE_BRIDGE_AGENTS codex,kimi` 后再打开 App，或从终端 `MOBILE_BRIDGE_AGENTS=codex,kimi open -a …`。网关没有 `--agents` 命令行参数。
 
 可选：Jev 权限预判（TypeSafe AI 的判断模型）在网页「设置 → 权限预判（Jev）」中配置 API Key（保存在网关数据目录 `jev.json`，0600 权限，密钥只回显掩码），保存后立即对所有会话生效，无需重启网关。启用后，手机端的权限确认卡片会获得风险分级、可撤销性、置信度和建议选项（星标），高风险请求排在待确认列表最前。勾选「自动审核低风险操作」后，仅当 Jev 明确建议允许一次/本次会话、风险不高于低风险、可撤销性和置信度均至少为 80% 时自动提交；永久授权、高风险、难以撤销、低置信度或 Jev 失败的请求仍需手动确认。默认关闭自动审核。未配置时保持本地确定性风险标签。同一表单可覆盖端点（默认 `https://api.typesafe.ai`）、模型（默认 `jev-latest`）与代理（`http://主机:端口`，留空直连）；评估请求经代理的 CONNECT 隧道转发，供 `api.typesafe.ai` 被地域封锁（HTTP 451）等直连不可达的网络使用，端到端 TLS 仍与目标端点建立。`TYPESAFE_API_KEY`/`TYPESAFE_BASE_URL`/`JEV_MODEL`/`JEV_PROXY` 环境变量仍作为启动时兜底，网页保存的值优先，清除密钥或保存空代理后即使环境变量仍在也不再启用。
 
