@@ -268,7 +268,7 @@ Large history pages also have a byte budget, so a large reply may require multip
 - For command-line deployment: Go (single Go binary built by `make build-gateway-package`); the ACP multi-agent npx fallback needs Node.js 22+.
 - Desktop App development and packaging additionally require Node.js and the build dependencies below.
 - Keep the computer awake, network reachable and gateway running.
-- For SSH chats: the host is configured in the App, the SSH alias works non-interactively, and remote Python 3 is available. Model/Skill discovery also needs the remote Codex runtime. On Windows, OpenSSH `ssh.exe` must be on PATH.
+- For SSH chats: the host is configured and connected in the desktop App; the gateway reaches remote chats through the App's own connection and does not run scripts on the server. Model/Skill discovery also needs the remote Codex runtime. SSH entry profiles (own-server forwarding) need OpenSSH `ssh` on PATH (`ssh.exe` on Windows).
 - Desktop builds include cloudflared; source runs install it separately.
 
 ## Command-line LAN setup (advanced)

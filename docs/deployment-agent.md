@@ -20,11 +20,12 @@
 | --- | --- |
 | 部署主机 | 在运行 Codex App 的 电脑 上部署网关；SSH 服务器保留原有 Codex 执行环境 |
 | 安装目录 | 使用用户指定目录；已有仓库先检查版本与本地修改，保留 `.local/` 内的账号、去重和队列记录 |
-| 系统与运行时 | 检查 macOS/Windows、App 是否运行，以及 App 内置 Codex 运行时版本；仅源码运行时检查 Python 3.9+，不要给安装包用户额外安装 Python；不要因版本不同就宣称兼容 |
+| 系统与运行时 | 检查 macOS/Windows（Linux 为实验性）、App 是否运行，以及 App 内置 Codex 运行时版本；仅源码运行时检查 Go（版本见 `go.mod`），ACP 多 Agent 的 npx 回退另需 Node.js 22+；不要给安装包用户额外安装 Go、Python 或 Node.js；不要因版本不同就宣称兼容 |
 | 数据目录 | 按实际 `--codex-home`、`CODEX_HOME` 或默认 `~/.codex` 定位；检查会话数据库和 macOS 的 `ipc/ipc.sock` 或 Windows 的 `\\.\pipe\codex-ipc`，保留已有认证配置 |
 | 端口与进程 | 检查计划使用的端口及本项目 `gateway.pid`；已有可用服务优先复用，停止或重启前核对进程归属 |
-| 登录 | 默认账号密码；仅在用户明确选择免密时启用 `--no-auth`；不要求用户提供模型 API key |
-| 局域网 | 用户在同一网络使用时启动 `--lan`，交付手机能访问的实际局域网 IP |
+| 登录 | 默认账号密码；仅在用户明确选择免密时，在桌面 App 开启或将 `.local/config.json` 的 `auth.mode` 设为 `none`；不要求用户提供模型 API key |
+| 局域网 | 网关默认同时监听 `127.0.0.1` 与所有活动网卡地址，无需额外参数；监听范围由数据目录 `desktop.json` 的 `lan` / `lanAddresses` / `localAccess` 控制（或桌面 App「网络与登录」）。交付手机能访问的实际局域网 IP |
+| 命令行参数 | `serve` 只接受 `--data-dir`、`--port`、`--codex-home`、`--ipc-path`、`--codex-bin`，其他参数（如旧版的 `--lan`、`--no-auth`、`--agents`）会报错退出；多 Agent 用环境变量 `GATEWAY_AGENTS` |
 | 外网 | 优先复用已有 NAS/HTTPS 反代，按需采用 `deploy/nas/` 配置；没有入口时再考虑临时隧道；涉及新安装和对外暴露时遵守已有授权范围 |
 | SSH | 检查 App 已保存的主机与项目，以及已有 SSH 别名能否非交互连接；不把本机模型目录、技能路径或登录状态套用到远端 |
 
@@ -46,34 +47,18 @@
 
 **Windows 前台方式：** 构建后使用 `start.cmd`（运行 `dist\gateway\codex-mobile-gateway.exe`），停止用 `stop.cmd`。
 
-**后台方式（macOS）：** `make start` 交给 launchd 托管（KeepAlive 崩溃自动拉活、开机自启），运行固定二进制 `~/.local/bin/mobile-bridge-gateway`（自动编译安装并签名），日志在 `~/Library/Logs/mobile-bridge-gateway.log`（`make logs` 跟随）。停止与重启用 `make stop` / `make restart`。建议先 `make dev-cert` 一次性生成本机签名证书，macOS 的目录访问授权不会因重编译而重置。
-print("日志:", data_dir / "gateway.log")
-PY
-```
+**后台方式（macOS）：** `make start` 交给 launchd 托管（KeepAlive 崩溃自动拉活、开机自启），运行固定二进制 `~/.local/bin/mobile-bridge-gateway`（自动编译安装并签名），日志在 `~/Library/Logs/mobile-bridge-gateway.log`（`make logs` 跟随）。`make start` 同时以 launchd 托管 ACP Agent Host（默认 Kimi），`make stop` 一并停止。停止与重启用 `make stop` / `make restart`，`make status` 查看服务状态与可达性。建议先 `make dev-cert` 一次性生成本机签名证书，macOS 的目录访问授权不会因重编译而重置。
 
-PID 只表示子进程已创建。**启动工具调用返回之后，再用独立的一次检查确认进程存活、HTTP 就绪、App 会话可连接。** 工具环境可能回收后台进程；若不能持续保留，改用用户终端等允许的运行方式并说明剩余操作。该示例不配置开机启动，也不保证 电脑 睡眠后继续在线。
+PID 只表示子进程已创建。**启动工具调用返回之后，再用独立的一次检查确认进程存活、HTTP 就绪、App 会话可连接。** 工具环境可能回收后台进程；若不能持续保留，改用用户终端等允许的运行方式并说明剩余操作。前台 `make serve` 不配置开机启动；macOS 的 `make start` 由 launchd 开机自启。两者都不保证电脑睡眠后继续在线。
 
 默认端口可先做以下无凭据检查；使用其他端口时替换 `8787`：
 
 ```sh
-python3 -B - <<'PY'
-import json
-import urllib.error
-import urllib.request
-
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-base = "http://127.0.0.1:8787"
-with opener.open(base + "/api/auth", timeout=5) as response:
-    print("认证状态:", json.load(response))
-try:
-    opener.open(base + "/api/sessions", timeout=5)
-except urllib.error.HTTPError as error:
-    assert error.code == 401, "聊天接口返回非预期状态"
-    print("未登录读取聊天: 401，符合预期")
-else:
-    raise RuntimeError("未登录即可读取聊天，请先检查认证")
-PY
+curl --noproxy '*' -sS -m 5 http://127.0.0.1:8787/api/auth
+curl --noproxy '*' -sS -m 5 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/api/sessions
 ```
+
+第一条应返回认证状态 JSON；第二条在默认密码模式下应输出 `401`，否则说明未登录即可读取聊天，需先检查认证。Windows PowerShell 中请使用 `curl.exe`。
 
 临时隧道建立时可能需要等待一段时间。结合本次进程、最新启动日志和当前 `.local/外网地址.txt` 判断状态，并实际请求该 HTTPS 地址；隧道失败时网关仍可能提供本地服务，应分别记录两个结果。
 
@@ -104,9 +89,9 @@ PY
 | 端口已占用或进程退出 | 核对该端口服务、PID 和本次日志；复用已有网关，或按授权停止本项目旧实例，不终止不明进程 |
 | 找不到聊天数据库或 IPC | 核对实际 Codex 数据目录、App 运行状态和文件访问权限 |
 | 只有历史记录，不能发送 | 核对 App 连接与协议版本；冷聊天可能需在桌面打开一次。SSH 普通 owner 查询失败不等于聊天未打开，应检查本项目的订阅发现路径 |
-| SSH 列表为空或主机不可达 | 核对 App 主机/项目映射、已有 SSH 认证、远端 Python 与数据目录；不会显示在本地数据库中的远端记录需通过 SSH 读取 |
+| SSH 列表为空或主机不可达 | 核对 App 主机/项目映射、App 内该主机的 SSH 连接状态与远端 Codex 数据目录；远端会话经原 App 的连接获取，网关不直接登录远端执行脚本 |
 | 模型或 Skill 目录读取失败 | 核对对应主机的 Codex 运行时路径、会话 cwd 和目录错误；不要替换原会话 provider 来绕过问题 |
-| 本机可用，局域网不可用 | 核对 `--lan`、实际 IP、同网访问条件及系统防火墙；网络地址变化后按需重启网关 |
+| 本机可用，局域网不可用 | 核对 `desktop.json` 的 `lan` / `lanAddresses`（或 App「局域网访问范围」）、实际 IP、同网访问条件及系统防火墙；网络地址变化后按需重启网关 |
 | HTTPS 不可用，本地正常 | 检查当前隧道进程、最新地址、TCP 7844 出站条件和代理路径；直连检查不能证明所有用户网络都可达 |
 | 扫码登录提示 `CERTIFICATE_VERIFY_FAILED` | 当前版本安装包已内置可信根证书；若仍失败，检查系统时间、HTTPS 代理及自有域名证书链，不要关闭证书校验。ntfy 使用新版 TLS 实现需重启网关 |
 | 发送结果待确认 | 先查原 App 会话与该消息状态，保持原提交 ID，不盲目重复发送 |

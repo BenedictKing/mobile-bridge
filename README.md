@@ -524,7 +524,7 @@ flowchart TD
     App --> SSH[SSH 服务器上的原会话]
 ```
 
-- **发现与历史**：只读查询 Codex 的 SQLite 和会话记录；SSH 主机通过已有别名执行只读脚本。
+- **发现与历史**：只读查询 Codex 的 SQLite 和会话记录；SSH 主机的会话经原 App 的连接获取，网关不登录远端执行脚本（`ssh` 仅用于自有服务器入口转发）。
 - **实时状态**：通过 macOS Unix socket 或 Windows 命名管道连接 App，订阅快照与增量更新；SSH 会话从携带 `hostId` 的订阅快照识别 owner。
 - **执行与授权**：消息、模型设置、停止与审批回应都路由到原 owner，保留会话 ID、工作目录、provider 和权限上下文。
 - **模型/Skill 目录**：使用短时 `app-server` 元数据辅助进程，仅调用初始化、`model/list` 和 `skills/list`；它不恢复会话或执行任务。
