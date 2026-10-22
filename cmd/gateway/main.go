@@ -41,6 +41,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpagents"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/codebuddy"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/conventions"
 	"github.com/BenedictKing/mobile-bridge/internal/dsh"
@@ -847,6 +848,13 @@ func runGateway(args []string) {
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("zcode native store: %v", err)
+		}
+	}
+	if manager := server.ACPAgents["workbuddy"]; manager != nil && !scriptedMode {
+		// codebuddy --acp implements session/load but not session/list
+		// (-32601), so the CLI's own transcript store is the list source.
+		manager.NativeList = func() []*jsoncompat.Object {
+			return codebuddy.ListSessions(home)
 		}
 	}
 	if len(server.ACPAgents) > 0 {

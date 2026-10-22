@@ -2,6 +2,8 @@
 
 ### Added
 
+- WorkBuddy conversations now appear in the phone's chat list. `codebuddy --acp` implements `session/load` but not `session/list` (it answers -32601), and the gateway cached that as an empty list, so not a single WorkBuddy session ever showed up — only bridge-created ones surfaced via the in-memory pending merge, and those vanished on restart. The manager gains a `NativeList` fallback hook for exactly this shape (load-capable but list-less agents): `internal/codebuddy` scans the CLI's own transcript store (`~/.codebuddy/projects/<cwd-slug>/<sessionId>.jsonl`, the Claude Code layout) and builds list rows from it — session id from the `session-meta` line, title from the CLI's own `ai-title` with the first user message as fallback, cwd from the message lines (transcripts without one are skipped: `session/load` needs a cwd and could never open them), recency from the transcript mtime. Listed sessions open through the ordinary `session/load` path. The web UI also learned the WorkBuddy agent badge (`AGENT_LABELS`).
+
 ### Changed / Fixed
 
 ## [v0.1.1] - 2026-10-22

@@ -182,6 +182,12 @@ type Manager struct {
 	// session/load is refused, the gateway falls back to this view instead of
 	// failing the open (DSH: the zstd transcript).
 	NativeTranscript func(sessionID string) (*acpview.NativeSnapshot, error)
+	// NativeList, when set, enumerates sessions from the agent's own on-disk
+	// store as session/list-shaped rows. It is the fallback for agents that
+	// implement session/load but not session/list (workbuddy's
+	// `codebuddy --acp` answers -32601); without it such an agent would never
+	// show a single conversation in the phone list.
+	NativeList func() []*jsoncompat.Object
 
 	// Canonical resolves a session/new placeholder to the backend session id
 	// once the agent materializes it under a different id (zcode's lazy
@@ -284,33 +290,47 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 	if _, err = process.Initialize(m.initializeTimeout()); err != nil {
 		return nil, err
 	}
+	// cacheRows stamps the list cache and builds the id→cwd index every list
+	// source (ACP or native) shares.
+	cacheRows := func(rows []*jsoncompat.Object) []*jsoncompat.Object {
+		if rows == nil {
+			rows = []*jsoncompat.Object{}
+		}
+		ids := map[string]string{}
+		for _, row := range rows {
+			if id, ok := row.MustGet("sessionId").(string); ok && id != "" {
+				cwd, _ := row.MustGet("cwd").(string)
+				ids[id] = cwd
+			}
+		}
+		m.listRows, m.listIDs, m.listAt = rows, ids, time.Now()
+		return rows
+	}
 	value, err := process.Request("session/list", jsoncompat.NewObject(), timeout)
 	if err != nil {
 		var acpErr *acp.Error
 		if errors.As(err, &acpErr) && methodNotFound(acpErr) {
 			// session/list is optional in ACP; agents without it (older
-			// claude-agent-acp) answer -32601. Cache an empty list instead
-			// of failing so the phone list does not nag on every refresh.
-			m.listRows, m.listIDs, m.listAt = []*jsoncompat.Object{}, map[string]string{}, time.Now()
-			return m.listRows, nil
+			// claude-agent-acp, workbuddy's codebuddy --acp) answer -32601.
+			// A wired native store fills the gap; otherwise cache an empty
+			// list instead of failing so the phone list does not nag on
+			// every refresh.
+			if m.NativeList != nil {
+				return cacheRows(m.NativeList()), nil
+			}
+			return cacheRows(nil), nil
 		}
 		return nil, err
 	}
 	result, _ := value.(*jsoncompat.Object)
 	if result == nil {
-		m.listRows, m.listIDs, m.listAt = []*jsoncompat.Object{}, map[string]string{}, time.Now()
-		return m.listRows, nil
+		return cacheRows(nil), nil
 	}
 	rows, _ := result.MustGet("sessions").(*jsoncompat.Array)
 	output := []*jsoncompat.Object{}
-	ids := map[string]string{}
 	for _, item := range rows.Items {
 		if row, ok := item.(*jsoncompat.Object); ok {
 			output = append(output, row)
-			if id, ok := row.MustGet("sessionId").(string); ok && id != "" {
-				cwd, _ := row.MustGet("cwd").(string)
-				ids[id] = cwd
-			}
 		}
 	}
 	if m.NativeMeta != nil {
@@ -330,8 +350,7 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 			}
 		}
 	}
-	m.listRows, m.listIDs, m.listAt = output, ids, time.Now()
-	return output, nil
+	return cacheRows(output), nil
 }
 
 // methodNotFound reports whether the agent answered a request with the

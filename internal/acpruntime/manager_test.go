@@ -92,6 +92,51 @@ for line in sys.stdin:
 	manager.Close()
 }
 
+// Agents that answer -32601 but carry an on-disk store (workbuddy's
+// `codebuddy --acp`) list through NativeList instead.
+func TestManagerFallsBackToNativeListWhenSessionListUnsupported(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "session/list":
+  print(json.dumps({"jsonrpc":"2.0","id":ident,"error":{"code":-32601,"message":"Method not found: session/list"}}),flush=True)
+  continue
+ result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.NativeList = func() []*jsoncompat.Object {
+		row := jsoncompat.NewObject()
+		row.Set("sessionId", "native-1")
+		row.Set("title", "原生会话")
+		row.Set("cwd", "/work/native")
+		row.Set("updatedAt", jsoncompat.Num(1792283000000/1000*1000))
+		return []*jsoncompat.Object{row}
+	}
+	rows, err := manager.List(3 * time.Second)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list rows=%v err=%v", rows, err)
+	}
+	if id, _ := rows[0].MustGet("sessionId").(string); id != "native-1" {
+		t.Fatalf("row=%v", rows[0])
+	}
+	if !manager.Knows("native-1") {
+		t.Fatal("native row not known to the manager")
+	}
+	if cwd := manager.CwdFor("native-1"); cwd != "/work/native" {
+		t.Fatalf("cwd=%q", cwd)
+	}
+	manager.Close()
+}
+
 func TestManagerResolvesLazyPlaceholderThroughCanonical(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
