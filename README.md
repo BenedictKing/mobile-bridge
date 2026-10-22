@@ -253,7 +253,7 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 | 模型设置 | 更改当前聊天的模型与推理强度，支持自定义模型 ID；符合条件的官方账号可开关 Fast 模式 |
 | 计划与目标模式 | 从网页开启计划或原生目标；计划完成后可直接执行或继续修改 |
 | Skill | Codex 按会话所在主机与工作目录读取已安装技能，随消息发送原生 Skill 引用；Kimi 列出会话广告的技能，每条消息限选一个 |
-| ACP 账号池 | Kimi / ZCode / MiniMax / WorkBuddy 多账号池：导入账号、面板内登录/重登（设备授权/扫码/OAuth）、查看各账号窗口额度、手动切换；窗口限额（如 Kimi 5 小时窗口）耗尽时自动切到可用账号并续跑中断会话，可在面板关闭；Codex 账号只读展示，切换走「账号与接入」 |
+| ACP 账号池 | Kimi / ZCode / MiniMax / WorkBuddy 多账号池，按 Agent 分 tab 展示：面板内添加账号/重登（设备授权/扫码/OAuth）、捕获本机当前登录、删除快照、查看各账号窗口额度、手动切换；窗口限额（如 Kimi 5 小时窗口）耗尽时自动切到可用账号并续跑中断会话（ZCode 先消耗重置卡），可在面板关闭；Codex 账号只读展示，切换走「账号与接入」 |
 | 登录方式 | 独立账号密码；可配置免密 |
 | 连接方式 | 局域网、临时 Cloudflare 与多个固定 HTTPS 入口可并行；配置可添加、命名、启停和删除 |
 | 双语界面 | 电脑 App 与手机网页支持简体中文 / English 切换 |
@@ -272,7 +272,7 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 
 ## 运行要求
 
-- macOS 或 Windows 10/11，已安装并运行 Codex App。
+- macOS 或 Windows 10/11（Linux x64 / ARM64 为实验性，见 [Linux 文档](docs/linux.md)），已安装并运行 Codex App。
 - 使用发布的桌面 App 时无需安装 Python 或 Node.js，网关运行时已内置。
 - 从源码运行需要 Go（网关为单一 Go 二进制，`make build-gateway-package` 构建）；ACP 多 Agent 的 npx 回退需要 Node.js 22+。桌面 App 的开发与打包另需 Wails 所需的 WebView/GTK 或 WebKit 依赖。
 - 电脑保持唤醒、联网，网关进程保持运行。
@@ -322,10 +322,10 @@ make serve          # 前台运行（自动构建 dist/gateway/codex-mobile-gate
 
 ```sh
 make dev-cert       # 一次性生成本机签名证书（稳定 TCC 身份，免重复弹目录授权）
-make start          # 编译→安装到 ~/.local/bin/mobile-bridge-gateway→签名→launchd 常驻
+make start          # 编译→安装到 ~/.local/bin/→签名→launchd 常驻网关与 ACP Agent Host
 make status         # 查看服务状态与健康探测
 make logs           # 跟随日志（~/Library/Logs/mobile-bridge-gateway.log）
-make stop           # 彻底停止并卸载服务
+make stop           # 彻底停止并卸载网关与 Agent Host
 make restart        # 重新编译部署
 ```
 
@@ -355,9 +355,19 @@ GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode,opencode,workbuddy make serve
 
 前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+；OpenCode 自带 ACP 子命令，经 `opencode acp` 接入，可用 `OPENCODE_BIN` 指定其他启动命令，须先用 `opencode auth login` 登录；WorkBuddy 经 `codebuddy --acp` 接入，可用 `CODEBUDDY_BIN` 指定 CLI 路径），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可；WorkBuddy 在 WorkBuddy 桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
 
-Kimi、ZCode、MiniMax 与 WorkBuddy 另有多账号池：网页账号对话框可导入多个账号（也可一键导入 zcode-switcher 数据目录里的既有账号）、直接在面板里**添加账号或重新登录**（Kimi/MiniMax 为设备授权流，WorkBuddy 为扫码，ZCode 为网页 OAuth，全程不再依赖 zcode-switcher 桌面版）、查看各账号窗口/积分额度并手动切换；当窗口限额（如 Kimi 的 5 小时窗口）耗尽时，网关自动切到池内可用账号并让中断的会话自动续跑（面板可按 Agent 关闭自动切换）。辅助额度（如 ZCode 的 MCP 用量）不参与自动切换判定。Codex 账号在该对话框中只读展示，切换仍走「账号与接入」面板的既有流程。
+Kimi、ZCode、MiniMax 与 WorkBuddy 另有多账号池，网页账号对话框按 Agent 分 tab，一次只读取当前 tab 的池：
 
-注意：Kimi/MiniMax/Claude/DeepSeek/ZCode/OpenCode/WorkBuddy 会话的任务由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
+- **添加账号 / 重新登录**：直接在面板内完成（Kimi/MiniMax 为设备授权流，WorkBuddy 为扫码，ZCode 为网页 OAuth），不依赖 zcode-switcher 桌面版。
+- **捕获当前登录**：读取本机 CLI 当前登录态，新账号直接入池，已有账号更新其凭证。WorkBuddy 桌面槽位为加密信封态时会提示扫码重登以换取明文凭据。
+- **删除**：只删除池中保存的快照，不影响本机当前登录态。
+- **额度与切换**：查看各账号窗口/积分额度并手动切换。当前账号默认每 5 分钟轮询（`GATEWAY_POOL_POLL_SECONDS`），全池每小时慢速清扫一次（`GATEWAY_POOL_POLL_ALL_SECONDS`），负值关闭。
+- **自动切换**：窗口限额（如 Kimi 的 5 小时窗口）耗尽时，网关自动切到池内可用账号并让中断的会话续跑（面板可按 Agent 关闭）。ZCode 若有重置卡会先核销一张原地恢复，无卡或核销失败才换号。辅助额度（如 ZCode 的 MCP 用量）不参与判定。Kimi 切换前会先刷新 token 验证凭证链有效，失效则拒切并标记需重新登录。
+
+Codex 账号在该对话框中只读展示，切换仍走「账号与接入」面板的既有流程。旧版的「从 zcode-switcher 导入」按钮已移除，`/api/pool/{kind}/import` 接口保留供脚本使用（导入目录由 `GATEWAY_ZCAS_DIR` 指定）。
+
+注意：Kimi/MiniMax/Claude/DeepSeek/ZCode/OpenCode/WorkBuddy 会话的任务默认由网关进程内的子进程执行，停止网关会中断其进行中的运行且不再续跑（历史保留）；重启网关后，已开启通知关注的会话会自动后台重连，未关注的会话打开聊天时才重连。Codex 会话的任务由桌面 App 持有，不受网关启停影响。
+
+**Agent Host（macOS 可选）**：`make start` 会同时以 launchd 托管一个独立的 ACP Agent Host（默认 Kimi，`ACP_HOST_KIND=<kind> make start-agent-host` 可换），网关经 Unix socket（`GATEWAY_ACP_HOST_SOCKETS`）接入。Agent 子进程由 Host 持有，网关重启或崩溃不会中断进行中的回合，重连后恢复视图；Host 签名身份稳定，TCC 目录授权不随网关重编译失效。未配置 Host 的 Agent 仍在网关内直接启动，两种方式可混用。细节见 `ARCHITECTURE.md`。
 
 聊天详情里可以把当前会话“迁移到”另一个已启用的 Agent：在目标 Agent 上按同目录创建新会话，并把标题与最近消息转录作为首条消息注入，源会话保持不变；目标没有同目录项目时会直接按源目录创建本机项目。远端源会话的目录无法在本机目标上创建，仍需显式选择目标项目。
 
@@ -507,7 +517,7 @@ Fast 会增加额度消耗，具体以[官方速度说明](https://learn.chatgpt
 
 ```mermaid
 flowchart TD
-    Phone[手机浏览器] -->|HTTP / HTTPS + 登录|Gateway[电脑上的 Python 网关]
+    Phone[手机浏览器] -->|HTTP / HTTPS + 登录|Gateway[电脑上的 Go 网关]
     Gateway -->|只读发现|Records[本机和 SSH 会话记录]
     Gateway -->|原生 IPC 订阅和操作|App[现有 Codex App 会话 owner]
     App --> Local[电脑上的原会话]
@@ -539,6 +549,8 @@ flowchart TD
 | `auth-sessions.json` | 私有登录记录（令牌只保存哈希）、IP 访问规则；请勿分享，正常更新保留 |
 | `.pairing-*` | 仅供本机桌面控制的短期扫码请求/响应；正常退出时清理，不复制到其他设备 |
 | `外网地址.txt`、`tunnel.log` | 临时隧道地址与日志 |
+| `pool/<kind>/`、`pool/settings.json` | ACP 账号池快照（目录 0700、文件 0600）与自动切换设置 |
+| `jev.json` | Jev 权限预判配置（0600，含 API Key） |
 
 服务前台日志输出到启动终端。`.local/`、`.tmp/`、环境文件与本地开发记录均已加入 `.gitignore`，不要把它们上传到 issue 或公开仓库。
 
@@ -569,12 +581,15 @@ flowchart TD
 项目图文介绍页位于 `site/`，使用 GitHub Pages 托管。修改 `site/` 并推送到 `main` 后，**Product website** 工作流自动发布；无需额外构建步骤。
 
 ```sh
-python3 -B -m unittest discover -s tests -v
+make test           # go test ./...
+make test-race      # go test -race ./...
+make check          # build + vet + test + test-race 回归门禁
+make conformance    # HTTP 差分对拍 golden
 ```
 
-测试使用项目 `.tmp/` 下的合成数据和本机临时 TCP/Unix socket，不需要真实账号、运行中的 Codex App 或模型请求。请在仓库根目录执行。
+测试使用合成数据和本机临时 TCP/Unix socket，不需要真实账号、运行中的 Codex App 或模型请求。请在仓库根目录执行。
 
-前端为原生 HTML/CSS/JavaScript，无构建步骤。修改后刷新页面即可；修改后端需重启网关。
+前端为原生 HTML/CSS/JavaScript，无构建步骤，但 `web/` 经 `go:embed` 打进网关二进制：修改前端或后端后都需重新编译并重启网关（`make serve` 或 `make restart`）。
 
 ## 问题反馈
 

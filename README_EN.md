@@ -252,6 +252,7 @@ The switch is independent of chat notifications. Messages use current entries ra
 | Local and SSH | Execute on the chat's original computer or server |
 | Chat navigation | Sort by recent activity or group by expandable projects |
 | Model and Skills | Choose model/reasoning effort, toggle Fast for eligible official accounts, or send Skills: Codex reads installed skills from the chat's host (up to 8 per message); Kimi lists the skills the agent advertises, one per message |
+| ACP account pools | Per-agent tabs for Kimi / ZCode / MiniMax / WorkBuddy: add or re-login accounts in the panel (device flow / QR / OAuth), capture the current local login, delete snapshots, view window quotas and switch manually; when a window limit (such as Kimi's 5-hour window) runs out, switch to an available account and resume the interrupted session (ZCode spends a reset card first); can be disabled per agent; Codex is shown read-only |
 | Plan and Goal modes | Start a plan or native goal from the composer; implement or revise a completed plan in the browser |
 | Independent authentication | Username/password or explicit passwordless mode |
 | Parallel access | LAN, temporary HTTPS and multiple fixed entries |
@@ -262,7 +263,7 @@ Large history pages also have a byte budget, so a large reply may require multip
 
 ## Requirements
 
-- macOS or Windows 10/11 with the original Codex App running.
+- macOS or Windows 10/11 (Linux x64 / ARM64 is experimental, see [docs/linux.md](docs/linux.md)) with the original Codex App running.
 - Release packages include the gateway runtime; no Python or Node.js installation is needed.
 - For command-line deployment: Go (single Go binary built by `make build-gateway-package`); the ACP multi-agent npx fallback needs Node.js 22+.
 - Desktop App development and packaging additionally require Node.js and the build dependencies below.
@@ -306,10 +307,11 @@ make serve          # foreground (builds dist/gateway/codex-mobile-gateway)
 For an always-on production setup use launchd:
 
 ```sh
-make start          # install plist, load and start (KeepAlive)
+make dev-cert       # one-time local signing cert (stable TCC identity across rebuilds)
+make start          # build, install to ~/.local/bin/, sign, run gateway + ACP Agent Host under launchd
 make status         # service state + health probe
 make logs           # follow ~/Library/Logs/mobile-bridge-gateway.log
-make stop           # stop and unload
+make stop           # stop and unload the gateway and Agent Host
 ```
 
 Open the printed LAN URL on a phone on the same network, for example `http://192.168.1.10:8787`. The initial username is `admin`; the generated password is in `.local/首次登录.txt`. Select a chat and wait for **Connected** before sending.
@@ -318,15 +320,27 @@ Without `--lan`, the gateway listens only on `127.0.0.1`. It does not install a 
 
 ### Multiple agents (source runs)
 
-The default `auto` probes for locally installed agents (Codex is always enabled; Kimi Code CLI, MiniMax mcode, Claude Code, DeepSeek Harness dsh, ZCode and OpenCode are enabled when a local install is detected — an npx download fallback alone does not count). You can also declare them explicitly with `--agents`, comma-separated:
+The default `auto` probes for locally installed agents (Codex is always enabled; Kimi Code CLI, MiniMax mcode, Claude Code, DeepSeek Harness dsh, ZCode, OpenCode and WorkBuddy codebuddy are enabled when a local install is detected — an npx download fallback alone does not count). You can also declare them explicitly with the `GATEWAY_AGENTS` environment variable, comma-separated:
 
 ```sh
-GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode,opencode make serve
+GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode,opencode,workbuddy make serve
 ```
 
-The corresponding CLI (`kimi` / `mcode` / `npx`; Claude is reached through the `@agentclientprotocol/claude-agent-acp` wrapper, overridable via the `CLAUDE_ACP_BIN` environment variable; DeepSeek through the `@openma/deepseek-harness-acp` wrapper, overridable via `DSH_ACP_BIN`; ZCode through the `zcode-acp-server` wrapper, overridable via `ZCODE_ACP_BIN`, credentials read from `~/.zcode`, Node.js 22+ required; OpenCode ships ACP natively and is reached through its `opencode acp` subcommand, overridable via `OPENCODE_BIN`, sign in first with `opencode auth login`) must be installed on PATH and signed in (for dsh use `dsh-acp login` or the `DEEPSEEK_API_KEY` environment variable; for ZCode sign in via the desktop app or CLI). The gateway spawns these agents as child processes; the phone chat list labels each session with its agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`. When creating a chat, the agent and the project are picked independently; projects pointing at the same directory are deduplicated across agents, and a local project directory known to one agent can be handed to another agent for the new session.
+The corresponding CLI (`kimi` / `mcode` / `npx`; Claude is reached through the `@agentclientprotocol/claude-agent-acp` wrapper, overridable via the `CLAUDE_ACP_BIN` environment variable; DeepSeek through the `@openma/deepseek-harness-acp` wrapper, overridable via `DSH_ACP_BIN`; ZCode through the `zcode-acp-server` wrapper, overridable via `ZCODE_ACP_BIN`, credentials read from `~/.zcode`, Node.js 22+ required; OpenCode ships ACP natively and is reached through its `opencode acp` subcommand, overridable via `OPENCODE_BIN`, sign in first with `opencode auth login`; WorkBuddy through `codebuddy --acp`, overridable via `CODEBUDDY_BIN`) must be installed on PATH and signed in (for dsh use `dsh-acp login` or the `DEEPSEEK_API_KEY` environment variable; for ZCode and WorkBuddy sign in via the desktop app or CLI). The gateway spawns these agents as child processes; the phone chat list labels each session with its agent, and listing, history, sending, approvals, interrupt, queueing and notifications behave the same across agents. Unsupported capabilities (goals, steer, skills, Fast mode, …) are hidden per agent; see the capability matrix in the "多 Agent 适配" section of `ARCHITECTURE.md`. When creating a chat, the agent and the project are picked independently; projects pointing at the same directory are deduplicated across agents, and a local project directory known to one agent can be handed to another agent for the new session.
 
-Note: Kimi/MiniMax/Claude/DeepSeek/ZCode/OpenCode runs execute inside the gateway process, so stopping the gateway interrupts their in-flight turns for good (history is preserved). After a gateway restart, sessions with notification watches re-attach automatically in the background; unwatched sessions reconnect when you open the chat. Codex runs are owned by the desktop App and survive gateway restarts.
+Kimi, ZCode, MiniMax and WorkBuddy also have account pools, shown as per-agent tabs in the web account dialog (only the active tab is loaded):
+
+- **Add account / re-login** inside the panel (device flow for Kimi/MiniMax, QR for WorkBuddy, web OAuth for ZCode); zcode-switcher is no longer required.
+- **Capture current login** reads the local CLI's signed-in state: new accounts are imported, existing ones get refreshed credentials. A WorkBuddy desktop slot in encrypted-envelope state prompts a QR re-login to obtain plaintext credentials.
+- **Delete** removes only the pooled snapshot, never the local login.
+- **Quotas**: the active account is polled every 5 minutes (`GATEWAY_POOL_POLL_SECONDS`) and the whole pool is swept hourly (`GATEWAY_POOL_POLL_ALL_SECONDS`); negative values disable either.
+- **Auto-switch**: when a window limit runs out, the gateway switches to an available pooled account and resumes the interrupted session (can be disabled per agent). ZCode first redeems a reset card if one is available and only switches when none is. Auxiliary quotas (such as ZCode MCP usage) are ignored. Kimi refreshes the token before switching and refuses dead credential chains, marking them for re-login.
+
+Codex accounts are shown read-only; switching them still uses the existing account panel. The old "Import from zcode-switcher" button is gone; `/api/pool/{kind}/import` remains for scripts (source directory from `GATEWAY_ZCAS_DIR`).
+
+Note: Kimi/MiniMax/Claude/DeepSeek/ZCode/OpenCode/WorkBuddy runs execute inside the gateway process by default, so stopping the gateway interrupts their in-flight turns for good (history is preserved). After a gateway restart, sessions with notification watches re-attach automatically in the background; unwatched sessions reconnect when you open the chat. Codex runs are owned by the desktop App and survive gateway restarts.
+
+**Agent Host (optional, macOS):** `make start` also runs a standalone ACP Agent Host under launchd (Kimi by default; use `ACP_HOST_KIND=<kind> make start-agent-host` for another agent), reached over a Unix socket (`GATEWAY_ACP_HOST_SOCKETS`). The Host owns the agent child processes, so gateway restarts or crashes no longer interrupt in-flight turns, and its stable signing identity keeps macOS folder permissions across gateway rebuilds. Agents without a Host are still spawned inside the gateway; both modes can be mixed. See `ARCHITECTURE.md`.
 
 The chat details dialog can migrate the current session to another enabled agent: a new session is created on the same directory, with the title and a transcript of recent messages injected as its first message; the source session stays unchanged. If a local source directory is missing from the target agent, the gateway creates the target session directly from that directory. A remote source directory cannot be created on the local target, so choose an explicit target project.
 
