@@ -188,7 +188,11 @@ func ItemsArray(items any) *jsoncompat.Array {
 
 // OrderedTurns mirrors ordered_turns: canonical turnHistory islands resolve
 // entities with dedupe; anything else falls back to the plain turns list.
+// A nil state (no snapshot yet) yields no turns.
 func OrderedTurns(state *jsoncompat.Object) *jsoncompat.Array {
+	if state == nil {
+		return &jsoncompat.Array{}
+	}
 	history := obj(state.MustGet("turnHistory"))
 	if history == nil {
 		return orEmptyArray(state.MustGet("turns"))

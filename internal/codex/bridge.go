@@ -279,6 +279,11 @@ func (b *Bridge) autoApprovePending(id string) {
 		return
 	}
 	state, _, _, _ := b.Snapshot(id)
+	// A broadcast follow can fire before the first snapshot lands; there is
+	// no state to inspect yet. NormalizeState(nil) would panic.
+	if state == nil {
+		return
+	}
 	view := model.NormalizeState(state, true)
 	requests, _ := view.MustGet("requests").(*jsoncompat.Array)
 	if requests == nil {
