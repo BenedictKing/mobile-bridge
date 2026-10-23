@@ -10,7 +10,10 @@
 //     signing cannot parse a JWT and every turn dies as a misleading
 //     "[网络异常，正在重试 (n/5)…]" loop. The real id.secret plan key lives
 //     AES-256-GCM-encrypted (enc:v1: prefix) in v2/credentials.json; the
-//     healer decrypts the ACTIVE account's key and restores it.
+//     healer decrypts the ACTIVE account's key and restores it. Accounts
+//     that keep their key in the cloud have no local entry at all — for
+//     those the healer mints the short-lived project access token the
+//     desktop app itself signs with (see the minting section below).
 //
 //  2. The provider/model dropdown. The healer mirrors the desktop app's own
 //     truth: the bundled provider table's builtinModelIds for the held plan,
@@ -21,12 +24,18 @@
 package acpagents
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -44,10 +53,20 @@ const (
 	zcAccountRuleID     = "account:bigmodel-individual-coding-plan"
 	zcAccountKeyPrefix  = "account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:"
 	zcUserInfoKey       = "oauth:bigmodel:user_info"
+	zcOAuthTokenKey     = "oauth:bigmodel:access_token"
 	zcCredentialEnv     = "ZCODE_CREDENTIAL_SECRET"
 	zcCacheName         = "coding-plan-cache.json"
 	zcPollInterval      = 2 * time.Second
+	zcLocationPrefix    = "project-key-location:v1:"
 )
+
+// zcTokenRefreshSlack is how long before a minted project access token's
+// expiry the healer re-mints; tokens live ~5h so this only bites at the tail.
+const zcTokenRefreshSlack = 10 * time.Minute
+
+// zcMintRetryDelay backs off repeated mint failures so an unreachable
+// bigmodel.cn never turns the 2s watcher into a request storm.
+const zcMintRetryDelay = time.Minute
 
 // zcTableCandidates: the desktop app's bundled provider table, newest truth
 // for what a plan offers.
@@ -260,6 +279,219 @@ func zcReadJSONBytes(raw []byte) *jsoncompat.Object {
 	return object
 }
 
+// --- project access token minting --------------------------------------------
+//
+// An account may keep its coding-plan key in the cloud instead of a local
+// account-provider entry: the desktop app then stores only a
+// project-key-location reference and signs every request with a short-lived
+// project access token minted over the OAuth token (zcode.cjs
+// ProjectAccessTokenClient). The headless wrapper has no such client, so the
+// healer performs the same mint and keeps the token in the config slot —
+// ClientRequestSigningV4 accepts "an API Key or Project Access Token".
+
+// zcKeyLocation is one decrypted project-key-location entry: where the
+// account's plan key lives (origin/family/account from the entry name,
+// org/project/apiKey ids from the entry value).
+type zcKeyLocation struct {
+	Origin         string
+	Family         string
+	AccountID      string
+	OrganizationID string
+	ProjectID      string
+	APIKeyID       string
+}
+
+// zcLocations decrypts every bigmodel project-key-location entry, keyed by
+// account id.
+func zcLocations(creds *jsoncompat.Object, secret string) map[string]zcKeyLocation {
+	out := map[string]zcKeyLocation{}
+	if creds == nil {
+		return out
+	}
+	for _, name := range creds.Keys() {
+		if !strings.HasPrefix(name, zcLocationPrefix) {
+			continue
+		}
+		decoded, err := url.QueryUnescape(strings.TrimPrefix(name, zcLocationPrefix))
+		if err != nil {
+			continue
+		}
+		header := []any{}
+		if err := json.Unmarshal([]byte(decoded), &header); err != nil || len(header) < 3 {
+			continue
+		}
+		origin, _ := header[0].(string)
+		family, _ := header[1].(string)
+		account, _ := header[2].(string)
+		if origin == "" || family != "bigmodel" || account == "" {
+			continue
+		}
+		encrypted, _ := creds.MustGet(name).(string)
+		plain, ok := zcDecrypt(encrypted, secret)
+		if !ok {
+			continue
+		}
+		body := zcReadJSONBytes([]byte(plain))
+		if body == nil {
+			continue
+		}
+		location := zcKeyLocation{Origin: origin, Family: family, AccountID: account}
+		location.OrganizationID, _ = body.MustGet("organizationId").(string)
+		location.ProjectID, _ = body.MustGet("projectId").(string)
+		location.APIKeyID, _ = body.MustGet("apiKeyId").(string)
+		if location.OrganizationID == "" || location.ProjectID == "" || location.APIKeyID == "" {
+			continue
+		}
+		out[account] = location
+	}
+	return out
+}
+
+// zcProjectTokenExp inspects a slot value: a JWT carrying a token_use claim
+// is one of our minted project access tokens, and its exp claim says when it
+// stops signing. OAuth access JWTs (the defect state) carry no token_use and
+// are reported as not-a-project-token.
+func zcProjectTokenExp(value string) (time.Time, bool) {
+	if !zcLooksLikeJWT(value) {
+		return time.Time{}, false
+	}
+	parts := strings.Split(value, ".")
+	payload, ok := zcDecodeBase64URL(parts[1])
+	if !ok {
+		return time.Time{}, false
+	}
+	claims := struct {
+		TokenUse string `json:"token_use"`
+		Exp      int64  `json:"exp"`
+	}{}
+	if json.Unmarshal(payload, &claims) != nil || claims.TokenUse == "" || claims.Exp == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(claims.Exp, 0), true
+}
+
+// zcMint performs the access_tokens POST against bigmodel.cn. Package
+// variable so tests stub the network away.
+var zcMint = func(location zcKeyLocation, oauthToken string) (string, error) {
+	endpoint := location.Origin +
+		"/api/biz/v1/organization/" + url.PathEscape(location.OrganizationID) +
+		"/projects/" + url.PathEscape(location.ProjectID) +
+		"/api_keys/" + url.PathEscape(location.APIKeyID) + "/access_tokens"
+	body, err := json.Marshal(map[string]string{"clientType": "zcode", "clientVersion": "4.1.10"})
+	if err != nil {
+		return "", err
+	}
+	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+oauthToken)
+	request.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<16))
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("access_tokens HTTP %d", response.StatusCode)
+	}
+	// Observed shapes: {code, data:{accessToken, expiresAt}} and an extra
+	// data.data nesting on some deployments — accept either.
+	var parsed struct {
+		Code int `json:"code"`
+		Data struct {
+			AccessToken string `json:"accessToken"`
+			Data        *struct {
+				AccessToken string `json:"accessToken"`
+			} `json:"data"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &parsed) != nil {
+		return "", errors.New("access_tokens 响应不是 JSON")
+	}
+	if parsed.Code != 0 && parsed.Code != 200 {
+		return "", fmt.Errorf("access_tokens code=%d", parsed.Code)
+	}
+	token := parsed.Data.AccessToken
+	if token == "" && parsed.Data.Data != nil {
+		token = parsed.Data.Data.AccessToken
+	}
+	if token == "" {
+		return "", errors.New("access_tokens 响应缺少 accessToken")
+	}
+	return token, nil
+}
+
+// zcNow is the clock, injectable for tests.
+var zcNow = time.Now
+
+// zcNextMint is when the watcher should re-run the heal even without a file
+// change: a minted token approaching expiry, or a backed-off retry.
+var zcNextMint struct {
+	sync.Mutex
+	at time.Time
+}
+
+func zcScheduleNextMint(at time.Time) {
+	zcNextMint.Lock()
+	zcNextMint.at = at
+	zcNextMint.Unlock()
+}
+
+func zcMintDue() bool {
+	zcNextMint.Lock()
+	defer zcNextMint.Unlock()
+	return !zcNextMint.at.IsZero() && !zcNow().Before(zcNextMint.at)
+}
+
+// zcMintForActive mints a project access token for the account the desktop
+// app considers active (user_info), falling back to the sole stored location
+// when user_info is unreadable. Empty token means "not mintable here".
+func zcMintForActive(creds *jsoncompat.Object, secret string) (string, string) {
+	if creds == nil {
+		return "", ""
+	}
+	account := ""
+	if userInfo, ok := creds.MustGet(zcUserInfoKey).(string); ok {
+		if decrypted, valid := zcDecrypt(userInfo, secret); valid {
+			if info := zcReadJSONBytes([]byte(decrypted)); info != nil {
+				account, _ = info.MustGet("id").(string)
+			}
+		}
+	}
+	locations := zcLocations(creds, secret)
+	if account == "" {
+		if len(locations) == 1 {
+			for only := range locations {
+				account = only
+			}
+		} else {
+			return "", ""
+		}
+	}
+	location, known := locations[account]
+	if !known {
+		return "", account
+	}
+	encryptedOAuth, _ := creds.MustGet(zcOAuthTokenKey).(string)
+	oauthToken, ok := zcDecrypt(encryptedOAuth, secret)
+	if !ok || oauthToken == "" {
+		return "", account
+	}
+	token, err := zcMint(location, oauthToken)
+	if err != nil || token == "" {
+		return "", account
+	}
+	if expiry, valid := zcProjectTokenExp(token); valid {
+		zcScheduleNextMint(expiry.Add(-zcTokenRefreshSlack))
+	} else {
+		zcScheduleNextMint(zcNow().Add(zcMintRetryDelay))
+	}
+	return token, account
+}
+
 func zcFindBuiltinTable() string {
 	for _, candidate := range zcTableCandidates {
 		path := candidate
@@ -448,20 +680,23 @@ func EnsureZcodeState(env func(string) string, home string, paths *zcPaths) stri
 	}
 	creds := zcReadJSON(paths.credsPath)
 	planKey, account := zcResolvePlanKey(creds, secret)
+	now := zcNow()
+	slotExpiry, slotIsToken := zcProjectTokenExp(slot)
 	switch {
 	case planKey != "" && slot == planKey:
 		keyStatus = "ok"
 	case planKey != "":
 		// Rewrite when the app overwrote the slot (JWT), left it empty, or a
 		// previous heal went stale after an account switch. A foreign
-		// hand-written key is respected.
+		// hand-written key is respected, and a still-valid minted token
+		// yields to the account's own stored key.
 		stored := map[string]bool{}
 		for _, encrypted := range zcPlanKeys(creds) {
 			if decrypted, ok := zcDecrypt(encrypted, secret); ok {
 				stored[decrypted] = true
 			}
 		}
-		if slot == "" || zcLooksLikeJWT(slot) || stored[slot] {
+		if slot == "" || zcLooksLikeJWT(slot) || stored[slot] || slotIsToken {
 			options, _ := provider.MustGet("options").(*jsoncompat.Object)
 			if options == nil {
 				options = jsoncompat.NewObject()
@@ -472,17 +707,66 @@ func EnsureZcodeState(env func(string) string, home string, paths *zcPaths) stri
 		} else {
 			keyStatus = "custom"
 		}
+	case slotIsToken:
+		// No local id.secret for this account, but the slot holds one of our
+		// minted project access tokens: healthy until nearing expiry, then
+		// re-mint (a failed re-mint keeps serving until the token really
+		// expires, backed off by a retry delay).
+		if now.Before(slotExpiry.Add(-zcTokenRefreshSlack)) {
+			keyStatus = "ok"
+			zcScheduleNextMint(slotExpiry.Add(-zcTokenRefreshSlack))
+		} else {
+			token, mintedAccount := zcMintForActive(creds, secret)
+			if token == "" {
+				if now.Before(slotExpiry) {
+					keyStatus = "ok"
+				}
+				zcScheduleNextMint(zcNow().Add(zcMintRetryDelay))
+			} else {
+				options, _ := provider.MustGet("options").(*jsoncompat.Object)
+				if options == nil {
+					options = jsoncompat.NewObject()
+					provider.Set("options", options)
+				}
+				options.Set("apiKey", token)
+				keyStatus = "minted"
+				account = mintedAccount
+			}
+		}
+	case slot == "" || zcLooksLikeJWT(slot):
+		// The defect state: the active account keeps its plan key in the
+		// cloud (no local entry) and the desktop app parked its OAuth JWT in
+		// the slot. Mint a project access token so headless turns can sign.
+		token, mintedAccount := zcMintForActive(creds, secret)
+		if token != "" {
+			options, _ := provider.MustGet("options").(*jsoncompat.Object)
+			if options == nil {
+				options = jsoncompat.NewObject()
+				provider.Set("options", options)
+			}
+			options.Set("apiKey", token)
+			keyStatus = "minted"
+			account = mintedAccount
+		} else {
+			zcScheduleNextMint(zcNow().Add(zcMintRetryDelay))
+		}
+	default:
+		// No stored plan key and a non-JWT handwritten slot: respect it.
+		keyStatus = "custom"
 	}
 
 	changes := []string{}
 	if keyStatus == "patched" {
 		changes = append(changes, fmt.Sprintf("plan key (account %s)", account))
 	}
+	if keyStatus == "minted" {
+		changes = append(changes, fmt.Sprintf("project access token (account %s)", account))
+	}
 	zcSyncModels(config, paths.tablePath, &changes)
 	zcDisableGhostStartPlan(config, paths.cachePath, &changes)
 	if len(changes) > 0 {
 		if zcWriteJSONAtomic(paths.configPath, config) {
-			return "patched"
+			return keyStatus
 		}
 		return "unavailable"
 	}
@@ -518,7 +802,7 @@ func EnsureAndWatch(env func(string) string, home string, logf func(string, ...a
 		logf = func(string, ...any) {}
 	}
 	status := EnsureZcodeState(env, home, nil)
-	if status == "patched" || status == "unavailable" {
+	if status == "patched" || status == "minted" || status == "unavailable" {
 		logf("zcode state heal: initial pass %s", status)
 	}
 	zcWatchOnce.Do(func() {
@@ -532,13 +816,19 @@ func EnsureAndWatch(env func(string) string, home string, logf func(string, ...a
 			signature := paths.stamps()
 			for {
 				time.Sleep(zcPollInterval)
+				// Two triggers: an input file changed (account switch, plan
+				// refresh, app update), or a minted project access token hit
+				// its refresh/retry deadline — the token expires on the
+				// clock, not on a file change.
 				current := paths.stamps()
-				if current == signature {
+				if current == signature && !zcMintDue() {
 					continue
 				}
-				signature = current
-				if status := EnsureZcodeState(env, home, nil); status == "patched" {
-					logf("zcode state heal: re-healed after input change")
+				if current != signature {
+					signature = current
+				}
+				if status := EnsureZcodeState(env, home, nil); status == "patched" || status == "minted" {
+					logf("zcode state heal: re-healed after input change (%s)", status)
 				}
 			}
 		}()

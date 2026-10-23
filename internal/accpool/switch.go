@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpagents"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
@@ -361,6 +362,14 @@ func (m *Manager) switchZcode(targetID, trigger string, sessions SessionManager,
 	if err := writeZcodeSlot(&zcodeSlot{Credentials: target.Credentials, Config: target.Config}); err != nil {
 		restoreZcodeSlot(previous)
 		return fail(err)
+	}
+	// The written snapshot may itself carry a dead coding-plan key (e.g. an
+	// account whose plan key lives in the cloud and whose config slot holds
+	// the desktop's OAuth JWT). Converge the slot before any backend
+	// reattaches and caches the broken credential; the background watcher
+	// would catch it too, but only after a window of failed turns.
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		acpagents.EnsureZcodeState(os.Getenv, home, nil)
 	}
 
 	if sessions != nil {

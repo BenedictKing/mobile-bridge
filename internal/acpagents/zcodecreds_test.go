@@ -1,10 +1,15 @@
 package acpagents
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -186,5 +191,155 @@ func TestEnsureZcodeStateUnavailableWithoutConfig(t *testing.T) {
 		credsPath:  filepath.Join(home, "creds.json"),
 	}); status != "unavailable" {
 		t.Fatalf("status=%s", status)
+	}
+}
+
+// mintedToken builds a project-access-token-shaped JWT (token_use + exp
+// claims) with a bogus signature — the healer never verifies it, the remote
+// endpoint issued it.
+func mintedToken(exp time.Time) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	claims, _ := json.Marshal(map[string]any{
+		"token_use": "project_access", "client_type": "zcode",
+		"exp": exp.Unix(),
+	})
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	return header + "." + payload + ".sig"
+}
+
+// writeCloudKeyFixture: active account keeps its plan key in the cloud — a
+// project-key-location entry plus the OAuth token, no local api-key entries.
+func writeCloudKeyFixture(t *testing.T, home, secret, account string) *zcPaths {
+	t.Helper()
+	paths := writeCredsFixture(t, home, secret, account, "")
+	v2 := filepath.Dir(paths.configPath)
+	creds := zcReadJSON(paths.credsPath)
+	creds.Delete("account-provider:coding-plan:account:bigmodel-individual-coding-plan:account:" + account + ":api-key")
+	location := jsoncompat.NewObject()
+	location.Set("organizationId", "org-1")
+	location.Set("projectId", "proj-1")
+	location.Set("apiKeyId", "key-1")
+	locationName := "project-key-location:v1:" + url.QueryEscape(
+		`["https://bigmodel.cn","bigmodel","`+account+`",null,1,"non-team"]`)
+	creds.Set(locationName, zcEncrypt(string(jsoncompat.EncodeCompact(location)), secret))
+	creds.Set("oauth:bigmodel:access_token", zcEncrypt("oauth-access-jwt", secret))
+	if err := os.WriteFile(paths.credsPath, jsoncompat.EncodePythonIndent2(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = v2
+	return paths
+}
+
+func stubMint(token string, calls *int) func() {
+	previous := zcMint
+	zcMint = func(location zcKeyLocation, oauthToken string) (string, error) {
+		if calls != nil {
+			*calls++
+		}
+		if oauthToken != "oauth-access-jwt" {
+			return "", errors.New("unexpected oauth token")
+		}
+		if location.OrganizationID != "org-1" || location.ProjectID != "proj-1" || location.APIKeyID != "key-1" {
+			return "", errors.New("unexpected location " + location.OrganizationID)
+		}
+		return token, nil
+	}
+	return func() { zcMint = previous }
+}
+
+func resetMintSchedule() { zcScheduleNextMint(time.Time{}) }
+
+func TestEnsureZcodeStateMintsProjectToken(t *testing.T) {
+	home := t.TempDir()
+	secret := "test-secret"
+	paths := writeCloudKeyFixture(t, home, secret, "uid-1")
+	token := mintedToken(zcNow().Add(time.Hour))
+	restore := stubMint(token, nil)
+	defer restore()
+	resetMintSchedule()
+	if status := EnsureZcodeState(envWith("ZCODE_CREDENTIAL_SECRET", secret), home, paths); status != "minted" {
+		t.Fatalf("status=%s", status)
+	}
+	healed := zcReadJSON(paths.configPath)
+	providers, _ := healed.MustGet("provider").(*jsoncompat.Object)
+	plan, _ := providers.MustGet("builtin:bigmodel-coding-plan").(*jsoncompat.Object)
+	options, _ := plan.MustGet("options").(*jsoncompat.Object)
+	if key, _ := options.MustGet("apiKey").(string); key != token {
+		t.Fatalf("apiKey not the minted token: %q", key[:min(20, len(key))])
+	}
+	// A valid token is left alone: second pass neither mints again nor
+	// rewrites the file.
+	calls := 0
+	restore2 := stubMint(token, &calls)
+	defer restore2()
+	if status := EnsureZcodeState(envWith("ZCODE_CREDENTIAL_SECRET", secret), home, paths); status != "ok" {
+		t.Fatalf("second pass status=%s", status)
+	}
+	if calls != 0 {
+		t.Fatalf("healthy token re-minted %d times", calls)
+	}
+}
+
+func TestEnsureZcodeStateRemintsNearExpiry(t *testing.T) {
+	home := t.TempDir()
+	secret := "test-secret"
+	paths := writeCloudKeyFixture(t, home, secret, "uid-1")
+	expiring := mintedToken(zcNow().Add(3 * time.Minute))
+	restore := stubMint(expiring, nil)
+	resetMintSchedule()
+	if status := EnsureZcodeState(envWith("ZCODE_CREDENTIAL_SECRET", secret), home, paths); status != "minted" {
+		t.Fatalf("status=%s", status)
+	}
+	restore()
+	fresh := mintedToken(zcNow().Add(time.Hour))
+	calls := 0
+	restore2 := stubMint(fresh, &calls)
+	defer restore2()
+	if status := EnsureZcodeState(envWith("ZCODE_CREDENTIAL_SECRET", secret), home, paths); status != "minted" {
+		t.Fatalf("re-mint status=%s", status)
+	}
+	if calls != 1 {
+		t.Fatalf("mint calls=%d", calls)
+	}
+	healed := zcReadJSON(paths.configPath)
+	providers, _ := healed.MustGet("provider").(*jsoncompat.Object)
+	plan, _ := providers.MustGet("builtin:bigmodel-coding-plan").(*jsoncompat.Object)
+	options, _ := plan.MustGet("options").(*jsoncompat.Object)
+	if key, _ := options.MustGet("apiKey").(string); key != fresh {
+		t.Fatal("expiring token not replaced")
+	}
+}
+
+func TestEnsureZcodeStateMintFailureKeepsUnavailable(t *testing.T) {
+	home := t.TempDir()
+	secret := "test-secret"
+	paths := writeCloudKeyFixture(t, home, secret, "uid-1")
+	previous := zcMint
+	zcMint = func(zcKeyLocation, string) (string, error) { return "", errors.New("boom") }
+	defer func() { zcMint = previous }()
+	resetMintSchedule()
+	if status := EnsureZcodeState(envWith("ZCODE_CREDENTIAL_SECRET", secret), home, paths); status != "unavailable" {
+		t.Fatalf("status=%s", status)
+	}
+	healed := zcReadJSON(paths.configPath)
+	providers, _ := healed.MustGet("provider").(*jsoncompat.Object)
+	plan, _ := providers.MustGet("builtin:bigmodel-coding-plan").(*jsoncompat.Object)
+	options, _ := plan.MustGet("options").(*jsoncompat.Object)
+	if key, _ := options.MustGet("apiKey").(string); !zcLooksLikeJWT(key) {
+		t.Fatalf("poisoned slot rewritten on mint failure: %q", key)
+	}
+}
+
+func TestZcProjectTokenExpRejectsOAuthJWT(t *testing.T) {
+	if _, ok := zcProjectTokenExp("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig"); ok {
+		t.Fatal("OAuth-shaped JWT accepted as project token")
+	}
+	exp := zcNow().Add(time.Hour)
+	parsed, ok := zcProjectTokenExp(mintedToken(exp))
+	if !ok || parsed.Unix() != exp.Unix() {
+		t.Fatalf("parsed=%v ok=%v", parsed, ok)
+	}
+	if _, ok := zcProjectTokenExp("realkey.realsecret"); ok {
+		t.Fatal("id.secret accepted as project token")
 	}
 }
