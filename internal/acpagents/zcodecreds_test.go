@@ -343,3 +343,25 @@ func TestZcProjectTokenExpRejectsOAuthJWT(t *testing.T) {
 		t.Fatal("id.secret accepted as project token")
 	}
 }
+
+func TestZcMintForActiveNeverSchedulesIntoPast(t *testing.T) {
+	home := t.TempDir()
+	secret := "test-secret"
+	paths := writeCloudKeyFixture(t, home, secret, "uid-1")
+	creds := zcReadJSON(paths.credsPath)
+	// The endpoint anchors expiry to a fixed window: a token minted right at
+	// the window's edge can arrive already inside the refresh slack. The
+	// schedule must fall back to the retry delay, not the past.
+	restore := stubMint(mintedToken(zcNow().Add(time.Minute)), nil)
+	defer restore()
+	resetMintSchedule()
+	token, account := zcMintForActive(creds, secret)
+	if token == "" || account != "uid-1" {
+		t.Fatalf("token=%v account=%q", token != "", account)
+	}
+	zcNextMint.Lock()
+	defer zcNextMint.Unlock()
+	if !zcNextMint.at.After(zcNow()) {
+		t.Fatalf("refresh scheduled at %v, not in the future", zcNextMint.at)
+	}
+}

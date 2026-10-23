@@ -485,7 +485,14 @@ func zcMintForActive(creds *jsoncompat.Object, secret string) (string, string) {
 		return "", account
 	}
 	if expiry, valid := zcProjectTokenExp(token); valid {
-		zcScheduleNextMint(expiry.Add(-zcTokenRefreshSlack))
+		// The endpoint anchors expiry to a fixed window, so a token minted
+		// near the window's end can already sit inside the refresh slack —
+		// never schedule into the past or the 2s watcher hammers the API.
+		deadline := expiry.Add(-zcTokenRefreshSlack)
+		if !deadline.After(zcNow()) {
+			deadline = zcNow().Add(zcMintRetryDelay)
+		}
+		zcScheduleNextMint(deadline)
 	} else {
 		zcScheduleNextMint(zcNow().Add(zcMintRetryDelay))
 	}
