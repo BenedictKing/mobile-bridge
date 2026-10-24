@@ -146,21 +146,34 @@ $('list-mode').value=localStorage.getItem('list-mode')||'recent';
 $('list-mode').onchange=()=>{localStorage.setItem('list-mode',$('list-mode').value);renderList();};
 // 最近交互视图按最后对话时间分段折叠；一周内的分段默认展开，更早的默认收起。
 const TIME_BUCKETS=[{days:1,label:'24 小时内',open:true},{days:3,label:'3 天内',open:true},{days:7,label:'一周内',open:true},{days:15,label:'15 天内',open:false},{days:30,label:'一月内',open:false},{days:90,label:'三月内',open:false},{days:Infinity,label:'更早',open:false}];
+// 项目分组每组默认只显示最近 5 条，点一次“显示更多”追加 10 条，平衡屏幕空间与
+// 查找效率；展开量只在内存里，列表轮询重渲染不回跳，刷新页面后回到默认。
+const PROJECT_GROUP_PAGE=5,PROJECT_GROUP_STEP=10,projectGroupLimits=new Map();
 function renderList(){
   $('sessions').replaceChildren();
-  const grouped=$('list-mode').value==='project', groups=new Map();
+  const grouped=$('list-mode').value==='project', groups=new Map(), totals=new Map(), shown=new Map();
   const now=Date.now();
   for(const chat of listRows){
     let parent=$('sessions');
     if(grouped){
+      totals.set(chat.projectKey,(totals.get(chat.projectKey)||0)+1);
       if(!groups.has(chat.projectKey)){
         const details=el('details','project-group');
         details.open=localStorage.getItem('group:'+chat.projectKey)!=='closed';
-        details.append(el('summary','',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+        // 组头“＋”以组内最近会话预选项目打开新建聊天，省去在对话框里重新挑项目。
+        const summary=el('summary');
+        summary.append(el('span','group-name',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+        const add=el('button','group-add','＋');
+        add.type='button';add.title=t('在此项目新建聊天');add.setAttribute('aria-label',t('在此项目新建聊天'));
+        add.onclick=event=>{event.preventDefault();event.stopPropagation();openNewChat(chat);};
+        summary.append(add);
+        details.append(summary);
         details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
         groups.set(chat.projectKey,details);$('sessions').append(details);
       }
       parent=groups.get(chat.projectKey);
+      if((shown.get(chat.projectKey)||0)>=(projectGroupLimits.get(chat.projectKey)||PROJECT_GROUP_PAGE))continue;
+      shown.set(chat.projectKey,(shown.get(chat.projectKey)||0)+1);
     }else{
       const days=(now-(chat.recency||0))/864e5;
       const bucket=TIME_BUCKETS.find(b=>days<=b.days)||TIME_BUCKETS[TIME_BUCKETS.length-1];
@@ -181,6 +194,14 @@ function renderList(){
     const agentTag=BridgeI18n.agentTag(chat.agent);if(agentTag)metaText.prepend(el('em','agent-badge',agentTag));
     meta.append(metaText,el('time','',dateText(chat.recency/1000)));
     button.append(meta);button.onclick=()=>openChat(chat.id,chat.host).catch(e=>toast(e.message));parent.append(button);
+  }
+  if(grouped)for(const [key,details] of groups){
+    const hidden=(totals.get(key)||0)-(shown.get(key)||0);
+    if(hidden<=0)continue;
+    const more=el('button','group-more',t('显示更多')+' · '+hidden);
+    more.type='button';
+    more.onclick=()=>{projectGroupLimits.set(key,(projectGroupLimits.get(key)||PROJECT_GROUP_PAGE)+PROJECT_GROUP_STEP);renderList();};
+    details.append(more);
   }
   if(!listRows.length)$('sessions').append(el('p','muted',t('没有找到聊天。')));renderActivity();
 }
@@ -238,7 +259,10 @@ $('new-chat-pin').onclick=()=>{
 function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'在电脑 App 的已有项目中创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。':'在已有项目目录中创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
-$('new-chat').onclick=async()=>{
+$('new-chat').onclick=()=>openNewChat();
+// preferred 是项目分组头“＋”传入的组内最近会话行：优先于当前打开的聊天，
+// 用于预选项目（cwd 匹配）与 Agent。
+async function openNewChat(preferred){
   $('new-chat-error').textContent='';$('new-chat-submit').disabled=true;
   $('new-chat-worktree-row').hidden=true;$('new-chat-worktree-base-row').hidden=true;
   $('new-chat-project').replaceChildren();$('new-chat-path').textContent=t('正在读取电脑项目…');
@@ -256,24 +280,24 @@ $('new-chat').onclick=async()=>{
       if(multi){const cwd=project.cwd||'';if(seen.has(cwd))continue;seen.add(cwd);}
       options.push(project);
     }
-    const current=listRows.find(row=>row.id===currentId&&row.host===currentHost);
+    const ref=preferred||listRows.find(row=>row.id===currentId&&row.host===currentHost);
     // 置顶项目和当前聊天项目即使掉出最近列表也保留入口
     const pins=newChatPins();
     for(let i=pins.length-1;i>=0;i--){
       const pin=pins[i];
       if(pin?.cwd&&!options.some(p=>p.cwd===pin.cwd&&p.host===pin.host))options.unshift(pin);
     }
-    if(current?.projectKey&&current?.cwd&&!options.some(p=>p.key===current.projectKey||p.cwd===current.cwd))
-      options.unshift({key:current.projectKey,cwd:current.cwd,name:current.projectName||(current.cwd.replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||''),host:current.host,hostLabel:current.hostLabel,agent:current.agent});
+    if(ref?.projectKey&&ref?.cwd&&!options.some(p=>p.key===ref.projectKey||p.cwd===ref.cwd))
+      options.unshift({key:ref.projectKey,cwd:ref.cwd,name:ref.projectName||(ref.cwd.replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||''),host:ref.host,hostLabel:ref.hostLabel,agent:ref.agent});
     newChatProjects=options;
     $('new-chat-filter').value='';renderNewChatProjects();
     if(multi){
-      if(newChatAgents.some(a=>a.kind===current?.agent))agentSelect.value=current.agent;
+      if(newChatAgents.some(a=>a.kind===ref?.agent))agentSelect.value=ref.agent;
       else if(newChatAgents.some(a=>a.kind==='codex'))agentSelect.value='codex';
     }
-    const selected=current?.projectKey;
+    const selected=ref?.projectKey;
     if(options.some(p=>p.key===selected))$('new-chat-project').value=selected;
-    else if(current?.cwd){const hit=options.find(p=>p.cwd===current.cwd);if(hit)$('new-chat-project').value=hit.key;}
+    else if(ref?.cwd){const hit=options.find(p=>p.cwd===ref.cwd&&p.host===ref.host)||options.find(p=>p.cwd===ref.cwd);if(hit)$('new-chat-project').value=hit.key;}
     $('new-chat-worktree').checked=localStorage.getItem('new-chat-worktree')==='1';
     $('new-chat-worktree-base').value=localStorage.getItem('new-chat-worktree-base')||'fresh';
     $('new-chat-project').onchange();updateNewChatDesc();

@@ -919,6 +919,8 @@ const en={
   "基于当前 HEAD（head）": "Based on the current HEAD (head)",
   "新连接类型": "New connection type",
   "显示方式": "Display",
+  "显示更多": "Show more",
+  "在此项目新建聊天": "New chat in this project",
   "最近交互": "Recent activity",
   "暂无关注聊天。请在手机打开聊天并开启提醒。": "No watched chats yet. Open a chat on your phone and enable reminders.",
   "暂无日志": "No logs yet",
