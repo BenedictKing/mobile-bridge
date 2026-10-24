@@ -42,7 +42,7 @@ class ChatTimeline {
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
     this.resize.observe(this.container);
   }
-  dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
+  dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.loadErrorEl?.remove();this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
   capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&!n.dataset.summary&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
@@ -71,9 +71,18 @@ class ChatTimeline {
     requestAnimationFrame(()=>this.suppress=false);
   }
   read(action,params={}){return this.request(this.url(action)+'&'+new URLSearchParams(params),undefined,this.abort.signal);}
+  // 重试按钮下的服务端错误详情；空文本时靠 .error:empty 自动隐藏。
+  loadError(message){
+    if(!this.loadErrorEl){
+      this.loadErrorEl=document.createElement('p');
+      this.loadErrorEl.className='error load-error';
+      this.older.insertAdjacentElement('afterend',this.loadErrorEl);
+    }
+    this.loadErrorEl.textContent=message||'';
+  }
   async start(){
     if(this.starting||this.abort.signal.aborted)return;
-    clearTimeout(this.startRetry);this.starting=true;
+    clearTimeout(this.startRetry);this.starting=true;this.loadError('');
     this.older.hidden=false;this.older.disabled=true;this.older.textContent=timelineText('正在读取最近内容…');
     try{
       const page=await this.read('timeline',{limit:20});
@@ -81,7 +90,7 @@ class ChatTimeline {
       this.apply(page,true);this.updates();
       // Give the first 20 records a paint before quietly filling the 100-row window.
       requestAnimationFrame(()=>requestAnimationFrame(()=>this.fillRecent()));
-    }catch(e){if(this.abort.signal.aborted)return;this.older.disabled=false;this.older.textContent=timelineText('读取失败，点击重试');this.status(e.message);this.startRetry=setTimeout(()=>this.start(),3000);}
+    }catch(e){if(this.abort.signal.aborted)return;this.older.disabled=false;this.older.textContent=timelineText('读取失败，点击重试');this.status(e.message);this.loadError(e.message);this.startRetry=setTimeout(()=>this.start(),3000);}
     finally{this.starting=false;}
   }
   fillRecent(){

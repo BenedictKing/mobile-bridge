@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -295,6 +296,8 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	} else if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
 		acpKind, acpManager = resolution.kind, resolution.manager
 		if resolution.err != nil {
+			// 手机端打开会话全靠这条链路；409 本身不可见，不落日志排障只能靠猜。
+			log.Printf("会话打开失败: agent=%s thread=%s: %v", acpKind, threadID, resolution.err)
 			h.fail(http.StatusConflict, errorBody(acpSessionMessage(resolution.err)))
 			return true
 		}
@@ -565,6 +568,7 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	if !write && (action == "timeline" || action == "changes" || action == "detail") {
 		if result, handled, err := h.liveTimeline(threadID, action, query); handled {
 			if err != nil {
+				log.Printf("timeline 读取失败: thread=%s action=%s: %v", threadID, action, err)
 				h.fail(http.StatusConflict, errorBody(err.Error()))
 			} else {
 				h.output(http.StatusOK, result, contentTypeJSON, "")
@@ -655,11 +659,13 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	}
 	cwd := queryValue(query, "cwd", manager.CwdFor(threadID))
 	if cwd == "" {
+		log.Printf("会话打开失败: agent=%s thread=%s: 找不到工作目录（列表缓存可能已过期）", kind, threadID)
 		h.fail(http.StatusConflict, errorBody("找不到这个会话的工作目录，请稍后刷新列表"))
 		return true
 	}
 	session, err := manager.Open(threadID, cwd, manager.InitializeTimeout)
 	if err != nil {
+		log.Printf("会话打开失败: agent=%s thread=%s: %v", kind, threadID, err)
 		h.fail(http.StatusConflict, errorBody(acpSessionMessage(err)))
 		return true
 	}
