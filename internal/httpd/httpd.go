@@ -36,6 +36,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
+	"github.com/BenedictKing/mobile-bridge/internal/team"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
 )
@@ -102,6 +103,14 @@ type Server struct {
 	Account         *account.Manager
 	Pool            *accpool.Manager
 	Goal            *goal.Manager
+	// Team 编排（docs/team-orchestration-plan.md §10）：服务、账本与每 Run
+	// 事件投影由 main.go 装配（构造后直赋，必须在任何 ServeHTTP 之前完成）。
+	Teams     *team.Service
+	TeamStore team.TeamStore
+	TeamFeeds *TeamFeedRegistry
+	// TeamChangesWait 是 changes 端点长轮询的等待上限（sessions.go 的
+	// sessionRouteChanges 同款 12s）。仅测试用：生产保持零值走默认。
+	TeamChangesWait time.Duration
 	queueMu         sync.Mutex // serializes queue dispatch passes
 	projectionsMu   sync.Mutex
 	projections     map[string]*projectionSlot // per-thread timeline + lock
@@ -324,6 +333,7 @@ var staticRoutes = map[string]staticRoute{
 	"/fast-mode.js":               {"fast-mode.js", "text/javascript; charset=utf-8"},
 	"/accounts.js":                {"accounts.js", "text/javascript; charset=utf-8"},
 	"/pool.js":                    {"pool.js", "text/javascript; charset=utf-8"},
+	"/team.js":                    {"team.js", "text/javascript; charset=utf-8"},
 	"/migrate.js":                 {"migrate.js", "text/javascript; charset=utf-8"},
 	"/account.js":                 {"account.js", "text/javascript; charset=utf-8"},
 	"/account.css":                {"account.css", "text/css; charset=utf-8"},
@@ -656,6 +666,18 @@ func (h *handler) handleMethod(write bool) {
 			return
 		}
 		h.handlePool(true)
+	case path == "/api/teams" || strings.HasPrefix(path, "/api/teams/"):
+		// Team 编排（§10）：PATCH/DELETE 是 web/team.js 契约使用的真实 HTTP
+		// 方法，写判定与 CSRF 校验按「非 GET 即写」在 case 内重算（挂载点
+		// 必须先于 default，否则被 Bridge.ForHost 拦成 404）。
+		if h.session(h.request.Method != http.MethodGet) == nil {
+			return
+		}
+		if h.server.Teams == nil || h.server.TeamStore == nil || h.server.TeamFeeds == nil {
+			h.fail(http.StatusConflict, errorBody("请启动支持团队编排的新版网关"))
+			return
+		}
+		h.handleTeams(h.request.Method)
 	case write && path == "/api/accounts/details":
 		if h.session(write) == nil {
 			return

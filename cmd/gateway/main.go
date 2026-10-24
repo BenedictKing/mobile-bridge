@@ -53,6 +53,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
+	"github.com/BenedictKing/mobile-bridge/internal/team"
 	"github.com/BenedictKing/mobile-bridge/internal/tunnel"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/BenedictKing/mobile-bridge/internal/zcode"
@@ -908,6 +909,36 @@ func runGateway(args []string) {
 	server.GoalCmds = httpd.NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
 	server.Hidden = httpd.LoadHiddenSessions(filepath.Join(dataDir, "hidden-sessions.json"))
 	server.Forks = httpd.LoadForks(filepath.Join(dataDir, "forks.json"))
+	// Team 编排（docs/team-orchestration-plan.md §8.3 启动顺序）：账本与
+	// journal 先装配，事件投影从 journal 预热后再对账恢复；恢复期产生的
+	// journal 事件经 OnEvent 继续进入投影。全部注入在任何 ServeHTTP 之前
+	//（Server 字段构造后直赋、无同步）。
+	teamJournal, teamJournalErr := team.OpenJournal(filepath.Join(dataDir, "team-journal.jsonl"))
+	if teamJournalErr != nil {
+		log.Fatalf("team journal: %v", teamJournalErr)
+	}
+	teamStore := team.LoadStore(filepath.Join(dataDir, "teams.json"), filepath.Join(dataDir, "team-runs.json"))
+	if teamStore.RunsLedgerCorrupt() {
+		// §8.1：team-runs.json 只是可重建的查询快照，journal 才是事实
+		// 来源。损坏原件已在 LoadStore 内改名留存，此处按 journal 事实
+		// 重建可恢复的 Run 记录。
+		if events, replayErr := teamJournal.Replay(); replayErr != nil {
+			log.Printf("team 运行账本损坏且 journal 重放失败，Run 记录按空账本启动: %v", replayErr)
+		} else {
+			teamStore.RebuildRunsFromJournal(events)
+		}
+	}
+	server.TeamStore = teamStore
+	server.TeamFeeds = httpd.NewTeamFeedRegistry(teamJournal, teamStore)
+	teamQueue, teamResolver := httpd.NewTeamAdapters(server)
+	server.Teams = team.NewService(teamStore, teamJournal, teamQueue, teamResolver)
+	server.Teams.OnEvent = server.TeamFeeds.Ingest
+	if err := server.TeamFeeds.PrimeFromJournal(); err != nil {
+		log.Printf("team 事件投影预热失败: %v", err)
+	}
+	if err := server.Teams.RecoverAll(); err != nil {
+		log.Printf("team 运行恢复失败: %v", err)
+	}
 	server.StartQueueWorker()
 	controller, controlErr := lifecycle.NewController(dataDir, os.Getpid(), instanceID)
 	if controlErr != nil {
