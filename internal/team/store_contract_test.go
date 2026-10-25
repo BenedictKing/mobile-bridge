@@ -1264,6 +1264,7 @@ func TestDefaultPolicy(t *testing.T) {
 		MaxParallelTasks:       3,
 		MinParallelTasks:       1,
 		MaxProviderConcurrency: 5,
+		MaxTaskRetries:         1, // §6.3：限流/瞬态错误的受限重试（阶段二）
 		MaxRounds:              3,
 		MaxTasksPerRun:         12,
 		MaxContextChars:        12000,

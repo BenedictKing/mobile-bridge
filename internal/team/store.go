@@ -493,14 +493,17 @@ func (s *Store) RebuildRunsFromJournal(events []*Event) {
 				continue // 缺 run_created 锚点的孤儿事件：无从重建。
 			}
 			run = &Run{
-				ID:        event.RunID,
-				TeamID:    payloadString(event.Payload, "teamId"),
-				Goal:      payloadString(event.Payload, "goal"),
-				Status:    RunCreated,
-				Round:     1,
-				PlanHash:  payloadString(event.Payload, "planHash"),
-				CreatedAt: event.CreatedAt,
-				UpdatedAt: event.CreatedAt,
+				ID:            event.RunID,
+				TeamID:        payloadString(event.Payload, "teamId"),
+				Goal:          payloadString(event.Payload, "goal"),
+				Mode:          payloadString(event.Payload, "mode"),
+				CollectPolicy: payloadString(event.Payload, "collectPolicy"),
+				Status:        RunCreated,
+				Round:         1,
+				PlanHash:      payloadString(event.Payload, "planHash"),
+				VerifyCommand: payloadStrings(event.Payload, "verifyCommand"),
+				CreatedAt:     event.CreatedAt,
+				UpdatedAt:     event.CreatedAt,
 			}
 			byID[event.RunID] = run
 			order = append(order, event.RunID)
@@ -544,6 +547,16 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			run.Status = RunCancelled
 		case EventRunStopped:
 			run.Status = RunStopped
+		case EventRunVerify:
+			// 闸门结果随事件重建（§6.4.1）：RunReducing 态的 run 崩溃后凭
+			// Verify 判定终局/等待 resume，缺了它会被误折成 completed。
+			verify := &VerifyResult{
+				ExitCode:   payloadInt(event.Payload, "exitCode"),
+				OutputHead: payloadString(event.Payload, "outputHead"),
+				FinishedAt: event.CreatedAt,
+			}
+			verify.Truncated, _ = event.Payload["truncated"].(bool)
+			run.Verify = verify
 		}
 		if reason := payloadString(event.Payload, "stopReason"); reason != "" {
 			run.StopReason = reason
@@ -576,11 +589,13 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	case EventTaskCompleted:
 		task.Status = TaskCompleted
 		result := &TaskResult{
-			SessionID:   payloadString(event.Payload, "sessionId"),
-			TurnID:      payloadString(event.Payload, "turnId"),
-			Result:      payloadString(event.Payload, "result"),
-			ResultChars: payloadInt(event.Payload, "resultChars"),
-			StopReason:  payloadString(event.Payload, "stopReason"),
+			SessionID:      payloadString(event.Payload, "sessionId"),
+			TurnID:         payloadString(event.Payload, "turnId"),
+			Result:         payloadString(event.Payload, "result"),
+			ResultChars:    payloadInt(event.Payload, "resultChars"),
+			StopReason:     payloadString(event.Payload, "stopReason"),
+			FileSummary:    payloadString(event.Payload, "fileSummary"),
+			CommandSummary: payloadString(event.Payload, "commandSummary"),
 		}
 		result.Truncated, _ = event.Payload["truncated"].(bool)
 		task.Result = result.Result
@@ -588,10 +603,12 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	case EventTaskFailed:
 		task.Status = TaskFailed
 		task.Error = payloadString(event.Payload, "error")
+		task.Outcome = payloadString(event.Payload, "outcome")
 	case EventTaskOutcomeUnknown:
 		task.Status = TaskOutcomeUnknown
 	case EventTaskStopped, EventTaskInputHashMismatch:
 		task.Status = TaskStopped
+		task.Outcome = payloadString(event.Payload, "outcome")
 	}
 	if reason := payloadString(event.Payload, "stopReason"); reason != "" && event.Type != EventTaskDispatching {
 		task.StopReason = reason
@@ -609,6 +626,22 @@ func payloadInt(payload map[string]any, key string) int {
 		return 0
 	}
 	return value
+}
+
+// payloadStrings 读取载荷里的字符串数组字段（run_created 的 verifyCommand
+// 等）；缺失或形态不符返回 nil。
+func payloadStrings(payload map[string]any, key string) []string {
+	items, ok := payload[key].([]any)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, isString := item.(string); isString {
+			values = append(values, text)
+		}
+	}
+	return values
 }
 
 func removeKey(order []string, key string) []string {

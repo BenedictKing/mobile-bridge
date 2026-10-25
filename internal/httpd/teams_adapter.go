@@ -1,12 +1,14 @@
 package httpd
 
-// teams_adapter.go 把 Server 的既有能力适配成 internal/team 的两个端口
+// teams_adapter.go 把 Server 的既有能力适配成 internal/team 的端口
 //（docs/team-orchestration-plan.md §3.1 原则 3：team 只依赖接口，生产实现由
 // httpd 装配提供，team 严禁 import internal/httpd）：
 //   - QueueAdapter → submissions 账本（queue.go）：Enqueue 固定 mode="queue"，
 //     绝不立即派发——派发时机完全交给既有 3s worker 与 settle 钩子；
 //   - SessionResolver → resolveACP 的归属解析（server_bridge.go）与
-//     manager.CwdFor 的工作目录读取。
+//     manager.CwdFor 的工作目录读取；
+//   - TranscriptSource → 迁移的源视图解析与转录压平（§7 成员间转发的
+//     来源侧，只读会话快照）。
 //
 // 本文件不做任何调度决策；成员归属与 cwd 的「免 spawn」判定也在这里
 //（teamMemberKind / teamMemberAvailable），供 teams.go 的成员绑定与列表
@@ -14,9 +16,12 @@ package httpd
 
 import (
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
 )
 
@@ -24,6 +29,57 @@ import (
 // ServeHTTP 之前（构造后直赋无同步的既有惯例）。
 func NewTeamAdapters(server *Server) (team.QueueAdapter, team.SessionResolver) {
 	return teamQueueAdapter{server: server}, teamSessionResolver{server: server}
+}
+
+// NewTeamTranscriptSource 返回成员间转发（§7）所需的会话转录提取端口。
+// 装配方在 NewService 之后直赋 Service.Transcripts。
+func NewTeamTranscriptSource(server *Server) team.TranscriptSource {
+	return teamTranscriptSource{server: server}
+}
+
+// teamTranscriptSource 只读解析成员会话的有界转录：源视图复用迁移的
+// migrationSourceView（ACP 快照 > codex 历史/视图），压平复用
+// migrationTranscript（按 scope 尾部偏置截断），但绝不用 migrationMessage——
+// 它自带 migrate 专属头/标题/目录行并以「继续」指令尾行收束，套进
+// [Team context] 会形成双层信封且尾行语义不当。这里由 teamTranscriptText
+// 自拼正文行（role 标签复用 migrationTextsByLocale 的 roles 表）。
+type teamTranscriptSource struct{ server *Server }
+
+// BoundedTranscript 返回 sessionID 按 scope 裁剪的转录正文（无任何信封）。
+// 找不到会话时返回错误（迁移的同款文案）。
+func (t teamTranscriptSource) BoundedTranscript(sessionID, scope string) (string, bool, error) {
+	normalized, valid := migrationScope(scope)
+	if !valid {
+		return "", false, fmt.Errorf("未知的转录范围：%s", scope)
+	}
+	// migrationSourceView 只读源会话（不创建会话、不发消息）；handler 的
+	// writer/request 字段在该路径上不被触碰。
+	h := &handler{server: t.server}
+	view := h.migrationSourceView(sessionID, normalized)
+	if view == nil {
+		return "", false, errors.New("找不到这个会话，请稍后刷新列表")
+	}
+	return teamTranscriptText(view, normalized)
+}
+
+// teamTranscriptText 把规范化视图压平为转发正文：每条转录一行「角色：文本」，
+// 复用 migrationTranscript 的 scope 预算与截断标记。role 标签固定 zh-CN
+// （[Team context] 信封是中文，roles 表与信封语言保持一致）。
+func teamTranscriptText(view *jsoncompat.Object, scope string) (string, bool, error) {
+	entries, truncated := migrationTranscript(view, scope)
+	if len(entries) == 0 {
+		return "", truncated, nil
+	}
+	roles := migrationTextsByLocale["zh-CN"].roles
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		role := roles[entry.role]
+		if role == "" {
+			role = entry.role
+		}
+		lines = append(lines, role+"："+entry.text)
+	}
+	return strings.Join(lines, "\n"), truncated, nil
 }
 
 // teamQueueAdapter 把任务投递对接到生产 submissions 账本。

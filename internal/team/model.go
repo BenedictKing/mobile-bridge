@@ -32,8 +32,11 @@ const (
 	TaskStopped        = "stopped"
 )
 
-// Run 状态（§4.3 状态图）。planning 由阶段三 Lead 自动规划使用，阶段一显式
-// Plan 不经过该状态。
+// Run 状态（§4.3 状态图）。planning 由阶段三 Lead 自动规划使用，显式 Plan
+// 不经过该状态；reducing 是验证闸门窗口（§6.4.1，阶段二）：全任务终态且
+// fold 判 completed 后先过闸门再终局——闸门未过 → waiting_input 可修可
+// 重跑，过了才落 completed。collecting 预留给收集策略的中间态（当前
+// fold 路径直接从 dispatching 终局）。
 const (
 	RunCreated        = "created"
 	RunPlanning       = "planning"
@@ -60,19 +63,61 @@ const (
 	EventTaskOutcomeUnknown    = "task_outcome_unknown"
 	EventTaskStopped           = "task_stopped"
 	EventTaskInputHashMismatch = "task_input_hash_mismatch"
+	// EventTaskRetryScheduled 是受限重试的重臂迁移事实（§6.3，阶段二）：
+	// 预算内的 rate_limited/transient 失败在 task_failed 之后「回 ready +
+	// attempt+1」的快照迁移必须与失败事实同批落 journal——重试常因 AIMD
+	// 冷却滞留 ready 数十秒（Retry-After 上限 300s），期间重启的话
+	// ReconcileRun 只有 task_failed 终态可重放，任务会被折成确定性 failed、
+	// 重试预算被静默丢弃（§8.3 第 7 条对可重试分类的豁免依赖本事件）。
+	// payload {taskId, attempt, outcome}，attempt 是重臂后的下一次尝试号。
+	EventTaskRetryScheduled = "task_retry_scheduled"
 	EventRunWaitingInput       = "run_waiting_input"
 	EventRunCompleted          = "run_completed"
 	EventRunFailed             = "run_failed"
 	EventRunCancelled          = "run_cancelled"
+	// EventProviderThrottled 是 AIMD 窗口实际减小时的限流事实（§6.3，
+	// 阶段二）：payload {bucket, window, retryAfterSecs}，每 epoch 一次。
+	// run 级事件（无 taskId），HTTP/SSE 路由归 httpd-api-2。
+	EventProviderThrottled = "provider_throttled"
+	// worktree 生命周期事件（§6.4 阶段二，§16 默认决策 6：只引用用户预备的
+	// worktree）：
+	//   - workspace_bound {taskId, workspaceId, path, baseRevision}——isolated
+	//     任务首派随 task_dispatching 同次记账写入，基线随 Task 持久化；
+	//   - workspace_lost {taskId, workspaceId, reason}——reason ∈ path_missing |
+	//     base_changed，重启恢复/收养时发现工作区丢失或基线变更：任务停靠
+	//     （stopped）+ run waiting_input，绝不自动创建新 worktree；
+	//   - workspace_cleanup_failed {taskId, workspaceId, error}——用户显式清理
+	//     失败（脏区等），错误上抛给触发方。
+	EventWorkspaceBound         = "workspace_bound"
+	EventWorkspaceLost          = "workspace_lost"
+	EventWorkspaceCleanupFailed = "workspace_cleanup_failed"
+	// EventRunVerify 是确定性验证闸门的执行事实（§6.4.1，阶段二）：payload
+	// {exitCode, durationMs, outputHead, truncated[, reason]}，run 级事件（无
+	// taskId）；VerifyResult 随 Run 快照持久化，resume 复验后再次落账。
+	EventRunVerify = "run_verify"
 )
 
-// 策略取值（§4.2）。isolated_worktree 属阶段二，仅作为可持久化的取值存在。
+// 策略取值（§4.2）。isolated_worktree 属阶段二：只引用用户预备的 worktree
+// （§16 默认决策：第一版不自动创建/合并/清理）。
 const (
 	WorkspaceShared           = "shared_workspace"
 	WorkspaceIsolatedWorktree = "isolated_worktree"
 	WritePolicyExclusive      = "exclusive"
 	WritePolicyParallel       = "parallel"
 )
+
+// 收集策略取值（§6.5 阶段二）：all 等待全部分支终态（失败分支不吞掉已完成
+// 结果，salvage）；first_success 仅 broadcast 模式允许——组内首个 completed
+// 即满足，其余成员取消（superseded）。空值一律按 all 归一。
+const (
+	RunCollectAll          = "all"
+	RunCollectFirstSuccess = "first_success"
+)
+
+// StopReasonSupersededByFirstSuccess 是 first_success 收集策略取消组内落败
+// 成员的固定停止原因：fold 时该类 cancelled 不参与终局分类（结果保留给
+// 首个成功者，§6.5）。
+const StopReasonSupersededByFirstSuccess = "superseded_by_first_success"
 
 // 成员角色与不可用标记（§4.1：成员引用失效时保留记录并标记 unavailable）。
 const (
@@ -133,6 +178,7 @@ type TeamPolicy struct {
 	MaxParallelTasks       int    `json:"maxParallelTasks"`
 	MinParallelTasks       int    `json:"minParallelTasks"`
 	MaxProviderConcurrency int    `json:"maxProviderConcurrency"`
+	MaxTaskRetries         int    `json:"maxTaskRetries"`
 	MaxRounds              int    `json:"maxRounds"`
 	MaxTasksPerRun         int    `json:"maxTasksPerRun"`
 	MaxContextChars        int    `json:"maxContextChars"`
@@ -152,6 +198,7 @@ func DefaultPolicy() TeamPolicy {
 		MaxParallelTasks:       3,
 		MinParallelTasks:       1,
 		MaxProviderConcurrency: 5,
+		MaxTaskRetries:         1, // §6.3：仅限流/瞬态错误的受限重试次数
 		MaxRounds:              3,
 		MaxTasksPerRun:         12,
 		MaxContextChars:        12000,
@@ -167,27 +214,54 @@ func DefaultPolicy() TeamPolicy {
 }
 
 // Run 是一次编排执行（§4.3）。team-runs.json 是可重建的查询快照，
-// 运行事实以 team-journal.jsonl 为准。
+// 运行事实以 team-journal.jsonl 为准。VerifyCommand 是 Run 声明的确定性
+// 验证闸门（§6.4.1，固定 argv 白名单，见 verify.go）：全任务终态且 fold 为
+// completed 时先过闸门再终局，绝不采信 Agent 的口头成功声明；Verify 持久化
+// 闸门结果，resume 清空后重跑即复验。
 type Run struct {
-	ID             string    `json:"id"`
-	TeamID         string    `json:"teamId"`
-	Goal           string    `json:"goal"`
-	Status         string    `json:"status"`
-	StopReason     string    `json:"stopReason,omitempty"`
-	Round          int       `json:"round"`
-	PlanHash       string    `json:"planHash"`
-	Tasks          []Task    `json:"tasks"`
-	PendingActions []Action  `json:"pendingActions,omitempty"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
-	Version        uint64    `json:"version"`
+	ID             string        `json:"id"`
+	TeamID         string        `json:"teamId"`
+	Goal           string        `json:"goal"`
+	Mode           string        `json:"mode,omitempty"`
+	CollectPolicy  string        `json:"collectPolicy,omitempty"`
+	Status         string        `json:"status"`
+	StopReason     string        `json:"stopReason,omitempty"`
+	Round          int           `json:"round"`
+	PlanHash       string        `json:"planHash"`
+	Tasks          []Task        `json:"tasks"`
+	PendingActions []Action      `json:"pendingActions,omitempty"`
+	VerifyCommand  []string      `json:"verifyCommand,omitempty"`
+	Verify         *VerifyResult `json:"verify,omitempty"`
+	CreatedAt      time.Time     `json:"createdAt"`
+	UpdatedAt      time.Time     `json:"updatedAt"`
+	Version        uint64        `json:"version"`
+
+	extra *jsoncompat.Object
+}
+
+// VerifyResult 是验证闸门的执行结果（§6.4.1/§13.3.7）：退出码交 Reducer 判
+// 定（非零 → run waiting_input 可修可重跑；零 → 正常 fold），OutputHead 是
+// 合并 stdout/stderr 的有界头部（≤2048 字节，verify.go），随 Run 快照跨重启
+// 存活。ExitCode=-1 统一表示「命令未能给出退出码」（cwd 解析失败/超时/启动
+// 失败），具体归因见 run_verify 事件的 reason 字段。
+type VerifyResult struct {
+	ExitCode   int       `json:"exitCode"`
+	OutputHead string    `json:"outputHead"`
+	Truncated  bool      `json:"truncated"`
+	FinishedAt time.Time `json:"finishedAt"`
 
 	extra *jsoncompat.Object
 }
 
 // Task 是 Run 内的一个执行单元（§4.3）。Result 是结果文本本体；
 // ResultDetail 携带 §6.5 要求的引用字段（sessionId/turnId/…），随 Run
-// 持久化，供 salvage 快照与重启对账使用。
+// 持久化，供 salvage 快照与重启对账使用。BaseRevision 是 isolated_worktree
+// 任务首派记录的基线提交（§6.4 规则 4，随 task_dispatching 同次记账写入），
+// 重启对账（workspace_lost）与 diff 数据面都以它为准。SentText 是派发时合成
+// 的完整发送文本（评审遗留④：随 task_dispatching 同次落快照），收养/超时/
+// 取消路径直接复用存量文本——matchTurn 按全文匹配 turn（dispatcher.go），策略
+// 或上下文合成的任何变更都不再让在途任务错认 turn。HTTP 投影不外发（§10.3
+// 有界 payload，teams.go teamRunDetail 显式剔除）。
 type Task struct {
 	ID               string      `json:"id"`
 	MemberID         string      `json:"memberId"`
@@ -197,8 +271,10 @@ type Task struct {
 	SiteID           string      `json:"siteId,omitempty"`
 	Ordinal          int         `json:"ordinal,omitempty"`
 	DependsOn        []string    `json:"dependsOn,omitempty"`
+	BroadcastGroup   string      `json:"broadcastGroup,omitempty"`
 	WorkspaceMode    string      `json:"workspaceMode,omitempty"`
 	WorkspaceID      string      `json:"workspaceId,omitempty"`
+	BaseRevision     string      `json:"baseRevision,omitempty"`
 	WriteLock        string      `json:"writeLock,omitempty"`
 	Status           string      `json:"status"`
 	SubmissionID     string      `json:"submissionId,omitempty"`
@@ -208,19 +284,24 @@ type Task struct {
 	Outcome          string      `json:"outcome,omitempty"`
 	StopReason       string      `json:"stopReason,omitempty"`
 	InstructionsHead string      `json:"instructionsHead,omitempty"`
+	SentText         string      `json:"sentText,omitempty"`
 
 	extra *jsoncompat.Object
 }
 
 // TaskResult 是任务结果的结构化引用（§6.5）：每条结果必须带 sessionId、
-// turnId、resultChars 与 truncated 标记，跨网关重启存活。
+// turnId、resultChars 与 truncated 标记，跨网关重启存活。FileSummary/
+// CommandSummary 是从 turn 的 activity 条目挖掘的有界摘要（§6.5 文件变更
+// 摘要与命令执行摘要，随 Run 持久化并随 task_completed 事件携带）。
 type TaskResult struct {
-	SessionID   string `json:"sessionId"`
-	TurnID      string `json:"turnId"`
-	Result      string `json:"result"`
-	ResultChars int    `json:"resultChars"`
-	Truncated   bool   `json:"truncated"`
-	StopReason  string `json:"stopReason,omitempty"`
+	SessionID      string `json:"sessionId"`
+	TurnID         string `json:"turnId"`
+	Result         string `json:"result"`
+	ResultChars    int    `json:"resultChars"`
+	Truncated      bool   `json:"truncated"`
+	StopReason     string `json:"stopReason,omitempty"`
+	FileSummary    string `json:"fileSummary,omitempty"`
+	CommandSummary string `json:"commandSummary,omitempty"`
 
 	extra *jsoncompat.Object
 }
@@ -259,22 +340,31 @@ var teamKnownFields = map[string]bool{
 }
 
 var runKnownFields = map[string]bool{
-	"id": true, "teamId": true, "goal": true, "status": true,
+	"id": true, "teamId": true, "goal": true, "mode": true,
+	"collectPolicy": true, "status": true,
 	"stopReason": true, "round": true, "planHash": true, "tasks": true,
-	"pendingActions": true, "createdAt": true, "updatedAt": true, "version": true,
+	"pendingActions": true, "verifyCommand": true, "verify": true,
+	"createdAt": true, "updatedAt": true, "version": true,
+}
+
+var verifyResultKnownFields = map[string]bool{
+	"exitCode": true, "outputHead": true, "truncated": true, "finishedAt": true,
 }
 
 var taskKnownFields = map[string]bool{
 	"id": true, "memberId": true, "prompt": true, "inputHash": true,
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
-	"workspaceMode": true, "workspaceId": true, "writeLock": true,
+	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
+	"baseRevision": true, "writeLock": true,
 	"status": true, "submissionId": true, "result": true, "resultDetail": true,
 	"error": true, "outcome": true, "stopReason": true, "instructionsHead": true,
+	"sentText": true,
 }
 
 var taskResultKnownFields = map[string]bool{
 	"sessionId": true, "turnId": true, "result": true,
 	"resultChars": true, "truncated": true, "stopReason": true,
+	"fileSummary": true, "commandSummary": true,
 }
 
 // UnmarshalJSON 解码 Team 并保留未知字段。
@@ -334,6 +424,7 @@ func (p *TeamPolicy) jsonObject() *jsoncompat.Object {
 	object.Set("maxParallelTasks", jsoncompat.Num(p.MaxParallelTasks))
 	object.Set("minParallelTasks", jsoncompat.Num(p.MinParallelTasks))
 	object.Set("maxProviderConcurrency", jsoncompat.Num(p.MaxProviderConcurrency))
+	object.Set("maxTaskRetries", jsoncompat.Num(p.MaxTaskRetries))
 	object.Set("maxRounds", jsoncompat.Num(p.MaxRounds))
 	object.Set("maxTasksPerRun", jsoncompat.Num(p.MaxTasksPerRun))
 	object.Set("maxContextChars", jsoncompat.Num(p.MaxContextChars))
@@ -385,6 +476,12 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 	object.Set("id", r.ID)
 	object.Set("teamId", r.TeamID)
 	object.Set("goal", r.Goal)
+	if r.Mode != "" {
+		object.Set("mode", r.Mode)
+	}
+	if r.CollectPolicy != "" {
+		object.Set("collectPolicy", r.CollectPolicy)
+	}
 	object.Set("status", r.Status)
 	if r.StopReason != "" {
 		object.Set("stopReason", r.StopReason)
@@ -406,6 +503,18 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 	object.Set("createdAt", r.CreatedAt.Format(time.RFC3339Nano))
 	object.Set("updatedAt", r.UpdatedAt.Format(time.RFC3339Nano))
 	object.Set("version", json.Number(strconv.FormatUint(r.Version, 10)))
+	// 闸门字段（§6.4.1）：verifyCommand 非空才落盘（未声明闸门的 Run 不带键）；
+	// verify 手工枚举四键——漏 Set 会让闸门结果在重启后丢失，resume 复验退化。
+	if len(r.VerifyCommand) > 0 {
+		command := &jsoncompat.Array{}
+		for _, part := range r.VerifyCommand {
+			command.Items = append(command.Items, part)
+		}
+		object.Set("verifyCommand", command)
+	}
+	if r.Verify != nil {
+		object.Set("verify", r.Verify.jsonObject())
+	}
 	mergeExtras(object, r.extra)
 	return object
 }
@@ -424,7 +533,7 @@ func (a *Action) jsonObject() *jsoncompat.Object {
 	return object
 }
 
-// Clone 深拷贝 Run（含任务、动作与未知字段）。
+// Clone 深拷贝 Run（含任务、动作、验证闸门与未知字段）。
 func (r *Run) Clone() *Run {
 	if r == nil {
 		return nil
@@ -438,6 +547,8 @@ func (r *Run) Clone() *Run {
 		}
 	}
 	copied.PendingActions = append([]Action(nil), r.PendingActions...)
+	copied.VerifyCommand = append([]string(nil), r.VerifyCommand...)
+	copied.Verify = r.Verify.Clone()
 	copied.extra = cloneExtra(r.extra)
 	return &copied
 }
@@ -483,11 +594,20 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 		}
 		object.Set("dependsOn", depends)
 	}
+	if t.BroadcastGroup != "" {
+		object.Set("broadcastGroup", t.BroadcastGroup)
+	}
 	if t.WorkspaceMode != "" {
 		object.Set("workspaceMode", t.WorkspaceMode)
 	}
 	if t.WorkspaceID != "" {
 		object.Set("workspaceId", t.WorkspaceID)
+	}
+	// BaseRevision（isolated worktree 首派基线，§6.4 规则 4）必须落盘：
+	// 重启恢复的 workspace_lost 对账与 diff 数据面都依赖它，漏序列化会让
+	// 基线校验静默失效（重启后误判工作区丢失）。
+	if t.BaseRevision != "" {
+		object.Set("baseRevision", t.BaseRevision)
 	}
 	if t.WriteLock != "" {
 		object.Set("writeLock", t.WriteLock)
@@ -513,6 +633,11 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	}
 	if t.InstructionsHead != "" {
 		object.Set("instructionsHead", t.InstructionsHead)
+	}
+	// SentText（派发全文，遗留④）必须落盘：漏 Set 会让收养/超时/取消路径
+	// 退回「按当前策略重算」，策略变更后在途任务的 turn 匹配即刻漂移。
+	if t.SentText != "" {
+		object.Set("sentText", t.SentText)
 	}
 	mergeExtras(object, t.extra)
 	return object
@@ -561,6 +686,12 @@ func (tr *TaskResult) jsonObject() *jsoncompat.Object {
 	if tr.StopReason != "" {
 		object.Set("stopReason", tr.StopReason)
 	}
+	if tr.FileSummary != "" {
+		object.Set("fileSummary", tr.FileSummary)
+	}
+	if tr.CommandSummary != "" {
+		object.Set("commandSummary", tr.CommandSummary)
+	}
 	mergeExtras(object, tr.extra)
 	return object
 }
@@ -572,6 +703,48 @@ func (tr *TaskResult) Clone() *TaskResult {
 	}
 	copied := *tr
 	copied.extra = cloneExtra(tr.extra)
+	return &copied
+}
+
+// UnmarshalJSON 解码 VerifyResult 并保留未知字段。
+func (v *VerifyResult) UnmarshalJSON(data []byte) error {
+	type verifyAlias VerifyResult
+	var decoded verifyAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	extra, err := collectExtras(data, verifyResultKnownFields)
+	if err != nil {
+		return err
+	}
+	*v = VerifyResult(decoded)
+	v.extra = extra
+	return nil
+}
+
+// MarshalJSON 输出四键固定顺序（exitCode/outputHead/truncated/finishedAt），
+// 未知字段原样回写在末尾。
+func (v *VerifyResult) MarshalJSON() ([]byte, error) {
+	return jsoncompat.EncodeCompact(v.jsonObject()), nil
+}
+
+func (v *VerifyResult) jsonObject() *jsoncompat.Object {
+	object := jsoncompat.NewObject()
+	object.Set("exitCode", jsoncompat.Num(v.ExitCode))
+	object.Set("outputHead", v.OutputHead)
+	object.Set("truncated", v.Truncated)
+	object.Set("finishedAt", v.FinishedAt.Format(time.RFC3339Nano))
+	mergeExtras(object, v.extra)
+	return object
+}
+
+// Clone 深拷贝 VerifyResult（含未知字段）。
+func (v *VerifyResult) Clone() *VerifyResult {
+	if v == nil {
+		return nil
+	}
+	copied := *v
+	copied.extra = cloneExtra(v.extra)
 	return &copied
 }
 

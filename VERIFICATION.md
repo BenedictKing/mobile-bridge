@@ -870,3 +870,13 @@ One-click deployment is implemented, with shell syntax checking and local tests 
 - Tests: 97 targeted Python tests plus 29 existing HTTP/pairing regressions passed; 44 desktop Node tests passed. Real isolated desktop UI checks covered disabled-profile inspection, prompt copying (mocked clipboard), dismiss/expiry timing and the website target (mocked external opening).
 - Real isolated mobile-page and desktop-window checks passed for remaining counts, blocked reload, desktop unblock, seven-day cookie, restart persistence, unchecked session cookie and narrow-screen overflow. Repeated against the packaged gateway runtime. Screenshots inspected for the blocked phone view and desktop unblock controls. No real Codex chat, remote server, DNS setting or production gateway was changed.
 - Updated the local macOS arm64 preview; no commit, push, Release or website publication.
+
+## Team Orchestrator 阶段二待人工验证项 — 2026-10-25（留位）
+
+以下交互属生产时序，集成测试环境不装配相应组件（internal/httpd 的 team 集成测试用独立伪 Agent 进程，无 accpool 账号池与 poolhooks 钩子），留待真实网关手测记录：
+
+- quota 停靠与账号池自动切换的任务级交互：poolhooks 在 quota 错误时切账号并按 ResumeAfterSwitchPrompt 续跑成员会话（internal/acpruntime），任务停靠后 watcher no-op、续跑产出保留在原会话 timeline；阶段二不自动认领续跑 turn（续跑文本不含任务幂等键），resume 后 attempt+1 重派与续跑产出各自独立可审计（internal/team/runner.go stopTaskBlocked 注释的显式定式）。
+- 真实 provider 的 429/Retry-After 行为：AIMD 的 Retry-After 解析与冷却在生产错误文本上验证（集成测试用伪 Agent 的固定哨兵文本覆盖同一分类路径）。
+- 验证闸门在真实仓库上跑 `make check`/`go test` 的退出码与输出截断展示（集成测试用临时 Makefile 固定 argv 覆盖同一执行路径）。
+
+Run ID / 重启点 / 最终状态的完整验收记录格式见 docs/team-orchestration-plan.md §13.3。

@@ -108,6 +108,11 @@ type Server struct {
 	Teams     *team.Service
 	TeamStore team.TeamStore
 	TeamFeeds *TeamFeedRegistry
+	// TeamWorkspaceRegistry 是 /api/teams/workspaces 注册/列表端点的读写面
+	//（§6.4 + §16 默认决策 6），与 Service.Workspaces 共用同一份
+	// {dataDir}/team-workspaces.json；main.go 构造后直赋，未装配（nil）时
+	// 端点报 409。
+	TeamWorkspaceRegistry *TeamWorkspaceRegistry
 	// TeamChangesWait 是 changes 端点长轮询的等待上限（sessions.go 的
 	// sessionRouteChanges 同款 12s）。仅测试用：生产保持零值走默认。
 	TeamChangesWait time.Duration

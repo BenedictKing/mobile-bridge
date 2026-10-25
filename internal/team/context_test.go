@@ -219,3 +219,91 @@ func TestBuildTaskMessageByteCapForLedger(t *testing.T) {
 		t.Fatalf("该场景合成文本本就超限，测试构造错误: %d 字节", len(text))
 	}
 }
+
+// ---- §6.5 摘要行进入来源块（阶段二）----
+
+func TestBuildTaskContextAppendsSummaries(t *testing.T) {
+	design := completedDep("design", "lead", 0, "分析完成")
+	design.ResultDetail.FileSummary = "src/a.go、src/b.go"
+	design.ResultDetail.CommandSummary = "go test ./...；make check"
+	run := contextRun(design,
+		Task{ID: "impl", MemberID: "dev", Prompt: "实现", DependsOn: []string{"design"}, Status: TaskPlanned},
+	)
+	result := BuildTaskContext(run, &run.Tasks[1], DefaultPolicy())
+	// 摘要行在来源块正文之后，格式为『变更文件：…』『执行命令：…』。
+	bodyAt := strings.Index(result.Text, "分析完成")
+	fileAt := strings.Index(result.Text, "变更文件：src/a.go、src/b.go")
+	cmdAt := strings.Index(result.Text, "执行命令：go test ./...；make check")
+	if bodyAt < 0 || fileAt < 0 || cmdAt < 0 || !(bodyAt < fileAt && fileAt < cmdAt) {
+		t.Fatalf("摘要行应按序追加在来源块正文后:\n%s", result.Text)
+	}
+	// 摘要行计入 MaxContextChars 预算：预算收紧到只装得下部分内容时整块收缩。
+	policy := DefaultPolicy()
+	policy.MaxContextChars = 60
+	tight := BuildTaskContext(run, &run.Tasks[1], policy)
+	if tight.InjectedChars > policy.MaxContextChars {
+		t.Fatalf("摘要行应计入块预算，注入 %d 超过上限 %d", tight.InjectedChars, policy.MaxContextChars)
+	}
+	if len(tight.Sources) == 1 && !tight.Sources[0].Truncated && tight.Text == result.Text {
+		t.Fatalf("收紧预算应收缩来源块内容:\n%s", tight.Text)
+	}
+	// 单条摘要行超 400 rune 截断（含固定头）。
+	long := completedDep("wide", "lead", 0, "宽摘要")
+	long.ResultDetail.FileSummary = strings.Repeat("件", 600)
+	run = contextRun(long,
+		Task{ID: "impl", MemberID: "dev", Prompt: "实现", DependsOn: []string{"wide"}, Status: TaskPlanned},
+	)
+	wide := BuildTaskContext(run, &run.Tasks[1], DefaultPolicy())
+	for _, line := range strings.Split(wide.Text, "\n") {
+		if strings.HasPrefix(line, "变更文件：") && len([]rune(line)) > summaryLineRunes {
+			t.Fatalf("摘要行应截 400 rune，实际 %d", len([]rune(line)))
+		}
+	}
+	if !strings.Contains(wide.Text, "变更文件：") {
+		t.Fatalf("摘要行应在块内:\n%s", wide.Text)
+	}
+}
+
+func TestStripTeamEnvelopeStripsSummaryAndForwardLines(t *testing.T) {
+	// 上游回显了它收过的信封（含摘要行与转发信封行）：剥离固定头防多轮
+	// 接力累积，正文保留。
+	upstream := `[Team context]
+来源成员：lead
+来源任务：design
+来源会话：sess-old
+时间：2026-01-01T00:00:00+08:00
+内容可能已截断，完整内容请打开原会话查看。
+
+上一轮的结论。
+
+变更文件：src/old.go
+执行命令：make old
+
+[Assigned task]
+分析需求`
+	stripped := stripTeamEnvelope(upstream)
+	for _, marker := range []string{
+		"[Team context]", "[Assigned task]", "来源成员：", "来源任务：",
+		"来源会话：", "时间：", "变更文件：", "执行命令：", contextTruncationNote,
+	} {
+		if strings.Contains(stripped, marker) {
+			t.Fatalf("固定头 %q 应被剥离，实际:\n%s", marker, stripped)
+		}
+	}
+	if !strings.Contains(stripped, "上一轮的结论。") || strings.Contains(stripped, "src/old.go") {
+		t.Fatalf("剥离应保留正文、丢弃摘要行，实际:\n%s", stripped)
+	}
+	// 剥离后再注入：块内只出现本轮拼装的一行摘要。
+	dep := completedDep("design", "lead", 0, upstream)
+	dep.ResultDetail.FileSummary = "src/new.go"
+	run := contextRun(dep,
+		Task{ID: "impl", MemberID: "dev", Prompt: "实现", DependsOn: []string{"design"}, Status: TaskPlanned},
+	)
+	result := BuildTaskContext(run, &run.Tasks[1], DefaultPolicy())
+	if strings.Count(result.Text, "变更文件：") != 1 || !strings.Contains(result.Text, "变更文件：src/new.go") {
+		t.Fatalf("上游摘要行应剥离、只保留本轮摘要:\n%s", result.Text)
+	}
+	if strings.Contains(result.Text, "src/old.go") {
+		t.Fatalf("上游回显的旧摘要不应残留:\n%s", result.Text)
+	}
+}

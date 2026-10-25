@@ -212,3 +212,154 @@ func TestLockRegistryConcurrentAcquire(t *testing.T) {
 		t.Fatalf("同一任务并发获取应全部成功，实际 %d/%d", winners["same-task"], contenders)
 	}
 }
+
+// ---- 依赖组释放判定（§6.5 组语义，depGroupVerdict 四处同规则的唯一权威）----
+
+func depFixture() (map[string]string, map[string]string) {
+	// 组 g：g-a/g-b；组 h：h-a/h-b；无组任务 plain。
+	statuses := map[string]string{}
+	groups := map[string]string{
+		"g-a": "g", "g-b": "g",
+		"h-a": "h", "h-b": "h",
+		"plain": "",
+	}
+	for id := range groups {
+		statuses[id] = TaskPlanned
+	}
+	return statuses, groups
+}
+
+func TestDepGroupVerdictTable(t *testing.T) {
+	cases := []struct {
+		name        string
+		mutate      func(statuses map[string]string)
+		deps        []string
+		collect     string
+		wantRelease bool
+		wantBlocked bool
+	}{
+		// 无组依赖：阶段一规则退化。
+		{"无组 completed", func(s map[string]string) { s["plain"] = TaskCompleted }, []string{"plain"}, RunCollectAll, true, false},
+		{"无组 failed", func(s map[string]string) { s["plain"] = TaskFailed }, []string{"plain"}, RunCollectAll, false, true},
+		{"无组 running 等待", func(s map[string]string) { s["plain"] = TaskRunning }, []string{"plain"}, RunCollectAll, false, false},
+		{"无组 cancelled", func(s map[string]string) { s["plain"] = TaskCancelled }, []string{"plain"}, RunCollectFirstSuccess, false, true},
+		// first_success：任一 completed 即满足（superseded 兄弟不影响）。
+		{"first_success 任一 completed", func(s map[string]string) {
+			s["g-a"] = TaskCompleted
+			s["g-b"] = TaskCancelled
+		}, []string{"g-a"}, RunCollectFirstSuccess, true, false},
+		{"first_success 组全终态 0 completed", func(s map[string]string) {
+			s["g-a"] = TaskFailed
+			s["g-b"] = TaskStopped
+		}, []string{"g-a"}, RunCollectFirstSuccess, false, true},
+		{"first_success 组未终态等待", func(s map[string]string) {
+			s["g-a"] = TaskCompleted
+			s["g-b"] = TaskRunning
+		}, []string{"g-a"}, RunCollectFirstSuccess, true, false},
+		// all：全终态且 ≥1 completed 才满足。
+		{"all 全终态且 1 completed", func(s map[string]string) {
+			s["g-a"] = TaskCompleted
+			s["g-b"] = TaskFailed
+		}, []string{"g-a"}, RunCollectAll, true, false},
+		{"all 1 completed 但组未全终态", func(s map[string]string) {
+			s["g-a"] = TaskCompleted
+			s["g-b"] = TaskRunning
+		}, []string{"g-a"}, RunCollectAll, false, false},
+		{"all 组全终态 0 completed", func(s map[string]string) {
+			s["g-a"] = TaskFailed
+			s["g-b"] = TaskCancelled
+		}, []string{"g-a"}, RunCollectAll, false, true},
+		// 混合依赖：组满足 + 无组依赖在飞 → 等待；组满足 + 无组 failed → 阻塞优先。
+		{"混合 组满足+无组在飞", func(s map[string]string) {
+			s["g-a"] = TaskCompleted
+			s["g-b"] = TaskCompleted
+			s["plain"] = TaskDispatching
+		}, []string{"g-a", "plain"}, RunCollectAll, false, false},
+		{"混合 组满足+无组 failed", func(s map[string]string) {
+			s["g-a"] = TaskCompleted
+			s["g-b"] = TaskCompleted
+			s["plain"] = TaskFailed
+		}, []string{"g-a", "plain"}, RunCollectAll, false, true},
+		// 同组多依赖引用只聚合一次；跨组独立判定。
+		{"双组依赖 一组等待", func(s map[string]string) {
+			s["g-a"] = TaskCompleted
+			s["g-b"] = TaskCompleted
+			s["h-a"] = TaskRunning
+		}, []string{"g-a", "g-b", "h-a"}, RunCollectAll, false, false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			statuses, groups := depFixture()
+			testCase.mutate(statuses)
+			released, blocked := depGroupVerdict(statuses, groups, testCase.deps, testCase.collect)
+			if released != testCase.wantRelease || blocked != testCase.wantBlocked {
+				t.Fatalf("期望 (released=%v, blocked=%v)，实际 (%v, %v)",
+					testCase.wantRelease, testCase.wantBlocked, released, blocked)
+			}
+		})
+	}
+	// 空依赖：恒释放。
+	released, blocked := depGroupVerdict(map[string]string{}, map[string]string{}, nil, RunCollectAll)
+	if !released || blocked {
+		t.Fatalf("空依赖应释放，实际 (%v, %v)", released, blocked)
+	}
+}
+
+func TestReadyTasksReleasesOnBroadcastGroup(t *testing.T) {
+	// first_success：组内首个 completed 即释放下游（superseded 兄弟不得误杀）。
+	run := runWithTasks(
+		taskWith("b-lead", "lead", TaskCompleted),
+		taskWith("b-dev", "dev", TaskCancelled),
+		taskWith("merge", "rev", TaskPlanned, "b-lead", "b-dev"),
+	)
+	run.CollectPolicy = RunCollectFirstSuccess
+	run.Tasks[0].BroadcastGroup = "b"
+	run.Tasks[1].BroadcastGroup = "b"
+	run.Tasks[1].StopReason = StopReasonSupersededByFirstSuccess
+	ready := ReadyTasks(run, DefaultPolicy(), 0, nil, nil, NewLockRegistry())
+	if !reflect.DeepEqual(ready, []string{"merge"}) {
+		t.Fatalf("first_success 组内已有成功者应释放 merge，实际 %v", ready)
+	}
+
+	// all：组未全终态（dev 在飞）→ 等待。
+	run2 := runWithTasks(
+		taskWith("b-lead", "lead", TaskCompleted),
+		taskWith("b-dev", "dev", TaskRunning),
+		taskWith("merge", "rev", TaskPlanned, "b-lead", "b-dev"),
+	)
+	run2.CollectPolicy = RunCollectAll
+	run2.Tasks[0].BroadcastGroup = "b"
+	run2.Tasks[1].BroadcastGroup = "b"
+	ready = ReadyTasks(run2, DefaultPolicy(), 0, nil, nil, NewLockRegistry())
+	if len(ready) != 0 {
+		t.Fatalf("all 组未全终态不应释放下游，实际 %v", ready)
+	}
+
+	// all：组全终态且 ≥1 completed（失败成员不阻塞合并，§12 阶段二验收）。
+	run3 := runWithTasks(
+		taskWith("b-lead", "lead", TaskCompleted),
+		taskWith("b-dev", "dev", TaskFailed),
+		taskWith("merge", "rev", TaskPlanned, "b-lead", "b-dev"),
+	)
+	run3.CollectPolicy = RunCollectAll
+	run3.Tasks[0].BroadcastGroup = "b"
+	run3.Tasks[1].BroadcastGroup = "b"
+	ready = ReadyTasks(run3, DefaultPolicy(), 0, nil, nil, NewLockRegistry())
+	if !reflect.DeepEqual(ready, []string{"merge"}) {
+		t.Fatalf("all 组全终态且含成功者应释放 merge，实际 %v", ready)
+	}
+
+	// 组全终态 0 completed：不选中（级联终止由 runner 落账）。
+	run4 := runWithTasks(
+		taskWith("b-lead", "lead", TaskFailed),
+		taskWith("b-dev", "dev", TaskFailed),
+		taskWith("merge", "rev", TaskPlanned, "b-lead", "b-dev"),
+	)
+	run4.CollectPolicy = RunCollectAll
+	run4.Tasks[0].BroadcastGroup = "b"
+	run4.Tasks[1].BroadcastGroup = "b"
+	ready = ReadyTasks(run4, DefaultPolicy(), 0, nil, nil, NewLockRegistry())
+	if len(ready) != 0 {
+		t.Fatalf("全失败组不应释放下游，实际 %v", ready)
+	}
+}

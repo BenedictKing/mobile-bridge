@@ -10,6 +10,7 @@ package team
 //	task_dispatching: {taskId, sessionId, submissionId, inputHash, attempt}
 //	task_completed:   {taskId, sessionId, turnId, result, resultChars, truncated, stopReason}
 //	task_failed:      {taskId, error}
+//	task_retry_scheduled: {taskId, attempt, outcome}
 //	task_outcome_unknown / task_stopped: {taskId, stopReason}
 //	task_input_hash_mismatch: {taskId, expected, actual}
 
@@ -44,20 +45,28 @@ type Probe interface {
 
 // journalTerminal 是按 journal 事件重建出的任务终态。needsUser 标记该终局
 // 需要用户处理（未决 outcome_unknown 与 inputHash 漂移）：只有这类终局才把
-// run 停进 waiting_input；resume 确认过的 stopped 不再触发。
+// run 停进 waiting_input；resume 确认过的 stopped 不再触发。outcome/attempt
+// 是 §6.3 错误策略表的分类与失败尝试号：rate_limited/transient 的 failed
+// 与 quota/auth/not_configured 的 stopped 可被同任务更高 attempt 的
+// task_dispatching 取代（受限重试/停靠重飞的在途事实优先于既有终态）。
 type journalTerminal struct {
 	status     string
 	stopReason string
 	failure    string
+	outcome    string
+	attempt    int
 	needsUser  bool
 	result     *TaskResult
 }
 
-// journalDispatch 是任务最近一次派发记录（task_dispatching 重建）。
+// journalDispatch 是任务最近一次派发记录（task_dispatching 重建）。attempt
+// 单调递增（重试/停靠重飞各 +1）；非单调的派发事件按 journal 乱序处理——
+// 不更新记录、不触发终态取代。
 type journalDispatch struct {
 	sessionID    string
 	submissionID string
 	inputHash    string
+	attempt      int
 }
 
 // ReconcileRun 是 §8.3 的对账决策（纯函数）：
@@ -71,7 +80,14 @@ type journalDispatch struct {
 //     ignored→outcome_unknown；
 //  3. 派发期 inputHash 漂移（同一任务多个派发记录哈希不一致，或与快照
 //     InputHash 不一致）→ task_input_hash_mismatch + run waiting_input（§8.2）；
-//  4. 确定性 failed 不重试：failed 终态原样保留，永不回到 ready（§8.3 第 7 条）；
+//  4. 确定性 failed 不重试：failed 终态原样保留，永不回到 ready（§8.3
+//     第 7 条）。例外（§6.3）：task_failed payload.outcome∈
+//     {rate_limited,transient}（受限重试事实）且其后存在同任务更高
+//     attempt 的 task_dispatching → 终态被该派发取代，按在途对账；
+//     stopped(outcome∈{quota,auth,not_configured})（停靠重飞）同理；
+//     task_failed 之后跟着 task_retry_scheduled（重臂迁移：回 ready@
+//     attempt+1）→ 失败终态被重试事实取代，任务按 ready 交调度循环
+//     重派，重试预算不因重启丢失；
 //  5. 快照终态无 journal 佐证 → outcome_unknown + run waiting_input（cancelled
 //     例外：阶段一事件表没有 task_cancelled 事件，用户取消自证）；
 //  6. 对账发现计划外任务（journal 引用了 Run 任务表之外的 taskId）或任何新
@@ -99,6 +115,7 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 	// 重放 journal：任务终态、最近派发记录与派发哈希集合。
 	terminal := map[string]*journalTerminal{}
 	dispatch := map[string]*journalDispatch{}
+	retry := map[string]int{} // taskId → 重臂后的下一次尝试号（task_retry_scheduled）
 	hashes := map[string]map[string]bool{}
 	unknownTaskID := ""
 	for _, event := range events {
@@ -117,13 +134,23 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 		}
 		switch event.Type {
 		case EventTaskDispatching:
+			attempt := payloadInt(event.Payload, "attempt")
 			record := dispatch[taskID]
 			if record == nil {
 				record = &journalDispatch{}
 				dispatch[taskID] = record
 			}
+			if attempt < record.attempt {
+				// attempts 必须单调（受限重试/停靠重飞各 +1）：回退的派发
+				// 事件按 journal 乱序处理，不更新记录、不触发终态取代。
+				break
+			}
+			record.attempt = attempt
 			record.sessionID = payloadString(event.Payload, "sessionId")
 			record.submissionID = payloadString(event.Payload, "submissionId")
+			// 重臂后的新派发事实取代重试标记：任务按在途对账（下述终态
+			// 取代逻辑同理）。
+			delete(retry, taskID)
 			if hash := payloadString(event.Payload, "inputHash"); hash != "" {
 				if hashes[taskID] == nil {
 					hashes[taskID] = map[string]bool{}
@@ -131,13 +158,21 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 				hashes[taskID][hash] = true
 				record.inputHash = hash
 			}
+			// §6.3 重试/停靠重飞：更高 attempt 的派发取代既有可重派终态
+			// （「确定性 failed 永不回 ready」的例外）——重试决策与重派
+			// 事实都已在 journal，在途对账按最新派发进行。
+			if entry, ok := terminal[taskID]; ok && retryableTerminal(entry) && attempt > entry.attempt {
+				delete(terminal, taskID)
+			}
 		case EventTaskCompleted:
 			entry := &journalTerminal{status: TaskCompleted}
 			result := &TaskResult{
-				SessionID:  payloadString(event.Payload, "sessionId"),
-				TurnID:     payloadString(event.Payload, "turnId"),
-				Result:     payloadString(event.Payload, "result"),
-				StopReason: payloadString(event.Payload, "stopReason"),
+				SessionID:      payloadString(event.Payload, "sessionId"),
+				TurnID:         payloadString(event.Payload, "turnId"),
+				Result:         payloadString(event.Payload, "result"),
+				StopReason:     payloadString(event.Payload, "stopReason"),
+				FileSummary:    payloadString(event.Payload, "fileSummary"),
+				CommandSummary: payloadString(event.Payload, "commandSummary"),
 			}
 			if number, ok := event.Payload["resultChars"].(json.Number); ok {
 				if chars, err := strconv.Atoi(number.String()); err == nil {
@@ -152,7 +187,16 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 			terminal[taskID] = &journalTerminal{
 				status:  TaskFailed,
 				failure: payloadString(event.Payload, "error"),
+				outcome: payloadString(event.Payload, "outcome"),
+				attempt: payloadInt(event.Payload, "attempt"),
 			}
+		case EventTaskRetryScheduled:
+			// 受限重试的重臂迁移（§6.3）：task_failed 的「回 ready +
+			// attempt+1」事实。它取代之前的失败终态（任务不是 failed，重试
+			// 预算仍在），后续按快照 ready 交调度循环重派；更高 attempt 的
+			// task_dispatching 到来时标记再被派发事实取代（上方 delete）。
+			delete(terminal, taskID)
+			retry[taskID] = payloadInt(event.Payload, "attempt")
 		case EventTaskOutcomeUnknown:
 			terminal[taskID] = &journalTerminal{
 				status:     TaskOutcomeUnknown,
@@ -163,6 +207,8 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 			terminal[taskID] = &journalTerminal{
 				status:     TaskStopped,
 				stopReason: payloadString(event.Payload, "stopReason"),
+				outcome:    payloadString(event.Payload, "outcome"),
+				attempt:    payloadInt(event.Payload, "attempt"),
 			}
 		case EventTaskInputHashMismatch:
 			terminal[taskID] = &journalTerminal{
@@ -190,6 +236,7 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 					Status:     entry.status,
 					StopReason: entry.stopReason,
 					Error:      entry.failure,
+					Outcome:    entry.outcome,
 					Result:     entry.result,
 				})
 			}
@@ -197,6 +244,20 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 				// 未决 unknown / 哈希漂移：run 必须停在等待用户；resume 已
 				// 确认过的 stopped 不再触发。
 				needsWaiting(fmt.Sprintf("任务 %s 待人工处理：%s", task.ID, entry.stopReason))
+			}
+			continue
+		}
+		if _, retried := retry[task.ID]; retried {
+			// 受限重试的重臂事实未被新派发取代（重试冷却/等待片中重启）：
+			// 任务不是终态，也不按旧 attempt 的派发记录探账本——旧派发的
+			// 结论已随 task_failed 落账，账本状态与重派无关；按 ready 交给
+			// 调度循环按快照 attempt 重派（新 attempt 派全新 submissionID）。
+			if task.Status != TaskReady {
+				transitions = append(transitions, Transition{
+					Kind:   TransitionTaskStatus,
+					TaskID: task.ID,
+					Status: TaskReady,
+				})
 			}
 			continue
 		}
@@ -326,6 +387,25 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 	return transitions
 }
 
+// retryableTerminal 报告该 journal 终态是否可被同任务更高 attempt 的
+// task_dispatching 取代（§6.3 错误策略表）：failed 的 rate_limited/
+// transient（受限重试：结算递增 attempt 后重派）与 stopped 的 quota/
+// auth/not_configured（停靠：resume 按 attempt+1 重飞）。其余终态
+// （确定性 failed、超限 failed、无 outcome 的 stopped/cancelled 等）一律
+// 保留，永不回 ready。
+func retryableTerminal(entry *journalTerminal) bool {
+	if entry == nil {
+		return false
+	}
+	switch entry.status {
+	case TaskFailed:
+		return entry.outcome == OutcomeRateLimited || entry.outcome == OutcomeTransient
+	case TaskStopped:
+		return stopOutcomeFreshSubmission(entry.outcome)
+	}
+	return false
+}
+
 // detectHashDrift 报告任务槽的输入哈希是否漂移：journal 里出现多个不同
 // inputHash，或最近一次派发哈希与账本快照记录的 InputHash 不一致。
 // 快照哈希为空（dispatcher 尚未回写）时只比较 journal 内部一致性。
@@ -342,7 +422,8 @@ func detectHashDrift(hashes map[string]bool, snapshotHash string, record *journa
 func isTaskScopedEvent(eventType string) bool {
 	switch eventType {
 	case EventTaskDispatching, EventTaskRunning, EventTaskCompleted, EventTaskFailed,
-		EventTaskOutcomeUnknown, EventTaskStopped, EventTaskInputHashMismatch:
+		EventTaskOutcomeUnknown, EventTaskStopped, EventTaskInputHashMismatch,
+		EventTaskRetryScheduled:
 		return true
 	}
 	return false

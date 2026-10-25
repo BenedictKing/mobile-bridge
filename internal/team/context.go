@@ -93,7 +93,7 @@ func BuildTaskContext(run *Run, task *Task, policy TeamPolicy) ContextResult {
 		blocks = append(blocks, contextBlock{
 			taskID:   dep.ID,
 			memberID: dep.MemberID,
-			content:  stripTeamEnvelope(content),
+			content:  appendSourceSummaries(stripTeamEnvelope(content), dep.ResultDetail),
 		})
 	}
 	if len(blocks) == 0 {
@@ -222,9 +222,35 @@ func shrinkOldest(blocks []contextBlock) []contextBlock {
 	return blocks[1:]
 }
 
+// summaryLineRunes 是来源块里摘要行（含「变更文件：/执行命令：」固定头）
+// 的 rune 上限。
+const summaryLineRunes = 400
+
+// appendSourceSummaries 在来源块正文后追加 §6.5 的两份有界摘要行（§7.2
+// 「优先保留……文件变更」）：依赖 ResultDetail 带 FileSummary/CommandSummary
+// 时各拼一行（『变更文件：…』『执行命令：…』），各截 400 rune。行随块内容
+// 一起进 MaxContextChars 预算（fitRuneBudget/shrinkOldest 原样作用）；上游
+// 回显的旧行已由 stripTeamEnvelope 剥掉，这里只拼本任务的事实摘要。
+func appendSourceSummaries(content string, detail *TaskResult) string {
+	if detail == nil || (detail.FileSummary == "" && detail.CommandSummary == "") {
+		return content
+	}
+	var builder strings.Builder
+	builder.WriteString(content)
+	if detail.FileSummary != "" {
+		builder.WriteString("\n")
+		builder.WriteString(truncateRunes("变更文件："+detail.FileSummary, summaryLineRunes))
+	}
+	if detail.CommandSummary != "" {
+		builder.WriteString("\n")
+		builder.WriteString(truncateRunes("执行命令："+detail.CommandSummary, summaryLineRunes))
+	}
+	return builder.String()
+}
+
 // stripTeamEnvelope 剥离上游结果里已有的信封标记（[Team context] /
-// [Assigned task] 头、来源行与截断提示行），保留正文，防多轮接力时信封
-// 嵌套指数增长（§7.2「移除重复的 Team envelope」）。
+// [Assigned task] 头、来源行、截断提示行与两份摘要行），保留正文，防多轮
+// 接力时信封嵌套指数增长（§7.2「移除重复的 Team envelope」）。
 func stripTeamEnvelope(text string) string {
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
@@ -233,7 +259,10 @@ func stripTeamEnvelope(text string) string {
 		switch {
 		case trimmed == teamContextHeader, trimmed == assignedTaskHeader:
 			continue
-		case strings.HasPrefix(trimmed, "来源成员："), strings.HasPrefix(trimmed, "来源任务："):
+		case strings.HasPrefix(trimmed, "来源成员："), strings.HasPrefix(trimmed, "来源任务："),
+			strings.HasPrefix(trimmed, "来源会话："), strings.HasPrefix(trimmed, "时间："):
+			continue
+		case strings.HasPrefix(trimmed, "变更文件："), strings.HasPrefix(trimmed, "执行命令："):
 			continue
 		case trimmed == contextTruncationNote:
 			continue

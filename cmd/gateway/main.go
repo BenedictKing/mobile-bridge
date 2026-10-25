@@ -932,6 +932,12 @@ func runGateway(args []string) {
 	server.TeamFeeds = httpd.NewTeamFeedRegistry(teamJournal, teamStore)
 	teamQueue, teamResolver := httpd.NewTeamAdapters(server)
 	server.Teams = team.NewService(teamStore, teamJournal, teamQueue, teamResolver)
+	server.Teams.Transcripts = httpd.NewTeamTranscriptSource(server)
+	// worktree 注册表（§6.4 + §16 默认决策 6）：注册/列表端点与 Service 的
+	// Resolve/HeadRevision/Diff/Cleanup 共用同一实例（一份注册表文件）。
+	teamWorkspaces := httpd.NewTeamWorkspaceRegistry(filepath.Join(dataDir, "team-workspaces.json"))
+	server.TeamWorkspaceRegistry = teamWorkspaces
+	server.Teams.Workspaces = teamWorkspaces
 	server.Teams.OnEvent = server.TeamFeeds.Ingest
 	if err := server.TeamFeeds.PrimeFromJournal(); err != nil {
 		log.Printf("team 事件投影预热失败: %v", err)

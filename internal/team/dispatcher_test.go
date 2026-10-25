@@ -13,6 +13,7 @@ package team
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -266,7 +267,7 @@ func newDispatchHarness(t *testing.T) *dispatchHarness {
 
 func (h *dispatchHarness) createRun(t *testing.T, mode string, plan []PlanTaskInput) *Run {
 	t.Helper()
-	run, err := h.service.CreateRun(h.team, "实现用户头像上传接口", mode, plan)
+	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", mode, "", nil, plan)
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -285,6 +286,21 @@ func (h *dispatchHarness) waitForSubmission(t *testing.T, threadID, what string)
 	}
 	t.Fatalf("等待超时: %s 未入队", what)
 	return "", ""
+}
+
+// waitForEntry 等到 threadID 的首条入账并返回条目（含状态，供闸门放行后
+// 观察入队落账完成）。
+func (h *dispatchHarness) waitForEntry(t *testing.T, threadID, what string) (fakeQueueEntry, bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if entry, ok := h.queue.firstEntry(threadID); ok {
+			return entry, true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待超时: %s", what)
+	return fakeQueueEntry{}, false
 }
 
 // completeSubmission 把条目置 accepted 并给会话换上「本任务 turn 已完成」的
@@ -759,13 +775,19 @@ func TestTaskTimeoutFailsTaskThenCancelsOwnTurn(t *testing.T) {
 
 	var statusAtCancel, stopReasonAtCancel string
 	var cancelCalls int
+	cancelled := make(chan struct{})
 	h.service.cancelAgentTurn = func(session *acpruntime.Session, text string) bool {
 		cancelCalls++
 		statusAtCancel = h.taskOf(run.ID, "lead").Status
 		stopReasonAtCancel = h.taskOf(run.ID, "lead").StopReason
+		// watcher goroutine 落完断言变量后发信号：主 goroutine 不得在写入
+		// 完成前读取（channel 同步，§13.1；本用例断言 cancelCalls==1，
+		// 二次调用会因重复 close 暴露）。
+		close(cancelled)
 		return true
 	}
 	waitFor(t, "任务超时落 failed", func() bool { return h.taskOf(run.ID, "lead").Status == TaskFailed })
+	waitForClosed(t, "超时取消 turn 副作用完成", cancelled)
 	task := h.taskOf(run.ID, "lead")
 	if task.StopReason != "task_timeout" {
 		t.Fatalf("超时应记 stopReason=task_timeout，实际 %q", task.StopReason)
@@ -947,17 +969,31 @@ func TestResumeRedispatchesHealthyBranchOnly(t *testing.T) {
 
 func TestOversizedPromptFailsTaskBeforeEnqueue(t *testing.T) {
 	h := newDispatchHarness(t)
-	// 40000 个 CJK rune（120000 字节）：planner 按 rune 校验放行（<87800），
-	// 账本按字节拒绝——SubmitTask 预检应把任务确定性拦下，绝不入队。
+	// 40000 个 CJK rune（120000 字节）：rune 在 87800 限内、字节远超创建期
+	// 上限（评审遗留②）——创建即拒，不再建成注定在派发期才失败的 Run。
 	goal := strings.Repeat("字", 40000)
-	run, err := h.service.CreateRun(h.team, goal, ModeSingle, nil)
-	if err != nil {
-		t.Fatalf("planner 应放行 rune 限内的目标: %v", err)
+	if _, err := h.service.CreateRun(h.team, "", goal, ModeSingle, "", nil, nil); err == nil || !strings.Contains(err.Error(), "字节") {
+		t.Fatalf("超字节上限的多字节目标应在创建期拒绝，实际 %v", err)
+	}
+	// 派发期预检仍是防御底线（旧账本/直写快照可能绕过创建校验）：直落一个
+	// 超限 prompt 的 planned 任务，调度循环派发时应确定性失败、绝不入队。
+	run := &Run{
+		ID: "run-oversize", TeamID: h.team.ID, Goal: "g", Status: RunDispatching, Round: 1,
+		Tasks: []Task{{
+			ID: "big", MemberID: "lead", Prompt: strings.Repeat("字", 40000),
+			Status: TaskPlanned, Attempt: 0, WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
+		}},
+	}
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecoverRun(run.ID); err != nil {
+		t.Fatalf("恢复启动调度循环失败: %v", err)
 	}
 	waitFor(t, "任务确定性失败", func() bool {
-		return terminalTask(h.taskOf(run.ID, "lead").Status)
+		return terminalTask(h.taskOf(run.ID, "big").Status)
 	})
-	task := h.taskOf(run.ID, "lead")
+	task := h.taskOf(run.ID, "big")
 	if task.Status != TaskFailed || !strings.Contains(task.Error, "超过账本上限") {
 		t.Fatalf("超限应确定性失败并说明原因: %+v", task)
 	}
@@ -969,11 +1005,11 @@ func TestOversizedPromptFailsTaskBeforeEnqueue(t *testing.T) {
 
 func TestLargeButLegalPromptAndContextPassLedger(t *testing.T) {
 	h := newDispatchHarness(t)
-	// planner 上限内的 ASCII prompt（87800 字）+ 依赖上下文：合成全文应过
-	// 账本字节校验（上下文按字节兜底收缩）。
+	// 创建期字节上限内（63488）的 ASCII prompt（63000 字节）+ 依赖上下文：
+	// 合成全文应过账本字节校验（上下文按字节兜底收缩）。
 	plan := []PlanTaskInput{
 		{ID: "design", MemberID: "lead", Prompt: "分析", WriteLock: TaskWriteLockNone},
-		{ID: "impl", MemberID: "dev", Prompt: strings.Repeat("p", 87800), DependsOn: []string{"design"}, WriteLock: TaskWriteLockNone},
+		{ID: "impl", MemberID: "dev", Prompt: strings.Repeat("p", 63000), DependsOn: []string{"design"}, WriteLock: TaskWriteLockNone},
 	}
 	run := h.createRun(t, ModePipeline, plan)
 	designSub, designText := h.waitForSubmission(t, "s-lead", "design")
@@ -984,6 +1020,124 @@ func TestLargeButLegalPromptAndContextPassLedger(t *testing.T) {
 	}
 	h.completeSubmission("s-dev", subImpl, textImpl, "实现完成。")
 	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+}
+
+// ---- 派发全文落盘（遗留④）：收养/取消不随策略漂移 ----
+
+// TestCancelUsesPersistedSentTextAfterPolicyChange 派发全文随 task_dispatching
+// 落快照；任务在途期间团队策略变更后取消，副作用目标必须仍是存量全文
+// （matchTurn 按全文匹配 turn，重算文本会错认或落空）。
+func TestCancelUsesPersistedSentTextAfterPolicyChange(t *testing.T) {
+	h := newDispatchHarness(t)
+	plan := []PlanTaskInput{
+		{ID: "design", MemberID: "lead", Prompt: "分析", WriteLock: TaskWriteLockNone},
+		{ID: "impl", MemberID: "dev", Prompt: "实现接口", DependsOn: []string{"design"}, WriteLock: TaskWriteLockNone},
+	}
+	run := h.createRun(t, ModePipeline, plan)
+	designSub, designText := h.waitForSubmission(t, "s-lead", "design")
+	h.completeSubmission("s-lead", designSub, designText, strings.Repeat("果", 600))
+	implSub, implText := h.waitForSubmission(t, "s-dev", "impl")
+	// 派发全文已随 task_dispatching 原子落盘（含依赖结果的上下文信封）。
+	if task := h.taskOf(run.ID, "impl"); task.SentText != implText {
+		t.Fatalf("派发全文应落快照: 快照 %q vs 账本 %q", task.SentText, implText)
+	}
+	// 任务在途（accepted + 本任务 turn 运行中）。
+	h.queue.setStatus("s-dev", implSub, SubStatusAccepted, "")
+	h.resolver.setSession("s-dev", newFakeSession("s-dev", "/tmp/dev", turnInProgress(implText)))
+	waitFor(t, "impl running", func() bool { return h.taskOf(run.ID, "impl").Status == TaskRunning })
+	// 策略改为几乎不注入上下文：此刻重算会得到与派发全文完全不同的文本。
+	teamRow := h.store.Team(h.team.ID)
+	teamRow.Policy.MaxContextChars = 10
+	if err := h.store.SaveTeam(teamRow); err != nil {
+		t.Fatal(err)
+	}
+	var cancelledWith string
+	h.service.cancelAgentTurn = func(session *acpruntime.Session, text string) bool {
+		cancelledWith = text
+		return true
+	}
+	if _, err := h.service.Cancel(run.ID); err != nil {
+		t.Fatalf("取消失败: %v", err)
+	}
+	if cancelledWith != implText {
+		t.Fatalf("取消目标应使用存量派发全文（策略变更后不得漂移）: %q vs %q", cancelledWith, implText)
+	}
+}
+
+// TestAdoptUsesPersistedSentTextAfterPolicyChange 重启收养同样用存量全文：
+// 构造「依赖已 completed、实现任务在途、SentText 已落盘」的 run，恢复前把
+// 团队策略改成会剧烈改变重算结果的值——收养的 watcher 必须按存量文本匹配
+// 到本任务 turn 并完成收尾（重算文本会 matchTurn 落空、任务永远停不了）。
+func TestAdoptUsesPersistedSentTextAfterPolicyChange(t *testing.T) {
+	h := newDispatchHarness(t)
+	result := strings.Repeat("果", 600)
+	design := Task{
+		ID: "design", MemberID: "lead", Prompt: "分析", Status: TaskCompleted, Ordinal: 0,
+		Result: result, ResultDetail: &TaskResult{SessionID: "s-lead", TurnID: "t1", Result: result, ResultChars: len([]rune(result))},
+		WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
+	}
+	impl := Task{
+		ID: "impl", MemberID: "dev", Prompt: "实现接口", Status: TaskDispatching, Ordinal: 1,
+		DependsOn: []string{"design"}, Attempt: 1, WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
+	}
+	shell := &Run{ID: "run-adopt", TeamID: h.team.ID, Tasks: []Task{design, impl}}
+	context := BuildTaskContext(shell, &shell.Tasks[1], policyOf(h.team))
+	if context.Text == "" {
+		t.Fatal("测试构造错误：依赖结果应注入上下文")
+	}
+	sentText := ComposeTaskMessage(context.Text, impl.Prompt)
+	impl.InputHash = InputHashFor(&impl, PolicyDigest(policyOf(h.team)), context.Text)
+	impl.SubmissionID = TaskSubmissionID(h.team.ID, shell.ID, "impl", 1)
+	impl.SentText = sentText
+	run := &Run{ID: shell.ID, TeamID: h.team.ID, Goal: "g", Status: RunDispatching, Round: 1,
+		Tasks: []Task{design, impl}}
+	// journal 事实与快照一致（design 的 completed 必须有事件佐证，否则恢复
+	// 对账会把快照终态判成缺证未知）。
+	for _, event := range []*Event{
+		newEvent(run.ID, EventRunCreated, "user", map[string]any{"mode": ModePipeline, "taskCount": jsoncompat.Num(2)}),
+		newEvent(run.ID, EventTaskPlanned, "user", map[string]any{"taskId": "design", "memberId": "lead"}),
+		newEvent(run.ID, EventTaskPlanned, "user", map[string]any{"taskId": "impl", "memberId": "dev"}),
+		newEvent(run.ID, EventTaskCompleted, "watcher", map[string]any{
+			"taskId": "design", "sessionId": "s-lead", "turnId": "t1",
+			"result": result, "resultChars": jsoncompat.Num(len([]rune(result))), "truncated": false,
+		}),
+		newEvent(run.ID, EventTaskDispatching, "runner", map[string]any{
+			"taskId": "impl", "sessionId": "s-dev", "submissionId": impl.SubmissionID,
+			"inputHash": impl.InputHash, "attempt": jsoncompat.Num(1),
+		}),
+	} {
+		if err := h.journal.Append(event); err != nil {
+			t.Fatalf("journal 预置失败: %v", err)
+		}
+	}
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.queue.Enqueue("s-dev", impl.SubmissionID, sentText); err != nil {
+		t.Fatalf("预置账本条目失败: %v", err)
+	}
+	h.queue.setStatus("s-dev", impl.SubmissionID, SubStatusAccepted, "")
+	// 会话里本任务的 turn 已按「存量派发全文」完成——重算文本（策略改变后）
+	// 匹配不到这个 turn。
+	h.resolver.setSession("s-dev", newFakeSession("s-dev", "/tmp/dev", turnCompleted(sentText, "实现完成。")))
+	// 策略改成几乎不注入上下文，再走重启恢复：收养必须用存量全文。
+	teamRow := h.store.Team(h.team.ID)
+	teamRow.Policy.MaxContextChars = 10
+	if err := h.store.SaveTeam(teamRow); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.service.RecoverRun(run.ID); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	waitFor(t, "收养后按存量全文完成收尾", func() bool {
+		return h.store.Run(run.ID).Status == RunCompleted
+	})
+	if got := h.queue.callCount(impl.SubmissionID); got != 1 {
+		t.Fatalf("收养不得重发：Enqueue 应只 1 次，实际 %d", got)
+	}
+	if task := h.taskOf(run.ID, "impl"); task.Status != TaskCompleted {
+		t.Fatalf("impl 应 completed，实际 %s", task.Status)
+	}
 }
 
 // ---- 重启恢复（§8.3 I/O 侧）：不重发 ----
@@ -1228,6 +1382,86 @@ func TestRecoverRunReacquiresWriteLockForAdoptedTask(t *testing.T) {
 	}
 }
 
+// admissionHook 把函数适配成 DispatchAdmission（测试注入缝）。
+type admissionHook func(task *Task, member *TeamMember, session *acpruntime.Session) bool
+
+func (f admissionHook) Admit(task *Task, member *TeamMember, session *acpruntime.Session) bool {
+	return f(task, member, session)
+}
+
+// TestCancelDuringDispatchWindowReleasesWriteLock：派发池 worker 在锁外慢
+// I/O（准入缝模拟 Resolve 冷探测/rev-parse 的秒级窗口）期间被 Cancel 抢先
+// 落账——accountDispatchLocked 的 commitRun 复查发现任务已终态时必须：
+// ① 释放刚获取的写锁（终态任务不经过任何 release 路径、run 终态后调度循环
+// 也已退出，残留即永久泄漏，同 cwd 的 exclusive 任务从此无法派发，且
+// writeLockHeldBy 投影显示无持有者掩盖死锁）；② 不入队（孤儿账本条目会被
+// 3s worker 真正发给 Agent）。
+func TestCancelDuringDispatchWindowReleasesWriteLock(t *testing.T) {
+	h := newDispatchHarness(t)
+	h.resolver.setCwd("s-lead", "/shared-ws")
+	h.resolver.setCwd("s-dev", "/shared-ws")
+	// exclusive 任务的 cwd 解析依赖会话（Admission 缝也只对有会话者生效）。
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/shared-ws"))
+	entered, release := make(chan struct{}), make(chan struct{})
+	h.service.Admission = admissionHook(func(task *Task, member *TeamMember, session *acpruntime.Session) bool {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return true
+	})
+	run := h.createRun(t, ModePipeline, []PlanTaskInput{
+		{ID: "w1", MemberID: "lead", Prompt: "独占写入", WriteLock: TaskWriteLockExclusive},
+	})
+	// worker 到达准入缝：步骤①状态复查已过（任务仍 planned）、步骤③记账未达。
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("派发 worker 未到达准入缝")
+	}
+	// Cancel 抢先落账：任务 cancelled、run cancelled、releaseAllTaskLocks 执行
+	//（此刻 w1 尚未 Acquire，无账可放）。
+	if _, err := h.service.Cancel(run.ID); err != nil {
+		t.Fatalf("取消失败: %v", err)
+	}
+	close(release) // 放行 worker → 步骤③记账：复查应发现 cancelled 并放弃
+	// 等 worker 收尾（pendingDispatch 清除即 executeDispatch 全部出口跑完）。
+	waitFor(t, "派发 worker 收尾", func() bool {
+		h.service.mu.Lock()
+		state := h.service.runs[run.ID]
+		h.service.mu.Unlock()
+		if state == nil {
+			return false
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return !state.pendingDispatch["w1"]
+	})
+	if task := h.taskOf(run.ID, "w1"); task.Status != TaskCancelled {
+		t.Fatalf("任务应保持 cancelled: %+v", task)
+	}
+	// ② 无孤儿账本条目（旧实现会照常入队，条目再无人撤回）。
+	if entries := h.queue.entriesFor("s-lead"); len(entries) != 0 {
+		t.Fatalf("终态任务不应入队: %+v", entries)
+	}
+	// ① 写锁不残留：可被其他任务立即获取（同 cwd 后续 Run 可派发的直接证据）。
+	if holder := h.service.locks.Holder("/shared-ws"); holder != "" {
+		t.Fatalf("取消竞态后写锁不应残留，实际持有者 %q", holder)
+	}
+	if !h.service.locks.Acquire("/shared-ws", "probe") {
+		t.Fatal("写锁应可被其他任务获取")
+	}
+	h.service.locks.Release("/shared-ws", "probe")
+	// 端到端：同 cwd 的后续 Run 立即派发成功（泄漏会让它永远拿不到锁）。
+	h.resolver.setSession("s-dev", newFakeSession("s-dev", "/shared-ws"))
+	h.createRun(t, ModePipeline, []PlanTaskInput{
+		{ID: "w2", MemberID: "dev", Prompt: "独占写入二", WriteLock: TaskWriteLockExclusive},
+	})
+	_, _ = h.waitForSubmission(t, "s-dev", "w2 派发")
+	waitFor(t, "w2 持锁", func() bool { return h.service.locks.Holder("/shared-ws") == "w2" })
+}
+
 func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
@@ -1238,4 +1472,917 @@ func equalStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+// ---- broadcast 模式与派发池（§5.3/§6.3/§6.5 阶段二）----
+
+// createBroadcastRun 建一个单条目的 broadcast Run（逐成员展开为 draft-{member}）。
+func (h *dispatchHarness) createBroadcastRun(t *testing.T, collect string, memberIDs []string) *Run {
+	t.Helper()
+	plan := []PlanTaskInput{
+		{ID: "draft", Prompt: "各写一版方案", MemberIDs: memberIDs, WriteLock: TaskWriteLockNone},
+	}
+	run, err := h.service.CreateRun(h.team, "", "产出方案", ModeBroadcast, collect, nil, plan)
+	if err != nil {
+		t.Fatalf("创建 broadcast run 失败: %v", err)
+	}
+	return run
+}
+
+func TestBroadcastDispatchesToBothMembersInParallel(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createBroadcastRun(t, RunCollectAll, []string{"lead", "dev"})
+	// 展开任务携带组归属（§5.3：BroadcastGroup=条目 ID）。
+	for taskID, member := range map[string]string{"draft-lead": "lead", "draft-dev": "dev"} {
+		task := h.taskOf(run.ID, taskID)
+		if task.MemberID != member || task.BroadcastGroup != "draft" {
+			t.Fatalf("展开任务 %s 归属错误: member=%s group=%s", taskID, task.MemberID, task.BroadcastGroup)
+		}
+	}
+	// 两个成员同时分派：两条入账并存，互不等待（谁也不依赖谁完成）。
+	leadSub, leadText := h.waitForSubmission(t, "s-lead", "draft-lead")
+	devSub, devText := h.waitForSubmission(t, "s-dev", "draft-dev")
+	// 两份任务文本一致（同 prompt），但 submissionID 不同（任务槽不同）。
+	if leadText != devText {
+		t.Fatalf("同条目展开任务应共享 prompt:\nlead: %s\ndev: %s", leadText, devText)
+	}
+	if leadSub == devSub {
+		t.Fatal("不同成员任务的 submissionID 必须不同")
+	}
+	h.completeSubmission("s-lead", leadSub, leadText, "Lead 版方案。")
+	h.completeSubmission("s-dev", devSub, devText, "Dev 版方案。")
+	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+	// 结果按来源合并（§12 阶段二验收）：两份结果各带自己的会话引用。
+	wantResults := []struct{ taskID, session, result string }{
+		{"draft-lead", "s-lead", "Lead 版方案。"},
+		{"draft-dev", "s-dev", "Dev 版方案。"},
+	}
+	for _, want := range wantResults {
+		task := h.taskOf(run.ID, want.taskID)
+		if task.Status != TaskCompleted || task.Result != want.result {
+			t.Fatalf("任务 %s 应带结果完成: %+v", want.taskID, task)
+		}
+		if task.ResultDetail == nil || task.ResultDetail.SessionID != want.session {
+			t.Fatalf("任务 %s 的结果引用应指向来源会话: %+v", want.taskID, task.ResultDetail)
+		}
+	}
+}
+
+func TestFirstSuccessWinnerCancelsSiblingsAndWithdrawsSideEffects(t *testing.T) {
+	h := newDispatchHarness(t)
+	// 取消钩子在创建 Run 前装好（避免与运行中的 watcher 竞争字段写）；
+	// run 变量的写经 resolver/queue 的 mutex 链与钩子读建立 happens-before。
+	var run *Run
+	devCancelled := make(chan struct{})
+	var closeOnce sync.Once
+	var devCancelCalls int
+	var devStatusAtCancel, devReasonAtCancel string
+	h.service.cancelAgentTurn = func(session *acpruntime.Session, text string) bool {
+		if session.ID != "s-dev" || run == nil {
+			return true
+		}
+		devCancelCalls++
+		devStatusAtCancel = h.taskOf(run.ID, "draft-dev").Status
+		devReasonAtCancel = h.taskOf(run.ID, "draft-dev").StopReason
+		closeOnce.Do(func() { close(devCancelled) })
+		return true
+	}
+	run = h.createBroadcastRun(t, RunCollectFirstSuccess, []string{"lead", "dev", "rev"})
+	leadSub, leadText := h.waitForSubmission(t, "s-lead", "draft-lead")
+	devSub, devText := h.waitForSubmission(t, "s-dev", "draft-dev")
+	_, _ = h.waitForSubmission(t, "s-rev", "draft-rev")
+	// dev 的回合进行中（turn 副作用路径）；rev 留在队列（账本撤回路径）。
+	h.queue.setStatus("s-dev", devSub, SubStatusAccepted, "")
+	h.resolver.setSession("s-dev", newFakeSession("s-dev", "/tmp/dev", turnInProgress(devText)))
+	waitFor(t, "dev running", func() bool { return h.taskOf(run.ID, "draft-dev").Status == TaskRunning })
+
+	// 首个成功者（lead）完成。
+	h.queue.setStatus("s-lead", leadSub, SubStatusAccepted, "")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead", turnCompleted(leadText, "Lead 版方案。")))
+
+	// 落败分支被取消：dev 的 turn 取消前任务必须已落 cancelled+superseded。
+	waitForClosed(t, "dev turn 取消副作用", devCancelled)
+	if devCancelCalls != 1 || devStatusAtCancel != TaskCancelled || devReasonAtCancel != StopReasonSupersededByFirstSuccess {
+		t.Fatalf("取消 turn 前落败任务必须已落 cancelled/superseded: calls=%d status=%s reason=%s",
+			devCancelCalls, devStatusAtCancel, devReasonAtCancel)
+	}
+	// rev 仍在队列：账本条目被撤销（不留给 3s worker 派发）。
+	waitFor(t, "rev 队列条目撤销", func() bool {
+		if entry, ok := h.queue.firstEntry("s-rev"); ok {
+			return entry.status == SubStatusCancelled
+		}
+		return false
+	})
+	for _, taskID := range []string{"draft-dev", "draft-rev"} {
+		waitFor(t, taskID+" 落 cancelled", func() bool {
+			return h.taskOf(run.ID, taskID).Status == TaskCancelled
+		})
+		task := h.taskOf(run.ID, taskID)
+		if task.StopReason != StopReasonSupersededByFirstSuccess {
+			t.Fatalf("落败分支停止原因应为 superseded: %+v", task)
+		}
+	}
+	// 组满足 → run 完成，首个成功者的结果保留。
+	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+	if task := h.taskOf(run.ID, "draft-lead"); task.Status != TaskCompleted || task.Result != "Lead 版方案。" {
+		t.Fatalf("首个成功者的结果必须保留: %+v", task)
+	}
+	// superseded 取消记 task_stopped 事件（可审计）。
+	found := false
+	for _, eventType := range h.runEventTypes(run.ID) {
+		if eventType == EventTaskStopped {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("superseded 取消应记 task_stopped 事件")
+	}
+}
+
+func TestCollectAllKeepsCompletedResultsWhenBranchFails(t *testing.T) {
+	h := newDispatchHarness(t)
+	// all 收集策略（§12 阶段二验收：任一分支失败不会吞掉其他分支结果）：
+	// run 可折 failed，但已完成分支的结果始终携带（salvage）。
+	run := h.createBroadcastRun(t, RunCollectAll, []string{"lead", "dev"})
+	leadSub, leadText := h.waitForSubmission(t, "s-lead", "draft-lead")
+	devSub, devText := h.waitForSubmission(t, "s-dev", "draft-dev")
+	h.completeSubmission("s-lead", leadSub, leadText, "Lead 版方案。")
+	waitFor(t, "lead 完成", func() bool { return h.taskOf(run.ID, "draft-lead").Status == TaskCompleted })
+	// dev 分支失败。
+	h.queue.setStatus("s-dev", devSub, SubStatusAccepted, "")
+	h.resolver.setSession("s-dev", newFakeSession("s-dev", "/tmp/dev", turnFailedView(devText, "模型拒绝执行")))
+	waitFor(t, "run 折 failed（all 维持阶段一优先级）", func() bool {
+		return h.store.Run(run.ID).Status == RunFailed
+	})
+	winner := h.taskOf(run.ID, "draft-lead")
+	if winner.Status != TaskCompleted || winner.Result != "Lead 版方案。" {
+		t.Fatalf("失败分支不得吞掉已完成分支的结果: %+v", winner)
+	}
+	if loser := h.taskOf(run.ID, "draft-dev"); loser.Status != TaskFailed || loser.Error != "模型拒绝执行" {
+		t.Fatalf("失败分支应带错误文本: %+v", loser)
+	}
+}
+
+// ---- 取消窗口一：信号量等待期被 Cancel ----
+
+func TestDispatchPoolCancelWhileWaitingForSlot(t *testing.T) {
+	h := newDispatchHarness(t)
+	h.team.Policy.MaxParallelTasks = 1
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatal(err)
+	}
+	// run1 独占团队派发池唯一槽位：入队闸门挂起（executeDispatch 阻塞在
+	// Enqueue 内，持有信号量）。
+	gate := make(chan struct{})
+	enqueueEntered := make(chan string, 8)
+	h.queue.onEnqueue = func(threadID, submissionID, text string) {
+		select {
+		case enqueueEntered <- threadID:
+		default:
+		}
+		if threadID == "s-lead" {
+			<-gate
+		}
+	}
+	run1 := h.createRun(t, ModeSingle, nil)
+	if thread := <-enqueueEntered; thread != "s-lead" {
+		t.Fatalf("首个入队应来自 run1 的 lead 任务，实际 %s", thread)
+	}
+	// run2 的任务投递池后在信号量上排队等待（取消窗口一）。
+	run2 := h.createRun(t, ModePipeline, []PlanTaskInput{
+		{ID: "w", MemberID: "dev", Prompt: "独立任务", WriteLock: TaskWriteLockNone},
+	})
+	waitFor(t, "run2 任务已投递派发池", func() bool {
+		state := h.service.stateFor(run2.ID)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return state.pendingDispatch["w"]
+	})
+	// 等待期间取消整个 run2。
+	if _, err := h.service.Cancel(run2.ID); err != nil {
+		t.Fatalf("取消失败: %v", err)
+	}
+	// 放行 run1：槽位释放后 run2 的等待者获槽，复查终态即退出（绝不入队）。
+	close(gate)
+	entry, ok := h.waitForEntry(t, "s-lead", "run1 入队完成")
+	if !ok {
+		t.Fatal("run1 应已入队")
+	}
+	h.completeSubmission("s-lead", entry.submissionID, entry.text, "完成。")
+	waitFor(t, "run1 完成", func() bool { return h.store.Run(run1.ID).Status == RunCompleted })
+	if entries := h.queue.entriesFor("s-dev"); len(entries) != 0 {
+		t.Fatalf("等待期被取消的任务绝不入队: %+v", entries)
+	}
+	waitFor(t, "run2 派发窗口清理", func() bool {
+		state := h.service.stateFor(run2.ID)
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return len(state.pendingDispatch) == 0
+	})
+	state := h.service.stateFor(run2.ID)
+	state.mu.Lock()
+	_, watched := state.watchers["w"]
+	state.mu.Unlock()
+	if watched {
+		t.Fatal("未入队任务不得启动 watcher（pollTask 会误判账本条目丢失）")
+	}
+	if status := h.store.Run(run2.ID).Status; status != RunCancelled {
+		t.Fatalf("run2 应保持 cancelled，实际 %s", status)
+	}
+}
+
+// ---- 取消窗口二：记账后、入队完成前被 Cancel ----
+
+func TestDispatchCancelDuringEnqueueWithdrawsOrphanEntry(t *testing.T) {
+	h := newDispatchHarness(t)
+	gate := make(chan struct{})
+	enqueueEntered := make(chan struct{}, 1)
+	h.queue.onEnqueue = func(threadID, submissionID, text string) {
+		select {
+		case enqueueEntered <- struct{}{}:
+		default:
+		}
+		<-gate
+	}
+	run := h.createRun(t, ModeSingle, nil)
+	waitFor(t, "任务已记账 dispatching", func() bool {
+		return h.taskOf(run.ID, "lead").Status == TaskDispatching
+	})
+	<-enqueueEntered // Enqueue 已进入且被闸门挂起。
+	// 闸门期间：watcher 尚未启动（只在 Enqueue 成功后启动）。
+	state := h.service.stateFor(run.ID)
+	state.mu.Lock()
+	_, watched := state.watchers["lead"]
+	state.mu.Unlock()
+	if watched {
+		t.Fatal("watcher 必须在 Enqueue 完成后才启动")
+	}
+	// Cancel：任务落 cancelled；Cancel 的副作用拿不到条目（尚未入账）。
+	if _, err := h.service.Cancel(run.ID); err != nil {
+		t.Fatalf("取消失败: %v", err)
+	}
+	// 放行入队：条目落账后 executeDispatch 复查终态，立即撤销孤儿条目。
+	close(gate)
+	waitFor(t, "孤儿条目被撤销", func() bool {
+		if entry, ok := h.queue.firstEntry("s-lead"); ok {
+			return entry.status == SubStatusCancelled
+		}
+		return false
+	})
+	task := h.taskOf(run.ID, "lead")
+	if task.Status != TaskCancelled {
+		t.Fatalf("任务应保持 cancelled，实际 %s", task.Status)
+	}
+	if status := h.store.Run(run.ID).Status; status != RunCancelled {
+		t.Fatalf("run 应保持 cancelled，实际 %s", status)
+	}
+	for _, eventType := range h.runEventTypes(run.ID) {
+		if eventType == EventTaskOutcomeUnknown {
+			t.Fatal("取消窗口绝不能把任务误判为 outcome_unknown")
+		}
+	}
+}
+
+// ---- watcher 只在 Enqueue 成功后启动 ----
+
+func TestWatcherSpawnsOnlyAfterEnqueueSucceeds(t *testing.T) {
+	h := newDispatchHarness(t)
+	gate := make(chan struct{})
+	enqueueEntered := make(chan struct{}, 1)
+	h.queue.onEnqueue = func(threadID, submissionID, text string) {
+		select {
+		case enqueueEntered <- struct{}{}:
+		default:
+		}
+		<-gate
+	}
+	run := h.createRun(t, ModeSingle, nil)
+	waitFor(t, "任务已记账 dispatching", func() bool {
+		return h.taskOf(run.ID, "lead").Status == TaskDispatching
+	})
+	<-enqueueEntered
+	// 入队被挂起期间：无 watcher、无 outcome_unknown、run 不落 waiting_input
+	// （阶段一「记账后即起 watcher」会在同样的窗口把任务误判为账本条目丢失）。
+	state := h.service.stateFor(run.ID)
+	state.mu.Lock()
+	_, watched := state.watchers["lead"]
+	state.mu.Unlock()
+	if watched {
+		t.Fatal("入队未完成前不得启动 watcher")
+	}
+	if task := h.taskOf(run.ID, "lead"); task.Status != TaskDispatching {
+		t.Fatalf("闸门期间任务应保持 dispatching，实际 %s", task.Status)
+	}
+	if status := h.store.Run(run.ID).Status; status != RunDispatching {
+		t.Fatalf("闸门期间 run 不得落 waiting_input，实际 %s", status)
+	}
+	close(gate)
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.completeSubmission("s-lead", submissionID, sentText, "完成。")
+	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+	for _, eventType := range h.runEventTypes(run.ID) {
+		if eventType == EventTaskOutcomeUnknown {
+			t.Fatal("正常路径绝不应出现 outcome_unknown")
+		}
+	}
+}
+
+// ---- 池容量限流：同时在途不超过 maxParallelTasks（含 broadcast 展开）----
+
+func TestDispatchPoolCapsConcurrentInFlightTasks(t *testing.T) {
+	h := newDispatchHarness(t)
+	h.team.Policy.MaxParallelTasks = 2
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatal(err)
+	}
+	run := h.createBroadcastRun(t, RunCollectAll, []string{"lead", "dev", "rev"})
+	leadSub, leadText := h.waitForSubmission(t, "s-lead", "draft-lead")
+	devSub, devText := h.waitForSubmission(t, "s-dev", "draft-dev")
+	// 前两个在途时第三个绝不被派发（并发上限硬护栏）。
+	if entries := h.queue.entriesFor("s-rev"); len(entries) != 0 {
+		t.Fatalf("并发上限内第三条任务不得入队: %+v", entries)
+	}
+	// rev 的入队必须发生在 lead 终态之后（释放才补位）。
+	leadTerminalAtRevEnqueue := false
+	h.queue.onEnqueue = func(threadID, submissionID, text string) {
+		if threadID == "s-rev" {
+			leadTerminalAtRevEnqueue = terminalTask(h.taskOf(run.ID, "draft-lead").Status)
+		}
+	}
+	h.completeSubmission("s-lead", leadSub, leadText, "Lead 版方案。")
+	revSub, revText := h.waitForSubmission(t, "s-rev", "draft-rev 补位")
+	if !leadTerminalAtRevEnqueue {
+		t.Fatal("rev 的派发必须发生在 lead 终态之后（池容量限流）")
+	}
+	h.completeSubmission("s-dev", devSub, devText, "Dev 版方案。")
+	h.completeSubmission("s-rev", revSub, revText, "Rev 版方案。")
+	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+}
+
+// ---- 序列化往返：mode/collectPolicy/broadcastGroup 落 team-runs.json ----
+
+func TestRunSnapshotKeepsModeCollectPolicyAndBroadcastGroup(t *testing.T) {
+	dir := t.TempDir()
+	teamsPath := filepath.Join(dir, "teams.json")
+	runsPath := filepath.Join(dir, "team-runs.json")
+	store := LoadStore(teamsPath, runsPath)
+	team := testTeam()
+	team.ID = "team-persist"
+	if err := store.SaveTeam(team); err != nil {
+		t.Fatal(err)
+	}
+	run := &Run{
+		ID: "run-persist", TeamID: "team-persist", Goal: "产出方案",
+		Mode: ModeBroadcast, CollectPolicy: RunCollectFirstSuccess,
+		Status: RunDispatching,
+		Tasks: []Task{{
+			ID: "draft-lead", MemberID: "lead", Prompt: "各写一版方案",
+			Status: TaskPlanned, BroadcastGroup: "draft", Ordinal: 0,
+		}},
+	}
+	if err := store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	// 逐键验证确实落盘（store_contract_test 只测未知字段，抓不到漏 Set；
+	// 账本文件是缩进格式，按键名检查而非紧凑片段）。
+	raw, err := os.ReadFile(runsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ledger map[string]map[string]any
+	if err := json.Unmarshal(raw, &ledger); err != nil {
+		t.Fatalf("team-runs.json 解析失败: %v\n%s", err, raw)
+	}
+	persisted := ledger["run-persist"]
+	if persisted == nil {
+		t.Fatalf("team-runs.json 应含 run-persist:\n%s", raw)
+	}
+	if persisted["mode"] != ModeBroadcast {
+		t.Fatalf("mode 应落盘，实际 %v", persisted["mode"])
+	}
+	if persisted["collectPolicy"] != RunCollectFirstSuccess {
+		t.Fatalf("collectPolicy 应落盘，实际 %v", persisted["collectPolicy"])
+	}
+	tasks, _ := persisted["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Fatalf("任务应落盘: %v", persisted["tasks"])
+	}
+	if task, _ := tasks[0].(map[string]any); task["broadcastGroup"] != "draft" {
+		t.Fatalf("broadcastGroup 应落盘，实际 %v", tasks[0])
+	}
+	fresh := LoadStore(teamsPath, runsPath).Run("run-persist")
+	if fresh == nil {
+		t.Fatal("重载后 run 应存在")
+	}
+	if fresh.Mode != ModeBroadcast || fresh.CollectPolicy != RunCollectFirstSuccess {
+		t.Fatalf("重启恢复必须能读回 mode/collectPolicy: %+v", fresh)
+	}
+	if task := findTaskIn(fresh, "draft-lead"); task == nil || task.BroadcastGroup != "draft" {
+		t.Fatalf("任务组归属应随快照持久化: %+v", fresh.Tasks)
+	}
+}
+
+// ---- first_success 跨重启恢复：PlanCollect 每轮重算、first-wins 幂等 ----
+
+func TestRecoverRunReplaysCollectPolicy(t *testing.T) {
+	h := newDispatchHarness(t)
+	const runID = "run-rec-collect"
+	// 手工构造重启前状态：组内 draft-lead 已完成带结果、draft-dev 在途
+	// （journal 已记账派发、账本条目 queued）。
+	lead := Task{
+		ID: "draft-lead", MemberID: "lead", Prompt: "各写一版方案", Status: TaskCompleted,
+		Ordinal: 0, Attempt: 1, WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
+		BroadcastGroup: "draft",
+		Result:         "Lead 版方案。",
+	}
+	lead.ResultDetail = &TaskResult{SessionID: "s-lead", TurnID: "t-1", Result: "Lead 版方案。", ResultChars: 8}
+	lead.InputHash = InputHashFor(&lead, PolicyDigest(policyOf(h.team)), "")
+	dev := Task{
+		ID: "draft-dev", MemberID: "dev", Prompt: "各写一版方案", Status: TaskDispatching,
+		Ordinal: 1, Attempt: 1, WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
+		BroadcastGroup: "draft",
+	}
+	dev.InputHash = InputHashFor(&dev, PolicyDigest(policyOf(h.team)), "")
+	dev.SubmissionID = TaskSubmissionID(h.team.ID, runID, "draft-dev", 1)
+	run := &Run{
+		ID: runID, TeamID: h.team.ID, Goal: "产出方案", Mode: ModeBroadcast,
+		CollectPolicy: RunCollectFirstSuccess, Status: RunDispatching, Tasks: []Task{lead, dev},
+	}
+	for _, event := range []*Event{
+		newEvent(runID, EventRunCreated, "user", map[string]any{
+			"teamId": h.team.ID, "mode": ModeBroadcast, "collectPolicy": RunCollectFirstSuccess, "taskCount": jsoncompat.Num(2),
+		}),
+		newEvent(runID, EventTaskPlanned, "user", map[string]any{"taskId": "draft-lead", "memberId": "lead"}),
+		newEvent(runID, EventTaskPlanned, "user", map[string]any{"taskId": "draft-dev", "memberId": "dev"}),
+	} {
+		if err := h.journal.Append(event); err != nil {
+			t.Fatalf("journal 预置失败: %v", err)
+		}
+	}
+	completed := newEvent(runID, EventTaskCompleted, "watcher", map[string]any{
+		"taskId": "draft-lead", "sessionId": "s-lead", "turnId": "t-1",
+		"result": "Lead 版方案。", "resultChars": jsoncompat.Num(8),
+	})
+	if err := h.journal.Append(completed); err != nil {
+		t.Fatalf("journal 预置失败: %v", err)
+	}
+	devDispatch := newEvent(runID, EventTaskDispatching, "runner", map[string]any{
+		"taskId": "draft-dev", "sessionId": "s-dev", "submissionId": dev.SubmissionID,
+		"inputHash": dev.InputHash, "attempt": jsoncompat.Num(1),
+	})
+	devDispatch.IdempotencyKey = TaskIdempotencyKey(h.team.ID, runID, "draft-dev", 1)
+	if err := h.journal.Append(devDispatch); err != nil {
+		t.Fatalf("journal 预置失败: %v", err)
+	}
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.queue.Enqueue("s-dev", dev.SubmissionID, "各写一版方案"); err != nil {
+		t.Fatalf("预置账本条目失败: %v", err)
+	}
+
+	if err := h.service.RecoverRun(runID); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	// 恢复后的调度循环重算收集策略：组内已有成功者 → 在途兄弟取消并撤条目。
+	waitFor(t, "draft-dev 落 cancelled", func() bool {
+		return h.taskOf(runID, "draft-dev").Status == TaskCancelled
+	})
+	if reason := h.taskOf(runID, "draft-dev").StopReason; reason != StopReasonSupersededByFirstSuccess {
+		t.Fatalf("恢复后的取消原因应为 superseded，实际 %q", reason)
+	}
+	waitFor(t, "队列条目撤销", func() bool {
+		if entry, ok := h.queue.firstEntry("s-dev"); ok {
+			return entry.status == SubStatusCancelled
+		}
+		return false
+	})
+	// 首个成功者的结果跨重启保留；run 折 completed。
+	waitFor(t, "run 完成", func() bool { return h.store.Run(runID).Status == RunCompleted })
+	if task := h.taskOf(runID, "draft-lead"); task.Result != "Lead 版方案。" {
+		t.Fatalf("首个成功者的结果必须跨重启保留: %+v", task)
+	}
+}
+
+// ---- §6.3 AIMD：错误策略表与共享桶 ----
+
+// aimdEventOf 找出 run 的指定类型事件并返回其 payload 列表。
+func aimdEventOf(t *testing.T, journal *Journal, runID, eventType string) []map[string]any {
+	t.Helper()
+	events, err := journal.Replay()
+	if err != nil {
+		t.Fatalf("journal 重放失败: %v", err)
+	}
+	var payloads []map[string]any
+	for _, event := range events {
+		if event.RunID == runID && event.Type == eventType {
+			payloads = append(payloads, event.Payload)
+		}
+	}
+	return payloads
+}
+
+// TestRateLimitedFailureRetriesWithNewSubmissionID：429 文本 → 单次 commitRun
+// 落 task_failed 事实（含 outcome）+ attempt+1 回 ready → 冷却过后按
+// TaskSubmissionID(...,2) 重派；预算耗尽（MaxTaskRetries=1）按确定性 failed
+// 收场（Outcome=rate_limited）；窗口实际减小时每 epoch 记一次
+// provider_throttled。
+func TestRateLimitedFailureRetriesWithNewSubmissionID(t *testing.T) {
+	h := newDispatchHarness(t)
+	clock := newAIMDClock()
+	h.service.AIMD.now = clock.Now
+	run := h.createRun(t, ModeSingle, nil)
+	firstSub, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	if firstSub != TaskSubmissionID(h.team.ID, run.ID, "lead", 1) {
+		t.Fatalf("首次派发应为 attempt 1 幂等键: %s", firstSub)
+	}
+	// attempt 1 以 429 失败（Retry-After: 30 → 冷却 30s，时钟可控）。
+	// 先备会话再放行账本：生产路径 BeginTurn 先于账本 accepted
+	// （manager.go prompt：s.View.BeginTurn 后才 Submit/返回），fake 必须
+	// 建模该不变式，否则 watcher 会在「accepted 但新 turn 未见」窗口抢先
+	// 匹配上一 attempt 的旧 turn。
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(sentText, "429 Too Many Requests (Retry-After: 30)")))
+	h.queue.setStatus("s-lead", firstSub, SubStatusAccepted, "")
+	waitFor(t, "受限重试回 ready", func() bool {
+		task := h.taskOf(run.ID, "lead")
+		return task.Status == TaskReady && task.Attempt == 2
+	})
+	task := h.taskOf(run.ID, "lead")
+	if task.SubmissionID != "" || task.Error != "" || task.Outcome != "" {
+		t.Fatalf("重试回 ready 应清引用与错误: %+v", task)
+	}
+	// task_failed 事实已落 journal（outcome + 失败 attempt=1）。
+	failures := aimdEventOf(t, h.journal, run.ID, EventTaskFailed)
+	if len(failures) != 1 || failures[0]["outcome"] != OutcomeRateLimited {
+		t.Fatalf("应落一条带 outcome 的 task_failed: %+v", failures)
+	}
+	if attempt, ok := failures[0]["attempt"].(json.Number); !ok || attempt.String() != "1" {
+		t.Fatalf("task_failed 应携带失败 attempt=1: %+v", failures[0])
+	}
+	// 窗口实际减小：每 epoch 记一次 provider_throttled。
+	throttled := aimdEventOf(t, h.journal, run.ID, EventProviderThrottled)
+	if len(throttled) != 1 || throttled[0]["window"] != jsoncompat.Num(4) {
+		t.Fatalf("首次减窗应记 provider_throttled(window=4): %+v", throttled)
+	}
+	// 冷却期内（假时钟冻结）不入队：桶冷却把重派挡在 planned/ready。
+	if entries := h.queue.entriesFor("s-lead"); len(entries) != 1 {
+		t.Fatalf("冷却期内不应有第二次入队: %+v", entries)
+	}
+	// 冷却结束：按 attempt 2 的全新 submissionID 重派。
+	clock.Advance(31 * time.Second)
+	var secondSub string
+	waitFor(t, "attempt 2 重派", func() bool {
+		entries := h.queue.entriesFor("s-lead")
+		if len(entries) >= 2 {
+			secondSub = entries[1].submissionID
+			return true
+		}
+		return false
+	})
+	if secondSub != TaskSubmissionID(h.team.ID, run.ID, "lead", 2) {
+		t.Fatalf("重派应为 attempt 2 幂等键: %s", secondSub)
+	}
+	// attempt 2 再次 429：预算耗尽（MaxTaskRetries=1）→ 确定性 failed。
+	// 同样先备会话（含 attempt-2 的失败回合）再放行账本。
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(sentText, "429 too many requests")))
+	h.queue.setStatus("s-lead", secondSub, SubStatusAccepted, "")
+	waitFor(t, "预算耗尽确定性失败", func() bool {
+		task := h.taskOf(run.ID, "lead")
+		return task.Status == TaskFailed && task.Outcome == OutcomeRateLimited
+	})
+	// 第二次减窗在新 epoch：第二条 provider_throttled。
+	waitFor(t, "第二条限流事件", func() bool {
+		return len(aimdEventOf(t, h.journal, run.ID, EventProviderThrottled)) == 2
+	})
+	// 任务 failed → run 折 failed（级联语义不变）。
+	waitFor(t, "run 失败", func() bool { return h.store.Run(run.ID).Status == RunFailed })
+}
+
+// TestRetryBudgetSurvivesRestartDuringCooldown：受限重试把任务滞留在 ready
+// （AIMD 冷却最长 300s——重试窗口真实存在）期间网关重启：journal 里的
+// task_retry_scheduled 让 ReconcileRun 保住「回 ready@attempt+1」的事实——
+// 任务不被折成确定性 failed，新进程照常按 attempt 2 重派，重试预算不因
+// 重启丢失（§6.3 受限重试语义；修复前重放只见 task_failed 终态）。
+func TestRetryBudgetSurvivesRestartDuringCooldown(t *testing.T) {
+	h := newDispatchHarness(t)
+	clock := newAIMDClock()
+	h.service.AIMD.now = clock.Now // 冻结冷却：重启前任务持续滞留 ready
+	run := h.createRun(t, ModeSingle, nil)
+	firstSub, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(sentText, "429 Too Many Requests (Retry-After: 30)")))
+	h.queue.setStatus("s-lead", firstSub, SubStatusAccepted, "")
+	waitFor(t, "受限重试回 ready", func() bool {
+		task := h.taskOf(run.ID, "lead")
+		return task.Status == TaskReady && task.Attempt == 2
+	})
+	// 重启：同一 store/journal/queue/resolver 上重建服务（新 AIMD 无冷却）。
+	restarted := NewService(h.store, h.journal, h.queue, h.resolver)
+	restarted.waitSlice = 2 * time.Millisecond
+	if err := restarted.RecoverRun(run.ID); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	// 重启后不得折 failed：按 attempt 2 的全新幂等键重派。
+	waitFor(t, "重启后按 attempt 2 重派", func() bool {
+		entries := h.queue.entriesFor("s-lead")
+		return len(entries) >= 2 && entries[1].submissionID == TaskSubmissionID(h.team.ID, run.ID, "lead", 2)
+	})
+	if task := h.taskOf(run.ID, "lead"); task.Status == TaskFailed {
+		t.Fatalf("重试预算不应因重启丢失: %+v", task)
+	}
+	// attempt 2 完成 → run 正常完成（重试预算被真正用上而非丢弃）。
+	entries := h.queue.entriesFor("s-lead")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnCompleted(entries[1].text, "完成。")))
+	h.queue.setStatus("s-lead", entries[1].submissionID, SubStatusAccepted, "")
+	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+}
+
+// TestTransientFailureRetriesWithoutThrottle：瞬态错误（timeout）同样受限
+// 重试（attempt 2 全新幂等键），但不压 AIMD 桶、不记 provider_throttled；
+// 无冷却 → 重派立即进行。
+func TestTransientFailureRetriesWithoutThrottle(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModeSingle, nil)
+	firstSub, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(sentText, "request timeout after 30s")))
+	h.queue.setStatus("s-lead", firstSub, SubStatusAccepted, "")
+	// 瞬态无冷却：ready 是瞬态（循环立刻重派），按第二条入账观察重试。
+	var secondSub string
+	waitFor(t, "瞬态受限重试", func() bool {
+		entries := h.queue.entriesFor("s-lead")
+		if len(entries) >= 2 {
+			secondSub = entries[1].submissionID
+			return true
+		}
+		return false
+	})
+	if secondSub != TaskSubmissionID(h.team.ID, run.ID, "lead", 2) {
+		t.Fatalf("重派应为 attempt 2 幂等键: %s", secondSub)
+	}
+	failures := aimdEventOf(t, h.journal, run.ID, EventTaskFailed)
+	if len(failures) != 1 || failures[0]["outcome"] != OutcomeTransient {
+		t.Fatalf("应落一条 outcome=transient 的 task_failed: %+v", failures)
+	}
+	if throttled := aimdEventOf(t, h.journal, run.ID, EventProviderThrottled); len(throttled) != 0 {
+		t.Fatalf("瞬态错误不应记 provider_throttled: %+v", throttled)
+	}
+	for _, state := range h.service.AIMDSnapshot() {
+		if state.Window != state.Ceiling {
+			t.Fatalf("瞬态错误不应压桶: %+v", state)
+		}
+	}
+}
+
+// TestQuotaFailureStopsTaskAndPausesRun：quota 文本 → 任务停靠（stopped +
+// Outcome=quota + 中文原因）+ run 停 waiting_input；共享桶不变；resume 后
+// 停靠任务按 attempt+1 派全新 submissionID。
+func TestQuotaFailureStopsTaskAndPausesRun(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModePipeline, pipelinePlan())
+	designSub, designText := h.waitForSubmission(t, "s-lead", "design")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(designText, "账户额度不足，请充值后重试")))
+	h.queue.setStatus("s-lead", designSub, SubStatusAccepted, "")
+	waitFor(t, "任务停靠", func() bool {
+		task := h.taskOf(run.ID, "design")
+		return task.Status == TaskStopped && task.Outcome == OutcomeQuota
+	})
+	task := h.taskOf(run.ID, "design")
+	if !strings.Contains(task.StopReason, "停靠") || task.Error == "" {
+		t.Fatalf("停靠原因与错误文本应保留: %+v", task)
+	}
+	waitFor(t, "run 停 waiting_input", func() bool { return h.store.Run(run.ID).Status == RunWaitingInput })
+	// 停靠事实携带 outcome 与 attempt（recovery 重放的依据）。
+	stops := aimdEventOf(t, h.journal, run.ID, EventTaskStopped)
+	if len(stops) != 1 || stops[0]["outcome"] != OutcomeQuota {
+		t.Fatalf("task_stopped 应携带 outcome=quota: %+v", stops)
+	}
+	// 桶不受 quota 影响：窗口仍是 ceiling，且无 provider_throttled。
+	for _, state := range h.service.AIMDSnapshot() {
+		if state.Window != state.Ceiling {
+			t.Fatalf("quota 不应压共享桶: %+v", state)
+		}
+	}
+	if throttled := aimdEventOf(t, h.journal, run.ID, EventProviderThrottled); len(throttled) != 0 {
+		t.Fatalf("quota 不应记 provider_throttled: %+v", throttled)
+	}
+	// run 暂停期间下游不派发。
+	if entries := h.queue.entriesFor("s-dev"); len(entries) != 0 {
+		t.Fatalf("暂停期间下游不应入队: %+v", entries)
+	}
+	// resume：停靠任务重臂重飞（attempt+1 全新 submissionID），下游等待其完成。
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("resume 失败: %v", err)
+	}
+	var secondSub string
+	waitFor(t, "停靠任务重飞", func() bool {
+		entries := h.queue.entriesFor("s-lead")
+		if len(entries) >= 2 {
+			secondSub = entries[1].submissionID
+			return true
+		}
+		return false
+	})
+	if secondSub != TaskSubmissionID(h.team.ID, run.ID, "design", 2) {
+		t.Fatalf("resume 重飞应为 attempt 2 幂等键: %s", secondSub)
+	}
+	rearmed := h.taskOf(run.ID, "design")
+	if rearmed.Status != TaskDispatching || rearmed.Attempt != 2 || rearmed.Outcome != "" {
+		t.Fatalf("重飞任务应为 dispatching/attempt=2/Outcome 清空: %+v", rearmed)
+	}
+	// 重飞完成后下游照常释放（先备完成回合再放行账本，理由同上）。
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnCompleted(designText, "设计完成。")))
+	h.queue.setStatus("s-lead", secondSub, SubStatusAccepted, "")
+	waitFor(t, "下游释放", func() bool {
+		_, ok := h.queue.firstEntry("s-dev")
+		return ok
+	})
+}
+
+// TestQuotaStopDoesNotAffectOtherTeamSameBucket：同 kind（共享桶）的另一
+// Team 不因 quota 停靠被冻结——quota 只停受影响 Run，不冻结共享桶（§6.3）。
+func TestQuotaStopDoesNotAffectOtherTeamSameBucket(t *testing.T) {
+	h := newDispatchHarness(t)
+	// 二队成员与一队 lead 同为 kimi：共享 "kimi:" 桶（会话无 model，降级键）。
+	second := &Team{
+		ID: "team-2", Name: "二队", LeadID: "alpha", Policy: DefaultPolicy(),
+		Members: []TeamMember{
+			{ID: "alpha", SessionID: "s-alpha", AgentKind: "kimi", Role: RoleLead, Enabled: true},
+		},
+	}
+	h.resolver.setCwd("s-alpha", "/tmp/alpha")
+	if err := h.store.SaveTeam(second); err != nil {
+		t.Fatalf("二队保存失败: %v", err)
+	}
+	run1 := h.createRun(t, ModeSingle, nil)
+	sub1, text1 := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(text1, "余额不足，请充值")))
+	h.queue.setStatus("s-lead", sub1, SubStatusAccepted, "")
+	if !waitForSoft(5*time.Second, "一队停靠", func() bool {
+		return h.store.Run(run1.ID).Status == RunWaitingInput
+	}) {
+		state := h.service.stateFor(run1.ID)
+		state.mu.Lock()
+		watchers := make([]string, 0, len(state.watchers))
+		for taskID := range state.watchers {
+			watchers = append(watchers, taskID)
+		}
+		state.mu.Unlock()
+		t.Fatalf("一队未停靠诊断: run=%+v tasks=%+v watchers=%v s-lead 条目=%+v 事件=%v buckets=%+v",
+			h.store.Run(run1.ID), h.store.Run(run1.ID).Tasks, watchers,
+			h.queue.entriesFor("s-lead"), h.runEventTypes(run1.ID), h.service.AIMDSnapshot())
+	}
+	// 二队的同桶任务照常派发。
+	run2, err := h.service.CreateRun(second, "", "二队目标", ModeSingle, "", nil, nil)
+	if err != nil {
+		t.Fatalf("二队 run 创建失败: %v", err)
+	}
+	waitFor(t, "二队任务入队", func() bool {
+		_, ok := h.queue.firstEntry("s-alpha")
+		return ok
+	})
+	if task := h.taskOf(run2.ID, "lead"); task.Status != TaskDispatching {
+		t.Fatalf("二队任务应正常派发: %+v", task)
+	}
+	// 对照：限流（429）才压共享桶——二队任务会被冷却挡住。
+}
+
+// TestBucketCooldownKeepsTaskPlanned：桶冷却期任务留 planned（准入拒绝后
+// 靠调度循环片重试，registry 不主动唤醒）；冷却结束后按序恢复派发。
+func TestBucketCooldownKeepsTaskPlanned(t *testing.T) {
+	h := newDispatchHarness(t)
+	clock := newAIMDClock()
+	h.service.AIMD.now = clock.Now
+	// 同 kind 两成员 + MaxParallelTasks=1：t1 先占额度，t2 的唯一阻碍是桶冷却。
+	team := &Team{
+		ID: "team-cd", Name: "冷却测试", LeadID: "a1", Policy: DefaultPolicy(),
+		Members: []TeamMember{
+			{ID: "a1", SessionID: "s-a1", AgentKind: "kimi", Role: RoleLead, Enabled: true},
+			{ID: "a2", SessionID: "s-a2", AgentKind: "kimi", Role: RoleMember, Enabled: true},
+		},
+	}
+	team.Policy.MaxParallelTasks = 1
+	for _, member := range team.Members {
+		h.resolver.setCwd(member.SessionID, "/tmp/"+member.ID)
+	}
+	if err := h.store.SaveTeam(team); err != nil {
+		t.Fatalf("team 保存失败: %v", err)
+	}
+	h.team = team
+	plan := []PlanTaskInput{
+		{ID: "t1", MemberID: "a1", Prompt: "任务一", WriteLock: TaskWriteLockNone},
+		{ID: "t2", MemberID: "a2", Prompt: "任务二", WriteLock: TaskWriteLockNone},
+	}
+	run := h.createRun(t, ModePipeline, plan)
+	sub1, text1 := h.waitForSubmission(t, "s-a1", "任务一")
+	h.resolver.setSession("s-a1", newFakeSession("s-a1", "/tmp/a1",
+		turnFailedView(text1, "429 rate limit exceeded")))
+	h.queue.setStatus("s-a1", sub1, SubStatusAccepted, "")
+	waitFor(t, "t1 受限重试回 ready", func() bool {
+		task := h.taskOf(run.ID, "t1")
+		return task.Status == TaskReady && task.Attempt == 2
+	})
+	// 冷却期（假时钟冻结）：t2 留 planned，二成员均无新入队。
+	if task := h.taskOf(run.ID, "t2"); task.Status != TaskPlanned {
+		t.Fatalf("冷却期 t2 应留 planned: %+v", task)
+	}
+	if entries := h.queue.entriesFor("s-a2"); len(entries) != 0 {
+		t.Fatalf("冷却期 t2 不应入队: %+v", entries)
+	}
+	// 冷却结束：t1（ordinal 在前）先重飞，成功后 t2 才派发。
+	clock.Advance(31 * time.Second)
+	var sub2 string
+	waitFor(t, "t1 重飞", func() bool {
+		entries := h.queue.entriesFor("s-a1")
+		if len(entries) >= 2 {
+			sub2 = entries[1].submissionID
+			return true
+		}
+		return false
+	})
+	if sub2 != TaskSubmissionID(team.ID, run.ID, "t1", 2) {
+		t.Fatalf("t1 重飞应为 attempt 2: %s", sub2)
+	}
+	// 先备完成回合再放行账本（生产不变式：BeginTurn 先于 accepted）。
+	h.resolver.setSession("s-a1", newFakeSession("s-a1", "/tmp/a1",
+		turnCompleted(text1, "一完成。")))
+	h.queue.setStatus("s-a1", sub2, SubStatusAccepted, "")
+	if !waitForSoft(5*time.Second, "t2 解除冷却后派发", func() bool {
+		_, ok := h.queue.firstEntry("s-a2")
+		return ok
+	}) {
+		state := h.service.stateFor(run.ID)
+		state.mu.Lock()
+		watchers := make([]string, 0, len(state.watchers))
+		for taskID := range state.watchers {
+			watchers = append(watchers, taskID)
+		}
+		pending := make([]string, 0, len(state.pendingDispatch))
+		for taskID := range state.pendingDispatch {
+			pending = append(pending, taskID)
+		}
+		state.mu.Unlock()
+		t.Fatalf("t2 未派发诊断: tasks=%+v watchers=%v pending=%v buckets=%+v s-a1 条目=%+v 事件=%v",
+			h.store.Run(run.ID).Tasks, watchers, pending, h.service.AIMDSnapshot(),
+			h.queue.entriesFor("s-a1"), h.runEventTypes(run.ID))
+	}
+	if task := h.taskOf(run.ID, "t2"); task.Status != TaskDispatching {
+		t.Fatalf("冷却结束后 t2 应已派发: %+v", task)
+	}
+}
+
+// waitForSoft 是 waitFor 的非 Fatal 版本（诊断转储用）。
+func waitForSoft(timeout time.Duration, what string, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// TestRecoverQuotaStoppedRunParksWaitingInput：quota 停靠的 run 重启对账后
+// 驻留 waiting_input——任务保持 stopped+Outcome，绝不重发（§6.3：停靠等
+// 用户 resume 重飞，对账不自动派发）。
+func TestRecoverQuotaStoppedRunParksWaitingInput(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModeSingle, nil)
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(sentText, "配额不足，请充值")))
+	h.queue.setStatus("s-lead", submissionID, SubStatusAccepted, "")
+	waitFor(t, "任务停靠", func() bool {
+		return h.taskOf(run.ID, "lead").Status == TaskStopped
+	})
+	waitFor(t, "run 停 waiting_input", func() bool { return h.store.Run(run.ID).Status == RunWaitingInput })
+
+	// 重启对账：驻留 waiting_input，任务保持停靠与 Outcome，零重发。
+	if err := h.service.RecoverRun(run.ID); err != nil {
+		t.Fatalf("恢复失败: %v", err)
+	}
+	if status := h.store.Run(run.ID).Status; status != RunWaitingInput {
+		t.Fatalf("停靠 run 恢复后应驻留 waiting_input，实际 %s", status)
+	}
+	task := h.taskOf(run.ID, "lead")
+	if task.Status != TaskStopped || task.Outcome != OutcomeQuota || task.Attempt != 1 {
+		t.Fatalf("停靠任务应保持 stopped/outcome=quota/attempt=1: %+v", task)
+	}
+	if entries := h.queue.entriesFor("s-lead"); len(entries) != 1 {
+		t.Fatalf("恢复不得重发停靠任务: %+v", entries)
+	}
+	if got := h.queue.callCount(submissionID); got != 1 {
+		t.Fatalf("恢复不得重复入账: %d 次", got)
+	}
+	// 调度循环未重启（waiting_input 无循环），无新派发事实。
+	if dispatches := aimdEventOf(t, h.journal, run.ID, EventTaskDispatching); len(dispatches) != 1 {
+		t.Fatalf("恢复后不应有第二次派发记账: %+v", dispatches)
+	}
 }
