@@ -10,9 +10,11 @@ import (
 
 // Poller refreshes quotas in the background. To bound requests against the
 // official API (design doc open question 4), the fast loop polls only the
-// account occupying the official slot on Interval; the slow loop sweeps every
-// pooled account whose snapshot is older than AllInterval, so backup accounts
-// stay fresh enough to trust (and display) without a manual refresh.
+// account occupying the official slot — on Interval at rest, tightened
+// adaptively as that account drains (see nextFastInterval) — while the slow
+// loop sweeps every pooled account whose snapshot is older than AllInterval,
+// so backup accounts stay fresh enough to trust (and display) without a
+// manual refresh.
 type Poller struct {
 	Manager  *Manager
 	Interval time.Duration
@@ -43,7 +45,28 @@ type Poller struct {
 const (
 	defaultPollInterval    = 5 * time.Minute
 	defaultPollAllInterval = time.Hour
+	// adaptiveFastFloor bounds the drain-aware cadence so a small env override
+	// of Interval cannot turn the ladder into a hammer.
+	adaptiveFastFloor = 10 * time.Second
 )
+
+// nextFastInterval maps the tightest remaining fraction of any active account
+// to the fast-loop delay: 20%/10%/5% remaining tighten the cadence 5/10/20×
+// (default base 5m → 1m/30s/15s, floored at 10s). A draining window is then
+// caught — and a held zcode reset card spent proactively — before a live
+// turn dies on it.
+func nextFastInterval(base time.Duration, remaining float64) time.Duration {
+	switch {
+	case remaining <= 0.05:
+		return max(base/20, adaptiveFastFloor)
+	case remaining <= 0.10:
+		return max(base/10, adaptiveFastFloor)
+	case remaining <= 0.20:
+		return max(base/5, adaptiveFastFloor)
+	default:
+		return base
+	}
+}
 
 // NewPoller reads GATEWAY_POOL_POLL_SECONDS (0 or absent = 5 minutes; a
 // negative value disables polling entirely) and GATEWAY_POOL_POLL_ALL_SECONDS
@@ -104,9 +127,9 @@ func (p *Poller) Stop() {
 
 func (p *Poller) loop(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
-	p.tick(ctx)
+	remaining := p.tick(ctx)
 	p.tickAll(ctx)
-	fast := time.NewTimer(p.Interval)
+	fast := time.NewTimer(nextFastInterval(p.Interval, remaining))
 	defer fast.Stop()
 	var all *time.Timer
 	var allC <-chan time.Time
@@ -120,8 +143,7 @@ func (p *Poller) loop(ctx context.Context, done chan<- struct{}) {
 		case <-ctx.Done():
 			return
 		case <-fast.C:
-			p.tick(ctx)
-			fast.Reset(p.Interval)
+			fast.Reset(nextFastInterval(p.Interval, p.tick(ctx)))
 		case <-allC:
 			p.tickAll(ctx)
 			all.Reset(p.AllInterval)
@@ -129,21 +151,31 @@ func (p *Poller) loop(ctx context.Context, done chan<- struct{}) {
 	}
 }
 
-func (p *Poller) tick(ctx context.Context) {
+// tick refreshes every kind's active account and returns the smallest
+// remaining fraction observed — the adaptive fast loop keys off it. A failed
+// refresh (network, auth) is recorded on the account by RefreshQuota itself;
+// the loop keeps going either way.
+func (p *Poller) tick(ctx context.Context) float64 {
+	remaining := 1.0
 	for _, kind := range p.Manager.Kinds() {
 		active := p.Manager.activeID(kind)
 		p.noteActiveChange(kind, active)
 		if active == "" {
 			continue
 		}
-		// A failed refresh (network, auth) is recorded on the account by
-		// RefreshQuota itself; the loop keeps going either way.
 		account, _ := p.Manager.RefreshQuota(ctx, kind, active)
-		if account != nil && p.OnExhausted != nil && p.Threshold > 0 &&
+		if account == nil {
+			continue
+		}
+		if fraction := WorstRemaining(account.Quota); fraction < remaining {
+			remaining = fraction
+		}
+		if p.OnExhausted != nil && p.Threshold > 0 &&
 			len(ExhaustedWindows(account.Quota, p.Threshold)) > 0 {
 			p.OnExhausted(kind)
 		}
 	}
+	return remaining
 }
 
 // noteActiveChange fires OnActiveChange when a kind's active account moved

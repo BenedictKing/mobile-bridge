@@ -30,6 +30,11 @@ type AutoSwitcher struct {
 	// ResetGrace: when the exhausted window resets within this span, waiting
 	// beats switching (5 minutes).
 	ResetGrace time.Duration
+	// ProactiveResetUsedRatio: on the poller path a zcode five-hour card is
+	// spent as soon as the Token window's used ratio crosses this line (0.98 —
+	// remaining ≤2%), before a live turn dies on the window; the failure-hook
+	// path keeps the plain Threshold trigger so a dead turn recovers ASAP.
+	ProactiveResetUsedRatio float64
 
 	now func() time.Time
 }
@@ -56,6 +61,9 @@ func (a *AutoSwitcher) defaults() {
 	}
 	if a.ResetGrace <= 0 {
 		a.ResetGrace = 5 * time.Minute
+	}
+	if a.ProactiveResetUsedRatio <= 0 || a.ProactiveResetUsedRatio > 1 {
+		a.ProactiveResetUsedRatio = 0.98
 	}
 	if a.now == nil {
 		a.now = time.Now
@@ -98,8 +106,18 @@ func (a *AutoSwitcher) HandleQuotaExhaustion(ctx context.Context, kind, failedSe
 		return false, nil
 	}
 	// zcode reset cards: a held 重置卡 restores the window without touching
-	// sessions, which always beats switching accounts when available.
-	if kind == "zcode" && a.tryZcodeResetCard(ctx, account, exhausted) {
+	// sessions, which always beats switching accounts when available. The
+	// poller path burns proactively once ≤2% remains; a turn that already died
+	// burns at the plain exhaustion threshold.
+	proactive := failedSessionID == ""
+	if kind == "zcode" && a.tryZcodeResetCard(ctx, account, exhausted, proactive) {
+		return false, nil
+	}
+	// Between the exhaustion and proactive lines a held card means the
+	// drain-aware poller will burn it within seconds — switching now would
+	// disturb every live session for nothing.
+	if kind == "zcode" && proactive && a.zcodeCardHeld(ctx, account, exhausted) {
+		log.Printf("账号池: zcode 账号 %s 额度未到主动核销线且持有重置卡，等待而非切换", account.ID)
 		return false, nil
 	}
 	if gate := a.gate(kind, active, exhausted); gate != "" {
@@ -136,20 +154,57 @@ func (a *AutoSwitcher) HandleQuotaExhaustion(ctx context.Context, kind, failedSe
 	return true, nil
 }
 
-// tryZcodeResetCard spends one held five-hour reset card on the exhausted
-// account. It returns true only when a card was consumed and a fresh quota
-// read confirms the window recovered — the caller then skips the switch (the
-// account keeps serving; sessions stay attached untouched).
-func (a *AutoSwitcher) tryZcodeResetCard(ctx context.Context, account *Account, exhausted []*WindowQuota) bool {
-	var window *WindowQuota
+// zcodeTokenWindow picks the Token 用量 (five-hour) row out of an exhausted
+// window list — the only window reset cards restore.
+func zcodeTokenWindow(exhausted []*WindowQuota) *WindowQuota {
 	for _, candidate := range exhausted {
 		if candidate.Name == "Token 用量" {
-			window = candidate
-			break
+			return candidate
 		}
 	}
+	return nil
+}
+
+// zcodeCardHeld reports whether the Token window sits between the exhaustion
+// and proactive-burn lines while the account still holds a five-hour card: the
+// drain-aware poller will burn it within seconds, so the switcher waits
+// instead of disturbing live sessions. A failed status check falls through to
+// the ordinary switch logic.
+func (a *AutoSwitcher) zcodeCardHeld(ctx context.Context, account *Account, exhausted []*WindowQuota) bool {
+	window := zcodeTokenWindow(exhausted)
+	if window == nil || window.Limit <= 0 {
+		return false
+	}
+	if float64(window.Used)/float64(window.Limit) >= a.ProactiveResetUsedRatio {
+		return false
+	}
+	status, err := zcodeResetStatus(ctx, account)
+	if err != nil {
+		return false
+	}
+	return status.FiveHourCards > 0
+}
+
+// tryZcodeResetCard spends one held five-hour reset card on the exhausted
+// account. proactive selects the trigger line: the poller path burns once the
+// window is ProactiveResetUsedRatio used (≤2% remaining), the failure-hook
+// path at the plain exhaustion threshold. It returns true only when a card was
+// consumed and a fresh quota read confirms the window recovered — the caller
+// then skips the switch (the account keeps serving; sessions stay attached
+// untouched).
+func (a *AutoSwitcher) tryZcodeResetCard(ctx context.Context, account *Account, exhausted []*WindowQuota, proactive bool) bool {
+	window := zcodeTokenWindow(exhausted)
 	if window == nil {
 		return false
+	}
+	if window.Limit > 0 {
+		minUsed := a.Threshold
+		if proactive {
+			minUsed = a.ProactiveResetUsedRatio
+		}
+		if float64(window.Used)/float64(window.Limit) < minUsed {
+			return false
+		}
 	}
 	// A window about to reset naturally must not burn a card (ResetGrace).
 	if resetAt, err := time.Parse(time.RFC3339, window.ResetAt); err == nil {
@@ -173,8 +228,13 @@ func (a *AutoSwitcher) tryZcodeResetCard(ctx context.Context, account *Account, 
 	refreshed, rErr := a.Pool.RefreshQuota(ctx, "zcode", account.ID)
 	if rErr == nil && refreshed != nil && refreshed.Quota != nil &&
 		len(ExhaustedWindows(refreshed.Quota, a.Threshold)) == 0 {
-		a.notify("账号池：已用重置卡恢复额度",
-			"zcode 账号 "+account.Label+" 的 5 小时额度已用尽，消耗一张重置卡恢复，无需切换账号")
+		if proactive {
+			a.notify("账号池：已提前用重置卡恢复额度",
+				"zcode 账号 "+account.Label+" 的 5 小时额度剩余不足 2%，提前消耗一张重置卡恢复，无需切换账号")
+		} else {
+			a.notify("账号池：已用重置卡恢复额度",
+				"zcode 账号 "+account.Label+" 的 5 小时额度已用尽，消耗一张重置卡恢复，无需切换账号")
+		}
 		log.Printf("账号池: zcode 账号 %s 消耗重置卡恢复 5 小时额度", account.ID)
 		return true
 	}

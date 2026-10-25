@@ -22,6 +22,22 @@ func primaryWindows(quota *Quota) []*WindowQuota {
 	return out
 }
 
+// WorstRemaining is the smallest remaining fraction (1 - used/limit) across
+// the primary windows; 1 when no window carries a usable limit. The poller's
+// drain-aware cadence and the switch-target ranking both key off it.
+func WorstRemaining(quota *Quota) float64 {
+	remaining := 1.0
+	for _, window := range primaryWindows(quota) {
+		if window.Limit <= 0 {
+			continue
+		}
+		if fraction := 1.0 - float64(window.Used)/float64(window.Limit); fraction < remaining {
+			remaining = fraction
+		}
+	}
+	return remaining
+}
+
 // ExhaustedWindows returns the quota windows at or over the threshold
 // (used/limit >= threshold). Windows without a usable limit carry no signal.
 func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
@@ -90,15 +106,7 @@ func (m *Manager) ChooseTarget(ctx context.Context, kind, currentID string, thre
 		}
 		headroom := 1.0
 		if fresh.Quota != nil {
-			for _, window := range primaryWindows(fresh.Quota) {
-				if window.Limit <= 0 {
-					continue
-				}
-				remaining := 1.0 - float64(window.Used)/float64(window.Limit)
-				if remaining < headroom {
-					headroom = remaining
-				}
-			}
+			headroom = WorstRemaining(fresh.Quota)
 		}
 		if best == nil || headroom > bestHeadroom ||
 			(headroom == bestHeadroom && candidate.LastUsedAt < best.LastUsedAt) {

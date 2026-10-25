@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -416,6 +417,53 @@ func TestPollerAllIntervalEnv(t *testing.T) {
 	t.Setenv("GATEWAY_POOL_POLL_ALL_SECONDS", "-1")
 	if p := NewPoller(newTestManager(t)); p.AllInterval > 0 {
 		t.Fatalf("negative all interval should disable: %v", p.AllInterval)
+	}
+}
+
+func TestPollerAdaptiveFastInterval(t *testing.T) {
+	base := 5 * time.Minute
+	cases := []struct {
+		remaining float64
+		want      time.Duration
+	}{
+		{1.0, base},
+		{0.5, base},
+		{0.21, base},
+		{0.20, base / 5},
+		{0.11, base / 5},
+		{0.10, base / 10},
+		{0.06, base / 10},
+		{0.05, base / 20},
+		{0.02, base / 20},
+		{0, base / 20},
+	}
+	for _, tc := range cases {
+		if got := nextFastInterval(base, tc.remaining); got != tc.want {
+			t.Errorf("remaining %.2f: got %v want %v", tc.remaining, got, tc.want)
+		}
+	}
+	// A small env override of the base interval must not hammer the API.
+	if got := nextFastInterval(30*time.Second, 0.02); got != adaptiveFastFloor {
+		t.Fatalf("floor: %v", got)
+	}
+}
+
+func TestWorstRemaining(t *testing.T) {
+	if got := WorstRemaining(nil); got != 1 {
+		t.Fatalf("nil quota: %v", got)
+	}
+	quota := &Quota{
+		Limits: []*WindowQuota{
+			{Name: "Token 用量", Used: 96, Limit: 100},
+			{Name: "MCP 用量", Used: 99, Limit: 100, Auxiliary: true},
+		},
+		Weekly: &WindowQuota{Used: 10, Limit: 100},
+	}
+	if got := WorstRemaining(quota); math.Abs(got-0.04) > 1e-9 {
+		t.Fatalf("worst primary window: %v", got)
+	}
+	if got := WorstRemaining(&Quota{Limits: []*WindowQuota{}}); got != 1 {
+		t.Fatalf("no usable windows: %v", got)
 	}
 }
 

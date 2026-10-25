@@ -701,6 +701,13 @@ func zcodeResetFixture(t *testing.T) (*Manager, string) {
 // per-account monitor keyed on the bare token, and the reset endpoints. The
 // exhausted account recovers once a card is used. Returns the /use hit count.
 func stubZcodeResetAPI(t *testing.T, cards int) *atomic.Int32 {
+	return stubZcodeResetAPIAt(t, cards, 96)
+}
+
+// stubZcodeResetAPIAt is stubZcodeResetAPI with the exhausted account's Token
+// window usage parameterized, so tests can sit on either side of the proactive
+// burn line.
+func stubZcodeResetAPIAt(t *testing.T, cards, usedPercentage int) *atomic.Int32 {
 	t.Helper()
 	var recovered atomic.Bool
 	useHits := &atomic.Int32{}
@@ -716,7 +723,7 @@ func stubZcodeResetAPI(t *testing.T, cards int) *atomic.Int32 {
 			switch r.Header.Get("authorization") {
 			case "jwt-zra-1234567890123456789", "plan-zra-1234567890123456":
 				if !recovered.Load() {
-					percentage = 96
+					percentage = usedPercentage
 				} else {
 					percentage = 5
 				}
@@ -772,7 +779,9 @@ func stubZcodeResetAPI(t *testing.T, cards int) *atomic.Int32 {
 
 func TestAutoSwitchUsesZcodeResetCard(t *testing.T) {
 	m, _ := zcodeResetFixture(t)
-	useHits := stubZcodeResetAPI(t, 1)
+	// 99% used crosses the proactive burn line (≤2% remaining), so the poller
+	// path spends the card before any turn dies on the window.
+	useHits := stubZcodeResetAPIAt(t, 1, 99)
 	notes := &[]string{}
 	auto := NewAutoSwitcher(m)
 	auto.now = m.now
@@ -818,6 +827,49 @@ func TestAutoSwitchZcodeFallsThroughWithoutCard(t *testing.T) {
 	}
 }
 
+func TestAutoSwitchZcodeResetCardHoldsBeforeProactiveLine(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	// 96% used crosses the exhaustion threshold but not the proactive burn
+	// line: with a card held the switcher must wait for the tightened poller
+	// to spend it, not swap accounts under live sessions.
+	useHits := stubZcodeResetAPIAt(t, 1, 96)
+	auto := NewAutoSwitcher(m)
+	auto.now = m.now
+	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
+
+	switched, err := auto.HandleQuotaExhaustion(context.Background(), "zcode", "")
+	if err != nil || switched {
+		t.Fatalf("held card below the proactive line must hold, not act: switched=%v err=%v", switched, err)
+	}
+	if useHits.Load() != 0 {
+		t.Fatalf("card must wait for the proactive line: %d", useHits.Load())
+	}
+	if got := m.activeID("zcode"); got != "zra" {
+		t.Fatalf("active account must stay: %q", got)
+	}
+	if history := m.History("zcode", 10); len(history) != 0 {
+		t.Fatalf("no switch must be journaled: %+v", history)
+	}
+}
+
+func TestAutoSwitchZcodeResetCardReactiveBelowProactiveLine(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	// A turn already died at 96% used: the failure-hook path burns at the
+	// plain exhaustion threshold instead of waiting for the proactive line.
+	useHits := stubZcodeResetAPIAt(t, 1, 96)
+	auto := NewAutoSwitcher(m)
+	auto.now = m.now
+	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
+
+	switched, err := auto.HandleQuotaExhaustion(context.Background(), "zcode", "sess-1")
+	if err != nil || switched {
+		t.Fatalf("reactive burn must keep the account: switched=%v err=%v", switched, err)
+	}
+	if useHits.Load() != 1 {
+		t.Fatalf("one card must be spent, hits=%d", useHits.Load())
+	}
+}
+
 func TestAutoSwitchZcodeResetCardSparedWhenResetImminent(t *testing.T) {
 	m, _ := zcodeResetFixture(t)
 	// The exhausted window resets two minutes from the (frozen) test clock:
@@ -840,6 +892,11 @@ func TestAutoSwitchZcodeResetCardSparedWhenResetImminent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	zcodeMonitorURLs = []string{server.URL + "/monitor/"}
+	// The card-held probe runs before the imminent-reset gate; keep it on the
+	// stub so the test never reaches the production reset endpoint.
+	restoreResetBase := zcodeResetBaseURL
+	zcodeResetBaseURL = server.URL + "/api/v1/coding-plan/reset"
+	t.Cleanup(func() { zcodeResetBaseURL = restoreResetBase })
 
 	notes := &[]string{}
 	auto := NewAutoSwitcher(m)
