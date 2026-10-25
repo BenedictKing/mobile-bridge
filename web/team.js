@@ -5,6 +5,10 @@
    BridgeTransport.subscribe 增量上屏（changes 长轮询 / SSE 同一套回调）。
    阶段二增量：broadcast 创建、成员转发、worktree diff 审查（复用 BridgeDiff，
    只读、不改 diff.js）、验证闸门徽标；meta 消费面扩展 mode/verify 摘要。
+   阶段三增量：Lead 动作预览卡（detail.pendingActions 三态）、成员提问 decision
+   卡（POST runUrl(decision)，questionId+version）、修订 Run 入口（amend 复用
+   同一 runDialog 三段流，从 detail 预填）、任务缓存命中标记；顺路修阶段二
+   遗留：verify 徽标改读顶层 verifyCommand、工作区注册表/任务清理入口。
    依赖 app.js 的全局 csrf / showLogin（team.js 先于 app.js 加载，仅运行时引用）。 */
 
 const TEAM_ROLE_LABELS={lead:'负责人',member:'成员',reviewer:'评审'};
@@ -20,6 +24,14 @@ const TEAM_FORWARD_SCOPES=[
   {key:'main',label:'主要历史（标题与最近消息）'},
   {key:'full',label:'完整历史'},
   {key:'latest',label:'最新一轮提问与结果'}];
+/* Lead 动作（§5.2）：delegate 委派成员任务、request_context 请求另一成员的
+   已有结果、summarize 请求 Lead 汇总。状态三态：proposed 待执行（autoDispatch
+   关闭的 Team 仅预览）、executed 已执行（可跳转派生任务）、rejected 已拒绝
+   （reason 醒目展示）。拒绝与执行状态一律从 detail.pendingActions 读——
+   action_* 是 run 级事件，applyEvent 早退不留 payload，400ms 兜底整页补读后
+   detail 即权威。 */
+const TEAM_ACTION_TYPE_LABELS={delegate:'委派任务',request_context:'请求上下文',summarize:'请求汇总'};
+const TEAM_ACTION_STATUS_BADGES={proposed:{cls:'planned',label:'待执行'},executed:{cls:'completed',label:'已执行'},rejected:{cls:'failed',label:'已拒绝'}};
 /* 客户端幂等键（Run 创建与成员转发）：crypto.randomUUID 不可用时降级；
    app.js 的 uuid() 属其模块内部，这里独立实现避免加载顺序耦合。 */
 function teamUUID(){
@@ -31,8 +43,10 @@ const TEAM_TASK_STATUS_LABELS={planned:'已规划',ready:'就绪',dispatching:'�
 const TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 /* 事件类型 → 任务状态（服务端事件行不携带 status 字段，状态由 type 推导；
    task_stopped 在用户取消 Run 时也用于 cancelled 任务——cancel 后的整页
-   重读会立即校正）。 */
-const TEAM_EVENT_TASK_STATUS={task_dispatching:'dispatching',task_running:'running',task_completed:'completed',task_failed:'failed',task_stopped:'stopped',task_outcome_unknown:'outcome_unknown',task_retry_scheduled:'ready'};
+   重读会立即校正。task_cache_hit 是 amend 缓存命中：任务直接携带父 Run 结果
+   完成（§6.4.1）；action、question、invalid_action_block 事件的 payload.taskId
+   指向来源任务、无任务状态语义，不进此表）。 */
+const TEAM_EVENT_TASK_STATUS={task_dispatching:'dispatching',task_running:'running',task_completed:'completed',task_failed:'failed',task_stopped:'stopped',task_outcome_unknown:'outcome_unknown',task_retry_scheduled:'ready',task_cache_hit:'completed'};
 
 function teamRunStatusLabel(status){return TEAM_RUN_STATUS_LABELS[status]||status;}
 function teamTaskStatusLabel(status){return TEAM_TASK_STATUS_LABELS[status]||status;}
@@ -65,10 +79,349 @@ async function teamRequest(path,{method='GET',body}={}){
   const data=await response.json().catch(()=>({}));
   if(!response.ok){
     if(response.status===401&&typeof showLogin==='function')showLogin();
-    throw Error(data.error||(typeof t==='function'?t('请求失败'):'请求失败'));
+    // 挂 HTTP 状态码：decision 端点按 409（问题已过期/已回答，整页补读）与
+    // 400（选项/格式错误，保持卡可重答）分流；既有调用方只读 message 不受影响。
+    const error=Error(data.error||(typeof t==='function'?t('请求失败'):'请求失败'));
+    error.status=response.status;
+    throw error;
   }
   return data;
 }
+
+/* Run 创建/修订对话框宿主（<dialog class="picker"> 动态创建，照 openQueueEditor
+   惯例）：TeamsPanel（新建 Run）与 TeamRunScreen（创建修订 Run）共用同一模块
+   级实例——同一时刻至多打开一个，状态挂 dialog.runState；提交端点与成功回调
+   随 state 注入（submit/onSuccess），宿主自身不持有 request 依赖。第一屏填
+   goal/mode/任务行（修订模式另有验证命令输入），第二屏按提交顺序+依赖做
+   确认预览（§11 默认保留预览）；修订模式的预填行由调用方从旧 Run detail
+   组装（broadcast 的逐成员展开任务先聚合回条目行）。 */
+class TeamRunDialogHost{
+  constructor(){this._dialog=null;}
+  node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
+  button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
+  runDialog(){
+    if(this._dialog)return this._dialog;
+    const dialog=document.createElement('dialog');
+    dialog.id='team-run-dialog';dialog.className='picker';
+    dialog.setAttribute('aria-labelledby','team-run-dialog-heading');
+    const head=document.createElement('div');head.className='picker-head';
+    const heading=document.createElement('h2');heading.id='team-run-dialog-heading';
+    const close=document.createElement('button');
+    close.type='button';close.className='icon-button';close.textContent='×';
+    close.setAttribute('aria-label',t_safe('关闭'));
+    close.setAttribute('data-i18n-aria-label','关闭');
+    close.onclick=()=>{dialog.runState=null;dialog.close();};
+    head.append(heading,close);
+    const body=document.createElement('div');body.className='picker-body';
+    dialog.append(head,body);
+    document.body.append(dialog);
+    this._dialog=dialog;
+    return dialog;
+  }
+  open(state){
+    const dialog=this.runDialog();
+    state.phase='edit';state.busy=false;state.error='';state.parsed=[];state.requestId=null;
+    dialog.runState=state;
+    this.render();
+    dialog.showModal();
+  }
+  /* 计划行 → 提交 plan（single 模式不用）：pipeline 单成员（memberId），
+     broadcast 多成员（memberIds ≥2，服务端按 BroadcastGroup 展开为逐成员任务）。
+     workspaceMode/workspaceId 由修订预填行透传（创建流程不产生这两个字段，
+     留空即默认 shared_workspace）。 */
+  parseRunTasks(state){
+    const t=BridgeI18n.t;
+    const broadcast=state.mode==='broadcast';
+    const ids=new Set();
+    for(const row of state.tasks){
+      const id=row.id.trim();
+      if(!id){state.error=t('请为每条任务填写任务 ID。');return null;}
+      if(ids.has(id)){state.error=t('任务 ID 重复：')+id;return null;}
+      ids.add(id);
+    }
+    const tasks=[];
+    for(const row of state.tasks){
+      if(broadcast){
+        if(row.memberIds.size<2){state.error=t('并行分派的每条任务至少选择 2 名成员。');return null;}
+      }else if(!row.memberId){
+        state.error=t('请为每条任务选择成员。');return null;
+      }
+      if(!row.prompt.trim()){state.error=t('请为每条任务填写提示词。');return null;}
+      const dependsOn=[...row.deps].filter(dep=>dep!==row.id.trim()&&ids.has(dep));
+      const task={id:row.id.trim(),prompt:row.prompt,writeLock:row.writeLock};
+      if(broadcast)task.memberIds=[...row.memberIds];
+      else task.memberId=row.memberId;
+      if(dependsOn.length)task.dependsOn=dependsOn;
+      if(row.workspaceMode)task.workspaceMode=row.workspaceMode;
+      if(row.workspaceId)task.workspaceId=row.workspaceId;
+      tasks.push(task);
+    }
+    return tasks;
+  }
+  render(){
+    const dialog=this._dialog,state=dialog&&dialog.runState;
+    if(!state)return;
+    const t=BridgeI18n.t;
+    dialog.querySelector('h2').textContent=state.phase==='preview'
+      ?t('确认 Run 计划')
+      :(state.amend?t('创建修订 Run'):t('新建 Run'))+' · '+state.team.name;
+    const body=dialog.querySelector('.picker-body');
+    body.replaceChildren();
+    const form=document.createElement('form');
+    if(state.phase==='edit'){
+      const goalLabel=this.node('label');
+      goalLabel.append(this.node('span',t('目标')));
+      const goal=document.createElement('textarea');
+      goal.rows=3;goal.maxLength=10000;
+      goal.value=state.goal;
+      goal.oninput=()=>{state.goal=goal.value;};
+      goalLabel.append(goal);
+      form.append(goalLabel);
+      const modeLabel=this.node('label');
+      modeLabel.append(this.node('span',t('运行模式')));
+      const mode=document.createElement('select');
+      mode.append(new Option(t('单任务（自动合成负责人任务）'),'single'));
+      mode.append(new Option(t('流水线（自定义任务与依赖）'),'pipeline'));
+      mode.append(new Option(t('并行分派（同一任务发多名成员）'),'broadcast'));
+      mode.value=state.mode;
+      mode.onchange=()=>{state.mode=mode.value;this.render();};
+      modeLabel.append(mode);
+      form.append(modeLabel);
+      if(state.mode==='broadcast'){
+        const collectLabel=this.node('label');
+        collectLabel.append(this.node('span',t('收集策略')));
+        const collect=document.createElement('select');
+        for(const option of TEAM_COLLECT_OPTIONS)collect.append(new Option(t(option.label),option.key));
+        collect.value=state.collect;
+        collect.onchange=()=>{state.collect=collect.value;};
+        collectLabel.append(collect);
+        form.append(collectLabel);
+      }
+      if(state.amend){
+        // 修订模式独有：验证命令随 Run 声明（§6.4.1），从父 Run 的
+        // verifyCommand 预填；创建流程不带此字段，保持 POST /runs 请求不变。
+        const verifyLabel=this.node('label');
+        verifyLabel.append(this.node('span',t('验证命令（可选，空格分隔，如 make check）')));
+        const verify=document.createElement('input');
+        verify.value=state.verifyText||'';
+        verify.placeholder='make check';
+        verify.oninput=()=>{state.verifyText=verify.value;};
+        verifyLabel.append(verify);
+        form.append(verifyLabel);
+      }
+      if(state.mode!=='single'){
+        const broadcast=state.mode==='broadcast';
+        const rowsBox=this.node('div',undefined,'team-member-rows');
+        for(const [index,row] of state.tasks.entries()){
+          const box=this.node('div',undefined,'member-row team-task-row');
+          const head=this.node('div',undefined,'member-row-head');
+          const idLabel=this.node('label');
+          idLabel.append(this.node('span',t('任务 ID')));
+          const idInput=document.createElement('input');
+          idInput.value=row.id;idInput.maxLength=64;
+          idInput.oninput=()=>{row.id=idInput.value;};
+          idLabel.append(idInput);
+          head.append(idLabel);
+          if(!broadcast){
+            const memberLabel=this.node('label');
+            memberLabel.append(this.node('span',t('成员')));
+            const memberSelect=document.createElement('select');
+            const members=(state.team.members||[]).filter(m=>m.enabled!==false);
+            memberSelect.append(new Option(t('请选择成员…'),''));
+            for(const member of members)memberSelect.append(new Option((member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind),member.id));
+            memberSelect.value=row.memberId||'';
+            memberSelect.onchange=()=>{row.memberId=memberSelect.value;};
+            memberLabel.append(memberSelect);
+            head.append(memberLabel);
+          }
+          const lockLabel=this.node('label');
+          lockLabel.append(this.node('span',t('写锁')));
+          const lockSelect=document.createElement('select');
+          lockSelect.append(new Option(t('无（只读/无副作用）'),'none'));
+          lockSelect.append(new Option(t('独占（持有项目写锁）'),'exclusive'));
+          lockSelect.value=row.writeLock;
+          lockSelect.onchange=()=>{row.writeLock=lockSelect.value;};
+          lockLabel.append(lockSelect);
+          head.append(lockLabel);
+          if(state.tasks.length>1){
+            const remove=this.button(t('移除'),()=>{state.tasks.splice(index,1);for(const other of state.tasks)other.deps.delete(row.id);this.render();});
+            head.append(remove);
+          }
+          box.append(head);
+          if(broadcast){
+            // 并行分派：成员多选 chip（≥2 校验在 parseRunTasks），放在 head 下方
+            // 独立区块（head 是定宽字段行），复用依赖 chip 的样式保持视觉一致。
+            const memberLabel=this.node('label');
+            memberLabel.append(this.node('span',t('成员（点选 ≥2 名）')));
+            const chips=this.node('div',undefined,'task-deps');
+            const enabled=(state.team.members||[]).filter(m=>m.enabled!==false);
+            if(!enabled.length)chips.append(this.node('span',t('没有可用成员'),'muted'));
+            for(const member of enabled){
+              const name=(member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind);
+              const chip=this.button((row.memberIds.has(member.id)?'✓ ':'')+name,'');
+              chip.className='task-dep-chip'+(row.memberIds.has(member.id)?' on':'');
+              chip.onclick=()=>{
+                if(row.memberIds.has(member.id))row.memberIds.delete(member.id);
+                else row.memberIds.add(member.id);
+                this.render();
+              };
+              chips.append(chip);
+            }
+            memberLabel.append(chips);
+            box.append(memberLabel);
+          }
+          const promptLabel=this.node('label');
+          promptLabel.append(this.node('span',t('提示词')));
+          const prompt=document.createElement('textarea');
+          prompt.rows=3;prompt.maxLength=100000;
+          prompt.value=row.prompt;
+          prompt.oninput=()=>{row.prompt=prompt.value;};
+          promptLabel.append(prompt);
+          box.append(promptLabel);
+          const others=state.tasks.filter(other=>other!==row);
+          if(others.length){
+            const deps=this.node('div',undefined,'task-deps');
+            deps.append(this.node('span',t('依赖：'),'task-deps-label'));
+            for(const other of others){
+              const otherId=other.id.trim();
+              const chip=this.button((row.deps.has(otherId)?'✓ ':'')+otherId,'');
+              chip.className='task-dep-chip'+(row.deps.has(otherId)?' on':'');
+              chip.disabled=!otherId;
+              chip.onclick=()=>{
+                if(row.deps.has(otherId))row.deps.delete(otherId);
+                else row.deps.add(otherId);
+                this.render();
+              };
+              deps.append(chip);
+            }
+            box.append(deps);
+          }
+          rowsBox.append(box);
+        }
+        form.append(rowsBox);
+        form.append(this.button(t('＋ 添加任务'),()=>{
+          state.tasks.push({id:'t'+(state.tasks.length+1),memberId:'',memberIds:new Set(),deps:new Set(),prompt:'',writeLock:'none'});
+          this.render();
+        }));
+      }
+    }else{
+      const preview=this.node('ol',undefined,'team-plan-preview');
+      const memberName=memberId=>{
+        const member=(state.team.members||[]).find(m=>m.id===memberId);
+        return member?(member.name||member.id):memberId;
+      };
+      if(state.mode==='single'){
+        const lead=(state.team.members||[]).find(m=>m.id===state.team.leadId)||((state.team.members||[])[0]||null);
+        const item=this.node('li');
+        item.append(this.node('strong',t('单任务')+' · '+(lead?(lead.name||lead.id):t('未指定'))));
+        item.append(this.node('p',t('将为负责人自动合成一条任务，提示词即目标内容。'),'muted'));
+        preview.append(item);
+      }else if(state.mode==='broadcast'){
+        // 按 BroadcastGroup 分组预览：每条计划任务展开为逐成员并行任务，
+        // 同组共用同一段提示词（服务端展开，taskId 粒度按成员细化）。
+        for(const [index,task] of state.parsed.entries()){
+          const item=this.node('li');
+          item.append(this.node('strong',(index+1)+'. '+task.id+' · '+t('并行分派')+' '+task.memberIds.length+' '+t('名成员')));
+          const meta=this.node('p',undefined,'muted');
+          const bits=[t('写锁：')+(task.writeLock==='exclusive'?t('独占'):t('无'))];
+          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join('、'));
+          bits.push(t('展开为：')+task.memberIds.map(memberName).join('、'));
+          meta.textContent=bits.join(' · ');
+          item.append(meta);
+          const head=task.prompt.length>80?task.prompt.slice(0,80)+'…':task.prompt;
+          item.append(this.node('p',head,'task-instructions'));
+          preview.append(item);
+        }
+        const collect=TEAM_COLLECT_OPTIONS.find(option=>option.key===state.collect);
+        const summary=this.node('li');
+        summary.append(this.node('p',t('收集策略：')+(collect?t(collect.label):state.collect),'muted'));
+        preview.append(summary);
+      }else{
+        for(const [index,task] of state.parsed.entries()){
+          const item=this.node('li');
+          item.append(this.node('strong',(index+1)+'. '+task.id+' · '+memberName(task.memberId)));
+          const meta=this.node('p',undefined,'muted');
+          const bits=[t('写锁：')+(task.writeLock==='exclusive'?t('独占'):t('无'))];
+          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join('、'));
+          meta.textContent=bits.join(' · ');
+          item.append(meta);
+          const head=task.prompt.length>80?task.prompt.slice(0,80)+'…':task.prompt;
+          item.append(this.node('p',head,'task-instructions'));
+          preview.append(item);
+        }
+      }
+      form.append(preview);
+      form.append(this.node('p',state.amend
+        ?t('修订会创建一个新 Run；与父 Run 输入一致且无依赖变化的任务将直接复用其结果（缓存命中）。')
+        :state.mode==='broadcast'
+          ?t('同组任务并行执行，互不等待；收集策略为「首个成功即止」时，首个成功会取消其余分支。创建后可在 Run 页随时取消。')
+          :t('任务按以上顺序派发；依赖就绪后才实际发送。创建后可在 Run 页随时取消。'),'muted'));
+    }
+    if(state.error)form.append(this.node('p',state.error,'error'));
+    const actions=this.node('div',undefined,'picker-actions');
+    if(state.phase==='preview'){
+      const back=this.button(t('返回修改'),()=>{
+        // 返回编辑即放弃当前幂等键：内容可能变化，重用同 id 会被「同 id 异内容」拒绝。
+        state.requestId=null;
+        state.phase='edit';
+        this.render();
+      });
+      back.disabled=state.busy;
+      actions.append(back);
+    }
+    const submit=document.createElement('button');
+    submit.type='submit';submit.className='primary';
+    submit.textContent=state.phase==='preview'?(state.amend?t('创建修订 Run'):t('开始运行')):t('预览计划');
+    submit.disabled=state.busy;
+    actions.append(submit);
+    form.append(actions);
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      if(state.busy)return;
+      state.error='';
+      if(!state.goal.trim()){state.error=t('请填写目标。');this.render();return;}
+      if(state.phase==='edit'){
+        if(state.mode!=='single'){
+          const tasks=this.parseRunTasks(state);
+          if(!tasks){this.render();return;}
+          state.parsed=tasks;
+        }else state.parsed=[];
+        state.phase='preview';
+        this.render();
+        return;
+      }
+      const payload={goal:state.goal.trim(),mode:state.mode};
+      if(state.mode!=='single'){
+        payload.plan=state.parsed;
+        // 服务端契约读取 collectPolicy（teams.go handleRunCreate 的
+        // stringField(body,"collectPolicy")；测试 teams_test.go:407 同键）。
+        if(state.mode==='broadcast')payload.collectPolicy=state.collect;
+      }
+      if(state.amend){
+        // 验证命令（§6.4.1）：文本按空白切段（服务端固定 argv 白名单校验，
+        // 非法段 400 直出）；空文本不携带该键，等同未声明。
+        const argv=(state.verifyText||'').trim().split(/\s+/).filter(Boolean);
+        if(argv.length)payload.verifyCommand=argv;
+      }
+      // 请求幂等键（可选 UUID）：失败后直接再点提交复用同 id 重放，不会在
+      // 网络抖动下重复建 Run；返回编辑则重生成。
+      if(!state.requestId)state.requestId=teamUUID();
+      payload.id=state.requestId;
+      state.busy=true;this.render();
+      try{
+        const run=await state.submit(payload);
+        dialog.runState=null;
+        dialog.close();
+        state.onSuccess&&state.onSuccess(run);
+      }catch(error){
+        state.busy=false;state.error=error.message;
+        this.render();
+      }
+    };
+    body.append(form);
+  }
+}
+const teamRunDialogHost=new TeamRunDialogHost();
 
 class TeamsPanel{
   constructor({root,request,openRun}){
@@ -80,6 +433,7 @@ class TeamsPanel{
     this.expanded=new Set(); // Run 列表展开的 teamId
     this.runs=new Map();    // teamId -> {loading,error,rows}
     this.sessions=null;     // 新建表单可用的 ACP 会话（打开面板时快照）
+    this.workspaces=null;   // 工作区注册表区：null=收起；{loading,error,rows,form,notice}
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
@@ -125,17 +479,31 @@ class TeamsPanel{
       this.render();
     });
     create.disabled=this.busy;
-    toolbar.append(refresh,create);
+    // 工作区注册表是无 teamID 前缀的集合端点（teams.go /api/teams/workspaces），
+    // 面板底部独立一区：注册与团队无关，没有团队也要能注册。
+    const workspaces=this.button(this.workspaces?t('收起工作区'):t('工作区'),()=>{
+      if(this.workspaces)this.workspaces=null;
+      else{
+        // loading 标记由 loadWorkspaces 自置（其入口有 loading 防重入），此处
+        // 只建骨架，否则预置 true 会被防重入守卫挡住、区块停在读取态。
+        this.workspaces={loading:false,error:'',rows:[],form:{id:'',path:'',error:''},notice:''};
+        this.loadWorkspaces();
+      }
+      this.render();
+    });
+    workspaces.disabled=this.busy;
+    toolbar.append(refresh,create,workspaces);
     root.append(toolbar);
     if(this.error)root.append(this.node('p',this.error,'error'));
     if(this.notice){root.append(this.node('p',this.notice,'team-notice'));this.notice='';}
     if(this.loading&&!this.teams.length){root.append(this.node('p',t('正在读取团队…'),'muted'));return;}
     if(this.create)root.append(this.renderCreateForm());
-    if(!this.teams.length){
-      if(!this.create)root.append(this.node('p',t('还没有团队。点击「新建团队」，把已有的 ACP 会话绑定成成员。'),'muted'));
-      return;
+    if(this.teams.length){
+      for(const team of this.teams)root.append(this.renderTeam(team));
+    }else if(!this.create){
+      root.append(this.node('p',t('还没有团队。点击「新建团队」，把已有的 ACP 会话绑定成成员。'),'muted'));
     }
-    for(const team of this.teams)root.append(this.renderTeam(team));
+    if(this.workspaces)root.append(this.renderWorkspaces());
   }
   renderTeam(team){
     const t=BridgeI18n.t;
@@ -320,307 +688,89 @@ class TeamsPanel{
     };
     return form;
   }
-  /* Run 创建对话框（<dialog class="picker"> 动态创建，照 openQueueEditor 惯例）：
-     第一屏填 goal/mode/任务行，第二屏按提交顺序+依赖做确认预览（§11 默认保留预览）。 */
-  runDialog(){
-    if(this._runDialog)return this._runDialog;
-    const dialog=document.createElement('dialog');
-    dialog.id='team-run-dialog';dialog.className='picker';
-    dialog.setAttribute('aria-labelledby','team-run-dialog-heading');
-    const head=document.createElement('div');head.className='picker-head';
-    const heading=document.createElement('h2');heading.id='team-run-dialog-heading';
-    const close=document.createElement('button');
-    close.type='button';close.className='icon-button';close.textContent='×';
-    close.setAttribute('aria-label',t_safe('关闭'));
-    close.setAttribute('data-i18n-aria-label','关闭');
-    close.onclick=()=>{dialog.runState=null;dialog.close();};
-    head.append(heading,close);
-    const body=document.createElement('div');body.className='picker-body';
-    dialog.append(head,body);
-    document.body.append(dialog);
-    this._runDialog=dialog;
-    return dialog;
-  }
+  /* Run 创建入口：三段流对话框（edit→preview→提交）由模块级 teamRunDialogHost
+     承载（修订 Run 复用同一宿主，见 TeamRunScreen.openAmend）；提交端点与成功
+     回调随 state 注入，宿主不感知调用方。 */
   openRunCreate(team){
-    const dialog=this.runDialog();
-    dialog.runState={
-      team,phase:'edit',busy:false,error:'',
+    teamRunDialogHost.open({
+      team,
       goal:'',mode:'single',collect:'all',
       tasks:[{id:'t1',memberId:'',memberIds:new Set(),deps:new Set(),prompt:'',writeLock:'none'}],
-      parsed:[],requestId:null,
-    };
-    this.renderRunDialog();
-    dialog.showModal();
+      submit:payload=>this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs',{method:'POST',body:payload}),
+      onSuccess:run=>{this.openRun&&this.openRun(team.id,run.id);this.loadRuns(team.id);},
+    });
   }
-  /* 计划行 → 提交 plan（single 模式不用）：pipeline 单成员（memberId），
-     broadcast 多成员（memberIds ≥2，服务端按 BroadcastGroup 展开为逐成员任务）。 */
-  parseRunTasks(state){
-    const t=BridgeI18n.t;
-    const broadcast=state.mode==='broadcast';
-    const ids=new Set();
-    for(const row of state.tasks){
-      const id=row.id.trim();
-      if(!id){state.error=t('请为每条任务填写任务 ID。');return null;}
-      if(ids.has(id)){state.error=t('任务 ID 重复：')+id;return null;}
-      ids.add(id);
-    }
-    const tasks=[];
-    for(const row of state.tasks){
-      if(broadcast){
-        if(row.memberIds.size<2){state.error=t('并行分派的每条任务至少选择 2 名成员。');return null;}
-      }else if(!row.memberId){
-        state.error=t('请为每条任务选择成员。');return null;
-      }
-      if(!row.prompt.trim()){state.error=t('请为每条任务填写提示词。');return null;}
-      const dependsOn=[...row.deps].filter(dep=>dep!==row.id.trim()&&ids.has(dep));
-      const task={id:row.id.trim(),prompt:row.prompt,writeLock:row.writeLock};
-      if(broadcast)task.memberIds=[...row.memberIds];
-      else task.memberId=row.memberId;
-      if(dependsOn.length)task.dependsOn=dependsOn;
-      tasks.push(task);
-    }
-    return tasks;
+  /* ---- 工作区注册表（§6.4 + §16 默认决策 6）----
+     isolated 任务引用的 git worktree 须先在此注册（第一版不自动创建）；
+     服务端校验 id 形制/绝对路径/linked worktree（主检出拒绝），同 id 同路径
+     重放幂等、异路径 400——错误信息在表单区直出。 */
+  async loadWorkspaces(){
+    const entry=this.workspaces;
+    if(!entry||entry.loading)return;
+    entry.loading=true;entry.error='';this.render();
+    try{const result=await this.request('/api/teams/workspaces');entry.rows=result.workspaces||[];}
+    catch(error){entry.error=error.message;}
+    finally{entry.loading=false;this.render();}
   }
-  renderRunDialog(){
-    const dialog=this._runDialog,state=dialog&&dialog.runState;
-    if(!state)return;
-    const t=BridgeI18n.t;
-    dialog.querySelector('h2').textContent=state.phase==='preview'?t('确认 Run 计划'):t('新建 Run')+' · '+state.team.name;
-    const body=dialog.querySelector('.picker-body');
-    body.replaceChildren();
-    const form=document.createElement('form');
-    if(state.phase==='edit'){
-      const goalLabel=this.node('label');
-      goalLabel.append(this.node('span',t('目标')));
-      const goal=document.createElement('textarea');
-      goal.rows=3;goal.maxLength=10000;
-      goal.value=state.goal;
-      goal.oninput=()=>{state.goal=goal.value;};
-      goalLabel.append(goal);
-      form.append(goalLabel);
-      const modeLabel=this.node('label');
-      modeLabel.append(this.node('span',t('运行模式')));
-      const mode=document.createElement('select');
-      mode.append(new Option(t('单任务（自动合成负责人任务）'),'single'));
-      mode.append(new Option(t('流水线（自定义任务与依赖）'),'pipeline'));
-      mode.append(new Option(t('并行分派（同一任务发多名成员）'),'broadcast'));
-      mode.value=state.mode;
-      mode.onchange=()=>{state.mode=mode.value;this.renderRunDialog();};
-      modeLabel.append(mode);
-      form.append(modeLabel);
-      if(state.mode==='broadcast'){
-        const collectLabel=this.node('label');
-        collectLabel.append(this.node('span',t('收集策略')));
-        const collect=document.createElement('select');
-        for(const option of TEAM_COLLECT_OPTIONS)collect.append(new Option(t(option.label),option.key));
-        collect.value=state.collect;
-        collect.onchange=()=>{state.collect=collect.value;};
-        collectLabel.append(collect);
-        form.append(collectLabel);
-      }
-      if(state.mode!=='single'){
-        const broadcast=state.mode==='broadcast';
-        const rowsBox=this.node('div',undefined,'team-member-rows');
-        for(const [index,row] of state.tasks.entries()){
-          const box=this.node('div',undefined,'member-row team-task-row');
-          const head=this.node('div',undefined,'member-row-head');
-          const idLabel=this.node('label');
-          idLabel.append(this.node('span',t('任务 ID')));
-          const idInput=document.createElement('input');
-          idInput.value=row.id;idInput.maxLength=64;
-          idInput.oninput=()=>{row.id=idInput.value;};
-          idLabel.append(idInput);
-          head.append(idLabel);
-          if(!broadcast){
-            const memberLabel=this.node('label');
-            memberLabel.append(this.node('span',t('成员')));
-            const memberSelect=document.createElement('select');
-            const members=(state.team.members||[]).filter(m=>m.enabled!==false);
-            memberSelect.append(new Option(t('请选择成员…'),''));
-            for(const member of members)memberSelect.append(new Option((member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind),member.id));
-            memberSelect.value=row.memberId||'';
-            memberSelect.onchange=()=>{row.memberId=memberSelect.value;};
-            memberLabel.append(memberSelect);
-            head.append(memberLabel);
-          }
-          const lockLabel=this.node('label');
-          lockLabel.append(this.node('span',t('写锁')));
-          const lockSelect=document.createElement('select');
-          lockSelect.append(new Option(t('无（只读/无副作用）'),'none'));
-          lockSelect.append(new Option(t('独占（持有项目写锁）'),'exclusive'));
-          lockSelect.value=row.writeLock;
-          lockSelect.onchange=()=>{row.writeLock=lockSelect.value;};
-          lockLabel.append(lockSelect);
-          head.append(lockLabel);
-          if(state.tasks.length>1){
-            const remove=this.button(t('移除'),()=>{state.tasks.splice(index,1);for(const other of state.tasks)other.deps.delete(row.id);this.renderRunDialog();});
-            head.append(remove);
-          }
-          box.append(head);
-          if(broadcast){
-            // 并行分派：成员多选 chip（≥2 校验在 parseRunTasks），放在 head 下方
-            // 独立区块（head 是定宽字段行），复用依赖 chip 的样式保持视觉一致。
-            const memberLabel=this.node('label');
-            memberLabel.append(this.node('span',t('成员（点选 ≥2 名）')));
-            const chips=this.node('div',undefined,'task-deps');
-            const enabled=(state.team.members||[]).filter(m=>m.enabled!==false);
-            if(!enabled.length)chips.append(this.node('span',t('没有可用成员'),'muted'));
-            for(const member of enabled){
-              const name=(member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind);
-              const chip=this.button((row.memberIds.has(member.id)?'✓ ':'')+name,'');
-              chip.className='task-dep-chip'+(row.memberIds.has(member.id)?' on':'');
-              chip.onclick=()=>{
-                if(row.memberIds.has(member.id))row.memberIds.delete(member.id);
-                else row.memberIds.add(member.id);
-                this.renderRunDialog();
-              };
-              chips.append(chip);
-            }
-            memberLabel.append(chips);
-            box.append(memberLabel);
-          }
-          const promptLabel=this.node('label');
-          promptLabel.append(this.node('span',t('提示词')));
-          const prompt=document.createElement('textarea');
-          prompt.rows=3;prompt.maxLength=100000;
-          prompt.value=row.prompt;
-          prompt.oninput=()=>{row.prompt=prompt.value;};
-          promptLabel.append(prompt);
-          box.append(promptLabel);
-          const others=state.tasks.filter(other=>other!==row);
-          if(others.length){
-            const deps=this.node('div',undefined,'task-deps');
-            deps.append(this.node('span',t('依赖：'),'task-deps-label'));
-            for(const other of others){
-              const otherId=other.id.trim();
-              const chip=this.button((row.deps.has(otherId)?'✓ ':'')+otherId,'');
-              chip.className='task-dep-chip'+(row.deps.has(otherId)?' on':'');
-              chip.disabled=!otherId;
-              chip.onclick=()=>{
-                if(row.deps.has(otherId))row.deps.delete(otherId);
-                else row.deps.add(otherId);
-                this.renderRunDialog();
-              };
-              deps.append(chip);
-            }
-            box.append(deps);
-          }
-          rowsBox.append(box);
-        }
-        form.append(rowsBox);
-        form.append(this.button(t('＋ 添加任务'),()=>{
-          state.tasks.push({id:'t'+(state.tasks.length+1),memberId:'',memberIds:new Set(),deps:new Set(),prompt:'',writeLock:'none'});
-          this.renderRunDialog();
-        }));
-      }
-    }else{
-      const preview=this.node('ol',undefined,'team-plan-preview');
-      const memberName=memberId=>{
-        const member=(state.team.members||[]).find(m=>m.id===memberId);
-        return member?(member.name||member.id):memberId;
-      };
-      if(state.mode==='single'){
-        const lead=(state.team.members||[]).find(m=>m.id===state.team.leadId)||((state.team.members||[])[0]||null);
-        const item=this.node('li');
-        item.append(this.node('strong',t('单任务')+' · '+(lead?(lead.name||lead.id):t('未指定'))));
-        item.append(this.node('p',t('将为负责人自动合成一条任务，提示词即目标内容。'),'muted'));
-        preview.append(item);
-      }else if(state.mode==='broadcast'){
-        // 按 BroadcastGroup 分组预览：每条计划任务展开为逐成员并行任务，
-        // 同组共用同一段提示词（服务端展开，taskId 粒度按成员细化）。
-        for(const [index,task] of state.parsed.entries()){
-          const item=this.node('li');
-          item.append(this.node('strong',(index+1)+'. '+task.id+' · '+t('并行分派')+' '+task.memberIds.length+' '+t('名成员')));
-          const meta=this.node('p',undefined,'muted');
-          const bits=[t('写锁：')+(task.writeLock==='exclusive'?t('独占'):t('无'))];
-          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join('、'));
-          bits.push(t('展开为：')+task.memberIds.map(memberName).join('、'));
-          meta.textContent=bits.join(' · ');
-          item.append(meta);
-          const head=task.prompt.length>80?task.prompt.slice(0,80)+'…':task.prompt;
-          item.append(this.node('p',head,'task-instructions'));
-          preview.append(item);
-        }
-        const collect=TEAM_COLLECT_OPTIONS.find(option=>option.key===state.collect);
-        const summary=this.node('li');
-        summary.append(this.node('p',t('收集策略：')+(collect?t(collect.label):state.collect),'muted'));
-        preview.append(summary);
-      }else{
-        for(const [index,task] of state.parsed.entries()){
-          const item=this.node('li');
-          item.append(this.node('strong',(index+1)+'. '+task.id+' · '+memberName(task.memberId)));
-          const meta=this.node('p',undefined,'muted');
-          const bits=[t('写锁：')+(task.writeLock==='exclusive'?t('独占'):t('无'))];
-          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join('、'));
-          meta.textContent=bits.join(' · ');
-          item.append(meta);
-          const head=task.prompt.length>80?task.prompt.slice(0,80)+'…':task.prompt;
-          item.append(this.node('p',head,'task-instructions'));
-          preview.append(item);
-        }
-      }
-      form.append(preview);
-      form.append(this.node('p',state.mode==='broadcast'
-        ?t('同组任务并行执行，互不等待；收集策略为「首个成功即止」时，首个成功会取消其余分支。创建后可在 Run 页随时取消。')
-        :t('任务按以上顺序派发；依赖就绪后才实际发送。创建后可在 Run 页随时取消。'),'muted'));
+  renderWorkspaces(){
+    const t=BridgeI18n.t,entry=this.workspaces;
+    const box=this.node('section',undefined,'team-card');
+    box.append(this.node('h3',t('工作区（git worktree 注册表）')));
+    box.append(this.node('p',t('isolated 任务的独立工作区须先在此注册（用 git worktree add 预备）；注册只登记路径，不创建或修改工作区。'),'muted'));
+    if(entry.notice){box.append(this.node('p',entry.notice,'team-notice'));entry.notice='';}
+    if(entry.loading){box.append(this.node('p',t('正在读取工作区…'),'muted'));return box;}
+    if(entry.error)box.append(this.node('p',entry.error,'error'));
+    if(!entry.rows.length)box.append(this.node('p',t('还没有注册的工作区。'),'muted'));
+    for(const row of entry.rows){
+      const line=this.node('p',undefined,'team-card-meta');
+      line.append(this.node('code',row.id));
+      line.append(document.createTextNode(' '));
+      line.append(this.node('code',row.path));
+      if(row.createdAt)line.append(document.createTextNode(' · '+t('注册于 ')+teamTimeText(row.createdAt)));
+      box.append(line);
     }
-    if(state.error)form.append(this.node('p',state.error,'error'));
-    const actions=this.node('div',undefined,'picker-actions');
-    if(state.phase==='preview'){
-      const back=this.button(t('返回修改'),()=>{
-        // 返回编辑即放弃当前幂等键：内容可能变化，重用同 id 会被「同 id 异内容」拒绝。
-        state.requestId=null;
-        state.phase='edit';
-        this.renderRunDialog();
-      });
-      back.disabled=state.busy;
-      actions.append(back);
-    }
+    const form=this.node('form',undefined,'team-create');
+    const idLabel=this.node('label');
+    idLabel.append(this.node('span',t('工作区标识')));
+    const idInput=document.createElement('input');
+    idInput.value=entry.form.id;idInput.maxLength=64;
+    idInput.oninput=()=>{entry.form.id=idInput.value;};
+    idLabel.append(idInput);
+    form.append(idLabel);
+    const pathLabel=this.node('label');
+    pathLabel.append(this.node('span',t('工作区绝对路径')));
+    const pathInput=document.createElement('input');
+    pathInput.value=entry.form.path;
+    pathInput.oninput=()=>{entry.form.path=pathInput.value;};
+    pathLabel.append(pathInput);
+    form.append(pathLabel);
+    if(entry.form.error)form.append(this.node('p',entry.form.error,'error'));
     const submit=document.createElement('button');
-    submit.type='submit';submit.className='primary';
-    submit.textContent=state.phase==='preview'?t('开始运行'):t('预览计划');
-    submit.disabled=state.busy;
-    actions.append(submit);
-    form.append(actions);
+    submit.type='submit';submit.className='primary';submit.textContent=t('注册工作区');
+    submit.disabled=this.busy;
+    form.append(submit);
     form.onsubmit=async event=>{
       event.preventDefault();
-      if(state.busy)return;
-      state.error='';
-      if(!state.goal.trim()){state.error=t('请填写目标。');this.renderRunDialog();return;}
-      if(state.phase==='edit'){
-        if(state.mode!=='single'){
-          const tasks=this.parseRunTasks(state);
-          if(!tasks){this.renderRunDialog();return;}
-          state.parsed=tasks;
-        }else state.parsed=[];
-        state.phase='preview';
-        this.renderRunDialog();
-        return;
-      }
-      const payload={goal:state.goal.trim(),mode:state.mode};
-      if(state.mode!=='single'){
-        payload.plan=state.parsed;
-        // 服务端契约读取 collectPolicy（teams.go handleRunCreate 的
-        // stringField(body,"collectPolicy")；测试 teams_test.go:407 同键）。
-        if(state.mode==='broadcast')payload.collectPolicy=state.collect;
-      }
-      // 请求幂等键（可选 UUID）：失败后直接再点「开始运行」复用同 id 重放，
-      // 不会在网络抖动下重复建 Run；返回编辑则重生成。
-      if(!state.requestId)state.requestId=teamUUID();
-      payload.id=state.requestId;
-      state.busy=true;this.renderRunDialog();
+      if(this.busy)return;
+      entry.form.error='';
+      const id=entry.form.id.trim(),path=entry.form.path.trim();
+      if(!id||!path){entry.form.error=t('请填写工作区标识与绝对路径。');this.render();return;}
+      this.busy=true;this.render();
       try{
-        const run=await this.request('/api/teams/'+encodeURIComponent(state.team.id)+'/runs',{method:'POST',body:payload});
-        dialog.runState=null;
-        dialog.close();
-        this.openRun&&this.openRun(state.team.id,run.id);
-        this.loadRuns(state.team.id);
+        const result=await this.request('/api/teams/workspaces',{method:'POST',body:{id,path}});
+        this.busy=false;
+        entry.form.id='';entry.form.path='';
+        entry.notice=result.duplicate?t('工作区已注册（路径一致），未重复创建。'):t('工作区已注册。');
+        await this.loadWorkspaces();
       }catch(error){
-        state.busy=false;state.error=error.message;
-        this.renderRunDialog();
+        this.busy=false;
+        // 同 id 异路径 / 非 linked worktree / 非绝对路径等 400 直出在表单区。
+        entry.form.error=error.message;
+        this.render();
       }
     };
-    body.append(form);
+    box.append(form);
+    return box;
   }
 }
 
@@ -637,6 +787,9 @@ class TeamRunScreen{
     this.taskDiffs=new Map();  // taskId -> {loading,error,data}：diff 拉取缓存（帧重渲染不丢展开态）
     this.diffOpen=new Set();   // 已展开「查看改动」的 taskId
     this.actionNotice='';      // 动作成功提示（转发等），随下一次动作/打开清空
+    this.questionState=new Map(); // questionId -> {busy,error,draft}：decision 卡本地态（帧重渲染不丢已填内容与错误）
+    this.taskCleanup=new Map();   // taskId -> {busy,error,done}：工作区清理的就地反馈（错误照 forwardDialog 内联风格）
+    this.taskActionKeys=new Map();// taskId -> actionKey：派生任务落地凭据（task_planned 载荷；Run detail 的任务对象不携带该字段）
     this._forwardDialog=null;
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
@@ -656,6 +809,7 @@ class TeamRunScreen{
     this.epoch='';this.lastSeq=-1;this._lastMetaJSON='';
     this.terminalSynced=false;this.refetchFailures=0;
     this.reconnecting=false;this.taskDiffs.clear();this.diffOpen.clear();
+    this.questionState.clear();this.taskCleanup.clear();this.taskActionKeys.clear();
     this.root.replaceChildren();
     const loading=this.node('div',undefined,'team-run-body');
     loading.append(this.node('p',BridgeI18n.t('正在读取 Run…'),'muted'));
@@ -751,6 +905,13 @@ class TeamRunScreen{
       return;
     }
     this.render();
+    // meta 只带未决问题计数（无文本，§5.4）：与本地 detail 的 open 数不一致说明
+    // 快照落后于 meta（事件行被环形缓冲裁掉等），补一次整页读校准——问题的
+    // 权威展示源是 detail.pendingQuestions，不进 meta。
+    if(typeof this.meta?.pendingQuestions==='number'){
+      const openNow=(this.detail.pendingQuestions||[]).filter(question=>(question.status||'open')==='open').length;
+      if(this.meta.pendingQuestions!==openNow)this.scheduleRefetch(400);
+    }
     const status=this.meta?.status||this.detail.status;
     if(TEAM_TERMINAL_RUN_STATUSES.has(status)){
       // 只在转入终态后补读一次完整 RunDetail；后续空帧不再重读。
@@ -765,6 +926,15 @@ class TeamRunScreen{
     const payload=event.payload&&typeof event.payload==='object'?event.payload:{};
     // 契约：taskId 只在 payload 内（runner/dispatcher 的事件构造），顶层从未出现。
     const taskID=typeof payload.taskId==='string'?payload.taskId:'';
+    // 派生任务落地凭据（§12 阶段三执行流）：task_planned 载荷携带 actionKey，而
+    // Run detail 的任务对象不外发该字段——先于下方「未知任务早退」记账内存映射
+    // taskId→actionKey，供 executed 动作卡的「派生任务」跳转；页面打开时
+    // after=-1 的全量事件行（环形缓冲近 500 条）回放会补齐，被裁剪的旧历史
+    // 无链接、只显示徽标。task_forwarded 虽也载 actionKey 但是 run 级事件
+    // （无 taskId），无法进此映射。
+    if(event.type==='task_planned'&&taskID&&typeof payload.actionKey==='string'&&payload.actionKey){
+      this.taskActionKeys.set(taskID,payload.actionKey);
+    }
     if(!taskID)return;
     const tasks=this.detail.tasks||(this.detail.tasks=[]);
     const task=tasks.find(x=>x.id===taskID);
@@ -777,9 +947,12 @@ class TeamRunScreen{
     if(payload.baseRevision!==undefined)task.baseRevision=payload.baseRevision||'';
     if(payload.error!==undefined)task.error=payload.error||'';
     if(payload.stopReason!==undefined)task.stopReason=payload.stopReason||'';
-    if(event.type==='task_completed'){
+    if(event.type==='task_completed'||event.type==='task_cache_hit'){
       task.result={sessionId:payload.sessionId,turnId:payload.turnId,
         result:payload.result,resultChars:payload.resultChars,truncated:payload.truncated};
+      // amend 缓存命中（§6.4.1）：任务携带父 Run 结果直接完成，cachedFrom 指向
+      // 父任务；就地补标记供任务卡显示，400ms 兜底整页补读后以 detail 为准。
+      if(event.type==='task_cache_hit'&&payload.parentTaskId)task.cachedFrom=payload.parentTaskId;
     }
   }
   scheduleRefetch(delay){
@@ -794,6 +967,9 @@ class TeamRunScreen{
       if(generation!==this.generation)return;
       this.detail=detail;
       this.refetchFailures=0;
+      // 拿到权威快照后解除 decision 卡的 busy：已作答的问题转灰态；仍 open 的
+      // 可重新作答（答案只允许消费一次，重复提交由服务端 409 拦截后整页补读）。
+      for(const entry of this.questionState.values())entry.busy=false;
       this.render();
     }catch{
       // 连接问题交给 transport 重连；此处有限重试，避免终态帧后的唯一一次
@@ -855,22 +1031,37 @@ class TeamRunScreen{
       line.append(holder?this.node('code',holder):this.node('span',t('无')));
       body.append(line);
     }
+    // 成员提问（§5.4，detail.pendingQuestions 是权威快照）：open 画应答卡，
+    // answered/withdrawn 画灰态徽标——放在任务列表前，等待输入最先被看到。
+    const questions=detail.pendingQuestions;
+    if(Array.isArray(questions)&&questions.length){
+      this.pruneQuestionState(questions);
+      body.append(this.renderQuestions(questions));
+    }
+    // Lead 动作预览（§5.2/§11）：任务列表上方展示三态（proposed/executed/
+    // rejected），拒绝原因与派生任务引用从 detail 读（run 级事件不留 payload）。
+    const pendingActions=detail.pendingActions;
+    if(Array.isArray(pendingActions)&&pendingActions.length)body.append(this.renderPendingActions(pendingActions));
     const tasks=detail.tasks||[];
     if(!tasks.length)body.append(this.node('p',t('还没有任务。'),'muted'));
     for(const task of tasks)body.append(this.renderTask(task));
     root.append(body);
     body.scrollTop=scrollTop;
   }
-  /* 合并 RunDetail.verify（权威：command/outputHead/truncated）与随帧 meta.verify
-   * （实时：verifying/exitCode 摘要）。postAction 后 meta 置空，回落 detail。 */
+  /* 合并验证事实：命令读 Run 声明的顶层 verifyCommand（string[]，阶段二遗留
+   * 修复——detail.verify 是 VerifyResult（exitCode/outputHead/truncated），没有
+   * command 字段，旧代码读 detailVerify.command 恒空）；实时态读随帧
+   * meta.verify（verifying/exitCode 摘要）。postAction 后 meta 置空，回落 detail。 */
   verifyInfo(){
-    const detailVerify=this.detail&&this.detail.verify&&typeof this.detail.verify==='object'?this.detail.verify:null;
+    const detail=this.detail;
+    const detailVerify=detail&&detail.verify&&typeof detail.verify==='object'?detail.verify:null;
     const metaVerify=this.meta&&this.meta.verify&&typeof this.meta.verify==='object'?this.meta.verify:null;
-    if(!detailVerify&&!metaVerify)return null;
+    const command=detail&&Array.isArray(detail.verifyCommand)?detail.verifyCommand.join(' '):'';
+    if(!command&&!detailVerify&&!metaVerify)return null;
     const exitCode=typeof metaVerify?.exitCode==='number'?metaVerify.exitCode
       :(typeof detailVerify?.exitCode==='number'?detailVerify.exitCode:null);
     return {
-      command:Array.isArray(detailVerify?.command)?detailVerify.command.join(' '):(detailVerify?.command||''),
+      command,
       exitCode,
       verifying:!!metaVerify?.verifying,
       outputHead:detailVerify?.outputHead||'',
@@ -931,6 +1122,9 @@ class TeamRunScreen{
       });
       box.append(cancel);
     }
+    // 修订 Run（§10.2 amend）：从当前 Run detail 预填三段流对话框，任何状态
+    // 都可派生修订（典型时点是终态看完结果后决定下一步）。
+    box.append(this.button(t('创建修订 Run'),()=>this.openAmend()));
     if(this.actionNotice)box.append(this.node('span',this.actionNotice,'team-notice'));
     if(this.actionError)box.append(this.node('span',this.actionError,'error'));
     return box;
@@ -954,6 +1148,7 @@ class TeamRunScreen{
     const t=BridgeI18n.t;
     const member=this.teamMember(task.memberId);
     const card=this.node('section',undefined,'task-card');
+    card.dataset.taskId=task.id; // 动作卡/问题卡的来源任务与派生任务跳转锚点
     const head=this.node('div',undefined,'task-head');
     head.append(this.node('strong',task.id));
     head.append(this.node('span',(member?(member.name||member.id):task.memberId)+(member?' · '+BridgeI18n.agentLabel(member.agentKind):''),'task-member'));
@@ -965,6 +1160,7 @@ class TeamRunScreen{
     if(task.dependsOn&&task.dependsOn.length)metaBits.push(t('依赖：')+task.dependsOn.join('、'));
     if(task.writeLock&&task.writeLock!=='none')metaBits.push(t('写锁：')+(task.writeLock==='exclusive'?t('独占'):task.writeLock));
     if(task.baseRevision)metaBits.push(t('基线：')+String(task.baseRevision).slice(0,12));
+    if(task.cachedFrom)metaBits.push(t('缓存复用：')+task.cachedFrom);
     if(this.detail.workspace?.writeLockHeldBy===task.id)metaBits.push(t('持有项目写锁'));
     if(metaBits.length)card.append(this.node('p',metaBits.join(' · '),'muted task-meta'));
     if(task.stopReason&&task.status!=='completed')card.append(this.node('p',t('停止原因：')+task.stopReason,'muted'));
@@ -1002,9 +1198,22 @@ class TeamRunScreen{
       actions.append(this.button(t('转发到成员'),()=>this.openForwardDialog(task)));
     }
     if(task.workspaceMode==='isolated_worktree'&&task.baseRevision){
-      actions.append(this.button(this.diffOpen.has(task.id)?t('收起改动'):t('查看改动'),()=>this.toggleTaskDiff(task)));
+      const cleanup=this.taskCleanup.get(task.id);
+      if(cleanup&&cleanup.done){
+        // 工作区已删除：diff 端点随 worktree 消失，查看/清理入口都撤下。
+        actions.append(this.node('span',t('工作区已清理'),'muted'));
+      }else{
+        actions.append(this.button(this.diffOpen.has(task.id)?t('收起改动'):t('查看改动'),()=>this.toggleTaskDiff(task)));
+        // 清理是用户显式触发的删除（§6.4 红线：编排器绝不自动清理）；脏区被
+        // 服务端拒绝（409）时就地展示原因，改动保留。
+        const cleanupButton=this.button(t('清理工作区'),()=>this.cleanupTaskWorkspace(task));
+        cleanupButton.disabled=!!(cleanup&&cleanup.busy);
+        actions.append(cleanupButton);
+      }
     }
     if(actions.childNodes.length)card.append(actions);
+    const cleanupState=this.taskCleanup.get(task.id);
+    if(cleanupState&&cleanupState.error)card.append(this.node('p',cleanupState.error,'error'));
     if(this.diffOpen.has(task.id))card.append(this.renderTaskDiff(task));
     return card;
   }
@@ -1063,6 +1272,302 @@ class TeamRunScreen{
     // 多文件靠文件卡列表逐个打开。
     box.append(window.BridgeDiff.fileCards(files,undefined,change=>window.BridgeDiff.open(change)));
     return box;
+  }
+  /* ---- 工作区清理（§6.4）----
+     用户显式触发的 worktree 删除（服务端 git worktree remove 不带 --force，
+     脏区 409 拒绝且改动保留）；成功后任务快照的 workspaceId/baseRevision 仍在
+     （审计），但 diff 与清理入口随 worktree 消失撤下。反馈照 forwardDialog 的
+     内联错误风格落在任务卡内。 */
+  async cleanupTaskWorkspace(task){
+    const t=BridgeI18n.t;
+    if(!window.confirm(t('将删除该任务的独立 worktree（有未提交改动时会拒绝并保留）。确认清理？')))return;
+    const entry=this.taskCleanup.get(task.id)||{busy:false,error:'',done:false};
+    if(entry.busy)return;
+    entry.busy=true;entry.error='';
+    this.taskCleanup.set(task.id,entry);
+    this.render();
+    const generation=this.generation;
+    try{
+      await this.request(this.runUrl('tasks/'+encodeURIComponent(task.id)+'/workspace/cleanup'),{method:'POST'});
+      if(generation!==this.generation)return;
+      this.taskCleanup.set(task.id,{busy:false,error:'',done:true});
+      this.diffOpen.delete(task.id);
+      this.taskDiffs.delete(task.id);
+      this.render();
+    }catch(error){
+      if(generation!==this.generation)return;
+      this.taskCleanup.set(task.id,{busy:false,error:error.message,done:entry.done});
+      this.render();
+    }
+  }
+  /* ---- 成员提问（§5.4 escalate → decision）----
+     问题快照在 RunDetail.pendingQuestions（权威，不进 meta）：open 画应答卡
+     （summary 等宽、来源任务、版本号小字、选项即答），answered/withdrawn 画
+     灰态徽标。提交走 POST runUrl(decision)——绝不能复用 /api/sessions/:id/
+     respond（那是会话侧 pendingID 通道，无 questionId+version 版本保护）；
+     response 形态按 respondWire 口径：question 类（AskUserQuestion→permission）
+     用 {optionId}/{cancel:true}，input 类（elicitation）用 {action,content}。
+     409（版本不匹配/已回答/已撤回）提示后整页补读；400（选项无效/格式不正确）
+     提示但保持卡可重答——草稿与错误存 questionState，帧重渲染不丢。 */
+  renderQuestions(questions){
+    const box=this.node('div',undefined,'team-questions');
+    for(const question of questions)box.append(this.renderQuestionCard(question));
+    return box;
+  }
+  // questionState 是 Map 字段（构造器），取条目的方法另名 questionEntry。
+  questionEntry(question){
+    const key=String(question.questionId||'');
+    let entry=this.questionState.get(key);
+    if(!entry){entry={busy:false,error:'',draft:''};this.questionState.set(key,entry);}
+    return entry;
+  }
+  // 只保留当前快照里仍存在的问题的本地态：撤走的问题连同错误/草稿一并丢弃。
+  pruneQuestionState(questions){
+    const live=new Set();
+    for(const question of questions)if(question.questionId)live.add(String(question.questionId));
+    for(const key of this.questionState.keys())if(!live.has(key))this.questionState.delete(key);
+  }
+  questionStatusBadge(status){
+    // 「问题已撤回」不复用聊天队列的「已撤回」键（那里指排队消息撤回，英文
+    // 语义不同）；问题态用独立词条。
+    return teamStatusBadge('stopped',{stopped:status==='answered'?'已回答':status==='withdrawn'?'问题已撤回':status});
+  }
+  renderQuestionCard(question){
+    const t=BridgeI18n.t;
+    const status=question.status||'open';
+    const open=status==='open';
+    // open 用 .approval 卡（与聊天页待确认卡同款琥珀底=需要你处理）；已解决
+    // 的退成白卡+灰态徽标，靠后不抢注意力。
+    const card=this.node('section',undefined,open?'approval':'task-card');
+    if(open){
+      const head=this.node('h3');
+      head.append(document.createTextNode(t('成员提问')));
+      card.append(head);
+    }else{
+      const head=this.node('div',undefined,'task-head');
+      head.append(this.questionStatusBadge(status));
+      card.append(head);
+    }
+    if(question.summary)card.append(this.node('pre',question.summary,open?undefined:'task-result-text'));
+    const bits=[];
+    if(question.taskId)bits.push(t('来源任务：')+question.taskId);
+    if(typeof question.version==='number')bits.push(t('版本：')+question.version);
+    if(bits.length)card.append(this.node('p',bits.join(' · '),open?'muted':'task-meta'));
+    if(!open)return card;
+    const state=this.questionEntry(question);
+    const options=Array.isArray(question.options)?question.options:[];
+    const actionsBox=this.node('div',undefined,'actions');
+    const cancelResponse=question.kind==='input'?{action:'cancel'}:{cancel:true};
+    const cancel=this.button(t('取消'));
+    cancel.className='secondary';cancel.disabled=state.busy;
+    cancel.onclick=()=>this.submitDecision(question,cancelResponse);
+    if(options.length){
+      // 选项即答（app.js renderAcpApproval 的 question 卡形态）：每个选项一个
+      // 按钮直接提交 {optionId}，无独立「提交」步。
+      for(const option of options){
+        const optionButton=this.button(option.label||option.id||'');
+        optionButton.className='secondary';
+        optionButton.disabled=state.busy;
+        optionButton.onclick=()=>this.submitDecision(question,{optionId:option.id});
+        actionsBox.append(optionButton);
+      }
+    }else if(question.kind==='input'){
+      const label=this.node('label');
+      const input=document.createElement('textarea');
+      input.rows=3;input.maxLength=100000;
+      input.value=state.draft;
+      input.oninput=()=>{state.draft=input.value;};
+      label.append(input);
+      card.append(label);
+      const submit=this.button(t('提交回答'));
+      submit.className='primary';submit.disabled=state.busy;
+      submit.onclick=()=>{
+        if(!state.draft.trim()){state.error=t('请输入回复内容。');this.render();return;}
+        this.submitDecision(question,{action:'accept',content:state.draft});
+      };
+      actionsBox.append(submit);
+    }
+    // question 形态却无选项（服务端契约下不该出现）：只保留取消，卡不失效。
+    actionsBox.append(cancel);
+    card.append(actionsBox);
+    if(state.error)card.append(this.node('p',state.error,'error'));
+    return card;
+  }
+  submitDecision(question,response){
+    const state=this.questionEntry(question);
+    if(state.busy||!question.questionId)return;
+    state.busy=true;state.error='';
+    this.render();
+    const generation=this.generation;
+    // 返回 promise 链（自带 catch 不外抛）：调用方可等待，测试可断言落点。
+    return this.request(this.runUrl('decision'),{method:'POST',body:{
+      // decisionId 每次点击新生成：答案只允许消费一次（§5.4），重复/过期提交
+      // 由服务端按问题状态拒绝（409），客户端幂等键不承担去重职责。
+      decisionId:teamUUID(),
+      questionId:question.questionId,
+      version:question.version,
+      response,
+    }}).then(()=>{
+      if(generation!==this.generation)return;
+      // decision 响应是 {ok,duplicate?} 而非 RunDetail：不能走 postAction 的整
+      // 替换，手动补读刷新问题态（busy 保持到补读落地，防止双击重复作答）。
+      this.scheduleRefetch(0);
+    }).catch(error=>{
+      if(generation!==this.generation)return;
+      state.busy=false;state.error=error.message;
+      this.render();
+      // 409=版本不匹配/已回答/已撤回：本地快照已过期，整页补读拿权威态。
+      if(error.status===409)this.scheduleRefetch(0);
+    });
+  }
+  /* ---- Lead 动作预览（§5.2/§11）----
+     每条：type 徽标、目标成员、轮次、task 摘要、来源任务（可跳转）；状态三态
+     ——proposed 在 autoDispatch 关闭的 Team 标注「仅预览」，executed 给派生任务
+     跳转，rejected 醒目展示 reason。全部字段从 detail.pendingActions 读。 */
+  renderPendingActions(actions){
+    const t=BridgeI18n.t;
+    const box=this.node('div',undefined,'team-pending-actions');
+    box.append(this.node('p',t('Lead 动作'),'muted'));
+    for(const action of actions)box.append(this.renderActionCard(action));
+    return box;
+  }
+  renderActionCard(action){
+    const t=BridgeI18n.t;
+    const card=this.node('section',undefined,'task-card');
+    const head=this.node('div',undefined,'task-head');
+    head.append(teamStatusBadge(action.type||'',TEAM_ACTION_TYPE_LABELS));
+    const statusBadge=TEAM_ACTION_STATUS_BADGES[action.status];
+    if(statusBadge)head.append(teamStatusBadge(statusBadge.cls,{[statusBadge.cls]:statusBadge.label}));
+    else if(action.status)head.append(teamStatusBadge(action.status,{[action.status]:action.status}));
+    if(action.member){
+      const member=this.teamMember(action.member);
+      head.append(this.node('span',member?(member.name||member.id):action.member,'task-member'));
+    }
+    if(action.round)head.append(this.node('span',t('第 ')+action.round+t(' 轮'),'task-member'));
+    card.append(head);
+    if(action.task)card.append(this.node('p',action.task,'task-instructions'));
+    const actionsBox=this.node('div',undefined,'task-actions');
+    if(action.sourceTaskId){
+      if(this.findTask(action.sourceTaskId)){
+        actionsBox.append(this.button(t('来源任务：')+action.sourceTaskId,()=>this.revealTask(action.sourceTaskId)));
+      }else{
+        actionsBox.append(this.node('span',t('来源任务：')+action.sourceTaskId,'muted'));
+      }
+    }
+    if(action.status==='executed'){
+      const derived=this.derivedTaskFor(action);
+      if(derived)actionsBox.append(this.button(t('派生任务：')+derived.id,()=>this.revealTask(derived.id)));
+    }
+    if(actionsBox.childNodes.length)card.append(actionsBox);
+    if(action.status==='proposed'&&this.team?.policy?.autoDispatch!==true){
+      card.append(this.node('p',t('未开启自动执行，仅预览。'),'muted'));
+    }
+    if(action.status==='rejected'&&action.reason){
+      card.append(this.node('p',t('拒绝原因：')+action.reason,'error'));
+    }
+    return card;
+  }
+  findTask(taskId){
+    return ((this.detail&&this.detail.tasks)||[]).find(task=>task.id===taskId)||null;
+  }
+  /* executed 动作的派生任务定位：actionKey 是动作幂等键（team:{t}:run:{r}:
+     action:{sourceTaskID}:{round}:{index}），执行流的 task_planned 事件载荷携带
+     同键（store 重建据此标 executed）——按 applyEvent 记账的 taskId→actionKey
+     映射反查派生任务。fromTaskId 是 request_context 的结果来源任务（非派生
+     任务，model.go Action 注释），不作派生链接；映射缺失（事件被环形缓冲裁
+     剪）时只显示徽标不硬造链接。 */
+  derivedTaskFor(action){
+    if(!action.actionKey)return null;
+    const tasks=(this.detail&&this.detail.tasks)||[];
+    return tasks.find(task=>this.taskActionKeys.get(task.id)===action.actionKey)||null;
+  }
+  revealTask(taskId){
+    const selector=typeof CSS!=='undefined'&&CSS.escape
+      ?'.task-card[data-task-id="'+CSS.escape(taskId)+'"]'
+      :'.task-card[data-task-id="'+taskId+'"]';
+    const target=this.root.querySelector(selector);
+    if(!target)return;
+    target.scrollIntoView({block:'center',behavior:'smooth'});
+    // 就地高亮 1.6s（帧重渲染可能换掉节点，超时回调摸到的是游离节点，无害）。
+    target.style.outline='2px solid #478767';
+    setTimeout(()=>{target.style.outline='';},1600);
+  }
+  /* ---- 修订 Run（§10.2/§6.4.1 amend 缓存）----
+     从当前 Run detail 预填三段流对话框（teamRunDialogHost 复用）：goal/mode/
+     collectPolicy/verifyCommand 原样带回；任务行由 detail.tasks 反填——
+     broadcast 的逐成员展开任务按 broadcastGroup 聚合回条目行（展开 ID 是
+     {entryID}-{memberID}，依赖映射回调目 ID），workspaceMode/workspaceId 透传。
+     提交打 POST runUrl(amend)，幂等键沿用对话框 requestId 机制（失败重试同 id
+     重放，返回编辑重生成）；成功 openRun 新 Run 并提示 cacheImports 摘要。 */
+  async openAmend(){
+    const t=BridgeI18n.t;
+    const detail=this.detail;
+    if(!detail)return;
+    if(!this.team){
+      // openRun 时团队读取失败不阻塞展示；修订需要成员映射，这里补读一次。
+      try{this.team=await this.request('/api/teams/'+encodeURIComponent(this.teamId));}
+      catch{this.team=null;}
+    }
+    if(!this.team){
+      this.actionError=t('团队信息不可用，无法创建修订 Run。');
+      this.render();
+      return;
+    }
+    const mode=['single','pipeline','broadcast'].includes(detail.mode)?detail.mode:'single';
+    const tasks=mode==='single'?[]
+      :mode==='broadcast'?this.amendBroadcastRows(detail)
+      :this.amendPipelineRows(detail);
+    const teamId=this.teamId;
+    teamRunDialogHost.open({
+      team:this.team,
+      amend:{runId:this.runId},
+      goal:detail.goal||'',
+      mode,
+      collect:detail.collectPolicy||'all',
+      tasks,
+      verifyText:Array.isArray(detail.verifyCommand)?detail.verifyCommand.join(' '):'',
+      submit:payload=>this.request(this.runUrl('amend'),{method:'POST',body:payload}),
+      onSuccess:run=>{
+        // 响应是新 Run 的 RunDetail + parentRunId/cacheImports；openRun 的同步
+        // 段会清 actionNotice，此处紧随其后赋值，晚到的首帧 render 仍会带上。
+        this.openRun(teamId,run.id);
+        const imports=Array.isArray(run.cacheImports)?run.cacheImports.length:0;
+        if(imports)this.actionNotice=t('已创建修订 Run；')+imports+t(' 个任务命中缓存，未重复执行。');
+      },
+    });
+  }
+  amendPipelineRows(detail){
+    return (detail.tasks||[]).map(task=>({
+      id:task.id,
+      memberId:task.memberId||'',
+      memberIds:new Set(),
+      deps:new Set(task.dependsOn||[]),
+      prompt:task.prompt||'',
+      writeLock:task.writeLock||'none',
+      workspaceMode:task.workspaceMode||'',
+      workspaceId:task.workspaceId||'',
+    }));
+  }
+  amendBroadcastRows(detail){
+    const rows=new Map();    // broadcastGroup（条目 ID）→ 聚合行
+    const groupOf=new Map(); // 展开任务 ID → broadcastGroup（依赖回调目用）
+    for(const task of detail.tasks||[])if(task.broadcastGroup)groupOf.set(task.id,task.broadcastGroup);
+    for(const task of detail.tasks||[]){
+      const groupId=task.broadcastGroup||task.id;
+      let row=rows.get(groupId);
+      if(!row){
+        row={id:groupId,memberId:'',memberIds:new Set(),deps:new Set(),
+          prompt:task.prompt||'',writeLock:task.writeLock||'none',
+          workspaceMode:task.workspaceMode||'',workspaceId:task.workspaceId||''};
+        rows.set(groupId,row);
+      }
+      if(task.memberId)row.memberIds.add(task.memberId);
+      for(const dep of task.dependsOn||[]){
+        const depGroup=groupOf.get(dep)||dep;
+        if(depGroup!==groupId)row.deps.add(depGroup); // 组内互依赖不回填
+      }
+    }
+    return [...rows.values()];
   }
   /* ---- 成员转发（§12 阶段二工作项 4）----
      轻量 <dialog class="picker">（照 runDialog/openQueueEditor 惯例；确认流与
@@ -1193,4 +1698,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost};

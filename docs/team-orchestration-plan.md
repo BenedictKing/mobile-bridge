@@ -305,13 +305,16 @@ Lead 可以返回普通回答，也可以在回答中附加：
   "sourceTaskId": "task-lead-1",
   "round": 1,
   "member": "reviewer",
-  "task": "检查错误处理并给出建议"
+  "task": "检查错误处理并给出建议",
+  "writeLock": "none"
 }
 ```
 
+`delegate`/`summarize` 可带可选字段 `writeLock`（`exclusive`（默认）/`none`，取值与计划任务同词汇）：纯读任务（review/test 类）声明 `none` 后按 §6.4 规则 3 与共享工作区的写任务并行；`summarize` 派生的摘要任务缺省即 `none`（汇总已有结果不写工作区）。`request_context` 不创建任务，不接受该字段。
+
 编排器拒绝以下情况：
 
-- 目标成员不存在、禁用或绑定会话失效。
+- 目标成员不存在、禁用或绑定会话失效（会话不属于任何 ACP Agent：已删除/从未接入；归属明确但暂时打不开的会话不算失效——动作照常执行，由派发路径与会话恢复兜底重试）。
 - 超过 Team 的最大轮次、任务数或并发数。
 - 同一 Run 中产生相同的任务幂等键。
 - 任务依赖未完成。

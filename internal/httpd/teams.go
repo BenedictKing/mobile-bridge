@@ -597,7 +597,12 @@ func (h *handler) handleRunCreate(teamID string) {
 			return
 		}
 	}
-	run, createErr := h.server.Teams.CreateRun(teamRow, requestID, goal, mode, collect, verifyCommand, inputs)
+	// autoPlan（§5.1/§10.2 阶段三：plan 为空才允许 Lead 产生 team-actions，
+	// 显式 Plan 优先）：按请求形状推导——无 plan 键或空数组即 autoPlan=true
+	//（single 模式空计划由 planner 合成 Lead 任务）；携带任何显式计划则
+	// false，与 CreateRun 的互斥校验天然一致。
+	autoPlan := len(inputs) == 0
+	run, createErr := h.server.Teams.CreateRun(teamRow, requestID, goal, mode, collect, verifyCommand, inputs, autoPlan)
 	if createErr != nil {
 		// 计划类错误已在上方预检映射 400；这里的错误是账本/journal IO
 		// （500）或版本哨兵（409），见 failTeamError（评审遗留①）。
@@ -615,8 +620,8 @@ func (h *handler) handleRunGet(teamID, runID string) {
 	h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
 }
 
-// handleRunAction 分发 run 级动作与事件流端点（§10.2/§10.3）。amend 属阶段三，
-// 显式 409；decision/questions 不注册（落到 404）。
+// handleRunAction 分发 run 级动作与事件流端点（§10.2/§10.3）。阶段三补齐
+// amend（修订 Run）/decision（成员提问回答）与 questions（问题快照）。
 func (h *handler) handleRunAction(method, teamID, runID, action string) {
 	if !teamIDPattern.MatchString(runID) {
 		h.fail(http.StatusNotFound, errorBody("页面不存在"))
@@ -628,6 +633,8 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 			h.handleTeamRunChanges(teamID, runID)
 		case "events":
 			h.handleTeamRunEvents(teamID, runID)
+		case "questions":
+			h.handleRunQuestions(teamID, runID)
 		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}
@@ -659,9 +666,260 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 		// 成员间显式转发（§7 阶段二工作项 4）。
 		h.handleRunForward(teamID, runID)
 	case "amend":
-		h.fail(http.StatusConflict, errorBody("修订 Run 在后续阶段提供"))
+		// 修订 Run（§10.2 amend 段/§6.4.1 多轮缓存，阶段三）。
+		h.handleRunAmend(teamID, runID)
+	case "decision":
+		// 成员提问的回答（§5.4，阶段三）。
+		h.handleRunDecision(teamID, runID)
 	default:
 		h.fail(http.StatusNotFound, errorBody("页面不存在"))
+	}
+}
+
+// ---- 阶段三增量端点（§5.4/§6.4.1/§10.2）----
+
+// handleRunQuestions 输出 Run 快照的问题登记表（§5.4 pendingQuestions 的
+// 只读视图）：{questions:[…]}，条目直出自 Run 全字段投影（questionId/taskId/
+// version/kind/summary/options/status/openedAt），空表返回空数组。404 沿用
+// loadRun（运行不存在/不属于该团队）。权威展示源是 RunDetail 的
+// pendingQuestions，本端点是 API 完整性（§10.2 路由表）与轻量轮询面。
+func (h *handler) handleRunQuestions(teamID, runID string) {
+	run := h.loadRun(teamID, runID)
+	if run == nil {
+		return
+	}
+	questions := &jsoncompat.Array{}
+	if len(run.PendingQuestions) > 0 {
+		raw, err := run.MarshalJSON()
+		if err == nil {
+			if value, unmarshalErr := jsoncompat.Unmarshal(raw); unmarshalErr == nil {
+				if object, _ := value.(*jsoncompat.Object); object != nil {
+					if rows, ok := object.MustGet("pendingQuestions").(*jsoncompat.Array); ok {
+						questions = rows
+					}
+				}
+			}
+		}
+	}
+	result := jsoncompat.NewObject()
+	result.Set("questions", questions)
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// handleRunAmend 创建修订 Run（§10.2 amend 段、§6.4.1 多轮缓存，阶段三）：
+// 校验完全复用 handleRunCreate 的件（goal/plan/verifyCommand 的 400 族与
+// isolated 未装配降级 409）；幂等重放与内容比对由 Service.CreateAmendRun
+// 裁决（增 parentRunID 一项：修订链的父 Run 属于请求身份），同 id 异内容
+// 400、父 Run 不存在 404。成功返回新 Run 的 RunDetail + cacheImports
+// （从新 Run 快照的 CachedFrom 任务合成：taskId/parentTaskId/inputHash/
+// sessionId/turnId 引用，§6.5——结果正文已在 tasks[].result，不重复携带）；
+// duplicate 重放附 duplicate:true。父 Run 的 journal/快照/版本不因 amend
+// 改变（Service 硬边界，amend.go）。
+func (h *handler) handleRunAmend(teamID, runID string) {
+	teamRow := h.loadTeam(teamID)
+	if teamRow == nil {
+		return
+	}
+	if h.loadRun(teamID, runID) == nil {
+		return
+	}
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	body := value.(*jsoncompat.Object)
+	requestID, _ := body.MustGet("id").(string)
+	if requestID != "" {
+		if _, parseErr := uuid.Parse(requestID); parseErr != nil {
+			h.fail(http.StatusBadRequest, errorBody("创建请求标识无效"))
+			return
+		}
+		if requestID == runID {
+			h.fail(http.StatusBadRequest, errorBody("修订 Run 不能复用父 Run 的标识"))
+			return
+		}
+	}
+	goal := strings.TrimSpace(stringField(body, "goal"))
+	if goal == "" || len([]rune(goal)) > teamGoalMaxRunes {
+		h.fail(http.StatusBadRequest, errorBody("请输入 1–10000 字的运行目标"))
+		return
+	}
+	inputs, planErr := parsePlanInputs(body.MustGet("plan"))
+	if planErr != nil {
+		h.fail(http.StatusBadRequest, errorBody(planErr.Error()))
+		return
+	}
+	mode := stringField(body, "mode")
+	if mode == "" {
+		if len(inputs) > 1 {
+			mode = team.ModePipeline
+		} else {
+			mode = team.ModeSingle
+		}
+	}
+	collect := stringField(body, "collectPolicy")
+	verifyCommand, verifyErr := parseVerifyCommand(body.MustGet("verifyCommand"))
+	if verifyErr != nil {
+		h.fail(http.StatusBadRequest, errorBody(verifyErr.Error()))
+		return
+	}
+	// 先经 planner 纯校验，把计划类错误稳定映射为 400（CreateAmendRun 内部
+	// 还会再解析一次；两次之间团队被并发改动的窗口由第二次的报错兜底）。
+	plan, err := team.ParsePlan(teamRow, goal, mode, collect, inputs)
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	for i := range plan.Tasks {
+		if plan.Tasks[i].WorkspaceMode == team.WorkspaceIsolatedWorktree {
+			if h.server.Teams != nil && h.server.Teams.Workspaces == nil {
+				h.fail(http.StatusConflict, errorBody(team.ErrWorkspacesUnavailable.Error()))
+				return
+			}
+			break
+		}
+	}
+	// autoPlan（§5.1/§10.2，与 handleRunCreate 同一推导规则）：无 plan 键或
+	// 空数组即 autoPlan=true——single 模式修订合成 Lead 任务，Lead 回复照常
+	// 解析 team-actions（「让 Lead 再规划一轮」的典型修订语义），与父 Run 及
+	// 同形状 POST /runs 行为一致；携带任何显式计划则 false。
+	autoPlan := len(inputs) == 0
+	run, duplicate, amendErr := h.server.Teams.CreateAmendRun(teamRow, runID, requestID, goal, mode, collect, verifyCommand, inputs, autoPlan)
+	if amendErr != nil {
+		switch {
+		case errors.Is(amendErr, team.ErrRunContentMismatch):
+			h.fail(http.StatusBadRequest, errorBody(amendErr.Error()))
+		case errors.Is(amendErr, team.ErrNotFound):
+			h.failTeamError(amendErr)
+		default:
+			// 预检之后的防御兜底：计划/参数类错误已在上方映射 400，剩余是
+			// 账本/journal IO（500）或版本哨兵（409），见 failTeamError。
+			h.failTeamError(amendErr)
+		}
+		return
+	}
+	result := teamRunDetail(run)
+	result.Set("cacheImports", teamCacheImports(run))
+	if duplicate {
+		result.Set("duplicate", true)
+	}
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// teamCacheImports 从新 Run 快照合成 amend 响应的 cacheImports 摘要：
+// CachedFrom 非空的任务即创建批次内导入的缓存命中（§6.4.1），携带溯源引用
+// （父任务/输入哈希/来源会话与 turn）；结果正文与截断标记已由 RunDetail 的
+// tasks[].result 直出，这里不重复放大 payload（§10.3 有界）。
+func teamCacheImports(run *team.Run) *jsoncompat.Array {
+	rows := &jsoncompat.Array{}
+	if run == nil {
+		return rows
+	}
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		if task.CachedFrom == "" {
+			continue
+		}
+		row := jsoncompat.NewObject()
+		row.Set("taskId", task.ID)
+		row.Set("parentTaskId", task.CachedFrom)
+		row.Set("inputHash", task.InputHash)
+		if task.ResultDetail != nil {
+			row.Set("sessionId", task.ResultDetail.SessionID)
+			row.Set("turnId", task.ResultDetail.TurnID)
+			row.Set("resultChars", jsoncompat.Num(task.ResultDetail.ResultChars))
+			row.Set("truncated", task.ResultDetail.Truncated)
+		}
+		rows.Items = append(rows.Items, row)
+	}
+	return rows
+}
+
+// handleRunDecision 回答成员的主动提问（§5.4 的 decision 入口，阶段三）。
+// body：{decisionId（必填 UUID，§9 决策幂等）、questionId（必填）、version
+// （必填整数=登记时 Run 快照版本）、response（必填对象：permission 类
+// {optionId}/{cancel:true}、input 类 {action,content}——与 /api/sessions/:id/
+// respond 是两套 API，载荷在此原样转交 Service.AnswerQuestion 投递成员会话）。
+//
+// 错误三分类（评审指令定死）：问题不存在 404；版本不匹配/已回答/已撤回/
+// 会话侧过期 409；选项无效/回应格式不正确 400（请求未被消费，问题仍 open
+// 可重答）。成功 200 {ok:true, duplicate?}（同 decisionID 重放不重复投递）。
+func (h *handler) handleRunDecision(teamID, runID string) {
+	if h.loadRun(teamID, runID) == nil {
+		return
+	}
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	body := value.(*jsoncompat.Object)
+	decisionID := stringField(body, "decisionId")
+	if decisionID == "" {
+		h.fail(http.StatusBadRequest, errorBody("缺少决策标识"))
+		return
+	}
+	if _, parseErr := uuid.Parse(decisionID); parseErr != nil {
+		h.fail(http.StatusBadRequest, errorBody("决策标识无效：必须是 UUID"))
+		return
+	}
+	questionID := stringField(body, "questionId")
+	if questionID == "" {
+		h.fail(http.StatusBadRequest, errorBody("缺少问题标识"))
+		return
+	}
+	version, versionErr := parseTeamVersion(body)
+	if versionErr != nil {
+		h.fail(http.StatusBadRequest, errorBody(versionErr.Error()))
+		return
+	}
+	response, isObject := body.MustGet("response").(*jsoncompat.Object)
+	if !isObject {
+		h.fail(http.StatusBadRequest, errorBody("回应必须是对象"))
+		return
+	}
+	_, duplicate, answerErr := h.server.Teams.AnswerQuestion(runID, questionID, version, decisionID, response)
+	if answerErr != nil {
+		h.failDecisionError(answerErr)
+		return
+	}
+	// 响应固定 {ok:true, duplicate?}（不回问题本体）：权威状态由客户端补读
+	// RunDetail（web/team.js 的 decision 卡即按此契约走 scheduleRefetch），
+	// 避免把快照嵌进决策响应造成第二事实源。
+	result := jsoncompat.NewObject()
+	result.Set("ok", true)
+	if duplicate {
+		result.Set("duplicate", true)
+	}
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// failDecisionError 映射 decision 的服务错误（三分类，failTeamError 口径的
+// 哨兵判别 + 决策专用的语义分派）：ErrQuestionNotOpen（已回答/已撤回）、
+// ErrVersionConflict 包装的版本过期与 ErrQuestionExpired（成员会话的问题卡
+// 已消失，登记随之撤回）→ 409 透出 team 侧中文文案；ErrQuestionInvalidResponse
+// （选项无效/回应格式不正确——请求未被消费、卡仍可答）→ 400；「同一决策标识
+// 不能用于不同内容」等请求身份问题 → 400；成员会话不可达/投递失败（问题
+// 保持 open，会话恢复后可重试）→ 409 透出文案；问题不存在（含来源任务或
+// 成员缺失）→ 404；其余（账本 IO 等）走 failTeamError（500 只进日志）。
+func (h *handler) failDecisionError(err error) {
+	message := err.Error()
+	switch {
+	case errors.Is(err, team.ErrNotFound):
+		h.fail(http.StatusNotFound, errorBody("问题不存在，请刷新"))
+	case errors.Is(err, team.ErrQuestionNotOpen),
+		errors.Is(err, team.ErrVersionConflict),
+		errors.Is(err, team.ErrQuestionExpired):
+		h.fail(http.StatusConflict, errorBody(message))
+	case errors.Is(err, team.ErrQuestionInvalidResponse),
+		errors.Is(err, team.ErrRunContentMismatch),
+		strings.Contains(message, "决策标识无效"), strings.Contains(message, "回答内容不能为空"):
+		h.fail(http.StatusBadRequest, errorBody(message))
+	case strings.Contains(message, "回答未送达"), strings.Contains(message, "投递失败"):
+		h.fail(http.StatusConflict, errorBody(message))
+	default:
+		h.failTeamError(err)
 	}
 }
 
@@ -1359,8 +1617,10 @@ func teamRunSummary(run *team.Run) *jsoncompat.Object {
 // teamRunMeta 是 Changes/SSE 随行 meta 的 Run 状态摘要。mode/collectPolicy/
 // verify 是阶段二增量（§6.4.1/§6.5）：verify 只在有闸门的 Run 上出现，
 // {exitCode?, verifying}——exitCode 在闸门出结果后携带，verifying 表示闸门
-// 正在执行（RunReducing 且结果未落）。meta 键变更是前端整页重渲染的触发
-// 契约（web/team.js applyFrame）。
+// 正在执行（RunReducing 且结果未落）。pendingQuestions 是阶段三增量（§5.4）：
+// 仅计数未决（open）问题——问题文本绝不进 meta（meta 键变更是前端整页重渲染
+// 的触发契约，web/team.js applyFrame），权威快照在 RunDetail.pendingQuestions；
+// 计数与 detail 的 open 数不一致是前端触发整页补读的信号（team.js 以此对账）。
 func teamRunMeta(run *team.Run) *jsoncompat.Object {
 	meta := jsoncompat.NewObject()
 	if run == nil {
@@ -1377,6 +1637,13 @@ func teamRunMeta(run *team.Run) *jsoncompat.Object {
 	meta.Set("status", run.Status)
 	meta.Set("stopReason", run.StopReason)
 	meta.Set("taskCounts", teamTaskCounts(run))
+	open := 0
+	for i := range run.PendingQuestions {
+		if run.PendingQuestions[i].Status == team.QuestionStatusOpen {
+			open++
+		}
+	}
+	meta.Set("pendingQuestions", jsoncompat.Num(open))
 	workspace := jsoncompat.NewObject()
 	workspace.Set("writeLockHeldBy", teamWriteLockHolder(run))
 	meta.Set("workspace", workspace)

@@ -51,8 +51,10 @@ const (
 	RunOutcomeUnknown = "outcome_unknown"
 )
 
-// 事件类型（§10.3 的阶段一子集）。task_cache_hit / action_* / question_* 等
-// 留给后续阶段。
+// 事件类型（§10.3 的阶段一子集）。task_cache_hit 等留给后续阶段；
+// action_* / invalid_action_block 属阶段三（§5.1，本包 actions.go 是唯一
+// 写入方——动作的解析与落账不经过 httpd 或执行侧直写）；question_* 属
+// 阶段三 §5.4（本包 questions.go 是唯一写入方）。
 const (
 	EventRunCreated            = "run_created"
 	EventTaskPlanned           = "task_planned"
@@ -71,10 +73,10 @@ const (
 	// 重试预算被静默丢弃（§8.3 第 7 条对可重试分类的豁免依赖本事件）。
 	// payload {taskId, attempt, outcome}，attempt 是重臂后的下一次尝试号。
 	EventTaskRetryScheduled = "task_retry_scheduled"
-	EventRunWaitingInput       = "run_waiting_input"
-	EventRunCompleted          = "run_completed"
-	EventRunFailed             = "run_failed"
-	EventRunCancelled          = "run_cancelled"
+	EventRunWaitingInput    = "run_waiting_input"
+	EventRunCompleted       = "run_completed"
+	EventRunFailed          = "run_failed"
+	EventRunCancelled       = "run_cancelled"
 	// EventProviderThrottled 是 AIMD 窗口实际减小时的限流事实（§6.3，
 	// 阶段二）：payload {bucket, window, retryAfterSecs}，每 epoch 一次。
 	// run 级事件（无 taskId），HTTP/SSE 路由归 httpd-api-2。
@@ -95,6 +97,33 @@ const (
 	// {exitCode, durationMs, outputHead, truncated[, reason]}，run 级事件（无
 	// taskId）；VerifyResult 随 Run 快照持久化，resume 复验后再次落账。
 	EventRunVerify = "run_verify"
+	// 阶段三 Lead 自动动作的事件（§5.1/§10.3）：action_proposed 是合法动作
+	// 入账事实（payload {taskId, index, actionKey, type, round, member?,
+	// taskHead?, fromTaskId?}，IdempotencyKey=actionKey）——由 actions.go 在
+	// Lead 任务结算的单批 commitRun 里写入，执行侧只消费不另写；
+	// action_rejected 是执行侧的拒绝事实（payload {actionKey, reason}，写入
+	// 归执行流，重建语义归本包）；invalid_action_block 是解析/校验失败事实
+	// （payload {taskId, attempt, final, round, violations}，每次失败一条，
+	// final=true 表示修复回路耗尽按普通文本收场）。
+	EventActionProposed     = "action_proposed"
+	EventActionRejected     = "action_rejected"
+	EventInvalidActionBlock = "invalid_action_block"
+	// EventTaskCacheHit 是 amend 缓存命中的入账事实（§6.4.1/§10.2 amend 段，
+	// 阶段三，amend.go 是唯一写入方）：payload {taskId, parentRunId,
+	// parentTaskId, inputHash, sessionId, turnId, result, resultChars,
+	// truncated}。命中结果仍作为本 Run 的新节点实例入账（§6.4.1 规则 4：
+	// 不跳过事件写入）——任务在创建批次内直接落 completed，task 级事件。
+	EventTaskCacheHit = "task_cache_hit"
+	// 成员主动提问的事件（§5.4，阶段三）：question_opened {questionId,
+	// taskId, version, kind, summary, options}、question_resolved
+	// {questionId, taskId, answerHead}（IdempotencyKey=decision 键，§9 决策
+	// 带 decisionID 且重复提交返回 duplicate）。question_withdrawn 是 §10.3
+	// 事件表的表外增量（照 EventRunStopped 先例补登）：Task 取消/Run 终止/
+	// 会话卡过期都必须有撤回事实可审计，payload {questionId, taskId, reason}，
+	// reason ∈ task_terminal | run_finished | stale。
+	EventQuestionOpened    = "question_opened"
+	EventQuestionResolved  = "question_resolved"
+	EventQuestionWithdrawn = "question_withdrawn"
 )
 
 // 策略取值（§4.2）。isolated_worktree 属阶段二：只引用用户预备的 worktree
@@ -219,22 +248,32 @@ func DefaultPolicy() TeamPolicy {
 // completed 时先过闸门再终局，绝不采信 Agent 的口头成功声明；Verify 持久化
 // 闸门结果，resume 清空后重跑即复验。
 type Run struct {
-	ID             string        `json:"id"`
-	TeamID         string        `json:"teamId"`
-	Goal           string        `json:"goal"`
-	Mode           string        `json:"mode,omitempty"`
-	CollectPolicy  string        `json:"collectPolicy,omitempty"`
-	Status         string        `json:"status"`
-	StopReason     string        `json:"stopReason,omitempty"`
-	Round          int           `json:"round"`
-	PlanHash       string        `json:"planHash"`
-	Tasks          []Task        `json:"tasks"`
-	PendingActions []Action      `json:"pendingActions,omitempty"`
-	VerifyCommand  []string      `json:"verifyCommand,omitempty"`
-	Verify         *VerifyResult `json:"verify,omitempty"`
-	CreatedAt      time.Time     `json:"createdAt"`
-	UpdatedAt      time.Time     `json:"updatedAt"`
-	Version        uint64        `json:"version"`
+	ID            string `json:"id"`
+	TeamID        string `json:"teamId"`
+	Goal          string `json:"goal"`
+	Mode          string `json:"mode,omitempty"`
+	CollectPolicy string `json:"collectPolicy,omitempty"`
+	AutoPlan      bool   `json:"autoPlan,omitempty"`
+	Status        string `json:"status"`
+	StopReason    string `json:"stopReason,omitempty"`
+	Round         int    `json:"round"`
+	PlanHash      string `json:"planHash"`
+	// ParentRunID 是 amend 修订链的父 Run（§6.4.1/§10.2 amend 段，阶段三）：
+	// 创建新 Run、绝不改写父 Run 的 journal；父 Run 的可复用前驱结果按
+	// inputHash 匹配导入（amend.go），随 run_created payload 落账供
+	// team-runs.json 损坏后的 journal 重建。空串=非 amend 产出的 Run。
+	ParentRunID    string   `json:"parentRunId,omitempty"`
+	Tasks          []Task   `json:"tasks"`
+	PendingActions []Action `json:"pendingActions,omitempty"`
+	// PendingQuestions 是成员主动提问的登记表（§5.4）：detail 顶层直出
+	//（teamRunDetail 自动携带），绝不进 changes meta（meta 逐键变更触发整页
+	// 重渲染契约，teams.go teamRunMeta）。
+	PendingQuestions []PendingQuestion `json:"pendingQuestions,omitempty"`
+	VerifyCommand    []string          `json:"verifyCommand,omitempty"`
+	Verify           *VerifyResult     `json:"verify,omitempty"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	UpdatedAt        time.Time         `json:"updatedAt"`
+	Version          uint64            `json:"version"`
 
 	extra *jsoncompat.Object
 }
@@ -263,28 +302,33 @@ type VerifyResult struct {
 // 或上下文合成的任何变更都不再让在途任务错认 turn。HTTP 投影不外发（§10.3
 // 有界 payload，teams.go teamRunDetail 显式剔除）。
 type Task struct {
-	ID               string      `json:"id"`
-	MemberID         string      `json:"memberId"`
-	Prompt           string      `json:"prompt"`
-	InputHash        string      `json:"inputHash"`
-	Attempt          int         `json:"attempt"`
-	SiteID           string      `json:"siteId,omitempty"`
-	Ordinal          int         `json:"ordinal,omitempty"`
-	DependsOn        []string    `json:"dependsOn,omitempty"`
-	BroadcastGroup   string      `json:"broadcastGroup,omitempty"`
-	WorkspaceMode    string      `json:"workspaceMode,omitempty"`
-	WorkspaceID      string      `json:"workspaceId,omitempty"`
-	BaseRevision     string      `json:"baseRevision,omitempty"`
-	WriteLock        string      `json:"writeLock,omitempty"`
-	Status           string      `json:"status"`
-	SubmissionID     string      `json:"submissionId,omitempty"`
-	Result           string      `json:"result,omitempty"`
-	ResultDetail     *TaskResult `json:"resultDetail,omitempty"`
-	Error            string      `json:"error,omitempty"`
-	Outcome          string      `json:"outcome,omitempty"`
-	StopReason       string      `json:"stopReason,omitempty"`
-	InstructionsHead string      `json:"instructionsHead,omitempty"`
-	SentText         string      `json:"sentText,omitempty"`
+	ID             string      `json:"id"`
+	MemberID       string      `json:"memberId"`
+	Prompt         string      `json:"prompt"`
+	InputHash      string      `json:"inputHash"`
+	Attempt        int         `json:"attempt"`
+	SiteID         string      `json:"siteId,omitempty"`
+	Ordinal        int         `json:"ordinal,omitempty"`
+	DependsOn      []string    `json:"dependsOn,omitempty"`
+	BroadcastGroup string      `json:"broadcastGroup,omitempty"`
+	WorkspaceMode  string      `json:"workspaceMode,omitempty"`
+	WorkspaceID    string      `json:"workspaceId,omitempty"`
+	BaseRevision   string      `json:"baseRevision,omitempty"`
+	WriteLock      string      `json:"writeLock,omitempty"`
+	Status         string      `json:"status"`
+	SubmissionID   string      `json:"submissionId,omitempty"`
+	Result         string      `json:"result,omitempty"`
+	ResultDetail   *TaskResult `json:"resultDetail,omitempty"`
+	// CachedFrom 是 amend 缓存导入的来源任务 ID（§6.4.1，阶段三）：本 Run 的
+	// 新节点实例在创建批次内直接落 completed，Result/ResultDetail 深拷贝自
+	// 父 Run 的同名任务，SubmissionID/SentText 留空——缓存任务绝不重派发。
+	// 空串=常规执行产出。
+	CachedFrom       string `json:"cachedFrom,omitempty"`
+	Error            string `json:"error,omitempty"`
+	Outcome          string `json:"outcome,omitempty"`
+	StopReason       string `json:"stopReason,omitempty"`
+	InstructionsHead string `json:"instructionsHead,omitempty"`
+	SentText         string `json:"sentText,omitempty"`
 
 	extra *jsoncompat.Object
 }
@@ -306,14 +350,78 @@ type TaskResult struct {
 	extra *jsoncompat.Object
 }
 
-// Action 是 Lead 提出的待确认动作（§5.2）。阶段一只持久化与回显，
-// 解析与执行在后续阶段实现。
+// Action 是 Lead 提出的待确认动作（§5.2）。阶段三起由 actions.go 从 Lead
+// 回复的 <team-actions> 信封解析落账（Status=proposed）；执行/拒绝由执行流
+// 改写（executed/rejected）。FromTaskID 是 request_context 的结果来源任务
+// （§5.2「请求另一成员提供已有结果」——校验要求存在于本 Run 且已完成）；
+// WriteLock 是 delegate/summarize 动作可选声明的派生任务写锁（§6.4 规则 3，
+// ∈ {exclusive, none}；空＝按动作类型缺省归一，见 buildActionTask），
+// request_context 不创建任务、不接受该字段；ActionKey 是动作的幂等键
+// （team:{t}:run:{r}:action:{sourceTaskID}:{round}:{index}）；Reason 在
+// rejected 时非空。
 type Action struct {
 	Type         string `json:"type"`
 	SourceTaskID string `json:"sourceTaskId"`
 	Round        int    `json:"round"`
 	Member       string `json:"member,omitempty"`
 	Task         string `json:"task,omitempty"`
+	FromTaskID   string `json:"fromTaskId,omitempty"`
+	WriteLock    string `json:"writeLock,omitempty"`
+	ActionKey    string `json:"actionKey,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+// Action 状态取值（§5.2/§12 阶段三）：proposed 已入账待执行；executed 已由
+// 执行流落地（task_planned/task_forwarded 携带 actionKey）；rejected 被执行
+// 流拒绝（Reason 说明原因）。
+const (
+	ActionStatusProposed = "proposed"
+	ActionStatusExecuted = "executed"
+	ActionStatusRejected = "rejected"
+)
+
+// 问题 Kind 取值（§5.4）：question 是 AskUserQuestion 形态的提问卡（成员把
+// 提问桥接在 session/request_permission 上，acpview 以 title==AskUserQuestion
+// 标记 question:true）；input 是 elicitation/create 的补充输入卡（acpruntime
+// pendingKinds 的 input 口径）。
+const (
+	QuestionKindQuestion = "question"
+	QuestionKindInput    = "input"
+)
+
+// PendingQuestion 状态取值（§5.4）：open 已登记待回答；answered 已按
+// questionID+version 消费（答案只允许消费一次）；withdrawn 已随 Task 取消/
+// Run 终止/会话卡过期撤回。
+const (
+	QuestionStatusOpen      = "open"
+	QuestionStatusAnswered  = "answered"
+	QuestionStatusWithdrawn = "withdrawn"
+)
+
+// QuestionOption 是提问卡的一个可选答案（acpview 把 permission options 映射
+// 为 {id, label, kind}；回答报文按 optionId 引用）。
+type QuestionOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// PendingQuestion 是成员主动提问的登记条目（§5.4）：QuestionID={taskID}:
+// {requestID}（会话请求 ID 在进程内可能跨成员撞号，任务前缀保证 Run 内唯一，
+// 末段可剥回会话侧 requestID 供 Respond 投递）；Version 是登记时的 Run 快照
+// 版本（decision 必须按 questionID+version 回答，过期版本拒绝并要求刷新）；
+// Summary/Options 是有界摘要（逐条截断，§10.3 有界 payload）；Status 见
+// QuestionStatus* 常量。任务保持 running、Run 不强制 waiting_input（§5.4
+// 独立分支继续；开放问题期间任务与 run 超时豁免）。
+type PendingQuestion struct {
+	QuestionID string           `json:"questionId"`
+	TaskID     string           `json:"taskId"`
+	Version    uint64           `json:"version"`
+	Kind       string           `json:"kind"`
+	Summary    string           `json:"summary"`
+	Options    []QuestionOption `json:"options,omitempty"`
+	Status     string           `json:"status"`
+	OpenedAt   time.Time        `json:"openedAt"`
 }
 
 // Event 是写入 journal 的运行事实（§4.3）。Sequence 由 Journal.Append
@@ -341,9 +449,10 @@ var teamKnownFields = map[string]bool{
 
 var runKnownFields = map[string]bool{
 	"id": true, "teamId": true, "goal": true, "mode": true,
-	"collectPolicy": true, "status": true,
-	"stopReason": true, "round": true, "planHash": true, "tasks": true,
-	"pendingActions": true, "verifyCommand": true, "verify": true,
+	"collectPolicy": true, "autoPlan": true, "status": true,
+	"stopReason": true, "round": true, "planHash": true, "parentRunId": true,
+	"tasks": true, "pendingActions": true, "pendingQuestions": true,
+	"verifyCommand": true, "verify": true,
 	"createdAt": true, "updatedAt": true, "version": true,
 }
 
@@ -357,7 +466,8 @@ var taskKnownFields = map[string]bool{
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
 	"baseRevision": true, "writeLock": true,
 	"status": true, "submissionId": true, "result": true, "resultDetail": true,
-	"error": true, "outcome": true, "stopReason": true, "instructionsHead": true,
+	"cachedFrom": true,
+	"error":      true, "outcome": true, "stopReason": true, "instructionsHead": true,
 	"sentText": true,
 }
 
@@ -482,12 +592,24 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 	if r.CollectPolicy != "" {
 		object.Set("collectPolicy", r.CollectPolicy)
 	}
+	// AutoPlan（§5.1/§10.2：plan 为空才允许 Lead 产生 team-actions）必须落盘：
+	// 漏 Set 会让重启后解析闸门静默关闭（false 是保守方向，但显式声明的
+	// Run 丢标记会让合法动作被当普通文本丢弃）。
+	if r.AutoPlan {
+		object.Set("autoPlan", true)
+	}
 	object.Set("status", r.Status)
 	if r.StopReason != "" {
 		object.Set("stopReason", r.StopReason)
 	}
 	object.Set("round", jsoncompat.Num(r.Round))
 	object.Set("planHash", r.PlanHash)
+	// ParentRunID 必须落盘（§6.4.1 amend 链）：漏 Set 或漏 runKnownFields 会让
+	// 网关重启后修订血缘静默丢失——前端「基于此 Run 修订」的入口与缓存命中
+	// 事实的溯源都依赖它。
+	if r.ParentRunID != "" {
+		object.Set("parentRunId", r.ParentRunID)
+	}
 	tasks := &jsoncompat.Array{}
 	for i := range r.Tasks {
 		tasks.Items = append(tasks.Items, r.Tasks[i].jsonObject())
@@ -499,6 +621,16 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 			actions.Items = append(actions.Items, r.PendingActions[i].jsonObject())
 		}
 		object.Set("pendingActions", actions)
+	}
+	// pendingQuestions 必须落盘（§5.4 快照四处同步硬纪律）：漏 Set 或漏
+	// runKnownFields 会让网关重启后问题登记静默清零——decision 按 Version
+	// 比对更是无从谈起。
+	if len(r.PendingQuestions) > 0 {
+		questions := &jsoncompat.Array{}
+		for i := range r.PendingQuestions {
+			questions.Items = append(questions.Items, r.PendingQuestions[i].jsonObject())
+		}
+		object.Set("pendingQuestions", questions)
 	}
 	object.Set("createdAt", r.CreatedAt.Format(time.RFC3339Nano))
 	object.Set("updatedAt", r.UpdatedAt.Format(time.RFC3339Nano))
@@ -530,10 +662,54 @@ func (a *Action) jsonObject() *jsoncompat.Object {
 	if a.Task != "" {
 		object.Set("task", a.Task)
 	}
+	if a.FromTaskID != "" {
+		object.Set("fromTaskId", a.FromTaskID)
+	}
+	if a.ActionKey != "" {
+		object.Set("actionKey", a.ActionKey)
+	}
+	if a.Status != "" {
+		object.Set("status", a.Status)
+	}
+	if a.Reason != "" {
+		object.Set("reason", a.Reason)
+	}
 	return object
 }
 
-// Clone 深拷贝 Run（含任务、动作、验证闸门与未知字段）。
+func (q *PendingQuestion) jsonObject() *jsoncompat.Object {
+	object := jsoncompat.NewObject()
+	object.Set("questionId", q.QuestionID)
+	object.Set("taskId", q.TaskID)
+	object.Set("version", json.Number(strconv.FormatUint(q.Version, 10)))
+	object.Set("kind", q.Kind)
+	object.Set("summary", q.Summary)
+	if len(q.Options) > 0 {
+		options := &jsoncompat.Array{}
+		for i := range q.Options {
+			entry := jsoncompat.NewObject()
+			entry.Set("id", q.Options[i].ID)
+			entry.Set("label", q.Options[i].Label)
+			options.Items = append(options.Items, entry)
+		}
+		object.Set("options", options)
+	}
+	object.Set("status", q.Status)
+	object.Set("openedAt", q.OpenedAt.Format(time.RFC3339Nano))
+	return object
+}
+
+// Clone 深拷贝 PendingQuestion（含选项）。
+func (q *PendingQuestion) Clone() *PendingQuestion {
+	if q == nil {
+		return nil
+	}
+	copied := *q
+	copied.Options = append([]QuestionOption(nil), q.Options...)
+	return &copied
+}
+
+// Clone 深拷贝 Run（含任务、动作、问题登记、验证闸门与未知字段）。
 func (r *Run) Clone() *Run {
 	if r == nil {
 		return nil
@@ -547,6 +723,12 @@ func (r *Run) Clone() *Run {
 		}
 	}
 	copied.PendingActions = append([]Action(nil), r.PendingActions...)
+	if len(r.PendingQuestions) > 0 {
+		copied.PendingQuestions = make([]PendingQuestion, len(r.PendingQuestions))
+		for i := range r.PendingQuestions {
+			copied.PendingQuestions[i] = *r.PendingQuestions[i].Clone()
+		}
+	}
 	copied.VerifyCommand = append([]string(nil), r.VerifyCommand...)
 	copied.Verify = r.Verify.Clone()
 	copied.extra = cloneExtra(r.extra)
@@ -621,6 +803,12 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	}
 	if t.ResultDetail != nil {
 		object.Set("resultDetail", t.ResultDetail.jsonObject())
+	}
+	// CachedFrom（amend 缓存导入来源，§6.4.1）必须落盘：重建与 detail 投影
+	// 都按它区分「导入结果」与「本 Run 执行产出」，漏序列化会让命中任务在
+	// 重启后退化为无来源的普通 completed。
+	if t.CachedFrom != "" {
+		object.Set("cachedFrom", t.CachedFrom)
 	}
 	if t.Error != "" {
 		object.Set("error", t.Error)

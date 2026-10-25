@@ -363,3 +363,34 @@ func TestReadyTasksReleasesOnBroadcastGroup(t *testing.T) {
 		t.Fatalf("全失败组不应释放下游，实际 %v", ready)
 	}
 }
+
+// TestReadyTasksActionDerivedTasks（阶段三 actions-exec 补口径）：动作派生
+// 任务（delegate 的 {source}-d{round}-{index} / summarize 的 {source}-s{round}-
+// {index}）以普通 planned 任务参与调度——依赖释放、成员互斥与并发上限与显式
+// 计划任务同口径；summarize 的 DependsOn=已完成任务集，未完成的依赖照常等待。
+func TestReadyTasksActionDerivedTasks(t *testing.T) {
+	run := runWithTasks(
+		taskWith("lead", "lead", TaskCompleted),
+		taskWith("lead-d1-0", "dev", TaskPlanned),               // delegate 派生：无依赖，立即可派。
+		taskWith("lead-s2-0", "lead", TaskPlanned, "lead-d1-0"), // summarize 派生：等 delegate 完成。
+	)
+	ready := ReadyTasks(run, DefaultPolicy(), 0, nil, nil, NewLockRegistry())
+	if !reflect.DeepEqual(ready, []string{"lead-d1-0"}) {
+		t.Fatalf("summarize 派生应等待 delegate 派生完成，实际 %v", ready)
+	}
+	// delegate 派生完成后 summarize 释放。
+	run.Tasks[1].Status = TaskCompleted
+	ready = ReadyTasks(run, DefaultPolicy(), 0, nil, nil, NewLockRegistry())
+	if !reflect.DeepEqual(ready, []string{"lead-s2-0"}) {
+		t.Fatalf("delegate 完成后应释放 summarize 派生，实际 %v", ready)
+	}
+	// 成员单活动任务口径：Lead 已有在途任务时 summarize 派生不选中。
+	busy := map[string]bool{"lead": true}
+	if ready = ReadyTasks(run, DefaultPolicy(), 0, busy, nil, NewLockRegistry()); len(ready) != 0 {
+		t.Fatalf("Lead 在途时不得选中 summarize 派生，实际 %v", ready)
+	}
+	// 并发上限口径：额度耗尽时派生任务同样排队等待。
+	if ready = ReadyTasks(run, DefaultPolicy(), DefaultPolicy().MaxParallelTasks, nil, nil, NewLockRegistry()); len(ready) != 0 {
+		t.Fatalf("并发额度耗尽时不得选中派生任务，实际 %v", ready)
+	}
+}

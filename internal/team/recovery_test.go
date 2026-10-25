@@ -602,3 +602,57 @@ func TestReconcileRunAttemptMonotonicViolationIgnored(t *testing.T) {
 		}
 	}
 }
+
+// ---- 评审遗留④：工作区停靠的单批原子判别 ----
+
+// TestStopTaskWorkspaceLostSingleBatchAtomic 判别（评审遗留④）：
+// stopTaskWorkspaceLost 的「workspace_lost + 任务 stopped + run
+// waiting_input」必须单批原子落账（旧实现先落任务事实、另批落 run 状态，
+// failAt=3 注入点会留下任务已 stopped 而 run 仍 dispatching 的撕裂快照，
+// passFold 会把全终态快照折成 RunStopped、堵死 Resume）。写锁释放已随单批
+// 后移，锁存续与任务在途状态一致。
+func TestStopTaskWorkspaceLostSingleBatchAtomic(t *testing.T) {
+	for _, failAt := range []int{2, 3} {
+		t.Run(fmt.Sprintf("SaveRun第%d次失败", failAt), func(t *testing.T) {
+			store, service, team := newSettleService(t, failAt)
+			run := &Run{
+				ID: "run-wslost", TeamID: team.ID, Goal: "交付功能", Status: RunDispatching, Round: 1,
+				Tasks: []Task{{
+					ID: "t1", MemberID: "dev", Prompt: "实现功能", Ordinal: 0,
+					Status: TaskDispatching, SubmissionID: "sub-t1",
+					WriteLock: TaskWriteLockExclusive, WorkspaceMode: WorkspaceIsolatedWorktree,
+					WorkspaceID: "ws-t1",
+				}},
+			}
+			if err := store.SaveRun(run); err != nil {
+				t.Fatalf("run 夹具落账失败: %v", err)
+			}
+			state := service.stateFor(run.ID)
+			service.stopTaskWorkspaceLost(state, run.ID, "t1", "ws-t1", "path_missing")
+			assertDockAtomic(t, store, run.ID, "t1")
+			if store.Run(run.ID).Status != RunWaitingInput {
+				if ok := service.stopTaskWorkspaceLost(state, run.ID, "t1", "ws-t1", "path_missing"); !ok {
+					t.Fatal("重试应落齐全部事实")
+				}
+				assertDockAtomic(t, store, run.ID, "t1")
+			}
+			fresh := store.Run(run.ID)
+			if task := findTaskIn(fresh, "t1"); task.Status != TaskStopped {
+				t.Fatalf("任务应停靠 stopped，实际 %s", task.Status)
+			}
+			// 事件序：workspace_lost → task_stopped → run_waiting_input（§3.1 原则 4）。
+			store.disarm() // 停靠事实已验：解除注入，Resume 不受影响。
+			if !eventOrderOK(service, run.ID, EventWorkspaceLost, EventTaskStopped, EventRunWaitingInput) {
+				t.Fatal("事件序应为 workspace_lost → task_stopped → run_waiting_input")
+			}
+			// Resume 仍可达（用户恢复 worktree 后经 resume 继续）。
+			resumed, err := service.Resume(run.ID)
+			if err != nil {
+				t.Fatalf("Resume 应可达: %v", err)
+			}
+			if resumed.Status == RunWaitingInput {
+				t.Fatal("Resume 后应离开 waiting_input")
+			}
+		})
+	}
+}

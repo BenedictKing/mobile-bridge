@@ -93,7 +93,10 @@ func BuildTaskContext(run *Run, task *Task, policy TeamPolicy) ContextResult {
 		blocks = append(blocks, contextBlock{
 			taskID:   dep.ID,
 			memberID: dep.MemberID,
-			content:  appendSourceSummaries(stripTeamEnvelope(content), dep.ResultDetail),
+			// 先剥 <team-actions> 动作块（§5.1：Lead 结果里的动作信封绝不由
+			// 上下文走私进下游——下游可执行的动作只来自编排器的正式派发），
+			// 再剥 [Team context] 信封（§7.2 防多轮接力指数增长）。
+			content: appendSourceSummaries(stripTeamEnvelope(stripActionBlocks(content)), dep.ResultDetail),
 		})
 	}
 	if len(blocks) == 0 {

@@ -498,9 +498,14 @@ func (s *Store) RebuildRunsFromJournal(events []*Event) {
 				Goal:          payloadString(event.Payload, "goal"),
 				Mode:          payloadString(event.Payload, "mode"),
 				CollectPolicy: payloadString(event.Payload, "collectPolicy"),
+				AutoPlan:      payloadBool(event.Payload, "autoPlan"),
 				Status:        RunCreated,
 				Round:         1,
 				PlanHash:      payloadString(event.Payload, "planHash"),
+				// 修订链血缘（§6.4.1 amend，阶段三）：run_created 的
+				// parentRunId 是唯一可恢复来源，漏读会让重建后的 amend Run
+				// 丢失「基于哪个 Run 修订」的溯源。
+				ParentRunID:   payloadString(event.Payload, "parentRunId"),
 				VerifyCommand: payloadStrings(event.Payload, "verifyCommand"),
 				CreatedAt:     event.CreatedAt,
 				UpdatedAt:     event.CreatedAt,
@@ -557,6 +562,75 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			}
 			verify.Truncated, _ = event.Payload["truncated"].(bool)
 			run.Verify = verify
+		case EventActionProposed:
+			// Lead 自动动作的入账事实（§5.1，阶段三）：重建默认 Round=1，
+			// 轮次以事件载荷的 round 增载（max 语义，0=缺省不动）。任务正文
+			// 只回 taskHead（§10.3 有界 payload；完整动作文本随 Run 快照存
+			// 活，快照重建与 task_planned 的 prompt 同为有界降级）。
+			actionKey := payloadString(event.Payload, "actionKey")
+			if actionKey != "" {
+				run.PendingActions = append(run.PendingActions, Action{
+					Type:         payloadString(event.Payload, "type"),
+					SourceTaskID: payloadString(event.Payload, "sourceTaskId"),
+					Round:        payloadInt(event.Payload, "round"),
+					Member:       payloadString(event.Payload, "member"),
+					Task:         payloadString(event.Payload, "taskHead"),
+					FromTaskID:   payloadString(event.Payload, "fromTaskId"),
+					WriteLock:    payloadString(event.Payload, "writeLock"),
+					ActionKey:    actionKey,
+					Status:       ActionStatusProposed,
+				})
+			}
+			advanceRebuildRound(run, event)
+		case EventActionRejected:
+			// 执行侧的拒绝事实（写入归执行流，重建归本包）：按 actionKey
+			// 定位并置 rejected+Reason。
+			if actionKey := payloadString(event.Payload, "actionKey"); actionKey != "" {
+				for i := range run.PendingActions {
+					if run.PendingActions[i].ActionKey == actionKey {
+						run.PendingActions[i].Status = ActionStatusRejected
+						run.PendingActions[i].Reason = payloadString(event.Payload, "reason")
+					}
+				}
+			}
+		case EventInvalidActionBlock:
+			// 解析失败是事实事件（修复任务由同批 task_planned 重建），只需
+			// 轮次增载。
+			advanceRebuildRound(run, event)
+		case EventTaskForwarded:
+			// 携带 actionKey 的转发是执行流落地动作的凭据（actions-exec
+			// 契约）：对应动作置 executed。
+			markRebuildActionExecuted(run, payloadString(event.Payload, "actionKey"))
+		case EventQuestionOpened:
+			// 成员问题登记（§5.4）：按 questionId 幂等 append（登记重试的
+			// 崩溃窗口可能留下重复事件，重建只认首条）。不补此 case 的话
+			// team-runs.json 损坏后的 journal 重建会静默丢 pendingQuestions
+			// ——decision 的 version 比对从此无从谈起。
+			questionID := payloadString(event.Payload, "questionId")
+			if questionID != "" && findQuestionIn(run, questionID) == nil {
+				run.PendingQuestions = append(run.PendingQuestions, PendingQuestion{
+					QuestionID: questionID,
+					TaskID:     payloadString(event.Payload, "taskId"),
+					Version:    payloadUint64(event.Payload, "version"),
+					Kind:       payloadString(event.Payload, "kind"),
+					Summary:    payloadString(event.Payload, "summary"),
+					Options:    payloadQuestionOptions(event.Payload),
+					Status:     QuestionStatusOpen,
+					OpenedAt:   event.CreatedAt,
+				})
+			}
+		case EventQuestionResolved:
+			// 回答事实：open → answered（答案只消费一次；答案正文不回写
+			// ——完整答案在成员会话，事件只留 answerHead 审计摘要）。
+			if question := findQuestionIn(run, payloadString(event.Payload, "questionId")); question != nil && question.Status == QuestionStatusOpen {
+				question.Status = QuestionStatusAnswered
+			}
+		case EventQuestionWithdrawn:
+			// 撤回事实：open → withdrawn（任务终态/Run 终局/会话卡过期；
+			// answered 是终态，不回写）。
+			if question := findQuestionIn(run, payloadString(event.Payload, "questionId")); question != nil && question.Status == QuestionStatusOpen {
+				question.Status = QuestionStatusWithdrawn
+			}
 		}
 		if reason := payloadString(event.Payload, "stopReason"); reason != "" {
 			run.StopReason = reason
@@ -577,6 +651,11 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.Status = TaskPlanned
 		task.MemberID = payloadString(event.Payload, "memberId")
 		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
+		// 修复任务（actfix-*）的 task_planned 携带 round 增载（§5.1 修复
+		// 回路随轮次推进）；携带 actionKey 的是执行流落地动作的凭据
+		// （actions-exec 契约），对应动作置 executed。
+		advanceRebuildRound(run, event)
+		markRebuildActionExecuted(run, payloadString(event.Payload, "actionKey"))
 	case EventTaskDispatching:
 		task.Status = TaskDispatching
 		task.SubmissionID = payloadString(event.Payload, "submissionId")
@@ -596,6 +675,25 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			StopReason:     payloadString(event.Payload, "stopReason"),
 			FileSummary:    payloadString(event.Payload, "fileSummary"),
 			CommandSummary: payloadString(event.Payload, "commandSummary"),
+		}
+		result.Truncated, _ = event.Payload["truncated"].(bool)
+		task.Result = result.Result
+		task.ResultDetail = result
+	case EventTaskCacheHit:
+		// amend 缓存命中（§6.4.1，阶段三）：创建批次的 completed 事实——
+		// 重建时置 completed 并回填结果引用、来源标记与创建期哈希。不补此
+		// case 的话 team-runs.json 损坏后的 journal 重建会静默丢掉缓存完成
+		// 事实（任务退回 planned 会被重派发，零 token 复用变重复执行）。
+		task.Status = TaskCompleted
+		task.CachedFrom = payloadString(event.Payload, "parentTaskId")
+		if hash := payloadString(event.Payload, "inputHash"); hash != "" {
+			task.InputHash = hash
+		}
+		result := &TaskResult{
+			SessionID:   payloadString(event.Payload, "sessionId"),
+			TurnID:      payloadString(event.Payload, "turnId"),
+			Result:      payloadString(event.Payload, "result"),
+			ResultChars: payloadInt(event.Payload, "resultChars"),
 		}
 		result.Truncated, _ = event.Payload["truncated"].(bool)
 		task.Result = result.Result
@@ -626,6 +724,72 @@ func payloadInt(payload map[string]any, key string) int {
 		return 0
 	}
 	return value
+}
+
+// payloadBool 读取载荷里的布尔字段（缺省 false——旧账本无 autoPlan 键的
+// run_created 按非自动规划保守重建）。
+func payloadBool(payload map[string]any, key string) bool {
+	value, _ := payload[key].(bool)
+	return value
+}
+
+// payloadUint64 读取载荷里的无符号整数字段（question_opened 的 version）。
+func payloadUint64(payload map[string]any, key string) uint64 {
+	number, ok := payload[key].(json.Number)
+	if !ok {
+		return 0
+	}
+	value, err := strconv.ParseUint(number.String(), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+// payloadQuestionOptions 还原登记载荷里的答案选项（[{id,label}]，journal
+// 解码后是 []any of map[string]any）。
+func payloadQuestionOptions(payload map[string]any) []QuestionOption {
+	items, ok := payload["options"].([]any)
+	if !ok {
+		return nil
+	}
+	var options []QuestionOption
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := entry["id"].(string)
+		if id == "" {
+			continue
+		}
+		label, _ := entry["label"].(string)
+		options = append(options, QuestionOption{ID: id, Label: label})
+	}
+	return options
+}
+
+// advanceRebuildRound 按事件载荷的 round 推进重建中的 Run 轮次（max 语义；
+// 0=缺省不动——重建默认 Round=1，action_proposed / invalid_action_block /
+// 修复任务的 task_planned 是轮次的唯一增载来源）。
+func advanceRebuildRound(run *Run, event *Event) {
+	if round := payloadInt(event.Payload, "round"); round > run.Round {
+		run.Round = round
+	}
+}
+
+// markRebuildActionExecuted 把 actionKey 对应的 proposed 动作置 executed
+// （payload.actionKey 非空的 task_planned / task_forwarded 是执行流的落地
+// 凭据；已 rejected 的动作不再改写——拒绝是终局）。
+func markRebuildActionExecuted(run *Run, actionKey string) {
+	if actionKey == "" {
+		return
+	}
+	for i := range run.PendingActions {
+		if run.PendingActions[i].ActionKey == actionKey && run.PendingActions[i].Status == ActionStatusProposed {
+			run.PendingActions[i].Status = ActionStatusExecuted
+		}
+	}
 }
 
 // payloadStrings 读取载荷里的字符串数组字段（run_created 的 verifyCommand

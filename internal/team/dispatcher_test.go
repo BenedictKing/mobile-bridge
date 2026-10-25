@@ -13,6 +13,7 @@ package team
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,22 +143,34 @@ func (q *fakeQueue) callCount(submissionID string) int {
 // fakeResolver 按会话返回预先构造的 Session。会话对象一经构造不再修改
 // （每次「视图变化」整体换新实例），杜绝与 watcher 并发读 View 的数据竞争
 // ——acpruntime.Session 的 changed 通道未导出，Cancel 不可用，取消路径经
-// service.cancelAgentTurn 钩子观测。
+// service.cancelAgentTurn 钩子观测。unopenable 登记「归属明确但当前打不开」
+// 的会话（生产 resolveACP 的 openACP 失败形态：manager 非 nil、session 为
+// nil、err 携带原因）——manager 用零值 Manager 哨兵占位（仅判非 nil，绝不
+// 调用其方法）。
 type fakeResolver struct {
-	mu       sync.Mutex
-	sessions map[string]*acpruntime.Session
-	cwds     map[string]string
+	mu                sync.Mutex
+	sessions          map[string]*acpruntime.Session
+	cwds              map[string]string
+	unopenable        map[string]error
+	unopenableManager *acpruntime.Manager
 }
 
 func newFakeResolver() *fakeResolver {
-	return &fakeResolver{sessions: map[string]*acpruntime.Session{}, cwds: map[string]string{}}
+	return &fakeResolver{
+		sessions:          map[string]*acpruntime.Session{},
+		cwds:              map[string]string{},
+		unopenable:        map[string]error{},
+		unopenableManager: &acpruntime.Manager{},
+	}
 }
 
 func (r *fakeResolver) Resolve(threadID string) (*acpruntime.Manager, *acpruntime.Session, error) {
 	r.mu.Lock()
-	session := r.sessions[threadID]
-	r.mu.Unlock()
-	return nil, session, nil
+	defer r.mu.Unlock()
+	if err, known := r.unopenable[threadID]; known {
+		return r.unopenableManager, nil, err
+	}
+	return nil, r.sessions[threadID], nil
 }
 
 func (r *fakeResolver) Cwd(threadID string) string {
@@ -176,6 +189,20 @@ func (r *fakeResolver) setCwd(threadID, cwd string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cwds[threadID] = cwd
+}
+
+// setUnopenable 把会话标记为「归属明确但当前打不开」（openACP 失败形态）；
+// clearUnopenable 恢复常规解析（session 表命中或两者皆空）。
+func (r *fakeResolver) setUnopenable(threadID string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.unopenable[threadID] = err
+}
+
+func (r *fakeResolver) clearUnopenable(threadID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.unopenable, threadID)
 }
 
 // newFakeSession 构造手工快照会话；drive 用真实的 acpview API 落出
@@ -267,9 +294,21 @@ func newDispatchHarness(t *testing.T) *dispatchHarness {
 
 func (h *dispatchHarness) createRun(t *testing.T, mode string, plan []PlanTaskInput) *Run {
 	t.Helper()
-	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", mode, "", nil, plan)
+	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", mode, "", nil, plan, false)
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
+	}
+	return run
+}
+
+// createAutoPlanRun 创建声明 AutoPlan 的空计划 single Run（§5.1/§10.2：
+// plan 为空才允许 Lead 产生 team-actions）：planner 合成 Lead 任务，Lead
+// 回复进入 settleLeadTaskLocked 的动作解析路径。
+func (h *dispatchHarness) createAutoPlanRun(t *testing.T) *Run {
+	t.Helper()
+	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", ModeSingle, "", nil, nil, true)
+	if err != nil {
+		t.Fatalf("创建 autoPlan run 失败: %v", err)
 	}
 	return run
 }
@@ -972,7 +1011,7 @@ func TestOversizedPromptFailsTaskBeforeEnqueue(t *testing.T) {
 	// 40000 个 CJK rune（120000 字节）：rune 在 87800 限内、字节远超创建期
 	// 上限（评审遗留②）——创建即拒，不再建成注定在派发期才失败的 Run。
 	goal := strings.Repeat("字", 40000)
-	if _, err := h.service.CreateRun(h.team, "", goal, ModeSingle, "", nil, nil); err == nil || !strings.Contains(err.Error(), "字节") {
+	if _, err := h.service.CreateRun(h.team, "", goal, ModeSingle, "", nil, nil, false); err == nil || !strings.Contains(err.Error(), "字节") {
 		t.Fatalf("超字节上限的多字节目标应在创建期拒绝，实际 %v", err)
 	}
 	// 派发期预检仍是防御底线（旧账本/直写快照可能绕过创建校验）：直落一个
@@ -1482,7 +1521,7 @@ func (h *dispatchHarness) createBroadcastRun(t *testing.T, collect string, membe
 	plan := []PlanTaskInput{
 		{ID: "draft", Prompt: "各写一版方案", MemberIDs: memberIDs, WriteLock: TaskWriteLockNone},
 	}
-	run, err := h.service.CreateRun(h.team, "", "产出方案", ModeBroadcast, collect, nil, plan)
+	run, err := h.service.CreateRun(h.team, "", "产出方案", ModeBroadcast, collect, nil, plan, false)
 	if err != nil {
 		t.Fatalf("创建 broadcast run 失败: %v", err)
 	}
@@ -1625,6 +1664,12 @@ func TestCollectAllKeepsCompletedResultsWhenBranchFails(t *testing.T) {
 
 // ---- 取消窗口一：信号量等待期被 Cancel ----
 
+// TestDispatchPoolCancelWhileWaitingForSlot 验证取消窗口一：任务投递派发池后
+// 在信号量上排队等待期间被 Cancel，获槽后复查终态即退出（绝不入队）。
+// Team 级并发护栏（评审遗留②）下，兄弟 Run 占满 Team 并发额度时本 Run 的
+// 任务在选择期即被拦下（不进池）；到达信号量等待的形态是「任务已记账
+// dispatching（窗口计数已转记给快照）、在 Enqueue 途中被取消使在途回落，
+// 但派发主体仍持槽」——取消后取消窗口一由信号量兜底并发上限。
 func TestDispatchPoolCancelWhileWaitingForSlot(t *testing.T) {
 	h := newDispatchHarness(t)
 	h.team.Policy.MaxParallelTasks = 1
@@ -1648,10 +1693,19 @@ func TestDispatchPoolCancelWhileWaitingForSlot(t *testing.T) {
 	if thread := <-enqueueEntered; thread != "s-lead" {
 		t.Fatalf("首个入队应来自 run1 的 lead 任务，实际 %s", thread)
 	}
-	// run2 的任务投递池后在信号量上排队等待（取消窗口一）。
+	// run1 任务已记账 dispatching：窗口计数转记给快照，Team 在途=1。
+	waitFor(t, "run1 任务已落 dispatching", func() bool {
+		return h.taskOf(run1.ID, "lead").Status == TaskDispatching
+	})
+	// run2 的任务此刻被 Team 级护栏拦下（在途 1=上限，不进池不占窗口）。
 	run2 := h.createRun(t, ModePipeline, []PlanTaskInput{
 		{ID: "w", MemberID: "dev", Prompt: "独立任务", WriteLock: TaskWriteLockNone},
 	})
+	// 取消 run1：任务终态使 Team 在途归零，但派发主体仍阻塞在 Enqueue 内
+	// 持有信号量——run2 的任务获准投递池后在信号量上排队（取消窗口一）。
+	if _, err := h.service.Cancel(run1.ID); err != nil {
+		t.Fatalf("取消失败: %v", err)
+	}
 	waitFor(t, "run2 任务已投递派发池", func() bool {
 		state := h.service.stateFor(run2.ID)
 		state.mu.Lock()
@@ -1662,14 +1716,15 @@ func TestDispatchPoolCancelWhileWaitingForSlot(t *testing.T) {
 	if _, err := h.service.Cancel(run2.ID); err != nil {
 		t.Fatalf("取消失败: %v", err)
 	}
-	// 放行 run1：槽位释放后 run2 的等待者获槽，复查终态即退出（绝不入队）。
+	// 放行 run1：槽位释放后 run2 的等待者获槽，复查终态即退出（绝不入队）；
+	// run1 的入队条目在其取消窗口二收尾中被撤销。
 	close(gate)
-	entry, ok := h.waitForEntry(t, "s-lead", "run1 入队完成")
-	if !ok {
-		t.Fatal("run1 应已入队")
-	}
-	h.completeSubmission("s-lead", entry.submissionID, entry.text, "完成。")
-	waitFor(t, "run1 完成", func() bool { return h.store.Run(run1.ID).Status == RunCompleted })
+	waitFor(t, "run1 取消窗口收尾（孤儿条目撤销）", func() bool {
+		if entry, ok := h.queue.firstEntry("s-lead"); ok {
+			return entry.status == SubStatusCancelled
+		}
+		return false
+	})
 	if entries := h.queue.entriesFor("s-dev"); len(entries) != 0 {
 		t.Fatalf("等待期被取消的任务绝不入队: %+v", entries)
 	}
@@ -1689,6 +1744,12 @@ func TestDispatchPoolCancelWhileWaitingForSlot(t *testing.T) {
 	if status := h.store.Run(run2.ID).Status; status != RunCancelled {
 		t.Fatalf("run2 应保持 cancelled，实际 %s", status)
 	}
+	// Team 级窗口计数随两 Run 的派发收尾归零（不残留阻塞后续 Run）。
+	waitFor(t, "Team 派发窗口计数归零", func() bool {
+		h.service.mu.Lock()
+		defer h.service.mu.Unlock()
+		return len(h.service.teamPending) == 0
+	})
 }
 
 // ---- 取消窗口二：记账后、入队完成前被 Cancel ----
@@ -2239,7 +2300,7 @@ func TestQuotaStopDoesNotAffectOtherTeamSameBucket(t *testing.T) {
 			h.queue.entriesFor("s-lead"), h.runEventTypes(run1.ID), h.service.AIMDSnapshot())
 	}
 	// 二队的同桶任务照常派发。
-	run2, err := h.service.CreateRun(second, "", "二队目标", ModeSingle, "", nil, nil)
+	run2, err := h.service.CreateRun(second, "", "二队目标", ModeSingle, "", nil, nil, false)
 	if err != nil {
 		t.Fatalf("二队 run 创建失败: %v", err)
 	}
@@ -2384,5 +2445,788 @@ func TestRecoverQuotaStoppedRunParksWaitingInput(t *testing.T) {
 	// 调度循环未重启（waiting_input 无循环），无新派发事实。
 	if dispatches := aimdEventOf(t, h.journal, run.ID, EventTaskDispatching); len(dispatches) != 1 {
 		t.Fatalf("恢复后不应有第二次派发记账: %+v", dispatches)
+	}
+}
+
+// ---- 阶段三：team-actions 信封的 watcher 挂钩与修复回路（§5.1，actions.go）----
+
+// leadActionReply 构造一段带 team-actions 信封的 Lead 回复全文。
+func leadActionReply(inner string) string {
+	return "方案整理如下。\n<team-actions>" + inner + "</team-actions>\n请查收。"
+}
+
+// validDelegateInner 是严格合法的单 delegate 信封内容（member=dev 存在且启用）。
+const validDelegateInner = `{"actions":[{"type":"delegate","sourceTaskId":"lead","round":1,"member":"dev","task":"实现接口并补测试"}]}`
+
+// invalidDelegateInner 引用已停用成员 ghost（schema 拒绝），并带尾逗号（宽容
+// 解码路径）——两类问题都进 violation 列表。
+const invalidDelegateInner = `{"actions":[{"type":"delegate","sourceTaskId":"lead","round":1,"member":"ghost","task":"做事"}],}`
+
+// eventsOfType 取 run 的指定类型 journal 事件（插入序）。
+func (h *dispatchHarness) eventsOfType(runID, eventType string) []*Event {
+	events, err := h.journal.Replay()
+	if err != nil {
+		return nil
+	}
+	matched := []*Event{}
+	for _, event := range events {
+		if event != nil && event.RunID == runID && event.Type == eventType {
+			matched = append(matched, event)
+		}
+	}
+	return matched
+}
+
+// waitForNthSubmission 等到 threadID 的第 n 条入账（1 起）并返回其条目。
+func (h *dispatchHarness) waitForNthSubmission(t *testing.T, threadID string, n int, what string) fakeQueueEntry {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if entries := h.queue.entriesFor(threadID); len(entries) >= n {
+			return entries[n-1]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待超时: %s（第 %d 条）未入队", what, n)
+	return fakeQueueEntry{}
+}
+
+// saveRecordingStore 在 SaveRun 落盘前记录每次快照形态（任务终态与动作事实
+// 是否同批可见）——结算原子性的确定性判别：无时间窗，任何一次保存都被
+// 观测到。「分批」形态（completeTask 与动作落账分开两批 commitRun）会留下
+// 「任务已 completed 但动作事实缺席」的样本，本判别对其失败。
+type saveRecordingStore struct {
+	TeamStore
+	mu      sync.Mutex
+	samples []saveSample
+}
+
+// saveSample 是一次 SaveRun 的入参形态快照。
+type saveSample struct {
+	runID     string
+	leadDone  bool // lead 任务已 completed
+	actions   int  // PendingActions 数量
+	hasRepair bool // 快照含 actfix-* 修复任务
+}
+
+func (s *saveRecordingStore) SaveRun(run *Run) error {
+	sample := saveSample{runID: run.ID, actions: len(run.PendingActions)}
+	for i := range run.Tasks {
+		if run.Tasks[i].ID == "lead" && run.Tasks[i].Status == TaskCompleted {
+			sample.leadDone = true
+		}
+		if strings.HasPrefix(run.Tasks[i].ID, actionRepairPrefix) {
+			sample.hasRepair = true
+		}
+	}
+	s.mu.Lock()
+	s.samples = append(s.samples, sample)
+	s.mu.Unlock()
+	return s.TeamStore.SaveRun(run)
+}
+
+func (s *saveRecordingStore) samplesOf(runID string) []saveSample {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matched := []saveSample{}
+	for _, sample := range s.samples {
+		if sample.runID == runID {
+			matched = append(matched, sample)
+		}
+	}
+	return matched
+}
+
+// recordSaves 把 harness 的服务换成带记录器的版本（必须在创建 Run 之前）。
+func (h *dispatchHarness) recordSaves() *saveRecordingStore {
+	recorder := &saveRecordingStore{TeamStore: h.store}
+	h.service = NewService(recorder, h.journal, h.queue, h.resolver)
+	h.service.waitSlice = 2 * time.Millisecond
+	return recorder
+}
+
+// TestAutoPlanRejectsExplicitPlan autoPlan 与显式计划互斥（§10.2「plan 为空
+// 才允许 Lead 产生 team-actions」，显式 Plan 优先）。
+func TestAutoPlanRejectsExplicitPlan(t *testing.T) {
+	h := newDispatchHarness(t)
+	plan := []PlanTaskInput{{ID: "design", MemberID: "lead", Prompt: "分析", WriteLock: TaskWriteLockNone}}
+	if _, err := h.service.CreateRun(h.team, "", "目标", ModeSingle, "", nil, plan, true); err == nil || !strings.Contains(err.Error(), "显式计划") {
+		t.Fatalf("autoPlan+显式计划应拒绝，实际 %v", err)
+	}
+	// 空计划 + autoPlan 合法。
+	if _, err := h.service.CreateRun(h.team, "", "目标", ModeSingle, "", nil, nil, true); err != nil {
+		t.Fatalf("autoPlan 空计划应创建成功: %v", err)
+	}
+}
+
+// TestLeadActionsSettleAtomicBatchOnSuccess 解析成功的结算原子性（§3.1 原则
+// 1）：任务 completed 事实与 action_proposed 在单个 commitRun 落账。判别式
+// 是 SaveRun 记录器：任何一次落盘样本都不得出现「lead 已 completed 但
+// PendingActions 仍空」的中间形态——「completeTask 与动作落账分两批」的
+// 修复前形态会留下这种样本，本测试对其失败。
+func TestLeadActionsSettleAtomicBatchOnSuccess(t *testing.T) {
+	h := newDispatchHarness(t)
+	recorder := h.recordSaves()
+	run := h.createAutoPlanRun(t)
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+
+	h.completeSubmission("s-lead", submissionID, sentText, leadActionReply(validDelegateInner))
+	waitFor(t, "Lead 任务 completed 且动作入账", func() bool {
+		fresh := h.store.Run(run.ID)
+		return findTaskIn(fresh, "lead") != nil &&
+			findTaskIn(fresh, "lead").Status == TaskCompleted &&
+			len(fresh.PendingActions) == 1
+	})
+	fresh := h.store.Run(run.ID)
+	settledSamples := 0
+	for _, sample := range recorder.samplesOf(run.ID) {
+		if !sample.leadDone {
+			continue
+		}
+		settledSamples++
+		if sample.actions == 0 {
+			t.Fatal("结算原子性被破坏：存在「任务已 completed 而动作未入账」的落盘样本（分批形态）")
+		}
+	}
+	if settledSamples == 0 {
+		t.Fatal("判别基线缺失：没有记录到 lead completed 的落盘样本")
+	}
+	action := fresh.PendingActions[0]
+	if action.Status != ActionStatusProposed || action.Type != ActionTypeDelegate || action.Member != "dev" {
+		t.Fatalf("动作字段不符: %+v", action)
+	}
+	if want := ActionKey(fresh.TeamID, fresh.ID, "lead", 1, 0); action.ActionKey != want {
+		t.Fatalf("ActionKey 应确定性派生: want %q got %q", want, action.ActionKey)
+	}
+	// 事件序：任务事实先于动作事实；action_proposed 的幂等键=ActionKey。
+	proposed := h.eventsOfType(run.ID, EventActionProposed)
+	if len(proposed) != 1 {
+		t.Fatalf("应恰好一条 action_proposed，实际 %d", len(proposed))
+	}
+	if proposed[0].IdempotencyKey != action.ActionKey {
+		t.Fatalf("action_proposed 幂等键应为 ActionKey: %q", proposed[0].IdempotencyKey)
+	}
+	types := h.runEventTypes(run.ID)
+	if !containsInOrder(types, EventTaskDispatching, EventTaskRunning, EventTaskCompleted, EventActionProposed) {
+		t.Fatalf("journal 事件序错误: %v", types)
+	}
+	// 完成事件带结算幂等键（整批失败重试不双写）。
+	completed := h.eventsOfType(run.ID, EventTaskCompleted)
+	if len(completed) != 1 || !strings.HasPrefix(completed[0].IdempotencyKey, "team:") ||
+		!strings.Contains(completed[0].IdempotencyKey, ":lead_settle:lead") {
+		t.Fatalf("Lead 完成事件应带结算幂等键: %+v", completed)
+	}
+}
+
+// TestLeadActionsInvalidBlockCreatesRepairTask 解析失败→invalid_action_block +
+// 同批修复任务 actfix-{root}-1（经既有派发机制入队 Lead 会话）；修复回复走
+// 同一 completed 分支重解析成功后动作入账。
+func TestLeadActionsInvalidBlockCreatesRepairTask(t *testing.T) {
+	h := newDispatchHarness(t)
+	recorder := h.recordSaves()
+	run := h.createAutoPlanRun(t)
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+
+	h.completeSubmission("s-lead", submissionID, sentText, leadActionReply(invalidDelegateInner))
+	waitFor(t, "修复任务创建", func() bool {
+		return findTaskIn(h.store.Run(run.ID), "actfix-lead-1") != nil
+	})
+	fresh := h.store.Run(run.ID)
+	// 结算原子性判别：lead completed 的落盘样本必须已含修复任务。
+	for _, sample := range recorder.samplesOf(run.ID) {
+		if sample.leadDone && !sample.hasRepair {
+			t.Fatal("结算原子性被破坏：存在「任务已 completed 而修复任务未入快照」的落盘样本（分批形态）")
+		}
+	}
+	repair := findTaskIn(fresh, "actfix-lead-1")
+	// Status 不锁死（快照读取与循环派发存在天然竞态，planned→dispatching 都
+	// 合法）；成员/写锁/提示词是结算批写死的字段。
+	if repair.MemberID != "lead" || repair.WriteLock != TaskWriteLockNone {
+		t.Fatalf("修复任务字段不符: %+v", repair)
+	}
+	if !strings.Contains(repair.Prompt, "第 1 次解析失败") || !strings.Contains(repair.Prompt, "已停用的成员") {
+		t.Fatalf("修复提示词应带尝试次数与 violation 摘要: %q", repair.Prompt)
+	}
+	// 事件序：任务事实先于动作事实，修复 task_planned 随后。
+	if !containsInOrder(h.runEventTypes(run.ID),
+		EventTaskCompleted, EventInvalidActionBlock, EventTaskPlanned) {
+		t.Fatalf("journal 事件序错误: %v", h.runEventTypes(run.ID))
+	}
+	invalid := h.eventsOfType(run.ID, EventInvalidActionBlock)
+	if len(invalid) != 1 {
+		t.Fatalf("每次失败恰好一条 invalid_action_block，实际 %d", len(invalid))
+	}
+	if attempt := payloadInt(invalid[0].Payload, "attempt"); attempt != 1 {
+		t.Fatalf("attempt 应为 1，实际 %d", attempt)
+	}
+	if final, _ := invalid[0].Payload["final"].(bool); final {
+		t.Fatal("首次失败不得 final")
+	}
+	if violations, _ := invalid[0].Payload["violations"].([]any); len(violations) == 0 {
+		t.Fatal("invalid_action_block 应携带 violation 列表")
+	}
+	// 修复任务经既有派发机制入队 Lead 会话（独立 submissionID）。
+	repairEntry := h.waitForNthSubmission(t, "s-lead", 2, "修复任务")
+	if repairEntry.submissionID == submissionID {
+		t.Fatal("修复入队必须用独立 submissionID")
+	}
+	if repairEntry.text != repair.SentText && repairEntry.text != repair.Prompt {
+		t.Fatalf("修复入队文本应即派发全文: %q", repairEntry.text)
+	}
+	// 修复回合回复（合法块，来源任务引用修复任务自身）→ 动作入账。阶段三起
+	// summarize 由执行流（passActions）落地：动作 executed 并派生 Lead 摘要
+	// 任务 actfix-lead-1-s1-0（闸门 autoDispatch 只约束 delegate/request_context）。
+	h.completeSubmission("s-lead", repairEntry.submissionID, repairEntry.text, leadActionReply(
+		`{"actions":[{"type":"summarize","sourceTaskId":"actfix-lead-1","round":1}]}`))
+	waitFor(t, "修复回复解析入账并执行", func() bool {
+		fresh := h.store.Run(run.ID)
+		return len(fresh.PendingActions) == 1 && fresh.PendingActions[0].Status == ActionStatusExecuted
+	})
+	fresh = h.store.Run(run.ID)
+	if fresh.PendingActions[0].Type != ActionTypeSummarize {
+		t.Fatalf("修复后动作应入账: %+v", fresh.PendingActions[0])
+	}
+	if derived := findTaskIn(fresh, "actfix-lead-1-s1-0"); derived == nil || derived.MemberID != "lead" {
+		t.Fatalf("summarize 动作应派生 Lead 摘要任务: %+v", derived)
+	}
+	if findTaskIn(fresh, "actfix-lead-1").Status != TaskCompleted {
+		t.Fatal("修复任务应 completed")
+	}
+	if second := findTaskIn(fresh, "actfix-lead-2"); second != nil {
+		t.Fatalf("解析成功后不得再建修复任务: %+v", second)
+	}
+}
+
+// TestLeadActionsRepairCapFinalAfterThreeRepairs §5.1 规则 3：最多 3 次修复
+// 回合；第 3 次修复仍失败 → invalid_action_block final=true，不再创建修复
+// 任务，结果按普通文本保留，每次失败都落 invalid_action_block。
+func TestLeadActionsRepairCapFinalAfterThreeRepairs(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createAutoPlanRun(t)
+	// 原始回复 + 3 个修复回合全部失败（同一份非法内容）。
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.completeSubmission("s-lead", submissionID, sentText, leadActionReply(invalidDelegateInner))
+	for attempt := 1; attempt <= maxActionRepairs; attempt++ {
+		repair := h.waitForNthSubmission(t, "s-lead", attempt+1, fmt.Sprintf("修复回合 %d", attempt))
+		wantID := fmt.Sprintf("actfix-lead-%d", attempt)
+		waitFor(t, "修复任务入快照", func() bool {
+			return findTaskIn(h.store.Run(run.ID), wantID) != nil
+		})
+		h.completeSubmission("s-lead", repair.submissionID, repair.text, leadActionReply(invalidDelegateInner))
+		if attempt < maxActionRepairs {
+			waitFor(t, "下一修复任务创建", func() bool {
+				return findTaskIn(h.store.Run(run.ID), fmt.Sprintf("actfix-lead-%d", attempt+1)) != nil
+			})
+			continue
+		}
+		// 第 3 次修复仍失败：final 收场。
+		waitFor(t, "final invalid_action_block", func() bool {
+			for _, event := range h.eventsOfType(run.ID, EventInvalidActionBlock) {
+				if final, _ := event.Payload["final"].(bool); final {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	waitFor(t, "全部任务终态", func() bool {
+		fresh := h.store.Run(run.ID)
+		return findTaskIn(fresh, "actfix-lead-3") != nil &&
+			terminalTask(findTaskIn(fresh, "actfix-lead-3").Status)
+	})
+	fresh := h.store.Run(run.ID)
+	if got := len(h.eventsOfType(run.ID, EventInvalidActionBlock)); got != maxActionRepairs+1 {
+		t.Fatalf("1 次原始失败 + 3 次修复失败应共 %d 条 invalid_action_block，实际 %d", maxActionRepairs+1, got)
+	}
+	if overflow := findTaskIn(fresh, "actfix-lead-4"); overflow != nil {
+		t.Fatalf("修复上限后不得再建修复任务: %+v", overflow)
+	}
+	actfixCount := 0
+	for _, task := range fresh.Tasks {
+		if strings.HasPrefix(task.ID, "actfix-lead-") {
+			actfixCount++
+		}
+	}
+	if actfixCount != maxActionRepairs {
+		t.Fatalf("应恰好 %d 个修复任务，实际 %d", maxActionRepairs, actfixCount)
+	}
+	// 结果按普通文本保留（§5.1 规则 3）。
+	last := findTaskIn(fresh, "actfix-lead-3")
+	if last.ResultDetail == nil || !strings.Contains(last.ResultDetail.Result, invalidDelegateInner[:20]) {
+		t.Fatalf("final 后结果应按普通文本保留: %+v", last.ResultDetail)
+	}
+	// 全部任务终态后 run 正常 fold。
+	waitFor(t, "run fold", func() bool { return terminalRun(h.store.Run(run.ID).Status) })
+}
+
+// TestLeadActionsNotParsedWithoutAutoPlan 安全边界判别：显式计划（非 AutoPlan）
+// 的 Run 即使 Lead 成员回复携带合法信封也绝不解析——无 pendingActions、无
+// action 事件（§10.2 显式 Plan 优先；自然语言/信封都不触发动作）。
+func TestLeadActionsNotParsedWithoutAutoPlan(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModeSingle, []PlanTaskInput{{
+		ID: "design", MemberID: "lead", Prompt: "分析需求", WriteLock: TaskWriteLockNone,
+	}})
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.completeSubmission("s-lead", submissionID, sentText, leadActionReply(validDelegateInner))
+	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+	fresh := h.store.Run(run.ID)
+	if len(fresh.PendingActions) != 0 {
+		t.Fatalf("非 AutoPlan Run 不得入账动作: %v", fresh.PendingActions)
+	}
+	if len(h.eventsOfType(run.ID, EventActionProposed)) != 0 ||
+		len(h.eventsOfType(run.ID, EventInvalidActionBlock)) != 0 {
+		t.Fatal("非 AutoPlan Run 不得产生任何动作事件")
+	}
+}
+
+// TestLeadActionsSettleRetriesWholeBatchOnJournalFailure 整批失败重试不双写
+// （§3.1 原则 1 的失败侧判别）：journal 写入失败时任务事实与动作事实都不落
+// 账（watcher 整套重试）；恢复后单批补齐，action_proposed 恰好一条——
+// 「completeTask 已落而动作丢失」与「动作事件重复落账」两种分批形态都失败。
+func TestLeadActionsSettleRetriesWholeBatchOnJournalFailure(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createAutoPlanRun(t)
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "lead 任务")
+
+	// 关闭 journal：所有 commitRun 在 Append 处失败。
+	if err := h.journal.Close(); err != nil {
+		t.Fatalf("journal 关闭失败: %v", err)
+	}
+	h.completeSubmission("s-lead", submissionID, sentText, leadActionReply(validDelegateInner))
+	// 观察若干等待片：任务保持非终态、journal 无 task_completed（整批未落）。
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if fresh := h.store.Run(run.ID); findTaskIn(fresh, "lead").Status == TaskCompleted {
+			t.Fatal("journal 失败时任务不得单独落 completed（分批形态才会如此）")
+		}
+		if len(h.eventsOfType(run.ID, EventTaskCompleted)) != 0 {
+			t.Fatal("journal 失败时不得落任何结算事件")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// 重开 journal（同一路径）：watcher 整套重试并单批落齐。换句柄必须持
+	// state.mu——结算路径（含幂等键预扫描的 Replay）全部在锁内读 s.journal，
+	// 锁外裸换会构成数据竞争。
+	reopened, err := OpenJournal(h.journal.path)
+	if err != nil {
+		t.Fatalf("journal 重开失败: %v", err)
+	}
+	state := h.service.stateFor(run.ID)
+	state.mu.Lock()
+	h.service.journal = reopened
+	state.mu.Unlock()
+	waitFor(t, "重试后单批落齐", func() bool {
+		fresh := h.store.Run(run.ID)
+		return findTaskIn(fresh, "lead") != nil &&
+			findTaskIn(fresh, "lead").Status == TaskCompleted &&
+			len(fresh.PendingActions) == 1
+	})
+	if got := len(h.eventsOfType(run.ID, EventTaskCompleted)); got != 1 {
+		t.Fatalf("重试不得重复落 task_completed，实际 %d 条", got)
+	}
+	if got := len(h.eventsOfType(run.ID, EventActionProposed)); got != 1 {
+		t.Fatalf("重试不得重复落 action_proposed，实际 %d 条", got)
+	}
+	waitFor(t, "run 完成", func() bool { return terminalRun(h.store.Run(run.ID).Status) })
+}
+
+// ---- 评审遗留①②④：顺路修复的判别测试 ----
+
+// flakySaveStore 在第 failAt 次 SaveRun（1 起算，含夹具落账）注入确定性失败
+// （非版本冲突——commitRun 不重试，调用方整套重试）：模拟「两段式提交的后段
+// 崩溃窗口」。单批实现下事实要么全落要么全不落；两段式实现会在注入点留下
+// 「先落事实已存、后落事实缺席」的撕裂快照。
+type flakySaveStore struct {
+	TeamStore
+	mu      sync.Mutex
+	failAt  int
+	counter int
+}
+
+func (s *flakySaveStore) SaveRun(run *Run) error {
+	s.mu.Lock()
+	s.counter++
+	at := s.counter == s.failAt
+	s.mu.Unlock()
+	if at {
+		return errors.New("注入：team-runs.json 写入失败")
+	}
+	return s.TeamStore.SaveRun(run)
+}
+
+// disarm 解除注入（停靠事实已验证后调用，后续保存全部放行）。
+func (s *flakySaveStore) disarm() {
+	s.mu.Lock()
+	s.failAt = 0
+	s.mu.Unlock()
+}
+
+// TestApplyCollectTargetsResetOnVersionConflict 判别（评审遗留①）：commitRun
+// 版本冲突重跑 mutate 时，applyCollectLocked 的 targets 必须重置——旧实现
+// 闭包外声明、闭包内 append，重跑把取消目标翻倍累积，取消副作用重复执行。
+func TestApplyCollectTargetsResetOnVersionConflict(t *testing.T) {
+	journal, err := OpenJournal(filepath.Join(t.TempDir(), "team-journal.jsonl"))
+	if err != nil {
+		t.Fatalf("journal 打开失败: %v", err)
+	}
+	// conflictOnceStore 让 run 的首次 collect 保存报版本冲突（模拟外部写者
+	// 抢先），迫使 commitRun 重跑 mutate。
+	conflictStore := &conflictOnceStore{TeamStore: newMemStore(), runID: "run-collect"}
+	team := testTeam()
+	if err := conflictStore.SaveTeam(team); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(conflictStore, journal, newFakeQueue(), newFakeResolver())
+	run := &Run{
+		ID: "run-collect", TeamID: team.ID, Goal: "起草方案", Status: RunDispatching,
+		Mode: ModeBroadcast, CollectPolicy: RunCollectFirstSuccess,
+		Tasks: []Task{
+			{ID: "draft-lead", MemberID: "lead", Prompt: "起草方案", Ordinal: 0, Status: TaskCompleted, BroadcastGroup: "draft"},
+			{ID: "draft-dev", MemberID: "dev", Prompt: "起草方案", Ordinal: 1, Status: TaskDispatching, BroadcastGroup: "draft", SubmissionID: "sub-dev"},
+			{ID: "draft-rev", MemberID: "rev", Prompt: "起草方案", Ordinal: 2, Status: TaskDispatching, BroadcastGroup: "draft", SubmissionID: "sub-rev"},
+		},
+	}
+	if err := conflictStore.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	state := service.stateFor(run.ID)
+	state.mu.Lock()
+	targets := service.applyCollectLocked(state, run, team, policyOf(team))
+	state.mu.Unlock()
+	if len(targets) != 2 {
+		t.Fatalf("版本冲突重跑 mutate 后取消目标应恰为 2 个（每被超越兄弟一个），实际 %d: %+v", len(targets), targets)
+	}
+	seen := map[string]bool{}
+	for _, target := range targets {
+		if seen[target.submissionID] {
+			t.Fatalf("取消目标重复累积: %s", target.submissionID)
+		}
+		seen[target.submissionID] = true
+	}
+	if !seen["sub-dev"] || !seen["sub-rev"] {
+		t.Fatalf("取消目标应覆盖两个被超越兄弟，实际 %v", seen)
+	}
+	fresh := conflictStore.Run(run.ID)
+	for _, taskID := range []string{"draft-dev", "draft-rev"} {
+		if task := findTaskIn(fresh, taskID); task.Status != TaskCancelled || task.StopReason != StopReasonSupersededByFirstSuccess {
+			t.Fatalf("被超越兄弟应收口为 cancelled（不重复收口）: %+v", task)
+		}
+	}
+}
+
+// conflictOnceStore 对指定 run 的第 2 次 SaveRun（夹具落账=1、收集批=2）报
+// ErrVersionConflict，其后放行（commitRun 收到冲突会重载快照重跑 mutate——
+// 正是 targets 累积的触发形态）。
+type conflictOnceStore struct {
+	TeamStore
+	runID string
+	saves int
+}
+
+func (s *conflictOnceStore) SaveRun(run *Run) error {
+	if run.ID == s.runID {
+		s.saves++
+		if s.saves == 2 {
+			return ErrVersionConflict
+		}
+	}
+	return s.TeamStore.SaveRun(run)
+}
+
+// TestDispatchTeamLevelParallelCapAcrossRuns 判别（评审遗留②）：Team 级并发
+// 口径——同 Team 两个 Run 并发时，两 Run 的在途任务合计（快照 dispatching/
+// running）任何时刻不超过 policy.MaxParallelTasks。旧口径只计本 Run，两 Run
+// 各自占满 MaxParallelTasks（合计 4 > 2）。夹具不推进任何提交（fakeQueue 无
+// worker），两个 Run 的在途各自稳定驻留，观察窗口内的每次采样都必须达标。
+func TestDispatchTeamLevelParallelCapAcrossRuns(t *testing.T) {
+	h := newDispatchHarness(t)
+	h.team.Policy.MaxParallelTasks = 2
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatal(err)
+	}
+	// run1：lead+dev 两个无依赖任务；run2：rev+lead（成员互斥是 Run 内口径，
+	// lead 跨 Run 可同时忙——正是 Team 口径要拦的形态）。
+	run1 := h.createRun(t, ModePipeline, []PlanTaskInput{
+		{ID: "a", MemberID: "lead", Prompt: "任务甲", WriteLock: TaskWriteLockNone},
+		{ID: "b", MemberID: "dev", Prompt: "任务乙", WriteLock: TaskWriteLockNone},
+	})
+	run2 := h.createRun(t, ModePipeline, []PlanTaskInput{
+		{ID: "c", MemberID: "rev", Prompt: "任务丙", WriteLock: TaskWriteLockNone},
+		{ID: "d", MemberID: "lead", Prompt: "任务丁", WriteLock: TaskWriteLockNone},
+	})
+	inFlightTotal := func() int {
+		total := 0
+		for _, run := range h.store.RunsByTeam(h.team.ID) {
+			for i := range run.Tasks {
+				switch run.Tasks[i].Status {
+				case TaskDispatching, TaskRunning:
+					total++
+				}
+			}
+		}
+		return total
+	}
+	// 派发确实发生了（合计达到 2——上限即配额，不是「什么都不派」的假通过；
+	// 取 ≥2：旧口径合计会冲到 4，由下方驻留期采样判别拦截）。
+	waitFor(t, "Team 在途达到上限 2", func() bool { return inFlightTotal() >= 2 })
+	// 稳定驻留期连续采样：任何时刻合计 ≤ 2（旧口径下 run2 会在毫秒内把
+	// 合计推到 4）。
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if total := inFlightTotal(); total > 2 {
+			t.Fatalf("Team 级在途 %d 超过 MaxParallelTasks=2（评审遗留②）", total)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// 未获额度的任务保持 planned（等待配额释放，绝无第三条在途）。
+	for _, runID := range []string{run1.ID, run2.ID} {
+		fresh := h.store.Run(runID)
+		if fresh.Status != RunDispatching {
+			t.Fatalf("run %s 应驻留 dispatching，实际 %s", runID, fresh.Status)
+		}
+		for i := range fresh.Tasks {
+			switch fresh.Tasks[i].Status {
+			case TaskDispatching, TaskRunning, TaskPlanned:
+			default:
+				t.Fatalf("任务 %s 不应落终态: %+v", fresh.Tasks[i].ID, fresh.Tasks[i])
+			}
+		}
+	}
+	// 释放配额验证护栏会放行后续任务：完成 run1 的一条在途任务，合计回落后
+	// 剩余 planned 任务应被派出（仍守 ≤2）。
+	entries := h.queue.entriesFor("s-lead")
+	if len(entries) == 0 {
+		t.Fatal("lead 会话应有已入队任务")
+	}
+	h.completeSubmission("s-lead", entries[0].submissionID, entries[0].text, "完成。")
+	waitFor(t, "完成释放额度后新任务派出（合计回升 2）", func() bool { return inFlightTotal() == 2 })
+	if total := inFlightTotal(); total > 2 {
+		t.Fatalf("回落再派出后合计仍不得超上限，实际 %d", total)
+	}
+}
+
+// newSettleService 构造带 SaveRun 失败注入的独立服务（评审遗留④判别基座）：
+// 不经 CreateRun（不启动调度循环），直达停靠/未决 settle 路径。failAt 是
+// 第几次 SaveRun（1 起算，夹具落账=1、settle 批=2）确定性失败。
+func newSettleService(t *testing.T, failAt int) (*flakySaveStore, *Service, *Team) {
+	t.Helper()
+	journal, err := OpenJournal(filepath.Join(t.TempDir(), "team-journal.jsonl"))
+	if err != nil {
+		t.Fatalf("journal 打开失败: %v", err)
+	}
+	store := &flakySaveStore{TeamStore: newMemStore(), failAt: failAt}
+	team := testTeam()
+	if err := store.SaveTeam(team); err != nil {
+		t.Fatalf("team 保存失败: %v", err)
+	}
+	service := NewService(store, journal, newFakeQueue(), newFakeResolver())
+	service.waitSlice = 2 * time.Millisecond
+	t.Cleanup(func() {
+		for _, run := range store.Runs() {
+			_, _ = service.Cancel(run.ID)
+		}
+	})
+	return store, service, team
+}
+
+// settleRunFixture 落一条单任务在途的 run（SaveRun 计数=1）。
+func settleRunFixture(t *testing.T, store TeamStore, team *Team, id string) *Run {
+	t.Helper()
+	run := &Run{
+		ID: id, TeamID: team.ID, Goal: "交付功能", Status: RunDispatching, Round: 1,
+		Tasks: []Task{{
+			ID: "t1", MemberID: "dev", Prompt: "实现功能", Ordinal: 0,
+			Status: TaskDispatching, SubmissionID: "sub-t1",
+			WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
+		}},
+	}
+	if err := store.SaveRun(run); err != nil {
+		t.Fatalf("run 夹具落账失败: %v", err)
+	}
+	return run
+}
+
+// assertDockAtomic 断言「任务终态 ⟺ run waiting_input」的单批原子不变量：
+// 撕裂形态（任务已终态而 run 仍 dispatching）就是两段式提交后段失败的现场，
+// passFold 会把这种全终态快照折成 RunStopped、堵死 Resume。
+func assertDockAtomic(t *testing.T, store TeamStore, runID, taskID string) {
+	t.Helper()
+	fresh := store.Run(runID)
+	task := findTaskIn(fresh, taskID)
+	if terminalTask(task.Status) != (fresh.Status == RunWaitingInput) {
+		t.Fatalf("「任务终态 + run waiting_input」必须单批原子同落: task=%s run=%s", task.Status, fresh.Status)
+	}
+}
+
+// eventOrderOK 断言 run 的 journal 事件序（types 依次出现于插入序之前）。
+func eventOrderOK(service *Service, runID string, types ...string) bool {
+	events, err := service.journal.Replay()
+	if err != nil {
+		return false
+	}
+	index := 0
+	for _, event := range events {
+		if event == nil || event.RunID != runID {
+			continue
+		}
+		if index < len(types) && event.Type == types[index] {
+			index++
+		}
+	}
+	return index == len(types)
+}
+
+// TestSettleUnknownSingleBatchAtomic 判别（评审遗留④）：settleUnknown 的
+// 「任务 outcome_unknown + run waiting_input」必须单批原子落账。failAt=3 是
+// 两段式实现的「后段失败」注入点——旧实现会留下任务已终态、run 仍
+// dispatching 的撕裂快照（随后被 fold 成 RunStopped、Resume 永拒）。
+func TestSettleUnknownSingleBatchAtomic(t *testing.T) {
+	for _, failAt := range []int{2, 3} {
+		t.Run(fmt.Sprintf("SaveRun第%d次失败", failAt), func(t *testing.T) {
+			store, service, team := newSettleService(t, failAt)
+			run := settleRunFixture(t, store, team, "run-unknown")
+			state := service.stateFor(run.ID)
+			service.settleUnknown(state, run.ID, "t1", "账本条目丢失，无法确认发送结果")
+			assertDockAtomic(t, store, run.ID, "t1")
+			if store.Run(run.ID).Status != RunWaitingInput {
+				// 注入失败（settle 批落盘失败）：整套重试，落齐。
+				if ok := service.settleUnknown(state, run.ID, "t1", "账本条目丢失，无法确认发送结果"); !ok {
+					t.Fatal("重试应落齐两事实")
+				}
+				assertDockAtomic(t, store, run.ID, "t1")
+			}
+			fresh := store.Run(run.ID)
+			if task := findTaskIn(fresh, "t1"); task.Status != TaskOutcomeUnknown {
+				t.Fatalf("任务应收口 outcome_unknown，实际 %s", task.Status)
+			}
+			if fresh.Status != RunWaitingInput {
+				t.Fatalf("run 应驻留 waiting_input，实际 %s", fresh.Status)
+			}
+			// 事件序：任务事实先于 run 状态（§3.1 原则 4）。
+			store.disarm() // 停靠事实已验：解除注入，Resume 不受影响。
+			if !eventOrderOK(service, run.ID, EventTaskOutcomeUnknown, EventRunWaitingInput) {
+				t.Fatal("事件序应为 task_outcome_unknown → run_waiting_input")
+			}
+			// Resume 仍可达（§9 驻留等待 resume；撕裂形态会被折成终态永拒）。
+			resumed, err := service.Resume(run.ID)
+			if err != nil {
+				t.Fatalf("Resume 应可达: %v", err)
+			}
+			if resumed.Status == RunWaitingInput {
+				t.Fatal("Resume 后应离开 waiting_input")
+			}
+		})
+	}
+}
+
+// TestStopTaskBlockedSingleBatchAtomic 判别（评审遗留④）：stopTaskBlocked 的
+// 「任务 stopped + run waiting_input」同批原子（failAt=3 是两段式后段失败的
+// 注入点）；停靠后 Resume 重臂回 ready（§6.3 停靠可经 resume 重飞）。
+func TestStopTaskBlockedSingleBatchAtomic(t *testing.T) {
+	for _, failAt := range []int{2, 3} {
+		t.Run(fmt.Sprintf("SaveRun第%d次失败", failAt), func(t *testing.T) {
+			store, service, team := newSettleService(t, failAt)
+			run := settleRunFixture(t, store, team, "run-blocked")
+			state := service.stateFor(run.ID)
+			service.stopTaskBlocked(state, run.ID, "t1", OutcomeQuota, "账号额度不足")
+			assertDockAtomic(t, store, run.ID, "t1")
+			if store.Run(run.ID).Status != RunWaitingInput {
+				if ok := service.stopTaskBlocked(state, run.ID, "t1", OutcomeQuota, "账号额度不足"); !ok {
+					t.Fatal("重试应落齐两事实")
+				}
+				assertDockAtomic(t, store, run.ID, "t1")
+			}
+			fresh := store.Run(run.ID)
+			if task := findTaskIn(fresh, "t1"); task.Status != TaskStopped || task.Outcome != OutcomeQuota {
+				t.Fatalf("任务应停靠 stopped+quota，实际 %+v", task)
+			}
+			if !strings.Contains(fresh.StopReason, "停靠") {
+				t.Fatalf("run 停靠原因应可读，实际 %q", fresh.StopReason)
+			}
+			store.disarm() // 停靠事实已验：解除注入，Resume 不受影响。
+			if !eventOrderOK(service, run.ID, EventTaskStopped, EventRunWaitingInput) {
+				t.Fatalf("事件序应为 task_stopped → run_waiting_input")
+			}
+			// Resume 仍可达：停靠重臂回 ready、run 回执行态。
+			resumed, err := service.Resume(run.ID)
+			if err != nil {
+				t.Fatalf("Resume 应可达: %v", err)
+			}
+			if resumed.Status == RunWaitingInput {
+				t.Fatal("Resume 后应离开 waiting_input")
+			}
+			waitFor(t, "停靠重臂后任务回 ready 并重派", func() bool {
+				task := findTaskIn(store.Run(run.ID), "t1")
+				return task.Status == TaskReady || task.Status == TaskDispatching || task.Status == TaskRunning
+			})
+		})
+	}
+}
+
+// TestLeadActionsRepairDerivedChildNoCollision 修复任务的派生子任务不再撞号
+// （复核确认的死结路径）：修复任务 actfix-lead-1 回复合法 summarize（数组
+// 第 3 位，index=2）→ 派生 Lead 摘要任务 actfix-lead-1-s1-2；该子任务回复
+// 再违规时，修复链必须剥掉派生后缀归回根 lead、按纯修复任务计数取尝试号 2，
+// 创建 actfix-lead-2——修复前的行为是以子任务自身为根、尝试号被前缀命中
+// 顶到 2，repairID 与子任务 actfix-lead-1-s1-2 撞号，findTaskIn 永远命中
+// 已完成的子任务，修复任务派发不到自己，Run 停摆到 RunTimeoutSecs。
+func TestLeadActionsRepairDerivedChildNoCollision(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createAutoPlanRun(t)
+
+	// 原始 Lead 回复违规 → actfix-lead-1。
+	first, firstText := h.waitForSubmission(t, "s-lead", "lead 任务")
+	h.completeSubmission("s-lead", first, firstText, leadActionReply(invalidDelegateInner))
+	waitFor(t, "修复任务创建", func() bool {
+		return findTaskIn(h.store.Run(run.ID), "actfix-lead-1") != nil
+	})
+	repair := h.waitForNthSubmission(t, "s-lead", 2, "修复任务")
+
+	// 修复回合回复：index 0/1 为 delegate（闸门关闭停在 proposed，不派生），
+	// index 2 为 summarize → 派生 Lead 摘要任务 actfix-lead-1-s1-2。
+	h.completeSubmission("s-lead", repair.submissionID, repair.text, leadActionReply(
+		`{"actions":[{"type":"delegate","sourceTaskId":"actfix-lead-1","round":1,"member":"dev","task":"甲"},`+
+			`{"type":"delegate","sourceTaskId":"actfix-lead-1","round":1,"member":"dev","task":"乙"},`+
+			`{"type":"summarize","sourceTaskId":"actfix-lead-1","round":1}]}`))
+	waitFor(t, "派生摘要任务创建", func() bool {
+		return findTaskIn(h.store.Run(run.ID), "actfix-lead-1-s1-2") != nil
+	})
+
+	// 派生子任务（Lead 成员）回复违规：归回根链，创建 actfix-lead-2。
+	child := h.waitForNthSubmission(t, "s-lead", 3, "派生摘要任务")
+	h.completeSubmission("s-lead", child.submissionID, child.text, leadActionReply(invalidDelegateInner))
+	waitFor(t, "第二修复任务创建", func() bool {
+		return findTaskIn(h.store.Run(run.ID), "actfix-lead-2") != nil
+	})
+	fresh := h.store.Run(run.ID)
+	second := findTaskIn(fresh, "actfix-lead-2")
+	if second == nil || second.MemberID != "lead" || second.WriteLock != TaskWriteLockNone {
+		t.Fatalf("第二修复任务字段不符: %+v", second)
+	}
+	if !strings.Contains(second.Prompt, "第 2 次解析失败") {
+		t.Fatalf("修复提示词应带尝试次数 2（未被派生子任务虚高）: %q", second.Prompt)
+	}
+	// 全表任务 ID 唯一：绝不追加与既有任务同 ID 的重复条目。
+	seen := map[string]bool{}
+	for i := range fresh.Tasks {
+		if seen[fresh.Tasks[i].ID] {
+			t.Fatalf("任务 ID 重复: %s", fresh.Tasks[i].ID)
+		}
+		seen[fresh.Tasks[i].ID] = true
+	}
+	attemptTwo := false
+	for _, event := range h.eventsOfType(run.ID, EventInvalidActionBlock) {
+		if payloadInt(event.Payload, "attempt") == 2 {
+			attemptTwo = true
+		}
+	}
+	if !attemptTwo {
+		t.Fatal("第二回合 invalid_action_block 应记 attempt=2")
+	}
+	// 第二修复任务可达派发（撞号死结的判别面）：入队 Lead 会话。
+	next := h.waitForNthSubmission(t, "s-lead", 4, "第二修复任务派发")
+	if next.submissionID == repair.submissionID || next.submissionID == child.submissionID {
+		t.Fatal("第二修复入队必须用独立 submissionID")
 	}
 }

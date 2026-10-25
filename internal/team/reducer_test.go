@@ -952,3 +952,43 @@ func TestPlanResumeRearmsAuthAndNotConfiguredToo(t *testing.T) {
 		}
 	}
 }
+
+// TestAssistantFullTextEquivalence AssistantFullText 与 ExtractResult 的文本
+// 拼接段等价（抽函数重构不改行为）；team-actions 解析依赖它拿未截断全文
+// （§5.1：ExtractResult 的结果按 MaxResultChars 截断，尾部标记会丢）。
+func TestAssistantFullTextEquivalence(t *testing.T) {
+	turns := []*jsoncompat.Object{
+		nil,
+		completedTurn("t-empty"),
+		completedTurn("t-1",
+			turnEntry("user-1", "userMessage", "user", "请检查"),
+			turnEntry("thought-1", "agentThought", "activity", "思考"),
+			turnEntry("msg-1", "agentMessage", "assistant", "第一段。"),
+			turnEntry("msg-2", "agentMessage", "assistant", "第二段。"),
+			turnEntry("error-1", "error", "error", "被排除的错误"),
+		),
+		completedTurn("t-2", turnEntry("msg-1", "agentMessage", "assistant",
+			"正文\n<team-actions>{\"actions\":[]}</team-actions>")),
+	}
+	for _, turn := range turns {
+		full := AssistantFullText(turn)
+		// 不截断（上限给全文长度的两倍）时 ExtractResult 的结果就是全文。
+		result := ExtractResult("s", turn, len([]rune(full))*2+1)
+		if result.Result != full {
+			t.Fatalf("全文与未截断结果应相等：full=%q result=%q", full, result.Result)
+		}
+		if result.ResultChars != len([]rune(full)) {
+			t.Fatalf("ResultChars 应等于全文字数：%d vs %d", result.ResultChars, len([]rune(full)))
+		}
+	}
+	// 尾部标记在截断结果里丢失、在全文里保留——解析必须用全文。
+	long := strings.Repeat("长", 200) + "\n<team-actions>{\"actions\":[]}</team-actions>"
+	turn := completedTurn("t-3", turnEntry("msg-1", "agentMessage", "assistant", long))
+	truncated := ExtractResult("s", turn, 100)
+	if strings.Contains(truncated.Result, actionsCloseTag) {
+		t.Fatal("基线：截断结果应丢掉尾部标记")
+	}
+	if inner, violations := ExtractActionBlock(AssistantFullText(turn)); len(violations) != 0 || inner != `{"actions":[]}` {
+		t.Fatalf("全文应保留尾部标记并成功提取，实际 inner=%q violations=%v", inner, violations)
+	}
+}

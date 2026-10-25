@@ -34,18 +34,45 @@ type Transition struct {
 	Result     *TaskResult // 重建 completed 终态时携带的有界结果（可选）
 }
 
+// AssistantFullText 返回 turn.messages 中 assistant 文本块的按序拼接全文
+// （排除 kind=="error" 与工具/过程类条目），未经任何截断。抽自 ExtractResult
+// 的拼接段：team-actions 信封解析（§5.1，actions.go）必须用完整全文——
+// ExtractResult 的结果按 MaxResultChars 截断（默认 12000 rune），尾部动作
+// 标记会被截掉（Truncated/ResultChars 只是提示不是恢复手段）。
+func AssistantFullText(turn *jsoncompat.Object) string {
+	if turn == nil {
+		return ""
+	}
+	var texts []string
+	if list, ok := turn.MustGet("messages").(*jsoncompat.Array); ok {
+		for _, item := range list.Items {
+			message, ok := item.(*jsoncompat.Object)
+			if !ok {
+				continue
+			}
+			if kind, _ := message.MustGet("kind").(string); kind == "error" {
+				continue
+			}
+			if role, _ := message.MustGet("role").(string); role != "assistant" {
+				continue
+			}
+			text, _ := message.MustGet("text").(string)
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
 // ExtractResult 从 turn 抽取有界结果（§6.5 只存摘要与引用）。调用契约：只对
 // turn.status=="completed" 的 turn 调用——失败信号不在 turn 顶层 error 字段
 // （该字段初始化后恒为 nil），失败文本在 messages 里 kind=="error" 条目的
 // text（internal/acpview/view.go FailTurn），本函数一律排除。
 //
-// 结果 = turn.messages 中 assistant 文本块（role=="assistant"）按序拼接，
-// 排除 kind=="error" 及工具/过程类条目（role=="activity"：toolCall/
-// agentThought/plan/subagent）。maxChars 为正时按 rune 截断并标 truncated；
-// maxChars≤0 一律回退默认上限（DefaultPolicy().MaxResultChars）——策略层
-// 已拒绝 0（httpd 校验 min=1），此处兜底历史账本里的非法 0 值，保证结果
-// payload 恒有界（§10.3/§15.3）。ResultChars 记录截断前的完整字数（rune），
-// 供前端显示"结果共 N 字"。
+// 结果 = AssistantFullText（assistant 文本按序拼接）按 maxChars 截断并标记
+// truncated；maxChars≤0 一律回退默认上限（DefaultPolicy().MaxResultChars）
+// ——策略层已拒绝 0（httpd 校验 min=1），此处兜底历史账本里的非法 0 值，
+// 保证结果 payload 恒有界（§10.3/§15.3）。ResultChars 记录截断前的完整字数
+// （rune），供前端显示"结果共 N 字"。
 //
 // 此外从 role=="activity"、kind=="toolCall" 的条目里挖掘两份有界摘要
 // （§6.5 文件变更摘要与命令执行摘要）：编辑类工具（按名匹配 edit/write/
@@ -65,24 +92,7 @@ func ExtractResult(sessionID string, turn *jsoncompat.Object, maxChars int) Task
 	if stopReason, ok := turn.MustGet("stopReason").(string); ok {
 		result.StopReason = stopReason
 	}
-	var texts []string
-	if list, ok := turn.MustGet("messages").(*jsoncompat.Array); ok {
-		for _, item := range list.Items {
-			message, ok := item.(*jsoncompat.Object)
-			if !ok {
-				continue
-			}
-			if kind, _ := message.MustGet("kind").(string); kind == "error" {
-				continue
-			}
-			if role, _ := message.MustGet("role").(string); role != "assistant" {
-				continue
-			}
-			text, _ := message.MustGet("text").(string)
-			texts = append(texts, text)
-		}
-	}
-	full := strings.Join(texts, "\n")
+	full := AssistantFullText(turn)
 	result.ResultChars = len([]rune(full))
 	if maxChars > 0 && result.ResultChars > maxChars {
 		result.Result = truncateRunes(full, maxChars)

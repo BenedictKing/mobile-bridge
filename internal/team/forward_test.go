@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/google/uuid"
 )
 
@@ -494,5 +495,224 @@ func TestForwardToMemberRejections(t *testing.T) {
 	missing := &Run{ID: "run-missing", TeamID: "team-1", Status: RunDispatching}
 	if _, _, err := service.ForwardToMember(h.team, missing, forwardRequest(uuid.NewString(), "analysis", "", "rev")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("账本外 run 应报 ErrNotFound，实际 %v", err)
+	}
+}
+
+// ---- 评审遗留③：时间串固化于 journal payload 的幂等判别 ----
+
+// TestForwardToMemberCrashWindowReplayReusesRecordedAt 判别（评审遗留③）：
+// 崩溃窗口（journal 已落 task_forwarded、账本未达）补投时，重组内容必须复用
+// payload 固化的 recordedAt——时间行参与内容身份，现取时间会重组出不同字节
+// 的「首次内容」，重放不再可判定（真实队列按同 id 不同内容拒绝）。
+func TestForwardToMemberCrashWindowReplayReusesRecordedAt(t *testing.T) {
+	h := newDispatchHarness(t) // 不挂 OnEvent 的裸基座。
+	run := forwardRunFixture("run-recorded")
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatalf("run 保存失败: %v", err)
+	}
+	requestID := uuid.NewString()
+	submissionID := ForwardSubmissionID(h.team.ID, run.ID, requestID)
+	idempotencyKey := ForwardIdempotencyKey(h.team.ID, run.ID, requestID)
+	const at = "2026-01-02T15:04:05+08:00"
+	req := forwardRequest(requestID, "analysis", "", "rev")
+	// 预演首次合成（补投内容必须与其字节全等）。
+	contextText, note, _, _, err := h.service.composeForward(h.team, h.store.Run(run.ID), req, nil, at)
+	if err != nil {
+		t.Fatalf("预演合成失败: %v", err)
+	}
+	want := ComposeTaskMessage(contextText, note)
+	// 预置 journal 事实（recordedAt 已固化；账本条目缺失=崩溃窗口）。
+	event := newEvent(run.ID, EventTaskForwarded, "user", map[string]any{
+		"targetMemberId": "rev",
+		"sessionId":      "s-rev",
+		"submissionId":   submissionID,
+		"recordedAt":     at,
+		"contextChars":   jsoncompat.Num(len([]rune(contextText))),
+		"truncated":      false,
+		"sourceTaskId":   "analysis",
+	})
+	event.IdempotencyKey = idempotencyKey
+	if err := h.journal.Append(event); err != nil {
+		t.Fatalf("预置事件失败: %v", err)
+	}
+	// 补投：duplicate=true、零新事件、内容与预演字节全等（时间行复用 at）。
+	got, duplicate, err := h.service.ForwardToMember(h.team, run, req)
+	if err != nil || !duplicate {
+		t.Fatalf("崩溃窗口补投应成功且 duplicate=true: err=%v duplicate=%v", err, duplicate)
+	}
+	if got != submissionID {
+		t.Fatalf("补投 submissionID 应恒等，实际 %s", got)
+	}
+	entry, ok := h.queue.firstEntry("s-rev")
+	if !ok {
+		t.Fatal("补投后账本应有转发条目")
+	}
+	// 时间行判别（不依赖生产函数重算）：必须逐字复用 payload 的 recordedAt。
+	if !strings.Contains(entry.text, "时间："+at) {
+		t.Fatalf("补投时间行必须复用 payload 固化的 recordedAt=%s:\n%s", at, entry.text)
+	}
+	if entry.text != want {
+		t.Fatalf("补投内容必须与首次合成字节全等（时间行复用 payload 的 recordedAt）:\n%s\n--- 实际 ---\n%s", want, entry.text)
+	}
+	events, _ := h.journal.Replay()
+	count := 0
+	for _, e := range events {
+		if e.Type == EventTaskForwarded {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("补投不得重复记账，实际 %d 条事件", count)
+	}
+}
+
+// seedingTranscripts 在首次转录提取（ForwardToMember 的锁外 ③ 段）时模拟
+// 「并发同 id 请求抢先完成记账 + 入队」——本请求随后在 ④ 复查发现事实，
+// 只补投。
+type seedingTranscripts struct {
+	text string
+	seed func()
+	done bool
+}
+
+func (f *seedingTranscripts) BoundedTranscript(sessionID, scope string) (string, bool, error) {
+	if !f.done {
+		f.done = true
+		f.seed()
+	}
+	return f.text, false, nil
+}
+
+// TestForwardToMemberConcurrentPreemptEnqueuesIdenticalContent 判别（评审
+// 遗留③的并发形态）：②③ 间隙被并发同 id 请求抢先记账后，本请求的补投内容
+// 必须与抢先者入队的内容字节全等——现取时间重组会在「同 submissionID 不同
+// 内容」上被账本拒绝（「同一消息标识不能用于不同内容」）。
+func TestForwardToMemberConcurrentPreemptEnqueuesIdenticalContent(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := forwardRunFixture("run-preempt")
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatalf("run 保存失败: %v", err)
+	}
+	requestID := uuid.NewString()
+	submissionID := ForwardSubmissionID(h.team.ID, run.ID, requestID)
+	idempotencyKey := ForwardIdempotencyKey(h.team.ID, run.ID, requestID)
+	const at = "2026-01-02T15:04:05+08:00"
+	req := forwardRequest(requestID, "", "s-lead", "dev")
+	req.Scope = "main"
+	transcriptText := "用户：请复核方案\n助手：方案可行，附两处修改建议"
+	// 抢先者的内容（recordedAt=at 的首次合成）。
+	contextText, note, _, _, err := h.service.composeForward(h.team, h.store.Run(run.ID), req, &forwardTranscript{text: transcriptText}, at)
+	if err != nil {
+		t.Fatalf("预演合成失败: %v", err)
+	}
+	want := ComposeTaskMessage(contextText, note)
+	seed := func() {
+		event := newEvent(run.ID, EventTaskForwarded, "user", map[string]any{
+			"targetMemberId":  "dev",
+			"sessionId":       "s-dev",
+			"submissionId":    submissionID,
+			"recordedAt":      at,
+			"contextChars":    jsoncompat.Num(len([]rune(contextText))),
+			"truncated":       false,
+			"sourceSessionId": "s-lead",
+		})
+		event.IdempotencyKey = idempotencyKey
+		if err := h.journal.Append(event); err != nil {
+			t.Fatalf("抢先记账失败: %v", err)
+		}
+		if _, _, err := h.queue.Enqueue("s-dev", submissionID, want); err != nil {
+			t.Fatalf("抢先入队失败: %v", err)
+		}
+	}
+	h.service.Transcripts = &seedingTranscripts{text: transcriptText, seed: seed}
+	sub, duplicate, err := h.service.ForwardToMember(h.team, run, req)
+	if err != nil || !duplicate {
+		t.Fatalf("并发抢先后的补投应零错误且 duplicate=true: err=%v duplicate=%v", err, duplicate)
+	}
+	if sub != submissionID {
+		t.Fatalf("补投 submissionID 应恒等，实际 %s", sub)
+	}
+	if calls := h.queue.callCount(submissionID); calls != 2 {
+		t.Fatalf("补投应第二次 Enqueue（同 id 同内容幂等），实际 %d 次", calls)
+	}
+	entry, _ := h.queue.firstEntry("s-dev")
+	// 时间行判别（不依赖生产函数重算）：补投不得带新时间戳。
+	if !strings.Contains(entry.text, "时间："+at) {
+		t.Fatalf("补投时间行必须复用抢先者记账的 recordedAt=%s:\n%s", at, entry.text)
+	}
+	if entry.text != want {
+		t.Fatalf("补投内容必须与抢先者入队的内容字节全等:\n%s\n--- 实际 ---\n%s", want, entry.text)
+	}
+	events, _ := h.journal.Replay()
+	count := 0
+	for _, e := range events {
+		if e.Type == EventTaskForwarded {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("并发抢先不得重复记账，实际 %d 条事件", count)
+	}
+}
+
+// TestForwardToMemberStripsActionBlocks 转发正文先剥 <team-actions> 动作块
+// （BuildTaskContext 注入依赖结果的同族义务，context.go）：Lead 结果里的
+// 动作信封绝不由转发走私进下游——转发目标是 Lead 时，回显信封会以新
+// sourceTaskId 产生新的合法 ActionKey 并在 autoDispatch 下被执行。任务源与
+// 会话源转录同剥；正文只剩动作块的任务源转发确定性报错（没有可转发的
+// 结果内容）。
+func TestForwardToMemberStripsActionBlocks(t *testing.T) {
+	h := newForwardHarness(t)
+	run := forwardRunFixture("run-fwd-strip")
+	envelope := "<team-actions>{\"actions\":[{\"type\":\"summarize\"}]}</team-actions>"
+	run.Tasks[0].Result = envelope + "\n分析结论：接口需要鉴权。"
+	run.Tasks[0].ResultDetail.Result = run.Tasks[0].Result
+	h.saveForwardRun(t, run)
+
+	// 任务源 → Lead（最危险的走私目标）：入队文本剥块但保留正文。
+	if _, _, err := h.service.ForwardToMember(h.team, run, forwardRequest(uuid.NewString(), "analysis", "", "lead")); err != nil {
+		t.Fatalf("剥离后应可转发: %v", err)
+	}
+	entry, ok := h.queue.firstEntry("s-lead")
+	if !ok {
+		t.Fatal("目标成员会话应收到转发消息")
+	}
+	if strings.Contains(entry.text, actionsOpenTag) || strings.Contains(entry.text, actionsCloseTag) {
+		t.Fatalf("转发文本不得携带动作信封:\n%s", entry.text)
+	}
+	if !strings.Contains(entry.text, "分析结论：接口需要鉴权。") {
+		t.Fatalf("剥离只去动作块，正文应保留:\n%s", entry.text)
+	}
+	// 来源自带的摘要行照常保留（剥离只作用于动作块）。
+	if !strings.Contains(entry.text, "变更文件：src/a.go、src/b.go") {
+		t.Fatalf("来源摘要行应保留:\n%s", entry.text)
+	}
+
+	// 会话源转录里的动作块同样剥除。
+	h.service.Transcripts = &fakeTranscripts{text: "Lead：" + envelope + "\n会上结论如下"}
+	if _, _, err := h.service.ForwardToMember(h.team, run, ForwardRequest{
+		RequestID: uuid.NewString(), SourceSessionID: "s-lead", TargetMemberID: "rev",
+	}); err != nil {
+		t.Fatalf("会话源剥离后应可转发: %v", err)
+	}
+	sessionEntry, ok := h.queue.firstEntry("s-rev")
+	if !ok {
+		t.Fatal("目标成员会话应收到会话源转发消息")
+	}
+	if strings.Contains(sessionEntry.text, actionsOpenTag) || strings.Contains(sessionEntry.text, actionsCloseTag) {
+		t.Fatalf("会话源转发文本不得携带动作信封:\n%s", sessionEntry.text)
+	}
+	if !strings.Contains(sessionEntry.text, "会上结论如下") {
+		t.Fatalf("会话源正文应保留:\n%s", sessionEntry.text)
+	}
+
+	// 正文只剩动作块（无摘要可拼）的任务源转发：确定性报错，不投空壳信封。
+	onlyBlock := forwardRunFixture("run-fwd-onlyblock")
+	onlyBlock.Tasks[0].Result = envelope
+	onlyBlock.Tasks[0].ResultDetail = &TaskResult{SessionID: "s-lead", TurnID: "turn-9", Result: envelope}
+	h.saveForwardRun(t, onlyBlock)
+	if _, _, err := h.service.ForwardToMember(h.team, onlyBlock, forwardRequest(uuid.NewString(), "analysis", "", "rev")); err == nil ||
+		!strings.Contains(err.Error(), "没有可转发的结果内容") {
+		t.Fatalf("只剩动作块的结果应确定性报错，实际 %v", err)
 	}
 }

@@ -6,7 +6,8 @@ package team
 // 派发池（信号量限定同时在执行的派发 I/O 数）+ 每在途任务一个 watcher
 // goroutine。并发护栏是选择期记账：调度决策把「快照在途 + 已投递派发池」
 // 一并计入 inFlight，任务从投递池到落 dispatching 始终占并发额度——任何
-// 时刻同 Run 在途任务数（含 broadcast 展开）不超过 policy.MaxParallelTasks。
+// 时刻同 Team 各 Run 在途任务合计（含 broadcast 展开）不超过
+// policy.MaxParallelTasks（§6.3 层 1 的 Team 口径，评审遗留②）。
 // 终局分类唯一权威是 reducer.FoldRunStatus，runner 不发明终态映射；任何
 // 未决 outcome_unknown 都把 run 停进 waiting_input（§9），resume 只做
 // 「确认不再重发」，绝不重建 submission。
@@ -74,6 +75,12 @@ type Service struct {
 	// 关闭 nil 通道）；生产实现恒为 cancelTurnIfOurs。
 	cancelAgentTurn func(session *acpruntime.Session, sentText string) bool
 
+	// respondAgent 把问题答案投递到成员会话（§5.4 decision 的 Respond 步）。
+	// 独立成字段是测试注入点，与 cancelAgentTurn 同因：手工构造的 Session
+	// 成功回应会走 signalLocked 关闭 nil changed 通道而 panic；生产实现恒为
+	// session.Respond。
+	respondAgent func(session *acpruntime.Session, requestID string, response *jsoncompat.Object) error
+
 	// verifyTimeout 是验证闸门命令的执行超时（§6.4.1，默认 600s；测试直接
 	// 调小，避免用真实十分钟等超时路径）。
 	verifyTimeout time.Duration
@@ -84,6 +91,15 @@ type Service struct {
 
 	mu   sync.Mutex
 	runs map[string]*runState
+
+	// teamPending 是 Team 级派发窗口在途计数（§6.3 层 1 的 Team 口径，评审
+	// 遗留②）：teamID → 已投递派发池、快照尚未落 dispatching/终态的任务数
+	// （各 Run 的 pendingDispatch 汇总）。与 state.pendingDispatch 在同两点
+	// 维护（passDispatch 登记、executeDispatch 收尾清除，1:1 对应），s.mu
+	// 保护。passDispatch 据此 + 全 Team 各 Run 快照的 dispatching/running 合成
+	// Team 级 inFlight——同 Team 多 Run 并发时在途合计不超过
+	// policy.MaxParallelTasks。纯内存，重启即空（与 pendingDispatch 同存亡）。
+	teamPending map[string]int
 
 	// pools 是团队级派发池（teamID → 信号量池，§6.3 层 1）。容量取 Team
 	// 策略的 MaxParallelTasks，策略变更时整体重建；在途派发持有旧池信号
@@ -136,9 +152,13 @@ func NewService(store TeamStore, journal *Journal, queue QueueAdapter, resolver 
 		verifyTimeout: defaultVerifyTimeout,
 		waitSlice:     defaultWaitSlice,
 		runs:          map[string]*runState{},
+		teamPending:   map[string]int{},
 		pools:         map[string]*teamDispatchPool{},
 	}
 	service.cancelAgentTurn = service.cancelTurnIfOurs
+	service.respondAgent = func(session *acpruntime.Session, requestID string, response *jsoncompat.Object) error {
+		return session.Respond(requestID, response)
+	}
 	return service
 }
 
@@ -222,9 +242,17 @@ func (s *Service) stateFor(runID string) *runState {
 // 负责校验与落账。verifyCommand 是 Run 声明的验证闸门（§6.4.1，nil/空表示
 // 不启用），创建期过 ValidateVerifyCommand 白名单校验，并随 run_created
 // 事件落账（team-runs.json 损坏后的 journal 重建据此恢复闸门声明）。
-func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput) (*Run, error) {
+//
+// autoPlan 声明「plan 为空、Lead 自动规划」（§5.1/§10.2）：只有 AutoPlan
+// Run 的 Lead 任务回复才解析 team-actions（显式 Plan 优先级高于 Agent 自动
+// 计划）——autoPlan 与显式计划互斥，同时携带直接拒绝。autoPlan 随
+// run_created payload 落账供 journal 重建（旧账本缺字段按 false 保守解析）。
+func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool) (*Run, error) {
 	if team == nil {
 		return nil, errors.New("team 不能为 nil")
+	}
+	if autoPlan && len(raw) > 0 {
+		return nil, errors.New("自动规划的 Run 不能携带显式计划（显式 Plan 优先，Lead 自动动作只在空计划时解析）")
 	}
 	if len(verifyCommand) > 0 {
 		if err := ValidateVerifyCommand(verifyCommand); err != nil {
@@ -245,6 +273,7 @@ func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verif
 		Goal:          plan.Goal,
 		Mode:          plan.Mode,
 		CollectPolicy: plan.CollectPolicy,
+		AutoPlan:      autoPlan,
 		Status:        RunCreated,
 		Round:         1,
 		PlanHash:      plan.PlanHash,
@@ -257,7 +286,7 @@ func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verif
 	// §10.3「事件流只推送有界 payload」）。teamId/goal 供 team-runs.json
 	// 损坏后的 journal 重建（§8.1 快照可重建；goal 已过 10000 字校验）；
 	// verifyCommand 已过白名单校验（≤8 段、单段 ≤512 字节），重建据此
-	// 恢复闸门声明。
+	// 恢复闸门声明；autoPlan 供重建恢复解析闸门。
 	createdPayload := map[string]any{
 		"teamId":        team.ID,
 		"goal":          plan.Goal,
@@ -266,37 +295,51 @@ func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verif
 		"planHash":      plan.PlanHash,
 		"taskCount":     jsoncompat.Num(len(plan.Tasks)),
 	}
+	if autoPlan {
+		createdPayload["autoPlan"] = true
+	}
 	if len(verifyCommand) > 0 {
 		createdPayload["verifyCommand"] = append([]string(nil), verifyCommand...)
 	}
 	created := newEvent(run.ID, EventRunCreated, "user", createdPayload)
-	if err := s.journal.Append(created); err != nil {
-		return nil, fmt.Errorf("run 创建记账失败: %w", err)
-	}
-	s.emit(created)
+	events := []*Event{created}
 	for i := range plan.Tasks {
 		task := &plan.Tasks[i]
-		planned := newEvent(run.ID, EventTaskPlanned, "user", map[string]any{
+		events = append(events, newEvent(run.ID, EventTaskPlanned, "user", map[string]any{
 			"taskId":           task.ID,
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
-		})
-		if err := s.journal.Append(planned); err != nil {
-			return nil, fmt.Errorf("run 创建记账失败: %w", err)
+		}))
+	}
+	if err := s.accountCreatedRun(run, events); err != nil {
+		return nil, err
+	}
+	return run, nil
+}
+
+// accountCreatedRun 落账一个 Run 的创建批次（CreateRun 与 CreateAmendRun
+// 共用的尾部，§3.1 原则 4：journal 先行、快照随后）：逐条追加 events（首条
+// 必须是 run_created，其后按任务序排列）→ 团队仍在的 TOCTOU 复查 → 一次
+// SaveRun 落全量快照 → 启动调度循环。amend 的缓存命中任务由调用方在快照
+// 构造期直接置 completed（创建批次内单次落账，绝不二次改写）。
+func (s *Service) accountCreatedRun(run *Run, events []*Event) error {
+	for _, event := range events {
+		if err := s.journal.Append(event); err != nil {
+			return fmt.Errorf("run 创建记账失败: %w", err)
 		}
-		s.emit(planned)
+		s.emit(event)
 	}
 	// TOCTOU 补丁：创建窗口内团队可能已被并发删除（DeleteTeam 不触碰 run
 	// 版本，SaveRun 无法靠版本冲突发现；账本层的 ErrActiveRuns 拦截只保护
 	// 已落账的 Run）。落账前重验团队仍在，收窄「孤儿 Run」窗口。
-	if s.store.Team(team.ID) == nil {
-		return nil, fmt.Errorf("团队已被删除，请刷新列表")
+	if s.store.Team(run.TeamID) == nil {
+		return errors.New("团队已被删除，请刷新列表")
 	}
 	if err := s.store.SaveRun(run); err != nil {
-		return nil, err
+		return err
 	}
 	s.startLoop(s.stateFor(run.ID))
-	return run, nil
+	return nil
 }
 
 // ---- 调度循环 ----
@@ -387,6 +430,10 @@ func (s *Service) loopPass(state *runState) bool {
 	// 注册表读取 + git rev-parse）：找不到 worktree 或基线不匹配 → 任务
 	// 停靠 + workspace_lost + run waiting_input，绝不自动创建新 worktree。
 	s.adoptWorkspaceWatchers(state, adoptions)
+	// ⓵ Lead 自动动作执行段（§5.2，阶段三）：proposed 动作的判定/执行/拒绝。
+	// 位于派发段之前——同 pass 内派生任务即可参与派发（依赖释放/写锁/AIMD/
+	// 幂等键/watcher 全套复用 executeDispatch，零新派发代码）。
+	s.passActions(state)
 	// ③a：候选 exclusive 任务的 cwd 解析（锁外慢 I/O；解析不到不登记，
 	// ReadyTasks 对缺 cwd 的 exclusive 任务跳过，绝不无锁派发）。
 	cwdByTask := s.resolveCandidateCwds(state.runID)
@@ -521,11 +568,388 @@ func (s *Service) resolveCandidateCwds(runID string) map[string]string {
 	return cwdByTask
 }
 
+// ---- Lead 自动动作执行（§5.2，阶段三 actions-exec）----
+
+// passActions 是循环的动作执行段（loopPass 在收养/级联之后、派发之前调用）：
+// 扫描快照里 Status=proposed 的 PendingActions，逐个判定并执行/拒绝。loop
+// 驱动而非 watcher 内执行：重启后快照存活、循环每轮重放补执行
+// （PlanCollect 重入语义同款）；watcher 路径不持 state.mu，在那里执行会绕过
+// run 终态复查（first-wins 无从谈起）。执行闸门（§5.1 规则 4）：delegate 与
+// request_context 仅 policy.AutoDispatch=true 时执行，false 时停在 proposed
+// （§11 动作预览的免执行形态）；summarize 恒可执行（§5.2）。解析门（autoPlan）
+// 在 settleLeadTaskLocked——两道门分开（§10.2）。
+//
+// 分段拆锁（仿 resolveCandidateCwds）：resolver.Resolve（冷探测可达 15s）、
+// 团队级在途统计与 journal Replay 都在锁外预取；判定与落账在 state.mu 内的
+// 单批 commitRun（拒绝原因的唯一持久落点是快照 Action.Status/Reason）。
+func (s *Service) passActions(state *runState) {
+	run := s.store.Run(state.runID)
+	if run == nil || terminalRun(run.Status) || run.Status != RunDispatching {
+		return
+	}
+	team := s.store.Team(run.TeamID)
+	if team == nil {
+		return // 团队已删（级联删除窗口）：动作无从执行，留给终局路径收尾。
+	}
+	policy := team.Policy
+	var proposed []Action
+	for i := range run.PendingActions {
+		if run.PendingActions[i].Status == ActionStatusProposed {
+			proposed = append(proposed, run.PendingActions[i])
+		}
+	}
+	if len(proposed) == 0 {
+		return
+	}
+	runnable := make([]Action, 0, len(proposed))
+	for i := range proposed {
+		action := proposed[i]
+		if (action.Type == ActionTypeDelegate || action.Type == ActionTypeRequestContext) && !policy.AutoDispatch {
+			continue // 执行闸门关闭：停在 proposed（动作预览），不判定不落账。
+		}
+		runnable = append(runnable, action)
+	}
+	if len(runnable) == 0 {
+		return
+	}
+	pre := &actionPrefetch{sessionLive: map[string]bool{}, teamInFlight: -1}
+	pre.facts = s.actionFacts(state.runID)
+	// ① 锁外预取（慢 I/O）：目标成员会话可达性（delegate/request_context 用
+	// member，summarize 用 Lead）。journal 已有终局事实的（崩溃窗口）无需预取。
+	for i := range runnable {
+		action := &runnable[i]
+		if pre.facts != nil {
+			if _, settled := pre.facts.settled[action.ActionKey]; settled {
+				continue
+			}
+		}
+		memberID := action.Member
+		if action.Type == ActionTypeSummarize {
+			memberID = team.LeadID
+		}
+		if memberID == "" {
+			continue
+		}
+		if _, resolved := pre.sessionLive[memberID]; resolved {
+			continue
+		}
+		member := memberOf(team, memberID)
+		if member == nil {
+			continue // 不存在的成员由 ValidateExecutable 给出可解释拒绝。
+		}
+		manager, session, _ := s.resolver.Resolve(member.SessionID)
+		switch {
+		case session != nil:
+			pre.sessionLive[memberID] = true
+		case manager == nil:
+			// 会话不属于任何 ACP Agent（已删除/从未接入）：绑定真失效，
+			// 落 sessionLive=false（§5.2 拒绝项，一次性可解释拒绝）。
+			pre.sessionLive[memberID] = false
+		default:
+			// 归属明确（manager.Knows 命中）但当前打不开——openACP 的瞬态
+			// 或环境性失败（agent 冷启超时/被桌面端持有/CwdFor 暂空）：不算
+			// 绑定失效，不落键（键缺省＝跳过该项判定），动作保持 proposed，
+			// 由后续循环与派发/转发路径兜底重试——与 executeDispatch 对同类
+			// Resolve 失败仅降级 AIMD 桶键、任务照常入队的语义对齐。
+		}
+	}
+	// ② 团队级在途（锁外：本函数此刻不持有任何 state.mu；teamInFlight 会短暂
+	// 持有其他 Run 的 state.mu，持锁调用会锁序倒置）。
+	pre.teamInFlight = s.teamInFlight(team.ID)
+	// ③ 逐动作执行/收敛/拒绝。
+	for i := range runnable {
+		s.executeAction(state, team, policy, &runnable[i], pre)
+	}
+}
+
+// executeAction 执行单个 proposed 动作：journal 已有终局事实的先做崩溃窗口
+// 收敛（只补快照、不重复记账）；delegate/summarize 走单批 commitRun；request_
+// context 锁内判定、锁外转发。
+func (s *Service) executeAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch) {
+	if pre != nil && pre.facts != nil {
+		if verdict, settled := pre.facts.settled[action.ActionKey]; settled {
+			s.convergeAction(state, team, action, verdict, pre.facts.reason[action.ActionKey])
+			return
+		}
+	}
+	switch action.Type {
+	case ActionTypeDelegate, ActionTypeSummarize:
+		s.executePlannedAction(state, team, policy, action, pre)
+	case ActionTypeRequestContext:
+		s.executeForwardAction(state, team, policy, action, pre)
+	}
+}
+
+// executePlannedAction 落地 delegate/summarize（§5.2）：判定→拒绝（action_
+// rejected + 快照 Status/Reason）或执行（先扩快照再 task_planned（payload 增载
+// round+actionKey——重建推 Run.Round 与动作 executed 态）+ 动作 executed +
+// Run.Round=max 推进）全部在单批 commitRun 内原子落账。派发零新代码：新任务
+// planned，同 pass 的 passDispatch 经 ReadyTasks/executeDispatch 全套派出。
+func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	err := s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
+		if terminalRun(fresh.Status) {
+			return nil, false
+		}
+		index := findProposedActionIndex(fresh, action.ActionKey)
+		if index < 0 {
+			return nil, false // 已被并发处理（first-wins）。
+		}
+		if ok, reason := ValidateExecutable(fresh, team, policy, action, pre, memberBusyOf(fresh, state.pendingDispatch)); !ok {
+			fresh.PendingActions[index].Status = ActionStatusRejected
+			fresh.PendingActions[index].Reason = reason
+			event := newEvent(fresh.ID, EventActionRejected, "runner", actionRejectedPayload(action, reason))
+			event.IdempotencyKey = action.ActionKey
+			return []*Event{event}, true
+		}
+		task := buildActionTask(fresh, team, action)
+		fresh.Tasks = append(fresh.Tasks, task)
+		if action.Round > fresh.Round {
+			fresh.Round = action.Round
+		}
+		fresh.PendingActions[index].Status = ActionStatusExecuted
+		event := newEvent(fresh.ID, EventTaskPlanned, "runner", map[string]any{
+			"taskId":           task.ID,
+			"memberId":         task.MemberID,
+			"instructionsHead": task.InstructionsHead,
+			"round":            jsoncompat.Num(action.Round),
+			"actionKey":        action.ActionKey,
+		})
+		event.IdempotencyKey = actionExecutionKey(fresh.TeamID, fresh.ID, action.ActionKey)
+		return []*Event{event}, true
+	})
+	if err != nil {
+		log.Printf("team run %s 动作 %s 执行记账失败（下轮重试）: %v", state.runID, action.ActionKey, err)
+	}
+}
+
+// executeForwardAction 落地 request_context（§5.2「请求另一成员提供已有
+// 结果」）：① 锁内判定（拒绝同批落 action_rejected + 快照；通过则无快照
+// 变更）；② 锁外调 ForwardToMember——其内部自持 state.mu，RequestID 由
+// ActionKey 确定性派生，幂等/记账/入队/信封整套复用，task_forwarded 事件
+// payload 增载 actionKey（journal 重建据此置 executed）；③ 成功后快照置
+// executed（纯收敛——执行凭据是 task_forwarded+actionKey 事实，不重复记账）。
+//
+// ② 的剩余错误按可重试处理：来源状态类错误已在 ① 判定拒绝（拒绝是一次性
+// 且可解释的），走到这里的失败只会是 journal/入队 I/O 或 Run 并发终局——
+// 前者保持 proposed 下轮重试（hasRunnableProposedActions 拦住 fold，直至
+// 成功或 Run 超时），后者随 Run 收场。
+func (s *Service) executeForwardAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch) {
+	proceed := false
+	func() {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		err := s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
+			if terminalRun(fresh.Status) {
+				return nil, false
+			}
+			index := findProposedActionIndex(fresh, action.ActionKey)
+			if index < 0 {
+				return nil, false
+			}
+			if ok, reason := ValidateExecutable(fresh, team, policy, action, pre, nil); !ok {
+				fresh.PendingActions[index].Status = ActionStatusRejected
+				fresh.PendingActions[index].Reason = reason
+				event := newEvent(fresh.ID, EventActionRejected, "runner", actionRejectedPayload(action, reason))
+				event.IdempotencyKey = action.ActionKey
+				return []*Event{event}, true
+			}
+			proceed = true
+			return nil, false // 判定通过：无快照变更，转发在锁外执行。
+		})
+		if err != nil {
+			log.Printf("team run %s 动作 %s 判定记账失败（下轮重试）: %v", state.runID, action.ActionKey, err)
+		}
+	}()
+	if !proceed {
+		return
+	}
+	run := s.store.Run(state.runID)
+	if run == nil {
+		return
+	}
+	_, _, err := s.ForwardToMember(team, run, ForwardRequest{
+		RequestID:      ActionRequestID(action.ActionKey),
+		SourceTaskID:   action.FromTaskID,
+		TargetMemberID: action.Member,
+		Note:           action.Task,
+		ActionKey:      action.ActionKey,
+	})
+	if err != nil {
+		if errors.Is(err, ErrForwardRunFinished) {
+			return // Run 已终局：动作随 Run 收场（快照保持 proposed，纯预览）。
+		}
+		log.Printf("team run %s 动作 %s 转发失败（保持 proposed，下轮重试）: %v", state.runID, action.ActionKey, err)
+		return
+	}
+	// 成功：快照置 executed（崩溃窗口由下一轮 actionFacts 按 journal 事实补齐）。
+	state.mu.Lock()
+	err = s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
+		index := findProposedActionIndex(fresh, action.ActionKey)
+		if index < 0 {
+			return nil, false
+		}
+		fresh.PendingActions[index].Status = ActionStatusExecuted
+		return nil, true
+	})
+	state.mu.Unlock()
+	if err != nil {
+		log.Printf("team run %s 动作 %s executed 收敛失败（下轮按 journal 事实补齐）: %v", state.runID, action.ActionKey, err)
+	}
+}
+
+// convergeAction 补齐崩溃窗口（journal 已有终局事实、快照仍 proposed）的快照
+// 收敛：executed → 置 executed 并补建缺失的派生任务（快照-only，事实已在
+// journal 的 task_planned/task_forwarded）；rejected → 置 rejected+Reason
+// （原因取自事件载荷）。不重复记账（RebuildActionEvents 的重建语义与这里
+// 的收敛语义同源）。
+func (s *Service) convergeAction(state *runState, team *Team, action *Action, verdict, reason string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	err := s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
+		if terminalRun(fresh.Status) {
+			return nil, false
+		}
+		index := findProposedActionIndex(fresh, action.ActionKey)
+		if index < 0 {
+			return nil, false
+		}
+		if verdict == actionVerdictRejected {
+			fresh.PendingActions[index].Status = ActionStatusRejected
+			fresh.PendingActions[index].Reason = reason
+			return nil, true
+		}
+		fresh.PendingActions[index].Status = ActionStatusExecuted
+		if action.Type == ActionTypeDelegate || action.Type == ActionTypeSummarize {
+			if derived := ActionDerivedTaskID(action); derived != "" && findTaskIn(fresh, derived) == nil {
+				fresh.Tasks = append(fresh.Tasks, buildActionTask(fresh, team, action))
+			}
+		}
+		return nil, true
+	})
+	if err != nil {
+		log.Printf("team run %s 动作 %s 崩溃窗口收敛失败（下轮重试）: %v", state.runID, action.ActionKey, err)
+	}
+}
+
+// findProposedActionIndex 返回快照中仍处 proposed 的指定动作下标（无则 -1）。
+func findProposedActionIndex(run *Run, actionKey string) int {
+	for i := range run.PendingActions {
+		if run.PendingActions[i].ActionKey == actionKey && run.PendingActions[i].Status == ActionStatusProposed {
+			return i
+		}
+	}
+	return -1
+}
+
+// memberBusyOf 返回本 Run 当前在途任务占用的成员集（快照 dispatching/running
+// + 派发池在途 pendingDispatch——与 passDispatch 的 inFlight 记账同口径，
+// §5.2 成员单活动任务）。
+func memberBusyOf(run *Run, pendingDispatch map[string]bool) map[string]bool {
+	busy := map[string]bool{}
+	for i := range run.Tasks {
+		switch run.Tasks[i].Status {
+		case TaskDispatching, TaskRunning:
+			busy[run.Tasks[i].MemberID] = true
+		}
+	}
+	for taskID := range pendingDispatch {
+		if task := findTaskIn(run, taskID); task != nil {
+			busy[task.MemberID] = true
+		}
+	}
+	return busy
+}
+
+// actionJournalFacts 是一次 journal Replay 提取的动作事实：
+//   - proposed：action_proposed 幂等键计数（>1 即同 Run 重复提案，§5.2）；
+//   - settled：动作终局（携带 actionKey 的 task_planned/task_forwarded＝
+//     executed；action_rejected＝rejected）——崩溃窗口（事实已落、快照未存）
+//     据此收敛，重复执行由它幂等短路；
+//   - reason：rejected 事实的拒绝原因（快照收敛用）。
+type actionJournalFacts struct {
+	proposed map[string]int
+	settled  map[string]string
+	reason   map[string]string
+}
+
+// actionFacts 重放 journal 提取本 Run 的动作事实（锁外调用，本地磁盘读；
+// forwardRecorded 同款读法）。读取失败返回 nil——后续判定退化为「重复与
+// 终局由幂等重试兜底」（journal 重放 last-wins，内容一致不双写）。
+func (s *Service) actionFacts(runID string) *actionJournalFacts {
+	events, err := s.journal.Replay()
+	if err != nil {
+		return nil
+	}
+	facts := &actionJournalFacts{
+		proposed: map[string]int{},
+		settled:  map[string]string{},
+		reason:   map[string]string{},
+	}
+	for _, event := range events {
+		if event == nil || event.RunID != runID {
+			continue
+		}
+		switch event.Type {
+		case EventActionProposed:
+			if event.IdempotencyKey != "" {
+				facts.proposed[event.IdempotencyKey]++
+			}
+		case EventActionRejected:
+			if event.IdempotencyKey != "" {
+				facts.settled[event.IdempotencyKey] = actionVerdictRejected
+				facts.reason[event.IdempotencyKey] = payloadString(event.Payload, "reason")
+			}
+		case EventTaskPlanned, EventTaskForwarded:
+			if key := payloadString(event.Payload, "actionKey"); key != "" {
+				facts.settled[key] = actionVerdictExecuted
+			}
+		}
+	}
+	return facts
+}
+
+// teamInFlight 统计团队级在途任务数（§6.3 层 1 的 Team 级口径，§5.2「超过
+// 并发数」拒绝与 passDispatch 派发护栏共用的同一口径）：全部 Run 快照的
+// dispatching/running 任务 + teamPending（各 Run 派发池在途窗口）。锁外调用
+// 即可——只读快照与 s.mu 计数，绝不触碰任何 Run 的 state.mu。
+func (s *Service) teamInFlight(teamID string) int {
+	count := 0
+	for _, run := range s.store.RunsByTeam(teamID) {
+		if terminalRun(run.Status) {
+			continue
+		}
+		for i := range run.Tasks {
+			if run.Tasks[i].Status == TaskDispatching || run.Tasks[i].Status == TaskRunning {
+				count++
+			}
+		}
+	}
+	s.mu.Lock()
+	count += s.teamPending[teamID]
+	s.mu.Unlock()
+	return count
+}
+
+// teamPendingDelta 调整团队的派发窗口计数（s.mu 保护）；归零/负值即删除键，
+// 防长期运行下按 teamID 无限增长。计数与 pendingDispatch 严格 1:1（登记一次
+// 必有一次收尾清除），负值只在防御意义下出现。
+func (s *Service) teamPendingDelta(teamID string, delta int) {
+	s.mu.Lock()
+	s.teamPending[teamID] += delta
+	if s.teamPending[teamID] <= 0 {
+		delete(s.teamPending, teamID)
+	}
+	s.mu.Unlock()
+}
+
 // passDispatch 执行派发段（短暂持有 state.mu）：ReadyTasks 纯决策（含组
 // 释放、成员互斥、写锁与并发护栏）并投递团队派发池。返回 false 表示循环
 // 退出。任务从投递池到 executeDispatch 落 dispatching 期间由
-// pendingDispatch 记账占并发额度与成员互斥——多任务同时在途（含 broadcast
-// 展开）不超过 policy.MaxParallelTasks 的硬保证。
+// pendingDispatch 记账占并发额度与成员互斥——并发护栏是 Team 级口径
+// （§6.3 层 1，评审遗留②）：全 Team 各 Run 的在途任务合计（含 broadcast
+// 展开与派发窗口）不超过 policy.MaxParallelTasks。
 func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) bool {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -544,36 +968,59 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 	}
 	team := s.store.Team(run.TeamID)
 	policy := policyOf(team)
-	inFlight := 0
 	memberBusy := map[string]bool{}
 	for i := range run.Tasks {
 		task := &run.Tasks[i]
 		if task.Status == TaskDispatching || task.Status == TaskRunning {
-			inFlight++
 			memberBusy[task.MemberID] = true
 		}
 	}
-	// 已投递派发池、快照尚未落 dispatching 的任务同样占并发额度与成员
-	// 互斥（窗口期记账，防重复选中/超额派发）。
+	// 已投递派发池、快照尚未落 dispatching 的任务同样占成员互斥（窗口期
+	// 记账，防重复选中）。
 	for taskID := range state.pendingDispatch {
-		inFlight++
 		if task := findTaskIn(run, taskID); task != nil {
 			memberBusy[task.MemberID] = true
 		}
 	}
+	// Team 级并发护栏（评审遗留②）：inFlight 从「本 Run 快照 + 本 Run 派发
+	// 窗口」改为「全 Team 各 Run 快照 dispatching/running + teamPending（各
+	// Run 派发窗口，s.mu 保护，含本 Run）」。锁纪律（state.mu→s.mu 单向）：
+	// 绝不锁兄弟 Run 的 state.mu（与其它 Run 的取锁方向倒置会死锁），快照经
+	// store.RunsByTeam 读取；「读计数 → ReadyTasks 决策 → 登记」整段收在
+	// 同一 s.mu 临界区内——读与登记之间松锁会让并发决策的 Run 各自读到旧
+	// 计数、合计超发。等待中的兄弟 Run 派发窗口任务已计入 teamPending，本
+	// 临界区与它们的登记/清除互斥，读数不会漏（快照先落、计数后减，计数只
+	// 可能短暂偏大，绝不偏小）。
+	s.mu.Lock()
+	inFlight := 0
+	for _, sibling := range s.store.RunsByTeam(run.TeamID) {
+		if terminalRun(sibling.Status) {
+			continue
+		}
+		for i := range sibling.Tasks {
+			if sibling.Tasks[i].Status == TaskDispatching || sibling.Tasks[i].Status == TaskRunning {
+				inFlight++
+			}
+		}
+	}
+	inFlight += s.teamPending[run.TeamID]
 	for _, taskID := range ReadyTasks(run, policy, inFlight, memberBusy, cwdByTask, s.locks) {
 		state.pendingDispatch[taskID] = true
-		s.dispatchViaPool(state, team, policy, run.ID, taskID, cwdByTask[taskID])
+		s.teamPending[run.TeamID]++
+		s.dispatchViaPool(state, team, policy, run.TeamID, run.ID, taskID, cwdByTask[taskID])
 	}
+	s.mu.Unlock()
 	return true
 }
 
 // passFold 执行折叠段（短暂持有 state.mu）：全部任务终态 → fold。
 // waiting_input 的 run 绝不在此 fold——停靠/结果未知语义是「驻留等待
-// resume」（§9/§6.3），fold 会把它变成终态、Resume 从此被拒。窄窗口：
+// resume」（§9/§6.3），fold 会把它变成终态、Resume 从此被拒。窄窗口防线：
 // 推进段读到 dispatching 后任务落终态并停 run，折叠段重读快照时全任务
-// 已终态——没有此守卫会误折（stopTaskBlocked/settleUnknown 的两段式提交
-// 与本段之间的竞态）。
+// 已终态——停靠路径（stopTaskBlocked/settleUnknown/stopTaskWorkspaceLost）
+// 的「任务终态 + run waiting_input」已改单批原子落账（评审遗留④），本守卫
+// 是对任何「全终态快照 + 非 waiting_input」中间态的兜底，没有它这类快照
+// 会被误折。
 func (s *Service) passFold(state *runState) bool {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -585,6 +1032,13 @@ func (s *Service) passFold(state *runState) bool {
 	}
 	if run.Status == RunWaitingInput {
 		return true // 驻留等待 resume：不 fold（下一轮推进段退出循环）。
+	}
+	// Lead 自动动作待执行（闸门开的 proposed）时不得 fold（§5.2，阶段三）：
+	// 动作执行段在本段之前的同一 pass 运行，但 watcher 结算与本段快照读取
+	// 之间存在竞态——守卫确保动作事实（执行或拒绝）先于终局。闸门关闭的
+	// 动作是 §11 预览形态（永不执行），不拦 fold。
+	if hasRunnableProposedActions(run, policyOf(s.store.Team(run.TeamID))) {
+		return true
 	}
 	if status, stopReason := FoldRunStatus(run.Tasks, run.Mode, run.CollectPolicy); status != "" {
 		// 验证闸门拦截（§6.4.1）：fold 判 completed 且闸门未决 → 不直接终局，
@@ -601,13 +1055,14 @@ func (s *Service) passFold(state *runState) bool {
 }
 
 // dispatchViaPool 把一次派发投递到团队派发池（§6.3）：信号量满时排队等待
-// ——阻塞期即取消窗口一（executeDispatch 获槽后先复查终态）。
-func (s *Service) dispatchViaPool(state *runState, team *Team, policy TeamPolicy, runID, taskID, cwd string) {
+// ——阻塞期即取消窗口一（executeDispatch 获槽后先复查终态）。teamID 是计数
+// 键（run.TeamID 的显式传递——team 快照可能为 nil，登记/清除必须用同一键）。
+func (s *Service) dispatchViaPool(state *runState, team *Team, policy TeamPolicy, teamID, runID, taskID, cwd string) {
 	pool := s.poolFor(team)
 	go func() {
 		pool.sem <- struct{}{}
 		defer func() { <-pool.sem }()
-		s.executeDispatch(state, team, policy, runID, taskID, cwd)
+		s.executeDispatch(state, team, policy, teamID, runID, taskID, cwd)
 	}()
 }
 
@@ -634,11 +1089,16 @@ func (s *Service) dispatchViaPool(state *runState, team *Team, policy TeamPolicy
 //	    时对称 OnSettle。
 //
 // 确定性失败（内容超限、账本拒绝、成员缺失）落任务 failed，分支级联终止。
-func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy, runID, taskID, cwd string) {
+func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy, teamID, runID, taskID, cwd string) {
 	// spawnSkipped 标记「已记账入队但 watcher 未生成」（前一代 watcher 尚
 	// 未退出，spawnWatcherLocked 幂等跳过）：收尾时额外唤醒循环，让
 	// adoptWatchersLocked 在旧 watcher 退出后补收养，否则要等一个等待片。
 	spawnSkipped := false
+	// accounted 标记窗口计数已转记：accountDispatchLocked 成功（快照落
+	// dispatching，接管计数）即减 teamPending，此后入队/收尾途中不再占窗口
+	// 额度——取消窗口一的信号量等待期由池容量兜底并发上限；未到达记账的
+	// 出口（复查终态/准入拒绝/绑定失败等）由 defer 补减，1:1 不漏。
+	accounted := false
 	// 收尾清理（不唤醒循环：准入拒绝/写锁暂缓的重试按等待片节奏进行，
 	// 防止「拒绝→唤醒→再投递→再拒绝」的自持热循环；需要立即推进的事件
 	// ——任务落终态、用户取消——各自经 applyTaskTerminalLocked/Cancel 唤醒）。
@@ -649,6 +1109,9 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 			s.wakeLocked(state)
 		}
 		state.mu.Unlock()
+		if !accounted {
+			s.teamPendingDelta(teamID, -1)
+		}
 	}()
 	// (1) 取消窗口一：获槽后先复查（等待期间状态可能已变）。
 	run := s.store.Run(runID)
@@ -719,8 +1182,16 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	// 的调用约定是持有 state.mu（写 state.taskCwds 等 run 级内存状态）——
 	// broadcast 的多个派发池 worker 会并发到达此处，裸调是 map 数据竞争
 	//（阶段二集成测试 -race 实测：dispatcher.go 的 state.taskCwds 赋值）。
+	// 记账成功即转记窗口计数：快照已落 dispatching（接管 inFlight 计数），
+	// 在同一 state.mu 段内减 teamPending——快照先落、计数后减，Team 级
+	// 读数不漏计；此后本主体的入队/取消收尾不再占窗口额度，取消窗口一的
+	// 等待期由池信号量（容量=MaxParallelTasks）兜底并发上限。
 	state.mu.Lock()
 	dispatch, err := s.accountDispatchLocked(state, team, run, taskID, cwd, binding)
+	if err == nil && dispatch != nil {
+		s.teamPendingDelta(teamID, -1)
+		accounted = true
+	}
 	state.mu.Unlock()
 	if err != nil {
 		s.failDispatch(state, runID, taskID, err.Error())
@@ -785,6 +1256,10 @@ func (s *Service) applyCollectLocked(state *runState, run *Run, team *Team, poli
 	}
 	var targets []cancelTarget
 	if err := s.commitRun(run.ID, func(fresh *Run) ([]*Event, bool) {
+		// 版本冲突重跑 mutate 前先重置（expireRun/Cancel 同款纪律）：闭包外
+		// 声明、闭包内 append，不重置会把两轮 mutate 的取消目标重复累积
+		// （评审遗留①）。
+		targets = targets[:0]
 		events, _ := applyTransitions(fresh, transitions, "runner")
 		for _, transition := range transitions {
 			task := findTaskIn(fresh, transition.TaskID)
@@ -972,16 +1447,18 @@ func (s *Service) adoptWorkspaceWatchers(state *runState, candidates []isolatedA
 }
 
 // stopTaskWorkspaceLost 落「工作区丢失或基线变更」停靠（§6.4 重启恢复）：
-// workspace_lost 事件与任务 stopped 同一 commitRun 落账（journal 先行），
-// 随后 run 停 waiting_input（两段式，settleUnknown 同款机制但落 stopped——
+// workspace_lost 事件、任务 stopped 与 run waiting_input 在同一 commitRun 内
+// 原子落账（journal 先行，事件序 workspace_lost → task_stopped →
+// run_waiting_input；评审遗留④同款纪律——两段式提交的后段失败会让先落的
+// 任务终态把全终态快照折成 RunStopped，堵死 Resume），写锁释放移到单批之后。
 // 停靠任务在用户恢复 worktree/基线后可经 resume 继续，绝不自动创建新
-// worktree、不自动重派）。
+// worktree、不自动重派。
 func (s *Service) stopTaskWorkspaceLost(state *runState, runID, taskID, workspaceID, reason string) bool {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	const stopReason = "工作区丢失或基线变更，任务已停靠"
 	applied := false
-	if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+	err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
 		if terminalRun(fresh.Status) {
 			return nil, false
 		}
@@ -998,15 +1475,24 @@ func (s *Service) stopTaskWorkspaceLost(state *runState, runID, taskID, workspac
 		if workspaceID != "" {
 			lostPayload["workspaceId"] = workspaceID
 		}
-		applied = true
-		return []*Event{
+		events := []*Event{
 			newEvent(runID, EventWorkspaceLost, "runner", lostPayload),
 			newEvent(runID, EventTaskStopped, "runner", map[string]any{
 				"taskId":     taskID,
 				"stopReason": stopReason,
 			}),
-		}, true
-	}); err != nil {
+		}
+		if fresh.Status != RunWaitingInput {
+			fresh.Status = RunWaitingInput
+			fresh.StopReason = fmt.Sprintf("任务 %s 工作区丢失或基线变更，等待用户处理", taskID)
+			events = append(events, newEvent(runID, EventRunWaitingInput, "runner", map[string]any{
+				"reason": fresh.StopReason,
+			}))
+		}
+		applied = true
+		return events, true
+	})
+	if err != nil {
 		log.Printf("team run %s 任务 %s 工作区停靠记账失败（下轮收养重试）: %v", runID, taskID, err)
 		return false
 	}
@@ -1014,18 +1500,6 @@ func (s *Service) stopTaskWorkspaceLost(state *runState, runID, taskID, workspac
 		return false
 	}
 	s.releaseTaskLockLocked(state, taskID)
-	if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
-		if fresh.Status == RunWaitingInput || terminalRun(fresh.Status) {
-			return nil, false
-		}
-		fresh.Status = RunWaitingInput
-		fresh.StopReason = fmt.Sprintf("任务 %s 工作区丢失或基线变更，等待用户处理", taskID)
-		return []*Event{newEvent(runID, EventRunWaitingInput, "runner", map[string]any{
-			"reason": fresh.StopReason,
-		})}, true
-	}); err != nil {
-		log.Printf("team run %s waiting_input 记账失败: %v", runID, err)
-	}
 	s.wakeLocked(state)
 	return true
 }
@@ -1140,16 +1614,31 @@ func (s *Service) watchTask(state *runState, dispatch *taskDispatch, policy Team
 			case <-time.After(slice):
 			}
 		}
-		if taskTimeout > 0 {
-			state.mu.Lock()
-			dispatchedAt := state.dispatchedAt[dispatch.taskID]
-			state.mu.Unlock()
-			if !dispatchedAt.IsZero() && time.Since(dispatchedAt) >= taskTimeout {
-				s.expireTask(state, dispatch)
-				return
-			}
+		if taskTimeout > 0 && s.taskTimeoutExpired(state, dispatch, taskTimeout) {
+			s.expireTask(state, dispatch)
+			return
 		}
 	}
+}
+
+// taskTimeoutExpired 检查任务是否超时（§5.4 超时豁免的判定入口）：超时线已过
+// 且该任务仍有 open 问题时，把 dispatchedAt 重臂为当前时刻并返回 false——
+// 用户未回答不烧任务时钟（开放问题期间任务超时停算）；无开放问题照常超时。
+// 重臂写入与读取都在 state.mu 内（dispatchedAt 是 mu 保护的 map）。
+func (s *Service) taskTimeoutExpired(state *runState, dispatch *taskDispatch, taskTimeout time.Duration) bool {
+	state.mu.Lock()
+	dispatchedAt := state.dispatchedAt[dispatch.taskID]
+	if dispatchedAt.IsZero() || time.Since(dispatchedAt) < taskTimeout {
+		state.mu.Unlock()
+		return false
+	}
+	if hasOpenQuestion(s.store.Run(state.runID), dispatch.taskID) {
+		state.dispatchedAt[dispatch.taskID] = time.Now()
+		state.mu.Unlock()
+		return false
+	}
+	state.mu.Unlock()
+	return true
 }
 
 // pollTask 观察一轮并尽可能把任务落终态。不持 state.mu（Resolve/Snapshot 是
@@ -1191,11 +1680,25 @@ func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamP
 			}
 			switch turnStatus(turn) {
 			case "inProgress":
+				// 成员主动提问观察（§5.4，阶段三）：本任务 turn 进行中时兼读
+				// 快照顶层 requests，AskUserQuestion 提问卡与输入卡登记为
+				// pendingQuestions（任务保持 running，普通权限卡不登记——
+				// questions.go 的边界声明）。
+				s.observeQuestions(state, dispatch, snapshot)
 				return false, session
 			case "completed":
 				result := ExtractResult(dispatch.sessionID, turn, policy.MaxResultChars)
 				// 成功 settle → 桶记账（§6.3 规则 b：连续 4 次成功增长窗口）。
 				s.AIMD.OnSuccess(dispatch.bucketKey)
+				// AutoPlan Run 的 Lead 任务：completed 事实与 team-actions 动作
+				// 事实单批原子落账（§5.1，settleLeadTaskLocked）；整批失败返回
+				// 未 settled，watcher 下一片整套重试。其余任务走 completeTask。
+				if s.settlesLeadActions(state, dispatch.taskID) {
+					if !s.settleLeadTaskLocked(state, dispatch, policy, turn, &result) {
+						return false, session
+					}
+					return true, session
+				}
 				s.completeTask(state, state.runID, dispatch.taskID, &result)
 				return true, session
 			case "failed":
@@ -1301,6 +1804,14 @@ func (s *Service) expireRun(state *runState) bool {
 				if terminalTask(task.Status) {
 					continue
 				}
+				// 超时豁免（§5.4）：有 open 问题的任务跳过批量 failed——
+				// 保持非终态，fold 因存在非终态任务不触发、run 维持非终态
+				// 驻留（stall 语义，§6.3「20 分钟无成功只 stall 不停止」
+				// 同调；verify_failed 超时豁免同款先例）。答案落定后下一轮
+				// 超时路径按剩余时钟收口。
+				if hasOpenQuestion(fresh, task.ID) {
+					continue
+				}
 				task.Status = TaskFailed
 				task.StopReason = "run_timeout"
 				task.Error = "运行超时，任务被终止"
@@ -1365,57 +1876,17 @@ func (s *Service) applyTaskTerminalLocked(state *runState, runID, taskID, status
 		if terminalRun(fresh.Status) {
 			return nil, false
 		}
-		task := findTaskIn(fresh, taskID)
-		if task == nil || terminalTask(task.Status) {
+		event, done := mutateTaskTerminal(fresh, taskID, status, stopReason, errorText, outcome, result, eventType, source)
+		if !done {
 			return nil, false
 		}
-		task.Status = status
-		task.StopReason = stopReason
-		task.Error = errorText
-		if outcome != "" {
-			task.Outcome = outcome
-		}
-		if result != nil {
-			task.Result = result.Result
-			task.ResultDetail = result
-		}
-		payload := map[string]any{"taskId": taskID}
-		if outcome != "" {
-			payload["outcome"] = outcome
-		}
-		if task.Attempt > 0 && (eventType == EventTaskFailed || eventType == EventTaskStopped) {
-			// 失败/停靠事实携带 attempt（recovery 判「更高 attempt 的派发
-			// 取代既有终态」的依据，§6.3 重试与停靠重飞）。
-			payload["attempt"] = jsoncompat.Num(task.Attempt)
-		}
-		switch eventType {
-		case EventTaskCompleted:
-			if result != nil {
-				payload["sessionId"] = result.SessionID
-				payload["turnId"] = result.TurnID
-				payload["result"] = result.Result
-				payload["resultChars"] = jsoncompat.Num(result.ResultChars)
-				payload["truncated"] = result.Truncated
-				if result.StopReason != "" {
-					payload["stopReason"] = result.StopReason
-				}
-				if result.FileSummary != "" {
-					payload["fileSummary"] = result.FileSummary
-				}
-				if result.CommandSummary != "" {
-					payload["commandSummary"] = result.CommandSummary
-				}
-			}
-		case EventTaskFailed:
-			payload["error"] = errorText
-			if stopReason != "" {
-				payload["stopReason"] = stopReason
-			}
-		default: // task_stopped / task_outcome_unknown
-			payload["stopReason"] = stopReason
-		}
+		// 任务终态同批撤回其全部 open 问题（§5.4）：事件序任务事实先于
+		// 问题撤回（low④ 教训——两段式提交的后段失败会让先落事实堵死
+		// 收口路径）。
+		events := append([]*Event{event},
+			withdrawTaskQuestions(fresh, taskID, questionWithdrawTaskTerminal, source)...)
 		applied = true
-		return []*Event{newEvent(runID, eventType, source, payload)}, true
+		return events, true
 	})
 	if err != nil {
 		log.Printf("team run %s 任务 %s 终态记账失败（watcher 继续观察重试）: %v", runID, taskID, err)
@@ -1428,6 +1899,64 @@ func (s *Service) applyTaskTerminalLocked(state *runState, runID, taskID, status
 	return applied
 }
 
+// mutateTaskTerminal 是任务终态的 mutate 段（applyTaskTerminalLocked 的
+// 闭包抽成可组合函数）：把 fresh 快照里的任务落到指定终态并构造对应 journal
+// 事件。返回 (事件, 是否应用)；任务不存在或已终态时 (nil, false)——first-wins
+// 由调用方的 commitRun 闭包组合（settleLeadTaskLocked 在同一批里追加动作
+// 事实，保证任务 completed 与 action_proposed/invalid_action_block 原子落账）。
+func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome string, result *TaskResult, eventType, source string) (*Event, bool) {
+	task := findTaskIn(run, taskID)
+	if task == nil || terminalTask(task.Status) {
+		return nil, false
+	}
+	task.Status = status
+	task.StopReason = stopReason
+	task.Error = errorText
+	if outcome != "" {
+		task.Outcome = outcome
+	}
+	if result != nil {
+		task.Result = result.Result
+		task.ResultDetail = result
+	}
+	payload := map[string]any{"taskId": taskID}
+	if outcome != "" {
+		payload["outcome"] = outcome
+	}
+	if task.Attempt > 0 && (eventType == EventTaskFailed || eventType == EventTaskStopped) {
+		// 失败/停靠事实携带 attempt（recovery 判「更高 attempt 的派发
+		// 取代既有终态」的依据，§6.3 重试与停靠重飞）。
+		payload["attempt"] = jsoncompat.Num(task.Attempt)
+	}
+	switch eventType {
+	case EventTaskCompleted:
+		if result != nil {
+			payload["sessionId"] = result.SessionID
+			payload["turnId"] = result.TurnID
+			payload["result"] = result.Result
+			payload["resultChars"] = jsoncompat.Num(result.ResultChars)
+			payload["truncated"] = result.Truncated
+			if result.StopReason != "" {
+				payload["stopReason"] = result.StopReason
+			}
+			if result.FileSummary != "" {
+				payload["fileSummary"] = result.FileSummary
+			}
+			if result.CommandSummary != "" {
+				payload["commandSummary"] = result.CommandSummary
+			}
+		}
+	case EventTaskFailed:
+		payload["error"] = errorText
+		if stopReason != "" {
+			payload["stopReason"] = stopReason
+		}
+	default: // task_stopped / task_outcome_unknown
+		payload["stopReason"] = stopReason
+	}
+	return newEvent(run.ID, eventType, source, payload), true
+}
+
 // completeTask 落任务 completed（§6.5 salvage：结果产生即入账，携带
 // TaskResult 引用）。
 func (s *Service) completeTask(state *runState, runID, taskID string, result *TaskResult) bool {
@@ -1438,6 +1967,222 @@ func (s *Service) completeTask(state *runState, runID, taskID string, result *Ta
 		stopReason = result.StopReason
 	}
 	return s.applyTaskTerminalLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher")
+}
+
+// settlesLeadActions 报告该任务的 completed 回复是否要做 team-actions 解析
+// （§5.1 解析闸门，pollTask 在锁外调用）：仅 AutoPlan Run（创建时显式声明
+// plan 为空、Lead 自动规划，§10.2「plan 为空时才允许 Lead 产生 team-actions」
+// ——显式 Plan 优先）且任务成员是团队 Lead 时成立。执行闸门（autoDispatch）
+// 归执行流，解析与修复不受其影响。
+func (s *Service) settlesLeadActions(state *runState, taskID string) bool {
+	run := s.store.Run(state.runID)
+	if run == nil || !run.AutoPlan {
+		return false
+	}
+	task := findTaskIn(run, taskID)
+	if task == nil {
+		return false
+	}
+	team := s.store.Team(run.TeamID)
+	return team != nil && team.LeadID != "" && task.MemberID == team.LeadID
+}
+
+// settleLeadTaskLocked 结算 AutoPlan Run 中 Lead 任务的 completed 回复（§5.1，
+// 调用方约定与 Cancel/Resume 相同的锁形：本函数自行短暂持有 state.mu）。把
+// 「任务 completed 事实 + 动作事实」在单个 commitRun 内原子落账（§3.1 原则
+// 1：消除 completeTask 已落而动作丢失的窗口）：
+//
+//   - 解析成功：每动作一条 action_proposed（IdempotencyKey=ActionKey）+
+//     PendingActions append（Status=proposed）；
+//   - 解析/校验失败：invalid_action_block（每次失败一条，幂等键按根任务与
+//     尝试号派生）+ 修复任务 actfix-{root}-{n}（成员=Lead、prompt=RepairPrompt、
+//     WriteLock=none，planned）随同批 task_planned 事件落快照——先扩快照再
+//     落事件、事件序任务事实先于动作事实。修复任务经既有 executeDispatch
+//     派发+watcher 观察（超时/收养/终态机械免费复用），其回复在同一
+//     completed 分支重解析；第 maxActionRepairs+1 次失败落 final=true、不再
+//     创建修复回合，结果按普通文本保留（§5.1 规则 3）。修复 ID 超长/非法或
+//     任务数达 MaxTasksPerRun 时同样确定性收场为 final，绝不静默。
+//
+// 幂等：批次内全部事件带幂等键，落账前 Replay 预扫描已记账键（journal.Append
+// 不去重；forwardRecorded 同款）——整批失败（journal/快照写失败）时返回
+// false，pollTask 以未 settled 返回、watcher 下一片整套重试（turn 仍按
+// SentText 匹配；first-wins 守卫 + 键预扫描保证重试不双写）。
+func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, policy TeamPolicy, turn *jsoncompat.Object, result *TaskResult) bool {
+	// ① 解析（纯内存）：完整 assistant 全文——ExtractResult 的结果已按
+	// MaxResultChars 截断，尾部标记会丢，必须用全文（actions.go）。
+	var actions []Action
+	var violations []string
+	if run := s.store.Run(state.runID); run != nil {
+		actions, violations = ParseLeadActions(AssistantFullText(turn), s.store.Team(run.TeamID), run, policy)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	// 幂等键预扫描（journal 全量重放，本地磁盘读；forwardRecorded 在 state.mu
+	// 内重放同款）：整批失败重试（journal 已落、快照未存）不重复落账——
+	// journal.Append 不去重，防重靠这里。
+	recorded := s.recordedActionKeys(state.runID)
+	settled := false
+	err := s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
+		settled = false
+		if terminalRun(fresh.Status) {
+			return nil, false
+		}
+		source := findTaskIn(fresh, dispatch.taskID)
+		stopReason := ""
+		if result != nil {
+			stopReason = result.StopReason
+		}
+		completedEvent, done := mutateTaskTerminal(fresh, dispatch.taskID, TaskCompleted,
+			stopReason, "", "", result, EventTaskCompleted, "watcher")
+		if !done {
+			return nil, false
+		}
+		// Lead 任务结算的全部事实（含 completed 本身）带幂等键：整批失败重试
+		//（journal 已落、快照未存的崩溃窗口）只补快照、不重复落账。
+		events := []*Event{}
+		completedKey := leadSettleKey(fresh.TeamID, fresh.ID, dispatch.taskID)
+		if !recorded[completedKey] {
+			completedEvent.IdempotencyKey = completedKey
+			events = append(events, completedEvent)
+		}
+		// 任务终态同批撤回其全部 open 问题（§5.4）：本路径不经
+		// applyTaskTerminalLocked（动作事实与之原子同批），撤回义务在此补齐，
+		// 事件序任务事实先于问题撤回。
+		events = append(events,
+			withdrawTaskQuestions(fresh, dispatch.taskID, questionWithdrawTaskTerminal, "watcher")...)
+		team := s.store.Team(fresh.TeamID)
+		leadDriven := fresh.AutoPlan && source != nil && team != nil &&
+			team.LeadID != "" && source.MemberID == team.LeadID
+		switch {
+		case leadDriven && len(violations) > 0:
+			root := actionRepairRoot(dispatch.taskID)
+			// 尝试号＝既有修复回合数+1，向后跳过已占用 ID（撞号守卫：
+			// actionRepairRoot 已把修复任务的派生子任务归回本根链，这里再
+			// 防御历史快照里的占位，绝不追加重复任务 ID）。
+			attempt := nextActionRepairAttempt(fresh, root)
+			repairID := actionRepairID(root, attempt)
+			final := attempt > maxActionRepairs
+			list := boundedViolations(violations)
+			if !final && !ValidMemberID(repairID) {
+				final = true
+				list = append(list, fmt.Sprintf("修复任务 ID %s 超长或含非法字符（字母/数字/下划线/连字符，1-64 字符），无法创建修复回合", repairID))
+			}
+			if !final && len(fresh.Tasks)+1 > policy.MaxTasksPerRun {
+				final = true
+				list = append(list, fmt.Sprintf("任务数已达上限 %d，无法创建修复回合", policy.MaxTasksPerRun))
+			}
+			invalidPayload := map[string]any{
+				"taskId":     dispatch.taskID,
+				"attempt":    jsoncompat.Num(attempt),
+				"final":      final,
+				"round":      jsoncompat.Num(fresh.Round),
+				"violations": list,
+			}
+			if key := invalidActionKey(fresh.TeamID, fresh.ID, root, attempt); !recorded[key] {
+				event := newEvent(fresh.ID, EventInvalidActionBlock, "watcher", invalidPayload)
+				event.IdempotencyKey = key
+				events = append(events, event)
+			}
+			if !final {
+				prompt := RepairPrompt(violations, attempt)
+				ordinal := 0
+				for i := range fresh.Tasks {
+					if fresh.Tasks[i].Ordinal > ordinal {
+						ordinal = fresh.Tasks[i].Ordinal
+					}
+				}
+				repair := Task{
+					ID:               repairID,
+					MemberID:         team.LeadID,
+					Prompt:           prompt,
+					Attempt:          0,
+					Ordinal:          ordinal + 1,
+					WriteLock:        TaskWriteLockNone,
+					WorkspaceMode:    WorkspaceShared,
+					Status:           TaskPlanned,
+					InstructionsHead: InstructionsHead(prompt),
+				}
+				// 创建期确定性字段（与 planner 同口径）：修复任务无依赖，
+				// 创建期与派发期的 InputHash 相同（contextText 恒空串）。
+				repair.InputHash = InputHashFor(&repair, PolicyDigest(team.Policy), "")
+				fresh.Tasks = append(fresh.Tasks, repair)
+				if key := actionRepairPlannedKey(fresh.TeamID, fresh.ID, repairID); !recorded[key] {
+					event := newEvent(fresh.ID, EventTaskPlanned, "runner", map[string]any{
+						"taskId":           repairID,
+						"memberId":         team.LeadID,
+						"instructionsHead": repair.InstructionsHead,
+						"round":            jsoncompat.Num(fresh.Round),
+					})
+					event.IdempotencyKey = key
+					events = append(events, event)
+				}
+			}
+		case leadDriven:
+			for i := range actions {
+				action := actions[i]
+				fresh.PendingActions = append(fresh.PendingActions, action)
+				if action.Round > fresh.Round {
+					fresh.Round = action.Round
+				}
+				if recorded[action.ActionKey] {
+					continue
+				}
+				payload := map[string]any{
+					"taskId":       dispatch.taskID,
+					"index":        jsoncompat.Num(i),
+					"actionKey":    action.ActionKey,
+					"type":         action.Type,
+					"round":        jsoncompat.Num(action.Round),
+					"sourceTaskId": action.SourceTaskID,
+				}
+				// 有界 payload（§10.3）：任务正文只带 240 rune 头；空可选键不落。
+				if action.Member != "" {
+					payload["member"] = action.Member
+				}
+				if action.Task != "" {
+					payload["taskHead"] = InstructionsHead(action.Task)
+				}
+				if action.FromTaskID != "" {
+					payload["fromTaskId"] = action.FromTaskID
+				}
+				if action.WriteLock != "" {
+					payload["writeLock"] = action.WriteLock
+				}
+				event := newEvent(fresh.ID, EventActionProposed, "watcher", payload)
+				event.IdempotencyKey = action.ActionKey
+				events = append(events, event)
+			}
+		}
+		settled = true
+		return events, true
+	})
+	if err != nil {
+		log.Printf("team run %s Lead 任务 %s 结算记账失败（watcher 继续观察整套重试）: %v", state.runID, dispatch.taskID, err)
+		return false
+	}
+	if settled {
+		s.releaseTaskLockLocked(state, dispatch.taskID)
+		s.wakeLocked(state)
+	}
+	// settled=false：任务已被并发置终态（取消/级联等，先落者已收尾）。
+	return true
+}
+
+// recordedActionKeys 收集 runID 已落账事件的全部幂等键（journal 全量重放，
+// forwardRecorded 的同款读法）。读取失败返回 nil——后续按键判重全部未命中，
+// 行为退化为「重复落账由内容一致的幂等重试兜底」（journal 重放 last-wins）。
+func (s *Service) recordedActionKeys(runID string) map[string]bool {
+	events, err := s.journal.Replay()
+	if err != nil {
+		return nil
+	}
+	keys := map[string]bool{}
+	for _, event := range events {
+		if event != nil && event.RunID == runID && event.IdempotencyKey != "" {
+			keys[event.IdempotencyKey] = true
+		}
+	}
+	return keys
 }
 
 // failTask 落任务 failed（确定性错误，重放仍会失败，§4.3）。outcome 非空
@@ -1591,8 +2336,10 @@ func blockedStopReason(outcome string) string {
 
 // stopTaskBlocked 把 quota/auth/not_configured 失败落任务停靠 + run 暂停
 // （§6.3）：任务 stopped（非 failed——停靠可经 resume 重飞）+ Outcome 分类
-// + 中文停靠原因；run 停 waiting_input（两段式，复用 settleUnknown 的
-// 「任务终态 + run waiting_input」机制，但落 stopped 非 unknown）。
+// + 中文停靠原因；run 停 waiting_input。「任务终态 + run waiting_input」在
+// 单个 commitRun 内原子落账（评审遗留④，Cancel 同款纪律）：事件序任务事实
+// （含问题撤回）先于 run 状态——两段式提交的后段失败会让先落的任务终态把
+// 全终态快照折成 RunStopped，堵死 Resume。
 //
 // 与 accpool AutoSwitcher 的任务级交互（显式定式）：poolhooks 在 quota 时
 // 切账号并按 ResumeAfterSwitchPrompt 续跑成员会话——任务停靠后 watcher
@@ -1603,24 +2350,37 @@ func (s *Service) stopTaskBlocked(state *runState, runID, taskID, outcome, error
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	stopReason := blockedStopReason(outcome)
-	if !s.applyTaskTerminalLocked(state, runID, taskID, TaskStopped, stopReason, errorText, outcome, nil, EventTaskStopped, "watcher") {
-		return false
-	}
+	applied := false
 	err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
-		if fresh.Status == RunWaitingInput || terminalRun(fresh.Status) {
+		if terminalRun(fresh.Status) {
 			return nil, false
 		}
-		fresh.Status = RunWaitingInput
-		fresh.StopReason = fmt.Sprintf("任务 %s 停靠：%s（处理账号或配置后可继续）", taskID, stopReason)
-		return []*Event{newEvent(runID, EventRunWaitingInput, "watcher", map[string]any{
-			"reason":  fresh.StopReason,
-			"outcome": outcome,
-		})}, true
+		event, done := mutateTaskTerminal(fresh, taskID, TaskStopped, stopReason, errorText, outcome, nil, EventTaskStopped, "watcher")
+		if !done {
+			return nil, false
+		}
+		events := append([]*Event{event},
+			withdrawTaskQuestions(fresh, taskID, questionWithdrawTaskTerminal, "watcher")...)
+		if fresh.Status != RunWaitingInput {
+			fresh.Status = RunWaitingInput
+			fresh.StopReason = fmt.Sprintf("任务 %s 停靠：%s（处理账号或配置后可继续）", taskID, stopReason)
+			events = append(events, newEvent(runID, EventRunWaitingInput, "watcher", map[string]any{
+				"reason":  fresh.StopReason,
+				"outcome": outcome,
+			}))
+		}
+		applied = true
+		return events, true
 	})
 	if err != nil {
-		log.Printf("team run %s waiting_input 记账失败: %v", runID, err)
+		log.Printf("team run %s 任务 %s 停靠记账失败（watcher 继续观察重试）: %v", runID, taskID, err)
+		return false
 	}
-	return true
+	if applied {
+		s.releaseTaskLockLocked(state, taskID)
+		s.wakeLocked(state)
+	}
+	return applied
 }
 
 // recordThrottled 在 AIMD 窗口实际减小时落 provider_throttled 事件
@@ -1644,27 +2404,42 @@ func (s *Service) recordThrottled(runID, bucket string, window int, retryAfter t
 
 // settleUnknown 落任务 outcome_unknown 并把 run 停进 waiting_input（§9 唯一
 // 规则：未决 unknown 暂停新派发、在途 turn 收尾入账、驻留等待 resume；不
-// fold、不重发）。run 已终态或已 waiting_input 时后者幂等跳过。
+// fold、不重发）。run 已终态或已 waiting_input 时后者幂等跳过。「任务终态 +
+// run waiting_input」在单个 commitRun 内原子落账（评审遗留④：两段式提交的
+// 后段失败会让先落的全终态快照被 passFold 折成 RunStopped，堵死 Resume）。
 func (s *Service) settleUnknown(state *runState, runID, taskID, stopReason string) bool {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	if !s.applyTaskTerminalLocked(state, runID, taskID, TaskOutcomeUnknown, stopReason, "", "", nil, EventTaskOutcomeUnknown, "watcher") {
-		return false
-	}
+	applied := false
 	err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
-		if fresh.Status == RunWaitingInput || terminalRun(fresh.Status) {
+		if terminalRun(fresh.Status) {
 			return nil, false
 		}
-		fresh.Status = RunWaitingInput
-		fresh.StopReason = fmt.Sprintf("任务 %s 结果未知，等待用户处理", taskID)
-		return []*Event{newEvent(runID, EventRunWaitingInput, "watcher", map[string]any{
-			"reason": fresh.StopReason,
-		})}, true
+		event, done := mutateTaskTerminal(fresh, taskID, TaskOutcomeUnknown, stopReason, "", "", nil, EventTaskOutcomeUnknown, "watcher")
+		if !done {
+			return nil, false
+		}
+		events := append([]*Event{event},
+			withdrawTaskQuestions(fresh, taskID, questionWithdrawTaskTerminal, "watcher")...)
+		if fresh.Status != RunWaitingInput {
+			fresh.Status = RunWaitingInput
+			fresh.StopReason = fmt.Sprintf("任务 %s 结果未知，等待用户处理", taskID)
+			events = append(events, newEvent(runID, EventRunWaitingInput, "watcher", map[string]any{
+				"reason": fresh.StopReason,
+			}))
+		}
+		applied = true
+		return events, true
 	})
 	if err != nil {
-		log.Printf("team run %s waiting_input 记账失败: %v", runID, err)
+		log.Printf("team run %s 任务 %s 未决记账失败（watcher 继续观察重试）: %v", runID, taskID, err)
+		return false
 	}
-	return true
+	if applied {
+		s.releaseTaskLockLocked(state, taskID)
+		s.wakeLocked(state)
+	}
+	return applied
 }
 
 // markRunning 把 dispatching 任务推到 running 并记 task_running 事件。
@@ -1719,8 +2494,13 @@ func (s *Service) finishRunLocked(state *runState, run *Run, status, stopReason 
 			if stopReason != "" {
 				payload["stopReason"] = stopReason
 			}
-			return []*Event{newEvent(fresh.ID, eventType, "runner", payload)}, true
+			// 终局同批撤回全部 open 问题（§5.4 兜底：常规路径问题已随任务
+			// 终态撤回，这里收口竞态窗口——fold 判定与终局落账之间新登记
+			// 的问题不允许留悬）。
+			return append([]*Event{newEvent(fresh.ID, eventType, "runner", payload)},
+				withdrawRunQuestions(fresh, questionWithdrawRunFinished, "runner")...), true
 		}
+		withdrawRunQuestions(fresh, questionWithdrawRunFinished, "runner")
 		return nil, true
 	})
 	s.releaseAllTaskLocksLocked(state)
@@ -1867,6 +2647,10 @@ func (s *Service) Cancel(runID string) (*Run, error) {
 			events = append(events, newEvent(fresh.ID, EventRunCancelled, "user", map[string]any{
 				"stopReason": fresh.StopReason,
 			}))
+			// Run 终止同批撤回全部 open 问题（§5.4，low④ 教训：单批双事实，
+			// 事件序任务事实→run 事实→问题撤回）；撤回后 decision → 409。
+			events = append(events,
+				withdrawRunQuestions(fresh, questionWithdrawRunFinished, "user")...)
 			return events, true
 		}); err != nil {
 			return err

@@ -51,6 +51,15 @@ import (
 //   - text 含 HOLDUNTIL:key → 等待 {dir}/release-{key}-{sessionId}.txt 出现
 //     或 session/cancel（每 50ms 轮询、20s 上限；测试用落文件精确放行单个
 //     turn，替代不可控的时长 sleep）；
+//   - 阶段三增量（teams_phase3_integration_test.go，分支先于 FAIL 族判定）：
+//     修复提示词（RepairPrompt 特征「动作块第 N 次解析失败」）→ 回
+//     actionsrepair-N.txt（缺文件退 actionsrepair-default.txt，再缺回普通
+//     文本）；ASKQ4/ASKQ → 发 4/1 张 question:true 反向提问卡（title=
+//     AskUserQuestion、问题文本在 toolCall.content、选项在 options——
+//     acpview AddPermission 据此标记 question 并映射 {id,label}），等全部
+//     回答（JSON-RPC response 按 ask-* id 路由、答案落 answers.log）或
+//     session/cancel；REPLYACTIONS:NAME → 回 actions-NAME.txt 全文
+//     （<team-actions> 剧本，合法/非法由文件内容决定）；
 //   - 其余立即 end_turn。完成前先发一条 assistant 文本块“已完成：<全文>”
 //     （ExtractResult 据此拿到有界结果）。
 func teamAgent(t *testing.T, dir string) []string {
@@ -64,6 +73,8 @@ DIR = "` + dir + `"
 LOCK = threading.Lock()
 STATE = {"event": threading.Event(), "cancelled": False}
 CWD = {"dir": "."}
+ASKEV = {}
+ASKANS = {}
 def record(name, value):
  with open(os.path.join(DIR, name), "a") as fh:
   fh.write(value + "\n")
@@ -104,11 +115,76 @@ def prompt_count(sid, text):
  return n
 def reply(payload):
  print(json.dumps(payload, ensure_ascii = False), flush = True)
+def read_script(name):
+ try:
+  with open(os.path.join(DIR, name)) as fh:
+   return fh.read()
+ except FileNotFoundError:
+  return None
+def ask_card(sid, key, question):
+ # 注册并发一张 question:true 反向提问卡（不等待——多张卡须同帧在途供
+ # 「同 Task 未决上限」用例观察）。
+ ev = threading.Event()
+ with LOCK:
+  ASKEV[key] = ev
+ reply({"jsonrpc": "2.0", "id": key, "method": "session/request_permission",
+        "params": {"sessionId": sid,
+                   "options": [{"optionId": "opt-a", "name": "继续", "kind": "allow_once"},
+                               {"optionId": "opt-b", "name": "跳过", "kind": "allow_once"}],
+                   "toolCall": {"title": "AskUserQuestion", "content": question}}})
+def ask_wait(key):
+ # 等单张卡回答或 session/cancel；答案落 answers.log，返回 turn 是否被取消。
+ ev = ASKEV.get(key)
+ if ev is None:
+  return False
+ cancelled = False
+ for _ in range(400):
+  with LOCK:
+   cancelled = STATE["cancelled"]
+  if cancelled or ev.wait(0.05):
+   break
+ with LOCK:
+  answer = ASKANS.pop(key, None)
+  ASKEV.pop(key, None)
+ if answer is not None:
+  record("answers.log", key + "\x00" + json.dumps(answer, ensure_ascii = False))
+ return cancelled
 def handle_prompt(m, ident):
  blocks = (m.get("params") or {}).get("prompt") or []
  text = next((b.get("text", "") for b in blocks if isinstance(b, dict)), "")
  sid = (m.get("params") or {}).get("sessionId") or "?"
  record("prompts.log", sid + "\x00" + text.replace("\n", "\\n"))
+ # 阶段三分支先于 FAIL 族：修复提示词里引用的违规模板可能含 FAIL 等字样。
+ repair = re.search(r"动作块第 (\d+) 次解析失败", text)
+ script = None if repair else re.search(r"REPLYACTIONS:([A-Za-z0-9_-]+)", text)
+ if repair:
+  body = read_script("actionsrepair-%s.txt" % repair.group(1))
+  if body is None:
+   body = read_script("actionsrepair-default.txt")
+  if body is None:
+   body = "已完成：没有可执行的动作。"
+  reply({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": body}}}})
+  reply({"jsonrpc": "2.0", "id": ident, "result": {"stopReason": "end_turn"}})
+  return
+ if "ASKQ4" in text or "ASKQ" in text:
+  count = 4 if "ASKQ4" in text else 1
+  keys = ["ask-%d" % k for k in range(1, count + 1)]
+  for k, key in enumerate(keys, 1):
+   ask_card(sid, key, "部署环境选择 PH3-ASKQ-%d：请选择处理方式" % k)
+  for key in keys:
+   if ask_wait(key):
+    reply({"jsonrpc": "2.0", "id": ident, "result": {"stopReason": "cancelled"}})
+    return
+  reply({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "已完成：" + text}}}})
+  reply({"jsonrpc": "2.0", "id": ident, "result": {"stopReason": "end_turn"}})
+  return
+ if script:
+  body = read_script("actions-%s.txt" % script.group(1))
+  if body is None:
+   body = "已完成：动作剧本文件缺失。"
+  reply({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": body}}}})
+  reply({"jsonrpc": "2.0", "id": ident, "result": {"stopReason": "end_turn"}})
+  return
  # 特定失败标记先于通用 FAIL（QUOTAFAIL 内含子串 FAIL：一次性标记二次到达
  # 跳过自身分支后，也不得落入通用 FAIL——否则重试 attempt 永远失败）。
  if "RATELIMIT" in text and prompt_count(sid, text) < 2:
@@ -183,6 +259,13 @@ for line in sys.stdin:
   with LOCK:
    STATE["cancelled"] = True; STATE["event"].set()
   result = {}
+ elif method is None and isinstance(ident, str) and ident.startswith("ask-"):
+  # 反向提问卡的回答（JSON-RPC response）：唤醒等待线程，答案由 ask_wait 落盘。
+  with LOCK:
+   ASKANS[ident] = m.get("result")
+   if ident in ASKEV:
+    ASKEV[ident].set()
+  continue
  else:
   result = {}
  print(json.dumps({"jsonrpc": "2.0", "id": ident, "result": result}), flush = True)
@@ -216,6 +299,14 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	journal, err := team.OpenJournal(filepath.Join(dataDir, "team-journal.jsonl"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// team-runs.json 整文件损坏时按 journal 重建（main.go:921-930 的同构启动
+	// 序列；损坏原件已由 LoadStore 改名留存）。阶段三恢复面用例据此覆盖
+	// pendingQuestions/pendingActions/缓存完成事实的重建。
+	if store.RunsLedgerCorrupt() {
+		if events, replayErr := journal.Replay(); replayErr == nil {
+			store.RebuildRunsFromJournal(events)
+		}
 	}
 	authenticator := auth.NewAuth(auth.Config{Mode: "none"})
 	token, session, err := authenticator.NewSession("127.0.0.1", "", false)

@@ -109,6 +109,12 @@ const nativeStoreLagGrace = 5 * time.Second
 // approvals or change settings while the app holds the write handle.
 const ReadOnlySessionMessage = "此会话正在桌面 App 中运行，手机端只读；可先对消息「从这里分支」再在手机继续"
 
+// ErrRequestExpired is the sentinel behind Respond's "请求已过期，请刷新聊天"
+// (the pending request is gone: answered elsewhere, flushed by the idle sweeper
+// or the turn ended). Exported so orchestration layers (team questions, §5.4)
+// can errors.Is it to withdraw their registration; the HTTP text is unchanged.
+var ErrRequestExpired = errors.New("请求已过期，请刷新聊天")
+
 // Subagents is the on-disk child-agent source decorating an agent's views
 // (Python's native_subagents stores). Nil disables decoration.
 type Subagents interface {
@@ -1096,7 +1102,7 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 	params, ok := s.pending[requestID]
 	if !ok || !exists {
 		s.mu.Unlock()
-		return errors.New("请求已过期，请刷新聊天")
+		return ErrRequestExpired
 	}
 	wire, invalid := respondWire(s.pendingKinds[requestID], params, response)
 	if invalid != nil {

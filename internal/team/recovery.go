@@ -13,6 +13,7 @@ package team
 //	task_retry_scheduled: {taskId, attempt, outcome}
 //	task_outcome_unknown / task_stopped: {taskId, stopReason}
 //	task_input_hash_mismatch: {taskId, expected, actual}
+//	task_cache_hit:   {taskId, parentRunId, parentTaskId, inputHash, sessionId, turnId, result, resultChars, truncated}
 
 import (
 	"encoding/json"
@@ -182,6 +183,21 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 			result.Truncated, _ = event.Payload["truncated"].(bool)
 			entry.result = result
 			entry.stopReason = result.StopReason
+			terminal[taskID] = entry
+		case EventTaskCacheHit:
+			// amend 缓存命中（§6.4.1，阶段三）：创建批次落账的 completed
+			// 事实，按 task_completed 同款重建终态与结果引用——不补此 case
+			// 的话，全缓存任务（快照 completed、journal 无 task_completed）
+			// 会被规则 5 折成 outcome_unknown + run waiting_input。
+			entry := &journalTerminal{status: TaskCompleted}
+			result := &TaskResult{
+				SessionID:   payloadString(event.Payload, "sessionId"),
+				TurnID:      payloadString(event.Payload, "turnId"),
+				Result:      payloadString(event.Payload, "result"),
+				ResultChars: payloadInt(event.Payload, "resultChars"),
+			}
+			result.Truncated, _ = event.Payload["truncated"].(bool)
+			entry.result = result
 			terminal[taskID] = entry
 		case EventTaskFailed:
 			terminal[taskID] = &journalTerminal{
@@ -423,7 +439,7 @@ func isTaskScopedEvent(eventType string) bool {
 	switch eventType {
 	case EventTaskDispatching, EventTaskRunning, EventTaskCompleted, EventTaskFailed,
 		EventTaskOutcomeUnknown, EventTaskStopped, EventTaskInputHashMismatch,
-		EventTaskRetryScheduled:
+		EventTaskRetryScheduled, EventTaskCacheHit:
 		return true
 	}
 	return false
