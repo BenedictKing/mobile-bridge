@@ -161,6 +161,19 @@ func TestSubmissionsLedgerTransitions(t *testing.T) {
 	}
 }
 
+func TestTimelineReadFallbackKeepsQueueMeta(t *testing.T) {
+	server, _, _ := newFeatureServer(t, t.TempDir())
+	_, _, err := server.Queue.enqueue("cold-thread", "5aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"切回后仍应显示", "queue", "", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	encoded := string(jsoncompat.EncodeCompact(server.TimelineRead("cold-thread", "page")))
+	if !strings.Contains(encoded, `"text":"切回后仍应显示"`) || !strings.Contains(encoded, `"status":"queued"`) {
+		t.Fatalf("cold fallback lost queue meta=%s", encoded)
+	}
+}
+
 func TestACPQueueDispatchOnSettle(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := t.TempDir()
@@ -197,6 +210,10 @@ func TestACPQueueDispatchOnSettle(t *testing.T) {
 	if meta.Code != http.StatusOK || !strings.Contains(meta.Body.String(), `"text": "排队消息"`) ||
 		!strings.Contains(meta.Body.String(), `"status": "queued"`) {
 		t.Fatalf("timeline meta=%s", meta.Body.String())
+	}
+	fallback := string(jsoncompat.EncodeCompact(server.TimelineRead("km-queue", "page")))
+	if !strings.Contains(fallback, `"text":"排队消息"`) || !strings.Contains(fallback, `"status":"queued"`) {
+		t.Fatalf("fallback timeline lost queue meta=%s", fallback)
 	}
 
 	// The turn settles and the settle hook dispatches the queued message.

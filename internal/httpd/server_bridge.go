@@ -350,6 +350,9 @@ func (s *Server) TimelineRead(threadID, mode string) any {
 		projection.SetMeta("agent", resolution.kind)
 		projection.SetMeta("hostLabel", "此电脑")
 		projection.SetMeta("capabilities", &jsoncompat.Array{})
+		if s.Queue != nil {
+			projection.SetMeta("submissions", s.queueMetaExcludingActivations(threadID))
+		}
 		switch mode {
 		case "detail":
 			if result, err := projection.Detail("", 0, nil); err == nil {
@@ -368,6 +371,9 @@ func (s *Server) TimelineRead(threadID, mode string) any {
 	}
 	projection := timeline.New(nil)
 	projection.Update(view)
+	if s.Queue != nil {
+		projection.SetMeta("submissions", s.queueMetaExcludingActivations(threadID))
+	}
 	switch mode {
 	case "detail":
 		result, err := projection.Detail("", 0, nil)
