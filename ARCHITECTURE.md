@@ -182,7 +182,7 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 `GET/POST /api/sessions/<sid>/permissions` 读取或切换 Agent 暴露的权限模式。当前仅 DeepSeek Harness 的 `mode` 配置明确作为权限预设；其他 ACP Agent 的 `mode` 可能是协作模式，不能误当权限设置。Codex 当前只保留桌面权限上下文并显示单次审批，未通过未经确认的 IPC 字段写入桌面权限策略。
 
-`POST /api/sessions/<sid>/queue`（body `{id, action, text?}`）管理排队消息：`send` 在当前任务空闲时立即发送，`edit` 修改待发送文本，`delete` 删除排队项。队列项在当前任务完成后自动发送；目标/计划激活消息不可编辑。排队始终可用，发送方式下拉是唯一入口。
+`POST /api/sessions/<sid>/queue`（body `{id, action, text?}`）管理排队消息：`send` 在当前任务运行中先停止该任务，再立即发送选中的排队消息（空闲时直接发送），`edit` 修改待发送文本，`delete` 删除排队项。队列项在当前任务完成后自动发送；目标/计划激活消息不可编辑。排队始终可用，发送方式下拉是唯一入口。
 
 子 Agent：Codex 本地与 SSH 会话从 `thread_spawn_edges` 读取 child thread；ACP Agent 从 `tool_call` 的嵌套输出读取子 Agent transcript。此外，把子 Agent 存为独立落盘会话的 Agent 由各自的原生存储补充发现（`bridge/agents/native_subagents.py`）：kimi 读会话目录 `state.json` 的 agents 表与每子 `wire.jsonl`（子 ID 带 `父会话/` 前缀去重）；zcode 经 `~/.zcode/v2/acp-lazy-sessions.json` 把 ACP 会话映射到后端 `sess_*` 后读 `~/.zcode/cli/agents/<sid>/agent_*/` 的 metadata 与 transcript；claude 按 `~/.claude/projects/<slug>/<父会话>/subagents/*.jsonl` 目录约定发现 sidechain。读取均为只读、带字节与条目上限、按 mtime 缓存，布局缺失时静默返回空。dsh 的子会话是 zstd 压缩事件流，网关所用的 stdlib-only Python 无 zstd 解压能力，保持不可发现。时间线保留子 Agent ID、类型、状态、停止原因和命令输出，并将其作为可展开 activity 展示。
 

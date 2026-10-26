@@ -888,9 +888,29 @@ func (h *handler) handleQueueRoute(threadID string, body *jsoncompat.Object) {
 	}
 }
 
-// queueSendNow mirrors send_queued_now: an idle, connected agent dispatches
-// immediately; anything else reports why.
+// interruptSubmissionTurn stops the active turn before a manual send-now.
+func (s *Server) interruptSubmissionTurn(threadID string, resolution acpResolution) error {
+	if resolution.manager != nil {
+		session := resolution.session
+		if session == nil {
+			session = resolution.manager.Get(threadID)
+		}
+		if session == nil {
+			return nil
+		}
+		return session.Cancel()
+	}
+	_, err := s.Codex.Interrupt(threadID)
+	return err
+}
+
+// queueSendNow stops any active turn, then dispatches the selected entry.
+// The queue lock keeps the cancellation's settle hook from dispatching another
+// entry between those two steps.
 func (h *handler) queueSendNow(threadID, submissionID string) {
+	h.server.queueMu.Lock()
+	defer h.server.queueMu.Unlock()
+
 	entry, err := h.server.Queue.editableEntry(threadID, submissionID)
 	if err != nil {
 		h.fail(http.StatusConflict, errorBody(err.Error()))
@@ -908,8 +928,10 @@ func (h *handler) queueSendNow(threadID, submissionID string) {
 		return
 	}
 	if h.server.threadActive(threadID, resolution) {
-		h.fail(http.StatusBadRequest, errorBody("当前任务仍在运行，请等待完成后再立即发送"))
-		return
+		if err := h.server.interruptSubmissionTurn(threadID, resolution); err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
+			return
+		}
 	}
 	h.server.Queue.setStatus(threadID, submissionID, SubUnknown)
 	h.server.Queue.mutate(threadID, submissionID, func(entry *submissionEntry) {
@@ -917,7 +939,6 @@ func (h *handler) queueSendNow(threadID, submissionID string) {
 		entry.Error = ""
 		entry.LastQueueError = ""
 	})
-	entry, _ = h.server.Queue.editableEntry(threadID, submissionID)
 	outcome, message := h.server.dispatchSubmission(threadID, resolution, entry)
 	switch outcome {
 	case outcomeAccepted:

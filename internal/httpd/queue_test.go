@@ -37,6 +37,9 @@ for line in sys.stdin:
   result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
  elif method == "session/list": result={"sessions":[]}
  elif method == "session/new": result={"sessionId":"km-queue","modes":{"currentModeId":"default","availableModes":[{"id":"default"}]},"configOptions":[]}
+ elif method == "session/cancel":
+  record("cancels.txt", "cancel")
+  continue
  elif method == "session/prompt":
   blocks=(m.get("params") or {}).get("prompt") or []
   text=next((b.get("text","") for b in blocks if isinstance(b,dict)),"")
@@ -293,6 +296,56 @@ func TestACPQueueDispatchOnSettle(t *testing.T) {
 	}
 	if entry := server.Queue.get("km-queue", "5aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"); entry == nil || entry.Status != SubIgnored {
 		t.Fatalf("ignore did not land: %+v", entry)
+	}
+}
+
+func TestACPQueueSendNowInterruptsActiveTurn(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := t.TempDir()
+	manager := acpruntime.NewCommand(queueAgent(t, agentDir))
+	defer manager.Close()
+
+	server, token, csrf := newFeatureServer(t, t.TempDir())
+	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
+	manager.AutoContinue = func(session *acpruntime.Session) {
+		server.QueueSettleACP("kimi", session)
+	}
+	request := func(method, target, body string) *httptest.ResponseRecorder {
+		return featureRequest(server, token, csrf, method, target, body)
+	}
+	create := request(http.MethodPost, "/api/sessions",
+		`{"agent":"kimi","cwd":"`+dir+`","title":"立即发送","id":"6aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`)
+	if create.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	if send := request(http.MethodPost, "/api/sessions/km-queue/send",
+		`{"text":"hold","mode":"send","id":"7aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`); send.Code != http.StatusOK {
+		t.Fatalf("send status=%d body=%s", send.Code, send.Body.String())
+	}
+	if queued := request(http.MethodPost, "/api/sessions/km-queue/send",
+		`{"text":"现在发送","mode":"queue","id":"8aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`); queued.Code != http.StatusOK {
+		t.Fatalf("queue status=%d body=%s", queued.Code, queued.Body.String())
+	}
+
+	sent := request(http.MethodPost, "/api/sessions/km-queue/queue",
+		`{"id":"8aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","action":"send"}`)
+	if sent.Code != http.StatusOK || !strings.Contains(sent.Body.String(), `"status": "accepted"`) {
+		t.Fatalf("send now status=%d body=%s", sent.Code, sent.Body.String())
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		prompts := recordedFile(agentDir, "prompts.txt")
+		cancels := recordedFile(agentDir, "cancels.txt")
+		if strings.Contains(prompts, "现在发送") && strings.Contains(cancels, "cancel") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("send now did not interrupt and dispatch; prompts=%s cancels=%s", prompts, cancels)
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+	if entry := server.Queue.get("km-queue", "8aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"); entry == nil || entry.Status != SubAccepted {
+		t.Fatalf("send now ledger entry=%+v", entry)
 	}
 }
 
