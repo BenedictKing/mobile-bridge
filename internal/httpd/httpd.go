@@ -113,6 +113,21 @@ type Server struct {
 	// {dataDir}/team-workspaces.json；main.go 构造后直赋，未装配（nil）时
 	// 端点报 409。
 	TeamWorkspaceRegistry *TeamWorkspaceRegistry
+	// TeamJournal 是 team-journal.jsonl 的只读出口（§12 阶段四：/stats 统计
+	// 必须走 journal.Replay 全量事件——内存投影每 Run 只留最近 500 条，长
+	// Run 的早期事件只在磁盘）。main.go 与 TeamStore 同源装配。
+	TeamJournal *team.Journal
+	// TeamSchedules 是 /api/teams/:id/schedule 配置端点的读写面（§12 阶段
+	// 四工作项 1 的 HTTP 配置面），与定时触发器（team.Scheduler）共用同一份
+	// {dataDir}/team-schedules.json；main.go 构造后直赋，未装配（nil）时
+	// 端点报 409。
+	TeamSchedules *team.ScheduleStore
+	// teamSchedulePuts* 是 schedule PUT 的 requestId 幂等重放登记（照 Team
+	// 创建先例：同 id 同内容 duplicate、异内容 400；schedule 的存储键是
+	// teamID 而非 requestId，故在内存另记指纹，FIFO 封顶防无界增长）。
+	teamSchedulePutsMu    sync.Mutex
+	teamSchedulePuts      map[string]teamSchedulePutRecord
+	teamSchedulePutsOrder []string
 	// TeamChangesWait 是 changes 端点长轮询的等待上限（sessions.go 的
 	// sessionRouteChanges 同款 12s）。仅测试用：生产保持零值走默认。
 	TeamChangesWait time.Duration
@@ -126,6 +141,12 @@ type Server struct {
 	subagentOnce    sync.Once
 	codexSubagents  *subagents.Flattener
 	discovery       *listDiscovery
+	// queueWorker / idleSweeper 是 Python maintain loop 的两半（3s 排队派发
+	// 与 30s 空闲会话清扫）的启停句柄（§12 阶段四：补停止通道，关停序列
+	// 可优雅退出）。main.go 在任何 ServeHTTP 之前 Start、HTTP 关停后 Stop，
+	// 与 discovery 同款无锁装配惯例。
+	queueWorker *maintainLoop
+	idleSweeper *maintainLoop
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {

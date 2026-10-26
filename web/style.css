@@ -201,4 +201,42 @@
 .team-badge.b-stopped{background:#eeeae1;color:#5f6761}
 .team-badge.b-cancelled{background:#eee9df;color:#755b35}
 .team-badge.b-waiting_input{background:#f4ebd7;color:#79632e}
+.team-badge.b-paused{background:#eeeae1;color:#876c35}
+/* 阶段四：stall 提示条 / 统计卡 / 阶段图 / 定时运行卡 / 预算编辑 */
+.team-stall-banner{display:flex;flex-wrap:wrap;align-items:center;gap:10px;border:1px solid #d7c595;background:#fbf7eb;border-radius:12px;padding:12px 16px;margin:0 0 14px;font-size:12px;color:#79632e}
+.team-stall-banner .muted{font-size:11px}
+.team-stats,.team-graph{border:1px solid var(--line);border-radius:12px;background:#fff;padding:12px 14px;margin:12px 0}
+.team-stats-head{display:flex;align-items:center;gap:8px}
+.team-stats-head h3,.team-graph h3{margin:0;font-size:13px;flex:1}
+.team-stats-head button{border:1px solid var(--line);background:#f0f3eb;border-radius:9px;padding:6px 12px;font-size:11px;color:#4f6656}
+.team-stats-tasks{display:grid;gap:5px;margin:10px 0 4px}
+.team-stat-row{display:flex;align-items:center;gap:8px;font-size:11px}
+.team-stat-label{flex:0 0 34%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#4f6656}
+.team-stat-bar{flex:1;height:6px;background:#edf0e8;border-radius:4px;overflow:hidden}
+.team-stat-bar i{display:block;height:100%;background:var(--green);border-radius:4px}
+.team-stat-value{flex:none;min-width:56px;text-align:right;color:var(--muted)}
+.team-graph-layer{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
+.team-graph-arrow{text-align:center;color:#9aa79d;font-size:12px;line-height:1.2;margin:2px 0}
+.team-graph-node{border:1px solid var(--line);border-radius:10px;background:#fff;padding:8px 11px;min-width:150px;max-width:240px;cursor:pointer;font-size:12px;text-align:left}
+.team-graph-node:hover{background:#f4f6f0}
+.team-graph-node:focus-visible{outline:2px solid #478767;outline-offset:2px}
+.team-graph-node-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.team-graph-node-head strong{font-size:12px;overflow-wrap:anywhere}
+.team-graph-runs{color:#79632e;background:#f4ebd7;border-radius:10px;padding:1px 7px;font-size:10px}
+.team-graph-kinds{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+.team-graph-kind{background:var(--soft);color:var(--green);border-radius:10px;padding:1px 7px;font-size:10px}
+.team-graph-deps{margin:4px 0 0;font-size:10px}
+.team-graph-node .task-instructions{font-size:10px;max-height:48px;overflow:hidden}
+.team-graph-members{margin-top:6px;border-top:1px dashed var(--line);padding-top:5px;display:grid;gap:3px}
+.team-graph-member{font-size:10px;color:var(--muted)}
+.team-schedule{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
+.team-schedule h4{margin:0 0 6px;font-size:12px}
+.team-schedule-summary{margin:0 0 6px;font-size:11px;overflow-wrap:anywhere}
+.team-policy-edit-wrap{margin-top:6px}
+.team-policy-edit{display:flex;gap:6px;align-items:center}
+.team-policy-edit input{width:120px;padding:8px 10px}
+.team-policy-edit button,.team-schedule .team-actions button{border:1px solid var(--line);background:#f0f3eb;border-radius:9px;padding:8px 13px;font-size:12px;color:#4f6656}
+.team-budget-note{font-size:11px;margin:6px 0 0}
+.team-schedule-enable{display:flex;align-items:center;gap:8px}
+.team-schedule-enable input{width:auto;margin:0}
 @media(max-width:720px){.team-run-head{padding:13px 17px;gap:8px}.team-run-info h1{font-size:15px}.team-run-body{padding:15px 20px}}

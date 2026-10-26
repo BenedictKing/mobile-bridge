@@ -568,20 +568,96 @@ func (s *Server) threadActive(threadID string, resolution acpResolution) bool {
 	return codexThreadActive(state)
 }
 
-// StartQueueWorker runs the maintain loop's dispatch pass: every 3s each
-// thread holding queued entries gets one dispatch attempt while its agent is
-// connected and idle.
-func (s *Server) StartQueueWorker() {
-	if s.Queue == nil {
+// maintainLoop 是后台维护循环的启停句柄（§12 阶段四：给裸 ticker goroutine
+// 补停止通道——stop chan + sync.Once 幂等关闭照 discovery.close 的先例，再加
+// done 通道让 close 同步等待在途一轮收尾）。body 在循环 goroutine 内同步
+// 执行；close 期间至多等完一轮在途 body。
+type maintainLoop struct {
+	stop     chan struct{}
+	once     sync.Once
+	done     chan struct{}
+	interval time.Duration
+	body     func()
+}
+
+// newMaintainLoop 启动一个每 interval 执行一次 body 的维护循环。
+func newMaintainLoop(interval time.Duration, body func()) *maintainLoop {
+	loop := &maintainLoop{
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+		interval: interval,
+		body:     body,
+	}
+	go loop.run()
+	return loop
+}
+
+func (l *maintainLoop) run() {
+	defer close(l.done)
+	ticker := time.NewTicker(l.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-l.stop:
+			return
+		case <-ticker.C:
+			l.body()
+		}
+	}
+}
+
+// close 停止循环并同步等待退出（幂等；nil 接收者无副作用——未启动的循环
+// 可安全停止）。
+func (l *maintainLoop) close() {
+	if l == nil {
 		return
 	}
-	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.safeDispatchQueuedPass()
+	l.once.Do(func() { close(l.stop) })
+	<-l.done
+}
+
+// StartQueueWorker runs the maintain loop's dispatch pass: every 3s each
+// thread holding queued entries gets one dispatch attempt while its agent is
+// connected and idle. StopQueueWorker 停止循环（幂等，同步等待在途派发轮
+// 收尾）；重复调用无副作用。
+func (s *Server) StartQueueWorker() {
+	if s.Queue == nil || s.queueWorker != nil {
+		return
+	}
+	s.queueWorker = newMaintainLoop(3*time.Second, s.safeDispatchQueuedPass)
+}
+
+// StopQueueWorker 停止排队派发循环（幂等；停止后可重新 Start）。
+func (s *Server) StopQueueWorker() {
+	if loop := s.queueWorker; loop != nil {
+		s.queueWorker = nil
+		loop.close()
+	}
+}
+
+// StartIdleSweeper 每 30s 清扫 5 分钟无人读的 ACP 会话（main.go 原内联
+// goroutine 的 Server 化：Idle ACP sessions hold one child process each——
+// 照 Python maintain loop 的 300s eviction once nobody is reading them）。
+// StopIdleSweeper 停止循环；重复调用无副作用。
+func (s *Server) StartIdleSweeper() {
+	if s.idleSweeper != nil {
+		return
+	}
+	s.idleSweeper = newMaintainLoop(30*time.Second, func() {
+		for _, manager := range s.ACPAgents {
+			if manager != nil {
+				manager.SweepIdle(5 * time.Minute)
+			}
 		}
-	}()
+	})
+}
+
+// StopIdleSweeper 停止空闲会话清扫循环（幂等；停止后可重新 Start）。
+func (s *Server) StopIdleSweeper() {
+	if loop := s.idleSweeper; loop != nil {
+		s.idleSweeper = nil
+		loop.close()
+	}
 }
 
 // safeDispatchQueuedPass keeps one bad dispatch from killing the gateway: a

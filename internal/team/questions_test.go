@@ -689,7 +689,7 @@ func TestExpireRunSkipsOpenQuestionTasks(t *testing.T) {
 	run.PendingQuestions = []PendingQuestion{openQuestionOf("dev1", "req-1", 1)}
 	state := h.saveQuestionRun(t, run)
 
-	if h.service.expireRun(state) {
+	if finished, _ := h.service.expireRun(state); finished {
 		t.Fatal("开放问题期间 expireRun 不得终局 run")
 	}
 	fresh := h.store.Run("run-q")
@@ -704,7 +704,7 @@ func TestExpireRunSkipsOpenQuestionTasks(t *testing.T) {
 	if _, _, err := h.service.AnswerQuestion("run-q", "dev1:req-1", 1, uuid.NewString(), optionResponse("opt-1")); err != nil {
 		t.Fatalf("回答失败: %v", err)
 	}
-	if !h.service.expireRun(state) {
+	if finished, _ := h.service.expireRun(state); !finished {
 		t.Fatal("答案落定后超时路径应终局 run")
 	}
 	fresh = h.store.Run("run-q")

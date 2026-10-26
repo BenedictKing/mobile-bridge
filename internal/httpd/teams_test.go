@@ -22,6 +22,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -229,6 +231,10 @@ func newTeamTestEnv(t *testing.T, queueStatus string, withAgent bool) *teamTestE
 	}
 	env.queue = newFakeTeamQueue(queueStatus)
 	server.TeamStore = store
+	// 阶段四端点装配（照 main.go：journal 供 /stats 全量重放，schedule 账本
+	// 供 GET/PUT /schedule 读写）。
+	server.TeamJournal = journal
+	server.TeamSchedules = team.LoadScheduleStore(filepath.Join(dataDir, "team-schedules.json"))
 	server.TeamFeeds = NewTeamFeedRegistry(journal, store)
 	// changes 端点已是长轮询（teams.go）：测试默认把等待上限压到毫秒级，
 	// 「游标最新」的用例不至于各挂 12s；长轮询行为本身由
@@ -2784,5 +2790,689 @@ func TestTeamsRunPendingActionsProjection(t *testing.T) {
 	plain := env.runDetail(t, teamID, env.createRun(t, teamID, `{"goal":"无动作","mode":"single"}`))
 	if _, exists := plain["pendingActions"]; exists {
 		t.Fatalf("无动作 Run 不应带 pendingActions: %s", responseText(t, plain))
+	}
+}
+
+// ---- 阶段四增量端点（§9/§11/§12 工作项 1/2/4/5/6）----
+
+// seedStage4Run 直落一支指定状态的 fixture Run（绕过 HTTP 创建链路的调度
+// 循环——纯投影/统计端点测试不依赖执行流）；收尾照 seedRunTeam 先取消。
+func (e *teamTestEnv) seedStage4Run(t *testing.T, teamID, runID string, mutate func(*team.Run)) *team.Run {
+	t.Helper()
+	run := &team.Run{ID: runID, TeamID: teamID, Goal: "阶段四 fixture", Mode: team.ModePipeline,
+		Status: team.RunCompleted, PlanHash: "ph-" + runID,
+		CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if mutate != nil {
+		mutate(run)
+	}
+	if err := e.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = e.server.Teams.Cancel(runID) })
+	return run
+}
+
+// TestTeamsScheduleConfigValidation PUT /schedule 的校验族（中文 400）：
+// 触发规格二选一、间隔生产下限（300s 硬护栏，无缩限钩子——集成测试用
+// fixture 预置绕开）、cron 解析错带实际表达式值、goal 上限、计划成员
+// 合法性（复用 Run 创建件）与验证命令白名单。
+func TestTeamsScheduleConfigValidation(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	put := func(body string) *httptest.ResponseRecorder {
+		return env.request(http.MethodPut, "/api/teams/"+teamID+"/schedule", body)
+	}
+	cases := []struct {
+		name    string
+		body    string
+		message string
+	}{
+		{"无触发规格", `{"goal":"目标"}`, "需指定间隔或 cron 之一"},
+		{"双触发规格", `{"goal":"目标","intervalSecs":600,"cron":"0 * * * *"}`, "二选一"},
+		{"间隔低于下限", `{"goal":"目标","intervalSecs":299}`, "定时间隔至少 300 秒"},
+		{"间隔非整数", `{"goal":"目标","intervalSecs":1.5}`, "定时间隔必须是整数"},
+		{"cron 缺字段", `{"goal":"目标","cron":"* * * *"}`, "5 个字段"},
+		{"cron 取值越界", `{"goal":"目标","cron":"61 * * * *"}`, "61 * * * *"},
+		{"goal 为空", `{"goal":"  ","intervalSecs":600}`, "运行目标"},
+		{"计划成员不存在", `{"goal":"目标","intervalSecs":600,"plan":[{"id":"a","memberId":"ghost","prompt":"x"}]}`, "ghost"},
+		{"验证命令未过白名单", `{"goal":"目标","intervalSecs":600,"verifyCommand":["rm -rf /"]}`, "验证命令"},
+		{"requestId 非 UUID", `{"requestId":"not-uuid","goal":"目标","intervalSecs":600}`, "保存请求标识无效"},
+		{"enabled 非布尔", `{"goal":"目标","intervalSecs":600,"enabled":"yes"}`, "布尔值"},
+	}
+	for _, testCase := range cases {
+		response := put(testCase.body)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s 应 400: %d %s", testCase.name, response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), testCase.message) {
+			t.Fatalf("%s 报错应含 %q: %s", testCase.name, testCase.message, response.Body.String())
+		}
+	}
+	// 团队不存在 404。
+	response := env.request(http.MethodPut, "/api/teams/team-not-exist-x/schedule", `{"goal":"x","intervalSecs":600}`)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("未知团队应 404: %d %s", response.Code, response.Body.String())
+	}
+	// 未装配账本（旧网关形态）409。
+	schedules := env.server.TeamSchedules
+	env.server.TeamSchedules = nil
+	if response = put(`{"goal":"x","intervalSecs":600}`); response.Code != http.StatusConflict {
+		t.Fatalf("未装配应 409: %d %s", response.Code, response.Body.String())
+	}
+	env.server.TeamSchedules = schedules
+}
+
+// TestTeamsSchedulePutGetAndIdempotency PUT/GET /schedule 的写入、簿记保留
+// 与 requestId 幂等：触发规格未变时 nextDue/lastRun/pendingTriggerID 原样
+// 保留（journal-first 触发协议的标记绝不被配置写清掉），规格变更清 nextDue
+// 让调度器按新规格重锚；同 requestId 同内容重放 duplicate:true 且不推版本、
+// 异内容 400；GET 无配置 404；响应含 pendingTriggerId（触发协议可观测）。
+func TestTeamsSchedulePutGetAndIdempotency(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	base := "/api/teams/" + teamID + "/schedule"
+	// GET 无配置：404（前端契约——未配置态）。
+	if response := env.request(http.MethodGet, base, ""); response.Code != http.StatusNotFound {
+		t.Fatalf("未配置 GET 应 404: %d %s", response.Code, response.Body.String())
+	}
+	// 首写：间隔模式。
+	body := `{"requestId":"11111111-1111-4111-8111-111111111111","goal":"每十分钟巡检","intervalSecs":600,"enabled":true}`
+	response := env.request(http.MethodPut, base, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("PUT 应 200: %d %s", response.Code, response.Body.String())
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved["goal"] != "每十分钟巡检" || saved["intervalSecs"].(float64) != 600 || saved["enabled"] != true {
+		t.Fatalf("保存响应异常: %s", response.Body.String())
+	}
+	version := saved["version"].(float64)
+	if _, exists := saved["cron"]; exists {
+		t.Fatalf("间隔模式不应带 cron: %s", response.Body.String())
+	}
+	// 回读一致。
+	response = env.request(http.MethodGet, base, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET 应 200: %d %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "每十分钟巡检") {
+		t.Fatalf("GET 应回读配置: %s", response.Body.String())
+	}
+	// 幂等重放：同 requestId 同内容 → duplicate:true、版本不推。
+	response = env.request(http.MethodPut, base, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("重放应 200: %d %s", response.Code, response.Body.String())
+	}
+	saved = map[string]any{}
+	json.Unmarshal(response.Body.Bytes(), &saved)
+	if saved["duplicate"] != true {
+		t.Fatalf("重放应 duplicate:true: %s", response.Body.String())
+	}
+	if saved["version"].(float64) != version {
+		t.Fatalf("重放不应推版本: %v → %v", version, saved["version"])
+	}
+	// 同 requestId 异内容：400。
+	response = env.request(http.MethodPut, base, `{"requestId":"11111111-1111-4111-8111-111111111111","goal":"改了目标","intervalSecs":600}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "不同内容") {
+		t.Fatalf("异内容重放应 400: %d %s", response.Code, response.Body.String())
+	}
+	// 簿记保留：fixture 预置 nextDue/lastRun/pendingTriggerID 后改 goal（规格
+	// 不变）——簿记原样带回且响应可观测 pendingTriggerId。
+	due := time.Now().Add(time.Hour).UTC()
+	seed := env.server.TeamSchedules.Schedule(teamID)
+	seed.NextDue = due
+	seed.LastRunID = "run-last-0001"
+	seed.LastRunAt = time.Now().UTC()
+	seed.PendingTriggerID = "trig-pending-0001"
+	if err := env.server.TeamSchedules.SaveSchedule(seed); err != nil {
+		t.Fatal(err)
+	}
+	response = env.request(http.MethodPut, base, `{"requestId":"22222222-2222-4222-8222-222222222222","goal":"目标升级","intervalSecs":600}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("改 goal PUT 应 200: %d %s", response.Code, response.Body.String())
+	}
+	saved = map[string]any{}
+	json.Unmarshal(response.Body.Bytes(), &saved)
+	if saved["pendingTriggerId"] != "trig-pending-0001" {
+		t.Fatalf("进行中触发标记应随响应可观测: %s", responseText(t, saved))
+	}
+	if saved["lastRunId"] != "run-last-0001" {
+		t.Fatalf("lastRunId 簿记应保留: %s", responseText(t, saved))
+	}
+	if next, _ := saved["nextDue"].(string); next == "" {
+		t.Fatalf("规格未变时 nextDue 应保留: %s", responseText(t, saved))
+	} else if parsed, parseErr := time.Parse(time.RFC3339Nano, next); parseErr != nil || !parsed.Equal(due) {
+		t.Fatalf("规格未变时 nextDue 应原样保留 %v: %s", due, next)
+	}
+	// 触发规格变更（间隔→cron）：nextDue 清零（调度器按新规格重锚），触发
+	// 标记仍在。
+	response = env.request(http.MethodPut, base, `{"requestId":"33333333-3333-4333-8333-333333333333","goal":"目标升级","cron":"15 3 * * *"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("切 cron PUT 应 200: %d %s", response.Code, response.Body.String())
+	}
+	saved = map[string]any{}
+	json.Unmarshal(response.Body.Bytes(), &saved)
+	if _, exists := saved["nextDue"]; exists {
+		t.Fatalf("规格变更应清 nextDue 待调度器重锚: %s", responseText(t, saved))
+	}
+	if saved["pendingTriggerId"] != "trig-pending-0001" {
+		t.Fatalf("触发标记不因配置写丢失: %s", responseText(t, saved))
+	}
+	// 账本落盘核对：换实例重读同一文件（fixture 绕开下限走的就是这条路径）。
+	reloaded := team.LoadScheduleStore(filepath.Join(env.dataDir, "team-schedules.json"))
+	if stored := reloaded.Schedule(teamID); stored == nil || stored.Cron != "15 3 * * *" || stored.PendingTriggerID != "trig-pending-0001" {
+		t.Fatalf("账本落盘与内存不一致: %+v", stored)
+	}
+}
+
+// TestTeamsPauseRunRoute pause 路由三态（§12 阶段四工作项 4）：进行中 Run
+// 200→RunDetail 带 paused 状态与 stopReason；重复暂停 409；paused 经同一
+// resume 端点续跑（零新路由）；取消后（终态）pause 409；run_paused 事件
+// 经 OnEvent→Ingest 进 changes 流。
+func TestTeamsPauseRunRoute(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	runID := env.createRun(t, teamID, `{"goal":"暂停巡检","mode":"single"}`)
+	env.waitForRunStatus(t, teamID, runID, "dispatching")
+	// 进行中暂停：200 + RunDetail。
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pause 应 200: %d %s", response.Code, response.Body.String())
+	}
+	var paused map[string]any
+	paused = map[string]any{}
+	json.Unmarshal(response.Body.Bytes(), &paused)
+	if paused["status"] != team.RunPaused {
+		t.Fatalf("pause 后状态应为 paused: %s", response.Body.String())
+	}
+	if reason, _ := paused["stopReason"].(string); !strings.Contains(reason, "暂停") {
+		t.Fatalf("stopReason 应说明用户暂停: %v", paused["stopReason"])
+	}
+	// 重复暂停：409。
+	if response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); response.Code != http.StatusConflict {
+		t.Fatalf("重复暂停应 409: %d %s", response.Code, response.Body.String())
+	}
+	// run_paused 事件进 changes（OnEvent→Ingest 无白名单）。
+	response = env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/changes?after=-1", "")
+	if !strings.Contains(response.Body.String(), team.EventRunPaused) {
+		t.Fatalf("changes 应含 run_paused: %s", response.Body.String())
+	}
+	// paused → 同一 resume 端点续跑（前端契约：同一端点、零新路由）。
+	if response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`); response.Code != http.StatusOK {
+		t.Fatalf("paused 续跑应 200: %d %s", response.Code, response.Body.String())
+	}
+	paused = map[string]any{}
+	json.Unmarshal(response.Body.Bytes(), &paused)
+	if paused["status"] != team.RunDispatching {
+		t.Fatalf("续跑后应回执行态: %s", response.Body.String())
+	}
+	// 终态 Run：取消后 pause 409。
+	env.waitForRunStatus(t, teamID, runID, "dispatching")
+	if response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/cancel", `{}`); response.Code != http.StatusOK {
+		t.Fatalf("取消失败: %d %s", response.Code, response.Body.String())
+	}
+	if response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); response.Code != http.StatusConflict {
+		t.Fatalf("终态 pause 应 409: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// TestTeamsRefreshRunRoute refresh 端点（§12 阶段四工作项 2 手动入口）：
+// waiting_input Run 的账本事实从 unknown 翻转为 failed 后刷新——reconciled:
+// true、任务事实单向纠正、run 状态绝不变更（recovery-refresh 铁律）；二次
+// 刷新 reconciled:false（幂等、版本不再前进）；终态 Run 刷新 200 no-op。
+func TestTeamsRefreshRunRoute(t *testing.T) {
+	env := newTeamTestEnv(t, "unknown", true)
+	teamID, _ := env.createTeam(t)
+	runID := env.createRun(t, teamID, `{"goal":"刷新对账","mode":"single"}`)
+	waiting := env.waitForRunStatus(t, teamID, runID, "waiting_input")
+	if task := teamTaskOf(t, waiting, "lead"); task["status"] != "outcome_unknown" {
+		t.Fatalf("任务应 outcome_unknown: %v", task["status"])
+	}
+	// 账本事实翻转：unknown → failed（探到确定事实才纠正）。
+	env.queue.mu.Lock()
+	for key, entry := range env.queue.entries {
+		entry.status = "failed"
+		env.queue.entries[key] = entry
+	}
+	env.queue.mu.Unlock()
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/refresh", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("refresh 应 200: %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Run        map[string]any `json:"run"`
+		Reconciled bool           `json:"reconciled"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Reconciled {
+		t.Fatalf("探到确定事实的刷新应 reconciled:true: %s", response.Body.String())
+	}
+	if result.Run["status"] != "waiting_input" {
+		t.Fatalf("刷新绝不改 run 状态: %s", response.Body.String())
+	}
+	if task := teamTaskOf(t, result.Run, "lead"); task["status"] != "failed" {
+		t.Fatalf("unknown 应单向纠正为 failed: %s", response.Body.String())
+	}
+	// 二次刷新：无新事实，reconciled:false、版本不推。
+	before := env.runDetail(t, teamID, runID)["version"].(float64)
+	response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/refresh", `{}`)
+	json.Unmarshal(response.Body.Bytes(), &result)
+	if result.Reconciled {
+		t.Fatalf("无新事实的刷新应 reconciled:false: %s", response.Body.String())
+	}
+	if after := env.runDetail(t, teamID, runID)["version"].(float64); after != before {
+		t.Fatalf("幂等刷新不应推版本: %v → %v", before, after)
+	}
+	// 终态 Run：no-op 200。
+	env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/cancel", `{}`)
+	env.waitForRunStatus(t, teamID, runID, "cancelled")
+	response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/refresh", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("终态 refresh 应 200: %d %s", response.Code, response.Body.String())
+	}
+	json.Unmarshal(response.Body.Bytes(), &result)
+	if result.Reconciled || result.Run["status"] != "cancelled" {
+		t.Fatalf("终态刷新应 no-op: %s", response.Body.String())
+	}
+	// 重发铁律：全程只有首派那一次入账。
+	if count := env.queue.enqueueCount(); count != 1 {
+		t.Fatalf("刷新绝不重发任务：enqueue 次数=%d", count)
+	}
+}
+
+// TestTeamsRunStatsEndpoint /stats 形状（§12 阶段四工作项 5）：运行中 Run
+// 直出 ComputeRunStats（coverage full、tasks 数组、budget 快照、tokens 恒
+// null）；旧 journal（事件无时间戳）的 fixture Run coverage=none 且 tasks
+// 为空数组（无派发事实）——绝不 null、绝不编数字。
+func TestTeamsRunStatsEndpoint(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	runID := env.createRun(t, teamID, `{"goal":"统计巡检","mode":"single"}`)
+	// 等 task_dispatching 落账（run 级状态在创建即可达 dispatching，先于循环
+	// 首拍——按任务状态轮询，不用固定 sleep，§13.1）。
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if task := teamTaskOf(t, env.runDetail(t, teamID, runID), "lead"); task["status"] == "dispatching" {
+			break
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/stats", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("stats 应 200: %d %s", response.Code, response.Body.String())
+	}
+	var stats struct {
+		RunElapsedMs  float64 `json:"runElapsedMs"`
+		DispatchCount float64 `json:"dispatchCount"`
+		Tokens        any     `json:"tokens"`
+		Tasks         []any   `json:"tasks"`
+		Coverage      string  `json:"coverage"`
+		Budget        struct {
+			Units     float64 `json:"units"`
+			Used      float64 `json:"used"`
+			Ceiling   float64 `json:"ceiling"`
+			Exhausted bool    `json:"exhausted"`
+		} `json:"budget"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Coverage != team.StatsCoverageFull {
+		t.Fatalf("运行期事件已盖章，coverage 应 full: %s", response.Body.String())
+	}
+	if stats.RunElapsedMs < 0 || stats.DispatchCount < 1 || len(stats.Tasks) < 1 {
+		t.Fatalf("统计形状异常: %s", response.Body.String())
+	}
+	if stats.Tokens != nil {
+		t.Fatalf("tokens 恒 null（按任务归因暂不支持）: %s", response.Body.String())
+	}
+	if stats.Budget.Units != 0 || stats.Budget.Used < 1 || stats.Budget.Exhausted {
+		t.Fatalf("默认策略只统计不暂停: %s", response.Body.String())
+	}
+	// 旧 journal fixture：run_created 事件零时间戳、无派发事实——coverage
+	// none + tasks 空数组（非 null）。
+	fixtureID := "run-stats-legacy1"
+	env.seedStage4Run(t, teamID, fixtureID, nil)
+	env.emitTeamEvent(t, &team.Event{ID: "ev-legacy", RunID: fixtureID, Type: team.EventRunCreated,
+		Source: "user", Payload: map[string]any{"goal": "旧 Run"}})
+	response = env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+fixtureID+"/stats", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("历史 Run stats 应 200: %d %s", response.Code, response.Body.String())
+	}
+	var legacy struct {
+		Tasks    []any  `json:"tasks"`
+		Coverage string `json:"coverage"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Coverage != team.StatsCoverageNone {
+		t.Fatalf("零时间戳 journal 应明示无数据: %s", response.Body.String())
+	}
+	if legacy.Tasks == nil || len(legacy.Tasks) != 0 {
+		t.Fatalf("无派发事实的 tasks 应为空数组（非 null）: %s", response.Body.String())
+	}
+	// 404：未知 Run。
+	if response = env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/run-not-exist1/stats", ""); response.Code != http.StatusNotFound {
+		t.Fatalf("未知 Run stats 应 404: %d", response.Code)
+	}
+}
+
+// TestTeamsRunGraphEndpoint /graph 端到端（§11.3）：fixture Run（broadcast
+// 组 + autoPlan 派生链 + 依赖）经 HTTP 输出 nodes/layers，节点字段按
+// apiContract（id/label/status/memberIds/agentKinds/dependsOn/runCount/
+// resultHead/truncated——agentKinds 必带，web 成员徽标依赖）。
+func TestTeamsRunGraphEndpoint(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", false)
+	teamID := env.seedRunTeam(t)
+	// 成员表补两成员供 agentKinds 解析（seedRunTeam 只有 lead）。
+	teamRow := env.store.Team(teamID)
+	teamRow.Members = append(teamRow.Members,
+		team.TeamMember{ID: "dev", SessionID: "sess-team-2", AgentKind: "zcode", Role: team.RoleMember, Enabled: true},
+		team.TeamMember{ID: "rev", SessionID: "sess-team-3", AgentKind: "claude", Role: team.RoleReviewer, Enabled: true})
+	if err := env.store.SaveTeam(teamRow); err != nil {
+		t.Fatal(err)
+	}
+	runID := "run-graph-fixture1"
+	env.seedStage4Run(t, teamID, runID, func(run *team.Run) {
+		run.Mode = team.ModeBroadcast
+		run.Tasks = []team.Task{
+			{ID: "lead", MemberID: "lead", Status: team.TaskCompleted, Result: "第一轮规划"},
+			{ID: "lead-d1-0", MemberID: "dev", Status: team.TaskCompleted, DependsOn: []string{"lead"}, Result: "委派完成"},
+			{ID: "lead-s2-0", MemberID: "rev", Status: team.TaskRunning, DependsOn: []string{"lead-d1-0"}},
+			{ID: "scan-lead", MemberID: "lead", Status: team.TaskCompleted, BroadcastGroup: "scan", DependsOn: []string{"lead-d1-0"}},
+			{ID: "scan-dev", MemberID: "dev", Status: team.TaskFailed, BroadcastGroup: "scan", DependsOn: []string{"lead-d1-0"}},
+		}
+	})
+	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/graph", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("graph 应 200: %d %s", response.Code, response.Body.String())
+	}
+	var graph struct {
+		Nodes []struct {
+			ID         string   `json:"id"`
+			Label      string   `json:"label"`
+			Status     string   `json:"status"`
+			MemberIDs  []string `json:"memberIds"`
+			AgentKinds []string `json:"agentKinds"`
+			DependsOn  []string `json:"dependsOn"`
+			RunCount   float64  `json:"runCount"`
+			ResultHead string   `json:"resultHead"`
+			Truncated  bool     `json:"truncated"`
+		} `json:"nodes"`
+		Layers [][]string `json:"layers"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
+		t.Fatal(err)
+	}
+	nodeOf := func(id string) (struct {
+		ID         string   `json:"id"`
+		Label      string   `json:"label"`
+		Status     string   `json:"status"`
+		MemberIDs  []string `json:"memberIds"`
+		AgentKinds []string `json:"agentKinds"`
+		DependsOn  []string `json:"dependsOn"`
+		RunCount   float64  `json:"runCount"`
+		ResultHead string   `json:"resultHead"`
+		Truncated  bool     `json:"truncated"`
+	}, bool) {
+		for _, node := range graph.Nodes {
+			if node.ID == id {
+				return node, true
+			}
+		}
+		return graph.Nodes[0], false
+	}
+	if len(graph.Nodes) != 2 {
+		t.Fatalf("应聚合成两节点（派生链归并根任务、broadcast 组聚合单节点）: %s", response.Body.String())
+	}
+	chain, ok := nodeOf("lead")
+	if !ok || chain.RunCount != 3 || chain.Status != team.TaskRunning {
+		t.Fatalf("派生链应聚合 runCount=3 且状态取最新: %s", response.Body.String())
+	}
+	if len(chain.MemberIDs) != 3 || len(chain.AgentKinds) != 3 || chain.AgentKinds[0] != "kimi" {
+		t.Fatalf("链节点成员/类型应跨实例聚合: %s", responseText(t, chain))
+	}
+	if chain.ResultHead != "委派完成" {
+		t.Fatalf("链结果取最近一次带结果的执行: %s", responseText(t, chain))
+	}
+	group, ok := nodeOf("scan")
+	if !ok || len(group.MemberIDs) != 2 || group.RunCount != 1 || group.Status != team.TaskFailed {
+		t.Fatalf("broadcast 组应聚合单节点: %s", response.Body.String())
+	}
+	if len(group.DependsOn) != 1 || group.DependsOn[0] != "lead" {
+		t.Fatalf("组依赖应映射到派生链根节点: %s", responseText(t, group))
+	}
+	if len(graph.Layers) < 2 || graph.Layers[0][0] != "lead" {
+		t.Fatalf("Kahn 分层应 lead 在首层: %+v", graph.Layers)
+	}
+	// 404：未知 Run / 越权团队。
+	if response = env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/run-not-exist1/graph", ""); response.Code != http.StatusNotFound {
+		t.Fatalf("未知 Run graph 应 404: %d", response.Code)
+	}
+}
+
+// TestTeamsRunDetailInstructionsHead 契约确认（§12 阶段四工作项 6）：
+// tasks[].instructionsHead 已随 RunDetail 全字段直出下发（teamRunDetail 剔除
+// resultDetail/sentText 之外的账本字段原样保留），240 rune 截断由
+// team.InstructionsHead 在创建期落账——本测试钉住契约防回归，非新增投影。
+func TestTeamsRunDetailInstructionsHead(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	longPrompt := strings.Repeat("析", 300) + "尾部"
+	runID := env.createRun(t, teamID, `{"goal":"摘要契约","mode":"pipeline","plan":[`+
+		`{"id":"design","memberId":"lead","prompt":"`+longPrompt+`"}]}`)
+	detail := env.runDetail(t, teamID, runID)
+	task := teamTaskOf(t, detail, "design")
+	head, _ := task["instructionsHead"].(string)
+	if got := len([]rune(head)); got != 240 {
+		t.Fatalf("instructionsHead 应截 240 rune: %d", got)
+	}
+	if !strings.HasPrefix(longPrompt, head) {
+		t.Fatalf("instructionsHead 应是 Prompt 前缀: %s", head)
+	}
+	// 派发全文不外发（遗留④口径不变）。
+	if _, exists := task["sentText"]; exists {
+		t.Fatalf("sentText 不应进 detail: %s", responseText(t, task))
+	}
+}
+
+// TestTeamsRunDetailStage4Fields RunDetail 的阶段四新字段（scheduledFrom/
+// budgetCeiling/paused 状态值域）经 Run 全字段 MarshalJSON 自动带出——
+// 投影零手写、测试断言防回归。
+func TestTeamsRunDetailStage4Fields(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", false)
+	teamID := env.seedRunTeam(t)
+	runID := "run-detail-stage41"
+	env.seedStage4Run(t, teamID, runID, func(run *team.Run) {
+		run.Status = team.RunPaused
+		run.StopReason = "用户暂停运行"
+		run.ScheduledFrom = "trig-stage4-0001"
+		run.BudgetCeiling = 7
+	})
+	detail := env.runDetail(t, teamID, runID)
+	if detail["status"] != team.RunPaused {
+		t.Fatalf("paused 状态值域应直出: %s", responseText(t, detail))
+	}
+	if detail["scheduledFrom"] != "trig-stage4-0001" {
+		t.Fatalf("scheduledFrom 应直出: %s", responseText(t, detail))
+	}
+	if detail["budgetCeiling"].(float64) != 7 {
+		t.Fatalf("budgetCeiling 应直出: %s", responseText(t, detail))
+	}
+	// 普通用户 Run：scheduledFrom/budgetCeiling 零值不外发（omitempty）。
+	plainID := env.createRun(t, teamID, `{"goal":"普通 Run","mode":"single"}`)
+	plain := env.runDetail(t, teamID, plainID)
+	if _, exists := plain["scheduledFrom"]; exists {
+		t.Fatalf("非定时 Run 不应带 scheduledFrom: %s", responseText(t, plain))
+	}
+	if _, exists := plain["budgetCeiling"]; exists {
+		t.Fatalf("未追加预算的 Run 不应带 budgetCeiling: %s", responseText(t, plain))
+	}
+}
+
+// TestTeamsRunMetaStage4NoNewKeys meta 键集回归（§12 阶段四：stats/graph/
+// schedule 不进 meta；阶段四只扩 status 值域，不新增键——meta 逐键变更触发
+// 前端整页重渲染契约）。对照 phase2/3 键集逐键断言相等。
+func TestTeamsRunMetaStage4NoNewKeys(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", false)
+	teamID := env.seedRunTeam(t)
+	runID := env.createRun(t, teamID, `{"goal":"meta 键集","mode":"single"}`)
+	metaKeys := func(run map[string]any) []string {
+		response := env.request(http.MethodGet,
+			"/api/teams/"+teamID+"/runs/"+runID+"/changes?after=-1", "")
+		var page struct {
+			Meta map[string]any `json:"meta"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil || page.Meta == nil {
+			t.Fatalf("changes meta 异常: %s (%v)", response.Body.String(), err)
+		}
+		keys := make([]string, 0, len(page.Meta))
+		for key := range page.Meta {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+	// 进行中 Run：phase2/3 键集（mode 直出 single；无 verifyCommand 无 verify）。
+	want := []string{"collectPolicy", "mode", "pendingQuestions", "runId", "status", "stopReason", "taskCounts", "teamId", "workspace"}
+	env.waitForRunStatus(t, teamID, runID, "dispatching")
+	if got := metaKeys(nil); !reflect.DeepEqual(got, want) {
+		t.Fatalf("meta 键集漂移: got %v want %v", got, want)
+	}
+	// paused Run：仍是同一键集（paused 只是 status 的值域扩展）。
+	if _, err := env.server.Teams.Pause(runID); err != nil {
+		t.Fatal(err)
+	}
+	if got := metaKeys(nil); !reflect.DeepEqual(got, want) {
+		t.Fatalf("paused Run 的 meta 键集漂移: got %v want %v", got, want)
+	}
+}
+
+// TestTeamsStage4EventStreamChanges 阶段四新事件（run_paused/run_stalled/
+// run_budget_resumed）经 OnEvent→TeamFeedRegistry.Ingest 自动入流（无白
+// 名单），照七类新事件先例断言 changes 增量可见且 payload 有界。
+func TestTeamsStage4EventStreamChanges(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", false)
+	teamID := env.seedRunTeam(t)
+	runID := env.createRun(t, teamID, `{"goal":"新事件","mode":"single"}`)
+	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/changes?after=-1", "")
+	var anchor struct {
+		Epoch    string `json:"epoch"`
+		Sequence uint64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &anchor); err != nil || anchor.Epoch == "" {
+		t.Fatalf("changes 锚页异常: %s (%v)", response.Body.String(), err)
+	}
+	for _, event := range []*team.Event{
+		{ID: "ev-p4a", RunID: runID, Type: team.EventRunPaused, Source: "user", Payload: map[string]any{
+			"reason": "用户暂停运行", "sequence": jsoncompat.Num(42)}},
+		{ID: "ev-p4b", RunID: runID, Type: team.EventRunStalled, Source: "runner", Payload: map[string]any{
+			"sinceMs": jsoncompat.Num(1200000), "lastTaskId": "lead"}},
+		{ID: "ev-p4c", RunID: runID, Type: team.EventRunBudgetResumed, Source: "user", Payload: map[string]any{
+			"ceiling": jsoncompat.Num(12), "units": jsoncompat.Num(5), "used": jsoncompat.Num(7)}},
+	} {
+		env.emitTeamEvent(t, event)
+	}
+	response = env.request(http.MethodGet,
+		"/api/teams/"+teamID+"/runs/"+runID+"/changes?after="+
+			url.QueryEscape(strconv.FormatUint(anchor.Sequence, 10))+"&epoch="+url.QueryEscape(anchor.Epoch), "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("changes 应 200: %d %s", response.Code, response.Body.String())
+	}
+	var page struct {
+		Rows []struct {
+			Type    string         `json:"type"`
+			Payload map[string]any `json:"payload"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := []string{team.EventRunPaused, team.EventRunStalled, team.EventRunBudgetResumed}
+	if len(page.Rows) != len(wantTypes) {
+		t.Fatalf("增量页应携带全部三类新事件: %s", response.Body.String())
+	}
+	for i, want := range wantTypes {
+		if page.Rows[i].Type != want {
+			t.Fatalf("第 %d 行应是 %s，实际 %s", i, want, page.Rows[i].Type)
+		}
+		if len(page.Rows[i].Payload) == 0 {
+			t.Fatalf("%s 行应带 payload: %s", want, response.Body.String())
+		}
+		if encoded := responseText(t, page.Rows[i]); len(encoded) > 8192 {
+			t.Fatalf("%s 行超出有界上限: %d bytes", want, len(encoded))
+		}
+	}
+}
+
+// TestTeamsStage4EventStreamSSE 阶段四新事件经 SSE 下发：订阅期间落一条
+// run_stalled → changes 帧携带（Ingest→Notify→帧）。
+func TestTeamsStage4EventStreamSSE(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	api := httptest.NewServer(env.server)
+	hostPort := api.URL[len("http://"):]
+	env.server.Hosts[hostPort] = true
+	env.server.Origins["http://"+hostPort] = true
+	env.server.LocalHosts[hostPort] = true
+	defer api.Close()
+
+	teamID, _ := env.createTeam(t)
+	runID := env.createRun(t, teamID, `{"goal":"SSE 阶段四","mode":"single"}`)
+	events := authorizedSSEGet(t, env, api.URL, hostPort,
+		"/api/teams/"+teamID+"/runs/"+runID+"/events?incremental=1")
+	defer events.Body.Close()
+	frames := make(chan string, 16)
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		reader := bufio.NewReader(events.Body)
+		event, data := "", ""
+		for {
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil {
+				return
+			}
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				event = strings.TrimSuffix(strings.TrimPrefix(line, "event: "), "\n")
+			case strings.HasPrefix(line, "data: "):
+				data = strings.TrimSuffix(strings.TrimPrefix(line, "data: "), "\n")
+			case line == "\n":
+				if event != "" {
+					frames <- event + "\n" + data
+				}
+				event, data = "", ""
+			}
+		}
+	}()
+	select {
+	case frame := <-frames:
+		if !strings.HasPrefix(frame, "ready\n") {
+			t.Fatalf("首帧应 ready: %q", frame)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("SSE 未在时限内发出 ready 帧")
+	}
+	env.emitTeamEvent(t, &team.Event{
+		ID: "ev-sse4", RunID: runID, Type: team.EventRunStalled, Source: "runner",
+		Payload: map[string]any{"sinceMs": jsoncompat.Num(1200000), "lastTaskId": "lead"},
+	})
+	deadline := time.After(8 * time.Second)
+	for {
+		select {
+		case frame := <-frames:
+			if strings.HasPrefix(frame, "changes\n") && strings.Contains(frame, team.EventRunStalled) {
+				events.Body.Close()
+				<-readerDone
+				return
+			}
+		case <-deadline:
+			t.Fatal("SSE 未在时限内发出携带 run_stalled 的 changes 帧")
+		}
 	}
 }

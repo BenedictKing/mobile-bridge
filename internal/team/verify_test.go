@@ -172,7 +172,7 @@ func TestVerifyGateFixedArgvNoShell(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	argvFile := os.Getenv("VERIFY_ARGV_FILE")
 	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "",
-		[]string{"make", "check", "pkg with space"}, nil, false)
+		[]string{"make", "check", "pkg with space"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestVerifyGateFixedArgvNoShell(t *testing.T) {
 // （completed），VerifyResult 随快照持久化，run_verify 事件带 exitCode 0。
 func TestVerifyGateExitZeroCompletesRun(t *testing.T) {
 	h, _ := newVerifyHarness(t)
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestVerifyGateExitZeroCompletesRun(t *testing.T) {
 func TestVerifyGateNonZeroPausesWaitingInput(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	t.Setenv("VERIFY_EXIT", "7")
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestVerifyGateNonZeroPausesWaitingInput(t *testing.T) {
 func TestVerifyGateResumeRerunsAndPasses(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	t.Setenv("VERIFY_EXIT", "7")
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestVerifyGateTimeoutFailsClosed(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	h.service.verifyTimeout = 200 * time.Millisecond
 	t.Setenv("VERIFY_HOLD_SECS", "3")
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestVerifyGateCwdUnresolved(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	h.resolver.setCwd("s-lead", "") // 模拟会话已不可解析
 	plan := []PlanTaskInput{{ID: "lead", MemberID: "lead", Prompt: "产出实现", WriteLock: TaskWriteLockNone}}
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, plan, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, plan, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestVerifyGateOutputHeadTruncated(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	t.Setenv("VERIFY_STDOUT_BYTES", "5000")
 	t.Setenv("VERIFY_STDERR_BYTES", "9000")
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -388,7 +388,7 @@ func TestVerifyGateRunReducingNoDoubleLaunch(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	argvFile := os.Getenv("VERIFY_ARGV_FILE")
 	t.Setenv("VERIFY_HOLD_SECS", "2")
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestVerifyGateRunReducingNoDoubleLaunch(t *testing.T) {
 func TestVerifyGateCancelDuringGateDiscardsResult(t *testing.T) {
 	h, _ := newVerifyHarness(t)
 	t.Setenv("VERIFY_HOLD_SECS", "2")
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestVerifyGateCancelDuringGateDiscardsResult(t *testing.T) {
 // 任务失败直接 fold failed，不跑闸门（失败 run 无成功声明可验证）。
 func TestVerifyGateNotRunWhenTaskFailed(t *testing.T) {
 	h, _ := newVerifyHarness(t)
-	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false)
+	run, err := h.service.CreateRun(h.team, "", "产出实现", ModeSingle, "", []string{"make", "check"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestVerifyFieldsSurviveStoreRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewService(reloaded, journal, newFakeQueue(), newFakeResolver())
-	created, err := service.CreateRun(teamRow, "", "目标二", ModeSingle, "", []string{"pytest", "-q"}, nil, false)
+	created, err := service.CreateRun(teamRow, "", "目标二", ModeSingle, "", []string{"pytest", "-q"}, nil, false, "")
 	if err != nil {
 		t.Fatalf("创建带闸门的 run 失败: %v", err)
 	}

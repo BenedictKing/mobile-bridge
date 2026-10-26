@@ -9,6 +9,12 @@
    卡（POST runUrl(decision)，questionId+version）、修订 Run 入口（amend 复用
    同一 runDialog 三段流，从 detail 预填）、任务缓存命中标记；顺路修阶段二
    遗留：verify 徽标改读顶层 verifyCommand、工作区注册表/任务清理入口。
+   阶段四增量：阶段图（GET runUrl(graph) Kahn 分层，点击节点定位任务卡，
+   404/空回退平铺列表）、统计卡（GET runUrl(stats)，coverage=none 明示无耗时
+   记录、Token 固定文案）、paused 徽标与暂停/继续（同一 resume 端点）、
+   run_stalled 顶部提示条、预算停靠（stopReason=budget_exhausted）继续即上调
+   上限；TeamsPanel 增预算策略编辑（PATCH policy.budgetUnits）与「定时运行」
+   卡（GET/PUT /schedule，模板编辑复用 runDialog 三段流，PUT 400 直出）。
    依赖 app.js 的全局 csrf / showLogin（team.js 先于 app.js 加载，仅运行时引用）。 */
 
 const TEAM_ROLE_LABELS={lead:'负责人',member:'成员',reviewer:'评审'};
@@ -38,7 +44,7 @@ function teamUUID(){
   if(typeof crypto!=='undefined'&&typeof crypto.randomUUID==='function')return crypto.randomUUID();
   return Date.now().toString(16)+'-'+Math.random().toString(16).slice(2)+'-'+Math.random().toString(16).slice(2,10);
 }
-const TEAM_RUN_STATUS_LABELS={created:'已创建',dispatching:'派发中',collecting:'收集中',reducing:'汇总中',completed:'已完成',waiting_input:'等待确认',failed:'已失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'结果未知'};
+const TEAM_RUN_STATUS_LABELS={created:'已创建',dispatching:'派发中',collecting:'收集中',reducing:'汇总中',completed:'已完成',waiting_input:'等待确认',paused:'已暂停',failed:'已失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'结果未知'};
 const TEAM_TASK_STATUS_LABELS={planned:'已规划',ready:'就绪',dispatching:'派发中',running:'运行中',completed:'已完成',failed:'已失败',cancelled:'已取消',outcome_unknown:'结果未知',stopped:'已停止'};
 const TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 /* 事件类型 → 任务状态（服务端事件行不携带 status 字段，状态由 type 推导；
@@ -63,6 +69,15 @@ function teamTimeText(value){
   if(!value)return '';
   const date=new Date(value);
   return isNaN(date.getTime())?String(value):date.toLocaleString(BridgeI18n.locale());
+}
+/* 毫秒 → 短时长文案（统计卡与 stall 提示用）：<1min 以 0.1s 粒度、<1h 分秒、
+   以上时分；后缀字母两种语言通用（照「第 N 轮」的拼接先例，不整句翻写）。 */
+function teamDurationText(ms){
+  if(typeof ms!=='number'||!isFinite(ms)||ms<0)return '';
+  if(ms<60000)return (Math.round(ms/100)/10).toLocaleString(BridgeI18n.locale(),{maximumFractionDigits:1})+'s';
+  const minutes=Math.floor(ms/60000);
+  if(minutes<60)return minutes+'m '+Math.floor((ms%60000)/1000)+'s';
+  return Math.floor(minutes/60)+'h '+(minutes%60)+'m';
 }
 function t_safe(text){return typeof BridgeI18n!=='undefined'&&BridgeI18n.t?BridgeI18n.t(text):text;}
 /* 与 app.js 的 api() 同语义，但支持 PATCH/DELETE（Team 契约使用真实 HTTP 方法）：
@@ -164,11 +179,52 @@ class TeamRunDialogHost{
     const t=BridgeI18n.t;
     dialog.querySelector('h2').textContent=state.phase==='preview'
       ?t('确认 Run 计划')
-      :(state.amend?t('创建修订 Run'):t('新建 Run'))+' · '+state.team.name;
+      :(state.schedule?t('定时运行配置'):(state.amend?t('创建修订 Run'):t('新建 Run')))+' · '+state.team.name;
     const body=dialog.querySelector('.picker-body');
     body.replaceChildren();
     const form=document.createElement('form');
     if(state.phase==='edit'){
+      // 定时运行触发字段（schedule 模式独有，插在 goal 之前）：间隔与 cron
+      // 二选一由触发方式下拉控制——契约要求 PUT 时恰一非空（都空/都非空 400），
+      // 客户端用单输入规避「都非空」，间隔下限 300 先行本地校验。
+      if(state.schedule){
+        const enableLabel=this.node('label',undefined,'team-schedule-enable');
+        const enableBox=document.createElement('input');
+        enableBox.type='checkbox';
+        enableBox.checked=state.schedule.enabled;
+        enableBox.onchange=()=>{state.schedule.enabled=enableBox.checked;};
+        enableLabel.append(enableBox);
+        enableLabel.append(this.node('span',t('启用定时运行')));
+        form.append(enableLabel);
+        const kindLabel=this.node('label');
+        kindLabel.append(this.node('span',t('触发方式')));
+        const kind=document.createElement('select');
+        kind.append(new Option(t('固定间隔（秒）'),'interval'));
+        kind.append(new Option(t('cron 表达式（分 时 日 月 周）'),'cron'));
+        kind.value=state.schedule.kind;
+        kind.onchange=()=>{state.schedule.kind=kind.value;this.render();};
+        kindLabel.append(kind);
+        form.append(kindLabel);
+        if(state.schedule.kind==='interval'){
+          const intervalLabel=this.node('label');
+          intervalLabel.append(this.node('span',t('间隔秒数（下限 300）')));
+          const interval=document.createElement('input');
+          interval.type='number';interval.min='300';interval.step='1';
+          interval.value=state.schedule.interval;
+          interval.oninput=()=>{state.schedule.interval=interval.value;};
+          intervalLabel.append(interval);
+          form.append(intervalLabel);
+        }else{
+          const cronLabel=this.node('label');
+          cronLabel.append(this.node('span',t('cron 表达式')));
+          const cron=document.createElement('input');
+          cron.value=state.schedule.cron;cron.maxLength=64;
+          cron.placeholder='*/30 9-18 * * 1-5';
+          cron.oninput=()=>{state.schedule.cron=cron.value;};
+          cronLabel.append(cron);
+          form.append(cronLabel);
+        }
+      }
       const goalLabel=this.node('label');
       goalLabel.append(this.node('span',t('目标')));
       const goal=document.createElement('textarea');
@@ -197,9 +253,9 @@ class TeamRunDialogHost{
         collectLabel.append(collect);
         form.append(collectLabel);
       }
-      if(state.amend){
-        // 修订模式独有：验证命令随 Run 声明（§6.4.1），从父 Run 的
-        // verifyCommand 预填；创建流程不带此字段，保持 POST /runs 请求不变。
+      if(state.amend||state.schedule){
+        // 修订/定时模式独有：验证命令随 Run 声明（§6.4.1），修订从父 Run 的
+        // verifyCommand 预填、定时从快照预填；创建流程不带此字段。
         const verifyLabel=this.node('label');
         verifyLabel.append(this.node('span',t('验证命令（可选，空格分隔，如 make check）')));
         const verify=document.createElement('input');
@@ -310,6 +366,14 @@ class TeamRunDialogHost{
         const member=(state.team.members||[]).find(m=>m.id===memberId);
         return member?(member.name||member.id):memberId;
       };
+      if(state.schedule){
+        const trigger=state.schedule.kind==='interval'
+          ?t('每 ')+parseInt(state.schedule.interval,10)+t(' 秒')
+          :t('cron：')+state.schedule.cron.trim();
+        const item=this.node('li');
+        item.append(this.node('strong',(state.schedule.enabled?t('启用中'):t('已停用'))+' · '+trigger));
+        preview.append(item);
+      }
       if(state.mode==='single'){
         const lead=(state.team.members||[]).find(m=>m.id===state.team.leadId)||((state.team.members||[])[0]||null);
         const item=this.node('li');
@@ -351,7 +415,9 @@ class TeamRunDialogHost{
         }
       }
       form.append(preview);
-      form.append(this.node('p',state.amend
+      form.append(this.node('p',state.schedule
+        ?t('保存后按此模板自动创建 Run；可随时停用或编辑。')
+        :state.amend
         ?t('修订会创建一个新 Run；与父 Run 输入一致且无依赖变化的任务将直接复用其结果（缓存命中）。')
         :state.mode==='broadcast'
           ?t('同组任务并行执行，互不等待；收集策略为「首个成功即止」时，首个成功会取消其余分支。创建后可在 Run 页随时取消。')
@@ -381,6 +447,13 @@ class TeamRunDialogHost{
       state.error='';
       if(!state.goal.trim()){state.error=t('请填写目标。');this.render();return;}
       if(state.phase==='edit'){
+        if(state.schedule){
+          // 触发字段本地校验（服务端同口径 400 兜底）：间隔 ≥300、cron 非空。
+          if(state.schedule.kind==='interval'){
+            const interval=parseInt(state.schedule.interval,10);
+            if(!Number.isFinite(interval)||interval<300){state.error=t('定时间隔至少 300 秒。');this.render();return;}
+          }else if(!state.schedule.cron.trim()){state.error=t('请填写 cron 表达式。');this.render();return;}
+        }
         if(state.mode!=='single'){
           const tasks=this.parseRunTasks(state);
           if(!tasks){this.render();return;}
@@ -390,23 +463,29 @@ class TeamRunDialogHost{
         this.render();
         return;
       }
-      const payload={goal:state.goal.trim(),mode:state.mode};
+      const payload=state.schedule
+        ?{enabled:state.schedule.enabled===true,goal:state.goal.trim(),mode:state.mode}
+        :{goal:state.goal.trim(),mode:state.mode};
+      if(state.schedule&&state.schedule.kind==='interval')payload.intervalSecs=parseInt(state.schedule.interval,10);
+      else if(state.schedule)payload.cron=state.schedule.cron.trim();
       if(state.mode!=='single'){
         payload.plan=state.parsed;
         // 服务端契约读取 collectPolicy（teams.go handleRunCreate 的
         // stringField(body,"collectPolicy")；测试 teams_test.go:407 同键）。
         if(state.mode==='broadcast')payload.collectPolicy=state.collect;
       }
-      if(state.amend){
+      if(state.amend||state.schedule){
         // 验证命令（§6.4.1）：文本按空白切段（服务端固定 argv 白名单校验，
         // 非法段 400 直出）；空文本不携带该键，等同未声明。
         const argv=(state.verifyText||'').trim().split(/\s+/).filter(Boolean);
         if(argv.length)payload.verifyCommand=argv;
       }
       // 请求幂等键（可选 UUID）：失败后直接再点提交复用同 id 重放，不会在
-      // 网络抖动下重复建 Run；返回编辑则重生成。
+      // 网络抖动下重复建 Run；返回编辑则重生成。Run 创建键名是 id（POST /runs
+      // 契约），定时保存键名是 requestId（PUT /schedule 契约），两处不可混用。
       if(!state.requestId)state.requestId=teamUUID();
-      payload.id=state.requestId;
+      if(state.schedule)payload.requestId=state.requestId;
+      else payload.id=state.requestId;
       state.busy=true;this.render();
       try{
         const run=await state.submit(payload);
@@ -432,6 +511,10 @@ class TeamsPanel{
     this.renameValue='';
     this.expanded=new Set(); // Run 列表展开的 teamId
     this.runs=new Map();    // teamId -> {loading,error,rows}
+    this.scheduleOpen=new Set(); // 定时运行卡展开的 teamId
+    this.schedules=new Map();    // teamId -> {loading,error,cfg,busy,notice}
+    this.policyEdit=null;   // 预算策略编辑中的 teamId（§11.7，0=只统计）
+    this.policyBudgetValue='';
     this.sessions=null;     // 新建表单可用的 ACP 会话（打开面板时快照）
     this.workspaces=null;   // 工作区注册表区：null=收起；{loading,error,rows,form,notice}
   }
@@ -542,7 +625,12 @@ class TeamsPanel{
     }
     if(members.length)card.append(chips);
     const policy=team.policy||{};
-    card.append(this.node('p',t('最大并行 ')+(policy.maxParallelTasks??'-')+' · '+t('最大轮次 ')+(policy.maxRounds??'-')+' · '+t('自动派发 ')+(policy.autoDispatch?t('开'):t('关')),'muted team-policy'));
+    const budget=policy.budgetUnits;
+    card.append(this.node('p',t('最大并行 ')+(policy.maxParallelTasks??'-')+' · '+t('最大轮次 ')+(policy.maxRounds??'-')+' · '+t('自动派发 ')+(policy.autoDispatch?t('开'):t('关'))
+      +' · '+t('预算 ')+(typeof budget==='number'&&budget>0?budget:t('只统计')),'muted team-policy'));
+    // 预算策略编辑（§11.7/§9「修订预算」的手机入口）：PATCH policy.budgetUnits
+    // 走既有 team PATCH 通道（version 冲突 409 的中文文案由服务端透出）。
+    if(this.policyEdit===team.id)card.append(this.renderPolicyEdit(team));
     const actions=this.node('div',undefined,'team-actions');
     const runsBtn=this.button(this.expanded.has(team.id)?t('收起 Run'):t('Run 记录'),()=>{
       if(this.expanded.has(team.id))this.expanded.delete(team.id);
@@ -551,6 +639,16 @@ class TeamsPanel{
     });
     const createRun=this.button(t('新建 Run'),()=>this.openRunCreate(team));
     actions.append(runsBtn,createRun);
+    actions.append(this.button(t('预算'),()=>{
+      if(this.policyEdit===team.id)this.policyEdit=null;
+      else{this.policyEdit=team.id;this.policyBudgetValue=typeof budget==='number'?String(budget):'0';}
+      this.render();
+    }));
+    actions.append(this.button(this.scheduleOpen.has(team.id)?t('收起定时'):t('定时运行'),()=>{
+      if(this.scheduleOpen.has(team.id))this.scheduleOpen.delete(team.id);
+      else{this.scheduleOpen.add(team.id);this.loadSchedule(team.id);}
+      this.render();
+    }));
     if(this.renaming!==team.id){
       actions.append(this.button(t('重命名'),()=>{this.renaming=team.id;this.renameValue=team.name;this.render();}));
     }
@@ -562,6 +660,7 @@ class TeamsPanel{
     if(this.busy)actions.querySelectorAll('button').forEach(b=>b.disabled=true);
     card.append(actions);
     if(this.expanded.has(team.id))card.append(this.renderRuns(team));
+    if(this.scheduleOpen.has(team.id))card.append(this.renderSchedule(team));
     return card;
   }
   renderRuns(team){
@@ -583,6 +682,141 @@ class TeamsPanel{
       box.append(row);
     }
     return box;
+  }
+  /* ---- 预算策略编辑（§11.7）----
+     内联一行数字输入（照重命名的就地编辑惯例）：0=只统计（Run 不因预算停靠，
+     仍计数展示）；保存 PATCH {policy:{budgetUnits},version}——版本冲突等错误
+     经 send() 落面板顶部 this.error，与重命名先例一致。 */
+  renderPolicyEdit(team){
+    const t=BridgeI18n.t;
+    const box=this.node('div',undefined,'team-policy-edit');
+    const input=document.createElement('input');
+    input.type='number';input.min='0';input.step='1';
+    input.value=this.policyBudgetValue;
+    input.oninput=()=>{this.policyBudgetValue=input.value;};
+    const save=this.button(t('保存预算'),async()=>{
+      const value=Number(this.policyBudgetValue);
+      if(!Number.isInteger(value)||value<0){
+        this.notice='';this.error=t('预算需为不小于 0 的整数（0=只统计）。');
+        this.render();
+        return;
+      }
+      const result=await this.send('PATCH','/api/teams/'+encodeURIComponent(team.id),{policy:{budgetUnits:value},version:team.version});
+      if(result){this.policyEdit=null;await this.notify(t('预算策略已保存。'));}
+    });
+    const cancel=this.button(t('取消'),()=>{this.policyEdit=null;this.render();});
+    box.append(input,save,cancel);
+    const note=this.node('p',t('按任务派发次数计量；0 表示只统计、不因预算暂停。'),'muted team-budget-note');
+    const wrap=this.node('div',undefined,'team-policy-edit-wrap');
+    wrap.append(box,note);
+    return wrap;
+  }
+  /* ---- 定时运行（§12 阶段四工作项 1 的配置入口）----
+     GET /api/teams/:id/schedule 无配置 404（契约）→ 展示未配置态；已有配置
+     展示摘要（启用/触发/nextDue/lastRun）+ lastRunId 直达 Run 页 + 编辑（复用
+     runDialog 三段流的 schedule 模式）+ 启停快捷开关（PUT 全量模板，400 直出
+     toast）。 */
+  async loadSchedule(teamId){
+    const entry={loading:true,error:'',cfg:null,busy:false,notice:''};
+    this.schedules.set(teamId,entry);
+    this.render();
+    try{
+      const result=await this.request('/api/teams/'+encodeURIComponent(teamId)+'/schedule');
+      entry.cfg=(result&&result.schedule)||result||null;
+    }catch(error){
+      if(error.status===404)entry.cfg=null; // 未配置：契约里 GET 无配置即 404
+      else entry.error=error.message;
+    }finally{
+      entry.loading=false;
+      this.render();
+    }
+  }
+  renderSchedule(team){
+    const t=BridgeI18n.t;
+    const box=this.node('div',undefined,'team-schedule');
+    box.append(this.node('h4',t('定时运行')));
+    const entry=this.schedules.get(team.id);
+    if(!entry||entry.loading){box.append(this.node('p',t('正在读取定时配置…'),'muted'));return box;}
+    if(entry.error){box.append(this.node('p',entry.error,'error'));return box;}
+    const cfg=entry.cfg;
+    if(!cfg||typeof cfg!=='object'){
+      box.append(this.node('p',t('未配置定时运行；可按固定间隔或 cron 自动创建 Run。'),'muted'));
+      const setup=this.button(t('配置定时运行'),()=>this.openScheduleEdit(team,null));
+      setup.disabled=this.busy;
+      box.append(setup);
+      return box;
+    }
+    const bits=[cfg.enabled?t('启用中'):t('已停用')];
+    if(cfg.intervalSecs)bits.push(t('每 ')+cfg.intervalSecs+t(' 秒'));
+    else if(cfg.cron)bits.push(t('cron：')+cfg.cron);
+    const next=teamTimeText(cfg.nextDue);
+    if(next)bits.push(t('下次 ')+next);
+    const last=teamTimeText(cfg.lastRunAt);
+    if(last)bits.push(t('上次 ')+last);
+    box.append(this.node('p',bits.join(' · '),'team-schedule-summary'));
+    if(cfg.lastRunId){
+      const lastBtn=this.button(t('上次 Run：')+cfg.lastRunId);
+      lastBtn.className='task-dep-chip';
+      lastBtn.onclick=()=>this.openRun&&this.openRun(team.id,cfg.lastRunId);
+      box.append(lastBtn);
+    }
+    const actions=this.node('div',undefined,'team-actions');
+    const edit=this.button(t('编辑'),()=>this.openScheduleEdit(team,cfg));
+    const toggle=this.button(cfg.enabled?t('停用'):t('启用'),()=>this.toggleSchedule(team,cfg));
+    toggle.disabled=entry.busy||this.busy;
+    actions.append(edit,toggle);
+    box.append(actions);
+    if(entry.notice){box.append(this.node('p',entry.notice,'team-notice'));entry.notice='';}
+    return box;
+  }
+  /* 快捷启停：PUT 全量模板（enabled 翻转，其余原样带回）；契约要求 PUT 校验
+     全字段，400（间隔/cron/goal 等）直接 toast + 卡内提示。 */
+  async toggleSchedule(team,cfg){
+    const t=BridgeI18n.t;
+    const entry=this.schedules.get(team.id);
+    if(!entry||entry.busy)return;
+    entry.busy=true;this.render();
+    const body={enabled:cfg.enabled!==true,goal:cfg.goal,mode:cfg.mode,requestId:teamUUID()};
+    if(cfg.intervalSecs)body.intervalSecs=cfg.intervalSecs;
+    if(cfg.cron)body.cron=cfg.cron;
+    if(cfg.collectPolicy)body.collectPolicy=cfg.collectPolicy;
+    if(Array.isArray(cfg.verifyCommand)&&cfg.verifyCommand.length)body.verifyCommand=cfg.verifyCommand;
+    if(Array.isArray(cfg.plan))body.plan=cfg.plan;
+    try{
+      const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/schedule',{method:'PUT',body});
+      entry.cfg=(result&&result.schedule)||result;
+      entry.notice=t('定时配置已更新。');
+    }catch(error){
+      if(typeof toast==='function')toast(error.message); // app.js 全局（运行时可用）
+      entry.notice=error.message;
+    }finally{
+      entry.busy=false;
+      this.render();
+    }
+  }
+  /* 模板编辑：复用 runDialog 三段流（edit→preview→PUT）的 schedule 模式，
+     从 GET 快照预填 goal/mode/collect/plan/verifyCommand 与触发字段。 */
+  openScheduleEdit(team,cfg){
+    const schedule={
+      enabled:cfg?cfg.enabled===true:true,
+      kind:cfg&&cfg.cron&&!cfg.intervalSecs?'cron':'interval',
+      interval:cfg&&cfg.intervalSecs?String(cfg.intervalSecs):'',
+      cron:cfg&&cfg.cron?String(cfg.cron):'',
+    };
+    const mode=['single','pipeline','broadcast'].includes(cfg&&cfg.mode)?cfg.mode:'single';
+    const tasks=mode==='single'?[]:(cfg&&Array.isArray(cfg.plan)?cfg.plan:[]).map(row=>({
+      id:row.id||'',memberId:row.memberId||'',memberIds:new Set(row.memberIds||[]),
+      deps:new Set(row.dependsOn||[]),prompt:row.prompt||'',writeLock:row.writeLock||'none',
+      workspaceMode:row.workspaceMode||'',workspaceId:row.workspaceId||'',
+    }));
+    const teamId=team.id;
+    teamRunDialogHost.open({
+      team,schedule,
+      goal:(cfg&&cfg.goal)||'',mode,collect:(cfg&&cfg.collectPolicy)||'all',tasks,
+      verifyText:cfg&&Array.isArray(cfg.verifyCommand)?cfg.verifyCommand.join(' '):'',
+      submit:payload=>this.request('/api/teams/'+encodeURIComponent(teamId)+'/schedule',{method:'PUT',body:payload}),
+      onSuccess:()=>{this.loadSchedule(teamId);this.notify(t_safe('定时配置已保存。'));},
+    });
   }
   // 新建表单的会话下拉只列本机 ACP 会话（阶段一 Team 成员仅支持 ACP Agent 会话）。
   async loadSessions(){
@@ -790,6 +1024,10 @@ class TeamRunScreen{
     this.questionState=new Map(); // questionId -> {busy,error,draft}：decision 卡本地态（帧重渲染不丢已填内容与错误）
     this.taskCleanup=new Map();   // taskId -> {busy,error,done}：工作区清理的就地反馈（错误照 forwardDialog 内联风格）
     this.taskActionKeys=new Map();// taskId -> actionKey：派生任务落地凭据（task_planned 载荷；Run detail 的任务对象不携带该字段）
+    this.stats=null;         // /stats 快照：{loading,error,data}（进页拉一次+手动刷新）
+    this.graph=null;         // /graph 快照：{loading,error,data}（404/空回退平铺任务列表）
+    this.graphOpen=new Set(); // 阶段图聚合节点展开的 node id（帧重渲染不丢展开态）
+    this.stalled=null;       // run_stalled 事件载荷 {sinceMs,lastCompletedTaskId}：任一 task_* 事件即清
     this._forwardDialog=null;
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
@@ -810,6 +1048,7 @@ class TeamRunScreen{
     this.terminalSynced=false;this.refetchFailures=0;
     this.reconnecting=false;this.taskDiffs.clear();this.diffOpen.clear();
     this.questionState.clear();this.taskCleanup.clear();this.taskActionKeys.clear();
+    this.stats=null;this.graph=null;this.graphOpen.clear();this.stalled=null;
     this.root.replaceChildren();
     const loading=this.node('div',undefined,'team-run-body');
     loading.append(this.node('p',BridgeI18n.t('正在读取 Run…'),'muted'));
@@ -824,6 +1063,10 @@ class TeamRunScreen{
       this.team=team;this.detail=detail;
       this.render();
       this.subscribe();
+      // 阶段四补充视图：图/统计各拉一次（generation 守卫内防串台）；404（旧
+      // 网关无该端点）时静默回退——图缺省即平铺任务列表，统计缺省不显示区块。
+      this.loadGraph();
+      this.loadStats();
     }catch(error){
       if(generation!==this.generation)return;
       this.root.replaceChildren();
@@ -881,6 +1124,17 @@ class TeamRunScreen{
     const rows=Array.isArray(page.rows)?page.rows:[];
     for(const event of rows){
       if(event&&typeof event.sequence==='number'&&(epochChanged||event.sequence>this.lastSeq))this.lastSeq=event.sequence;
+      // stall 提示条（§6.3）：run_stalled 到达置位；任何 task_* 事件都代表编排
+      // 仍在推进，即撤下。重开 Run 页经 after=-1 回放历史事件会自然恢复该态。
+      if(event&&event.type==='run_stalled'){
+        const stallPayload=event.payload&&typeof event.payload==='object'?event.payload:{};
+        this.stalled={
+          sinceMs:typeof stallPayload.sinceMs==='number'?stallPayload.sinceMs:null,
+          lastCompletedTaskId:typeof stallPayload.lastCompletedTaskId==='string'?stallPayload.lastCompletedTaskId:'',
+        };
+      }else if(event&&typeof event.type==='string'&&event.type.indexOf('task_')===0){
+        this.stalled=null;
+      }
       this.applyEvent(event);
     }
     if(typeof page.sequence==='number'&&(epochChanged||page.sequence>this.lastSeq))this.lastSeq=page.sequence;
@@ -978,6 +1232,197 @@ class TeamRunScreen{
       if(++this.refetchFailures<=5)this.scheduleRefetch(1000);
     }
   }
+  /* ---- 阶段图（§11.3，GET runUrl(graph)）----
+     节点卡：状态徽标（单任务节点——非聚合且 runCount===1——用 detail 实时
+     状态覆盖服务端快照；聚合节点 runCount>1 时以服务端归并状态为准，本地
+     detail 只含根任务本人的陈旧终态，覆盖会误显）、成员 agentKind 徽标、
+     runCount「×N」（循环阶段只显示一个稳定节点+运行次数）、依赖以文本表达；
+     broadcast/autoPlan 聚合节点（memberIds>1）点击展开成员小列表，普通节点
+     点击 scrollIntoView 高亮对应任务卡（revealTask）。 */
+  loadGraph(){
+    const generation=this.generation;
+    this.graph={loading:true};
+    this.request(this.runUrl('graph')).then(data=>{
+      if(generation!==this.generation)return;
+      this.graph={loading:false,data};
+      this.render();
+    }).catch(error=>{
+      if(generation!==this.generation)return;
+      // 404=旧快照/旧网关无图数据：静默回退平铺任务列表；其余错误小字提示。
+      this.graph={loading:false,error:error.status===404?null:error.message};
+      if(this.graph.error)this.render();
+    });
+  }
+  /* ---- 统计（GET runUrl(stats)）----
+     总耗时/每任务耗时条（相对最长任务的比例）/预算 used/ceiling；coverage=none
+     明示旧版本数据无耗时记录；tokens 恒 null，固定文案「按任务归因暂不支持」。 */
+  loadStats(){
+    const generation=this.generation;
+    this.stats={loading:true};
+    this.render();
+    this.request(this.runUrl('stats')).then(data=>{
+      if(generation!==this.generation)return;
+      this.stats={loading:false,data};
+      this.render();
+    }).catch(error=>{
+      if(generation!==this.generation)return;
+      // 404=旧网关无 stats 端点：整块隐藏（progressive）；其余错误就地提示。
+      this.stats=error.status===404?null:{loading:false,error:error.message};
+      this.render();
+    });
+  }
+  renderStats(){
+    const t=BridgeI18n.t;
+    const box=this.node('section',undefined,'team-stats');
+    const head=this.node('div',undefined,'team-stats-head');
+    head.append(this.node('h3',t('统计')));
+    const refresh=this.button(t('刷新'),()=>this.loadStats());
+    refresh.disabled=this.stats.loading;
+    head.append(refresh);
+    box.append(head);
+    if(this.stats.loading){box.append(this.node('p',t('正在读取统计…'),'muted'));return box;}
+    if(this.stats.error){box.append(this.node('p',this.stats.error,'error'));return box;}
+    const data=this.stats.data&&typeof this.stats.data==='object'?this.stats.data:{};
+    if(data.coverage==='none'){
+      box.append(this.node('p',t('旧版本数据无耗时记录。'),'muted'));
+    }else{
+      const bits=[];
+      if(typeof data.runElapsedMs==='number')bits.push(t('总耗时 ')+teamDurationText(data.runElapsedMs));
+      if(typeof data.dispatchCount==='number')bits.push(t('派发 ')+data.dispatchCount+t(' 次'));
+      if(bits.length)box.append(this.node('p',bits.join(' · '),'muted'));
+      const rows=Array.isArray(data.tasks)?data.tasks:[];
+      if(rows.length){
+        const grid=this.node('div',undefined,'team-stats-tasks');
+        const max=Math.max(0,...rows.map(row=>typeof row.elapsedMs==='number'?row.elapsedMs:0));
+        for(const row of rows){
+          const line=this.node('div',undefined,'team-stat-row');
+          const label=this.node('span',undefined,'team-stat-label');
+          label.append(document.createTextNode(row.taskId||''));
+          if(typeof row.attempt==='number'&&row.attempt>1)label.append(document.createTextNode(' · ×'+row.attempt));
+          const bar=this.node('div',undefined,'team-stat-bar');
+          const fill=this.node('i');
+          if(typeof row.elapsedMs==='number'&&max>0)fill.style.width=Math.max(2,Math.round(row.elapsedMs/max*100))+'%';
+          bar.append(fill);
+          line.append(label,bar,this.node('span',teamDurationText(row.elapsedMs)||'—','team-stat-value'));
+          grid.append(line);
+        }
+        box.append(grid);
+      }
+    }
+    const budget=data.budget;
+    if(budget&&typeof budget==='object'){
+      const line=this.node('p',undefined,'muted');
+      const used=typeof budget.used==='number'?budget.used:0;
+      if(typeof budget.ceiling==='number'&&budget.ceiling>0){
+        line.append(document.createTextNode(t('预算：')+used+'/'+budget.ceiling));
+      }else{
+        line.append(document.createTextNode(t('预算：只统计，已用 ')+used+t(' 次')));
+      }
+      if(budget.exhausted)line.append(this.node('span',t('预算已用尽'),'team-truncated'));
+      box.append(line);
+    }
+    box.append(this.node('p',t('Token 按任务归因暂不支持。'),'muted'));
+    return box;
+  }
+  renderGraph(){
+    if(!this.graph||this.graph.loading||this.graph.error||!this.graph.data)return null;
+    const nodes=Array.isArray(this.graph.data.nodes)?this.graph.data.nodes.filter(node=>node&&typeof node.id==='string'):[];
+    if(!nodes.length)return null;
+    const t=BridgeI18n.t;
+    const box=this.node('section',undefined,'team-graph');
+    box.append(this.node('h3',t('阶段图')));
+    const layers=this.graphLayers(nodes);
+    for(const [index,layer] of layers.entries()){
+      if(index){
+        const arrow=this.node('div',undefined,'team-graph-arrow');
+        arrow.textContent='↓';
+        box.append(arrow);
+      }
+      const row=this.node('div',undefined,'team-graph-layer');
+      for(const node of layer)row.append(this.renderGraphNode(node));
+      box.append(row);
+    }
+    return box;
+  }
+  /* Kahn 分层：每层一行，节点入层当且仅当其（在节点集内的）依赖全部落在更早
+     层。显式 Plan 由 planner 拒绝环；防御性兜底把无法分层的剩余节点按原顺序
+     追加为最后一行，绝不因图数据异常阻塞整页渲染。 */
+  graphLayers(nodes){
+    const byId=new Map(nodes.map(node=>[node.id,node]));
+    const remaining=[...byId.keys()];
+    const placed=new Set();
+    const layers=[];
+    while(remaining.length){
+      const layerIDs=remaining.filter(id=>{
+        const deps=(byId.get(id).dependsOn||[]).filter(dep=>byId.has(dep));
+        return deps.every(dep=>placed.has(dep));
+      });
+      if(!layerIDs.length){
+        layers.push(remaining.map(id=>byId.get(id)));
+        break;
+      }
+      for(const id of layerIDs){
+        remaining.splice(remaining.indexOf(id),1);
+        placed.add(id);
+      }
+      layers.push(layerIDs.map(id=>byId.get(id)));
+    }
+    return layers;
+  }
+  renderGraphNode(node){
+    const t=BridgeI18n.t;
+    const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
+    // 本地 detail 实时覆盖仅限单任务节点（非聚合且 runCount===1）：派生链/
+    // 修复链聚合节点的 id=根任务 ID，findTask 命中的是根任务本人的陈旧终态，
+    // 会盖掉服务端按「链上最新执行」归并出的 node.status——循环阶段进行中
+    //（根任务已终态、派生任务 running）会误显「已完成 ×N」而非「进行中」。
+    const single=!aggregate&&!(typeof node.runCount==='number'&&node.runCount>1);
+    const detailTask=single?this.findTask(node.id):null;
+    const card=this.node('div',undefined,'team-graph-node'+(aggregate?' aggregate':''));
+    card.setAttribute('role','button');
+    card.tabIndex=0;
+    const activate=()=>{
+      if(aggregate){
+        if(this.graphOpen.has(node.id))this.graphOpen.delete(node.id);
+        else this.graphOpen.add(node.id);
+        this.render();
+        return;
+      }
+      this.revealTask(node.id);
+    };
+    card.onclick=activate;
+    card.onkeydown=event=>{
+      if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}
+    };
+    const head=this.node('div',undefined,'team-graph-node-head');
+    head.append(this.node('strong',node.label||node.id));
+    if(typeof node.runCount==='number'&&node.runCount>1)head.append(this.node('span','×'+node.runCount,'team-graph-runs'));
+    head.append(this.taskBadge(detailTask?detailTask.status:node.status));
+    card.append(head);
+    const kinds=Array.isArray(node.agentKinds)?node.agentKinds:[];
+    if(kinds.length){
+      const chips=this.node('div',undefined,'team-graph-kinds');
+      for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
+      card.append(chips);
+    }
+    if(Array.isArray(node.dependsOn)&&node.dependsOn.length){
+      card.append(this.node('p',t('依赖：')+node.dependsOn.join('、'),'muted team-graph-deps'));
+    }
+    if(node.resultHead){
+      card.append(this.node('p',node.resultHead,'task-instructions'));
+      if(node.truncated)card.append(this.node('span',t('已截断'),'team-truncated'));
+    }
+    if(aggregate&&this.graphOpen.has(node.id)){
+      const list=this.node('div',undefined,'team-graph-members');
+      for(const memberId of node.memberIds){
+        const member=this.teamMember(memberId);
+        list.append(this.node('span',(member?(member.name||member.id):memberId)
+          +(member?' · '+BridgeI18n.agentLabel(member.agentKind):''),'team-graph-member'));
+      }
+      card.append(list);
+    }
+    return card;
+  }
   leave(){
     this.close();
     this.onNavigateAway&&this.onNavigateAway();
@@ -997,7 +1442,7 @@ class TeamRunScreen{
     const scrollTop=prevBody?prevBody.scrollTop:0;
     root.replaceChildren();
     const head=this.node('header',undefined,'team-run-head');
-    const back=this.button('‹');
+    const back=this.button('‹',()=>this.leave());
     back.className='icon-button';
     back.setAttribute('aria-label',t('返回'));
     back.title=t('返回');
@@ -1005,6 +1450,7 @@ class TeamRunScreen{
     info.append(this.node('h1',detail.goal||detail.id));
     const statusLine=this.node('p',undefined,'team-run-status');
     statusLine.append(this.runBadge(detail.status));
+    if(detail.scheduledFrom)statusLine.append(this.node('span',t('定时触发'),'team-badge b-ready'));
     if(detail.stopReason)statusLine.append(this.node('span',detail.stopReason,'team-stop-reason'));
     if(this.reconnecting){
       // 断线提示 chip：transport 重试期间置位，成功帧到达自清（对照聊天页
@@ -1018,6 +1464,18 @@ class TeamRunScreen{
     head.append(back,info,this.renderActions());
     root.append(head);
     const body=this.node('div',undefined,'team-run-body');
+    if(this.stalled){
+      // stall 顶部提示条（§6.3「20 分钟无成功只通知不停止」）：事件到达展示，
+      // 后续任何任务事件推进即由 applyFrame 撤下；sinceMs 为当时已停时长。
+      const banner=this.node('div',undefined,'team-stall-banner');
+      banner.append(this.node('span',t('超过 20 分钟无进展（通知已发送）')));
+      const since=teamDurationText(this.stalled.sinceMs);
+      if(since)banner.append(this.node('span',since,'muted'));
+      if(this.stalled.lastCompletedTaskId){
+        banner.append(this.node('span',t('最近完成：')+this.stalled.lastCompletedTaskId,'muted'));
+      }
+      body.append(banner);
+    }
     const counts=this.meta?.taskCounts;
     if(counts&&typeof counts==='object'){
       const summary=Object.entries(counts).map(([key,value])=>teamTaskStatusLabel(key)+' '+value).filter(Boolean).join(' · ');
@@ -1031,6 +1489,8 @@ class TeamRunScreen{
       line.append(holder?this.node('code',holder):this.node('span',t('无')));
       body.append(line);
     }
+    // 统计卡（阶段四）：进页拉一次，手动刷新按钮重拉；404（旧网关）整块不显示。
+    if(this.stats)body.append(this.renderStats());
     // 成员提问（§5.4，detail.pendingQuestions 是权威快照）：open 画应答卡，
     // answered/withdrawn 画灰态徽标——放在任务列表前，等待输入最先被看到。
     const questions=detail.pendingQuestions;
@@ -1042,6 +1502,10 @@ class TeamRunScreen{
     // rejected），拒绝原因与派生任务引用从 detail 读（run 级事件不留 payload）。
     const pendingActions=detail.pendingActions;
     if(Array.isArray(pendingActions)&&pendingActions.length)body.append(this.renderPendingActions(pendingActions));
+    // 阶段图（§11.3）：Kahn 分层节点卡，点击定位下方任务卡；404/空（旧快照）
+    // 回退平铺列表——图是补充视图，缺省时任务卡照常渲染。
+    const graphSection=this.renderGraph();
+    if(graphSection)body.append(graphSection);
     const tasks=detail.tasks||[];
     if(!tasks.length)body.append(this.node('p',t('还没有任务。'),'muted'));
     for(const task of tasks)body.append(this.renderTask(task));
@@ -1107,16 +1571,35 @@ class TeamRunScreen{
     const t=BridgeI18n.t;
     const box=this.node('div',undefined,'team-run-actions');
     const status=this.detail.status;
+    const stopReason=this.detail.stopReason||'';
     if(status==='waiting_input'){
-      box.append(this.node('span',t('结果未知任务已核查，不再重发；继续可继续的分支。'),'muted team-resume-hint'));
+      if(stopReason.indexOf('budget_exhausted')===0){
+        // §9 预算停靠：resume 即上调上限并恢复（服务端额外落 run_budget_resumed）。
+        box.append(this.node('span',t('预算已用尽；继续会提高预算上限并恢复运行。'),'muted team-resume-hint'));
+      }else{
+        box.append(this.node('span',t('结果未知任务已核查，不再重发；继续可继续的分支。'),'muted team-resume-hint'));
+      }
       // 验证闸门失败停靠（stopReason 以 verify_failed 开头）时，resume 即重跑闸门。
-      const verifyFailed=(this.detail.stopReason||'').startsWith('verify_failed');
+      const verifyFailed=stopReason.startsWith('verify_failed');
       const resume=this.button(verifyFailed?t('重新验证'):t('继续'),async()=>{
         await this.postAction('resume');
       });
       box.append(resume);
     }
+    if(status==='paused'){
+      // 暂停态（阶段四）：同一 resume 端点恢复（契约 waiting_input|paused→200）。
+      box.append(this.node('span',t('已暂停；继续会从停止处恢复。'),'muted team-resume-hint'));
+      box.append(this.button(t('继续'),async()=>{
+        await this.postAction('resume');
+      }));
+    }
     if(!TEAM_TERMINAL_RUN_STATUSES.has(status)){
+      // 暂停仅对进行中的 Run 有意义（waiting_input 本就停靠、paused 已停）。
+      if(status!=='paused'&&status!=='waiting_input'){
+        box.append(this.button(t('暂停'),async()=>{
+          await this.postAction('pause');
+        }));
+      }
       const cancel=this.button(t('取消'),async()=>{
         await this.postAction('cancel');
       });
@@ -1138,6 +1621,10 @@ class TeamRunScreen{
       if(teamId!==this.teamId||runId!==this.runId)return;
       this.detail=detail;this.meta=null;
       this.render();
+      // 暂停/继续/取消会改变图节点状态与统计口径：动作成功后补拉一次补充视图
+      //（404 静默回退，旧网关不报错）。
+      this.loadGraph();
+      this.loadStats();
     }catch(error){
       if(teamId!==this.teamId||runId!==this.runId)return;
       this.actionError=error.message;

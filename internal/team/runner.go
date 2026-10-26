@@ -13,9 +13,12 @@ package team
 // 「确认不再重发」，绝不重建 submission。
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +49,22 @@ type Service struct {
 	// OnEvent 在每条 journal 事件成功落账后被调用（httpd 装配侧接
 	// EventFeed.Add，把事实投影到事件流）。nil 表示无人订阅。
 	OnEvent func(*Event)
+
+	// OnRunStatus 在 run 状态事件（run_completed/run_failed/run_cancelled/
+	// run_stopped/run_waiting_input，§12 阶段四工作项 3）与 stall 事实
+	// （run_stalled，§6.3）成功落账后回调（挂点收口见 notify.go 的
+	// notifyRunStatusEvents）。回调在该 Run 的 state.mu 下同步执行：装配方
+	// 只做「读 store + 写通知账本」，绝不能再入 Service 的运行方法（死锁）。
+	// nil 表示无人订阅。
+	OnRunStatus func(runID, kind string)
+
+	// stallAfter 是 §6.3 的 stall 判定线（默认 20 分钟，notify.go）。≤0
+	// 关闭 stall 检查；测试经此注入缝调小。
+	stallAfter time.Duration
+
+	// nowFn 是可控 clock 注入缝（stall 计时与 lastSuccessAt 锚点取时用；
+	// 测试注入假时钟推进 20 分钟而不真睡，§13.1）。NewService 填 time.Now。
+	nowFn func() time.Time
 
 	// Admission 是派发准入缝（§6.3 的注入点，测试用）：派发主体在锁外、
 	// 记账前调用；返回 false 表示本轮暂缓（任务保持 planned，下一轮重新
@@ -106,6 +125,13 @@ type Service struct {
 	// 量直至完成，重建瞬间可能短暂超出新容量。
 	poolsMu sync.Mutex
 	pools   map[string]*teamDispatchPool
+
+	// reconciler 是 waiting_input Run 的周期刷新循环（§12 阶段四工作项 2，
+	// 仿 accpool Poller 的 ctx+done 形态）：每 tick 对全部 waiting_input Run
+	// 依次 RefreshRun。Start/Stop 同步退出，字段由 reconcilerMu 保护。
+	reconcilerMu     sync.Mutex
+	reconcilerCancel context.CancelFunc
+	reconcilerDone   chan struct{}
 }
 
 // teamDispatchPool 是团队级派发池：信号量限定同时在执行的派发主体数
@@ -151,6 +177,8 @@ func NewService(store TeamStore, journal *Journal, queue QueueAdapter, resolver 
 		AIMD:          newAIMDRegistry(nil),
 		verifyTimeout: defaultVerifyTimeout,
 		waitSlice:     defaultWaitSlice,
+		stallAfter:    defaultStallAfter,
+		nowFn:         time.Now,
 		runs:          map[string]*runState{},
 		teamPending:   map[string]int{},
 		pools:         map[string]*teamDispatchPool{},
@@ -177,6 +205,22 @@ func (s *Service) SetWaitSlice(slice time.Duration) {
 	s.waitSlice = slice
 }
 
+// SetStallAfter 调整 §6.3 的 stall 判定线（默认 defaultStallAfter=20 分钟）。
+// 存在原因是让 internal/httpd 的集成测试把判定线缩到毫秒级（notify.go
+// maybeStallLocked 的取时走真实时钟——推进由 deadline 轮询兜住，只有阈值
+// 需要注入），notify_test.go 经包内 stallAfter 字段注入、本方法是它的导出
+// 面版本——生产装配不要调用。照 SetWaitSlice 契约：仅在没有启动任何 Run
+// 之前调用才生效；d≤0 关闭 stall 检查。
+func (s *Service) SetStallAfter(after time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.runs) > 0 {
+		log.Printf("team SetStallAfter 在 Run 已启动后被调用，已忽略: runs=%d", len(s.runs))
+		return
+	}
+	s.stallAfter = after
+}
+
 // runState 是单个 Run 的内存执行状态。mu 即该 Run 的运行写锁：串行化循环、
 // watcher、cancel、resume 与恢复的全部「journal+快照」变更；纯读（账本轮询、
 // 快照读取）不持锁。
@@ -192,7 +236,9 @@ type runState struct {
 	// 只有最新一代循环存活，旧循环在下一轮检查点自行退出——规避「旧循环
 	// 退出途中把 looping 标记留给新循环」的让位竞态。
 	loopGeneration uint64
-	// deadline 是 run 超时截止；每次循环启动重臂。
+	// deadline 是 run 超时截止；每次循环启动重臂。paused 驻留期间冻结
+	//（循环已退出、无人检查，软停不烧时钟）；Resume 从 paused 经
+	// startLoopLocked 重臂，从 resume 时刻重新起算。
 	deadline time.Time
 	// watchers 记录在途任务的 watcher 退出信号（taskID → 关闭即退出）。
 	watchers map[string]chan struct{}
@@ -211,6 +257,21 @@ type runState struct {
 	// 分支据此避免重复启动闸门；settleVerifyGateLocked 收尾（含记账失败）
 	// 复位，resume 复验经 fold 拦截重新启动。
 	gateLaunched bool
+	// lastSuccessAt 是最近一次任务 completed 的时刻（§6.3 stall 计时锚点，
+	// mu 保护）：循环启动（create/resume/恢复）时初始化或重建（notify.go），
+	// 任务 completed 落账时刷新（noteTaskSuccessLocked）。lastCompletedTaskID
+	// 随锚点记录，供 run_stalled payload 追溯最近成功。
+	lastSuccessAt       time.Time
+	lastCompletedTaskID string
+	// stalled 标记本段停滞已报过 stall（§6.3 只通知不停止：每段至多一条
+	// run_stalled；任务 completed 后重置，新一段可再报）。
+	stalled bool
+	// dispatchCount 是本 Run 已落账的 task_dispatching 事实数（§9 预算
+	// 计量，mu 保护）：创建起 0，executeDispatch 记账成功 +1，重启恢复按
+	// journal 重放重建（countRunDispatches，与 Resume 重算同一函数）。
+	// 预算闸门（passDispatch）与追加上限推导（Resume 的 budget 分支）都
+	// 以它为「已派发数」，绝不另设口径。
+	dispatchCount int
 }
 
 // stateFor 返回（或创建）runID 的执行状态。
@@ -247,7 +308,12 @@ func (s *Service) stateFor(runID string) *runState {
 // Run 的 Lead 任务回复才解析 team-actions（显式 Plan 优先级高于 Agent 自动
 // 计划）——autoPlan 与显式计划互斥，同时携带直接拒绝。autoPlan 随
 // run_created payload 落账供 journal 重建（旧账本缺字段按 false 保守解析）。
-func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool) (*Run, error) {
+//
+// scheduledFrom 是定时触发的可追溯标记（§12 阶段四工作项 1，schedule.go 的
+// journal-first 触发协议传入）：非空时写入 Run.ScheduledFrom 与 run_created
+// payload.scheduledBy——回扫对账只认 journal 里的该事件，绝不依赖 HTTP 层
+// 的 creations 账本。空串=用户手工创建（HTTP 调用方恒传空串）。
+func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom string) (*Run, error) {
 	if team == nil {
 		return nil, errors.New("team 不能为 nil")
 	}
@@ -279,6 +345,7 @@ func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verif
 		PlanHash:      plan.PlanHash,
 		Tasks:         plan.Tasks,
 		VerifyCommand: append([]string(nil), verifyCommand...),
+		ScheduledFrom: scheduledFrom,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -300,6 +367,13 @@ func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verif
 	}
 	if len(verifyCommand) > 0 {
 		createdPayload["verifyCommand"] = append([]string(nil), verifyCommand...)
+	}
+	// scheduledBy 是定时触发的事实凭据（§12 阶段四）：崩溃窗口的回扫对账
+	// （schedule.go）按「journal 有无 scheduledBy==triggerID 的 run_created」
+	// 裁决该触发是否已生效，键名与 Run.ScheduledFrom 字段名刻意区分——
+	// payload 侧描述「由谁触发」，快照侧描述「来源于哪」。
+	if scheduledFrom != "" {
+		createdPayload["scheduledBy"] = scheduledFrom
 	}
 	created := newEvent(run.ID, EventRunCreated, "user", createdPayload)
 	events := []*Event{created}
@@ -362,6 +436,12 @@ func (s *Service) startLoopLocked(state *runState) {
 			state.deadline = time.Time{}
 		}
 	}
+	// stall 计时锚点（§6.3）：create 首启从现在起算；resume 显式重置（驻留
+	// 时长是用户治理时间，不计入「无成功」）、恢复路径按 journal 重建
+	// （notify.go rebuildLastSuccessAt），这里的零值兜底只兜创建。
+	if state.lastSuccessAt.IsZero() {
+		state.lastSuccessAt = s.now()
+	}
 	state.loopGeneration++
 	generation := state.loopGeneration
 	go s.runLoop(state, generation)
@@ -383,16 +463,23 @@ func (s *Service) runLoop(state *runState, generation uint64) {
 			return
 		}
 		if s.runExpired(state) {
-			if s.expireRun(state) {
+			finished, dwellPass := s.expireRun(state)
+			if finished {
 				return
 			}
-			// 超时记账失败（磁盘故障等）：等一片重试，自愈或驻留至重启恢复。
-			select {
-			case <-state.done:
-				return
-			case <-time.After(s.slice()):
+			if !dwellPass {
+				// 超时记账失败（磁盘故障等）：等一片重试，自愈或驻留至重启恢复。
+				select {
+				case <-state.done:
+					return
+				case <-time.After(s.slice()):
+				}
+				continue
 			}
-			continue
+			// 超时豁免驻留（runnable proposed 动作，§5.2）：不原地等片重试——
+			// 动作执行段（passActions）只在完整 pass 里运行，超时分支短路 pass
+			// 会把待执行动作悬死。落回下方 pass（收养/动作/派发/fold 照常），
+			// 动作事实执行/拒绝落定后，派生任务由下一轮超时路径按剩余事实收口。
 		}
 		if !s.loopPass(state) {
 			return
@@ -471,13 +558,26 @@ func (s *Service) passAdvance(state *runState, collectTargets *[]cancelTarget) (
 		return false, false, nil
 	}
 	if run.Status == RunWaitingInput {
-		return false, false, nil // 驻留等待 resume；在途 watcher 继续收尾入账
+		// 驻留等待 resume；在途 watcher 继续收尾入账。stall 不计时——
+		// 停靠时刻已有独立通知，驻留时长是用户治理时间（盲区声明见
+		// notify.go maybeStallLocked）。
+		return false, false, nil
+	}
+	if run.Status == RunPaused {
+		// 用户软停驻留（§12 阶段四工作项 4）：循环退出、不再推进/级联/派发；
+		// 在途 watcher 继续收尾入账（停靠/结果未知会把 run 升级 waiting_input，
+		// 语义严格强于 paused）。run 超时 deadline 与 stall 计时在此冻结——
+		// 循环已无人检查两者，软停不该烧时钟（有意设计，照 verify_failed 停靠
+		// 豁免 expireRun 的注释先例；Pause/Resume 的重臂语义与测试钉住）。
+		return false, false, nil
 	}
 	// RunReducing：验证闸门态（§6.4.1，全任务终态后、终局前的闸门窗口）。
 	// 短路 ①②③——不收养、不级联终止、不派发（闸门进行中的 run 不该再产生
 	// 任何调度副作用）；闸门结果已落但判定未应用（记账失败的崩溃窗口）时
-	// 就地补判，否则确保闸门已启动并在飞，等片/唤醒。
+	// 就地补判，否则确保闸门已启动并在飞，等片/唤醒。闸门挂起也参与 stall
+	// 计时（有活循环、无成功推进的形态之一）。
 	if run.Status == RunReducing {
+		s.maybeStallLocked(state, run)
 		if run.Verify != nil {
 			s.applyVerifyVerdictLocked(state, run.ID)
 			return true, false, nil
@@ -524,6 +624,10 @@ func (s *Service) passAdvance(state *runState, collectTargets *[]cancelTarget) (
 	// ②' 收集策略（§6.5 first_success）：已出现成功成员的组，其余非终态
 	// 成员取消（记账先行；副作用目标交锁外执行）。
 	*collectTargets = s.applyCollectLocked(state, run, team, policy)
+	// stall 检查（§6.3「20 分钟无成功只通知不停止」）：能走到这里的是
+	// 有活调度循环的 run（dispatching 等执行态）；waiting_input 已在上方
+	// 早退、终态已收口——盲区声明见 notify.go maybeStallLocked。
+	s.maybeStallLocked(state, run)
 	return true, true, adoptions
 }
 
@@ -968,6 +1072,19 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 	}
 	team := s.store.Team(run.TeamID)
 	policy := policyOf(team)
+	// 预算闸门（§9，阶段四 cost-stats）：计量=任务派发次数（journal
+	// task_dispatching 计数，可精确重放；token 无法归因到 Run/Task，不做
+	// token 预算——见 stats.go 文件头）。BudgetUnits>0 且已派发数≥
+	// max(BudgetCeiling,BudgetUnits) 时不再选新任务，run 落 waiting_input
+	//（stopReason=budget_exhausted；预算停靠是 run 级，未派发任务保持
+	// planned/ready 不落终态，在途任务自然收尾——照 stopTaskBlocked 的
+	// 单批落账纪律）。BudgetUnits=0 只统计（§4.2 默认）。Lead 动作派生的
+	// 任务不经本闸门预检（passActions 在派发段之前同 pass 运行），其派发
+	// 照常计入计数、下一轮 pass 在此停靠——预算计量以 journal 事实为准，
+	// 动作路径的少量超额是可接受的有界过冲，绝不静默放行后续派发。
+	if s.parkBudgetLocked(state, run, policy) {
+		return true
+	}
 	memberBusy := map[string]bool{}
 	for i := range run.Tasks {
 		task := &run.Tasks[i]
@@ -1004,7 +1121,19 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 		}
 	}
 	inFlight += s.teamPending[run.TeamID]
-	for _, taskID := range ReadyTasks(run, policy, inFlight, memberBusy, cwdByTask, s.locks) {
+	selected := ReadyTasks(run, policy, inFlight, memberBusy, cwdByTask, s.locks)
+	// 预算余量封顶（§9）：闸门判定用的是已落账计数，本批选择还要扣掉
+	// 派发窗口在途（pendingDispatch，尚未落账的记账窗口）——否则同批
+	// ReadyTasks 一次放行 N 个会越过阈值。余量外的任务保持 planned，
+	// 追加预算（Resume）后下一轮自然入选。
+	if policy.BudgetUnits > 0 {
+		remaining := budgetThreshold(policy.BudgetUnits, run.BudgetCeiling) -
+			state.dispatchCount - len(state.pendingDispatch)
+		if remaining < len(selected) {
+			selected = selected[:max(remaining, 0)]
+		}
+	}
+	for _, taskID := range selected {
 		state.pendingDispatch[taskID] = true
 		s.teamPending[run.TeamID]++
 		s.dispatchViaPool(state, team, policy, run.TeamID, run.ID, taskID, cwdByTask[taskID])
@@ -1030,8 +1159,13 @@ func (s *Service) passFold(state *runState) bool {
 		s.finishLocked(state)
 		return false
 	}
-	if run.Status == RunWaitingInput {
-		return true // 驻留等待 resume：不 fold（下一轮推进段退出循环）。
+	if run.Status == RunWaitingInput || run.Status == RunPaused {
+		// 驻留等待 resume：不 fold（下一轮推进段退出循环）。paused 同守：
+		// 推进段读到 dispatching 后 Pause 落账的窄窗口里，全终态快照若在此
+		// 折叠会把用户的软停悄悄变成终局（resume 从此被拒），「暂停期间普通
+		// completed 不改 run 状态」也就无从谈起——终局统一延到 resume 后的
+		// 下一轮。
+		return true
 	}
 	// Lead 自动动作待执行（闸门开的 proposed）时不得 fold（§5.2，阶段三）：
 	// 动作执行段在本段之前的同一 pass 运行，但 watcher 结算与本段快照读取
@@ -1191,6 +1325,9 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	if err == nil && dispatch != nil {
 		s.teamPendingDelta(teamID, -1)
 		accounted = true
+		// 预算计量（§9）：task_dispatching 事实已落 journal，已派发数 +1
+		//（与 countRunDispatches 的重放口径一致——每次成功记账恰一次）。
+		state.dispatchCount++
 	}
 	state.mu.Unlock()
 	if err != nil {
@@ -1776,16 +1913,53 @@ func (s *Service) expireTask(state *runState, dispatch *taskDispatch) {
 	})
 }
 
+// countRunnableProposedActions 统计会被执行流处理的 proposed 动作数（§5.2
+// 豁免日志用；判定与 hasRunnableProposedActions 同口径：summarize 恒可执行，
+// delegate/request_context 仅 autoDispatch 开启时）。
+func countRunnableProposedActions(run *Run, policy TeamPolicy) int {
+	if run == nil {
+		return 0
+	}
+	count := 0
+	for i := range run.PendingActions {
+		action := &run.PendingActions[i]
+		if action.Status != ActionStatusProposed {
+			continue
+		}
+		switch action.Type {
+		case ActionTypeSummarize:
+			count++
+		case ActionTypeDelegate, ActionTypeRequestContext:
+			if policy.AutoDispatch {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // expireRun 处理 run 超时：先记账（全部非终态任务 failed / run_timeout），再
-// fold 落 run 终态（failed），最后取消副作用。返回 run 是否已到达终态（false
-// 表示记账失败，调用方应择机重试）。
-func (s *Service) expireRun(state *runState) bool {
+// fold 落 run 终态（failed），最后取消副作用。返回 (run 是否已到达终态, 豁免
+// 驻留是否需要推进一轮 pass)：finished=false 且记账失败时调用方应择机重试；
+// dwellPass=true 表示 runnable proposed 动作的「动作事实先于终局」豁免（§5.2，
+// passFold 同一守卫）命中——超时分支跑不到动作执行段，调用方必须走一轮完整
+// pass 让 passActions 收口，否则待执行动作悬死。
+func (s *Service) expireRun(state *runState) (finished, dwellPass bool) {
 	var targets []cancelTarget
-	finished := false
+	finished = false
 	func() {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		run := s.store.Run(state.runID)
+		if run != nil && run.Status == RunPaused {
+			// 暂停冻结 run 超时（§12 阶段四工作项 4，与 stall 同调）：Pause
+			// 落账到循环退出之间存在窄窗口——循环最后一轮醒来先查 runExpired
+			// 再进推进段，超时线恰在窗口内越过时不得触发（软停不烧时钟）。
+			// 返回 true 让循环退出（与推进段的 paused 驻留分支殊途同归）；
+			// resume 经 startLoopLocked 重臂 deadline，从 resume 时刻重新起算。
+			finished = true
+			return
+		}
 		if run == nil || terminalRun(run.Status) {
 			// Run 消失或已被并发落终局：终局路径自身负责释放写锁，这里
 			// 兜底清掉可能残留的登记（幂等）。
@@ -1841,6 +2015,21 @@ func (s *Service) expireRun(state *runState) bool {
 		if fresh := s.store.Run(state.runID); fresh != nil {
 			if status, stopReason := FoldRunStatus(fresh.Tasks, fresh.Mode, fresh.CollectPolicy); status != "" {
 				switch {
+				case hasRunnableProposedActions(fresh, policy):
+					// Lead 自动动作待执行（§5.2「动作事实先于终局」，与
+					// passFold 的 fold 前守卫对齐，置于闸门分支之前——闸门
+					// 只对「动作清空后的 completed 折叠」有意义）：超时路径
+					// 不得绕过守卫强制终局，否则待执行动作被静默丢弃——
+					// 「待执行」变「从未发生」。照 verify_failed 超时豁免
+					// 同款不 fold，但驻留不等片：返回 dwellPass 让循环走
+					// 完整 pass，passActions 执行/拒绝动作后，派生任务由
+					// 下一轮超时路径按 run_timeout 收口、passFold 按剩余
+					// 事实终局（超时语义对任务成立，只对动作事实让步；
+					// 动作链受 MaxTasksPerRun/MaxRounds 天然有界，长驻留
+					// 由 §6.3 stall 通知兜底）。
+					log.Printf("team run %s 超时豁免：%d 个待执行动作先于终局，驻留推进一轮 pass",
+						fresh.ID, countRunnableProposedActions(fresh, policy))
+					dwellPass = true
 				case status == RunCompleted && verifyPending(fresh):
 					// 闸门未决：run 超时不得绕过闸门 fold（否则 Agent 的口头
 					// 成功声明在超时路径上免检，§6.4.1）。推进/确保闸门并等
@@ -1860,7 +2049,7 @@ func (s *Service) expireRun(state *runState) bool {
 	for _, target := range targets {
 		s.cancelSideEffects(target)
 	}
-	return finished
+	return finished, dwellPass
 }
 
 // ---- 终态落账（settle 原语）----
@@ -1893,6 +2082,10 @@ func (s *Service) applyTaskTerminalLocked(state *runState, runID, taskID, status
 		return false
 	}
 	if applied {
+		if eventType == EventTaskCompleted {
+			// stall 计时锚点刷新（§6.3：成功即恢复，stalled 标记重置）。
+			s.noteTaskSuccessLocked(state, taskID)
+		}
 		s.releaseTaskLockLocked(state, taskID)
 		s.wakeLocked(state)
 	}
@@ -2161,6 +2354,9 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 		return false
 	}
 	if settled {
+		// Lead 任务的 completed 不经 applyTaskTerminalLocked（动作事实原子
+		// 同批），stall 锚点在此刷新（§6.3）。
+		s.noteTaskSuccessLocked(state, dispatch.taskID)
 		s.releaseTaskLockLocked(state, dispatch.taskID)
 		s.wakeLocked(state)
 	}
@@ -2383,6 +2579,94 @@ func (s *Service) stopTaskBlocked(state *runState, runID, taskID, outcome, error
 	return applied
 }
 
+// parkBudgetLocked 是 §9 的预算停靠（调用方持有 state.mu；passDispatch 的
+// 派发段每轮调用）：BudgetUnits>0 且已派发数≥max(BudgetCeiling,BudgetUnits)
+// 时把 run 落 waiting_input——单批 commitRun 原子落账（照 stopTaskBlocked
+// 纪律）：stopReason 前缀 budget_exhausted，事件 run_waiting_input payload
+// {units,used,stopReason}（stopReason 供 store.go 的 journal 重建还原停靠
+// 语义、Resume 按前缀路由）。预算停靠是 run 级：未派发任务保持 planned/
+// ready 不落终态（resume 追加预算后天然可派发），在途任务自然收尾——
+// watcher 的 completed/failed 照常入账，全终态后不 fold（passFold 对
+// waiting_input 驻留），等用户 Resume（追加预算继续）或 Cancel。
+// 返回 true=预算已到线：本轮绝不选新任务（落账失败也拦——宁可下轮重试
+// 停靠，绝不放行超额派发）。
+func (s *Service) parkBudgetLocked(state *runState, run *Run, policy TeamPolicy) bool {
+	used := state.dispatchCount
+	units := policy.BudgetUnits
+	if !budgetExhausted(units, run.BudgetCeiling, used) {
+		return false
+	}
+	threshold := budgetThreshold(units, run.BudgetCeiling)
+	applied := false
+	err := s.commitRun(run.ID, func(fresh *Run) ([]*Event, bool) {
+		// 版本冲突重载后复查：并发停靠/取消可能已改变状态（first-wins）。
+		if terminalRun(fresh.Status) || fresh.Status != RunDispatching {
+			return nil, false
+		}
+		fresh.Status = RunWaitingInput
+		fresh.StopReason = budgetStopReason(threshold, used)
+		applied = true
+		return []*Event{newEvent(fresh.ID, EventRunWaitingInput, "runner", map[string]any{
+			"units":      jsoncompat.Num(units),
+			"used":       jsoncompat.Num(used),
+			"stopReason": fresh.StopReason,
+		})}, true
+	})
+	if err != nil {
+		log.Printf("team run %s 预算停靠记账失败（下轮重试，本轮拦截派发）: %v", run.ID, err)
+		return true
+	}
+	if applied {
+		// 停靠即通知（notify.go 经 commitRun 的 notifyRunStatusEvents 挂点
+		// 已回调 OnRunStatus）；此处只唤醒循环——推进段读到 waiting_input
+		// 即驻留退出，在途 watcher 继续收尾。
+		s.wakeLocked(state)
+	}
+	return true
+}
+
+// resumeBudgetLocked 落预算追加事实（§9「继续本轮」；调用方持有 state.mu；
+// Resume 的 budget 分支调用，落账后回到 PlanResume 既有路径）：
+// run_budget_resumed payload {ceiling,units,used}，ceiling=已派发数
+// （journal 重放计数，绝不依赖内存增量——重启后首次 Resume 同样成立）
+// +当前 BudgetUnits，同一 commitRun 内同步写 Run.BudgetCeiling 并清
+// StopReason。store.go 的 journal 重建重放本事件回填 ceiling（单调取高），
+// 快照损坏也不丢追加事实。units≤0（用户把预算调成只统计）同样落事件——
+// 记录「继续」的显式决定，闸门自此关闭（budgetExhausted 对 units≤0 恒
+// false），Run 跑完为止。
+func (s *Service) resumeBudgetLocked(state *runState, run *Run) error {
+	events, err := s.journal.Replay()
+	if err != nil {
+		return fmt.Errorf("run %s 预算续跑对账失败: %w", run.ID, err)
+	}
+	used := countRunDispatches(events, run.ID)
+	units := policyOf(s.store.Team(run.TeamID)).BudgetUnits
+	if units < 0 {
+		units = 0
+	}
+	ceiling := used + units
+	applied := false
+	if err := s.commitRun(run.ID, func(fresh *Run) ([]*Event, bool) {
+		if fresh.Status != RunWaitingInput {
+			return nil, false // 并发 Cancel/停靠已改写：first-wins。
+		}
+		fresh.BudgetCeiling = ceiling
+		fresh.StopReason = ""
+		applied = true
+		return []*Event{newEvent(run.ID, EventRunBudgetResumed, "user", map[string]any{
+			"ceiling": jsoncompat.Num(ceiling),
+			"units":   jsoncompat.Num(units),
+			"used":    jsoncompat.Num(used),
+		})}, true
+	}); err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("%w: 当前状态 %s", ErrRunNotWaiting, s.store.Run(run.ID).Status)
+	}
+	return nil
+}
+
 // recordThrottled 在 AIMD 窗口实际减小时落 provider_throttled 事件
 // （§6.3，每 epoch 一次；payload {bucket,window,retryAfterSecs}）。事实级
 // 事件不改快照；HTTP/SSE 路由归 httpd-api-2。
@@ -2541,6 +2825,9 @@ func (s *Service) commitRun(runID string, mutate func(run *Run) ([]*Event, bool)
 		run.UpdatedAt = time.Now()
 		lastErr = s.store.SaveRun(run)
 		if lastErr == nil {
+			// run 状态事件成功落账（journal+快照）后的通知挂点（notify.go）：
+			// 放在 SaveRun 之后，回调侧从 store 读到的才是终局快照。
+			s.notifyRunStatusEvents(events)
 			return nil
 		}
 		if !errors.Is(lastErr, ErrVersionConflict) {
@@ -2556,14 +2843,19 @@ func (s *Service) emit(event *Event) {
 	}
 }
 
-// newEvent 构造 journal 事件（Sequence 由 Journal.Append 统一盖写）。
+// newEvent 构造 journal 事件（Sequence 由 Journal.Append 统一盖写，
+// CreatedAt 在此统一盖章——§12 阶段四工作项 5：耗时统计（stats.go）与
+// stall 锚点重建（notify.go rebuildLastSuccessAt）都依赖事件时间戳；
+// Append 只盖 Sequence 不动时间戳。旧 journal 的事件 createdAt 恒为零值，
+// 无法回填——统计侧以 coverage=none 明示（stats.go）。
 func newEvent(runID, eventType, source string, payload map[string]any) *Event {
 	return &Event{
-		ID:      uuid.NewString(),
-		RunID:   runID,
-		Type:    eventType,
-		Source:  source,
-		Payload: payload,
+		ID:        uuid.NewString(),
+		RunID:     runID,
+		Type:      eventType,
+		Source:    source,
+		Payload:   payload,
+		CreatedAt: time.Now(),
 	}
 }
 
@@ -2594,7 +2886,7 @@ func (s *Service) slice() time.Duration {
 	return defaultWaitSlice
 }
 
-// ---- 用户操作：Cancel / Resume ----
+// ---- 用户操作：Cancel / Pause / Resume ----
 
 // Cancel 取消整个运行（§10.2）。顺序保证 watcher no-op：先把全部非终态任务
 // 与 run 本体在 store/journal 落 cancelled（先记账），再逐个执行副作用
@@ -2675,11 +2967,83 @@ func (s *Service) Cancel(runID string) (*Run, error) {
 	return s.store.Run(runID), nil
 }
 
-// Resume 恢复 waiting_input 的运行（§10.2：resume 只用于外因暂停，不得把
-// 确定性 failed 或未决 unknown 直接改成 running）。流程：PlanResume 纯决策 →
-// 未决 unknown 任务落 stopped（『结果未知，用户已确认不再重发』，绝不重发、
-// 不重建 submission）→ 应用其余转移 → 可继续分支重启调度循环；无可派发且
-// 全终态时 fold（存在 stopped → run stopped）。
+// Pause 把运行软停到 paused（§12 阶段四工作项 4：区别于 cancel 的可恢复
+// 软停——cancel 是终局，先落账再撤全部副作用、重复 409；pause 非终态）。
+// 语义：
+//
+//   - 只对新派发生效：runLoop 推进段对 paused 驻留退出（照 waiting_input
+//     分支同款），在途 watcher 继续跑到终态自然入账——普通 completed/failed
+//     只落任务事实，run 停在 paused；停靠（quota/auth/not_configured）与
+//     结果未知会把 run 升级 waiting_input（有意设计：waiting_input 语义严格
+//     强于 paused，升级后 Resume 走 PlanResume 既有路径）；
+//   - paused 不撤回 open 问题（非终局，问题随任务终态/Run 终局撤回）；
+//   - run 超时 deadline 与 stall 计时冻结（软停不烧时钟），Resume 经
+//     startLoopLocked 重臂；
+//   - 暂停期间 Cancel 可用（终局优先）。
+//
+// checkpoint＝Run 快照 + journal 游标，不加新存储：run_paused payload.sequence
+// 记录暂停落账前 journal 已有事实的最大序号（游标锚点）；恢复续跑不重发由
+// 既有机制保证（ReconcileRun 账本有条目不回 ready + submissionID 确定性幂等）。
+//
+// 状态门：终态拒绝（ErrRunFinished→409）；已 paused 拒绝重复暂停、
+// waiting_input 拒绝（它本就是停靠态，语义严格强于 paused，直接 Resume 或
+// Cancel 即可）——两者都包 ErrRunNotWaiting 哨兵（HTTP 侧既有映射 409）。
+func (s *Service) Pause(runID string) (*Run, error) {
+	state := s.stateFor(runID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	run := s.store.Run(runID)
+	if run == nil {
+		return nil, fmt.Errorf("%w: run=%s", ErrNotFound, runID)
+	}
+	if terminalRun(run.Status) {
+		return nil, fmt.Errorf("%w: 当前状态 %s", ErrRunFinished, run.Status)
+	}
+	if run.Status == RunPaused {
+		return nil, fmt.Errorf("%w: 当前状态 %s（已暂停，请先继续）", ErrRunNotWaiting, run.Status)
+	}
+	if run.Status == RunWaitingInput {
+		return nil, fmt.Errorf("%w: 当前状态 %s（已停靠等待输入，无需暂停，可直接继续或取消）", ErrRunNotWaiting, run.Status)
+	}
+	// 游标锚点：暂停落账前 journal 已有事实的最大序号（run_paused 事件自身
+	// 是游标后的首条新事实；LastSequence 与 commitRun 的 Append 都经 journal
+	// 自身的锁，state.mu 已把本 Run 的并发写者挡在门外）。
+	cursor := s.journal.LastSequence()
+	applied := false
+	if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+		// 版本冲突重载后复查：并发停靠/取消可能已改变状态（first-wins）。
+		if terminalRun(fresh.Status) || fresh.Status == RunPaused || fresh.Status == RunWaitingInput {
+			return nil, false
+		}
+		fresh.Status = RunPaused
+		fresh.StopReason = "用户暂停运行"
+		applied = true
+		return []*Event{newEvent(runID, EventRunPaused, "user", map[string]any{
+			"reason":   fresh.StopReason,
+			"sequence": json.Number(strconv.FormatUint(cursor, 10)),
+		})}, true
+	}); err != nil {
+		return nil, err
+	}
+	if !applied {
+		// 外部写者抢先把 run 挪进停靠/终局（进程内写者已被 state.mu 串行化）：
+		// 按当前状态报冲突，绝不谎报暂停成功。
+		return nil, fmt.Errorf("%w: 当前状态 %s", ErrRunNotWaiting, s.store.Run(runID).Status)
+	}
+	// 唤醒循环：推进段读到 paused 即驻留退出。绝不 finishLocked（done 保持
+	// 打开，在途 watcher 继续收尾）也绝不释放写锁（锁的存续与在途任务一致）。
+	s.wakeLocked(state)
+	return s.store.Run(runID), nil
+}
+
+// Resume 恢复 waiting_input / paused 的运行（§10.2：resume 只用于外因暂停，
+// 不得把确定性 failed 或未决 unknown 直接改成 running）。waiting_input 流程：
+// PlanResume 纯决策 → 未决 unknown 任务落 stopped（『结果未知，用户已确认
+// 不再重发』，绝不重发、不重建 submission）→ 应用其余转移 → 可继续分支重启
+// 调度循环；无可派发且全终态时 fold（存在 stopped → run stopped）。
+// paused 流程（§12 阶段四工作项 4）见下方 paused 分支：不走 PlanResume——
+// 暂停期间在途任务已自然收尾、任务快照即真相，没有 waiting_input 的用户
+// 裁决迁移（unknown 转 stopped、停靠重飞）要补做。
 func (s *Service) Resume(runID string) (*Run, error) {
 	state := s.stateFor(runID)
 	state.mu.Lock()
@@ -2688,8 +3052,44 @@ func (s *Service) Resume(runID string) (*Run, error) {
 	if run == nil {
 		return nil, fmt.Errorf("%w: run=%s", ErrNotFound, runID)
 	}
-	if run.Status != RunWaitingInput {
+	if run.Status != RunWaitingInput && run.Status != RunPaused {
 		return nil, fmt.Errorf("%w: 当前状态 %s", ErrRunNotWaiting, run.Status)
+	}
+	if run.Status == RunPaused {
+		// paused 续跑（§12 工作项 4）：commitRun 推回执行态 + startLoopLocked
+		// 重启循环。有意行为（resume 前写明，测试钉住）：startLoopLocked 每次启
+		// 动都重臂 run 超时 deadline——暂停驻留时长是用户治理时间，从 resume
+		// 时刻重新起算（stall 计时同调，resetStallClockLocked）。
+		//
+		// 目标态选择：暂停落在验证闸门窗口（reducing）时，在飞/已落未判的
+		// 闸门结果随暂停自然收尾（Verify 已落账、判定因状态不在 reducing 而
+		// 未应用）——推回 RunReducing 让推进段就地补判（闸门未过 → 升级
+		// waiting_input 走 verify_failed 复验；过了 → 正常 fold）；否则推回
+		// RunDispatching，剩余任务照常派发、全终态由折叠段收口（闸门未决的
+		// 会被 fold 拦截重新过闸）。绝不重发已确认任务：在途任务按快照事实
+		// 收养，planned/ready 才是新派发。
+		target := RunDispatching
+		if run.Verify != nil {
+			target = RunReducing
+		}
+		applied := false
+		if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+			if fresh.Status != RunPaused {
+				return nil, false // 并发 Cancel/停靠已改写：first-wins。
+			}
+			fresh.Status = target
+			fresh.StopReason = ""
+			applied = true
+			return nil, true // 纯状态推进：续跑事实由其后的派发/终局事件记账。
+		}); err != nil {
+			return nil, err
+		}
+		if !applied {
+			return nil, fmt.Errorf("%w: 当前状态 %s", ErrRunNotWaiting, s.store.Run(runID).Status)
+		}
+		s.resetStallClockLocked(state)
+		s.startLoopLocked(state)
+		return s.store.Run(runID), nil
 	}
 	// 闸门复验（§13.3.7：修复后 continue 即复验）：verify_failed 停靠不走
 	// PlanResume（此时任务表全 completed，无可恢复分支），清空 Verify、回
@@ -2706,8 +3106,23 @@ func (s *Service) Resume(runID string) (*Run, error) {
 		}); err != nil {
 			return nil, err
 		}
+		s.resetStallClockLocked(state)
 		s.startLoopLocked(state)
 		return s.store.Run(runID), nil
+	}
+	// 预算停靠续跑（§9「继续本轮」，与上方 paused/verify_failed 分支并列）：
+	// 先 journal-first 落 run_budget_resumed（ceiling=已派发数+当前
+	// BudgetUnits，同步写 Run.BudgetCeiling 快照），再走 PlanResume 既有
+	// 路径——planned/ready 任务天然可派发，未决 unknown 落 stopped，quota
+	// 停靠重臂。上限推导钉死为 journal 事实（事件重放，重启后
+	// applyJournalEventToRun 回填 ceiling）+快照双载体，不丢失、不漂移；
+	// 决策审计由 Resume 动作本身的 journal 事件承担（§9 的 decisionID 载体
+	// 是成员问题 decision 端点，预算继续走 Resume 即显式用户动作+事件审计，
+	// 与 amend/repair 同口径，不新增 decisionID 通道）。
+	if strings.HasPrefix(run.StopReason, StopReasonBudgetExhausted) {
+		if err := s.resumeBudgetLocked(state, run); err != nil {
+			return nil, err
+		}
 	}
 	transitions, ok := PlanResume(run)
 	if !ok {
@@ -2734,6 +3149,7 @@ func (s *Service) Resume(runID string) (*Run, error) {
 		}); err != nil {
 			return nil, err
 		}
+		s.resetStallClockLocked(state)
 		s.startLoopLocked(state)
 	}
 	return s.store.Run(runID), nil
@@ -2743,42 +3159,203 @@ func (s *Service) Resume(runID string) (*Run, error) {
 
 // RecoverRun 对单个 run 跑启动对账：journal 重放 + Probe（submissions 账本
 // 与会话存活）→ ReconcileRun 纯决策 → 落账 → 未终局的 run 重启调度循环
-// （在途任务由循环收养 watcher）；waiting_input 驻留等待 resume。终态或
-// 不存在的 run 直接跳过。
+// （在途任务由循环收养 watcher）；waiting_input/paused 驻留等待 resume，
+// 但在途任务仍经 adoptInFlight 重新有人观察（§12 阶段四收养解耦；paused
+// 照 waiting_input 先例不启动循环——startLoopLocked 会重臂 run 超时时钟，
+// 暂停驻留不该烧时钟）。终态或不存在的 run 直接跳过。
 func (s *Service) RecoverRun(runID string) error {
 	state := s.stateFor(runID)
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	run := s.store.Run(runID)
-	if run == nil || terminalRun(run.Status) {
+	parked := false
+	if err := func() error {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		run := s.store.Run(runID)
+		if run == nil || terminalRun(run.Status) {
+			return nil
+		}
+		events, err := s.journal.Replay()
+		if err != nil {
+			return fmt.Errorf("run %s 对账失败: %w", runID, err)
+		}
+		// 预算计量重建（§9）：已派发数按 journal 重放（与运行期增量同一
+		// 口径，countRunDispatches 去重幂等）——重启绝不丢预算事实。
+		state.dispatchCount = countRunDispatches(events, runID)
+		transitions := ReconcileRun(run, events, &serviceProbe{service: s})
+		if len(transitions) > 0 {
+			if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+				applied, _ := applyTransitions(fresh, transitions, "runner")
+				return applied, len(applied) > 0 || len(transitions) > 0
+			}); err != nil {
+				return err
+			}
+		}
+		// 崩溃窗口补偿：journal 已记账、快照未保存的 dispatching/running 任务
+		// 补回 submissionId/attempt（幂等键确定性派生，§6.2）。
+		s.backfillDispatchesLocked(runID)
+		fresh := s.store.Run(runID)
+		if fresh == nil || terminalRun(fresh.Status) {
+			s.finishLocked(state)
+			return nil
+		}
+		if fresh.Status == RunWaitingInput || fresh.Status == RunPaused {
+			parked = true
+			return nil // 驻留等待 resume：不启动调度循环（deadline 不重臂）。
+		}
+		// stall 锚点重建（§6.3）：journal 最近 task_completed 的 createdAt
+		// （无有效时间戳回退当前时刻，见 notify.go 的施工顺序依赖说明）。
+		s.rebuildLastSuccessAt(state, events)
+		s.startLoopLocked(state)
 		return nil
+	}(); err != nil {
+		return err
 	}
-	events, err := s.journal.Replay()
-	if err != nil {
-		return fmt.Errorf("run %s 对账失败: %w", runID, err)
+	if parked {
+		// 收养解耦（§12 阶段四工作项 2）：waiting_input/paused Run 的在途任务
+		// 重启后重新有人观察（watcher 自带任务超时兜底），但绝不启动调度循环
+		// ——startLoopLocked 会重臂 run 超时时钟，驻留语义只归 resume。
+		s.adoptInFlight(state)
 	}
-	transitions := ReconcileRun(run, events, &serviceProbe{service: s})
-	if len(transitions) > 0 {
-		if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
-			applied, _ := applyTransitions(fresh, transitions, "runner")
-			return applied, len(applied) > 0 || len(transitions) > 0
-		}); err != nil {
-			return err
+	return nil
+}
+
+// adoptInFlight 为 run 快照在途（dispatching/running）的任务补 watcher
+// （§12 阶段四工作项 2 的「收养解耦」：watcher 本就独立于调度循环存活——
+// 起 watcher 不等于起循环，runner.go:474 的驻留注释）。持 state.mu 复用
+// adoptWatchersLocked 主体；isolated 任务的收养要走锁外工作区对账（注册表
+// + rev-parse），照 loopPass 先例先收集候选、锁外交 adoptWorkspaceWatchers
+// 处理。不启动调度循环、不触碰 run 状态与 deadline。终态/reducing 闸门
+// 窗口/已删除的 run 直接跳过（照 passAdvance 的短路语义）。
+func (s *Service) adoptInFlight(state *runState) {
+	var adoptions []isolatedAdoption
+	func() {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		run := s.store.Run(state.runID)
+		if run == nil || terminalRun(run.Status) || run.Status == RunReducing {
+			return
+		}
+		team := s.store.Team(run.TeamID)
+		adoptions = s.adoptWatchersLocked(state, team, run, policyOf(team))
+	}()
+	if len(adoptions) > 0 {
+		s.adoptWorkspaceWatchers(state, adoptions)
+	}
+}
+
+// RefreshRun 刷新一个 Run 的运行中状态（§12 阶段四工作项 2，周期 reconciler
+// 与 RecoverRun 之外的独立对账入口）：① 收养在途任务的 watcher（adoptInFlight
+// 同款主体）；② outcome_unknown 任务只读重探（ReconcileUnknown 纯决策 +
+// 专用 mutate 落账，探到确定事实才单向纠正）。
+//
+// 三条铁律（对齐阶段四验收「结果未知任务不会自动重发」）：
+//
+//  1. 不改 run.Status——waiting_input 驻留等 resume；全任务因纠正转终态也
+//     绝不 fold（passFold 对 waiting_input 早退正是 verify_failed/quota 停靠
+//     的保护，refresh 绕过它等于杀死停靠语义），终局只由用户 Resume 触发；
+//  2. 不把任何任务转回 ready——账本无条目只证明「现在查不到」，不构成
+//     「从未发送」的证明（Probe 契约，recovery.go）；
+//  3. 不 startLoop——startLoopLocked 每次启动都重臂 run 超时时钟。
+//
+// 终态或不存在的 run 直接跳过（幂等）；重探记账失败返回错误（周期循环下轮
+// 重试），收养仍照常执行。
+func (s *Service) RefreshRun(runID string) error {
+	state := s.stateFor(runID)
+	var adoptions []isolatedAdoption
+	reconcileErr := func() error {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		run := s.store.Run(runID)
+		if run == nil || terminalRun(run.Status) {
+			return nil
+		}
+		var err error
+		// ② unknown 只读重探：纯决策按入口快照计算，专用 mutate 在 fresh
+		// 副本上复核 outcome_unknown（快照被并发演进时本轮放弃该迁移）。
+		if transitions := ReconcileUnknown(run, s.store.Team(run.TeamID), &serviceProbe{service: s}); len(transitions) > 0 {
+			err = s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+				events := applyReconciledUnknown(fresh, transitions, "runner")
+				return events, len(events) > 0
+			})
+			if run = s.store.Run(runID); run == nil {
+				return err
+			}
+		}
+		// ① 收养在途任务（reducing 闸门窗口不收养，照 passAdvance 短路）。
+		if run.Status != RunReducing {
+			team := s.store.Team(run.TeamID)
+			adoptions = s.adoptWatchersLocked(state, team, run, policyOf(team))
+		}
+		return err
+	}()
+	if len(adoptions) > 0 {
+		s.adoptWorkspaceWatchers(state, adoptions)
+	}
+	return reconcileErr
+}
+
+// DefaultReconcileInterval 是 waiting_input Run 刷新循环的默认周期（§12
+// 阶段四工作项 2；env GATEWAY_TEAM_RECONCILE_SECONDS 可调，解析见
+// cmd/gateway/main.go 的 teamReconcileIntervalFromEnv——默认值的唯一来源）。
+const DefaultReconcileInterval = 60 * time.Second
+
+// StartReconciler 启动运行中状态刷新循环（§12 阶段四工作项 2）：每 tick
+// 对全部 waiting_input Run 依次 RefreshRun——各 Run 的 state.mu 天然串行
+// 防重入（循环与用户 Resume/watcher 收尾互斥）。仿 accpool Poller 的
+// ctx+done 形态：interval≤0 不启动，重复调用无副作用。
+func (s *Service) StartReconciler(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	s.reconcilerMu.Lock()
+	defer s.reconcilerMu.Unlock()
+	if s.reconcilerCancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.reconcilerCancel = cancel
+	s.reconcilerDone = make(chan struct{})
+	go s.reconcileLoop(ctx, interval, s.reconcilerDone)
+}
+
+// StopReconciler 停止刷新循环并同步等待在途 RefreshRun 收尾（幂等；未启动
+// 时无副作用）。
+func (s *Service) StopReconciler() {
+	s.reconcilerMu.Lock()
+	cancel, done := s.reconcilerCancel, s.reconcilerDone
+	s.reconcilerCancel, s.reconcilerDone = nil, nil
+	s.reconcilerMu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+}
+
+// reconcileLoop 每 interval 对全部 waiting_input Run 依次刷新；单个 Run
+// 失败只记日志不阻断其余。ctx 取消即返回（进行中的 RefreshRun 完成后退出）。
+func (s *Service) reconcileLoop(ctx context.Context, interval time.Duration, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, run := range s.store.Runs() {
+			if run.Status != RunWaitingInput {
+				continue // 快照初筛：非 waiting_input 的 Run 循环常驻已覆盖。
+			}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			if err := s.RefreshRun(run.ID); err != nil {
+				log.Printf("team run %s 运行状态刷新失败（下轮重试）: %v", run.ID, err)
+			}
 		}
 	}
-	// 崩溃窗口补偿：journal 已记账、快照未保存的 dispatching/running 任务
-	// 补回 submissionId/attempt（幂等键确定性派生，§6.2）。
-	s.backfillDispatchesLocked(runID)
-	fresh := s.store.Run(runID)
-	if fresh == nil || terminalRun(fresh.Status) {
-		s.finishLocked(state)
-		return nil
-	}
-	if fresh.Status == RunWaitingInput {
-		return nil
-	}
-	s.startLoopLocked(state)
-	return nil
 }
 
 // RecoverAll 在网关启动时对全部 run 逐个对账；单个 run 失败不阻断其余

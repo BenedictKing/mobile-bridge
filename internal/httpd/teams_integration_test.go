@@ -15,11 +15,15 @@ package httpd
 // 缩到毫秒级（runner.go 的导出测试钩子）。缺 python3 时沿用 t.Skip 惯例。
 // 阶段二组（TestTeamIntegration2*，§12 阶段二验收 / §13.2 条目 2/7/8/11/12）
 // 在本文件后半段，复用同一套 fixture，另装配 Transcripts/Workspaces 端口。
+// 阶段四组（TestTeamIntegration4*，§12 阶段四验收三条 + §13.2 对应行）同样
+// 在后半段（定时触发/重启恢复/结果未知 reconciler/手机恢复/pause/stall/
+// 预算/通知/stats/graph），另装配 TeamJournal、Scheduler 与伪 ntfy 通知渠道。
 
 import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,12 +31,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
 	"github.com/google/uuid"
 )
@@ -185,6 +191,30 @@ def handle_prompt(m, ident):
   reply({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": body}}}})
   reply({"jsonrpc": "2.0", "id": ident, "result": {"stopReason": "end_turn"}})
   return
+ # 阶段四增量（本文件后半段）：QUOTAGATE:key → 先等 {dir}/release-{key}-
+ # {sessionId}.txt（HOLDUNTIL 同款精确放行），放行后回 quota 错误（余额/
+ # 充值措辞触发 aimd.go quotaRE）——制造「在途任务延迟停靠」的可控窗口
+ # （pause 期间停靠升级 waiting_input 的用例）；一次性标记，二次到达跳过
+ # 本分支落入普通完成（resume 重飞即通过）。
+ if "QUOTAGATE" in text and prompt_count(sid, text) < 2:
+  with LOCK:
+   STATE["cancelled"] = False
+  match = re.search(r"QUOTAGATE:([A-Za-z0-9_-]+)", text)
+  gate = os.path.join(DIR, "release-%s-%s.txt" % (match.group(1) if match else "x", sid))
+  for _ in range(400):
+   with LOCK:
+    if STATE["cancelled"]:
+     break
+   if os.path.exists(gate):
+    break
+   time.sleep(0.05)
+  with LOCK:
+   cancelled = STATE["cancelled"]
+  if cancelled:
+   reply({"jsonrpc": "2.0", "id": ident, "result": {"stopReason": "cancelled"}})
+  else:
+   reply({"jsonrpc": "2.0", "id": ident, "error": {"code": -32000, "message": "请求失败：账户余额不足，请充值后再试"}})
+  return
  # 特定失败标记先于通用 FAIL（QUOTAFAIL 内含子串 FAIL：一次性标记二次到达
  # 跳过自身分支后，也不得落入通用 FAIL——否则重试 attempt 永远失败）。
  if "RATELIMIT" in text and prompt_count(sid, text) < 2:
@@ -215,18 +245,20 @@ def handle_prompt(m, ident):
   with LOCK:
    STATE["cancelled"] = False  # 取消状态按 turn 作用：上个 turn 的 session/cancel 不得传染本 turn
   # 闸门键只从 [Assigned task] 尾段提取：注入的 [Team context] 可能携带上游
-  # 结果里的同名标记（rsplit 取最后一个信封头，上游信封已被 strip，正常只剩
-  # 本任务一处）。
+  # 结果里的同名标记（rsplit 取最后一个信封头）；尾段无标记说明本任务不设
+  # 闸门（阶段四图用例的下游任务上下文含上游 HOLDUNTIL 结果文本），直接
+  # 放行，绝不落到 release-x 的 20s 死等。
   tail = text.rsplit("[Assigned task]", 1)[-1]
   match = re.search(r"HOLDUNTIL:([A-Za-z0-9_-]+)", tail)
-  gate = os.path.join(DIR, "release-%s-%s.txt" % (match.group(1) if match else "x", sid))
-  for _ in range(400):
-   with LOCK:
-    if STATE["cancelled"]:
+  if match:
+   gate = os.path.join(DIR, "release-%s-%s.txt" % (match.group(1), sid))
+   for _ in range(400):
+    with LOCK:
+     if STATE["cancelled"]:
+      break
+    if os.path.exists(gate):
      break
-   if os.path.exists(gate):
-    break
-   time.sleep(0.05)
+    time.sleep(0.05)
   stop = "cancelled" if STATE["cancelled"] else "end_turn"
  elif "hold" in text:
   time.sleep(1.5)
@@ -330,6 +362,9 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	t.Cleanup(func() { journal.Close() })
 	queueAdapter, resolver := NewTeamAdapters(server)
 	server.TeamStore = store
+	// TeamJournal 供 /stats 端点全量重放 journal（main.go:928-930 的同构
+	// 装配：与 TeamStore 同源；缺它 stats 端点按 409 拒绝）。
+	server.TeamJournal = journal
 	server.TeamFeeds = NewTeamFeedRegistry(journal, store)
 	// changes 长轮询的测试等待上限（生产默认 12s，见 teams.go）。
 	server.TeamChangesWait = 20 * time.Millisecond
@@ -2905,5 +2940,1701 @@ func TestTeamIntegration2EventStreamPhase2Rows(t *testing.T) {
 	}
 	if meta, _ = page["meta"].(map[string]any); meta == nil || meta["status"] != "completed" {
 		t.Fatalf("增量帧 meta 应翻 completed: %v", meta)
+	}
+}
+
+// ---- 阶段四组（TestTeamIntegration4*）：§12 阶段四验收 / §13.2 对应行 ----
+//
+// 覆盖计划阶段四验收三条与配套工作项的端到端：定时触发全链路与崩溃窗口
+// 幂等（fixture 预置 team-schedules.json 绕开 PUT 的 intervalSecs≥300 下限
+// ——评审缺失项③定案，API 层下限由 teams_test 的校验用例钉住）、定时 Run
+// 重启恢复、结果未知经 reconciler 周期/重启/refresh 三面绝不重发、
+// waiting_input 手机恢复（通知落账+resume 续跑）、pause/resume 全语义
+// （收尾/冻结/重启保持/journal 重建/停靠升级）、Run 通知四类载荷与水位
+// 补发退避、stall 只通知不停止（SetStallAfter 缩线）、预算停靠与重启
+// ceiling 不漂移、stats 数字与 coverage=none、阶段图形状。选择器约定：
+// -run 'TestTeamIntegration4'（与阶段一/二组分开跑，-race 下避免时限压力
+// 叠加）；等待全部 deadline 轮询（120ms 节拍/20s 超时），不用固定 sleep
+// 判正确性（§13.1）。
+
+// writeTeamScheduleFixture 直写 team-schedules.json（集成测试旁路：fixture
+// 不经 ValidateSchedule，intervalSecs 可小于生产下限 300——MinScheduleInterval
+// Secs 只挡 HTTP 配置面）。mutate 允许覆盖 NextDue/PendingTriggerID 等
+// 簿记字段构造崩溃窗口形态。
+func writeTeamScheduleFixture(t *testing.T, dataDir, teamID string, mutate func(schedule *team.TeamSchedule)) {
+	t.Helper()
+	schedule := &team.TeamSchedule{TeamID: teamID, Enabled: true, IntervalSecs: 600}
+	if mutate != nil {
+		mutate(schedule)
+	}
+	raw, err := json.Marshal(map[string]*team.TeamSchedule{teamID: schedule})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "team-schedules.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// attachScheduler 照 main.go:966-978 装配定时触发器（ScheduleStore 与
+// /schedule 端点共用同一实例；CreateRun 恒传新 runID、autoPlan=false、
+// scheduledFrom=triggerID）。tick 经导出字段缩到秒级（env
+// GATEWAY_TEAM_SCHEDULE_TICK_SECONDS 是进程级全局、测试包内互串，不取）；
+// 返回的触发器已 Start——Start 首轮 sweep 即含 PendingTriggerID 回扫。
+func (e *teamIntegrationEnv) attachScheduler(t *testing.T) *team.Scheduler {
+	t.Helper()
+	schedules := team.LoadScheduleStore(filepath.Join(e.dataDir, "team-schedules.json"))
+	e.server.TeamSchedules = schedules
+	scheduler := team.NewScheduler(schedules, e.store, e.journal,
+		func(scheduledTeam *team.Team, goal, mode, collect string, verifyCommand []string, plan []team.PlanTaskInput, scheduledFrom string) (*team.Run, error) {
+			return e.server.Teams.CreateRun(scheduledTeam, "", goal, mode, collect, verifyCommand, plan, false, scheduledFrom)
+		})
+	scheduler.Tick = time.Second
+	t.Cleanup(scheduler.Stop)
+	scheduler.Start()
+	return scheduler
+}
+
+// teamScheduleView 读取 GET /api/teams/:id/schedule 的配置投影。
+func (e *teamIntegrationEnv) teamScheduleView(t *testing.T, teamID string) map[string]any {
+	t.Helper()
+	response := e.request(http.MethodGet, "/api/teams/"+teamID+"/schedule", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("读取 schedule 失败: %d %s", response.Code, response.Body.String())
+	}
+	var view map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	return view
+}
+
+// teamRunsList 返回团队的 Run 概要列表。
+func (e *teamIntegrationEnv) teamRunsList(t *testing.T, teamID string) []map[string]any {
+	t.Helper()
+	response := e.request(http.MethodGet, "/api/teams/"+teamID+"/runs", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("读取 Run 列表失败: %d %s", response.Code, response.Body.String())
+	}
+	var list struct {
+		Runs []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	return list.Runs
+}
+
+// teamRunStats 读取 GET /stats 的统计投影。
+func (e *teamIntegrationEnv) teamRunStats(t *testing.T, teamID, runID string) map[string]any {
+	t.Helper()
+	response := e.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/stats", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("读取 stats 失败: %d %s", response.Code, response.Body.String())
+	}
+	var stats map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	return stats
+}
+
+// teamRunGraph 读取 GET /graph 的阶段图投影。
+func (e *teamIntegrationEnv) teamRunGraph(t *testing.T, teamID, runID string) map[string]any {
+	t.Helper()
+	response := e.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/graph", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("读取 graph 失败: %d %s", response.Code, response.Body.String())
+	}
+	var graph map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &graph); err != nil {
+		t.Fatal(err)
+	}
+	return graph
+}
+
+// ---- 伪 ntfy 渠道与 Run 通知装配（main.go:938-962 的同构测试面）----
+
+// fakeNtfyPost 是 ntfy 渠道的一条发送载荷（publish.go publishNtfy 的落点）。
+type fakeNtfyPost struct {
+	Topic   string `json:"topic"`
+	Title   string `json:"title"`
+	Message string `json:"message"`
+	Click   string `json:"click"`
+}
+
+// fakeNtfy 是可关停的伪 ntfy 服务：捕获全部 POST 载荷；failing 置真时回
+// 500 模拟服务不可达（杀 server / 复活由测试翻转，无需重建服务器——
+// URL 不变才能跨「重启」复用送达痕迹）。
+type fakeNtfy struct {
+	url string
+
+	mu      sync.Mutex
+	posts   []fakeNtfyPost
+	failing bool
+}
+
+func startFakeNtfy(t *testing.T) *fakeNtfy {
+	t.Helper()
+	fake := &fakeNtfy{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var post fakeNtfyPost
+		_ = json.Unmarshal(raw, &post)
+		fake.mu.Lock()
+		fake.posts = append(fake.posts, post)
+		failing := fake.failing
+		fake.mu.Unlock()
+		if failing {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	fake.url = server.URL
+	return fake
+}
+
+func (f *fakeNtfy) setFailing(failing bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failing = failing
+}
+
+func (f *fakeNtfy) all() []fakeNtfyPost {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]fakeNtfyPost(nil), f.posts...)
+}
+
+// findByTitle 返回标题包含 want 的全部载荷（按 Run goal 区分通知归属）。
+func (f *fakeNtfy) findByTitle(want string) []fakeNtfyPost {
+	var matched []fakeNtfyPost
+	for _, post := range f.all() {
+		if strings.Contains(post.Title, want) {
+			matched = append(matched, post)
+		}
+	}
+	return matched
+}
+
+// writeNotificationsSettings 预置 {dataDir}/notifications.json：启用 ntfy
+// 渠道指向伪服务、clickBase 固定值（click deep link 断言载体）。
+func writeNotificationsSettings(t *testing.T, dataDir, serverURL string) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"enabled": true, "server": serverURL, "topic": "bridgetest", "token": "",
+		"barkEnabled": false, "barkServer": "https://api.day.app", "barkKey": "",
+		"clickBase": "https://bridge.example", "includeTitle": false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "notifications.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// notifyKindLog 是 OnRunStatus 回调的测试侧观察面（回调在 Run 的 state.mu
+// 下同步执行，只做记录；commitRun 先落快照后回调，故等待以本日志为准而
+// 非轮询 run 状态——状态可见可能早于回调）。
+type notifyKindLog struct {
+	mu    sync.Mutex
+	kinds []string
+}
+
+func (l *notifyKindLog) record(runID, kind string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.kinds = append(l.kinds, runID+"/"+kind)
+}
+
+func (l *notifyKindLog) has(runID, kind string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, entry := range l.kinds {
+		if entry == runID+"/"+kind {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *notifyKindLog) count(runID, kind string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	count := 0
+	for _, entry := range l.kinds {
+		if entry == runID+"/"+kind {
+			count++
+		}
+	}
+	return count
+}
+
+// attachRunNotifications 照 main.go:941-944 + recordTeamRunNotification 装配
+// OnRunStatus→账本（标题正文经 team.RunNotificationText 组装）；发送与退避
+// 由测试驱动 ledger.Reconcile（不 StartWorker，时间轴完全可控）。
+func (e *teamIntegrationEnv) attachRunNotifications(t *testing.T, ledger *notifications.RunNotificationLedger) *notifyKindLog {
+	t.Helper()
+	log := &notifyKindLog{}
+	e.server.Teams.OnRunStatus = func(runID, kind string) {
+		log.record(runID, kind)
+		run := e.store.Run(runID)
+		if run == nil {
+			return
+		}
+		title, body := team.RunNotificationText(run, kind)
+		if title == "" {
+			return
+		}
+		if err := ledger.Record(runID, run.TeamID, kind, title, body, time.Now()); err != nil {
+			t.Logf("Run 通知记账失败: %v", err)
+		}
+	}
+	return log
+}
+
+// teamBackfillCandidates 是 main.go backfillTeamRunNotifications 的测试侧
+// 镜像：把 store 快照里的可通知 Run 投影成补发候选（水位窗口裁决归
+// ledger.Backfill）。
+func teamBackfillCandidates(e *teamIntegrationEnv) []notifications.RunBackfillCandidate {
+	candidates := []notifications.RunBackfillCandidate{}
+	for _, run := range e.store.Runs() {
+		kind := team.RunNotificationKindOfStatus(run.Status)
+		if kind == "" {
+			continue
+		}
+		title, body := team.RunNotificationText(run, kind)
+		if title == "" {
+			continue
+		}
+		candidates = append(candidates, notifications.RunBackfillCandidate{
+			RunID: run.ID, TeamID: run.TeamID, Kind: kind,
+			UpdatedAt: run.UpdatedAt, Title: title, Body: body,
+		})
+	}
+	return candidates
+}
+
+// ---- 用例 4-1：§12 阶段四验收行 1 前置——定时触发全链路 ----
+
+// TestTeamIntegration4ScheduledTriggerEndToEnd：fixture 预置 NextDue=过去
+// 时刻的 schedule → 装配触发器即在首轮 sweep 到期 → 自动建 Run 跑完。
+// 断言溯源双载体一致（RunDetail.scheduledFrom == run_created
+// payload.scheduledBy）、账面收尾（schedule.lastRunId、pendingTriggerId
+// 清空）、稳定性窗口内不二发（intervalSecs=600，NextDue 已推进）。
+func TestTeamIntegration4ScheduledTriggerEndToEnd(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	sessionA := env.createMemberSession(t, "lead-sess", "定时会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+
+		`","role":"lead"}]`)
+	writeTeamScheduleFixture(t, dataDir, teamID, func(schedule *team.TeamSchedule) {
+		schedule.Goal = "定时验收目标 SCHED-E2E"
+		schedule.Plan = []team.PlanTaskInput{
+			{ID: "st1", MemberID: "lead", Prompt: "定时任务 SCHED-E2E 执行", WriteLock: team.TaskWriteLockNone},
+		}
+		schedule.NextDue = time.Now().Add(-time.Minute)
+	})
+	env.attachScheduler(t)
+
+	// 首轮 sweep 即到期：deadline 轮询等 Run 出现（不经 HTTP 创建）。
+	if !awaitCond(t, 20*time.Second, func() bool {
+		return len(env.teamRunsList(t, teamID)) == 1
+	}) {
+		t.Fatal("定时触发未在时限内创建 Run")
+	}
+	runID, _ := env.teamRunsList(t, teamID)[0]["id"].(string)
+	drive := env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "completed"
+	})
+	if !drive {
+		t.Fatal("定时 Run 未在时限内完成")
+	}
+	// 溯源双载体：RunDetail.scheduledFrom 与 run_created payload.scheduledBy
+	// 同值且非空（触发幂等键）。
+	detail := env.runDetail(t, teamID, runID)
+	scheduledFrom, _ := detail["scheduledFrom"].(string)
+	if scheduledFrom == "" {
+		t.Fatalf("定时 Run 应携带 scheduledFrom: %v", detail)
+	}
+	payload := teamEventPayload(env.journalEvents(t), team.EventRunCreated)
+	if payload == nil || payload["scheduledBy"] != scheduledFrom {
+		t.Fatalf("run_created payload.scheduledBy 应与 scheduledFrom 一致: payload=%v scheduledFrom=%s", payload, scheduledFrom)
+	}
+	// 账面收尾：lastRunId 指向本 Run、pending 标记清除、NextDue 已推进。
+	scheduleView := env.teamScheduleView(t, teamID)
+	if scheduleView["lastRunId"] != runID {
+		t.Fatalf("schedule.lastRunId 应指向触发的 Run: %v", scheduleView)
+	}
+	if pending, _ := scheduleView["pendingTriggerId"].(string); pending != "" {
+		t.Fatalf("触发完成后 pendingTriggerId 应清空: %v", scheduleView)
+	}
+	if records := readTeamPrompts(t, dataDir); len(records) != 1 ||
+		!strings.Contains(records[0].text, "SCHED-E2E") || records[0].session != sessionA {
+		t.Fatalf("定时任务应恰好派发一次到成员会话: %v", records)
+	}
+	// 稳定性窗口：几个 sweep 周期内不二发（NextDue 已推进到下个周期）。
+	env.drive(t, 1300*time.Millisecond, func() bool { return false })
+	if runs := env.teamRunsList(t, teamID); len(runs) != 1 {
+		t.Fatalf("同一窗口内不得重复触发: %d 条 Run", len(runs))
+	}
+	if got := len(readTeamPrompts(t, dataDir)); got != 1 {
+		t.Fatalf("稳定性窗口内不得二次派发: %d 条", got)
+	}
+}
+
+// TestTeamIntegration4ScheduledTriggerCrashWindows：journal-first 触发协议的
+// 两个崩溃窗口（schedule.go 的回扫对账）：
+//   - (a) journal 已有 scheduledBy 事件 + team-runs.json 损坏（快照丢失）→
+//     重启回扫按 journal 事实收尾：清标记、记账 lastRunId、绝不重触发（快照
+//     按 journal 重建后由恢复路径收账）；
+//   - (b) 标记已落、journal 无该事件（标记与创建之间的崩溃）→ provably 未
+//     触发 → 以同一 triggerID 重执行恰好一次。
+func TestTeamIntegration4ScheduledTriggerCrashWindows(t *testing.T) {
+	const crashTeam = "tteam-sched-crash"
+	const crashRun = "trun-sched-crash"
+	const crashSession = "km-team-1"
+	writeCrashTeamFixture := func(t *testing.T, dataDir string) {
+		t.Helper()
+		now := time.Now()
+		teamRow := &team.Team{ID: crashTeam, Name: "触发崩溃团队",
+			Members: []team.TeamMember{{ID: "lead", SessionID: crashSession, AgentKind: "kimi", Role: team.RoleLead, Enabled: true}},
+			LeadID:  "lead", Policy: team.DefaultPolicy(), CreatedAt: now, UpdatedAt: now}
+		raw, err := json.Marshal(map[string]*team.Team{crashTeam: teamRow})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dataDir, "teams.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dataDir, "sessions.txt"),
+			[]byte(crashSession+"\x00"+dataDir+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("journal 已有 scheduledBy 快照丢失不重触发", func(t *testing.T) {
+		dataDir := t.TempDir()
+		writeCrashTeamFixture(t, dataDir)
+		triggerID := uuid.NewString()
+		submissionID := team.TaskSubmissionID(crashTeam, crashRun, "st1", 1)
+		// journal：触发已生效（run_created.scheduledBy）+ 任务已记账派发。
+		events := []*team.Event{
+			{ID: uuid.NewString(), RunID: crashRun, Type: team.EventRunCreated, Source: "scheduler",
+				Payload:  map[string]any{"teamId": crashTeam, "goal": "崩溃窗口目标", "mode": team.ModePipeline, "planHash": "hand-sched", "taskCount": 1, "scheduledBy": triggerID},
+				Sequence: 1, CreatedAt: time.Now()},
+			{ID: uuid.NewString(), RunID: crashRun, Type: team.EventTaskPlanned, Source: "user",
+				Payload: map[string]any{"taskId": "st1", "memberId": "lead"}, Sequence: 2, CreatedAt: time.Now()},
+			{ID: uuid.NewString(), RunID: crashRun, Type: team.EventTaskDispatching, Source: "runner",
+				Payload: map[string]any{"taskId": "st1", "sessionId": crashSession, "submissionId": submissionID, "attempt": 1}, Sequence: 3, CreatedAt: time.Now()},
+		}
+		var journalLines strings.Builder
+		for _, event := range events {
+			line, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journalLines.Write(line)
+			journalLines.WriteByte('\n')
+		}
+		if err := os.WriteFile(filepath.Join(dataDir, "team-journal.jsonl"), []byte(journalLines.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// 快照损坏（写一半崩溃）→ 启动按 journal 重建。
+		if err := os.WriteFile(filepath.Join(dataDir, "team-runs.json"), []byte(`{"trun-sched-crash": {bro`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		writeTeamScheduleFixture(t, dataDir, crashTeam, func(schedule *team.TeamSchedule) {
+			schedule.Goal = "崩溃窗口目标"
+			schedule.Plan = []team.PlanTaskInput{
+				{ID: "st1", MemberID: "lead", Prompt: "崩溃窗口任务 SCHED-CRASH-A 执行", WriteLock: team.TaskWriteLockNone},
+			}
+			schedule.PendingTriggerID = triggerID
+			schedule.NextDue = time.Now().Add(time.Hour)
+		})
+		env := reopenTeamIntegrationEnv(t, dataDir)
+		// 冷 List 预热成员会话归属（生产由 discovery 周期执行；不预热则
+		// 重建后的派发解析不到会话）。
+		if _, err := env.manager.List(15 * time.Second); err != nil {
+			t.Fatalf("session/list 预热失败: %v", err)
+		}
+		env.attachScheduler(t) // 首轮 sweep 即回扫 pending
+		// 回扫裁决：标记清除、lastRunId 指向 journal 里那条 Run（而非新建）。
+		if !awaitCond(t, 20*time.Second, func() bool {
+			view := env.teamScheduleView(t, crashTeam)
+			pending, _ := view["pendingTriggerId"].(string)
+			return pending == "" && view["lastRunId"] == crashRun
+		}) {
+			t.Fatalf("回扫未按 journal 事实收尾: %v", env.teamScheduleView(t, crashTeam))
+		}
+		if runs := env.teamRunsList(t, crashTeam); len(runs) != 1 || runs[0]["id"] != crashRun {
+			t.Fatalf("快照丢失不得触发第二条 Run: %v", runs)
+		}
+		// 快照丢失的边界（现状钉住）：journal 只携带有界 instructionsHead
+		//（§10.3），任务全文随快照丢失——重建后回 ready 的任务重派发时入队
+		// 校验拒绝空文本、Run 确定性 failed。触发协议的关键断言是上一段：
+		// journal 事件在，回扫就绝不重触发（哪怕 Run 自身已不可恢复）。
+		if !env.drive(t, 20*time.Second, func() bool {
+			return env.runDetail(t, crashTeam, crashRun)["status"] == "failed"
+		}) {
+			t.Fatalf("重建的定时 Run 未在时限内确定性收口: %+v", env.runDetail(t, crashTeam, crashRun))
+		}
+		detail := env.runDetail(t, crashTeam, crashRun)
+		if reason, _ := detail["stopReason"].(string); !strings.Contains(reason, "入队失败") {
+			t.Fatalf("快照丢失的任务重派发应确定性失败（空文本入队被拒）: %v", reason)
+		}
+		records := readTeamPrompts(t, dataDir)
+		if len(records) != 0 {
+			t.Fatalf("空文本任务不得到达 Agent: %v", records)
+		}
+		if scheduledFrom, _ := detail["scheduledFrom"].(string); scheduledFrom != triggerID {
+			t.Fatalf("重建后的 scheduledFrom 应保持 triggerID: %q", scheduledFrom)
+		}
+	})
+	t.Run("标记已落 journal 无事件则重执行一次", func(t *testing.T) {
+		dataDir := t.TempDir()
+		writeCrashTeamFixture(t, dataDir)
+		triggerID := uuid.NewString()
+		writeTeamScheduleFixture(t, dataDir, crashTeam, func(schedule *team.TeamSchedule) {
+			schedule.Goal = "崩溃重执行目标"
+			schedule.Plan = []team.PlanTaskInput{
+				{ID: "st1", MemberID: "lead", Prompt: "崩溃重执行任务 SCHED-CRASH-B 执行", WriteLock: team.TaskWriteLockNone},
+			}
+			schedule.PendingTriggerID = triggerID
+			schedule.NextDue = time.Now().Add(time.Hour)
+		})
+		env := reopenTeamIntegrationEnv(t, dataDir)
+		env.attachScheduler(t)
+		if !awaitCond(t, 20*time.Second, func() bool {
+			return len(env.teamRunsList(t, crashTeam)) == 1
+		}) {
+			t.Fatal("provably 未触发的标记应在回扫后重执行")
+		}
+		runID, _ := env.teamRunsList(t, crashTeam)[0]["id"].(string)
+		// 重执行沿用同一 triggerID（崩溃重试间幂等）。
+		if scheduledFrom, _ := env.runDetail(t, crashTeam, runID)["scheduledFrom"].(string); scheduledFrom != triggerID {
+			t.Fatalf("重执行应以同一 triggerID 打标: %q", scheduledFrom)
+		}
+		payload := teamEventPayload(env.journalEvents(t), team.EventRunCreated)
+		if payload == nil || payload["scheduledBy"] != triggerID {
+			t.Fatalf("重执行的 run_created 应带 scheduledBy: %v", payload)
+		}
+		if !env.drive(t, 20*time.Second, func() bool {
+			return env.runDetail(t, crashTeam, runID)["status"] == "completed"
+		}) {
+			t.Fatal("重执行的 Run 未在时限内完成")
+		}
+		if runs := env.teamRunsList(t, crashTeam); len(runs) != 1 {
+			t.Fatalf("重执行恰好一次: %d 条 Run", len(runs))
+		}
+		if records := readTeamPrompts(t, dataDir); len(records) != 1 {
+			t.Fatalf("应恰好派发一次: %v", records)
+		}
+	})
+}
+
+// ---- 用例 4-2：§12 阶段四验收行 1——定时 Run 重启后恢复可确认任务 ----
+
+// TestTeamIntegration4ScheduledRunRestartRecovery：定时触发后在途（任务已
+// 记账、账本 queued、提示词尚未到达 Agent——真实崩溃瞬间）→ 同 dataDir
+// 重装配 + RecoverAll → 账本 queued 保持、重启后恰好派发一次完成、
+// scheduledFrom 与触发溯源跨重启不丢、不重复触发。
+func TestTeamIntegration4ScheduledRunRestartRecovery(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	sessionA := env.createMemberSession(t, "lead-sess", "定时重启会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+
+		`","role":"lead"}]`)
+	writeTeamScheduleFixture(t, dataDir, teamID, func(schedule *team.TeamSchedule) {
+		schedule.Goal = "定时重启目标 SCHED-RESTART"
+		schedule.Plan = []team.PlanTaskInput{
+			{ID: "st1", MemberID: "lead", Prompt: "定时重启任务 SCHED-RESTART HOLDUNTIL:sr", WriteLock: team.TaskWriteLockNone},
+		}
+		schedule.NextDue = time.Now().Add(-time.Minute)
+	})
+	scheduler := env.attachScheduler(t)
+	if !awaitCond(t, 20*time.Second, func() bool {
+		return len(env.teamRunsList(t, teamID)) == 1
+	}) {
+		t.Fatal("定时触发未在时限内创建 Run")
+	}
+	runID, _ := env.teamRunsList(t, teamID)[0]["id"].(string)
+	// 在途窗口：loopPass 已把 st1 记账派发（submissionId 可见、账本 queued），
+	// 不做派发巡检——提示词未出发即「崩溃」。
+	var submissionID string
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && submissionID == "" {
+		task := teamTaskOf(t, env.runDetail(t, teamID, runID), "st1")
+		if id, _ := task["submissionId"].(string); id != "" {
+			submissionID = id
+		} else {
+			time.Sleep(120 * time.Millisecond)
+		}
+	}
+	if submissionID == "" {
+		t.Fatal("任务未在时限内完成派发记账")
+	}
+	if records := readTeamPrompts(t, dataDir); len(records) != 0 {
+		t.Fatalf("崩溃前提示词不应已到达: %v", records)
+	}
+	// 重启：先停旧触发器（避免双触发器并存的账本版本串扰），再同 dataDir
+	// 重装配 + RecoverAll（main.go:921-945 的启动顺序），重挂触发器。
+	scheduler.Stop()
+	env2 := reopenTeamIntegrationEnv(t, dataDir)
+	if _, err := env2.manager.List(15 * time.Second); err != nil {
+		t.Fatalf("session/list 预热失败: %v", err)
+	}
+	env2.attachScheduler(t)
+	// 恢复后：账本 queued 保持并恰好派发一次（HOLDUNTIL 精确放行收账）。
+	if !env2.drive(t, 20*time.Second, func() bool {
+		return promptIndex(readTeamPrompts(t, dataDir), "SCHED-RESTART") >= 0
+	}) {
+		t.Fatal("重启后任务未在时限内派发")
+	}
+	releaseAgentTurn(t, dataDir, "sr", sessionA)
+	if !env2.drive(t, 20*time.Second, func() bool {
+		return env2.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatal("重启后的定时 Run 未在时限内完成")
+	}
+	records := readTeamPrompts(t, dataDir)
+	if len(records) != 1 || !strings.Contains(records[0].text, "SCHED-RESTART") {
+		t.Fatalf("重启恢复零重复：应恰好一条提示词: %v", records)
+	}
+	entry := env2.server.Queue.get(sessionA, submissionID)
+	if entry == nil || entry.Status != SubAccepted {
+		t.Fatalf("恢复派发的条目应 accepted: %+v", entry)
+	}
+	// 溯源跨重启：scheduledFrom 仍在、触发器不重复触发。
+	if scheduledFrom, _ := env2.runDetail(t, teamID, runID)["scheduledFrom"].(string); scheduledFrom == "" {
+		t.Fatal("重启后 scheduledFrom 不应丢失")
+	}
+	if runs := env2.teamRunsList(t, teamID); len(runs) != 1 {
+		t.Fatalf("重启不得重复触发: %d 条 Run", len(runs))
+	}
+	if view := env2.teamScheduleView(t, teamID); view["lastRunId"] != runID {
+		t.Fatalf("schedule.lastRunId 应保持: %v", view)
+	}
+}
+
+// ---- 用例 4-3：§12 阶段四验收行 2——结果未知经 reconciler 三面绝不重发 ----
+
+// TestTeamIntegration4UnknownOutcomeReconcilerNeverResends：派发结果未知
+// （账本 unknown）→ run 停 waiting_input 后，周期 reconciler、手动 refresh
+// 端点、重启 RecoverAll 三面都只对账：run 状态永不变（waiting_input 驻留）、
+// 任务不转 ready、提示词零增长；用户 Resume 才把未决 unknown 落 stopped
+// （「不再重发」）。
+func TestTeamIntegration4UnknownOutcomeReconcilerNeverResends(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	sessionA := env.createMemberSession(t, "lead-sess", "对账会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"结果未知对账","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"等待对账的任务 UNKNOWN-R4","writeLock":"none"}]}`)
+
+	// 等派发记账后手动落 unknown（生产 dispatchSubmission 的真实中间态）。
+	var submissionID string
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) && submissionID == "" {
+		task := teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")
+		if id, _ := task["submissionId"].(string); id != "" {
+			submissionID = id
+		} else {
+			time.Sleep(120 * time.Millisecond)
+		}
+	}
+	if submissionID == "" {
+		t.Fatal("任务未在时限内完成派发记账")
+	}
+	env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
+	}) {
+		t.Fatal("结果未知应把 Run 停进 waiting_input")
+	}
+
+	// 面①：周期 reconciler 循环跑过多个 tick，状态纹丝不动。
+	env.server.Teams.StartReconciler(150 * time.Millisecond)
+	t.Cleanup(env.server.Teams.StopReconciler)
+	since := time.Now()
+	if !awaitCond(t, 5*time.Second, func() bool {
+		return time.Since(since) > 600*time.Millisecond
+	}) {
+		t.Fatal("等待 reconciler 周期失败")
+	}
+	// 面②：手动 refresh 端点（同一 Service.RefreshRun 入口）。
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/refresh", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("refresh 应 200: %d %s", response.Code, response.Body.String())
+	}
+	detail := env.runDetail(t, teamID, runID)
+	if detail["status"] != "waiting_input" || teamTaskOf(t, detail, "t1")["status"] != "outcome_unknown" {
+		t.Fatalf("reconciler/refresh 只对账不改状态: %v", detail["status"])
+	}
+	if records := readTeamPrompts(t, dataDir); len(records) != 0 {
+		t.Fatalf("对账绝不重发: %v", records)
+	}
+	env.server.Teams.StopReconciler()
+
+	// 面③：重启 + RecoverAll + 派发巡检（巡检节拍空转两秒——稳定性窗口，
+	// 返回值按惯例忽略，用例 3 的取消后巡检同款）。
+	env2 := reopenTeamIntegrationEnv(t, dataDir)
+	env2.server.Teams.StartReconciler(150 * time.Millisecond)
+	env2.drive(t, 2*time.Second, func() bool { return false })
+	response = env2.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/refresh", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("重启后 refresh 应 200: %d %s", response.Code, response.Body.String())
+	}
+	detail = env2.runDetail(t, teamID, runID)
+	if detail["status"] != "waiting_input" || teamTaskOf(t, detail, "t1")["status"] != "outcome_unknown" {
+		t.Fatalf("重启后对账不得改 run 状态/转 ready: %v", detail)
+	}
+	entry := env2.server.Queue.get(sessionA, submissionID)
+	if entry == nil || entry.Status != SubUnknown {
+		t.Fatalf("账本应保持 unknown: %+v", entry)
+	}
+	if records := readTeamPrompts(t, dataDir); len(records) != 0 {
+		t.Fatalf("重启后对账绝不重发: %v", records)
+	}
+	env2.server.Teams.StopReconciler()
+
+	// 用户裁决：Resume 把未决 unknown 落 stopped（不再重发），fold stopped。
+	response = env2.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
+	}
+	detail = env2.runDetail(t, teamID, runID)
+	if detail["status"] != "stopped" {
+		t.Fatalf("resume 后 Run 应 stopped: %v", detail["status"])
+	}
+	if task := teamTaskOf(t, detail, "t1"); task["status"] != "stopped" {
+		t.Fatalf("未决 unknown 应转 stopped: %v", task["status"])
+	} else if reason, _ := task["stopReason"].(string); !strings.Contains(reason, "不再重发") {
+		t.Fatalf("stopReason 应说明不再重发: %v", reason)
+	}
+	if records := readTeamPrompts(t, dataDir); len(records) != 0 {
+		t.Fatalf("全程零重发: %v", records)
+	}
+}
+
+// ---- 用例 4-4：§12 阶段四验收行 3——waiting_input 手机可恢复 ----
+
+// TestTeamIntegration4MobileRecoveryViaNotification：quota 停靠把 Run 停进
+// waiting_input → 通知落账（标题「需要你的输入」+ click deep link 指向
+// #run=teamId/runId）→ 用户在手机端 Resume → 停靠任务重飞（attempt+1、
+// 一次性 quota 通过）→ Run 完成并收到完成通知。AskUserQuestion 的 decision
+// 流程不停靠 Run（questions.go:225「不强制 waiting_input」，阶段三
+// TestTeamPhase3EscalateQuestionLifecycle 已覆盖手机回答），验收行的
+// 「需要用户输入」形态即 waiting_input 停靠。
+func TestTeamIntegration4MobileRecoveryViaNotification(t *testing.T) {
+	dataDir := t.TempDir()
+	fake := startFakeNtfy(t)
+	writeNotificationsSettings(t, dataDir, fake.url)
+	env := newTeamIntegrationEnv(t, dataDir)
+	ledger := notifications.NewRunNotificationLedger(dataDir)
+	kindLog := env.attachRunNotifications(t, ledger)
+	sessionA := env.createMemberSession(t, "lead-sess", "手机恢复会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+
+		`","role":"lead"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"手机恢复目标 MOBILE-RECOVER","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"手机恢复任务 MOBILE-RECOVER QUOTAFAIL 首航停靠","writeLock":"none"}]}`)
+
+	// 停靠：quota 文本 → 任务 stopped(outcome=quota) + run waiting_input +
+	// waiting_input 通知落账。
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
+	}) {
+		t.Fatal("quota 停靠未在时限内发生")
+	}
+	if !awaitCond(t, 20*time.Second, func() bool {
+		return kindLog.has(runID, notifications.RunNotifyWaitingInput)
+	}) {
+		t.Fatal("waiting_input 通知未落账")
+	}
+	detail := env.runDetail(t, teamID, runID)
+	if task := teamTaskOf(t, detail, "t1"); task["status"] != "stopped" || task["outcome"] != team.OutcomeQuota {
+		t.Fatalf("任务应 quota 停靠: %v", task)
+	}
+	// 手机侧收到通知：fake ntfy 载荷含「需要你的输入」与 click deep link。
+	if err := ledger.Reconcile(time.Now(), notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("通知补发失败: %v", err)
+	}
+	waiting := fake.findByTitle("需要你的输入")
+	if len(waiting) != 1 {
+		t.Fatalf("waiting_input 通知应恰好一条: %+v", fake.all())
+	}
+	if want := "https://bridge.example/#run=" + teamID + "/" + runID; waiting[0].Click != want {
+		t.Fatalf("waiting_input 通知 click 应指向 Run 页: %q ≠ %q", waiting[0].Click, want)
+	}
+	if !strings.Contains(waiting[0].Title, "MOBILE-RECOVER") {
+		t.Fatalf("通知标题应含目标: %+v", waiting[0])
+	}
+
+	// 手机端恢复：Resume → 重飞 attempt 2（QUOTAFAIL 一次性）→ 完成。
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatal("resume 后 Run 未在时限内完成")
+	}
+	detail = env.runDetail(t, teamID, runID)
+	if attempt, _ := teamTaskOf(t, detail, "t1")["attempt"].(float64); attempt != 2 {
+		t.Fatalf("quota 重飞后 attempt 应为 2: %v", attempt)
+	}
+	if !awaitCond(t, 20*time.Second, func() bool {
+		return kindLog.has(runID, notifications.RunNotifyCompleted)
+	}) {
+		t.Fatal("完成通知未落账")
+	}
+	if err := ledger.Reconcile(time.Now(), notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("通知补发失败: %v", err)
+	}
+	completed := fake.findByTitle("运行完成")
+	if len(completed) != 1 {
+		t.Fatalf("完成通知应恰好一条: %+v", fake.all())
+	}
+	if want := "https://bridge.example/#run=" + teamID + "/" + runID; completed[0].Click != want {
+		t.Fatalf("完成通知 click 异常: %q", completed[0].Click)
+	}
+	if !strings.Contains(completed[0].Message, "MOBILE-RECOVER") {
+		t.Fatalf("完成通知正文应含任务结果摘要: %+v", completed[0])
+	}
+	if records := readTeamPrompts(t, dataDir); len(records) != 2 {
+		t.Fatalf("停靠+重飞应恰好两次派发: %d 条", len(records))
+	}
+}
+
+// ---- 用例 4-5：§12 阶段四工作项 4——pause/resume 全语义 ----
+
+// TestTeamIntegration4PauseResumeLifecycle：pause 掐断新派发（剩余任务零
+// 提示词）、在途任务自然收尾（HOLDUNTIL 精确放行，等价 HOLDLONG 收尾的可
+// 控版）、收尾后 Run 保持 paused 不折叠、run 超时 deadline 冻结（跨线不
+// 超时）、重启保持 paused（快照路径）、resume 续跑恰好派剩余任务、重复
+// pause 409。
+func TestTeamIntegration4PauseResumeLifecycle(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	sessionA := env.createMemberSession(t, "lead-sess", "暂停会话")
+	teamID := env.createTeamWithPolicy(t, `{"runTimeoutSecs":4}`,
+		`[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+	runStarted := time.Now()
+	runID := env.createRun(t, teamID, `{"goal":"暂停恢复 PAUSE-LIFE","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"暂停在途任务 PAUSE-HOLD HOLDUNTIL:pl","writeLock":"none"},
+		{"id":"t2","memberId":"lead","prompt":"暂停剩余任务 PAUSE-TAIL 执行","dependsOn":["t1"],"writeLock":"none"}]}`)
+
+	// t1 在途（闸门未放行）时暂停。
+	if !env.drive(t, 20*time.Second, func() bool {
+		return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
+	}) {
+		t.Fatal("t1 未在时限内进入 running")
+	}
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pause 失败: %d %s", response.Code, response.Body.String())
+	}
+	if status := env.runDetail(t, teamID, runID)["status"]; status != "paused" {
+		t.Fatalf("Run 应 paused: %v", status)
+	}
+	// 重复 pause 409（failTeamError 映射哨兵）。
+	if again := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); again.Code != http.StatusConflict {
+		t.Fatalf("重复 pause 应 409: %d %s", again.Code, again.Body.String())
+	}
+
+	// 暂停期间在途收尾：放行 t1 → completed，Run 仍 paused 不折叠。
+	releaseAgentTurn(t, dataDir, "pl", sessionA)
+	if !env.drive(t, 20*time.Second, func() bool {
+		detail := env.runDetail(t, teamID, runID)
+		return detail["status"] == "paused" && teamTaskOf(t, detail, "t1")["status"] == "completed"
+	}) {
+		t.Fatal("在途任务未在暂停期间自然收尾（或 Run 被误折叠）")
+	}
+	// 暂停期间零新派发：t2 的提示词绝不出现。
+	if records := readTeamPrompts(t, dataDir); len(records) != 1 || promptIndex(records, "PAUSE-TAIL") >= 0 {
+		t.Fatalf("暂停后不得派发剩余任务: %v", records)
+	}
+
+	// run 超时冻结：跨过 runTimeoutSecs 判定线（自 Run 创建起 >4.5s，其中
+	// 大半是 paused 驻留）仍 paused——deadline 只由活循环检查，软停不烧时钟。
+	if !awaitCond(t, 10*time.Second, func() bool {
+		return time.Since(runStarted) > 4500*time.Millisecond
+	}) {
+		t.Fatal("等待超时判定线失败")
+	}
+	detail := env.runDetail(t, teamID, runID)
+	if detail["status"] != "paused" {
+		t.Fatalf("paused 驻留期间 run 超时不得触发: %v（stopReason=%v）", detail["status"], detail["stopReason"])
+	}
+	if events := env.journalEvents(t); teamEventCount(events, team.EventRunStopped) > 0 {
+		t.Fatal("暂停期间不得落 run_stopped（超时冻结）")
+	}
+
+	// 重启保持 paused：同 dataDir 重装配 + RecoverAll + 派发巡检，t2 仍零派发。
+	env2 := reopenTeamIntegrationEnv(t, dataDir)
+	if status := env2.runDetail(t, teamID, runID)["status"]; status != "paused" {
+		t.Fatalf("重启后应保持 paused: %v", status)
+	}
+	env2.drive(t, 1300*time.Millisecond, func() bool { return false })
+	if records := readTeamPrompts(t, dataDir); len(records) != 1 {
+		t.Fatalf("重启后的 paused Run 不得派发: %v", records)
+	}
+
+	// resume 续跑恰好派剩余：t2 派发并完成，t1 零重发（提示词总数 2）。
+	response = env2.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env2.drive(t, 20*time.Second, func() bool {
+		return env2.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatal("resume 后 Run 未在时限内完成")
+	}
+	records := readTeamPrompts(t, dataDir)
+	if len(records) != 2 || promptIndex(records, "PAUSE-TAIL") != 1 {
+		t.Fatalf("续跑应恰好派剩余任务: %v", records)
+	}
+	if t1 := teamTaskOf(t, env2.runDetail(t, teamID, runID), "t1"); t1["status"] != "completed" || t1["attempt"] != float64(1) {
+		t.Fatalf("已确认任务零重发（attempt 保持 1）: %v", t1)
+	}
+}
+
+// TestTeamIntegration4PauseCorruptRebuildStaysPaused：team-runs.json 损坏后
+// 按 journal 重建回 paused（run_paused 事件是唯一可恢复事实，store.go 的
+// applyJournalEventToRun）；重建后的 Run 等 resume，不自动推进。
+func TestTeamIntegration4PauseCorruptRebuildStaysPaused(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	sessionA := env.createMemberSession(t, "lead-sess", "重建暂停会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"重建暂停 PAUSE-REBUILD","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"重建暂停在途任务 PAUSE-RB HOLDUNTIL:pr","writeLock":"none"},
+		{"id":"t2","memberId":"lead","prompt":"重建暂停剩余任务 PAUSE-RB-TAIL","dependsOn":["t1"],"writeLock":"none"}]}`)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
+	}) {
+		t.Fatal("t1 未在时限内进入 running")
+	}
+	if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); response.Code != http.StatusOK {
+		t.Fatalf("pause 失败: %d %s", response.Code, response.Body.String())
+	}
+	releaseAgentTurn(t, dataDir, "pr", sessionA)
+	if !env.drive(t, 20*time.Second, func() bool {
+		detail := env.runDetail(t, teamID, runID)
+		return detail["status"] == "paused" && teamTaskOf(t, detail, "t1")["status"] == "completed"
+	}) {
+		t.Fatal("在途任务未收尾")
+	}
+	// 快照损坏 → 重启按 journal 重建（冷 List 预热：重建任务的 writeLock
+	// 随快照丢失、空值按独占处理，cwd 解析依赖 list 缓存）。
+	if err := os.WriteFile(filepath.Join(dataDir, "team-runs.json"), []byte(`{"broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env2 := reopenTeamIntegrationEnv(t, dataDir)
+	if _, err := env2.manager.List(15 * time.Second); err != nil {
+		t.Fatalf("session/list 预热失败: %v", err)
+	}
+	detail := env2.runDetail(t, teamID, runID)
+	if status := detail["status"]; status != "paused" {
+		t.Fatalf("journal 重建后应回 paused: %v", status)
+	}
+	if task := teamTaskOf(t, detail, "t1"); task["status"] != "completed" {
+		t.Fatalf("重建应保留已确认任务事实: %v", task["status"])
+	}
+	env2.drive(t, 1300*time.Millisecond, func() bool { return false })
+	if records := readTeamPrompts(t, dataDir); len(records) != 1 {
+		t.Fatalf("重建后的 paused Run 不得派发: %v", records)
+	}
+	// 续跑语义的边界（现状钉住）：journal 只携带有界 instructionsHead，
+	// t2 全文随快照丢失——resume 会推进 Run 但剩余任务以空文本入队被拒、
+	// 确定性 failed。重建后「保持 paused 等用户处置」正是 run_paused 事件
+	// journal-first 的价值；快照完好的续跑链路由上一用例覆盖。
+	if response := env2.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`); response.Code != http.StatusOK {
+		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env2.drive(t, 20*time.Second, func() bool {
+		return env2.runDetail(t, teamID, runID)["status"] == "failed"
+	}) {
+		t.Fatalf("重建后的 resume 未在时限内确定性收口: %+v", env2.runDetail(t, teamID, runID))
+	}
+	if reason, _ := teamTaskOf(t, env2.runDetail(t, teamID, runID), "t2")["error"].(string); !strings.Contains(reason, "入队失败") {
+		t.Fatalf("快照丢失的剩余任务应确定性失败: %v", reason)
+	}
+	if got := len(readTeamPrompts(t, dataDir)); got != 1 {
+		t.Fatalf("已确认任务零重发、空文本任务不得到达 Agent: %d", got)
+	}
+}
+
+// TestTeamIntegration4PauseUpgradesToWaitingInput：暂停期间在途任务的后续
+// 停靠把 Run 升级 waiting_input（语义严格强于 paused，runner.go:550-556）：
+//   - unknown：暂停中账本转 unknown → watcher 落 outcome_unknown + 升级；
+//     Resume 走 PlanResume——unknown 落 stopped「不再重发」，绝不重飞。
+//   - quota：QUOTAGATE 在途停靠（闸门文件精确触发）→ 升级 waiting_input；
+//     Resume 重飞 attempt+1 通过并完成。
+func TestTeamIntegration4PauseUpgradesToWaitingInput(t *testing.T) {
+	t.Run("暂停期间 unknown 升级且不再重发", func(t *testing.T) {
+		dataDir := t.TempDir()
+		env := newTeamIntegrationEnv(t, dataDir)
+		sessionA := env.createMemberSession(t, "lead-sess", "升级会话")
+		teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+		runID := env.createRun(t, teamID, `{"goal":"暂停升级 PAUSE-UNK","mode":"pipeline","plan":[
+			{"id":"t1","memberId":"lead","prompt":"暂停升级任务 PAUSE-UNK 等待对账","writeLock":"none"}]}`)
+		// 派发记账但不巡检（提示词未出发——账本 queued）；watcher 的
+		// unknown 判定要求「会话空闲且无本任务 turn」，真实在途 turn 不会
+		// 被误判为未知（去抖复核的正确性面），故本形态停在记账窗口。
+		var submissionID string
+		deadline := time.Now().Add(20 * time.Second)
+		for time.Now().Before(deadline) && submissionID == "" {
+			if id, _ := teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["submissionId"].(string); id != "" {
+				submissionID = id
+			} else {
+				time.Sleep(120 * time.Millisecond)
+			}
+		}
+		if submissionID == "" {
+			t.Fatal("任务未在时限内完成派发记账")
+		}
+		if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); response.Code != http.StatusOK {
+			t.Fatalf("pause 失败: %d %s", response.Code, response.Body.String())
+		}
+		// 暂停中「派发结果未知」：账本转 unknown → watcher 升级。
+		env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
+		if !env.drive(t, 20*time.Second, func() bool {
+			return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
+		}) {
+			t.Fatal("暂停期间结果未知应把 Run 升级 waiting_input")
+		}
+		detail := env.runDetail(t, teamID, runID)
+		if task := teamTaskOf(t, detail, "t1"); task["status"] != "outcome_unknown" {
+			t.Fatalf("任务应 outcome_unknown: %v", task["status"])
+		}
+		response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`)
+		if response.Code != http.StatusOK {
+			t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
+		}
+		detail = env.runDetail(t, teamID, runID)
+		if detail["status"] != "stopped" {
+			t.Fatalf("升级后的 resume 应按 waiting_input 语义收口 stopped: %v", detail["status"])
+		}
+		if reason, _ := teamTaskOf(t, detail, "t1")["stopReason"].(string); !strings.Contains(reason, "不再重发") {
+			t.Fatalf("升级后 resume 绝不重飞: %v", reason)
+		}
+		if got := len(readTeamPrompts(t, dataDir)); got != 0 {
+			t.Fatalf("结果未知绝不重发（提示词零到达）: %d", got)
+		}
+	})
+	t.Run("暂停期间 quota 停靠升级可重飞", func(t *testing.T) {
+		dataDir := t.TempDir()
+		env := newTeamIntegrationEnv(t, dataDir)
+		sessionA := env.createMemberSession(t, "lead-sess", "配额升级会话")
+		teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+		runID := env.createRun(t, teamID, `{"goal":"暂停配额升级 PAUSE-QUOTA","mode":"pipeline","plan":[
+			{"id":"t1","memberId":"lead","prompt":"暂停配额任务 PAUSE-QUOTA QUOTAGATE:pq","writeLock":"none"}]}`)
+		// QUOTAGATE 首航：闸门放行前 turn 在途。
+		if !env.drive(t, 20*time.Second, func() bool {
+			return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
+		}) {
+			t.Fatal("任务未在时限内进入 running")
+		}
+		if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); response.Code != http.StatusOK {
+			t.Fatalf("pause 失败: %d %s", response.Code, response.Body.String())
+		}
+		// 放行闸门：在途 turn 以 quota 错误收尾 → watcher 停靠 → 从 paused
+		// 升级 waiting_input。
+		releaseAgentTurn(t, dataDir, "pq", sessionA)
+		if !env.drive(t, 20*time.Second, func() bool {
+			return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
+		}) {
+			t.Fatal("暂停期间 quota 停靠应把 Run 升级 waiting_input")
+		}
+		detail := env.runDetail(t, teamID, runID)
+		if task := teamTaskOf(t, detail, "t1"); task["status"] != "stopped" || task["outcome"] != team.OutcomeQuota {
+			t.Fatalf("任务应 quota 停靠: %v", task)
+		}
+		// Resume：停靠重飞 attempt+1（QUOTAGATE 一次性）→ 完成。
+		response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`)
+		if response.Code != http.StatusOK {
+			t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
+		}
+		if !env.drive(t, 20*time.Second, func() bool {
+			return env.runDetail(t, teamID, runID)["status"] == "completed"
+		}) {
+			t.Fatal("升级后的 resume 未在时限内完成")
+		}
+		if attempt, _ := teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["attempt"].(float64); attempt != 2 {
+			t.Fatalf("quota 停靠重飞 attempt 应为 2: %v", attempt)
+		}
+		if got := len(readTeamPrompts(t, dataDir)); got != 2 {
+			t.Fatalf("停靠+重飞应恰好两次派发: %d", got)
+		}
+	})
+}
+
+// ---- 用例 4-6：§12 阶段四工作项 3/5——通知四类载荷 + 水位补发与退避 ----
+
+// TestTeamIntegration4RunNotificationPayloads：完成/失败/waiting_input 三类
+// 经真实 OnRunStatus 落账并送达伪 ntfy——标题前缀、click deep link
+// （#run=teamId/runId）、失败通知 salvage 前 3 个已完成任务结果（§6.5：不
+// 因后续失败吞掉，第 4 个已完成任务被 3 条上限截去）。stall 类见
+// TestTeamIntegration4StallNotifiesWithoutStopping（同渠道同 click 组装）。
+func TestTeamIntegration4RunNotificationPayloads(t *testing.T) {
+	dataDir := t.TempDir()
+	fake := startFakeNtfy(t)
+	writeNotificationsSettings(t, dataDir, fake.url)
+	env := newTeamIntegrationEnv(t, dataDir)
+	ledger := notifications.NewRunNotificationLedger(dataDir)
+	kindLog := env.attachRunNotifications(t, ledger)
+	sessionA := env.createMemberSession(t, "lead-sess", "通知会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+	clickOf := func(runID string) string {
+		return "https://bridge.example/#run=" + teamID + "/" + runID
+	}
+
+	// Run 1：单任务完成。
+	doneRun := env.createRun(t, teamID, `{"goal":"通知完成目标 NOTIF-OK","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"通知完成任务 NOTIF-OK","writeLock":"none"}]}`)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, doneRun)["status"] == "completed"
+	}) {
+		t.Fatal("Run 未在时限内完成")
+	}
+	// Run 2：四个完成 + 一个失败（salvage 上限载体）。
+	failedRun := env.createRun(t, teamID, `{"goal":"通知失败目标 NOTIF-FAIL","mode":"pipeline","plan":[
+		{"id":"c1","memberId":"lead","prompt":"失败挽救一 NOTIF-C1","writeLock":"none"},
+		{"id":"c2","memberId":"lead","prompt":"失败挽救二 NOTIF-C2","dependsOn":["c1"],"writeLock":"none"},
+		{"id":"c3","memberId":"lead","prompt":"失败挽救三 NOTIF-C3","dependsOn":["c2"],"writeLock":"none"},
+		{"id":"c4","memberId":"lead","prompt":"失败挽救四 NOTIF-C4","dependsOn":["c3"],"writeLock":"none"},
+		{"id":"f5","memberId":"lead","prompt":"失败触发 NOTIF-F5 FAIL 注入","dependsOn":["c4"],"writeLock":"none"}]}`)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, failedRun)["status"] == "failed"
+	}) {
+		t.Fatal("Run 未在时限内失败")
+	}
+	// Run 3：quota 停靠 waiting_input。
+	parkedRun := env.createRun(t, teamID, `{"goal":"通知停靠目标 NOTIF-PARK","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"通知停靠任务 NOTIF-PARK QUOTAFAIL","writeLock":"none"}]}`)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, parkedRun)["status"] == "waiting_input"
+	}) {
+		t.Fatal("Run 未在时限内停靠")
+	}
+	for _, want := range []struct {
+		runID, kind string
+	}{
+		{doneRun, notifications.RunNotifyCompleted},
+		{failedRun, notifications.RunNotifyFailed},
+		{parkedRun, notifications.RunNotifyWaitingInput},
+	} {
+		if !awaitCond(t, 20*time.Second, func() bool {
+			return kindLog.has(want.runID, want.kind)
+		}) {
+			t.Fatalf("Run %s 的 %s 通知未落账", want.runID, want.kind)
+		}
+	}
+	// 一次性 Reconcile 全部送达（任一渠道成功即送达）。
+	if err := ledger.Reconcile(time.Now(), notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("通知补发失败: %v", err)
+	}
+	assertNotification := func(prefix, runID string) fakeNtfyPost {
+		t.Helper()
+		posts := fake.findByTitle(prefix)
+		if len(posts) != 1 {
+			t.Fatalf("%s 通知应恰好一条: %+v", prefix, fake.all())
+		}
+		if posts[0].Click != clickOf(runID) {
+			t.Fatalf("%s 通知 click 异常: %q", prefix, posts[0].Click)
+		}
+		return posts[0]
+	}
+	donePost := assertNotification("运行完成", doneRun)
+	if !strings.Contains(donePost.Message, "NOTIF-OK") || !strings.Contains(donePost.Message, "完成 1") {
+		t.Fatalf("完成通知正文应含结果摘要与计数: %+v", donePost)
+	}
+	failedPost := assertNotification("运行失败", failedRun)
+	for _, want := range []string{"NOTIF-C1", "NOTIF-C2", "NOTIF-C3"} {
+		if !strings.Contains(failedPost.Message, want) {
+			t.Fatalf("失败通知应 salvage 前 3 个完成结果（缺 %s）: %q", want, failedPost.Message)
+		}
+	}
+	if strings.Contains(failedPost.Message, "NOTIF-C4") {
+		t.Fatalf("失败通知结果摘要应截在前 3 个: %q", failedPost.Message)
+	}
+	if !strings.Contains(failedPost.Message, "失败 1") {
+		t.Fatalf("失败通知正文应含任务计数: %q", failedPost.Message)
+	}
+	assertNotification("需要你的输入", parkedRun)
+}
+
+// TestTeamIntegration4RunNotificationBackfillAndBackoff：发送失败按指数退避
+// 顺延（退避窗内 Reconcile 不再尝试——不轰炸）、server 复活后到点补发；
+// 优雅关停水位 + 送达痕迹双闸：重启后补发扫描只补水位窗口内的未送达 Run，
+// 已送达的绝不重发、窗口外的老 Run 绝不轰炸。
+func TestTeamIntegration4RunNotificationBackfillAndBackoff(t *testing.T) {
+	dataDir := t.TempDir()
+	fake := startFakeNtfy(t)
+	writeNotificationsSettings(t, dataDir, fake.url)
+	env := newTeamIntegrationEnv(t, dataDir)
+	ledger := notifications.NewRunNotificationLedger(dataDir)
+	kindLog := env.attachRunNotifications(t, ledger)
+	sessionA := env.createMemberSession(t, "lead-sess", "补发会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+
+	// Run A：完成即送达（对照面——此后永不重发）。
+	runA := env.createRun(t, teamID, `{"goal":"补发对照 BACKFILL-A","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"补发对照任务 BACKFILL-A","writeLock":"none"}]}`)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runA)["status"] == "completed"
+	}) || !awaitCond(t, 20*time.Second, func() bool {
+		return kindLog.has(runA, notifications.RunNotifyCompleted)
+	}) {
+		t.Fatal("Run A 未完成或通知未落账")
+	}
+	// Run A：完成即送达（对照面——此后永不重发）。第一次尝试失败（杀
+	// server），退避到点（now=first+11s）后复活送达。
+	first := time.Now()
+	fake.setFailing(true)
+	if err := ledger.Reconcile(first, notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("补发失败: %v", err)
+	}
+	fake.setFailing(false)
+	if err := ledger.Reconcile(first.Add(11*time.Second), notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("补发失败: %v", err)
+	}
+	if got := len(fake.findByTitle("BACKFILL-A")); got != 2 {
+		t.Fatalf("Run A 应恰好一次失败尝试+一次送达: %d", got)
+	}
+	if !ledger.Delivered(runA, notifications.RunNotifyCompleted) {
+		t.Fatal("Run A 应已送达")
+	}
+
+	// Run B：server 挂掉期间完成 → 失败退避。
+	fake.setFailing(true)
+	runB := env.createRun(t, teamID, `{"goal":"补发退避 BACKFILL-B","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"补发退避任务 BACKFILL-B","writeLock":"none"}]}`)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runB)["status"] == "completed"
+	}) || !awaitCond(t, 20*time.Second, func() bool {
+		return kindLog.has(runB, notifications.RunNotifyCompleted)
+	}) {
+		t.Fatal("Run B 未完成或通知未落账")
+	}
+	base := first.Add(20 * time.Second)
+	if err := ledger.Reconcile(base, notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("补发失败: %v", err)
+	}
+	if got := len(fake.findByTitle("BACKFILL-B")); got != 1 {
+		t.Fatalf("失败也应有一次尝试: %d", got)
+	}
+	if ledger.Delivered(runB, notifications.RunNotifyCompleted) {
+		t.Fatal("失败的发送不得标记送达")
+	}
+	// 退避窗内（attempts=1 → next=+10s）反复 Reconcile 不再尝试。
+	if err := ledger.Reconcile(base.Add(5*time.Second), notifications.NewPublisher(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Reconcile(base.Add(9*time.Second), notifications.NewPublisher(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(fake.findByTitle("BACKFILL-B")); got != 1 {
+		t.Fatalf("退避窗内不得轰炸: %d 次尝试", got)
+	}
+
+	// Run C：关停前落账、未送达——水位窗口内的补发候选。
+	runC := env.createRun(t, teamID, `{"goal":"补发窗口 BACKFILL-C","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"补发窗口任务 BACKFILL-C","writeLock":"none"}]}`)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runC)["status"] == "completed"
+	}) || !awaitCond(t, 20*time.Second, func() bool {
+		return kindLog.has(runC, notifications.RunNotifyCompleted)
+	}) {
+		t.Fatal("Run C 未完成或通知未落账")
+	}
+	// 优雅关停：水位盖到关停时刻（B/C 的 UpdatedAt 都在水位附近，落在
+	// watermark−5min 窗口内；水位窗口的排除算术由 runledger 单测
+	// TestRunLedgerWatermarkBackfill 钉住，此处验端到端接线）。
+	shutdown := base.Add(30 * time.Second)
+	if err := ledger.SetWatermark(shutdown); err != nil {
+		t.Fatalf("水位落账失败: %v", err)
+	}
+
+	// 「重启」：同 dataDir 重建账本（文件加载——退避与送达痕迹随文件存活），
+	// 水位扫描补记未送达的窗口内 Run（B 幂等重记不重置退避、C 补记后立即
+	// 到期），已送达的 A 绝不重发。
+	restarted := notifications.NewRunNotificationLedger(dataDir)
+	candidates := teamBackfillCandidates(env)
+	restarted.Backfill(shutdown.Add(time.Second), notifications.RunBackfillMargin, candidates)
+	fake.setFailing(false)
+	aBefore := len(fake.findByTitle("BACKFILL-A"))
+	if err := restarted.Reconcile(base.Add(41*time.Second), notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("重启补发失败: %v", err)
+	}
+	if got := len(fake.findByTitle("BACKFILL-A")); got != aBefore {
+		t.Fatalf("已送达的 Run 重启后绝不重发: %d → %d", aBefore, got)
+	}
+	if got := len(fake.findByTitle("BACKFILL-B")); got != 2 {
+		t.Fatalf("Run B 应在退避到点后恰好补发一次（共 2 次尝试）: %d", got)
+	}
+	if got := len(fake.findByTitle("BACKFILL-C")); got != 1 {
+		t.Fatalf("Run C 应经水位扫描恰好补发一次: %d", got)
+	}
+	if !restarted.Delivered(runB, notifications.RunNotifyCompleted) ||
+		!restarted.Delivered(runC, notifications.RunNotifyCompleted) {
+		t.Fatal("补发后应留送达痕迹")
+	}
+	if restarted.Delivered(runA, notifications.RunNotifyFailed) {
+		t.Fatal("Run A 只有 completed 痕迹（键按类别隔离）")
+	}
+}
+
+// ---- 用例 4-7：§6.3 stall——20 分钟无成功只通知不停止 ----
+
+// TestTeamIntegration4StallNotifiesWithoutStopping：SetStallAfter 把判定线
+// 缩到 300ms（notify.go maybeStallLocked 取真实时钟，推进由 deadline 轮询
+// 兜住——不用固定 sleep 判正确性）：在途任务挂闸门期间跨线 → run_stalled
+// 事件恰好一条（payload.sinceMs≥判定线）+ stall 通知落账送达（标题「运行
+// 疑似停滞」+ click deep link）+ Run 状态纹丝不动（不停、不取消）；放行后
+// 任务完成、Run 正常终局——成功即恢复，不再报第二条。
+func TestTeamIntegration4StallNotifiesWithoutStopping(t *testing.T) {
+	dataDir := t.TempDir()
+	fake := startFakeNtfy(t)
+	writeNotificationsSettings(t, dataDir, fake.url)
+	env := newTeamIntegrationEnv(t, dataDir)
+	env.server.Teams.SetStallAfter(300 * time.Millisecond)
+	ledger := notifications.NewRunNotificationLedger(dataDir)
+	kindLog := env.attachRunNotifications(t, ledger)
+	sessionA := env.createMemberSession(t, "lead-sess", "停滞会话")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"停滞观测目标 STALL-WATCH","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"lead","prompt":"停滞观测任务 STALL-WATCH HOLDUNTIL:sw","writeLock":"none"}]}`)
+
+	// 在途（闸门未放行）→ 跨过判定线 → run_stalled 落账恰好一条。
+	if !env.drive(t, 20*time.Second, func() bool {
+		return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
+	}) {
+		t.Fatal("任务未在时限内进入 running")
+	}
+	if !awaitCond(t, 20*time.Second, func() bool {
+		return kindLog.has(runID, notifications.RunNotifyStall) &&
+			teamEventCount(env.journalEvents(t), team.EventRunStalled) == 1
+	}) {
+		t.Fatal("停滞未在时限内触发 run_stalled（恰好一条）")
+	}
+	// §6.3 只通知不停止：Run 状态不变、任务仍在途。
+	detail := env.runDetail(t, teamID, runID)
+	if detail["status"] != "dispatching" {
+		t.Fatalf("stall 绝不改 Run 状态: %v（stopReason=%v）", detail["status"], detail["stopReason"])
+	}
+	if task := teamTaskOf(t, detail, "t1"); !inFlightTask(task) {
+		t.Fatalf("stall 绝不取消任务: %v", task["status"])
+	}
+	var stalledPayload map[string]any
+	for _, event := range env.journalEvents(t) {
+		if event.Type == team.EventRunStalled {
+			stalledPayload = event.Payload
+		}
+	}
+	if sinceMs := eventPayloadInt(stalledPayload, "sinceMs"); sinceMs < 300 {
+		t.Fatalf("run_stalled payload.sinceMs 应≥判定线 300: %v", stalledPayload)
+	}
+	// stall 通知送达伪 ntfy（click deep link 与其他类别同一组装）。
+	if err := ledger.Reconcile(time.Now(), notifications.NewPublisher(nil)); err != nil {
+		t.Fatalf("通知补发失败: %v", err)
+	}
+	stallPosts := fake.findByTitle("运行疑似停滞")
+	if len(stallPosts) != 1 {
+		t.Fatalf("stall 通知应恰好一条: %+v", fake.all())
+	}
+	if want := "https://bridge.example/#run=" + teamID + "/" + runID; stallPosts[0].Click != want {
+		t.Fatalf("stall 通知 click 异常: %q", stallPosts[0].Click)
+	}
+
+	// 放行 → 任务完成 → Run 正常终局（成功即恢复；不再报第二条 stall）。
+	releaseAgentTurn(t, dataDir, "sw", sessionA)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatal("停滞后的 Run 未在时限内正常完成")
+	}
+	if got := teamEventCount(env.journalEvents(t), team.EventRunStalled); got != 1 {
+		t.Fatalf("成功恢复后不得再报 stall: %d 条", got)
+	}
+	if got := kindLog.count(runID, notifications.RunNotifyStall); got != 1 {
+		t.Fatalf("stall 通知应恰好一次: %d", got)
+	}
+}
+
+// ---- 用例 4-8：§9 预算暂停与恢复、重启重放 ceiling 不漂移 ----
+
+// TestTeamIntegration4BudgetParkResumeAndRestart：BudgetUnits=2 的五任务
+// 流水线——第 2 次派发后试图派第 3 个时停靠 waiting_input
+// （stopReason=budget_exhausted）；Resume 追加预算（run_budget_resumed，
+// ceiling=已派发+units）续跑到下一阈值再次停靠；team-runs.json 损坏后按
+// journal 重建，ceiling 与停靠语义不漂移（store.go 回填 run_budget_resumed
+// 的 ceiling）；再次 Resume 后跑完，stats 的预算计量与 journal 一致。
+func TestTeamIntegration4BudgetParkResumeAndRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	sessionA := env.createMemberSession(t, "lead-sess", "预算会话")
+	teamID := env.createTeamWithPolicy(t, `{"budgetUnits":2}`,
+		`[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"预算闸门 BUDGET-FLOW","mode":"pipeline","plan":[
+		{"id":"a","memberId":"lead","prompt":"预算任务一 BUDGET-A","writeLock":"none"},
+		{"id":"b","memberId":"lead","prompt":"预算任务二 BUDGET-B","dependsOn":["a"],"writeLock":"none"},
+		{"id":"c","memberId":"lead","prompt":"预算任务三 BUDGET-C","dependsOn":["b"],"writeLock":"none"},
+		{"id":"d","memberId":"lead","prompt":"预算任务四 BUDGET-D","dependsOn":["c"],"writeLock":"none"},
+		{"id":"e","memberId":"lead","prompt":"预算任务五 BUDGET-E","dependsOn":["d"],"writeLock":"none"}]}`)
+
+	// 第一次停靠：a/b 派发记账后，试图派 c 时预算到线（在途的 b 由 watcher
+	// 自然收尾——停靠不 fold，等它落 completed 再断言）。
+	if !env.drive(t, 20*time.Second, func() bool {
+		detail := env.runDetail(t, teamID, runID)
+		reason, _ := detail["stopReason"].(string)
+		return detail["status"] == "waiting_input" &&
+			strings.Contains(reason, team.StopReasonBudgetExhausted) &&
+			teamTaskOf(t, detail, "b")["status"] == "completed"
+	}) {
+		t.Fatal("第 2 次派发后未在时限内预算停靠（或 b 未收尾）")
+	}
+	detail := env.runDetail(t, teamID, runID)
+	if task := teamTaskOf(t, detail, "c"); task["status"] != "planned" {
+		t.Fatalf("预算停靠时未派发任务保持 planned: %v", task["status"])
+	}
+	if got := len(readTeamPrompts(t, dataDir)); got != 2 {
+		t.Fatalf("停靠前应恰好派发 2 次: %d", got)
+	}
+
+	// 第一次 Resume：ceiling=2+2=4 → c/d 续跑 → 到下一阈值再次停靠。
+	if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`); response.Code != http.StatusOK {
+		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env.drive(t, 20*time.Second, func() bool {
+		detail := env.runDetail(t, teamID, runID)
+		reason, _ := detail["stopReason"].(string)
+		return detail["status"] == "waiting_input" &&
+			strings.Contains(reason, team.StopReasonBudgetExhausted) &&
+			teamTaskOf(t, detail, "d")["status"] == "completed"
+	}) {
+		t.Fatal("续跑未在时限内到下一预算阈值停靠")
+	}
+	events := env.journalEvents(t)
+	if got := teamEventCount(events, team.EventRunBudgetResumed); got != 1 {
+		t.Fatalf("应恰好一条 run_budget_resumed: %d", got)
+	}
+	if payload := teamEventPayload(events, team.EventRunBudgetResumed); payload == nil ||
+		eventPayloadInt(payload, "ceiling") != 4 || eventPayloadInt(payload, "units") != 2 ||
+		eventPayloadInt(payload, "used") != 2 {
+		t.Fatalf("run_budget_resumed payload 异常: %v", payload)
+	}
+	if got := len(readTeamPrompts(t, dataDir)); got != 4 {
+		t.Fatalf("第二阈值停靠前应恰好派发 4 次: %d", got)
+	}
+
+	// 快照损坏 → journal 重建：ceiling 回填 4、停靠语义还原，重启不漂移
+	//（冷 List 预热：重建任务的 writeLock 随快照丢失、空值按独占处理，
+	// resume 后剩余任务的 cwd 解析依赖 list 缓存）。
+	if err := os.WriteFile(filepath.Join(dataDir, "team-runs.json"), []byte(`{"broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env2 := reopenTeamIntegrationEnv(t, dataDir)
+	if _, err := env2.manager.List(15 * time.Second); err != nil {
+		t.Fatalf("session/list 预热失败: %v", err)
+	}
+	detail = env2.runDetail(t, teamID, runID)
+	if detail["status"] != "waiting_input" ||
+		!strings.Contains(detail["stopReason"].(string), team.StopReasonBudgetExhausted) {
+		t.Fatalf("重建后应保持预算停靠: %v %v", detail["status"], detail["stopReason"])
+	}
+	stats := env2.teamRunStats(t, teamID, runID)
+	budget, _ := stats["budget"].(map[string]any)
+	if budget == nil || budget["ceiling"] != float64(4) || budget["used"] != float64(4) ||
+		budget["exhausted"] != true {
+		t.Fatalf("重建后预算计量不漂移: %v", budget)
+	}
+	env2.drive(t, 1300*time.Millisecond, func() bool { return false })
+	if got := len(readTeamPrompts(t, dataDir)); got != 4 {
+		t.Fatalf("停靠中的 Run 重启后不得派发: %d", got)
+	}
+
+	// 第二次 Resume（重建后）：ceiling=4+2=6，e 派发。续跑语义的边界
+	// （现状钉住，与定时触发崩溃窗口同源）：journal 只携带有界
+	// instructionsHead，从未派发的 e 全文随快照丢失——重派发以空文本入队
+	// 被拒、确定性 failed；追加与计量事实仍完整落 journal（这正是双载体的
+	// 意义）。快照完好的续跑链路见暂停恢复用例（TestTeamIntegration4
+	// PauseResumeLifecycle）。
+	if response := env2.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`); response.Code != http.StatusOK {
+		t.Fatalf("重建后 resume 失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env2.drive(t, 20*time.Second, func() bool {
+		return env2.runDetail(t, teamID, runID)["status"] == "failed"
+	}) {
+		t.Fatalf("重建后的 resume 未在时限内确定性收口: %+v", env2.runDetail(t, teamID, runID))
+	}
+	if errText, _ := teamTaskOf(t, env2.runDetail(t, teamID, runID), "e")["error"].(string); !strings.Contains(errText, "入队失败") {
+		t.Fatalf("快照丢失的剩余任务应确定性失败: %v", errText)
+	}
+	events = env2.journalEvents(t)
+	if got := teamEventCount(events, team.EventRunBudgetResumed); got != 2 {
+		t.Fatalf("应有两条 run_budget_resumed: %d", got)
+	}
+	lastBudget := map[string]int{}
+	for _, event := range events {
+		if event.Type == team.EventRunBudgetResumed {
+			lastBudget = map[string]int{
+				"ceiling": eventPayloadInt(event.Payload, "ceiling"),
+				"units":   eventPayloadInt(event.Payload, "units"),
+				"used":    eventPayloadInt(event.Payload, "used"),
+			}
+		}
+	}
+	if lastBudget["ceiling"] != 6 || lastBudget["used"] != 4 {
+		t.Fatalf("第二次追加应 ceiling=6 used=4: %v", lastBudget)
+	}
+	// e 的派发记账已入 journal（used=5<6，未再停靠）。
+	stats = env2.teamRunStats(t, teamID, runID)
+	budget, _ = stats["budget"].(map[string]any)
+	if budget == nil || budget["units"] != float64(2) || budget["used"] != float64(5) ||
+		budget["ceiling"] != float64(6) || budget["exhausted"] != false {
+		t.Fatalf("终局预算计量异常: %v", budget)
+	}
+	if got := len(readTeamPrompts(t, dataDir)); got != 4 {
+		t.Fatalf("已派发任务零重发、空文本任务不得到达 Agent: %d", got)
+	}
+}
+
+// ---- 用例 4-9：§12 阶段四工作项 5——成本与耗时统计 ----
+
+// TestTeamIntegration4RunStats：真实跑完的 Run 统计数字断言（coverage=full、
+// runElapsedMs>0、dispatchCount、任务条目、tokens 恒 null 明示不支持）；
+// 手工预置零时间戳 journal 的历史 Run（升级前事件 createdAt 恒零值）以
+// coverage=none 诚实降级——耗时为 0 绝不编造，派发计数仍按事件可得。
+func TestTeamIntegration4RunStats(t *testing.T) {
+	t.Run("真实 Run 统计", func(t *testing.T) {
+		dataDir := t.TempDir()
+		env := newTeamIntegrationEnv(t, dataDir)
+		sessionA := env.createMemberSession(t, "lead-sess", "统计会话")
+		teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+		runID := env.createRun(t, teamID, `{"goal":"统计目标 STATS-FLOW","mode":"pipeline","plan":[
+			{"id":"t1","memberId":"lead","prompt":"统计任务一 STATS-ONE","writeLock":"none"},
+			{"id":"t2","memberId":"lead","prompt":"统计任务二 STATS-TWO","dependsOn":["t1"],"writeLock":"none"}]}`)
+		if !env.drive(t, 20*time.Second, func() bool {
+			return env.runDetail(t, teamID, runID)["status"] == "completed"
+		}) {
+			t.Fatal("Run 未在时限内完成")
+		}
+		stats := env.teamRunStats(t, teamID, runID)
+		if stats["coverage"] != team.StatsCoverageFull {
+			t.Fatalf("新事件全部盖章应 coverage=full: %v", stats["coverage"])
+		}
+		if elapsed, _ := stats["runElapsedMs"].(float64); elapsed <= 0 {
+			t.Fatalf("runElapsedMs 应为正: %v", stats["runElapsedMs"])
+		}
+		if stats["dispatchCount"] != float64(2) {
+			t.Fatalf("dispatchCount 应为 2: %v", stats["dispatchCount"])
+		}
+		if stats["tokens"] != nil {
+			t.Fatalf("tokens 恒 null（明示不支持）: %v", stats["tokens"])
+		}
+		tasks, _ := stats["tasks"].([]any)
+		if len(tasks) != 2 {
+			t.Fatalf("应有两条任务统计: %v", tasks)
+		}
+		for _, row := range tasks {
+			stat, _ := row.(map[string]any)
+			if stat["attempt"] != float64(1) {
+				t.Fatalf("任务条目 attempt 应为 1: %v", stat)
+			}
+			if _, ok := stat["elapsedMs"]; !ok {
+				t.Fatalf("任务条目应带 elapsedMs: %v", stat)
+			}
+		}
+		budget, _ := stats["budget"].(map[string]any)
+		if budget == nil || budget["units"] != float64(0) || budget["used"] != float64(2) {
+			t.Fatalf("默认策略只统计不暂停: %v", budget)
+		}
+	})
+	t.Run("零时间戳历史 Run 降级为无数据", func(t *testing.T) {
+		dataDir := t.TempDir()
+		now := time.Now()
+		const statsTeam, statsRun, statsSession = "tteam-stats-old", "trun-stats-old", "km-team-1"
+		teamRow := &team.Team{ID: statsTeam, Name: "历史统计团队",
+			Members: []team.TeamMember{{ID: "lead", SessionID: statsSession, AgentKind: "kimi", Role: team.RoleLead, Enabled: true}},
+			LeadID:  "lead", Policy: team.DefaultPolicy(), CreatedAt: now, UpdatedAt: now}
+		teamRaw, err := json.Marshal(map[string]*team.Team{statsTeam: teamRow})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dataDir, "teams.json"), teamRaw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		run := &team.Run{ID: statsRun, TeamID: statsTeam, Goal: "历史统计目标", Mode: team.ModePipeline,
+			Status: team.RunCompleted, Round: 1, PlanHash: "hand-stats", CreatedAt: now, UpdatedAt: now}
+		result := "已完成：历史统计结果 STATS-OLD"
+		run.Tasks = []team.Task{{
+			ID: "t1", MemberID: "lead", Prompt: "历史统计任务 STATS-OLD", Attempt: 1, Ordinal: 0,
+			Status: team.TaskCompleted, WriteLock: team.TaskWriteLockNone, Result: result,
+			ResultDetail: &team.TaskResult{SessionID: statsSession, TurnID: "turn-stats-1",
+				Result: result, ResultChars: len([]rune(result))},
+		}}
+		runRaw, err := json.Marshal(map[string]*team.Run{statsRun: run})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dataDir, "team-runs.json"), runRaw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// journal：全部事件 createdAt 零值（升级前的历史形态）。
+		events := []*team.Event{
+			{ID: uuid.NewString(), RunID: statsRun, Type: team.EventRunCreated, Source: "user",
+				Payload: map[string]any{"teamId": statsTeam, "goal": run.Goal, "mode": team.ModePipeline, "planHash": "hand-stats", "taskCount": 1}, Sequence: 1},
+			{ID: uuid.NewString(), RunID: statsRun, Type: team.EventTaskPlanned, Source: "user",
+				Payload: map[string]any{"taskId": "t1", "memberId": "lead"}, Sequence: 2},
+			{ID: uuid.NewString(), RunID: statsRun, Type: team.EventTaskDispatching, Source: "runner",
+				Payload: map[string]any{"taskId": "t1", "sessionId": statsSession, "submissionId": team.TaskSubmissionID(statsTeam, statsRun, "t1", 1), "attempt": 1}, Sequence: 3},
+			{ID: uuid.NewString(), RunID: statsRun, Type: team.EventTaskCompleted, Source: "watcher",
+				Payload: map[string]any{"taskId": "t1", "sessionId": statsSession, "turnId": "turn-stats-1", "result": result}, Sequence: 4},
+			{ID: uuid.NewString(), RunID: statsRun, Type: team.EventRunCompleted, Source: "runner",
+				Payload: map[string]any{"taskCounts": map[string]any{"completed": 1}}, Sequence: 5},
+		}
+		var journalLines strings.Builder
+		for _, event := range events {
+			line, marshalErr := json.Marshal(event)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			journalLines.Write(line)
+			journalLines.WriteByte('\n')
+		}
+		if err := os.WriteFile(filepath.Join(dataDir, "team-journal.jsonl"), []byte(journalLines.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env := reopenTeamIntegrationEnv(t, dataDir)
+		stats := env.teamRunStats(t, statsTeam, statsRun)
+		if stats["coverage"] != team.StatsCoverageNone {
+			t.Fatalf("零时间戳历史 Run 应 coverage=none: %v", stats["coverage"])
+		}
+		if elapsed, _ := stats["runElapsedMs"].(float64); elapsed != 0 {
+			t.Fatalf("无数据不得编造耗时: %v", stats["runElapsedMs"])
+		}
+		if stats["dispatchCount"] != float64(1) {
+			t.Fatalf("派发计数按事件可得: %v", stats["dispatchCount"])
+		}
+		tasks, _ := stats["tasks"].([]any)
+		if len(tasks) != 1 {
+			t.Fatalf("应有一条任务条目: %v", tasks)
+		}
+		stat, _ := tasks[0].(map[string]any)
+		if stat["elapsedMs"] != float64(0) {
+			t.Fatalf("任务耗时应降级为 0: %v", stat)
+		}
+	})
+}
+
+// ---- 用例 4-10：§11.3 完整阶段图 ----
+
+// TestTeamIntegration4RunGraph：三节点 broadcast 链的聚合形状——每条
+// memberIds 条目聚合单节点（memberIds/agentKinds 去重、runCount 恒 1、
+// 注意力序归并状态）、依赖映射到节点 ID、Kahn 分层行序、结果摘要就位。
+// 纯 memberId 的普通节点形状由 graph 单测覆盖（planner 限制：broadcast
+// 模式逐条目 memberIds≥2，单 Run 无法混排普通条目）。运行中窗口断言组内
+// 一支完成一支在途 → 聚合节点取在途（注意力序）。
+func TestTeamIntegration4RunGraph(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	sessionA := env.createMemberSession(t, "lead-sess", "图会话一")
+	sessionB := env.createMemberSession(t, "dev-sess", "图会话二")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+
+		`","role":"lead"},{"id":"dev","sessionId":"`+sessionB+`","role":"member"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"阶段图目标 GRAPH-FLOW","mode":"broadcast","plan":[
+		{"id":"prep","memberIds":["lead","dev"],"prompt":"阶段图准备 GRAPH-PREP","writeLock":"none"},
+		{"id":"grp","memberIds":["lead","dev"],"prompt":"阶段图广播 GRAPH-GRP HOLDUNTIL:gg","writeLock":"none","dependsOn":["prep"]},
+		{"id":"fin","memberIds":["lead","dev"],"prompt":"阶段图收口 GRAPH-FIN","writeLock":"none","dependsOn":["grp"]}]}`)
+
+	// 中间态：广播组一支放行完成、另一支仍持闸门——聚合节点状态按注意力
+	// 序取在途（dispatching/running 优先于 completed）。
+	if !env.drive(t, 20*time.Second, func() bool {
+		detail := env.runDetail(t, teamID, runID)
+		return inFlightTask(teamTaskOf(t, detail, "grp-lead")) &&
+			inFlightTask(teamTaskOf(t, detail, "grp-dev"))
+	}) {
+		t.Fatal("广播分支未在时限内并行在途")
+	}
+	releaseAgentTurn(t, dataDir, "gg", sessionA)
+	if !awaitCond(t, 20*time.Second, func() bool {
+		detail := env.runDetail(t, teamID, runID)
+		return teamTaskOf(t, detail, "grp-lead")["status"] == "completed" &&
+			inFlightTask(teamTaskOf(t, detail, "grp-dev"))
+	}) {
+		t.Fatal("广播分支未在时限内分出先后")
+	}
+	graph := env.teamRunGraph(t, teamID, runID)
+	nodes, _ := graph["nodes"].([]any)
+	nodeOf := func(id string) map[string]any {
+		t.Helper()
+		for _, row := range nodes {
+			node, _ := row.(map[string]any)
+			if node != nil && node["id"] == id {
+				return node
+			}
+		}
+		t.Fatalf("阶段图缺节点 %s: %v", id, nodes)
+		return nil
+	}
+	if len(nodes) != 3 {
+		t.Fatalf("broadcast 组应聚合为单节点（共 3 节点）: %v", nodes)
+	}
+	grp := nodeOf("grp")
+	if members, _ := grp["memberIds"].([]any); len(members) != 2 {
+		t.Fatalf("聚合节点应带双成员: %v", grp)
+	}
+	if kinds, _ := grp["agentKinds"].([]any); len(kinds) == 0 {
+		t.Fatalf("聚合节点应带成员类型徽标: %v", grp)
+	} else if fmt.Sprint(kinds) != fmt.Sprint([]any{"kimi"}) {
+		t.Fatalf("成员类型应解析为 kimi: %v", kinds)
+	}
+	if grp["runCount"] != float64(1) {
+		t.Fatalf("广播组是一次条目的多路执行 runCount=1: %v", grp["runCount"])
+	}
+	if grp["status"] != "running" && grp["status"] != "dispatching" {
+		t.Fatalf("聚合状态按注意力序应取在途分支: %v", grp["status"])
+	}
+	if deps, _ := grp["dependsOn"].([]any); len(deps) != 1 || deps[0] != "prep" {
+		t.Fatalf("聚合节点依赖应映射到节点 ID: %v", grp["dependsOn"])
+	}
+
+	// 终态：跑完 → 三节点 completed、分层行序 prep→grp→fin、结果摘要就位。
+	releaseAgentTurn(t, dataDir, "gg", sessionB)
+	if !env.drive(t, 20*time.Second, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatal("Run 未在时限内完成")
+	}
+	graph = env.teamRunGraph(t, teamID, runID)
+	nodes, _ = graph["nodes"].([]any)
+	if len(nodes) != 3 {
+		t.Fatalf("终态阶段图仍应 3 节点: %v", nodes)
+	}
+	for _, id := range []string{"prep", "grp", "fin"} {
+		if nodeOf(id)["status"] != "completed" {
+			t.Fatalf("节点 %s 应 completed: %v", id, nodeOf(id))
+		}
+	}
+	if head, _ := nodeOf("prep")["resultHead"].(string); !strings.Contains(head, "GRAPH-PREP") {
+		t.Fatalf("节点应带结果摘要: %v", nodeOf("prep"))
+	}
+	layers, _ := graph["layers"].([]any)
+	if len(layers) != 3 {
+		t.Fatalf("三段依赖应分三层: %v", layers)
+	}
+	for depth, want := range []string{"prep", "grp", "fin"} {
+		layer, _ := layers[depth].([]any)
+		if len(layer) != 1 || layer[0] != want {
+			t.Fatalf("第 %d 层应只有 %s: %v", depth, want, layers)
+		}
+	}
+	if deps, _ := nodeOf("fin")["dependsOn"].([]any); len(deps) != 1 || deps[0] != "grp" {
+		t.Fatalf("下游依赖应指向聚合节点: %v", nodeOf("fin")["dependsOn"])
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -106,5 +107,32 @@ func TestTrustedOriginsFromConfigAndDesktopConnections(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("origins=%v want=%v", got, want)
 		}
+	}
+}
+
+func TestTeamReconcileIntervalFromEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{"未设置回默认", "", 60 * time.Second},
+		{"正整数秒", "5", 5 * time.Second},
+		{"非法值回默认", "abc", 60 * time.Second},
+		{"零回默认", "0", 60 * time.Second},
+		{"负数回默认", "-3", 60 * time.Second},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			getenv := func(key string) string {
+				if key == "GATEWAY_TEAM_RECONCILE_SECONDS" {
+					return testCase.raw
+				}
+				return ""
+			}
+			if got := teamReconcileIntervalFromEnv(getenv); got != testCase.want {
+				t.Fatalf("间隔应为 %v，实际 %v", testCase.want, got)
+			}
+		})
 	}
 }

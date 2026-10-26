@@ -36,7 +36,11 @@ const (
 // 不经过该状态；reducing 是验证闸门窗口（§6.4.1，阶段二）：全任务终态且
 // fold 判 completed 后先过闸门再终局——闸门未过 → waiting_input 可修可
 // 重跑，过了才落 completed。collecting 预留给收集策略的中间态（当前
-// fold 路径直接从 dispatching 终局）。
+// fold 路径直接从 dispatching 终局）。paused 是用户主动的可恢复软停——
+// §12 阶段四工作项 4：非终态、不进 terminalRun，只停新派发，在途任务
+// 自然收尾入账（停靠/结果未知会把 run 升级 waiting_input，语义严格强于
+// paused）；run 超时与 stall 时钟冻结（软停不烧时钟），resume 推回
+// dispatching 并重臂。
 const (
 	RunCreated        = "created"
 	RunPlanning       = "planning"
@@ -45,6 +49,7 @@ const (
 	RunReducing       = "reducing"
 	RunCompleted      = "completed"
 	RunWaitingInput   = "waiting_input"
+	RunPaused         = "paused"
 	RunFailed         = "failed"
 	RunCancelled      = "cancelled"
 	RunStopped        = "stopped"
@@ -124,6 +129,24 @@ const (
 	EventQuestionOpened    = "question_opened"
 	EventQuestionResolved  = "question_resolved"
 	EventQuestionWithdrawn = "question_withdrawn"
+	// EventRunPaused 是用户暂停的 checkpoint 事实（§12 阶段四工作项 4，
+	// runner.go Pause 是唯一写入方）：payload {reason, sequence}——sequence
+	// 是暂停落账前 journal 已有事实的最大序号，即「Run 快照 + journal 游标」
+	// checkpoint 的游标锚点（不加新存储：恢复续跑不重发由 submissions 账本
+	// 对账 + submissionID 确定性幂等保证，§8.3）。store.go 的 journal 重建
+	// 据此把 paused Run 复原为 paused（缺了它会在 run_created 锚点上以
+	// created 复活、被恢复路径自动 fold）。resume 是纯状态推进，不落镜像
+	// 事件（快照迁移的 journal 佐证是暂停后的派发/终态事实本身）。
+	EventRunPaused = "run_paused"
+	// EventRunBudgetResumed 是预算停靠后用户续跑的预算追加事实（§9
+	// 「继续本轮」，阶段四 cost-stats，runner.go Resume 的 budget 分支是
+	// 唯一写入方）：payload {ceiling, units, used}——ceiling=已派发数
+	// （journal task_dispatching 计数）+ 当前 BudgetUnits，随事件同步写
+	// Run.BudgetCeiling。上限推导钉死为 journal 事实 + 快照双载体：重启
+	// 后 store.go applyJournalEventToRun 重放本事件回填 ceiling（单调取
+	// 高），不丢失、不漂移；预算停靠本身（run_waiting_input payload
+	// {units,used,stopReason}）先于本事件，重建按事件序自然还原停靠语义。
+	EventRunBudgetResumed = "run_budget_resumed"
 )
 
 // 策略取值（§4.2）。isolated_worktree 属阶段二：只引用用户预备的 worktree
@@ -147,6 +170,15 @@ const (
 // 成员的固定停止原因：fold 时该类 cancelled 不参与终局分类（结果保留给
 // 首个成功者，§6.5）。
 const StopReasonSupersededByFirstSuccess = "superseded_by_first_success"
+
+// StopReasonBudgetExhausted 是预算停靠原因的固定前缀（§9：预算达到阈值只
+// 暂停并请求用户选择「继续本轮、修订预算或停止 Run」，绝不自动续）。Resume
+// 按前缀路由到预算追加分支（照 StopReasonVerifyFailed 先例：机器前缀+中文
+// 说明，落 Run 快照与 run_waiting_input payload.stopReason 双载体，journal
+// 重建按 payload 还原）。计量=任务派发次数（journal task_dispatching 计数）
+// ——token 无法归因到 Run/Task（zcode turn_usage 的 turn id 双空间错配、
+// 其余 Agent 无用量数据源），不做 token 预算。
+const StopReasonBudgetExhausted = "budget_exhausted"
 
 // 成员角色与不可用标记（§4.1：成员引用失效时保留记录并标记 unavailable）。
 const (
@@ -262,7 +294,21 @@ type Run struct {
 	// 创建新 Run、绝不改写父 Run 的 journal；父 Run 的可复用前驱结果按
 	// inputHash 匹配导入（amend.go），随 run_created payload 落账供
 	// team-runs.json 损坏后的 journal 重建。空串=非 amend 产出的 Run。
-	ParentRunID    string   `json:"parentRunId,omitempty"`
+	ParentRunID string `json:"parentRunId,omitempty"`
+	// ScheduledFrom 是定时触发的可追溯标记（§12 阶段四工作项 1）：值为
+	// schedule.go 生成的确定性 triggerID（uuid5(nsURL,
+	// "mobile-bridge:team-schedule:{teamID}:{dueUnix}")），随 run_created
+	// payload.scheduledBy 落账；崩溃窗口的回扫对账（journal 有无该标记的
+	// run_created 事件）是触发幂等的唯一裁决。空串=用户手工创建的 Run。
+	ScheduledFrom string `json:"scheduledFrom,omitempty"`
+	// BudgetCeiling 是预算停靠的有效上限（§9，阶段四 cost-stats）：0=未追加
+	// 过预算（阈值为当前策略 BudgetUnits）；用户在 budget_exhausted 停靠后
+	// Resume 时=已派发数+BudgetUnits，随 run_budget_resumed 事件落 journal
+	// 并同步写本快照字段——重启后按事件重放回填（store.go
+	// applyJournalEventToRun，单调取高），journal 事实+快照双载体不漂移。
+	// 四处同步纪律：runKnownFields / jsonObject Set / Clone（值拷贝天然覆盖）
+	// / applyJournalEventToRun。
+	BudgetCeiling  int      `json:"budgetCeiling,omitempty"`
 	Tasks          []Task   `json:"tasks"`
 	PendingActions []Action `json:"pendingActions,omitempty"`
 	// PendingQuestions 是成员主动提问的登记表（§5.4）：detail 顶层直出
@@ -451,6 +497,7 @@ var runKnownFields = map[string]bool{
 	"id": true, "teamId": true, "goal": true, "mode": true,
 	"collectPolicy": true, "autoPlan": true, "status": true,
 	"stopReason": true, "round": true, "planHash": true, "parentRunId": true,
+	"scheduledFrom": true, "budgetCeiling": true,
 	"tasks": true, "pendingActions": true, "pendingQuestions": true,
 	"verifyCommand": true, "verify": true,
 	"createdAt": true, "updatedAt": true, "version": true,
@@ -609,6 +656,20 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 	// 事实的溯源都依赖它。
 	if r.ParentRunID != "" {
 		object.Set("parentRunId", r.ParentRunID)
+	}
+	// ScheduledFrom（定时触发标记，§12 阶段四）必须落盘：漏 Set 或漏
+	// runKnownFields 会让重启后定时 Run 的溯源静默丢失——回扫对账按
+	// run_created payload.scheduledBy 裁决（journal 侧），快照侧的该字段
+	// 是投影与审计的来源。
+	if r.ScheduledFrom != "" {
+		object.Set("scheduledFrom", r.ScheduledFrom)
+	}
+	// BudgetCeiling（预算追加上限，§9）必须落盘：漏 Set 或漏 runKnownFields
+	// 会让重启后已追加的预算上限静默归零——passDispatch 的阈值
+	// max(BudgetCeiling,BudgetUnits) 退化回策略值，下一次派发立刻重复停靠，
+	// 用户「继续本轮」的决定丢失。0（从未追加）不带键，与 omitempty 一致。
+	if r.BudgetCeiling > 0 {
+		object.Set("budgetCeiling", jsoncompat.Num(r.BudgetCeiling))
 	}
 	tasks := &jsoncompat.Array{}
 	for i := range r.Tasks {

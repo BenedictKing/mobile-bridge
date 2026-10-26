@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
 // submissions 账本（internal/httpd/queue.go:33-40）的 submission 状态取值。
@@ -94,6 +96,13 @@ type journalDispatch struct {
 //  6. 对账发现计划外任务（journal 引用了 Run 任务表之外的 taskId）或任何新
 //     产生的 outcome_unknown → run 一律落 waiting_input（§9），不直接 fold 成
 //     run outcome_unknown。
+//
+// paused Run（§12 阶段四工作项 4）照常对账：任务按 journal 事实迁移（在途
+// watcher 由 RecoverRun 的收养路径重建），run 本身保持 paused；仅当对账产生
+// 需用户处理的事实（未决 unknown/哈希漂移/计划外任务）时升级 waiting_input
+// ——语义严格强于 paused，升级后 Resume 走 PlanResume 既有路径。恢复续跑
+// 不重发由账本对账（有条目不回 ready）+ submissionID 确定性幂等保证，paused
+// 不是重发许可。
 //
 // 已终态的 Run（completed/failed/cancelled/stopped/outcome_unknown）无需对账，
 // 返回 nil。
@@ -401,6 +410,114 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 		})
 	}
 	return transitions
+}
+
+// ReconcileUnknown 是 outcome_unknown 任务的只读重探决策（§8.3 第 6 条 +
+// §12 阶段四工作项 2「运行中状态刷新」，纯函数）：仅遍历快照
+// status=outcome_unknown 且携带派发凭据（SentText/SubmissionID）的任务，按
+// Probe 查 submissions 账本做单向纠正——探到确定事实才迁移动作，绝不重发、
+// 绝不改 run 状态。账本分支：
+//
+//	确凿 failed/cancelled（确定性拒绝，消息从未送达 Agent）→ 迁移
+//	  outcome_unknown→failed/cancelled（事件随 RefreshRun 的专用 mutate 落账）；
+//	仍 unknown / 无条目 → no-op（无条目只证明「现在查不到」，对已派发任务
+//	  不构成「从未发送」的证明——Probe 契约见上，绝不回 ready）；
+//	queued / accepted / ignored → no-op（queued 交既有队列 worker，accepted
+//	  交 watcher 观察；ignored 与 ReconcileRun 的 default 分支同调保持未决）。
+//
+// team 用于解析任务的成员会话（账本按 threadID+submissionID 键控，快照 Task
+// 不携带 sessionId）。成员已从团队移除或凭据缺失的任务跳过（无从对账，等
+// 用户 resume）。会话侧 turn 发现（matchTurn）不进本决策：turn 缺席本是
+// settleUnknown 的落账条件，事后出现归用户 resume 裁量。
+//
+// 与 ReconcileRun 的分工：ReconcileRun 只在启动对账时跑、按 journal 重放
+// 裁决全部任务；本函数只看快照、只动 outcome_unknown 单一终态，供周期
+// reconciler（RefreshRun）反复调用。
+func ReconcileUnknown(run *Run, team *Team, probe Probe) []Transition {
+	if run == nil || probe == nil {
+		return nil
+	}
+	var transitions []Transition
+	for _, task := range sortTasksByOrdinal(run.Tasks) {
+		if task.Status != TaskOutcomeUnknown {
+			continue
+		}
+		if task.SubmissionID == "" || task.SentText == "" {
+			continue // 无派发凭据：无从探账本，等用户 resume。
+		}
+		member := memberOf(team, task.MemberID)
+		if member == nil {
+			continue
+		}
+		status, errorText, ok := probe.LedgerStatus(member.SessionID, task.SubmissionID)
+		switch {
+		case !ok, status == ledgerUnknown, status == ledgerQueued,
+			status == ledgerAccepted, status == ledgerIgnored:
+			// 无条目/未决/仍在途：探不到确定事实，一律 no-op。
+			continue
+		case status == ledgerFailed:
+			transitions = append(transitions, Transition{
+				Kind:      TransitionTaskStatus,
+				TaskID:    task.ID,
+				Status:    TaskFailed,
+				Error:     firstNonEmpty(errorText, "队列派发失败"),
+				EventType: EventTaskFailed,
+			})
+		case status == ledgerCancelled:
+			// 阶段一事件表没有 task_cancelled 事件：事件用 task_stopped
+			//（用户取消把任务落 cancelled 的同款先例，runner Cancel），快照
+			// 状态与 ReconcileRun 的 ledgerCancelled 分支同为 cancelled。
+			transitions = append(transitions, Transition{
+				Kind:       TransitionTaskStatus,
+				TaskID:     task.ID,
+				Status:     TaskCancelled,
+				StopReason: "队列消息已被取消",
+				EventType:  EventTaskStopped,
+			})
+		}
+	}
+	return transitions
+}
+
+// applyReconciledUnknown 把 ReconcileUnknown 的迁移应用到 fresh 快照
+// （RefreshRun 的专用 mutate 段）：允许覆写 outcome_unknown 单一终态——
+// first-wins 的显式例外（照「更高 attempt 派发事实取代可重派终态」的
+// recovery.go 重放先例），其余任何状态一律不动（快照已被用户 resume 等先落
+// 时本轮放弃）。事件沿用既有 task_failed/task_stopped 类型并携带
+// reconciled:true（journal 重放 last-wins 天然兼容——重探事实落在
+// task_outcome_unknown 之后，下次 ReconcileRun 重放以它为准，不新增事件
+// 类型）。
+func applyReconciledUnknown(run *Run, transitions []Transition, source string) []*Event {
+	var events []*Event
+	for _, transition := range transitions {
+		task := findTaskIn(run, transition.TaskID)
+		if task == nil || task.Status != TaskOutcomeUnknown {
+			continue
+		}
+		task.Status = transition.Status
+		task.StopReason = transition.StopReason
+		task.Error = transition.Error
+		payload := map[string]any{
+			"taskId":     task.ID,
+			"reconciled": true,
+		}
+		switch transition.EventType {
+		case EventTaskFailed:
+			payload["error"] = transition.Error
+			if transition.StopReason != "" {
+				payload["stopReason"] = transition.StopReason
+			}
+		default: // task_stopped（cancelled 迁移）
+			payload["stopReason"] = transition.StopReason
+		}
+		if task.Attempt > 0 {
+			// 失败/停靠事实携带 attempt（与 mutateTaskTerminal 的事件约定
+			// 一致；reconciled 迁移不设 outcome，重放永不触发终态取代）。
+			payload["attempt"] = jsoncompat.Num(task.Attempt)
+		}
+		events = append(events, newEvent(run.ID, transition.EventType, source, payload))
+	}
+	return events
 }
 
 // retryableTerminal 报告该 journal 终态是否可被同任务更高 attempt 的

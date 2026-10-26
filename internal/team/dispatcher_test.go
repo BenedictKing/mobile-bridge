@@ -6,7 +6,9 @@ package team
 // acpview view.go:169-199 的真实字段形态构造 fixture）、POST-cancel 先记账后
 // session.Cancel 且 watcher 对已终态 no-op、Resume 四分支、超时取消、上下文
 // 截断与合成全文上限的派发期联合用例、多任务同会话按文本匹配、watcher 终态
-// 后退出（channel 关闭断言）、重启恢复不重发。全部 Go 级 fake，不依赖
+// 后退出（channel 关闭断言）、重启恢复不重发；阶段四的暂停/恢复（§12 工作
+// 项 4：停新派发、在途自然收尾、超时冻结/重臂、停靠升级 waiting_input、
+// 重启驻留与续跑零重复、闸门窗口暂停的判定补齐）。全部 Go 级 fake，不依赖
 // python3；等待用 deadline 轮询（queue_test.go 惯用法），不用固定 sleep 判
 // 正确性。
 
@@ -294,7 +296,7 @@ func newDispatchHarness(t *testing.T) *dispatchHarness {
 
 func (h *dispatchHarness) createRun(t *testing.T, mode string, plan []PlanTaskInput) *Run {
 	t.Helper()
-	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", mode, "", nil, plan, false)
+	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", mode, "", nil, plan, false, "")
 	if err != nil {
 		t.Fatalf("创建 run 失败: %v", err)
 	}
@@ -306,7 +308,7 @@ func (h *dispatchHarness) createRun(t *testing.T, mode string, plan []PlanTaskIn
 // 回复进入 settleLeadTaskLocked 的动作解析路径。
 func (h *dispatchHarness) createAutoPlanRun(t *testing.T) *Run {
 	t.Helper()
-	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", ModeSingle, "", nil, nil, true)
+	run, err := h.service.CreateRun(h.team, "", "实现用户头像上传接口", ModeSingle, "", nil, nil, true, "")
 	if err != nil {
 		t.Fatalf("创建 autoPlan run 失败: %v", err)
 	}
@@ -857,6 +859,234 @@ func TestRunTimeoutFailsRunAndWithdrawsQueue(t *testing.T) {
 	}
 }
 
+// ---- 超时豁免对齐（§5.2/§5.4/§13.3.7：三豁免在超时路径上各自不终局，收口路径仍可走通）----
+
+// forceRunExpiryWithAction 是超时豁免用例的可控 clock 前置：把 run 的超时
+// 截止推到过去，并在同一 state.mu 持有期内同批注入一个 proposed summarize
+// 动作（sourceTaskID 必须是本 Run 已完成任务）。两件事原子落账——循环的
+// 下一轮超时路径要么同时看到两者、要么都看不到，绝不取到「已过期但无动作」
+// 的中间态（那会走旧路径直接折叠，用例失去判别力）。optional 在同一批
+// mutate 里追加快照事实（如 open 问题登记）。事件载荷/幂等键照
+// settleLeadTaskLocked 的 action_proposed 口径。
+func (h *dispatchHarness) forceRunExpiryWithAction(t *testing.T, runID, sourceTaskID string, optional func(fresh *Run)) {
+	t.Helper()
+	state := h.service.stateFor(runID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.deadline = time.Now().Add(-time.Second)
+	err := h.service.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+		action := Action{
+			Type:         ActionTypeSummarize,
+			SourceTaskID: sourceTaskID,
+			Round:        1,
+			ActionKey:    ActionKey(fresh.TeamID, fresh.ID, sourceTaskID, 1, 0),
+			Status:       ActionStatusProposed,
+		}
+		fresh.PendingActions = append(fresh.PendingActions, action)
+		if action.Round > fresh.Round {
+			fresh.Round = action.Round
+		}
+		if optional != nil {
+			optional(fresh)
+		}
+		payload := map[string]any{
+			"taskId":       sourceTaskID,
+			"index":        jsoncompat.Num(0),
+			"actionKey":    action.ActionKey,
+			"type":         action.Type,
+			"round":        jsoncompat.Num(action.Round),
+			"sourceTaskId": action.SourceTaskID,
+		}
+		event := newEvent(fresh.ID, EventActionProposed, "watcher", payload)
+		event.IdempotencyKey = action.ActionKey
+		return []*Event{event}, true
+	})
+	if err != nil {
+		t.Fatalf("注入 proposed 动作失败: %v", err)
+	}
+}
+
+// TestRunTimeoutDwellsForRunnableProposedActions 判别用例（§5.2「动作事实
+// 先于终局」的超时面对齐，对修复前代码失败）：run 内 Lead proposed 动作待
+// 执行 + 超时线已过——passFold 在 fold 前拦 runnable proposed 动作，超时路径
+// 不得绕过守卫强制终局（旧实现 expireRun 折叠段直接 default 分支：待执行
+// 动作静默丢弃，「待执行」变「从未发生」）。豁免驻留不原地等片：推进一轮
+// pass 让 passActions 执行动作（executed + 派生任务），派生任务由下一轮
+// 超时路径按 run_timeout 收口、按剩余事实折叠——事件序 action_proposed →
+// 派生 task_planned → task_failed → run_failed 钉住「终局晚于动作事实」。
+// 修复前：首拍即 run_failed 且派生任务永不出现（waitFor 超时失败）。
+func TestRunTimeoutDwellsForRunnableProposedActions(t *testing.T) {
+	h := newDispatchHarness(t)
+	plan := []PlanTaskInput{
+		{ID: "a", MemberID: "lead", Prompt: "分析", WriteLock: TaskWriteLockNone},
+		{ID: "b", MemberID: "dev", Prompt: "实现", DependsOn: []string{"a"}, WriteLock: TaskWriteLockNone},
+	}
+	run := h.createRun(t, ModePipeline, plan)
+	// 手工 Session 的 Cancel 走 signalLocked（nil 通道），照取消用例先例注入
+	// no-op 钩子；超时对在途 turn 的取消语义已有专测（TestTaskTimeout…）。
+	h.service.cancelAgentTurn = func(session *acpruntime.Session, sentText string) bool { return true }
+
+	subA, textA := h.waitForSubmission(t, "s-lead", "任务 a")
+	h.completeSubmission("s-lead", subA, textA, "分析完成。")
+	subB, textB := h.waitForSubmission(t, "s-dev", "任务 b")
+	h.queue.setStatus("s-dev", subB, SubStatusAccepted, "")
+	h.resolver.setSession("s-dev", newFakeSession("s-dev", "/tmp/dev", turnInProgress(textB)))
+	waitFor(t, "任务 b running", func() bool { return h.taskOf(run.ID, "b").Status == TaskRunning })
+
+	// 推进 deadline + 同批注入 proposed summarize 动作（来源 a 已完成）。
+	h.forceRunExpiryWithAction(t, run.ID, "a", nil)
+	derived := ActionDerivedTaskID(&Action{
+		Type:         ActionTypeSummarize,
+		SourceTaskID: "a",
+		Round:        1,
+		ActionKey:    ActionKey(h.team.ID, run.ID, "a", 1, 0),
+	})
+
+	// 判别点：豁免驻留推进 pass，动作执行落派生任务（修复前首拍折叠、
+	// 派生任务永不出现）。
+	waitFor(t, "豁免驻留执行动作派生任务", func() bool {
+		return findTaskIn(h.store.Run(run.ID), derived) != nil
+	})
+	if fresh := h.store.Run(run.ID); len(fresh.PendingActions) != 1 ||
+		fresh.PendingActions[0].Status != ActionStatusExecuted {
+		t.Fatalf("动作应落 executed: %+v", fresh.PendingActions)
+	}
+	// 按剩余事实终局：派生任务随下一轮超时路径收口、run 折叠 failed。
+	waitFor(t, "run 按剩余事实折叠", func() bool { return h.store.Run(run.ID).Status == RunFailed })
+	task := h.taskOf(run.ID, derived)
+	if task.Status != TaskFailed || task.StopReason != "run_timeout" {
+		t.Fatalf("派生任务应随超时收口: %s/%s", task.Status, task.StopReason)
+	}
+	if taskB := h.taskOf(run.ID, "b"); taskB.Status != TaskFailed || taskB.StopReason != "run_timeout" {
+		t.Fatalf("b 应随 run 超时终止: %s/%s", taskB.Status, taskB.StopReason)
+	}
+	// containsInOrder 向前扫描：action_proposed 之后的 task_planned 只能是
+	// 派生事实（计划任务的 task_planned 都在它之前），终局晚于动作事实。
+	if got := h.runEventTypes(run.ID); !containsInOrder(got,
+		EventActionProposed, EventTaskPlanned, EventTaskFailed, EventRunFailed) {
+		t.Fatalf("事件序应钉住「动作事实先于终局」: %v", got)
+	}
+}
+
+// TestRunTimeoutExemptionStackingClosesViaAnswer 三豁免对齐（§5.4 open 问题
+// × §5.2 proposed 动作叠加）：超时批量 failed 跳过有 open 问题的任务——run
+// 维持非终态驻留（无豁免的 c 照常 run_timeout，证明超时路径确实跑过）；
+// 问题随成员 turn 完成落定后，动作豁免接管（驻留推进 pass 执行动作），再按
+// 剩余事实收口——绝不「叠加即永悬」。答案流本身（AnswerQuestion →
+// expireRun 收口）由 TestExpireRunSkipsOpenQuestionTasks 钉住，本用例驱动
+// 「答案落定 → 成员继续 → turn 完成」的自然收口形态。
+func TestRunTimeoutExemptionStackingClosesViaAnswer(t *testing.T) {
+	h := newDispatchHarness(t)
+	plan := []PlanTaskInput{
+		{ID: "a", MemberID: "lead", Prompt: "分析", WriteLock: TaskWriteLockNone},
+		{ID: "b", MemberID: "dev", Prompt: "实现", DependsOn: []string{"a"}, WriteLock: TaskWriteLockNone},
+		{ID: "c", MemberID: "rev", Prompt: "审查", DependsOn: []string{"a"}, WriteLock: TaskWriteLockNone},
+	}
+	run := h.createRun(t, ModePipeline, plan)
+	h.service.cancelAgentTurn = func(session *acpruntime.Session, sentText string) bool { return true }
+
+	subA, textA := h.waitForSubmission(t, "s-lead", "任务 a")
+	h.completeSubmission("s-lead", subA, textA, "分析完成。")
+	subB, textB := h.waitForSubmission(t, "s-dev", "任务 b")
+	h.queue.setStatus("s-dev", subB, SubStatusAccepted, "")
+	h.resolver.setSession("s-dev", newFakeSession("s-dev", "/tmp/dev", turnInProgress(textB)))
+	subC, textC := h.waitForSubmission(t, "s-rev", "任务 c")
+	h.queue.setStatus("s-rev", subC, SubStatusAccepted, "")
+	h.resolver.setSession("s-rev", newFakeSession("s-rev", "/tmp/rev", turnInProgress(textC)))
+	waitFor(t, "b/c running", func() bool {
+		return h.taskOf(run.ID, "b").Status == TaskRunning && h.taskOf(run.ID, "c").Status == TaskRunning
+	})
+
+	// 推进 deadline + 同批注入：b 的 open 问题（豁免持有者）+ proposed 动作。
+	h.forceRunExpiryWithAction(t, run.ID, "a", func(fresh *Run) {
+		fresh.PendingQuestions = append(fresh.PendingQuestions, PendingQuestion{
+			QuestionID: QuestionIDOf("b", "req-1"),
+			TaskID:     "b",
+			Version:    fresh.Version,
+			Kind:       QuestionKindQuestion,
+			Summary:    "问题：req-1",
+			Status:     QuestionStatusOpen,
+		})
+	})
+	derived := ActionDerivedTaskID(&Action{
+		Type:         ActionTypeSummarize,
+		SourceTaskID: "a",
+		Round:        1,
+		ActionKey:    ActionKey(h.team.ID, run.ID, "a", 1, 0),
+	})
+
+	// 豁免各自不终局：c 无豁免照常 run_timeout（超时路径已跑），b 被 open
+	// 问题拦下、run 不折叠、动作保持待执行。
+	waitFor(t, "c 随超时终止", func() bool {
+		task := h.taskOf(run.ID, "c")
+		return task.Status == TaskFailed && task.StopReason == "run_timeout"
+	})
+	fresh := h.store.Run(run.ID)
+	if fresh.Status != RunDispatching {
+		t.Fatalf("open 问题期间 run 不得折叠: %s", fresh.Status)
+	}
+	if taskB := h.taskOf(run.ID, "b"); taskB.Status != TaskRunning {
+		t.Fatalf("有 open 问题的任务不得被批量 failed: %s", taskB.Status)
+	}
+	if len(fresh.PendingActions) != 1 || fresh.PendingActions[0].Status != ActionStatusProposed {
+		t.Fatalf("动作应保持待执行: %+v", fresh.PendingActions)
+	}
+
+	// 答案路径收口：成员继续、turn 完成（问题随任务终态撤回）→ 全终态 +
+	// 待执行动作 → 动作豁免接管（驻留推进 pass 执行）→ 按剩余事实折叠。
+	h.completeSubmission("s-dev", subB, textB, "实现完成。")
+	waitFor(t, "动作豁免接管执行", func() bool {
+		return findTaskIn(h.store.Run(run.ID), derived) != nil
+	})
+	waitFor(t, "run 按剩余事实折叠", func() bool { return h.store.Run(run.ID).Status == RunFailed })
+	if task := h.taskOf(run.ID, derived); task.Status != TaskFailed || task.StopReason != "run_timeout" {
+		t.Fatalf("派生任务应随超时收口: %s/%s", task.Status, task.StopReason)
+	}
+	if fresh := h.store.Run(run.ID); len(fresh.PendingActions) != 1 ||
+		fresh.PendingActions[0].Status != ActionStatusExecuted {
+		t.Fatalf("动作应落 executed: %+v", fresh.PendingActions)
+	}
+	if got := h.runEventTypes(run.ID); !containsInOrder(got,
+		EventActionProposed, EventTaskPlanned, EventTaskFailed, EventRunFailed) {
+		t.Fatalf("事件序应钉住「动作事实先于终局」: %v", got)
+	}
+}
+
+// TestExpireRunDwellsVerifyFailedThenResumeReverifies 三豁免对齐（§13.3.7
+// verify_failed 停靠）：闸门停靠的 run 过超时线也不 fold——终局化会拒绝
+// Resume、堵死复验；复验路径经 Resume 清 Verify 回执行态重启循环收口。直接
+// 调 expireRun 钉守卫契约（TestExpireRunSkipsOpenQuestionTasks 同款先例：
+// deadline 门控是 runExpired 的职责，本函数只管超时已到后的处置）。
+func TestExpireRunDwellsVerifyFailedThenResumeReverifies(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := &Run{
+		ID: "run-vf", TeamID: h.team.ID, Goal: "实现头像上传", Mode: ModeSingle,
+		Status: RunWaitingInput, StopReason: StopReasonVerifyFailed, Round: 1,
+		Verify: &VerifyResult{ExitCode: 1, OutputHead: "校验失败", FinishedAt: time.Now()},
+		Tasks: []Task{{
+			ID: "lead", MemberID: "lead", Status: TaskCompleted, Ordinal: 0, Result: "完成",
+		}},
+	}
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatalf("run 保存失败: %v", err)
+	}
+	state := h.service.stateFor(run.ID)
+	finished, dwell := h.service.expireRun(state)
+	if finished || dwell {
+		t.Fatalf("verify_failed 停靠的超时路径不得折叠: finished=%v dwell=%v", finished, dwell)
+	}
+	if fresh := h.store.Run(run.ID); fresh.Status != RunWaitingInput ||
+		!strings.HasPrefix(fresh.StopReason, StopReasonVerifyFailed) {
+		t.Fatalf("run 应保持 verify_failed 停靠: %s/%s", fresh.Status, fresh.StopReason)
+	}
+	// 复验路径收口：Resume 清 Verify 回执行态、重启循环，折叠段按剩余事实
+	//（全 completed、无闸门配置）正常终局。
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("resume 复验失败: %v", err)
+	}
+	waitFor(t, "复验路径收口", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+}
+
 // ---- 流水线：依赖执行、有界上下文注入、写锁 ----
 
 func TestPipelineRunsByDependencyWithBoundedContext(t *testing.T) {
@@ -1011,7 +1241,7 @@ func TestOversizedPromptFailsTaskBeforeEnqueue(t *testing.T) {
 	// 40000 个 CJK rune（120000 字节）：rune 在 87800 限内、字节远超创建期
 	// 上限（评审遗留②）——创建即拒，不再建成注定在派发期才失败的 Run。
 	goal := strings.Repeat("字", 40000)
-	if _, err := h.service.CreateRun(h.team, "", goal, ModeSingle, "", nil, nil, false); err == nil || !strings.Contains(err.Error(), "字节") {
+	if _, err := h.service.CreateRun(h.team, "", goal, ModeSingle, "", nil, nil, false, ""); err == nil || !strings.Contains(err.Error(), "字节") {
 		t.Fatalf("超字节上限的多字节目标应在创建期拒绝，实际 %v", err)
 	}
 	// 派发期预检仍是防御底线（旧账本/直写快照可能绕过创建校验）：直落一个
@@ -1521,7 +1751,7 @@ func (h *dispatchHarness) createBroadcastRun(t *testing.T, collect string, membe
 	plan := []PlanTaskInput{
 		{ID: "draft", Prompt: "各写一版方案", MemberIDs: memberIDs, WriteLock: TaskWriteLockNone},
 	}
-	run, err := h.service.CreateRun(h.team, "", "产出方案", ModeBroadcast, collect, nil, plan, false)
+	run, err := h.service.CreateRun(h.team, "", "产出方案", ModeBroadcast, collect, nil, plan, false, "")
 	if err != nil {
 		t.Fatalf("创建 broadcast run 失败: %v", err)
 	}
@@ -2300,7 +2530,7 @@ func TestQuotaStopDoesNotAffectOtherTeamSameBucket(t *testing.T) {
 			h.queue.entriesFor("s-lead"), h.runEventTypes(run1.ID), h.service.AIMDSnapshot())
 	}
 	// 二队的同桶任务照常派发。
-	run2, err := h.service.CreateRun(second, "", "二队目标", ModeSingle, "", nil, nil, false)
+	run2, err := h.service.CreateRun(second, "", "二队目标", ModeSingle, "", nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("二队 run 创建失败: %v", err)
 	}
@@ -2550,11 +2780,11 @@ func (h *dispatchHarness) recordSaves() *saveRecordingStore {
 func TestAutoPlanRejectsExplicitPlan(t *testing.T) {
 	h := newDispatchHarness(t)
 	plan := []PlanTaskInput{{ID: "design", MemberID: "lead", Prompt: "分析", WriteLock: TaskWriteLockNone}}
-	if _, err := h.service.CreateRun(h.team, "", "目标", ModeSingle, "", nil, plan, true); err == nil || !strings.Contains(err.Error(), "显式计划") {
+	if _, err := h.service.CreateRun(h.team, "", "目标", ModeSingle, "", nil, plan, true, ""); err == nil || !strings.Contains(err.Error(), "显式计划") {
 		t.Fatalf("autoPlan+显式计划应拒绝，实际 %v", err)
 	}
 	// 空计划 + autoPlan 合法。
-	if _, err := h.service.CreateRun(h.team, "", "目标", ModeSingle, "", nil, nil, true); err != nil {
+	if _, err := h.service.CreateRun(h.team, "", "目标", ModeSingle, "", nil, nil, true, ""); err != nil {
 		t.Fatalf("autoPlan 空计划应创建成功: %v", err)
 	}
 }
@@ -3228,5 +3458,352 @@ func TestLeadActionsRepairDerivedChildNoCollision(t *testing.T) {
 	next := h.waitForNthSubmission(t, "s-lead", 4, "第二修复任务派发")
 	if next.submissionID == repair.submissionID || next.submissionID == child.submissionID {
 		t.Fatal("第二修复入队必须用独立 submissionID")
+	}
+}
+
+// ---- 阶段四：Run 暂停（可恢复软停）、恢复与 checkpoint（§12 工作项 4）----
+
+// twoStepPlan 返回 design(lead) → implement(dev) 的两步流水线（暂停语义的
+// 最小观测面：上游在途、下游未派）。
+func twoStepPlan() []PlanTaskInput {
+	return []PlanTaskInput{
+		{ID: "design", MemberID: "lead", Prompt: "分析需求", WriteLock: TaskWriteLockNone},
+		{ID: "implement", MemberID: "dev", Prompt: "实现接口", DependsOn: []string{"design"}, WriteLock: TaskWriteLockNone},
+	}
+}
+
+// readDeadline 读取 run 的超时截止（state.mu 内；deadline 重臂/冻结断言用）。
+func (h *dispatchHarness) readDeadline(runID string) time.Time {
+	state := h.service.stateFor(runID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.deadline
+}
+
+// TestPauseStopsNewDispatchInFlightSettlesAndResumeContinues：暂停的核心
+// 语义面——停新派发（下游不入队）、在途自然收尾入账（普通 completed 不改
+// run 状态）、重复暂停 409、run_paused 事件携带 checkpoint 游标锚点、resume
+// 续跑恰好派剩余任务（入账零重复）。
+func TestPauseStopsNewDispatchInFlightSettlesAndResumeContinues(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModePipeline, twoStepPlan())
+	designSub, designText := h.waitForSubmission(t, "s-lead", "design 派发")
+
+	paused, err := h.service.Pause(run.ID)
+	if err != nil {
+		t.Fatalf("pause 失败: %v", err)
+	}
+	if paused.Status != RunPaused || paused.StopReason != "用户暂停运行" {
+		t.Fatalf("暂停后快照异常: %+v", paused)
+	}
+	pauseEvents := h.eventsOfType(run.ID, EventRunPaused)
+	if len(pauseEvents) != 1 {
+		t.Fatalf("应恰有一条 run_paused: %v", pauseEvents)
+	}
+	// checkpoint 游标锚点：payload.sequence 是暂停落账前 journal 的最大序号，
+	// run_paused 自身紧随其后（本测试无并发写者，序号衔接是确定性的）。
+	cursor, ok := pauseEvents[0].Payload["sequence"].(json.Number)
+	if !ok {
+		t.Fatalf("run_paused 应携带 sequence 游标: %+v", pauseEvents[0].Payload)
+	}
+	cursorValue, err := cursor.Int64()
+	if err != nil || cursorValue < 1 {
+		t.Fatalf("游标应解析为正数: %q %v", cursor.String(), err)
+	}
+	if pauseEvents[0].Sequence != uint64(cursorValue)+1 {
+		t.Fatalf("游标应为 run_paused 前的最大序号: cursor=%d event=%d",
+			cursorValue, pauseEvents[0].Sequence)
+	}
+
+	// 重复暂停拒绝（ErrRunNotWaiting 哨兵，HTTP 侧既有映射 409）。
+	if _, err := h.service.Pause(run.ID); !errors.Is(err, ErrRunNotWaiting) || !strings.Contains(err.Error(), "已暂停") {
+		t.Fatalf("重复暂停应拒绝: %v", err)
+	}
+
+	// 在途任务自然收尾：design 完成入账，run 停在 paused（普通 completed 不
+	// 改 run 状态、不折叠）。
+	h.completeSubmission("s-lead", designSub, designText, "分析完成。")
+	waitFor(t, "在途 design 收尾入账", func() bool { return h.taskOf(run.ID, "design").Status == TaskCompleted })
+	if status := h.store.Run(run.ID).Status; status != RunPaused {
+		t.Fatalf("普通 completed 不改 run 状态，应保持 paused，实际 %s", status)
+	}
+	// 暂停期间无新派发：循环已驻留退出（等待片 2ms 量级），误活循环会立刻
+	// 派出 implement——有界负向窗口探测。
+	if waitForSoft(300*time.Millisecond, "暂停期间误派 implement", func() bool {
+		_, ok := h.queue.firstEntry("s-dev")
+		return ok
+	}) {
+		t.Fatal("暂停期间不得派发下游任务")
+	}
+
+	// resume 续跑：推回执行态、重启循环，恰好派剩余任务。
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("paused resume 失败: %v", err)
+	}
+	implSub, implText := h.waitForSubmission(t, "s-dev", "implement 派发")
+	if got := h.queue.callCount(designSub); got != 1 {
+		t.Fatalf("design 不得重复入账: %d 次", got)
+	}
+	h.completeSubmission("s-dev", implSub, implText, "实现完成。")
+	waitFor(t, "run 终态", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+	if got := h.queue.callCount(implSub); got != 1 {
+		t.Fatalf("implement 应恰派一次: %d 次", got)
+	}
+	if entries := h.queue.entriesFor("s-lead"); len(entries) != 1 {
+		t.Fatalf("s-lead 应恰一条入账: %+v", entries)
+	}
+}
+
+// TestPauseAllTerminalStaysPausedUntilResumeFolds：暂停期间全任务终态也不
+// 折叠（passFold 的 paused 守卫）——终局统一延到 resume 后的下一轮，用户的
+// 软停绝不被静默换成终局。
+func TestPauseAllTerminalStaysPausedUntilResumeFolds(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModeSingle, nil)
+	sub, text := h.waitForSubmission(t, "s-lead", "lead 任务")
+	if _, err := h.service.Pause(run.ID); err != nil {
+		t.Fatalf("pause 失败: %v", err)
+	}
+	h.completeSubmission("s-lead", sub, text, "完成。")
+	waitFor(t, "任务完成", func() bool { return h.taskOf(run.ID, "lead").Status == TaskCompleted })
+	if status := h.store.Run(run.ID).Status; status != RunPaused {
+		t.Fatalf("全终态也不折叠，run 应保持 paused: %s", status)
+	}
+	if waitForSoft(300*time.Millisecond, "暂停期间误折叠", func() bool {
+		return terminalRun(h.store.Run(run.ID).Status)
+	}) {
+		t.Fatal("暂停期间不得折叠终局")
+	}
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("resume 失败: %v", err)
+	}
+	waitFor(t, "resume 后折叠终局", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+}
+
+// TestPausedRunCancelStillTerminates：暂停期间 Cancel 可用（终局优先）；
+// 终态后的 Pause 拒绝（ErrRunFinished）。
+func TestPausedRunCancelStillTerminates(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModePipeline, twoStepPlan())
+	h.waitForSubmission(t, "s-lead", "design 派发")
+	if _, err := h.service.Pause(run.ID); err != nil {
+		t.Fatalf("pause 失败: %v", err)
+	}
+	cancelled, err := h.service.Cancel(run.ID)
+	if err != nil {
+		t.Fatalf("暂停期间 cancel 应可用: %v", err)
+	}
+	if cancelled.Status != RunCancelled {
+		t.Fatalf("取消后应为 cancelled，实际 %s", cancelled.Status)
+	}
+	for i := range cancelled.Tasks {
+		if !terminalTask(cancelled.Tasks[i].Status) {
+			t.Fatalf("取消后任务应全终态: %+v", cancelled.Tasks[i])
+		}
+	}
+	if entry, ok := h.queue.firstEntry("s-lead"); !ok || entry.status != SubStatusCancelled {
+		t.Fatalf("队列条目应被撤回: %+v ok=%v", entry, ok)
+	}
+	if _, err := h.service.Pause(run.ID); !errors.Is(err, ErrRunFinished) {
+		t.Fatalf("终态 pause 应拒绝: %v", err)
+	}
+}
+
+// TestPausedInFlightBlockedUpgradesWaitingInput：暂停期间在途任务 quota 停靠
+// → run 升级 waiting_input（语义严格强于 paused，事件序 run_paused →
+// run_waiting_input）；升级后 resume 走 PlanResume 既有路径（停靠重飞
+// attempt+1 全新 submissionID），waiting_input 上的 pause 拒绝。
+func TestPausedInFlightBlockedUpgradesWaitingInput(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModePipeline, twoStepPlan())
+	designSub, designText := h.waitForSubmission(t, "s-lead", "design 派发")
+	if _, err := h.service.Pause(run.ID); err != nil {
+		t.Fatalf("pause 失败: %v", err)
+	}
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnFailedView(designText, "账户额度不足，请充值后重试")))
+	h.queue.setStatus("s-lead", designSub, SubStatusAccepted, "")
+	waitFor(t, "任务停靠", func() bool { return h.taskOf(run.ID, "design").Status == TaskStopped })
+	waitFor(t, "run 升级 waiting_input", func() bool { return h.store.Run(run.ID).Status == RunWaitingInput })
+	if types := h.runEventTypes(run.ID); !containsInOrder(types, EventRunPaused, EventRunWaitingInput) {
+		t.Fatalf("journal 应含 run_paused → run_waiting_input 升级序: %v", types)
+	}
+	if _, err := h.service.Pause(run.ID); !errors.Is(err, ErrRunNotWaiting) {
+		t.Fatalf("waiting_input 不应再暂停（停靠语义强于 paused）: %v", err)
+	}
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("resume 失败: %v", err)
+	}
+	second := h.waitForNthSubmission(t, "s-lead", 2, "停靠重飞")
+	if second.submissionID != TaskSubmissionID(h.team.ID, run.ID, "design", 2) {
+		t.Fatalf("重飞应为 attempt 2 全新键: %s", second.submissionID)
+	}
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnCompleted(designText, "分析完成。")))
+	h.queue.setStatus("s-lead", second.submissionID, SubStatusAccepted, "")
+	waitFor(t, "下游释放", func() bool {
+		_, ok := h.queue.firstEntry("s-dev")
+		return ok
+	})
+}
+
+// TestPausedInFlightUnknownUpgradesWaitingInput：暂停期间在途任务结果未知 →
+// outcome_unknown + run 升级 waiting_input；resume 走 PlanResume（unknown 转
+// stopped 不重发、下游级联停止、fold stopped）。
+func TestPausedInFlightUnknownUpgradesWaitingInput(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModePipeline, twoStepPlan())
+	designSub, _ := h.waitForSubmission(t, "s-lead", "design 派发")
+	if _, err := h.service.Pause(run.ID); err != nil {
+		t.Fatalf("pause 失败: %v", err)
+	}
+	h.queue.setStatus("s-lead", designSub, SubStatusUnknown, "")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead"))
+	waitFor(t, "任务落 outcome_unknown", func() bool { return h.taskOf(run.ID, "design").Status == TaskOutcomeUnknown })
+	waitFor(t, "run 升级 waiting_input", func() bool { return h.store.Run(run.ID).Status == RunWaitingInput })
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("resume 失败: %v", err)
+	}
+	waitFor(t, "run 终态", func() bool { return terminalRun(h.store.Run(run.ID).Status) })
+	after := h.store.Run(run.ID)
+	if after.Status != RunStopped {
+		t.Fatalf("存在 stopped 任务应 fold 为 stopped，实际 %s", after.Status)
+	}
+	if got := h.queue.callCount(designSub); got != 1 {
+		t.Fatalf("结果未知绝不重发: %d 次", got)
+	}
+	if entries := h.queue.entriesFor("s-dev"); len(entries) != 0 {
+		t.Fatalf("级联停止后不派下游: %+v", entries)
+	}
+}
+
+// TestPausedRunRestartStaysPausedAndResumeContinues：paused Run 重启对账后
+// 保持 paused（不 startLoop——deadline 不重臂、无新派发事实），在途任务经
+// 收养解耦继续有人观察并自然收尾；resume 续跑恰好派剩余任务（journal 派发
+// 记账恰两次、入账零重复）。
+func TestPausedRunRestartStaysPausedAndResumeContinues(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createRun(t, ModePipeline, twoStepPlan())
+	designSub, designText := h.waitForSubmission(t, "s-lead", "design 派发")
+	h.queue.setStatus("s-lead", designSub, SubStatusAccepted, "")
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead", turnInProgress(designText)))
+	waitFor(t, "design 落 running", func() bool { return h.taskOf(run.ID, "design").Status == TaskRunning })
+	if _, err := h.service.Pause(run.ID); err != nil {
+		t.Fatalf("pause 失败: %v", err)
+	}
+	deadlineAtPause := h.readDeadline(run.ID)
+	if deadlineAtPause.IsZero() {
+		t.Fatal("循环启动应已重臂 deadline")
+	}
+
+	if err := h.service.RecoverRun(run.ID); err != nil {
+		t.Fatalf("重启对账失败: %v", err)
+	}
+	if status := h.store.Run(run.ID).Status; status != RunPaused {
+		t.Fatalf("重启后应保持 paused，实际 %s", status)
+	}
+	if got := h.readDeadline(run.ID); !got.Equal(deadlineAtPause) {
+		t.Fatalf("paused 驻留不得重臂 deadline: %v vs %v", got, deadlineAtPause)
+	}
+	// 收养解耦：在途任务重启后仍有 watcher（无需调度循环）。
+	h.grabWatcherExit(t, run.ID, "design")
+	// 暂停期间在途自然收尾（重启后由收养的 watcher 观察到完成）。
+	h.resolver.setSession("s-lead", newFakeSession("s-lead", "/tmp/lead",
+		turnCompleted(designText, "分析完成。")))
+	waitFor(t, "在途收尾", func() bool { return h.taskOf(run.ID, "design").Status == TaskCompleted })
+	if status := h.store.Run(run.ID).Status; status != RunPaused {
+		t.Fatalf("收尾后仍应 paused，实际 %s", status)
+	}
+
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("resume 失败: %v", err)
+	}
+	implSub, implText := h.waitForSubmission(t, "s-dev", "implement 派发")
+	if got := h.queue.callCount(designSub); got != 1 {
+		t.Fatalf("恢复+续跑不得重发 design: %d 次", got)
+	}
+	if dispatches := h.eventsOfType(run.ID, EventTaskDispatching); len(dispatches) != 2 {
+		t.Fatalf("应恰两次派发记账（design+implement），实际 %d", len(dispatches))
+	}
+	h.completeSubmission("s-dev", implSub, implText, "实现完成。")
+	waitFor(t, "run 终态", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+}
+
+// TestPauseFreezesRunTimeoutAndResumeRearms：暂停期间 run 超时不触发
+// （deadline 冻结——循环驻留退出后无人检查；expireRun 的 paused 守卫封住
+// Pause 落账与循环退出之间的窄窗口）；resume 经 startLoopLocked 重臂
+// deadline，从 resume 时刻重新起算。
+func TestPauseFreezesRunTimeoutAndResumeRearms(t *testing.T) {
+	h := newDispatchHarness(t)
+	h.team.Policy.RunTimeoutSecs = 2
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatalf("team 保存失败: %v", err)
+	}
+	run := h.createRun(t, ModePipeline, twoStepPlan())
+	h.waitForSubmission(t, "s-lead", "design 派发")
+	if _, err := h.service.Pause(run.ID); err != nil {
+		t.Fatalf("pause 失败: %v", err)
+	}
+	deadline := h.readDeadline(run.ID)
+	if deadline.IsZero() {
+		t.Fatal("循环启动应已重臂 deadline")
+	}
+	// 确定性等到超时线越过（等待事实成立，非固定 sleep 判定正确性）。
+	waitFor(t, "超时线越过", func() bool { return time.Now().After(deadline) })
+	if waitForSoft(400*time.Millisecond, "暂停期间误超时", func() bool {
+		return terminalRun(h.store.Run(run.ID).Status)
+	}) {
+		t.Fatal("暂停期间 run 超时不得触发（deadline 冻结）")
+	}
+	if status := h.store.Run(run.ID).Status; status != RunPaused {
+		t.Fatalf("应保持 paused，实际 %s", status)
+	}
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("resume 失败: %v", err)
+	}
+	rearmed := h.readDeadline(run.ID)
+	if !rearmed.After(deadline) {
+		t.Fatalf("resume 应重臂 deadline: %v vs %v", rearmed, deadline)
+	}
+}
+
+// TestResumePausedAppliesLandedVerifyVerdict：暂停落在验证闸门窗口、闸门
+// 结果已落账但判定未应用的形态（现实入口：run_verify 落账与判定应用之间
+// 崩溃 + journal 重建，或 Pause 抢在 settleVerifyGateLocked 的两段 commitRun
+// 之间落账）——resume 推回 RunReducing 就地补判：未过升级 waiting_input、
+// 过了正常折叠（verify_failed 复验语义）。
+func TestResumePausedAppliesLandedVerifyVerdict(t *testing.T) {
+	h := newDispatchHarness(t)
+	cases := []struct {
+		name     string
+		exitCode int
+		want     string
+	}{
+		{"闸门未过升级 waiting_input", 2, RunWaitingInput},
+		{"闸门通过正常折叠", 0, RunCompleted},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			run := &Run{
+				ID: uuid.NewString(), TeamID: h.team.ID, Goal: "闸门暂停", Status: RunPaused,
+				Mode: ModeSingle, Round: 1,
+				Tasks:         []Task{{ID: "lead", MemberID: "lead", Status: TaskCompleted, Ordinal: 0}},
+				VerifyCommand: []string{"make", "check"},
+				Verify:        &VerifyResult{ExitCode: testCase.exitCode, FinishedAt: time.Now()},
+			}
+			if err := h.store.SaveRun(run); err != nil {
+				t.Fatalf("run 保存失败: %v", err)
+			}
+			if _, err := h.service.Resume(run.ID); err != nil {
+				t.Fatalf("resume 失败: %v", err)
+			}
+			waitFor(t, "闸门判定落地", func() bool { return h.store.Run(run.ID).Status == testCase.want })
+			if testCase.want == RunWaitingInput {
+				after := h.store.Run(run.ID)
+				if !strings.HasPrefix(after.StopReason, StopReasonVerifyFailed) {
+					t.Fatalf("未过闸门应带 verify_failed 原因: %q", after.StopReason)
+				}
+			}
+		})
 	}
 }

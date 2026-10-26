@@ -109,6 +109,17 @@ func (h *handler) handleTeams(method string) {
 		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}
+	case len(segments) == 2 && segments[1] == "schedule":
+		// 定时触发配置（§12 阶段四工作项 1 的 HTTP 配置面）：GET 无配置
+		// 404（前端据此展示未配置态）、PUT 全量模板写。
+		switch method {
+		case http.MethodGet:
+			h.handleTeamScheduleGet(teamID)
+		case http.MethodPut:
+			h.handleTeamSchedulePut(teamID)
+		default:
+			h.fail(http.StatusNotFound, errorBody("页面不存在"))
+		}
 	case len(segments) == 3 && segments[1] == "runs" && method == http.MethodGet:
 		h.handleRunGet(teamID, segments[2])
 	case len(segments) == 4 && segments[1] == "runs":
@@ -602,7 +613,7 @@ func (h *handler) handleRunCreate(teamID string) {
 	//（single 模式空计划由 planner 合成 Lead 任务）；携带任何显式计划则
 	// false，与 CreateRun 的互斥校验天然一致。
 	autoPlan := len(inputs) == 0
-	run, createErr := h.server.Teams.CreateRun(teamRow, requestID, goal, mode, collect, verifyCommand, inputs, autoPlan)
+	run, createErr := h.server.Teams.CreateRun(teamRow, requestID, goal, mode, collect, verifyCommand, inputs, autoPlan, "")
 	if createErr != nil {
 		// 计划类错误已在上方预检映射 400；这里的错误是账本/journal IO
 		// （500）或版本哨兵（409），见 failTeamError（评审遗留①）。
@@ -635,6 +646,10 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 			h.handleTeamRunEvents(teamID, runID)
 		case "questions":
 			h.handleRunQuestions(teamID, runID)
+		case "stats":
+			h.handleRunStats(teamID, runID)
+		case "graph":
+			h.handleRunGraph(teamID, runID)
 		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}
@@ -662,6 +677,20 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 			return
 		}
 		h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
+	case "pause":
+		// 用户软停（§12 阶段四工作项 4）：非终态 200 RunDetail，终态/
+		// 已 paused/waiting_input 409（failTeamError 映射哨兵）。续跑走
+		// 同一 resume 端点（Service.Resume 的 paused 分支），无新路由。
+		run, err := h.server.Teams.Pause(runID)
+		if err != nil {
+			h.failTeamError(err)
+			return
+		}
+		h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
+	case "refresh":
+		// 运行中状态刷新（§12 阶段四工作项 2 的手动入口；周期 reconciler
+		// 走同一 Service.RefreshRun）：只改任务事实绝不改 run 状态。
+		h.handleRunRefresh(teamID, runID)
 	case "forward":
 		// 成员间显式转发（§7 阶段二工作项 4）。
 		h.handleRunForward(teamID, runID)
@@ -921,6 +950,363 @@ func (h *handler) failDecisionError(err error) {
 	default:
 		h.failTeamError(err)
 	}
+}
+
+// ---- 阶段四增量端点（§9/§11/§12 工作项 1/2/5/6）----
+
+// handleTeamScheduleGet 输出 Team 的定时触发配置（§12 阶段四工作项 1）：
+// 未配置 404（前端据此展示未配置态——契约键），已配置直出账本全字段投影
+// （含 nextDue/lastRunAt/lastRunId 与 pendingTriggerId 簿记：触发协议进行中
+// 的标记对客户端可观测）。团队不存在 404 沿用 loadTeam。
+func (h *handler) handleTeamScheduleGet(teamID string) {
+	if h.loadTeam(teamID) == nil {
+		return
+	}
+	schedules := h.server.TeamSchedules
+	if schedules == nil {
+		h.fail(http.StatusConflict, errorBody("定时触发配置不可用，请启动新版网关"))
+		return
+	}
+	schedule := schedules.Schedule(teamID)
+	if schedule == nil {
+		h.fail(http.StatusNotFound, errorBody("尚未配置定时运行"))
+		return
+	}
+	h.output(http.StatusOK, teamScheduleProject(schedule), contentTypeJSON, "")
+}
+
+// handleTeamSchedulePut 全量写入 Team 的定时触发配置（PUT /schedule，前端
+// 模板编辑与快捷启停共用）：校验复用 Run 创建的件（goal 1–10000 字、
+// parsePlanInputs+ParsePlan 计划合法性、parseVerifyCommand、isolated 未装配
+// 降级 409），触发规格二选一由 team.ValidateSchedule 裁决（间隔下限
+// MinScheduleIntervalSecs=300 是生产硬护栏，无缩限钩子——集成测试用 fixture
+// 预置 team-schedules.json 绕开）。写法是账本读改写：簿记字段
+// （nextDue/lastRun*/pendingTriggerID/triggerFailures/version）原样保留，仅
+// 覆盖模板字段；触发规格（间隔/cron）变更时清 NextDue 让调度器按新规格重锚
+// （错过的到期点不补跑语义不变）。
+//
+// 幂等：requestId（可选 UUID，前端契约键名）照 Team 创建先例——同 id 同
+// 内容重放返回已存配置 + duplicate:true（不推版本），异内容 400；登记在
+// 内存 FIFO（teamSchedulePuts，封顶 512）。
+func (h *handler) handleTeamSchedulePut(teamID string) {
+	teamRow := h.loadTeam(teamID)
+	if teamRow == nil {
+		return
+	}
+	schedules := h.server.TeamSchedules
+	if schedules == nil {
+		h.fail(http.StatusConflict, errorBody("定时触发配置不可用，请启动新版网关"))
+		return
+	}
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	body := value.(*jsoncompat.Object)
+	requestID := stringField(body, "requestId")
+	if requestID != "" {
+		if _, parseErr := uuid.Parse(requestID); parseErr != nil {
+			h.fail(http.StatusBadRequest, errorBody("保存请求标识无效"))
+			return
+		}
+	}
+	goal := strings.TrimSpace(stringField(body, "goal"))
+	if goal == "" || len([]rune(goal)) > teamGoalMaxRunes {
+		h.fail(http.StatusBadRequest, errorBody("请输入 1–10000 字的运行目标"))
+		return
+	}
+	intervalSecs := 0
+	if raw, exists := body.Get("intervalSecs"); exists && raw != nil {
+		number, isNumber := raw.(json.Number)
+		if !isNumber {
+			h.fail(http.StatusBadRequest, errorBody("定时间隔必须是整数"))
+			return
+		}
+		parsed, parseErr := number.Int64()
+		if parseErr != nil {
+			h.fail(http.StatusBadRequest, errorBody("定时间隔必须是整数"))
+			return
+		}
+		intervalSecs = int(parsed)
+	}
+	cron := strings.TrimSpace(stringField(body, "cron"))
+	if intervalSecs == 0 && cron == "" {
+		h.fail(http.StatusBadRequest, errorBody("需指定间隔或 cron 之一"))
+		return
+	}
+	if intervalSecs != 0 && cron != "" {
+		h.fail(http.StatusBadRequest, errorBody("intervalSecs 与 cron 二选一"))
+		return
+	}
+	enabled := true
+	if raw, exists := body.Get("enabled"); exists && raw != nil {
+		flag, isBool := raw.(bool)
+		if !isBool {
+			h.fail(http.StatusBadRequest, errorBody("启用状态必须是布尔值"))
+			return
+		}
+		enabled = flag
+	}
+	inputs, planErr := parsePlanInputs(body.MustGet("plan"))
+	if planErr != nil {
+		h.fail(http.StatusBadRequest, errorBody(planErr.Error()))
+		return
+	}
+	mode := stringField(body, "mode")
+	collect := stringField(body, "collectPolicy")
+	verifyCommand, verifyErr := parseVerifyCommand(body.MustGet("verifyCommand"))
+	if verifyErr != nil {
+		h.fail(http.StatusBadRequest, errorBody(verifyErr.Error()))
+		return
+	}
+	// 计划合法性先经 planner 纯校验（同 handleRunCreate：中文报错稳定映射
+	// 400；mode 缺省按计划形状推断仅用于校验，存储保留请求原值——触发时的
+	// 推断与 Service.CreateRun 同款）。
+	validateMode := mode
+	if validateMode == "" {
+		if len(inputs) > 1 {
+			validateMode = team.ModePipeline
+		} else {
+			validateMode = team.ModeSingle
+		}
+	}
+	plan, err := team.ParsePlan(teamRow, goal, validateMode, collect, inputs)
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	for i := range plan.Tasks {
+		if plan.Tasks[i].WorkspaceMode == team.WorkspaceIsolatedWorktree {
+			if h.server.Teams != nil && h.server.Teams.Workspaces == nil {
+				h.fail(http.StatusConflict, errorBody(team.ErrWorkspacesUnavailable.Error()))
+				return
+			}
+			break
+		}
+	}
+	// 账本读改写：模板字段覆盖、簿记保留；触发规格变更清 NextDue（调度器
+	// 首个到期点归一为一个完整周期之后，schedule.go）。
+	existing := schedules.Schedule(teamID)
+	schedule := &team.TeamSchedule{TeamID: teamID, Enabled: enabled,
+		IntervalSecs: intervalSecs, Cron: cron, Goal: goal,
+		Mode: mode, CollectPolicy: collect, VerifyCommand: verifyCommand, Plan: inputs}
+	if existing != nil {
+		specChanged := existing.IntervalSecs != intervalSecs || existing.Cron != cron
+		schedule.NextDue = existing.NextDue
+		schedule.LastRunAt = existing.LastRunAt
+		schedule.LastRunID = existing.LastRunID
+		schedule.PendingTriggerID = existing.PendingTriggerID
+		schedule.TriggerFailures = existing.TriggerFailures
+		schedule.Version = existing.Version
+		if specChanged {
+			schedule.NextDue = time.Time{}
+		}
+	}
+	if err := team.ValidateSchedule(schedule); err != nil {
+		message := err.Error()
+		if cron != "" {
+			// cron 解析错误带实际表达式值（校验件：勘误可定位）。
+			message = fmt.Sprintf("%s（cron：%q）", message, cron)
+		}
+		h.fail(http.StatusBadRequest, errorBody(message))
+		return
+	}
+	fingerprint := teamScheduleFingerprint(schedule)
+	// 幂等重放：同 requestId 同内容返回已存配置 + duplicate:true（配置可能
+	// 已被后续 PUT 推进，返回当前账本态而非重放时刻的快照——与 Team 创建
+	// 先例一致，权威态以账本为准）。
+	if requestID != "" {
+		if record, seen := h.server.lookupTeamSchedulePut(requestID); seen {
+			if record.teamID != teamID || record.fingerprint != fingerprint {
+				h.fail(http.StatusBadRequest, errorBody("同一保存请求不能用于不同内容"))
+				return
+			}
+			if stored := schedules.Schedule(teamID); stored != nil {
+				result := teamScheduleProject(stored)
+				result.Set("duplicate", true)
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+				return
+			}
+			// 极窗口：重放到达但账本条目已不在（fixture 手删等）——按全新
+			// 写入收场，不做重复登记。
+		}
+	}
+	if err := schedules.SaveSchedule(schedule); err != nil {
+		h.failTeamStoreError(err)
+		return
+	}
+	if requestID != "" {
+		h.server.recordTeamSchedulePut(requestID, teamID, fingerprint)
+	}
+	h.output(http.StatusOK, teamScheduleProject(schedule), contentTypeJSON, "")
+}
+
+// teamScheduleProject 输出 TeamSchedule 的 API 投影（账本全字段，含簿记）。
+func teamScheduleProject(schedule *team.TeamSchedule) *jsoncompat.Object {
+	raw, err := schedule.MarshalJSON()
+	if err != nil {
+		return jsoncompat.NewObject()
+	}
+	value, _ := jsoncompat.Unmarshal(raw)
+	object, _ := value.(*jsoncompat.Object)
+	if object == nil {
+		return jsoncompat.NewObject()
+	}
+	return object
+}
+
+// teamSchedulePutRecord 是 schedule PUT 的 requestId 幂等登记（内容指纹=模板
+// 字段的规范化 JSON）。
+type teamSchedulePutRecord struct {
+	teamID      string
+	fingerprint string
+}
+
+// teamScheduleFingerprint 以模板字段（不含簿记）构造内容指纹：同 requestId
+// 重放比对用，簿记推进（nextDue/lastRun）不构成「不同内容」。
+func teamScheduleFingerprint(schedule *team.TeamSchedule) string {
+	config := struct {
+		Enabled       bool                 `json:"enabled"`
+		IntervalSecs  int                  `json:"intervalSecs"`
+		Cron          string               `json:"cron"`
+		Goal          string               `json:"goal"`
+		Mode          string               `json:"mode"`
+		CollectPolicy string               `json:"collectPolicy"`
+		VerifyCommand []string             `json:"verifyCommand"`
+		Plan          []team.PlanTaskInput `json:"plan"`
+	}{schedule.Enabled, schedule.IntervalSecs, schedule.Cron, schedule.Goal,
+		schedule.Mode, schedule.CollectPolicy, schedule.VerifyCommand, schedule.Plan}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+// teamSchedulePutsCap 是 requestId 登记的 FIFO 上限（防恶意/失控客户端无界
+// 增长；正常使用是低频配置写）。
+const teamSchedulePutsCap = 512
+
+func (s *Server) lookupTeamSchedulePut(requestID string) (teamSchedulePutRecord, bool) {
+	s.teamSchedulePutsMu.Lock()
+	defer s.teamSchedulePutsMu.Unlock()
+	record, seen := s.teamSchedulePuts[requestID]
+	return record, seen
+}
+
+func (s *Server) recordTeamSchedulePut(requestID, teamID, fingerprint string) {
+	s.teamSchedulePutsMu.Lock()
+	defer s.teamSchedulePutsMu.Unlock()
+	if s.teamSchedulePuts == nil {
+		s.teamSchedulePuts = map[string]teamSchedulePutRecord{}
+	}
+	if _, exists := s.teamSchedulePuts[requestID]; exists {
+		return
+	}
+	s.teamSchedulePuts[requestID] = teamSchedulePutRecord{teamID: teamID, fingerprint: fingerprint}
+	s.teamSchedulePutsOrder = append(s.teamSchedulePutsOrder, requestID)
+	for len(s.teamSchedulePutsOrder) > teamSchedulePutsCap {
+		oldest := s.teamSchedulePutsOrder[0]
+		s.teamSchedulePutsOrder = s.teamSchedulePutsOrder[1:]
+		delete(s.teamSchedulePuts, oldest)
+	}
+}
+
+// handleRunRefresh 手动触发运行中状态刷新（§12 阶段四工作项 2）：
+// {run: RunDetail, reconciled: bool}——reconciled 表示本次调用实际落账了
+// 对账事实（Run 版本前进：outcome_unknown 只读重探的单向纠正），纯收养
+// （watcher 补位）与无事实可纠正都为 false。幂等：终态 Run 直接回当前
+// 快照；铁律在 Service.RefreshRun——只改任务事实、绝不改 run 状态、绝不
+// 重发（账本无条目不构成「从未发送」的证明）。
+func (h *handler) handleRunRefresh(teamID, runID string) {
+	run := h.loadRun(teamID, runID)
+	if run == nil {
+		return
+	}
+	before := run.Version
+	if err := h.server.Teams.RefreshRun(runID); err != nil {
+		h.failTeamError(err)
+		return
+	}
+	fresh := h.server.TeamStore.Run(runID)
+	if fresh == nil {
+		h.failTeamError(team.ErrNotFound)
+		return
+	}
+	result := jsoncompat.NewObject()
+	result.Set("run", teamRunDetail(fresh))
+	result.Set("reconciled", fresh.Version != before)
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// handleRunStats 输出 Run 的成本/耗时统计（§12 阶段四工作项 5）：
+// team.ComputeRunStats 直出（coverage=none 明示旧 journal 无时间戳的历史
+// Run「无数据」，绝不编数字；tokens 恒 null——token 按任务归因暂无数据
+// 源）。统计必须走 journal.Replay 全量（内存投影每 Run 只留 500 条）；tasks
+// 归一为空数组而非 null（无派发事实的 Run）。
+func (h *handler) handleRunStats(teamID, runID string) {
+	run := h.loadRun(teamID, runID)
+	if run == nil {
+		return
+	}
+	journal := h.server.TeamJournal
+	if journal == nil {
+		h.fail(http.StatusConflict, errorBody("运行统计不可用，请启动新版网关"))
+		return
+	}
+	events, err := journal.Replay()
+	if err != nil {
+		log.Printf("team run %s 统计 journal 重放失败: %v", runID, err)
+		h.fail(http.StatusInternalServerError, errorBody("服务内部错误"))
+		return
+	}
+	policy := team.DefaultPolicy()
+	if teamRow := h.server.TeamStore.Team(run.TeamID); teamRow != nil {
+		policy = teamRow.Policy
+	}
+	stats := team.ComputeRunStats(events, run, policy, time.Now())
+	raw, err := json.Marshal(stats)
+	if err != nil {
+		log.Printf("team run %s 统计序列化失败: %v", runID, err)
+		h.fail(http.StatusInternalServerError, errorBody("服务内部错误"))
+		return
+	}
+	value, unmarshalErr := jsoncompat.Unmarshal(raw)
+	object, _ := value.(*jsoncompat.Object)
+	if unmarshalErr != nil || object == nil {
+		log.Printf("team run %s 统计投影异常: %v", runID, unmarshalErr)
+		h.fail(http.StatusInternalServerError, errorBody("服务内部错误"))
+		return
+	}
+	if _, isRows := object.MustGet("tasks").(*jsoncompat.Array); !isRows {
+		object.Set("tasks", &jsoncompat.Array{})
+	}
+	h.output(http.StatusOK, object, contentTypeJSON, "")
+}
+
+// handleRunGraph 输出 Run 的完整阶段图（§11.3/§12 阶段四工作项 6）：
+// team.BuildRunGraph 纯函数直出（broadcast 组聚合单节点、autoPlan 派生链
+// 按根任务聚合 runCount 累加、Kahn 分层），拉取式端点——不做推送，前端
+// 在动作成功后自行补拉。成员 agentKind 取自 Team 成员表。
+func (h *handler) handleRunGraph(teamID, runID string) {
+	run := h.loadRun(teamID, runID)
+	if run == nil {
+		return
+	}
+	graph := team.BuildRunGraph(run, h.server.TeamStore.Team(run.TeamID))
+	raw, err := json.Marshal(graph)
+	if err != nil {
+		log.Printf("team run %s 阶段图序列化失败: %v", runID, err)
+		h.fail(http.StatusInternalServerError, errorBody("服务内部错误"))
+		return
+	}
+	value, _ := jsoncompat.Unmarshal(raw)
+	object, _ := value.(*jsoncompat.Object)
+	if object == nil {
+		object = jsoncompat.NewObject()
+	}
+	h.output(http.StatusOK, object, contentTypeJSON, "")
 }
 
 // ---- 阶段二增量端点（§6.3/§6.4/§7）----

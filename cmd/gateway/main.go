@@ -890,17 +890,8 @@ func runGateway(args []string) {
 		log.Printf("agents enabled: %s", strings.Join(enabled, ", "))
 		// Idle ACP sessions hold one child process each; sweep them like the
 		// Python maintain loop's 300s eviction once nobody is reading them.
-		go func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for range ticker.C {
-				for _, manager := range server.ACPAgents {
-					if manager != nil {
-						manager.SweepIdle(5 * time.Minute)
-					}
-				}
-			}
-		}()
+		// （§12 阶段四：Server 化补停止通道，关停序列可优雅退出。）
+		server.StartIdleSweeper()
 	}
 	server.Creations = httpd.LoadCreations(filepath.Join(dataDir, "creations.json"))
 	// Durable feature ledgers: queued sends, hidden (deleted) sessions and
@@ -929,6 +920,9 @@ func runGateway(args []string) {
 		}
 	}
 	server.TeamStore = teamStore
+	// TeamJournal 供 /stats 端点全量重放 journal（§12 阶段四：内存投影每
+	// Run 只留 500 条，长 Run 的早期事件只在磁盘）；与 TeamStore 同源装配。
+	server.TeamJournal = teamJournal
 	server.TeamFeeds = httpd.NewTeamFeedRegistry(teamJournal, teamStore)
 	teamQueue, teamResolver := httpd.NewTeamAdapters(server)
 	server.Teams = team.NewService(teamStore, teamJournal, teamQueue, teamResolver)
@@ -939,12 +933,55 @@ func runGateway(args []string) {
 	server.TeamWorkspaceRegistry = teamWorkspaces
 	server.Teams.Workspaces = teamWorkspaces
 	server.Teams.OnEvent = server.TeamFeeds.Ingest
+	// Run 通知（编排计划 §12 阶段四工作项 3/5，§6.3/§9）：完成/失败/取消/
+	// 停止/waiting_input 事件经 ntfy/Bark 推送（click deep link），stall 只
+	// 通知不停止。OnRunStatus 在 run 状态事件落账点同步回调（notify.go 的
+	// commitRun 收口）——先装配再 RecoverAll：恢复期对账产生的 waiting_input
+	// 迁移（recovery.go）同样入账，重启补发由下方水位扫描兜底。
+	runNotifyLedger := notifications.NewRunNotificationLedger(dataDir)
+	server.Teams.OnRunStatus = func(runID, kind string) {
+		recordTeamRunNotification(runNotifyLedger, teamStore, runID, kind, time.Now())
+	}
 	if err := server.TeamFeeds.PrimeFromJournal(); err != nil {
 		log.Printf("team 事件投影预热失败: %v", err)
 	}
 	if err := server.Teams.RecoverAll(); err != nil {
 		log.Printf("team 运行恢复失败: %v", err)
 	}
+	// 启动补发扫描（评审缺失项④：水位定案）：优雅关停时账本记下 watermark，
+	// 重启后只考虑 UpdatedAt≥watermark−5min 的 Run（停机期间完结的 Run 覆盖
+	// 在内）；送达痕迹（7 天内）仍在的跳过——两道合并后扫描集合有界
+	// （team-runs.json 不裁剪，无水位会随历史 Run 无界轰炸，评审问题⑤）。
+	// 首启（从未优雅关停、水位为零）不回扫历史。stall 不参与补发（运行期
+	// 事实，补发只会轰炸）。
+	backfillTeamRunNotifications(runNotifyLedger, teamStore, time.Now())
+	// 补发 worker（仿 outcomeWorker 的 StartPublisher 形态）：每分钟对未达
+	// 通知重试，带每键指数退避（stall 类下限 20 分钟）；Record 即时唤醒，
+	// 首次尝试不必等整周期。启动即 reconcile 一次，上方扫描补记的行随首轮
+	// 立即发出。
+	runNotifyWorker := runNotifyLedger.StartWorker(time.Minute, notifications.NewPublisher(nil))
+	// 定时触发（编排计划 §12 阶段四工作项 1）：team-schedules.json 账本 +
+	// 按 tick 扫描的触发器。装配在 RecoverAll 之后——先让既有 Run 回到可
+	// 确认状态，到期判定才不会撞上恢复前的假非终态；启动首轮 sweep 兼作
+	// PendingTriggerID 的 journal 回扫对账（崩溃/重启不重复触发）。CreateRun
+	// 恒传新 runID（每次触发都是全新 Run）、autoPlan=false 与
+	// scheduledFrom=triggerID（打标可追溯，触发幂等由 journal 裁决）。
+	teamSchedules := team.LoadScheduleStore(filepath.Join(dataDir, "team-schedules.json"))
+	// TeamSchedules 供 /api/teams/:id/schedule 配置端点读写（§12 阶段四
+	// 工作项 1 的 HTTP 配置面）；与触发器共用同一份账本——单实例、单事实
+	// 来源，HTTP 写与调度器读天然互见（账本自身的锁串行化）。
+	server.TeamSchedules = teamSchedules
+	teamScheduler := team.NewScheduler(teamSchedules, teamStore, teamJournal,
+		func(scheduledTeam *team.Team, goal, mode, collect string, verifyCommand []string, plan []team.PlanTaskInput, scheduledFrom string) (*team.Run, error) {
+			return server.Teams.CreateRun(scheduledTeam, "", goal, mode, collect, verifyCommand, plan, false, scheduledFrom)
+		})
+	teamScheduler.Start()
+	// 运行中状态刷新（编排计划 §12 阶段四工作项 2）：周期对全部 waiting_input
+	// Run 依次 RefreshRun——收养在途任务的 watcher（重启后重新有人观察）+
+	// outcome_unknown 任务只读重探（探到确定事实才单向纠正，绝不重发、不改
+	// run 状态）。装配在 RecoverAll 之后；间隔默认 60s，env
+	// GATEWAY_TEAM_RECONCILE_SECONDS 可调（正整数秒）。
+	server.Teams.StartReconciler(teamReconcileIntervalFromEnv(os.Getenv))
 	server.StartQueueWorker()
 	controller, controlErr := lifecycle.NewController(dataDir, os.Getpid(), instanceID)
 	if controlErr != nil {
@@ -982,9 +1019,26 @@ func runGateway(args []string) {
 	if err != nil && err != http.ErrServerClosed {
 		_ = httpServer.Shutdown(context.Background())
 	}
-	outcomeWorker.Close()
-	poolPoller.Stop()
+	// 后台循环按序优雅退出（§12 阶段四：此前 queue worker 与 idle sweeper 是
+	// 裸 ticker goroutine，进程关停只能靠整体退出）：HTTP 已停 → 队列 worker
+	// → 空闲 sweeper → team 对账 reconciler → 定时触发 → 会话发现；其余
+	// 收尾随后。
+	server.StopQueueWorker()
+	server.StopIdleSweeper()
+	server.Teams.StopReconciler()
+	// 定时触发器优雅退出（ctx 取消 + 等待循环返回，仿 accpool Poller）：
+	// sweep 中断处即停，进行中的触发留标记，重启后按 journal 回扫收尾。
+	teamScheduler.Stop()
 	server.StopDiscovery()
+	outcomeWorker.Close()
+	// Run 通知收尾：worker 先优雅退出，再把水位盖到关停时刻——重启后的
+	// 补发扫描只看水位窗口（覆盖停机期间完结的 Run）。崩溃无优雅关停时
+	// 水位陈旧、扫描窗口变宽，由送达痕迹（7 天）兜底去重。
+	runNotifyWorker.Close()
+	if err := runNotifyLedger.SetWatermark(time.Now()); err != nil {
+		log.Printf("team run 通知水位更新失败: %v", err)
+	}
+	poolPoller.Stop()
 	if quickTunnel != nil {
 		quickTunnel.Close()
 	}
@@ -1057,4 +1111,68 @@ func gatewayListenAddresses(dataDir string) []string {
 		}
 	}
 	return result
+}
+
+// teamReconcileIntervalFromEnv 解析 team 对账刷新循环的间隔（编排计划 §12
+// 阶段四工作项 2）：env GATEWAY_TEAM_RECONCILE_SECONDS 取正整数秒，未设置/
+// 非法/非正一律回 team.DefaultReconcileInterval（默认 60s；非法值不打断启动，
+// 回默认即可观察可修）。
+func teamReconcileIntervalFromEnv(getenv func(string) string) time.Duration {
+	if raw := getenv("GATEWAY_TEAM_RECONCILE_SECONDS"); raw != "" {
+		if seconds, err := strconv.Atoi(raw); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return team.DefaultReconcileInterval
+}
+
+// recordTeamRunNotification 是 OnRunStatus 回调的主体（§12 阶段四工作项
+// 3/5）：从 store 补读 Run（事件落账点之后，快照已是终局形态），经
+// team.RunNotificationText 组装标题（goal 截 60 rune+任务计数+结果摘要）并
+// 写入 Run 通知账本——键=run+kind 幂等去重，实际发送与退避在账本 worker。
+// 回调在 Run 的 state.mu 下同步执行，只做读 store+写账本；Run 已被删除
+// （随 Team 级联）时静默跳过。
+func recordTeamRunNotification(ledger *notifications.RunNotificationLedger, store *team.Store, runID, kind string, at time.Time) {
+	run := store.Run(runID)
+	if run == nil {
+		return
+	}
+	title, body := team.RunNotificationText(run, kind)
+	if title == "" {
+		return
+	}
+	if err := ledger.Record(runID, run.TeamID, kind, title, body, at); err != nil {
+		log.Printf("team run %s 通知记账失败（%s，下轮补发扫描兜底）: %v", runID, kind, err)
+	}
+}
+
+// backfillTeamRunNotifications 是水位制启动补发扫描（评审缺失项④）：把
+// team-runs.json 快照里 UpdatedAt 落在水位窗口（≥watermark−5min）内的终态/
+// waiting_input Run 投影成补发候选（文案组装复用 RunNotificationText），
+// 交给 ledger.Backfill 裁决——送达痕迹仍在的跳过、首启无水位不回扫。
+// PrimeFromJournal 只喂 TeamFeed 不重放 OnEvent，运行期挂点对停机期间完结
+// 的 Run 无能为力，靠本扫描自建「未通知」索引（勘察结论）。
+func backfillTeamRunNotifications(ledger *notifications.RunNotificationLedger, store *team.Store, now time.Time) {
+	candidates := []notifications.RunBackfillCandidate{}
+	for _, run := range store.Runs() {
+		kind := team.RunNotificationKindOfStatus(run.Status)
+		if kind == "" {
+			continue
+		}
+		title, body := team.RunNotificationText(run, kind)
+		if title == "" {
+			continue
+		}
+		candidates = append(candidates, notifications.RunBackfillCandidate{
+			RunID:     run.ID,
+			TeamID:    run.TeamID,
+			Kind:      kind,
+			UpdatedAt: run.UpdatedAt,
+			Title:     title,
+			Body:      body,
+		})
+	}
+	if recorded := ledger.Backfill(now, notifications.RunBackfillMargin, candidates); recorded > 0 {
+		log.Printf("team run 通知补发扫描：%d 条待发通知已入账", recorded)
+	}
 }

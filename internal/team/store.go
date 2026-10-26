@@ -29,9 +29,10 @@ var ErrVersionConflict = errors.New("版本冲突：账本已被其他写入更�
 var ErrNotFound = errors.New("账本条目不存在")
 
 // ErrActiveRuns 表示 Team 仍有非终态 Run（created/dispatching/collecting/
-// reducing/waiting_input），不得删除（§10.1：用户必须先取消或等待结束）。
-// 该校验在账本层与版本检查同一临界区执行——HTTP 层的预检与之存在 TOCTOU
-// 窗口（检查后、删除前并发新建的 Run 会被静默连删），账本层是原子兜底。
+// reducing/waiting_input/paused），不得删除（§10.1：用户必须先取消或等待
+// 结束）。该校验在账本层与版本检查同一临界区执行——HTTP 层的预检与之存在
+// TOCTOU 窗口（检查后、删除前并发新建的 Run 会被静默连删），账本层是原子
+// 兜底。
 var ErrActiveRuns = errors.New("团队仍有未结束的 Run，请先取消或等待结束")
 
 // TeamStore 是 Team/Run 账本的共用契约（§12 工作项 8）：JSON 账本与纯内存
@@ -505,7 +506,11 @@ func (s *Store) RebuildRunsFromJournal(events []*Event) {
 				// 修订链血缘（§6.4.1 amend，阶段三）：run_created 的
 				// parentRunId 是唯一可恢复来源，漏读会让重建后的 amend Run
 				// 丢失「基于哪个 Run 修订」的溯源。
-				ParentRunID:   payloadString(event.Payload, "parentRunId"),
+				ParentRunID: payloadString(event.Payload, "parentRunId"),
+				// 定时触发标记（§12 阶段四）：run_created 的 scheduledBy 是
+				// 唯一可恢复来源，漏读会让重建后的定时 Run 丢失溯源，且
+				// schedule.go 的回扫对账与快照侧标记从此对不上。
+				ScheduledFrom: payloadString(event.Payload, "scheduledBy"),
 				VerifyCommand: payloadStrings(event.Payload, "verifyCommand"),
 				CreatedAt:     event.CreatedAt,
 				UpdatedAt:     event.CreatedAt,
@@ -544,6 +549,27 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		switch event.Type {
 		case EventRunWaitingInput:
 			run.Status = RunWaitingInput
+		case EventRunPaused:
+			// 用户软停事实（§12 阶段四工作项 4）：缺了它，team-runs.json 损坏
+			// 重建后的 paused Run 会在 run_created 锚点上以 Status=created 复活，
+			// RecoverRun 视为非终态非驻留 → startLoopLocked → 按剩余事实自动
+			// 推进/fold——「重启保持 paused」恰在 journal-first 设计要保护的
+			// 损坏路径上失效。resume 是纯状态推进、不落镜像事件，重建以
+			// run_paused 之后的任务事实为准（在途停靠会落 run_waiting_input
+			// 覆盖本状态，升级语义与运行期一致）。
+			run.Status = RunPaused
+		case EventRunBudgetResumed:
+			// 预算追加上限回填（§9，阶段四 cost-stats）：ceiling 取单调高值
+			//（照 recovery.go 的 attempt 单调先例——每次追加的 ceiling=当时
+			// 已派发数+units，天然递增；取高防御异常序）。缺了它，快照损坏
+			// 重建后的 Run.BudgetCeiling 归零，passDispatch 的阈值退化回策略
+			// 值，重启后第一次派发立刻重复停靠——用户「继续本轮」的决定在
+			// journal-first 设计要保护的损坏路径上丢失。状态语义照 paused
+			// 先例：resume 是纯状态推进，重建停在 waiting_input 等用户再次
+			// Resume（ceiling 已按事件还原，重算结果与运行期一致，不漂移）。
+			if ceiling := payloadInt(event.Payload, "ceiling"); ceiling > run.BudgetCeiling {
+				run.BudgetCeiling = ceiling
+			}
 		case EventRunCompleted:
 			run.Status = RunCompleted
 		case EventRunFailed:
