@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acp"
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -553,6 +554,41 @@ for line in sys.stdin:
 	}
 	if err := session.SetMode("default"); err == nil || err.Error() != "当前 Agent 不支持此工作模式" {
 		t.Fatalf("missing collaboration_mode must refuse, got %v", err)
+	}
+}
+
+func TestWorkbuddyRefusalSurfacesAuthenticationError(t *testing.T) {
+	result := jsoncompat.NewObject()
+	result.Set("stopReason", "refusal")
+	meta := jsoncompat.NewObject()
+	meta.Set("codebuddy.ai/errorMessage", `{"code":-32000,"message":"Authentication required","data":{"statusCode":401,"details":"401 Authentication required","code":401,"category":"auth"}}`)
+	result.Set("_meta", meta)
+	session := &Session{ID: "workbuddy-1", View: acpview.NewView("workbuddy-1", "Demo", "/work", func() float64 { return 1 }), changed: make(chan struct{})}
+	session.View.BeginTurn("测试")
+	outcome := make(chan acp.Delivery, 1)
+	outcome <- acp.Delivery{Value: result}
+	session.awaitPrompt("prompt-1", outcome, time.Hour, time.Millisecond)
+	turns := session.Snapshot().MustGet("turns").(*jsoncompat.Array).Items
+	if len(turns) != 1 || turns[0].(*jsoncompat.Object).MustGet("status") != "failed" {
+		t.Fatalf("auth refusal did not fail the turn: %v", turns)
+	}
+	messages := turns[0].(*jsoncompat.Object).MustGet("messages").(*jsoncompat.Array).Items
+	last := messages[len(messages)-1].(*jsoncompat.Object)
+	if last.MustGet("kind") != "error" || last.MustGet("text") != "WorkBuddy 登录已失效，请在 CLI 中执行 /login 后重试" {
+		t.Fatalf("missing visible login guidance: %v", last)
+	}
+
+	plain := jsoncompat.NewObject()
+	plain.Set("_meta", jsoncompat.NewObject())
+	if failure := refusalFailure(plain); failure != "" {
+		t.Fatalf("ordinary refusal was misreported: %q", failure)
+	}
+	other := jsoncompat.NewObject()
+	otherMeta := jsoncompat.NewObject()
+	otherMeta.Set("codebuddy.ai/errorMessage", `{"message":"temporary failure","data":{"details":"do not expose"}}`)
+	other.Set("_meta", otherMeta)
+	if failure := refusalFailure(other); failure != "temporary failure" {
+		t.Fatalf("non-auth failure = %q", failure)
 	}
 }
 

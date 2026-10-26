@@ -860,12 +860,22 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 				s.View.FailTurn(outcome.Err.Error())
 			} else {
 				stopReason := "end_turn"
+				var result *jsoncompat.Object
 				if object, ok := outcome.Value.(*jsoncompat.Object); ok {
+					result = object
 					if value, ok := object.MustGet("stopReason").(string); ok && value != "" {
 						stopReason = value
 					}
 				}
-				s.View.EndTurn(stopReason)
+				if stopReason == "refusal" {
+					if failure := refusalFailure(result); failure != "" {
+						s.View.FailTurn(failure)
+					} else {
+						s.View.EndTurn(stopReason)
+					}
+				} else {
+					s.View.EndTurn(stopReason)
+				}
 			}
 			s.signalLocked()
 			s.mu.Unlock()
@@ -889,6 +899,35 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 			return
 		}
 	}
+}
+
+func refusalFailure(result *jsoncompat.Object) string {
+	if result == nil {
+		return ""
+	}
+	meta, _ := result.MustGet("_meta").(*jsoncompat.Object)
+	raw, _ := meta.MustGet("codebuddy.ai/errorMessage").(string)
+	if raw == "" {
+		return ""
+	}
+	decoded, err := jsoncompat.Unmarshal([]byte(raw))
+	if err != nil {
+		return raw
+	}
+	failure, _ := decoded.(*jsoncompat.Object)
+	if failure == nil {
+		return raw
+	}
+	data, _ := failure.MustGet("data").(*jsoncompat.Object)
+	category, _ := data.MustGet("category").(string)
+	statusCode, _ := data.MustGet("statusCode").(json.Number)
+	if category == "auth" || statusCode.String() == "401" {
+		return "WorkBuddy 登录已失效，请在 CLI 中执行 /login 后重试"
+	}
+	if message, _ := failure.MustGet("message").(string); message != "" {
+		return message
+	}
+	return raw
 }
 
 // fireAutoContinue launches the installed settle hook off the turn's
