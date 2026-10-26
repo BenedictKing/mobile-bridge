@@ -531,6 +531,7 @@ $('settings-save').onclick=async()=>{
   if(await saveConventions()){await window.loadConventions();}
   else ok=false;
   button.disabled=false;
+  if(ok)$('appearance-dialog').close();
   toast(ok?t('设置已保存'):t('部分设置保存失败，请检查表单错误'));
 };
 $('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);syncDocumentTitle();loadList(true).catch(e=>toast(e.message));};
