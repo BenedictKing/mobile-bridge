@@ -565,6 +565,10 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		} else {
 			plan.Set("status", nil)
 		}
+	case "session_info_update":
+		if title, exists := update.Get("title"); exists {
+			v.Title = title
+		}
 	case "available_commands_update":
 		v.Commands = nil
 		if list := arr(truthyOr(update.MustGet("availableCommands"),

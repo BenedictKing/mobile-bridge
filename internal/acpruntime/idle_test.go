@@ -91,9 +91,18 @@ func TestPromptIdleTimeoutCancelsAndFailsTurn(t *testing.T) {
 	if !failure {
 		t.Fatalf("turn carries no error entry: %s", string(jsoncompat.EncodeCompact(lastTurn)))
 	}
-	raw, readErr := os.ReadFile(cancelLog)
-	if readErr != nil || len(raw) == 0 {
-		t.Fatalf("agent never received cancel: %v %q", readErr, raw)
+	deadline = time.Now().Add(3 * time.Second)
+	var raw []byte
+	var readErr error
+	for {
+		raw, readErr = os.ReadFile(cancelLog)
+		if readErr == nil && len(raw) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("agent never received cancel: %v %q", readErr, raw)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	// A follow-up prompt is accepted again (the first was cleaned up).
 	session.mu.Lock()

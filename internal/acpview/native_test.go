@@ -63,6 +63,29 @@ func TestApplyNativeEmptyIsNoop(t *testing.T) {
 	}
 }
 
+func TestSessionInfoUpdateChangesTitle(t *testing.T) {
+	view := NewView("sess-1", "旧标题", "/w", func() float64 { return 0 })
+	update := jsoncompat.NewObject()
+	update.Set("sessionUpdate", "session_info_update")
+	update.Set("title", "自动标题")
+	view.OnUpdate(update)
+	if view.Snapshot().MustGet("title") != "自动标题" {
+		t.Fatalf("title = %v", view.Snapshot().MustGet("title"))
+	}
+	metadataOnly := jsoncompat.NewObject()
+	metadataOnly.Set("sessionUpdate", "session_info_update")
+	metadataOnly.Set("updatedAt", "2026-10-26T00:00:00Z")
+	view.OnUpdate(metadataOnly)
+	if view.Snapshot().MustGet("title") != "自动标题" {
+		t.Fatal("metadata-only update changed the title")
+	}
+	update.Set("title", nil)
+	view.OnUpdate(update)
+	if view.Title != nil || view.Snapshot().MustGet("title") != "未命名聊天" {
+		t.Fatalf("cleared title = %v", view.Snapshot().MustGet("title"))
+	}
+}
+
 func TestAddPermissionSurfacesAskUserQuestion(t *testing.T) {
 	view := NewView("sess-1", "Demo", "/work", func() float64 { return 1 })
 	params := jsoncompat.NewObject()
@@ -201,6 +224,50 @@ func TestAddInputSupportsKimiQuestionForms(t *testing.T) {
 	}
 	if validated.MustGet("q0") != "Green" {
 		t.Fatalf("single-select answer = %v", validated.MustGet("q0"))
+	}
+}
+
+func TestOpenCodeFormConstraints(t *testing.T) {
+	text := jsoncompat.NewObject()
+	text.Set("type", "string")
+	text.Set("format", "uri")
+	text.Set("pattern", "^https://")
+	multi := jsoncompat.NewObject()
+	multi.Set("type", "array")
+	multi.Set("title", "功能")
+	multi.Set("minItems", jsoncompat.Num(2))
+	multi.Set("maxItems", jsoncompat.Num(2))
+	variants := &jsoncompat.Array{}
+	for _, label := range []string{"A", "B", "C"} {
+		variant := jsoncompat.NewObject()
+		variant.Set("const", label)
+		variants.Items = append(variants.Items, variant)
+	}
+	items := jsoncompat.NewObject()
+	items.Set("anyOf", variants)
+	multi.Set("items", items)
+	properties := jsoncompat.NewObject()
+	properties.Set("homepage", text)
+	properties.Set("features", multi)
+	schema := jsoncompat.NewObject()
+	schema.Set("type", "object")
+	schema.Set("properties", properties)
+	if !FormSupported(schema) {
+		t.Fatal("OpenCode constraints must remain renderable")
+	}
+	content := jsoncompat.NewObject()
+	content.Set("homepage", "https://example.com")
+	content.Set("features", &jsoncompat.Array{Items: []any{"A", "B"}})
+	if _, err := ValidateForm(schema, content); err != nil {
+		t.Fatalf("valid OpenCode answers rejected: %v", err)
+	}
+	content.Set("features", &jsoncompat.Array{Items: []any{"A"}})
+	if _, err := ValidateForm(schema, content); err == nil {
+		t.Fatal("minItems was not enforced")
+	}
+	content.Set("features", &jsoncompat.Array{Items: []any{"A", "B", "C"}})
+	if _, err := ValidateForm(schema, content); err == nil {
+		t.Fatal("maxItems was not enforced")
 	}
 }
 

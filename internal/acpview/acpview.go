@@ -100,7 +100,7 @@ func FormSupported(schema *jsoncompat.Object) bool {
 	allowedFields := map[string]bool{"type": true, "title": true, "description": true,
 		"enum": true, "oneOf": true, "anyOf": true, "items": true, "default": true,
 		"minLength": true, "maxLength": true, "minimum": true, "maximum": true,
-		"minItems": true, "_meta": true}
+		"minItems": true, "maxItems": true, "format": true, "pattern": true, "_meta": true}
 	for _, name := range properties.Keys() {
 		field := obj(properties.MustGet(name))
 		if field == nil {
@@ -227,8 +227,16 @@ func ValidateForm(schema *jsoncompat.Object, content any) (*jsoncompat.Object, e
 			if choices == nil {
 				choices = enumValues(items)
 			}
+			minItems := 1
+			if value, ok := field.Get("minItems"); ok && value != nil {
+				minItems = int(parseFloatValue(value))
+			}
+			maxItems := maxFormItems
+			if value, ok := field.Get("maxItems"); ok && value != nil {
+				maxItems = min(maxItems, int(parseFloatValue(value)))
+			}
 			list := arr(value)
-			if list == nil || len(list.Items) == 0 {
+			if list == nil || len(list.Items) < minItems {
 				return nil, errors.New("请至少选择一项：" + label(field, key))
 			}
 			allStrings := true
@@ -238,7 +246,7 @@ func ValidateForm(schema *jsoncompat.Object, content any) (*jsoncompat.Object, e
 					break
 				}
 			}
-			if len(list.Items) > maxFormItems || !allStrings {
+			if len(list.Items) > maxItems || !allStrings {
 				return nil, errors.New("选择数量超出限制：" + label(field, key))
 			}
 			if choices != nil {

@@ -166,6 +166,41 @@ func TestDiscoverKimiViaHomeDirectoryLayout(t *testing.T) {
 	}
 }
 
+func TestClaudeProfileEnablesSteering(t *testing.T) {
+	profile := claudeProfile(emptyEnv, t.TempDir())
+	if profile.SteerMethod != "_session/steering" {
+		t.Fatalf("steer method = %q", profile.SteerMethod)
+	}
+	found := false
+	for _, capability := range profile.Capabilities {
+		found = found || capability == "steer"
+	}
+	if !found {
+		t.Fatalf("Claude steering is not advertised: %v", profile.Capabilities)
+	}
+}
+
+func TestZcodeDBPathOverrides(t *testing.T) {
+	home := t.TempDir()
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "default", env: map[string]string{}, want: filepath.Join(home, ".zcode", "cli", "db", "db.sqlite")},
+		{name: "legacy home expansion", env: map[string]string{"ZCODE_SESSION_DB": "~/legacy.sqlite"}, want: filepath.Join(home, "legacy.sqlite")},
+		{name: "explicit priority", env: map[string]string{"ZCODE_SESSION_DB_PATH": "/data/current.sqlite", "ZCODE_SESSION_DB": "/data/legacy.sqlite"}, want: "/data/current.sqlite"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := func(key string) string { return test.env[key] }
+			if got := ZcodeDBPath(env, home); got != test.want {
+				t.Fatalf("path = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestDiscoverOpencode(t *testing.T) {
 	// No binary anywhere: auto-discovery must stay off even though a stale
 	// data directory exists (only the CLI itself can serve ACP).

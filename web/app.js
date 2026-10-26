@@ -656,6 +656,7 @@ function renderAcpInput(request){
     }else{
       input=el('input');input.type=field.type==='boolean'?'checkbox':['number','integer'].includes(field.type)?'number':'text';
       if(input.type==='number')input.step=field.type==='integer'?'1':'any';
+      if(input.type==='text'&&typeof field.pattern==='string')input.pattern=field.pattern;
       controls[key]=()=>input.type==='checkbox'?input.checked:input.value===''?undefined:['number','integer'].includes(field.type)?Number(input.value):input.value;
     }
     input.required=required.has(key)&&input.type!=='checkbox';

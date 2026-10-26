@@ -63,6 +63,52 @@ for line in sys.stdin:
 	manager.Close()
 }
 
+func TestMergePendingKeepsCreatedSessionWithClearedTitle(t *testing.T) {
+	manager := NewCommand(nil)
+	manager.sessions["sess-created"] = &Session{
+		ID: "sess-created", Cwd: "/work", CreatedAtMs: 1,
+		View: acpview.NewView("sess-created", nil, "/work", func() float64 { return 1 }),
+	}
+	rows := manager.MergePending(nil)
+	if len(rows) != 1 || rows[0].MustGet("title") != "未命名聊天" {
+		t.Fatalf("created session with cleared title disappeared: %v", rows)
+	}
+}
+
+func TestManagerFetchesAllSessionListPages(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/list":
+  cursor=m.get("params",{}).get("cursor")
+  if cursor is None: result={"sessions":[{"sessionId":"sess-1","cwd":"/work"},{"sessionId":"sess-2","cwd":"/work"}],"nextCursor":"page-2"}
+  elif cursor == "page-2": result={"sessions":[{"sessionId":"sess-2","cwd":"/work"},{"sessionId":"sess-3","cwd":"/work"}],"nextCursor":"page-2"}
+  else: raise Exception("unexpected cursor "+str(cursor))
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	rows, err := manager.List(3 * time.Second)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("paginated rows=%v err=%v", rows, err)
+	}
+	for index, id := range []string{"sess-1", "sess-2", "sess-3"} {
+		if rows[index].MustGet("sessionId") != id {
+			t.Fatalf("row %d = %v", index, rows[index])
+		}
+	}
+	manager.Close()
+}
+
 func TestManagerTreatsMissingSessionListAsUnsupported(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -500,6 +546,95 @@ func TestSessionFoldsUpdatesAndRequests(t *testing.T) {
 	session.onRequest(request, func(any) {})
 	if len(session.Snapshot().MustGet("requests").(*jsoncompat.Array).Items) != 1 {
 		t.Fatal("permission request was not exposed")
+	}
+}
+
+func TestSessionTracksSessionInfoTitle(t *testing.T) {
+	session := &Session{ID: "sess-1", Title: "旧标题", View: acpview.NewView("sess-1", "旧标题", "/work", func() float64 { return 1 }), changed: make(chan struct{})}
+	message := jsoncompat.NewObject()
+	message.Set("method", "session/update")
+	params := jsoncompat.NewObject()
+	params.Set("sessionUpdate", "session_info_update")
+	params.Set("title", "自动标题")
+	message.Set("params", params)
+	session.onNotification(message)
+	if session.Title != "自动标题" || session.Snapshot().MustGet("title") != "自动标题" {
+		t.Fatalf("title was not synchronized: %q", session.Title)
+	}
+	params.Set("title", nil)
+	session.onNotification(message)
+	if session.Title != "" || session.Snapshot().MustGet("title") != "未命名聊天" {
+		t.Fatalf("title was not cleared: %q", session.Title)
+	}
+}
+
+func TestSessionCancelsOnlyRequestedReverseRequest(t *testing.T) {
+	session := &Session{ID: "sess-1", View: acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }), changed: make(chan struct{})}
+	addRequest := func(id any) {
+		request := jsoncompat.NewObject()
+		request.Set("id", id)
+		request.Set("method", "session/request_permission")
+		params := jsoncompat.NewObject()
+		params.Set("toolCall", jsoncompat.NewObject())
+		params.Set("options", &jsoncompat.Array{})
+		request.Set("params", params)
+		session.onRequest(request, func(any) {})
+	}
+	addRequest(jsoncompat.Num(7))
+	addRequest("permission-keep")
+	if len(session.Snapshot().MustGet("requests").(*jsoncompat.Array).Items) != 2 {
+		t.Fatal("expected two pending requests")
+	}
+	cancel := jsoncompat.NewObject()
+	cancel.Set("method", "$/cancel_request")
+	params := jsoncompat.NewObject()
+	params.Set("id", "missing")
+	cancel.Set("params", params)
+	sequence := session.Snapshot().MustGet("sequence")
+	session.onNotification(cancel)
+	if session.Snapshot().MustGet("sequence") != sequence {
+		t.Fatal("unknown cancellation must not emit a change")
+	}
+	params.Set("id", jsoncompat.Num(7))
+	session.onNotification(cancel)
+	requests := session.Snapshot().MustGet("requests").(*jsoncompat.Array).Items
+	if len(requests) != 1 || requests[0].(*jsoncompat.Object).MustGet("id") != "permission-keep" {
+		t.Fatalf("wrong request was cancelled: %v", requests)
+	}
+	if _, exists := session.pendingIDs["permission-keep"]; !exists {
+		t.Fatal("unrelated request is no longer answerable")
+	}
+}
+
+func TestSessionAcceptsMcodeSteeredResult(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new": result={"sessionId":"sess-mcode"}
+ elif method == "mcode/session/steer":
+  assert m["params"]["text"] == "继续补充"
+  result={"turnId":"turn-1","mode":"steered"}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	session, err := manager.Create("seed", "/work", "MiniMax", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected, err := session.Steer("mcode/session/steer", "继续补充")
+	if err != nil || !injected {
+		t.Fatalf("mcode steer injected=%v err=%v", injected, err)
 	}
 }
 

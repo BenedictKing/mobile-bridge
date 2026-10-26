@@ -21,8 +21,7 @@ type Session struct {
 	Process *acp.Process
 	View    *acpview.View
 
-	// Title and CreatedAtMs are set at creation time and never mutated, so
-	// list merging may read them without the session lock.
+	// CreatedAtMs is immutable. Title follows session_info_update under mu.
 	Title       string
 	CreatedAtMs int64
 
@@ -145,7 +144,7 @@ type Manager struct {
 	InitializeTimeout time.Duration
 
 	// SteerMethod names the agent's steering RPC ("_session/steering" for
-	// dsh, "mcode/session/steer" for mcode); empty means the agent cannot
+	// claude/dsh, "mcode/session/steer" for mcode); empty means the agent cannot
 	// steer and the send route rejects the mode. ModeMap translates the
 	// bridge's plan/default work modes onto the agent's own mode ids
 	// (zcode: default→yolo).
@@ -318,32 +317,58 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 		m.listRows, m.listIDs, m.listAt = rows, ids, time.Now()
 		return rows
 	}
-	value, err := process.Request("session/list", jsoncompat.NewObject(), timeout)
-	if err != nil {
-		var acpErr *acp.Error
-		if errors.As(err, &acpErr) && methodNotFound(acpErr) {
-			// session/list is optional in ACP; agents without it (older
-			// claude-agent-acp, workbuddy's codebuddy --acp) answer -32601.
-			// A wired native store fills the gap; otherwise cache an empty
-			// list instead of failing so the phone list does not nag on
-			// every refresh.
-			if m.NativeList != nil {
-				return cacheRows(m.NativeList()), nil
-			}
-			return cacheRows(nil), nil
-		}
-		return nil, err
-	}
-	result, _ := value.(*jsoncompat.Object)
-	if result == nil {
-		return cacheRows(nil), nil
-	}
-	rows, _ := result.MustGet("sessions").(*jsoncompat.Array)
 	output := []*jsoncompat.Object{}
-	for _, item := range rows.Items {
-		if row, ok := item.(*jsoncompat.Object); ok {
-			output = append(output, row)
+	seenSessions := map[string]bool{}
+	seenCursors := map[string]bool{}
+	params := jsoncompat.NewObject()
+	for page := 0; ; page++ {
+		if page >= 100 {
+			return nil, errors.New("session/list 分页超过 100 页")
 		}
+		value, requestErr := process.Request("session/list", params, timeout)
+		if requestErr != nil {
+			var acpErr *acp.Error
+			if errors.As(requestErr, &acpErr) && methodNotFound(acpErr) {
+				// session/list is optional in ACP; agents without it (older
+				// claude-agent-acp, workbuddy's codebuddy --acp) answer -32601.
+				// A wired native store fills the gap; otherwise cache an empty
+				// list instead of failing so the phone list does not nag on
+				// every refresh.
+				if m.NativeList != nil {
+					return cacheRows(m.NativeList()), nil
+				}
+				return cacheRows(nil), nil
+			}
+			return nil, requestErr
+		}
+		result, _ := value.(*jsoncompat.Object)
+		if result == nil {
+			if page == 0 {
+				return cacheRows(nil), nil
+			}
+			break
+		}
+		rows, _ := result.MustGet("sessions").(*jsoncompat.Array)
+		if rows != nil {
+			for _, item := range rows.Items {
+				row, ok := item.(*jsoncompat.Object)
+				if !ok {
+					continue
+				}
+				id, _ := row.MustGet("sessionId").(string)
+				if id != "" && seenSessions[id] {
+					continue
+				}
+				seenSessions[id] = true
+				output = append(output, row)
+			}
+		}
+		cursor, _ := result.MustGet("nextCursor").(string)
+		if cursor == "" || seenCursors[cursor] {
+			break
+		}
+		seenCursors[cursor] = true
+		params.Set("cursor", cursor)
 	}
 	if m.NativeMeta != nil {
 		for _, row := range output {
@@ -395,10 +420,16 @@ func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for id, session := range m.sessions {
-		if session == nil || session.IsClosed() || session.Title == "" {
-			// Only bridge-created sessions count as pending (Python's
-			// _pending_created); opened ones come from the list anyway.
+		if session == nil || session.IsClosed() || session.CreatedAtMs == 0 {
+			// Only bridge-created sessions count as pending; opened ones have no
+			// creation timestamp and come from the list anyway.
 			continue
+		}
+		session.mu.Lock()
+		title := session.Title
+		session.mu.Unlock()
+		if title == "" {
+			title = "未命名聊天"
 		}
 		if listed[id] {
 			continue
@@ -408,7 +439,7 @@ func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
 		}
 		row := jsoncompat.NewObject()
 		row.Set("sessionId", id)
-		row.Set("title", session.Title)
+		row.Set("title", title)
 		row.Set("cwd", session.Cwd)
 		row.Set("updatedAt", jsoncompat.Num(int(session.CreatedAtMs)))
 		rows = append(rows, row)
@@ -889,9 +920,9 @@ func (s *Session) flushResponders() {
 }
 
 // Steer injects a supplementary prompt into the running turn through the
-// agent's steering RPC (dsh/mcode dispatch_turn ports). dsh answers
-// outcome "injected"; anything else means the turn ended in the race
-// window and the caller should fall back to a normal prompt.
+// agent's steering RPC. claude/dsh answer outcome "injected" and mcode answers
+// mode "steered"; anything else means the turn ended in the race window and
+// the caller should fall back to a normal prompt.
 func (s *Session) Steer(method, text string) (injected bool, err error) {
 	s.mu.Lock()
 	if s.closed || (s.Process != nil && !s.active) {
@@ -922,15 +953,17 @@ func (s *Session) Steer(method, text string) (injected bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	outcome := ""
+	injected = false
 	if object, ok := result.(*jsoncompat.Object); ok {
-		outcome, _ = object.MustGet("outcome").(string)
+		outcome, _ := object.MustGet("outcome").(string)
+		mode, _ := object.MustGet("mode").(string)
+		injected = outcome == "injected" || method == "mcode/session/steer" && mode == "steered"
 	}
-	if outcome == "injected" {
+	if injected {
 		// A human steered the running turn; re-arm the auto-continue budget.
 		s.NoteHumanAction()
 	}
-	return outcome == "injected", nil
+	return injected, nil
 }
 
 // Request sends one generic agent RPC on the session process — the custom
@@ -1880,11 +1913,24 @@ func (s *Session) ownsUpdate(params *jsoncompat.Object) bool {
 
 func (s *Session) onNotification(message *jsoncompat.Object) {
 	method, _ := message.MustGet("method").(string)
-	if method != "session/update" {
-		return
-	}
 	params, _ := message.MustGet("params").(*jsoncompat.Object)
 	if params == nil {
+		return
+	}
+	if method == "$/cancel_request" {
+		requestID := jsoncompat.PyStr(params.MustGet("id"))
+		s.mu.Lock()
+		if _, exists := s.pendingIDs[requestID]; exists {
+			delete(s.pending, requestID)
+			delete(s.pendingIDs, requestID)
+			delete(s.pendingKinds, requestID)
+			s.View.RemovePermission(requestID)
+			s.signalLocked()
+		}
+		s.mu.Unlock()
+		return
+	}
+	if method != "session/update" {
 		return
 	}
 	if !s.ownsUpdate(params) {
@@ -1902,6 +1948,9 @@ func (s *Session) onNotification(message *jsoncompat.Object) {
 		return
 	}
 	s.View.OnUpdate(params)
+	if params.MustGet("sessionUpdate") == "session_info_update" {
+		s.Title, _ = s.View.Title.(string)
+	}
 	s.signalLocked()
 	s.mu.Unlock()
 }

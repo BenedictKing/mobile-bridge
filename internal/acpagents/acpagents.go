@@ -25,7 +25,7 @@ type Profile struct {
 	EffortMap         map[string]string
 	Canonical         func(id string) string
 
-	// SteerMethod names the steering RPC (dsh/mcode); ModeMap translates the
+	// SteerMethod names the steering RPC (claude/dsh/mcode); ModeMap translates the
 	// bridge's plan/default work modes onto the agent's own mode ids.
 	// ModeOptionID names the dialect whose collaboration surface is the config
 	// option with that id (dsh: collaboration_mode — its modes object is a
@@ -190,8 +190,9 @@ func claudeProfile(env func(string) string, home string) Profile {
 		Kind: "claude", Label: "Claude",
 		Command:           argv,
 		InitializeTimeout: 180 * time.Second,
-		Capabilities:      []string{"fork"},
+		Capabilities:      []string{"steer", "fork"},
 		EffortMap:         map[string]string{"none": "default", "minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "ultra": "max"},
+		SteerMethod:       "_session/steering",
 	}
 }
 
@@ -328,6 +329,17 @@ func zcodeHome(env func(string) string, home string) string {
 // wrapper share for sessions, messages and parts. The gateway reads it
 // read-only to follow turns the desktop app drives.
 func ZcodeDBPath(env func(string) string, home string) string {
+	for _, key := range []string{"ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB"} {
+		if explicit := env(key); explicit != "" {
+			if explicit == "~" {
+				return home
+			}
+			if strings.HasPrefix(explicit, "~/") {
+				return filepath.Join(home, explicit[2:])
+			}
+			return explicit
+		}
+	}
 	return filepath.Join(zcodeHome(env, home), "cli", "db", "db.sqlite")
 }
 
