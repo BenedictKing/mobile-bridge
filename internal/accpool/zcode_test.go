@@ -420,6 +420,49 @@ func TestZcodeSyncSwitcherRejectsIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestZcodeValidateLoginUsesCurrentOnly(t *testing.T) {
+	var currentHits, balanceHits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/current":
+			currentHits++
+			_, _ = w.Write([]byte(`{"data":{"plans":[]}}`))
+		case "/balance":
+			balanceHits++
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":3001,"msg":"parameter error"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
+	zcodeBillingCurrentURL, zcodeBillingBalanceURL = server.URL+"/current", server.URL+"/balance"
+	t.Cleanup(func() { zcodeBillingCurrentURL, zcodeBillingBalanceURL = restoreCurrent, restoreBalance })
+	target := &Account{Credentials: `{"zcodejwttoken":"valid-token-1234567890123456"}`}
+	if err := zcodeValidateLogin(context.Background(), target); err != nil {
+		t.Fatalf("billing/current success must pass validation: %v", err)
+	}
+	if currentHits != 1 || balanceHits != 0 {
+		t.Fatalf("validation endpoints: current=%d balance=%d", currentHits, balanceHits)
+	}
+}
+
+func TestZcodeValidateLoginRejectsUnauthorized(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	restoreCurrent := zcodeBillingCurrentURL
+	zcodeBillingCurrentURL = server.URL
+	t.Cleanup(func() { zcodeBillingCurrentURL = restoreCurrent })
+	target := &Account{Credentials: `{"zcodejwttoken":"expired-token-1234567890123456"}`}
+	if err := zcodeValidateLogin(context.Background(), target); err == nil {
+		t.Fatal("401 must reject target login")
+	}
+}
+
 func TestZcodeSwitchValidationFailureLeavesCurrentAccount(t *testing.T) {
 	m, home, targets := setupZcodeFixture(t)
 	restoreValidation := zcodeValidateLogin

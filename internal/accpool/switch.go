@@ -309,7 +309,7 @@ var zcodeValidateLogin = func(ctx context.Context, target *Account) error {
 	if !looksLikeToken(token) {
 		return errors.New("目标账号快照缺少有效的 zcodeJWT")
 	}
-	if _, err := fetchZcodeBillingPair(ctx, token); err != nil {
+	if _, err := fetchZcodeBilling(ctx, zcodeBillingURL(zcodeBillingCurrentURL), token); err != nil {
 		return fmt.Errorf("目标账号登录态校验失败: %w", err)
 	}
 	return nil
