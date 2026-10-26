@@ -30,13 +30,20 @@ type View struct {
 	Now        func() float64
 	ModeOption string
 
-	ordinal   int
-	toolIndex map[string]*jsoncompat.Object
+	ordinal       int
+	toolIndex     map[string]*jsoncompat.Object
+	questionTools map[string]bool
 }
 
 func NewView(sessionID string, title, cwd any, now func() float64) *View {
 	return &View{SessionID: sessionID, Title: title, Cwd: cwd, Status: "idle",
-		Now: now, toolIndex: map[string]*jsoncompat.Object{}}
+		Now: now, toolIndex: map[string]*jsoncompat.Object{}, questionTools: map[string]bool{}}
+}
+
+func questionTitle(value any) bool {
+	title, _ := value.(string)
+	title = strings.TrimSpace(title)
+	return strings.EqualFold(title, "AskUserQuestion") || strings.EqualFold(title, "Asking user questions")
 }
 
 func (v *View) nextID(prefix string) string {
@@ -231,7 +238,7 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 	// the question text rides in toolCall.content while the options are the
 	// answer choices (plus a reject_once "Skip"). Flag it so the phone draws
 	// a question card instead of a permission prompt.
-	if strings.EqualFold(titleText, "AskUserQuestion") {
+	if questionTitle(titleText) || QuestionSummary(toolCall.MustGet("rawInput")) != "" {
 		entryParams.Set("question", true)
 	}
 	if text := flattenContentText(toolCall.MustGet("content")); text != "" {
@@ -404,6 +411,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		}
 	case "tool_call":
 		titleInput, _ := update.MustGet("title").(string)
+		callID, _ := update.MustGet("toolCallId").(string)
 		metadata := SubagentMeta(update.MustGet("rawInput"), titleInput)
 		message := jsoncompat.NewObject()
 		message.Set("id", v.nextID("tool"))
@@ -411,12 +419,21 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		message.Set("role", "activity")
 		message.Set("title", truthyOr(update.MustGet("title"),
 			truthyOr(update.MustGet("kind"), "工具调用")))
-		text := QuestionSummary(update.MustGet("rawInput"))
+		summary := QuestionSummary(update.MustGet("rawInput"))
+		question := questionTitle(titleInput) || summary != ""
+		if question && callID != "" {
+			v.questionTools[callID] = true
+		}
+		text := summary
 		if text == "" {
 			text = CommandSummary(update.MustGet("rawInput"))
 		}
 		message.Set("text", text)
-		message.Set("output", flattenContentText(update.MustGet("content")))
+		output := flattenContentText(update.MustGet("content"))
+		if question {
+			output = ""
+		}
+		message.Set("output", output)
 		message.Set("status", statusMap(getDefault(update, "status", nil)))
 		if metadata.Len() > 0 {
 			for _, key := range metadata.Keys() {
@@ -428,7 +445,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		appendContentAttachments(message, update.MustGet("content"))
 		appendContentChanges(message, update.MustGet("content"), update.MustGet("rawInput"))
 		messages(v.assistantTurn()).Items = append(messages(v.assistantTurn()).Items, message)
-		if callID, ok := update.MustGet("toolCallId").(string); ok && callID != "" {
+		if callID != "" {
 			v.toolIndex[callID] = message
 		}
 	case "tool_call_update":
@@ -453,12 +470,20 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		if id, ok := message.MustGet("subagentId").(string); ok && id != "" {
 			message.Set("kind", "subagent")
 		}
-		if summary := QuestionSummary(update.MustGet("rawInput")); summary != "" {
-			message.Set("text", summary)
-		} else if command := CommandSummary(update.MustGet("rawInput")); command != "" {
-			message.Set("text", command)
+		summary := QuestionSummary(update.MustGet("rawInput"))
+		if questionTitle(update.MustGet("title")) || summary != "" {
+			v.questionTools[callID] = true
 		}
-		if output := flattenContentText(update.MustGet("content")); output != "" {
+		if summary != "" {
+			message.Set("text", summary)
+		} else if !v.questionTools[callID] {
+			if command := CommandSummary(update.MustGet("rawInput")); command != "" {
+				message.Set("text", command)
+			}
+		}
+		if v.questionTools[callID] {
+			message.Set("output", "")
+		} else if output := flattenContentText(update.MustGet("content")); output != "" {
 			message.Set("output", output)
 		}
 		appendContentAttachments(message, update.MustGet("content"))

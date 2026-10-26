@@ -428,8 +428,8 @@ const (
 )
 
 // 问题 Kind 取值（§5.4）：question 是 AskUserQuestion 形态的提问卡（成员把
-// 提问桥接在 session/request_permission 上，acpview 以 title==AskUserQuestion
-// 标记 question:true）；input 是 elicitation/create 的补充输入卡（acpruntime
+// 提问桥接在 session/request_permission 上，acpview 按 Kimi 工具标题或结构化
+// questions 输入标记 question:true）；input 是 elicitation/create 的补充输入卡（acpruntime
 // pendingKinds 的 input 口径）。
 const (
 	QuestionKindQuestion = "question"

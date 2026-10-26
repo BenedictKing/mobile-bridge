@@ -67,7 +67,7 @@ func TestAddPermissionSurfacesAskUserQuestion(t *testing.T) {
 	view := NewView("sess-1", "Demo", "/work", func() float64 { return 1 })
 	params := jsoncompat.NewObject()
 	toolCall := jsoncompat.NewObject()
-	toolCall.Set("title", "AskUserQuestion")
+	toolCall.Set("title", "Asking user questions")
 	text := jsoncompat.NewObject()
 	text.Set("type", "text")
 	text.Set("text", "选 A 还是 B？")
@@ -107,7 +107,7 @@ func TestToolCallRendersQuestionSummary(t *testing.T) {
 	update := jsoncompat.NewObject()
 	update.Set("sessionUpdate", "tool_call")
 	update.Set("toolCallId", "tool-1")
-	update.Set("title", "AskUserQuestion")
+	update.Set("title", "Asking user questions")
 	question := jsoncompat.NewObject()
 	question.Set("question", "选 A 还是 B？")
 	question.Set("header", "偏好")
@@ -116,20 +116,91 @@ func TestToolCallRendersQuestionSummary(t *testing.T) {
 	rawInput := jsoncompat.NewObject()
 	rawInput.Set("questions", &jsoncompat.Array{Items: []any{question}})
 	update.Set("rawInput", rawInput)
+	text := jsoncompat.NewObject()
+	text.Set("type", "text")
+	text.Set("text", string(jsoncompat.EncodeCompact(rawInput)))
+	block := jsoncompat.NewObject()
+	block.Set("type", "content")
+	block.Set("content", text)
+	update.Set("content", &jsoncompat.Array{Items: []any{block}})
 	view.OnUpdate(update)
 	snapshot := view.Snapshot()
 	turn := snapshot.MustGet("turns").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
 	messages := turn.MustGet("messages").(*jsoncompat.Array)
-	var toolText string
+	var toolMessage *jsoncompat.Object
 	for _, value := range messages.Items {
 		if message := value.(*jsoncompat.Object); message.MustGet("kind") == "toolCall" {
-			toolText, _ = message.MustGet("text").(string)
+			toolMessage = message
 		}
 	}
+	if toolMessage == nil {
+		t.Fatal("question tool call missing")
+	}
+	toolText, _ := toolMessage.MustGet("text").(string)
 	for _, want := range []string{"选 A 还是 B？", "· A", "· B"} {
 		if !strings.Contains(toolText, want) {
 			t.Fatalf("tool text missing %q: %q", want, toolText)
 		}
+	}
+	if output, _ := toolMessage.MustGet("output").(string); output != "" {
+		t.Fatalf("question arguments leaked as raw JSON: %q", output)
+	}
+
+	result := jsoncompat.NewObject()
+	result.Set("sessionUpdate", "tool_call_update")
+	result.Set("toolCallId", "tool-1")
+	result.Set("content", &jsoncompat.Array{Items: []any{block}})
+	view.OnUpdate(result)
+	if output, _ := toolMessage.MustGet("output").(string); output != "" {
+		t.Fatalf("question result leaked as raw JSON: %q", output)
+	}
+}
+
+func TestAddInputSupportsKimiQuestionForms(t *testing.T) {
+	variant := func(value string) *jsoncompat.Object {
+		entry := jsoncompat.NewObject()
+		entry.Set("const", value)
+		entry.Set("title", value)
+		entry.Set("description", value+" 说明")
+		return entry
+	}
+	single := jsoncompat.NewObject()
+	single.Set("type", "string")
+	single.Set("title", "Pick a color")
+	single.Set("oneOf", &jsoncompat.Array{Items: []any{variant("Red"), variant("Green")}})
+	multi := jsoncompat.NewObject()
+	multi.Set("type", "array")
+	multi.Set("title", "Pick features")
+	multi.Set("minItems", 1)
+	items := jsoncompat.NewObject()
+	items.Set("anyOf", &jsoncompat.Array{Items: []any{variant("Auth"), variant("Uploads")}})
+	multi.Set("items", items)
+	properties := jsoncompat.NewObject()
+	properties.Set("q0", single)
+	properties.Set("q1", multi)
+	schema := jsoncompat.NewObject()
+	schema.Set("type", "object")
+	schema.Set("properties", properties)
+	schema.Set("required", &jsoncompat.Array{Items: []any{"q0", "q1"}})
+	params := jsoncompat.NewObject()
+	params.Set("message", "Pick a color\nPick features")
+	params.Set("requestedSchema", schema)
+
+	view := NewView("sess-1", "Demo", "/work", func() float64 { return 1 })
+	view.AddInput("req-form", params)
+	request := view.Snapshot().MustGet("requests").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+	if supported, _ := request.MustGet("supported").(bool); !supported {
+		t.Fatalf("Kimi question form was rejected: %s", jsoncompat.EncodeCompact(request))
+	}
+	content := jsoncompat.NewObject()
+	content.Set("q0", "Green")
+	content.Set("q1", &jsoncompat.Array{Items: []any{"Uploads", "Auth"}})
+	validated, err := ValidateForm(schema, content)
+	if err != nil {
+		t.Fatalf("Kimi question answers were rejected: %v", err)
+	}
+	if validated.MustGet("q0") != "Green" {
+		t.Fatalf("single-select answer = %v", validated.MustGet("q0"))
 	}
 }
 

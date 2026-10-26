@@ -100,7 +100,7 @@ func FormSupported(schema *jsoncompat.Object) bool {
 	allowedFields := map[string]bool{"type": true, "title": true, "description": true,
 		"enum": true, "oneOf": true, "anyOf": true, "items": true, "default": true,
 		"minLength": true, "maxLength": true, "minimum": true, "maximum": true,
-		"_meta": true}
+		"minItems": true, "_meta": true}
 	for _, name := range properties.Keys() {
 		field := obj(properties.MustGet(name))
 		if field == nil {
