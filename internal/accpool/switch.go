@@ -63,7 +63,7 @@ func (m *Manager) Switch(ctx context.Context, kind, targetID, trigger string, se
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if kind == "zcode" {
-		return m.switchZcode(targetID, trigger, sessions, ignoreBusy)
+		return m.switchZcode(ctx, targetID, trigger, sessions, ignoreBusy)
 	}
 	if kind == "minimax" {
 		return m.switchMinimax(ctx, targetID, trigger, sessions, ignoreBusy)
@@ -303,15 +303,30 @@ func copyFile(src, dst string) error {
 	return os.WriteFile(dst, raw, 0o600)
 }
 
+var zcodeValidateLogin = func(ctx context.Context, target *Account) error {
+	credentials := parseJSONObject(target.Credentials)
+	token := zcodeDecryptSafe(stringValue(credentials, "zcodejwttoken"))
+	if !looksLikeToken(token) {
+		return errors.New("目标账号快照缺少有效的 zcodeJWT")
+	}
+	if _, err := fetchZcodeBillingPair(ctx, token); err != nil {
+		return fmt.Errorf("目标账号登录态校验失败: %w", err)
+	}
+	return nil
+}
+
 // switchZcode swaps the ~/.zcode/v2 login state. Differences from kimi: no
 // token refresh flow exists (provider apiKeys are JWTs the server renews),
 // and the ZCode desktop app rewrites both slot files while running, so —
 // mirroring zcode-switcher's switchTo — it is stopped before the swap and
 // relaunched afterwards (best effort).
-func (m *Manager) switchZcode(targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
+func (m *Manager) switchZcode(ctx context.Context, targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
 	kind := "zcode"
 	target, err := m.loadAccount(kind, targetID)
 	if err != nil {
+		return err
+	}
+	if err := m.syncZcodeSwitcherSnapshot(target); err != nil {
 		return err
 	}
 	if target.Status == StatusReauthRequired || target.Status == StatusDisabled {
@@ -319,6 +334,9 @@ func (m *Manager) switchZcode(targetID, trigger string, sessions SessionManager,
 	}
 	if target.Credentials == "" || target.Config == "" {
 		return fmt.Errorf("账号 %s 的快照不完整（缺少 credentials/config）", target.Label)
+	}
+	if err := zcodeValidateLogin(ctx, target); err != nil {
+		return err
 	}
 	previous := readZcodeSlot()
 	fromID := m.activeID(kind)
@@ -362,6 +380,13 @@ func (m *Manager) switchZcode(targetID, trigger string, sessions SessionManager,
 	if err := writeZcodeSlot(&zcodeSlot{Credentials: target.Credentials, Config: target.Config}); err != nil {
 		restoreZcodeSlot(previous)
 		return fail(err)
+	}
+	if active := m.activeID(kind); active != target.ID {
+		restoreZcodeSlot(previous)
+		if desktopWasRunning {
+			zcodeDesktopRelaunch()
+		}
+		return fail(errors.New("写入后账号指纹核验失败，已恢复原账号"))
 	}
 	// The written snapshot may itself carry a dead coding-plan key (e.g. an
 	// account whose plan key lives in the cloud and whose config slot holds

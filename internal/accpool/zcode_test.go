@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -177,10 +178,15 @@ func setupZcodeFixture(t *testing.T) (*Manager, string, []*Account) {
 		}
 	}
 	writeZcodeSlotFiles(t, home, &zcodeSlot{Credentials: accounts[0].Credentials, Config: accounts[0].Config})
-	// No desktop app in tests.
+	// No desktop app or real credential validation in tests.
 	restore := zcodeDesktopRunning
 	zcodeDesktopRunning = func() bool { return false }
-	t.Cleanup(func() { zcodeDesktopRunning = restore })
+	restoreValidation := zcodeValidateLogin
+	zcodeValidateLogin = func(context.Context, *Account) error { return nil }
+	t.Cleanup(func() {
+		zcodeDesktopRunning = restore
+		zcodeValidateLogin = restoreValidation
+	})
 	return m, home, accounts
 }
 
@@ -335,6 +341,133 @@ func TestZcodeSwitchRejectsIncompleteSnapshot(t *testing.T) {
 	if err := m.Switch(context.Background(), "zcode", "zbroken", "manual", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), "快照不完整") {
 		t.Fatalf("expected incomplete-snapshot error, got %v", err)
+	}
+}
+
+func zcodeSlotWithJWT(t *testing.T, id string, issuedAt int64) zcodeSlot {
+	t.Helper()
+	slot := zcodeFixtureSlot(t, id)
+	credentials := parseJSONObject(slot.Credentials)
+	token, err := zcodeEncrypt(makeJWT(map[string]any{"user_id": "uid-" + id, "iat": issuedAt}), zcodeCredentialSecret())
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials["zcodejwttoken"] = token
+	raw, _ := json.Marshal(credentials)
+	slot.Credentials = string(raw)
+	return *slot
+}
+
+func writeZcodeSwitcherSnapshot(t *testing.T, m *Manager, id string, slot zcodeSlot) {
+	t.Helper()
+	dir := filepath.Join(m.ZcasDir, "accounts-zcode")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]string{"credentials": slot.Credentials, "config": slot.Config})
+	if err := os.WriteFile(filepath.Join(dir, id+".snap.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestZcodeSyncSwitcherUsesNewerSnapshot(t *testing.T) {
+	m, _, targets := setupZcodeFixture(t)
+	m.ZcasDir = t.TempDir()
+	target := targets[1]
+	local := zcodeSlotWithJWT(t, "zb", 100)
+	target.Credentials, target.Config = local.Credentials, local.Config
+	external := zcodeSlotWithJWT(t, "zb", 200)
+	writeZcodeSwitcherSnapshot(t, m, target.ID, external)
+	if err := m.syncZcodeSwitcherSnapshot(target); err != nil {
+		t.Fatal(err)
+	}
+	if target.Credentials != external.Credentials || target.Config != external.Config {
+		t.Fatal("newer zcode-switcher snapshot was not adopted")
+	}
+	reloaded, err := m.loadAccount("zcode", target.ID)
+	if err != nil || reloaded.Credentials != external.Credentials {
+		t.Fatalf("synchronized snapshot not persisted: %+v, %v", reloaded, err)
+	}
+}
+
+func TestZcodeSyncSwitcherKeepsNewerLocalSnapshot(t *testing.T) {
+	m, _, targets := setupZcodeFixture(t)
+	m.ZcasDir = t.TempDir()
+	target := targets[1]
+	local := zcodeSlotWithJWT(t, "zb", 200)
+	target.Credentials, target.Config = local.Credentials, local.Config
+	external := zcodeSlotWithJWT(t, "zb", 100)
+	writeZcodeSwitcherSnapshot(t, m, target.ID, external)
+	if err := m.syncZcodeSwitcherSnapshot(target); err != nil {
+		t.Fatal(err)
+	}
+	if target.Credentials != local.Credentials || target.Config != local.Config {
+		t.Fatal("older zcode-switcher snapshot replaced newer local credentials")
+	}
+}
+
+func TestZcodeSyncSwitcherRejectsIdentityMismatch(t *testing.T) {
+	m, _, targets := setupZcodeFixture(t)
+	m.ZcasDir = t.TempDir()
+	target := targets[1]
+	local := target.Credentials
+	writeZcodeSwitcherSnapshot(t, m, target.ID, zcodeSlotWithJWT(t, "other", 300))
+	if err := m.syncZcodeSwitcherSnapshot(target); err == nil {
+		t.Fatal("identity-mismatched snapshot must be rejected")
+	}
+	if target.Credentials != local {
+		t.Fatal("identity-mismatched snapshot changed local credentials")
+	}
+}
+
+func TestZcodeSwitchValidationFailureLeavesCurrentAccount(t *testing.T) {
+	m, home, targets := setupZcodeFixture(t)
+	restoreValidation := zcodeValidateLogin
+	zcodeValidateLogin = func(context.Context, *Account) error { return errors.New("HTTP 401") }
+	restoreRunning, restoreStop := zcodeDesktopRunning, zcodeDesktopStop
+	zcodeDesktopRunning = func() bool { return true }
+	stopped := false
+	zcodeDesktopStop = func(time.Duration) bool { stopped = true; return true }
+	t.Cleanup(func() {
+		zcodeValidateLogin = restoreValidation
+		zcodeDesktopRunning, zcodeDesktopStop = restoreRunning, restoreStop
+	})
+	if err := m.Switch(context.Background(), "zcode", targets[1].ID, "manual", nil, nil); err == nil {
+		t.Fatal("expired target must not switch")
+	}
+	if stopped {
+		t.Fatal("desktop stopped before target credential validation")
+	}
+	if slot := readZcodeSlotFiles(t, home); slot.Credentials != targets[0].Credentials {
+		t.Fatal("current account changed after validation failure")
+	}
+}
+
+func TestZcodeSwitchValidationSuccess(t *testing.T) {
+	m, _, targets := setupZcodeFixture(t)
+	calls := 0
+	zcodeValidateLogin = func(context.Context, *Account) error { calls++; return nil }
+	if err := m.Switch(context.Background(), "zcode", targets[1].ID, "manual", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("validation calls = %d, want 1", calls)
+	}
+}
+
+func TestZcodeSwitchRollsBackFingerprintMismatch(t *testing.T) {
+	m, home, targets := setupZcodeFixture(t)
+	broken := *targets[1]
+	broken.ID = "zwrong"
+	if err := m.saveAccount("zcode", &broken); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Switch(context.Background(), "zcode", broken.ID, "manual", nil, nil); err == nil ||
+		!strings.Contains(err.Error(), "指纹核验失败") {
+		t.Fatalf("expected fingerprint verification failure, got %v", err)
+	}
+	if slot := readZcodeSlotFiles(t, home); slot.Credentials != targets[0].Credentials {
+		t.Fatal("fingerprint mismatch did not restore outgoing account")
 	}
 }
 
@@ -693,7 +826,12 @@ func zcodeResetFixture(t *testing.T) (*Manager, string) {
 	writeZcodeSlotFiles(t, home, &zcodeSlot{Credentials: accounts[0].Credentials, Config: accounts[0].Config})
 	restore := zcodeDesktopRunning
 	zcodeDesktopRunning = func() bool { return false }
-	t.Cleanup(func() { zcodeDesktopRunning = restore })
+	restoreValidation := zcodeValidateLogin
+	zcodeValidateLogin = func(context.Context, *Account) error { return nil }
+	t.Cleanup(func() {
+		zcodeDesktopRunning = restore
+		zcodeValidateLogin = restoreValidation
+	})
 	return m, home
 }
 

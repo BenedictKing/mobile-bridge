@@ -1207,6 +1207,57 @@ func (m *Manager) importZcode(dir string) (imported []string, skipped []ImportSk
 	return imported, skipped, nil
 }
 
+func zcodeSnapshotIssuedAt(slot zcodeSlot) int64 {
+	credentials := parseJSONObject(slot.Credentials)
+	token := zcodeDecryptSafe(stringValue(credentials, "zcodejwttoken"))
+	return int64Or(decodeJWTPayload(token)["iat"], 0)
+}
+
+func (m *Manager) syncZcodeSwitcherSnapshot(target *Account) error {
+	if m.ZcasDir == "" || target == nil {
+		return nil
+	}
+	if _, err := safeID(target.ID); err != nil {
+		return err
+	}
+	path := filepath.Join(m.ZcasDir, "accounts-zcode", target.ID+".snap.json")
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取 zcode-switcher 目标快照失败: %w", err)
+	}
+	var external zcodeSlot
+	if json.Unmarshal(raw, &external) != nil ||
+		parseJSONObject(external.Credentials) == nil || parseJSONObject(external.Config) == nil {
+		return errors.New("zcode-switcher 目标快照不是有效 JSON")
+	}
+	fingerprint := zcodeFingerprintFrom(parseJSONObject(external.Credentials), parseJSONObject(external.Config))
+	if fingerprint == nil || fingerprint.ID != target.ID {
+		return errors.New("zcode-switcher 目标快照的账号身份不匹配")
+	}
+	if zcodeSnapshotIssuedAt(external) <= zcodeSnapshotIssuedAt(zcodeSlot{
+		Credentials: target.Credentials, Config: target.Config,
+	}) {
+		return nil
+	}
+	target.Credentials = external.Credentials
+	target.Config = external.Config
+	target.UserID = fingerprint.UserID
+	target.Email = fingerprint.Email
+	target.Nickname = fingerprint.Name
+	target.Avatar = fingerprint.Avatar
+	target.Provider = fingerprint.Provider
+	target.Status = StatusActive
+	target.StatusReason = ""
+	target.QuotaError = ""
+	if err := m.saveAccount("zcode", target); err != nil {
+		return fmt.Errorf("同步 zcode-switcher 目标快照失败: %w", err)
+	}
+	return nil
+}
+
 // --- ZCode desktop process control (switcher.js) ------------------------------
 //
 // The desktop app rewrites credentials.json/config.json while running, so a

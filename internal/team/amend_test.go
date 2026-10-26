@@ -487,7 +487,7 @@ func TestCreateAmendRunIdempotencyAndParentChecks(t *testing.T) {
 	if err := h.store.SaveRun(parent); err != nil {
 		t.Fatalf("父 Run 保存失败: %v", err)
 	}
-	// 同 id 同内容重放：duplicate=true、零新事件。
+	// 同 id 同内容重放：duplicate=true、创建事实不重复；后台调度可并发追加其他事件。
 	first, duplicate, err := h.service.CreateAmendRun(h.team, "run-parent", "run-amend-idem",
 		amendGoal, ModePipeline, "", nil, pipelinePlan(), false)
 	if err != nil || duplicate {
@@ -498,8 +498,12 @@ func TestCreateAmendRunIdempotencyAndParentChecks(t *testing.T) {
 	if err != nil || !duplicate || second.ID != first.ID {
 		t.Fatalf("同 id 同内容重放应返回 duplicate: duplicate=%v id=%s err=%v", duplicate, second.ID, err)
 	}
-	if got := len(amendEventsOf(t, h.journal, "run-amend-idem")); got != 5 {
-		t.Fatalf("重放不得追加事件（run_created + 3×task_planned + design 的 cache_hit 共 5 条），实际 %d 条", got)
+	counts := map[string]int{}
+	for _, event := range amendEventsOf(t, h.journal, "run-amend-idem") {
+		counts[event.Type]++
+	}
+	if counts[EventRunCreated] != 1 || counts[EventTaskPlanned] != 3 || counts[EventTaskCacheHit] != 1 {
+		t.Fatalf("重放不得重复创建事实：run_created + 3×task_planned + design 的 cache_hit 应各出现一次，实际 %v", counts)
 	}
 	// 异内容（目标修订）：拒绝。
 	if _, _, err := h.service.CreateAmendRun(h.team, "run-parent", "run-amend-idem",
