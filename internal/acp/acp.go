@@ -187,6 +187,7 @@ func (p *Process) Initialize(timeout time.Duration) (any, error) {
 	capabilities := jsoncompat.NewObject()
 	capabilities.Set("fs", fs)
 	capabilities.Set("terminal", false)
+	capabilities.Set("plan", true)
 	elicitation := jsoncompat.NewObject()
 	elicitation.Set("form", true)
 	capabilities.Set("elicitation", elicitation)

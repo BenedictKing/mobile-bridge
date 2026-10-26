@@ -153,19 +153,23 @@ func (r *Reader) read(sessionID, path string, stale bool) (*acpview.NativeSnapsh
 	if len(raw) > maxTranscriptBytes {
 		return nil, errTranscriptTooLarge
 	}
-	decoder, err := zstd.NewReader(bytes.NewReader(raw))
-	if err != nil {
-		return nil, err
-	}
-	defer decoder.Close()
-	decoded, decodeErr := io.ReadAll(io.LimitReader(decoder, maxDecodedBytes+1))
-	if len(decoded) > maxDecodedBytes {
-		return nil, errTranscriptTooLarge
-	}
-	// The app appends frames while we read: a truncated tail still leaves
-	// every complete earlier frame usable.
-	if decodeErr != nil && len(decoded) == 0 {
-		return nil, decodeErr
+	decoded := raw
+	if strings.HasSuffix(path, ".zstd") {
+		decoder, err := zstd.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return nil, err
+		}
+		defer decoder.Close()
+		var decodeErr error
+		decoded, decodeErr = io.ReadAll(io.LimitReader(decoder, maxDecodedBytes+1))
+		if len(decoded) > maxDecodedBytes {
+			return nil, errTranscriptTooLarge
+		}
+		// The app appends frames while we read: a truncated tail still leaves
+		// every complete earlier frame usable.
+		if decodeErr != nil && len(decoded) == 0 {
+			return nil, decodeErr
+		}
 	}
 	return parseTranscript(sessionID, r.root, decoded, stale), nil
 }

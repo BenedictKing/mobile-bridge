@@ -86,6 +86,51 @@ func TestSessionInfoUpdateChangesTitle(t *testing.T) {
 	}
 }
 
+func TestPlanUpdateAndRemoval(t *testing.T) {
+	view := NewView("sess-1", nil, "/w", func() float64 { return 0 })
+	view.BeginTurn("审阅计划")
+	update := func(id, content string) *jsoncompat.Object {
+		update := jsoncompat.NewObject()
+		update.Set("sessionUpdate", "plan_update")
+		plan := jsoncompat.NewObject()
+		plan.Set("type", "markdown")
+		plan.Set("planId", id)
+		plan.Set("content", content)
+		update.Set("plan", plan)
+		return update
+	}
+	view.OnUpdate(update("plan-1", "旧内容"))
+	view.OnUpdate(update("plan-2", "保留"))
+	view.OnUpdate(update("plan-1", "新内容"))
+	plans := func() []*jsoncompat.Object {
+		turn := view.TipTurn()
+		messages := turn.MustGet("messages").(*jsoncompat.Array)
+		rows := []*jsoncompat.Object{}
+		for _, item := range messages.Items {
+			if message := item.(*jsoncompat.Object); message.MustGet("kind") == "plan" {
+				rows = append(rows, message)
+			}
+		}
+		return rows
+	}
+	rows := plans()
+	if len(rows) != 2 || rows[0].MustGet("text") != "新内容" {
+		t.Fatalf("plan update duplicated or did not replace: %v", rows)
+	}
+	removed := jsoncompat.NewObject()
+	removed.Set("sessionUpdate", "plan_removed")
+	view.OnUpdate(removed)
+	if len(plans()) != 2 {
+		t.Fatal("missing planId removed a plan")
+	}
+	removed.Set("planId", "plan-1")
+	view.OnUpdate(removed)
+	rows = plans()
+	if len(rows) != 1 || rows[0].MustGet("planId") != "plan-2" {
+		t.Fatalf("wrong plan removed: %v", rows)
+	}
+}
+
 func TestAddPermissionSurfacesAskUserQuestion(t *testing.T) {
 	view := NewView("sess-1", "Demo", "/work", func() float64 { return 1 })
 	params := jsoncompat.NewObject()

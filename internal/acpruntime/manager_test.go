@@ -638,6 +638,70 @@ for line in sys.stdin:
 	}
 }
 
+func TestBackgroundQuestionSurvivesPromptCompletion(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	answerLog := filepath.Join(t.TempDir(), "answers.log")
+	script := `import json,sys
+log = open(` + pythonRepr(answerLog) + `, "a")
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method")
+ if method is None and m.get("id") == "ask-background":
+  log.write(json.dumps(m.get("result"))+"\n"); log.flush()
+  continue
+ ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new": result={"sessionId":"sess-background"}
+ elif method == "session/prompt":
+  print(json.dumps({"jsonrpc":"2.0","id":"ask-background","method":"session/request_permission","params":{"sessionId":"sess-background","toolCall":{"toolCallId":"tool-q","title":"AskUserQuestion"},"options":[{"optionId":"q0_opt_0","name":"继续","kind":"allow_once"}]}}),flush=True)
+  result={"stopReason":"end_turn"}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	session, err := manager.Create("seed", "/work", "后台提问", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Prompt("开始", 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		snapshot := session.Snapshot()
+		requests := snapshot.MustGet("requests").(*jsoncompat.Array).Items
+		if snapshot.MustGet("status") == "idle" && len(requests) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background question did not survive prompt completion: %s", jsoncompat.EncodeCompact(snapshot))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	response := jsoncompat.NewObject()
+	response.Set("optionId", "q0_opt_0")
+	if err := session.Respond("ask-background", response); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		raw, readErr := os.ReadFile(answerLog)
+		if readErr == nil && len(raw) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background answer was not delivered: %v", readErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestRespondWireTranslatesPermissionReplies(t *testing.T) {
 	params := jsoncompat.NewObject()
 	options := &jsoncompat.Array{}

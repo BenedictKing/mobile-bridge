@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,46 @@ func TestTranscriptReaderBuildsTurns(t *testing.T) {
 	// Unchanged file: the poller must not rebuild.
 	if again, err := reader(fixtureSession); err != nil || again != nil {
 		t.Fatalf("unchanged load = %v/%v", again, err)
+	}
+}
+
+func TestTranscriptReaderPlainJSONLMatchesZstd(t *testing.T) {
+	lines := []string{
+		`{"type":"session/title","seq":1,"time":1000,"data":{"title":"明文会话"}}`,
+		`{"type":"turn/start","seq":2,"time":1000,"data":{"turn":1}}`,
+		`{"type":"user/message","seq":3,"time":1100,"data":{"id":"u1","role":"user","source":{"kind":"user"},"content":[{"type":"text","text":"第一问"}]}}`,
+		`{"type":"assistant/message","seq":4,"time":1200,"data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"答一"}]}}}`,
+		`{"type":"turn/end","seq":5,"time":1300,"data":{"turn":1,"reason":{"kind":"completed"}}}`,
+	}
+	compressedRoot := t.TempDir()
+	writeFixture(t, compressedRoot, lines)
+	compressed, err := TranscriptReader(compressedRoot)(fixtureSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainRoot := t.TempDir()
+	dir := filepath.Join(plainRoot, "sessions", "--work--", fixtureSession)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(strings.Join(lines, "\n") + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "session.v4.jsonl"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := TranscriptReader(plainRoot)(fixtureSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain == nil || compressed == nil {
+		t.Fatalf("missing snapshot: plain=%v zstd=%v", plain != nil, compressed != nil)
+	}
+	if plain.Title != compressed.Title || len(plain.Turns) != len(compressed.Turns) {
+		t.Fatal("plain and zstd snapshot metadata differ")
+	}
+	for index := range plain.Turns {
+		if string(jsoncompat.EncodeCompact(plain.Turns[index])) != string(jsoncompat.EncodeCompact(compressed.Turns[index])) {
+			t.Fatalf("plain and zstd turn %d differ", index)
+		}
 	}
 }
 

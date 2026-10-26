@@ -185,7 +185,6 @@ func (v *View) EndTurn(stopReason string) {
 		}
 	}
 	v.Status = "idle"
-	v.Requests = nil
 }
 
 // FailTurn mirrors fail_turn.
@@ -202,7 +201,6 @@ func (v *View) FailTurn(message any) {
 		}
 	}
 	v.Status = "idle"
-	v.Requests = nil
 }
 
 // FinishReplay mirrors finish_replay.
@@ -488,6 +486,50 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		}
 		appendContentAttachments(message, update.MustGet("content"))
 		appendContentChanges(message, update.MustGet("content"), update.MustGet("rawInput"))
+	case "plan_update":
+		payload := obj(update.MustGet("plan"))
+		if payload == nil {
+			return
+		}
+		planID, _ := payload.MustGet("planId").(string)
+		if planID == "" {
+			return
+		}
+		content, _ := payload.MustGet("content").(string)
+		turn := v.assistantTurn()
+		var plan *jsoncompat.Object
+		for _, item := range messages(turn).Items {
+			if message := obj(item); message != nil && message.MustGet("kind") == "plan" && message.MustGet("planId") == planID {
+				plan = message
+				break
+			}
+		}
+		if plan == nil {
+			plan = jsoncompat.NewObject()
+			plan.Set("id", v.nextID("plan"))
+			plan.Set("kind", "plan")
+			plan.Set("role", "activity")
+			plan.Set("title", "计划")
+			plan.Set("planId", planID)
+			messages(turn).Items = append(messages(turn).Items, plan)
+		}
+		plan.Set("text", content)
+	case "plan_removed":
+		planID, _ := update.MustGet("planId").(string)
+		if planID == "" {
+			return
+		}
+		for _, turn := range v.Turns {
+			list := messages(turn)
+			kept := list.Items[:0]
+			for _, item := range list.Items {
+				if message := obj(item); message != nil && message.MustGet("kind") == "plan" && message.MustGet("planId") == planID {
+					continue
+				}
+				kept = append(kept, item)
+			}
+			list.Items = kept
+		}
 	case "plan":
 		entries := &jsoncompat.Array{}
 		if list := arr(truthyOr(update.MustGet("entries"), any(&jsoncompat.Array{}))); list != nil {
