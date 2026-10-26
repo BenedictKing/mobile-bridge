@@ -315,18 +315,13 @@ var zcodeValidateLogin = func(ctx context.Context, target *Account) error {
 	return nil
 }
 
-// switchZcode swaps the ~/.zcode/v2 login state. Differences from kimi: no
-// token refresh flow exists (provider apiKeys are JWTs the server renews),
-// and the ZCode desktop app rewrites both slot files while running, so —
-// mirroring zcode-switcher's switchTo — it is stopped before the swap and
-// relaunched afterwards (best effort).
+// switchZcode swaps the ~/.zcode/v2 login state. ZCode has no client refresh
+// flow for zcodeJWT, so expired targets require reauthentication. The desktop
+// app rewrites both slot files while running and is stopped before the swap.
 func (m *Manager) switchZcode(ctx context.Context, targetID, trigger string, sessions SessionManager, ignoreBusy map[string]bool) error {
 	kind := "zcode"
 	target, err := m.loadAccount(kind, targetID)
 	if err != nil {
-		return err
-	}
-	if err := m.syncZcodeSwitcherSnapshot(target); err != nil {
 		return err
 	}
 	if target.Status == StatusReauthRequired || target.Status == StatusDisabled {
@@ -364,8 +359,8 @@ func (m *Manager) switchZcode(ctx context.Context, targetID, trigger string, ses
 		return fail(errors.New("关闭 ZCode 桌面端超时，已取消切换（避免登录态损坏）"))
 	}
 
-	// Read the slot back into the outgoing snapshot when the app/CLI rewrote
-	// it since the snapshot was taken.
+	// Re-read after shutdown so the outgoing snapshot includes the final write.
+	previous = readZcodeSlot()
 	if previous != nil && fromID != "" {
 		if outgoing, loadErr := m.loadAccount(kind, fromID); loadErr == nil &&
 			(outgoing.Credentials != previous.Credentials || outgoing.Config != previous.Config) {
@@ -419,6 +414,7 @@ func (m *Manager) switchZcode(ctx context.Context, targetID, trigger string, ses
 	if desktopWasRunning {
 		zcodeDesktopRelaunch()
 	}
+	syncZcodeAccountSlot(target)
 	target.LastUsedAt = m.now().UnixMilli()
 	if err := m.saveAccount(kind, target); err != nil {
 		return fail(err)

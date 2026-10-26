@@ -1036,11 +1036,36 @@ func useZcodeResetCard(ctx context.Context, acc *Account, resetType string) (boo
 
 // --- pool integration ---------------------------------------------------------
 
-// refreshZcodeQuota is the zcode RefreshQuota branch: no token refresh flow
-// exists (provider apiKeys are JWTs), so it decrypts candidate tokens from
-// the snapshot and polls billing, marking the account reauth_required when
-// every credential is rejected.
+// syncZcodeAccountSlot recovers desktop writes into our own snapshot. A slot
+// whose identity is unclear or different must never overwrite the account.
+func syncZcodeAccountSlot(acc *Account) {
+	slot := readZcodeSlot()
+	if slot == nil {
+		return
+	}
+	fp := zcodeFingerprintFrom(parseJSONObject(slot.Credentials), parseJSONObject(slot.Config))
+	if fp == nil {
+		return
+	}
+	matched := false
+	if acc.UserID != "" && fp.UserID != "" {
+		matched = acc.UserID == fp.UserID
+	} else if acc.Email != "" && fp.Email != "" {
+		matched = acc.Email == fp.Email
+	} else {
+		matched = acc.ID == fp.ID
+	}
+	if matched {
+		acc.Credentials = slot.Credentials
+		acc.Config = slot.Config
+	}
+}
+
+// refreshZcodeQuota polls the official APIs with our latest slot snapshot.
+// ZCode has no client refresh flow for zcodeJWT; rejected credentials require
+// reauthentication rather than borrowing another application's snapshot.
 func (m *Manager) refreshZcodeQuota(ctx context.Context, acc *Account) (*Account, error) {
+	syncZcodeAccountSlot(acc)
 	credentials := parseJSONObject(acc.Credentials)
 	config := parseJSONObject(acc.Config)
 	tokens := zcodeCandidateTokens(credentials, config)
@@ -1205,57 +1230,6 @@ func (m *Manager) importZcode(dir string) (imported []string, skipped []ImportSk
 		imported = append(imported, meta.ID)
 	}
 	return imported, skipped, nil
-}
-
-func zcodeSnapshotIssuedAt(slot zcodeSlot) int64 {
-	credentials := parseJSONObject(slot.Credentials)
-	token := zcodeDecryptSafe(stringValue(credentials, "zcodejwttoken"))
-	return int64Or(decodeJWTPayload(token)["iat"], 0)
-}
-
-func (m *Manager) syncZcodeSwitcherSnapshot(target *Account) error {
-	if m.ZcasDir == "" || target == nil {
-		return nil
-	}
-	if _, err := safeID(target.ID); err != nil {
-		return err
-	}
-	path := filepath.Join(m.ZcasDir, "accounts-zcode", target.ID+".snap.json")
-	raw, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("读取 zcode-switcher 目标快照失败: %w", err)
-	}
-	var external zcodeSlot
-	if json.Unmarshal(raw, &external) != nil ||
-		parseJSONObject(external.Credentials) == nil || parseJSONObject(external.Config) == nil {
-		return errors.New("zcode-switcher 目标快照不是有效 JSON")
-	}
-	fingerprint := zcodeFingerprintFrom(parseJSONObject(external.Credentials), parseJSONObject(external.Config))
-	if fingerprint == nil || fingerprint.ID != target.ID {
-		return errors.New("zcode-switcher 目标快照的账号身份不匹配")
-	}
-	if zcodeSnapshotIssuedAt(external) <= zcodeSnapshotIssuedAt(zcodeSlot{
-		Credentials: target.Credentials, Config: target.Config,
-	}) {
-		return nil
-	}
-	target.Credentials = external.Credentials
-	target.Config = external.Config
-	target.UserID = fingerprint.UserID
-	target.Email = fingerprint.Email
-	target.Nickname = fingerprint.Name
-	target.Avatar = fingerprint.Avatar
-	target.Provider = fingerprint.Provider
-	target.Status = StatusActive
-	target.StatusReason = ""
-	target.QuotaError = ""
-	if err := m.saveAccount("zcode", target); err != nil {
-		return fmt.Errorf("同步 zcode-switcher 目标快照失败: %w", err)
-	}
-	return nil
 }
 
 // --- ZCode desktop process control (switcher.js) ------------------------------

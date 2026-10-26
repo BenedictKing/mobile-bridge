@@ -358,65 +358,66 @@ func zcodeSlotWithJWT(t *testing.T, id string, issuedAt int64) zcodeSlot {
 	return *slot
 }
 
-func writeZcodeSwitcherSnapshot(t *testing.T, m *Manager, id string, slot zcodeSlot) {
-	t.Helper()
+func TestZcodeSyncAccountSlotUsesOfficialSlot(t *testing.T) {
+	_, home, targets := setupZcodeFixture(t)
+	target := targets[0]
+	updated := zcodeSlotWithJWT(t, "za", 200)
+	writeZcodeSlotFiles(t, home, &updated)
+	syncZcodeAccountSlot(target)
+	if target.Credentials != updated.Credentials || target.Config != updated.Config {
+		t.Fatal("official slot was not recovered into the local snapshot")
+	}
+}
+
+func TestZcodeSyncAccountSlotRejectsIdentityMismatch(t *testing.T) {
+	_, home, targets := setupZcodeFixture(t)
+	target := targets[1]
+	localCredentials, localConfig := target.Credentials, target.Config
+	other := zcodeSlotWithJWT(t, "other", 300)
+	writeZcodeSlotFiles(t, home, &other)
+	syncZcodeAccountSlot(target)
+	if target.Credentials != localCredentials || target.Config != localConfig {
+		t.Fatal("another account's slot overwrote the target snapshot")
+	}
+}
+
+func TestZcodeSwitchIgnoresSwitcherStore(t *testing.T) {
+	m, _, targets := setupZcodeFixture(t)
+	m.ZcasDir = t.TempDir()
 	dir := filepath.Join(m.ZcasDir, "accounts-zcode")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(map[string]string{"credentials": slot.Credentials, "config": slot.Config})
-	if err := os.WriteFile(filepath.Join(dir, id+".snap.json"), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, targets[1].ID+".snap.json"), []byte("broken"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if err := m.Switch(context.Background(), "zcode", targets[1].ID, "manual", nil, nil); err != nil {
+		t.Fatalf("external snapshot must not affect switching: %v", err)
 	}
 }
 
-func TestZcodeSyncSwitcherUsesNewerSnapshot(t *testing.T) {
-	m, _, targets := setupZcodeFixture(t)
-	m.ZcasDir = t.TempDir()
-	target := targets[1]
-	local := zcodeSlotWithJWT(t, "zb", 100)
-	target.Credentials, target.Config = local.Credentials, local.Config
-	external := zcodeSlotWithJWT(t, "zb", 200)
-	writeZcodeSwitcherSnapshot(t, m, target.ID, external)
-	if err := m.syncZcodeSwitcherSnapshot(target); err != nil {
+func TestZcodeSwitchReadsOutgoingSlotAfterDesktopStop(t *testing.T) {
+	m, home, targets := setupZcodeFixture(t)
+	latest := zcodeSlotWithJWT(t, "za", 300)
+	restoreRunning, restoreStop, restoreRelaunch := zcodeDesktopRunning, zcodeDesktopStop, zcodeDesktopRelaunch
+	zcodeDesktopRunning = func() bool { return true }
+	zcodeDesktopStop = func(time.Duration) bool {
+		writeZcodeSlotFiles(t, home, &latest)
+		return true
+	}
+	zcodeDesktopRelaunch = func() {}
+	t.Cleanup(func() {
+		zcodeDesktopRunning, zcodeDesktopStop, zcodeDesktopRelaunch = restoreRunning, restoreStop, restoreRelaunch
+	})
+	if err := m.Switch(context.Background(), "zcode", targets[1].ID, "manual", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if target.Credentials != external.Credentials || target.Config != external.Config {
-		t.Fatal("newer zcode-switcher snapshot was not adopted")
-	}
-	reloaded, err := m.loadAccount("zcode", target.ID)
-	if err != nil || reloaded.Credentials != external.Credentials {
-		t.Fatalf("synchronized snapshot not persisted: %+v, %v", reloaded, err)
-	}
-}
-
-func TestZcodeSyncSwitcherKeepsNewerLocalSnapshot(t *testing.T) {
-	m, _, targets := setupZcodeFixture(t)
-	m.ZcasDir = t.TempDir()
-	target := targets[1]
-	local := zcodeSlotWithJWT(t, "zb", 200)
-	target.Credentials, target.Config = local.Credentials, local.Config
-	external := zcodeSlotWithJWT(t, "zb", 100)
-	writeZcodeSwitcherSnapshot(t, m, target.ID, external)
-	if err := m.syncZcodeSwitcherSnapshot(target); err != nil {
+	outgoing, err := m.loadAccount("zcode", targets[0].ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Credentials != local.Credentials || target.Config != local.Config {
-		t.Fatal("older zcode-switcher snapshot replaced newer local credentials")
-	}
-}
-
-func TestZcodeSyncSwitcherRejectsIdentityMismatch(t *testing.T) {
-	m, _, targets := setupZcodeFixture(t)
-	m.ZcasDir = t.TempDir()
-	target := targets[1]
-	local := target.Credentials
-	writeZcodeSwitcherSnapshot(t, m, target.ID, zcodeSlotWithJWT(t, "other", 300))
-	if err := m.syncZcodeSwitcherSnapshot(target); err == nil {
-		t.Fatal("identity-mismatched snapshot must be rejected")
-	}
-	if target.Credentials != local {
-		t.Fatal("identity-mismatched snapshot changed local credentials")
+	if outgoing.Credentials != latest.Credentials || outgoing.Config != latest.Config {
+		t.Fatal("desktop's final shutdown write was not saved")
 	}
 }
 
@@ -804,9 +805,17 @@ func TestZcodeRefreshQuotaMarksReauth(t *testing.T) {
 }
 
 func TestZcodeRefreshQuotaSuccess(t *testing.T) {
-	m, _, targets := setupZcodeFixture(t)
+	m, home, targets := setupZcodeFixture(t)
+	updated := zcodeSlotWithJWT(t, "za", 400)
+	writeZcodeSlotFiles(t, home, &updated)
+	expectedToken := zcodeDecryptSafe(stringValue(parseJSONObject(updated.Credentials), "zcodejwttoken"))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if got := r.Header.Get("authorization"); got != "Bearer "+expectedToken {
+			t.Errorf("quota used stale token: authorization mismatch")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/billing/current") {
 			_, _ = w.Write([]byte(`{"data":{"plans":[{"plan_id":"pro","status":"active"}]}}`))
 			return
@@ -822,6 +831,13 @@ func TestZcodeRefreshQuotaSuccess(t *testing.T) {
 	acc, err := m.RefreshQuota(context.Background(), "zcode", targets[0].ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if acc.Credentials != updated.Credentials || acc.Config != updated.Config {
+		t.Fatal("quota refresh did not recover the current slot")
+	}
+	persisted, err := m.loadAccount("zcode", targets[0].ID)
+	if err != nil || persisted.Credentials != updated.Credentials {
+		t.Fatalf("synchronized slot was not persisted: %v", err)
 	}
 	if acc.Quota == nil || len(acc.Quota.Limits) != 1 || acc.Quota.Limits[0].Used != 50 || acc.LevelName != "Pro" {
 		t.Fatalf("quota: %+v level=%q", acc.Quota, acc.LevelName)
