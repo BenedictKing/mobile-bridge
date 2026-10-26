@@ -49,6 +49,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/httpd"
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/kimi"
 	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
@@ -849,6 +850,15 @@ func runGateway(args []string) {
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			log.Printf("zcode native store: %v", err)
+		}
+	}
+	if manager := server.ACPAgents["kimi"]; manager != nil && !scriptedMode {
+		kimiHome := os.Getenv("KIMI_CODE_HOME")
+		if kimiHome == "" {
+			kimiHome = filepath.Join(home, ".kimi-code")
+		}
+		manager.NativeList = func() []*jsoncompat.Object {
+			return kimi.ListSessions(kimiHome)
 		}
 	}
 	if manager := server.ACPAgents["workbuddy"]; manager != nil && !scriptedMode {

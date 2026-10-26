@@ -109,6 +109,45 @@ for line in sys.stdin:
 	manager.Close()
 }
 
+func TestManagerSupplementsIncompleteACPListFromNativeStore(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/list": result={"sessions":[{"sessionId":"sess-acp","title":"ACP 标题","cwd":"/acp"}]}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.NativeList = func() []*jsoncompat.Object {
+		duplicate := jsoncompat.NewObject()
+		duplicate.Set("sessionId", "sess-acp")
+		duplicate.Set("title", "原生标题")
+		duplicate.Set("cwd", "/native")
+		missing := jsoncompat.NewObject()
+		missing.Set("sessionId", "sess-native")
+		missing.Set("title", "补全会话")
+		missing.Set("cwd", "/native")
+		return []*jsoncompat.Object{duplicate, missing}
+	}
+	rows, err := manager.List(3 * time.Second)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("merged rows=%v err=%v", rows, err)
+	}
+	if rows[0].MustGet("title") != "ACP 标题" || rows[0].MustGet("cwd") != "/acp" || rows[1].MustGet("sessionId") != "sess-native" {
+		t.Fatalf("ACP row was not authoritative: %v", rows)
+	}
+	manager.Close()
+}
+
 func TestManagerTreatsMissingSessionListAsUnsupported(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

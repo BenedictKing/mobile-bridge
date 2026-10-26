@@ -188,10 +188,9 @@ type Manager struct {
 	// failing the open (DSH: the zstd transcript).
 	NativeTranscript func(sessionID string) (*acpview.NativeSnapshot, error)
 	// NativeList, when set, enumerates sessions from the agent's own on-disk
-	// store as session/list-shaped rows. It is the fallback for agents that
-	// implement session/load but not session/list (workbuddy's
-	// `codebuddy --acp` answers -32601); without it such an agent would never
-	// show a single conversation in the phone list.
+	// store as session/list-shaped rows. It supplements incomplete ACP pages
+	// (kimi) and is the fallback for agents without session/list (workbuddy).
+	// ACP rows win when the same sessionId appears in both sources.
 	NativeList func() []*jsoncompat.Object
 
 	// Canonical resolves a session/new placeholder to the backend session id
@@ -369,6 +368,19 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 		}
 		seenCursors[cursor] = true
 		params.Set("cursor", cursor)
+	}
+	if m.NativeList != nil {
+		for _, row := range m.NativeList() {
+			if row == nil {
+				continue
+			}
+			id, _ := row.MustGet("sessionId").(string)
+			if id == "" || seenSessions[id] {
+				continue
+			}
+			seenSessions[id] = true
+			output = append(output, row)
+		}
 	}
 	if m.NativeMeta != nil {
 		for _, row := range output {
