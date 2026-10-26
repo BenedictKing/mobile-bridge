@@ -114,6 +114,11 @@
 .diff-line.hunk{color:var(--muted);background:var(--surface);padding:2px 8px;margin:4px 0}
 .diff-more{display:block;margin:10px auto 2px}
 
+.apk-download{flex:none;display:flex;align-items:center;gap:12px;margin:10px max(24px,calc((100% - 760px)/2)) 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--green);text-decoration:none}
+.apk-download-icon{display:grid;place-items:center;width:32px;height:32px;flex:none;border-radius:50%;background:var(--green);color:var(--page);font-size:20px}
+.apk-download-copy{min-width:0}.apk-download-copy strong{display:block;font-size:13px}.apk-download-copy small{display:block;margin-top:3px;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:720px){.apk-download{margin:8px 16px 0}}
+
 /* HTML 工件内联预览：默认折叠，展开时才加载 iframe src；跟随两套主题变量 */
 .artifact-preview{margin:12px 0;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
 .artifact-preview>summary{cursor:pointer;padding:9px 12px;font-size:12px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}

@@ -285,15 +285,39 @@ func (h *handler) serveWorkspaceArtifact(threadID, id string) {
 		h.fail(http.StatusNotFound, errorBody("文件不存在或不属于此聊天"))
 		return
 	}
+	if artifacts.IsAPK(entry.Path) {
+		h.serveAPK(entry)
+		return
+	}
 	data, _, ok := readServableFile(entry.Path)
 	if !ok {
 		h.fail(http.StatusNotFound, errorBody("文件已不可用"))
 		return
 	}
 	serve := artifacts.ServeType(entry.Path, data)
-	// octet-stream downloads regardless of disposition; everything viewable
-	// stays inline.
 	h.writeMedia(http.StatusOK, data, serve.Mime, entry.Name, serve.Sandbox)
+}
+
+func (h *handler) serveAPK(entry artifacts.Entry) {
+	file, err := os.Open(entry.Path)
+	if err != nil {
+		h.fail(http.StatusNotFound, errorBody("文件已不可用"))
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > artifacts.MaxAPKFile {
+		h.fail(http.StatusNotFound, errorBody("文件已不可用"))
+		return
+	}
+	header := h.writer.Header()
+	header.Set("Cache-Control", "private, no-cache")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("X-Frame-Options", "DENY")
+	header.Set("Content-Type", "application/vnd.android.package-archive")
+	header.Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(entry.Name))
+	http.ServeContent(h.writer, h.request, entry.Name, info.ModTime(), file)
 }
 
 // readServableFile stats and reads one servable file with the shared size
@@ -301,7 +325,7 @@ func (h *handler) serveWorkspaceArtifact(threadID, id string) {
 // image.
 func readServableFile(path string) ([]byte, string, bool) {
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > artifacts.MaxFile {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > artifacts.FileLimit(path) {
 		return nil, "", false
 	}
 	data, err := os.ReadFile(path)
@@ -331,7 +355,11 @@ func (h *handler) writeMedia(status int, data []byte, mime, name, sandbox string
 	header.Set("Content-Type", mime)
 	header.Set("Content-Length", strconv.Itoa(len(data)))
 	header.Set("ETag", etag)
-	header.Set("Content-Disposition", "inline; filename*=UTF-8''"+url.PathEscape(name))
+	disposition := "inline"
+	if mime == "application/octet-stream" {
+		disposition = "attachment"
+	}
+	header.Set("Content-Disposition", disposition+"; filename*=UTF-8''"+url.PathEscape(name))
 	if status != http.StatusNotModified && h.request.Header.Get("If-None-Match") == etag {
 		status = http.StatusNotModified
 		data = nil

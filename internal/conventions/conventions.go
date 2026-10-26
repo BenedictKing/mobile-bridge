@@ -18,7 +18,7 @@ import (
 // ArtifactPathHint is the convention text injected as the first extra block
 // of a phone-initiated ACP turn: short, Chinese, and phrased so the reply's
 // markdown links/images resolve into the /files and /desktop-images channels.
-const ArtifactPathHint = "（网关约定）完成任务后，请在回复末尾列出你产出或修改的文件路径；引用图片请使用 Markdown 图片语法（相对工作目录的路径或绝对路径），以便手机端预览。"
+const ArtifactPathHint = "（网关约定）完成任务后，请在回复末尾用 Markdown 链接列出你产出或修改的文件路径；引用图片请使用 Markdown 图片语法（相对工作目录的路径或绝对路径），以便手机端预览和下载。"
 
 // Settings is safe for concurrent HTTP reads and updates.
 type Settings struct {

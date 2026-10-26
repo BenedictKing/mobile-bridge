@@ -142,6 +142,7 @@
               element.previewUrl = destination.url;
             } else {
               element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
+              if (destination?.file) element.download = destination.file.name || '';
             }
           } else if (tags.has(token.tag)) {
             element = document.createElement(token.tag);

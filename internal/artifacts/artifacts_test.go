@@ -153,6 +153,29 @@ func TestCollectSizeAndRegularFileGuards(t *testing.T) {
 	}
 }
 
+func TestCollectAPKMetadataAndLimit(t *testing.T) {
+	root := t.TempDir()
+	apk := filepath.Join(root, "app-release.apk")
+	writeFile(t, apk, nil)
+	if err := os.Truncate(apk, 80*1024*1024); err != nil {
+		t.Fatal(err)
+	}
+	view := viewWithAgentText(t, "[下载](app-release.apk)")
+	files := Collect(view, root)
+	entry, ok := files[ID(apk)]
+	if !ok || entry.Size != 80*1024*1024 || entry.ModTime <= 0 {
+		t.Fatalf("apk entry=%+v", entry)
+	}
+	payload := FilesPayload(files)
+	first := payload.Items[0].(*jsoncompat.Object)
+	if first.MustGet("size") != entry.Size || first.MustGet("modifiedAt") != entry.ModTime {
+		t.Fatalf("apk payload=%v", first)
+	}
+	if FileLimit(apk) != MaxAPKFile || FileLimit(filepath.Join(root, "big.zip")) != MaxFile {
+		t.Fatal("artifact limits are not extension-specific")
+	}
+}
+
 func TestFilesPayloadAndAttachmentPaths(t *testing.T) {
 	root := t.TempDir()
 	shot := filepath.Join(root, "shot.png")
@@ -187,5 +210,8 @@ func TestServeType(t *testing.T) {
 	}
 	if serve := ServeType("blob", []byte("junk")); serve.Mime != "application/octet-stream" {
 		t.Fatalf("fallback: %+v", serve)
+	}
+	if serve := ServeType("app.apk", nil); serve.Mime != "application/vnd.android.package-archive" {
+		t.Fatalf("apk serve: %+v", serve)
 	}
 }

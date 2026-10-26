@@ -152,8 +152,8 @@ class ChatTimeline {
     const anchor=this.capture(),bottom=this.following;
     const cursor={after:this.sequence,epoch:this.epoch,start:this.before||''};
     this.sequence=frame.sequence;
-    if(frame.meta){this.meta=frame.meta;this.renderMeta({...frame.meta,files:[...this.files.values()]});}
     for(const file of frame.files||[])this.files.set(file.id,file);
+    if(frame.meta){this.meta=frame.meta;this.renderMeta({...frame.meta,files:[...this.files.values()]});}
     let changed=false,mismatch=false;
     for(const delta of frame.rows||[]){
       const entry=this.rows.get(delta.key);

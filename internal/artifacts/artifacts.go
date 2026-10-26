@@ -17,8 +17,9 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
-// MaxFile bounds one servable artifact (mirrors files.py's 50 MB).
+// MaxFile bounds regular artifacts; APKs need a larger limit for mobile builds.
 const MaxFile = 50 * 1024 * 1024
+const MaxAPKFile = 512 * 1024 * 1024
 
 // markdownPath matches image and plain markdown links, angle-bracket targets
 // included: `!?\[[^\]\n]*\]\((?:<target>|target)\)`.
@@ -30,14 +31,27 @@ var imageSuffixes = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true,
 }
 
-// Entry is one servable artifact. Path stays gateway-side; ID/Reference/
-// Name/Image are what the phone renders.
+// Entry is one servable artifact. Path stays gateway-side; the remaining
+// fields are safe to expose through the session-scoped files payload.
 type Entry struct {
 	ID        string
 	Path      string
 	Reference string
 	Name      string
 	Image     bool
+	Size      int64
+	ModTime   int64
+}
+
+func IsAPK(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".apk")
+}
+
+func FileLimit(path string) int64 {
+	if IsAPK(path) {
+		return MaxAPKFile
+	}
+	return MaxFile
 }
 
 // Identity normalizes a local path for hashing and duplicate linking.
@@ -140,7 +154,7 @@ func Collect(view *jsoncompat.Object, cwd string) map[string]Entry {
 		}
 		resolved := Identity(path)
 		info, err := os.Stat(resolved)
-		if err != nil || !info.Mode().IsRegular() || info.Size() > MaxFile {
+		if err != nil || !info.Mode().IsRegular() || info.Size() > FileLimit(resolved) {
 			return
 		}
 		if !trusted {
@@ -160,8 +174,8 @@ func Collect(view *jsoncompat.Object, cwd string) map[string]Entry {
 			return
 		}
 		result[id] = Entry{ID: id, Path: resolved, Reference: raw,
-			Name:  filepath.Base(resolved),
-			Image: imageSuffixes[strings.ToLower(filepath.Ext(resolved))]}
+			Name: filepath.Base(resolved), Image: imageSuffixes[strings.ToLower(filepath.Ext(resolved))],
+			Size: info.Size(), ModTime: info.ModTime().UnixMilli()}
 	}
 	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
 	if turns == nil {
@@ -270,6 +284,8 @@ func FilesPayload(entries map[string]Entry) *jsoncompat.Array {
 		object.Set("name", entry.Name)
 		object.Set("reference", entry.Reference)
 		object.Set("image", entry.Image)
+		object.Set("size", entry.Size)
+		object.Set("modifiedAt", entry.ModTime)
 		array.Items = append(array.Items, object)
 	}
 	return array
@@ -324,6 +340,8 @@ func ServeType(path string, data []byte) Serve {
 		return Serve{Mime: "text/javascript; charset=utf-8"}
 	case ".pdf":
 		return Serve{Mime: "application/pdf"}
+	case ".apk":
+		return Serve{Mime: "application/vnd.android.package-archive"}
 	}
 	return Serve{Mime: "application/octet-stream"}
 }

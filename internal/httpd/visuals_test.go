@@ -43,7 +43,8 @@ for line in sys.stdin:
  elif method == "session/prompt":
   with open(os.path.join(CWD,"shot.png"),"wb") as fh: fh.write(PNG)
   with open(os.path.join(CWD,"viz.html"),"w") as fh: fh.write("<html>ok</html>")
-  note({"sessionUpdate":"agent_message_chunk","messageId":"m-1","content":{"type":"text","text":"看图 ![截图](shot.png) 与 [可视化](viz.html)"}});
+  with open(os.path.join(CWD,"app.apk"),"wb") as fh: fh.write(b"apk-binary-content")
+  note({"sessionUpdate":"agent_message_chunk","messageId":"m-1","content":{"type":"text","text":"看图 ![截图](shot.png)、[可视化](viz.html) 与 [安装包](app.apk)"}});
   note({"sessionUpdate":"agent_message_chunk","messageId":"m-1","content":{"type":"image","data":base64.b64encode(PNG).decode(),"mimeType":"image/png"}});
   result={"stopReason":"end_turn"}
  else: result={}
@@ -75,11 +76,14 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
 	server.Uploads = uploads.New(dir)
 
-	request := func(method, target, body string) *httptest.ResponseRecorder {
+	request := func(method, target, body string, header ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		httptestRequest := httptest.NewRequest(method, "http://127.0.0.1:8791"+target, strings.NewReader(body))
 		httptestRequest.Host = "127.0.0.1:8791"
 		httptestRequest.Header.Set("Origin", "http://127.0.0.1:8791")
+		if len(header) == 2 {
+			httptestRequest.Header.Set(header[0], header[1])
+		}
 		if body != "" {
 			httptestRequest.Header.Set("Content-Type", "application/json")
 			httptestRequest.Header.Set("X-CSRF-Token", csrf)
@@ -113,7 +117,7 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 
 	// files: the markdown references resolve to servable workspace artifacts.
 	files, _ := payload.MustGet("files").(*jsoncompat.Array)
-	var imageID, htmlID string
+	var imageID, htmlID, apkID string
 	for _, item := range files.Items {
 		file, _ := item.(*jsoncompat.Object)
 		if file == nil {
@@ -123,10 +127,15 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 			imageID, _ = file.MustGet("id").(string)
 		} else if reference, _ := file.MustGet("reference").(string); reference == "viz.html" {
 			htmlID, _ = file.MustGet("id").(string)
+		} else if reference, _ := file.MustGet("reference").(string); reference == "app.apk" {
+			apkID, _ = file.MustGet("id").(string)
+			if file.MustGet("size") == nil || file.MustGet("modifiedAt") == nil {
+				t.Fatalf("apk metadata missing: %s", page.Body.String())
+			}
 		}
 	}
-	if imageID == "" || htmlID == "" {
-		t.Fatalf("files incomplete (image=%q html=%q): %s", imageID, htmlID, page.Body.String())
+	if imageID == "" || htmlID == "" || apkID == "" {
+		t.Fatalf("files incomplete (image=%q html=%q apk=%q): %s", imageID, htmlID, apkID, page.Body.String())
 	}
 
 	// The persisted inline image comes back as a desktopId attachment, and
@@ -189,6 +198,17 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 	// Non-sandboxed media keeps the blanket framing ban.
 	if shot.Header().Get("X-Frame-Options") != "DENY" {
 		t.Fatalf("image artifact lost X-Frame-Options: %v", shot.Header())
+	}
+	apk := request(http.MethodGet, "/api/sessions/km-visual/files/"+apkID, "")
+	if apk.Code != http.StatusOK || apk.Body.String() != "apk-binary-content" ||
+		apk.Header().Get("Content-Type") != "application/vnd.android.package-archive" ||
+		!strings.HasPrefix(apk.Header().Get("Content-Disposition"), "attachment;") {
+		t.Fatalf("apk download status=%d headers=%v body=%q", apk.Code, apk.Header(), apk.Body.String())
+	}
+	partial := request(http.MethodGet, "/api/sessions/km-visual/files/"+apkID, "", "Range", "bytes=0-3")
+	if partial.Code != http.StatusPartialContent || partial.Body.String() != "apk-" ||
+		partial.Header().Get("Content-Range") != "bytes 0-3/18" {
+		t.Fatalf("apk range status=%d headers=%v body=%q", partial.Code, partial.Header(), partial.Body.String())
 	}
 }
 
