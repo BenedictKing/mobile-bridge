@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
 const (
@@ -352,7 +353,7 @@ func Normalize(state *jsoncompat.Object, connected bool) *jsoncompat.Object {
 func Text(content any) string {
 	if block := obj(content); block != nil {
 		if text, ok := block.MustGet("text").(string); ok && text != "" {
-			return text
+			return textutil.StripInternalReminders(text)
 		}
 	}
 	return ""

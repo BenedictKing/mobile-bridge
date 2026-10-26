@@ -48,6 +48,10 @@
 .migrate-heading{margin:10px 0 2px;font-size:12px;font-weight:600}
 .migrate-targets{display:flex;flex-wrap:wrap}
 .migrate-scopes{display:flex;flex-direction:column;align-items:flex-start}
+.context-usage{margin-left:5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.compact-control{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}
+.compact-control>p{margin-bottom:2px;font-weight:600}
+.compact-control .migrate-scopes button{text-align:left;white-space:normal;line-height:1.5}
 
 .attachment-list{display:grid;gap:8px;margin-bottom:8px}
 .attachment-chip{display:flex;align-items:center;gap:10px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:10px;background:#fff}

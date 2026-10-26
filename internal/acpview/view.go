@@ -27,6 +27,7 @@ type View struct {
 	Turns      []*jsoncompat.Object
 	Requests   []*jsoncompat.Object
 	Commands   []*jsoncompat.Object
+	Usage      any
 	Now        func() float64
 	ModeOption string
 
@@ -150,6 +151,9 @@ func (v *View) Snapshot() *jsoncompat.Object {
 	snapshot.Set("turns", turns)
 	snapshot.Set("requests", requests)
 	snapshot.Set("historyComplete", true)
+	if v.Usage != nil {
+		snapshot.Set("usage", jsoncompat.Clone(v.Usage))
+	}
 	return snapshot
 }
 
@@ -607,6 +611,11 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		} else {
 			plan.Set("status", nil)
 		}
+	case "usage_update":
+		usage := jsoncompat.NewObject()
+		usage.Set("used", update.MustGet("used"))
+		usage.Set("size", update.MustGet("size"))
+		v.Usage = usage
 	case "session_info_update":
 		if title, exists := update.Get("title"); exists {
 			v.Title = title

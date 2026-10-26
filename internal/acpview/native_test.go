@@ -1,6 +1,7 @@
 package acpview
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -83,6 +84,21 @@ func TestSessionInfoUpdateChangesTitle(t *testing.T) {
 	view.OnUpdate(update)
 	if view.Title != nil || view.Snapshot().MustGet("title") != "未命名聊天" {
 		t.Fatalf("cleared title = %v", view.Snapshot().MustGet("title"))
+	}
+}
+
+func TestUsageUpdate(t *testing.T) {
+	view := NewView("sess-1", nil, "/w", func() float64 { return 0 })
+	update := jsoncompat.NewObject()
+	update.Set("sessionUpdate", "usage_update")
+	update.Set("used", jsoncompat.Num(12000))
+	update.Set("size", jsoncompat.Num(960000))
+	view.OnUpdate(update)
+	update.Set("used", jsoncompat.Num(13000))
+	view.OnUpdate(update)
+	usage := view.Snapshot().MustGet("usage").(*jsoncompat.Object)
+	if usage.MustGet("used").(json.Number).String() != "13000" || usage.MustGet("size").(json.Number).String() != "960000" {
+		t.Fatalf("usage = %v", usage)
 	}
 }
 

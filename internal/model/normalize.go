@@ -207,7 +207,34 @@ func NormalizeState(state *jsoncompat.Object, connected bool) *jsoncompat.Object
 	view.Set("turns", result)
 	view.Set("requests", PendingRequests(state))
 	view.Set("historyComplete", historyComplete)
+	if usage := normalizeTokenUsage(state.MustGet("tokenUsage")); usage != nil {
+		view.Set("usage", usage)
+	}
 	return view
+}
+
+func normalizeTokenUsage(value any) *jsoncompat.Object {
+	usage := obj(value)
+	if usage == nil {
+		return nil
+	}
+	total := obj(usage.MustGet("total"))
+	if total == nil {
+		return nil
+	}
+	used, usedOK := total.MustGet("totalTokens").(json.Number)
+	size, sizeOK := usage.MustGet("modelContextWindow").(json.Number)
+	if !usedOK || !sizeOK {
+		return nil
+	}
+	window, err := size.Float64()
+	if err != nil || window <= 0 {
+		return nil
+	}
+	result := jsoncompat.NewObject()
+	result.Set("used", used)
+	result.Set("size", size)
+	return result
 }
 
 func paginationFallback(state *jsoncompat.Object) any {

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
 var fileDrivePattern = regexp.MustCompile(`^/[A-Za-z]:[\\/].+$`)
@@ -127,6 +128,7 @@ const filesMarker = "# Files mentioned by the user:"
 // UserDisplayText mirrors user_display_text: strip the desktop's
 // "files mentioned" plumbing, keep the real request.
 func UserDisplayText(text string) string {
+	text = textutil.StripInternalReminders(text)
 	if !strings.Contains(text, filesMarker) {
 		return text
 	}
@@ -377,7 +379,7 @@ func NormalizeItem(item *jsoncompat.Object) *jsoncompat.Object {
 		row.Set("text", text)
 	case "agentMessage", "assistantMessage":
 		row.Set("role", "assistant")
-		row.Set("text", getDefault(item, "text", ""))
+		row.Set("text", textutil.StripInternalReminders(jsoncompat.PyStr(getDefault(item, "text", ""))))
 		row.Set("phase", item.MustGet("phase"))
 	case "imageView", "ImageView":
 		raw, _ := getDefault(item, "path", "").(string)

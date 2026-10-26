@@ -166,6 +166,8 @@ dsh 会话被桌面 App 持有时（dsh-acp 报 `already owned by an active writ
 
 ### Capability 门控
 
+Codex 与 ACP 的 user/assistant 文本在展示层统一移除完整的 `<system-reminder>…</system-reminder>` 块，内部提醒不会进入手机时间线，发送给 Agent 的原文不变。view 的可选 `usage: {used, size}` 统一表示当前上下文 token 用量：ACP 来自 `usage_update`，Codex 来自 `tokenUsage.total.totalTokens` 与 `modelContextWindow`；前端在模型按钮上显示已用/总窗口，未上报时隐藏。
+
 view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门控：无 `steer` 隐藏"补充当前任务"选项；无 `goals` 隐藏目标模式；无 `skills` 隐藏 Skill 按钮；fork/edit 按钮依赖每行 `forkable`/`editable`（ACP 会话天然为假）；Fast 模式与额度档位随目录 `fastMode.allowed` 隐藏；`fullHistory` 由快照 `historyComplete` 决定。审批卡片对 `acp/requestPermission` 按 agent 返回的 `options` 动态渲染，kimi 的 AskUserQuestion 也走此通道并标记为提问卡片（问题文本 + 选项 + 跳过）；网页回应仍只回传 `optionId`（或 `cancel`），由 `Session.Respond` 统一翻译成 ACP 的 `{outcome:{outcome,optionId}}` 线格式（optionId 先对请求选项校验，非法回应保留卡片可重答）。`elicitation/create` 表单支持单选、多选及 Other 文本字段，数组按 `minItems`/`maxItems` 校验，OpenCode 的 `format`/`pattern` 字段保持可渲染，文本 pattern 由浏览器原生校验。状态文案与会话行标题按 `BridgeI18n.agentLabel(view.agent)` 显示 Agent 名称。通知路由见 `bridge/notifications.py`：watch/policy 接受非 UUID 会话标识，经 Registry 路由到对应 bridge；推送标题使用 adapter 的 `label`；`notification_candidates` 的 SQLite 全局发现仍是 codex-only，ACP 会话依赖显式关注。
 
 ### 生命周期限制
@@ -193,6 +195,8 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 - `latest`：只复制最新提问和回答。仅保留 user/assistant 角色，从最后一条 user 消息截到结尾（无 user 时只留最后一条助手消息），预算 12 条 / 40k 字符（单条 20k，长计划不被单条上限切断）；注入消息使用独立的"最新问答"头尾文案。
 
 源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`；本机源匹配不到时自动以源目录在目标上创建（合成与 `AcpAdapter.projects()` 同构的 resolved 项目，key 为 `kind:sha256(cwd)[:12]`，结果带 `projectCreated: true`，目标随后列出该会话即自然收录该目录），远端源的 cwd 是远端路径、无法在本机目标上创建，仍报错并要求显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。前端入口在聊天详情弹层：先按 view 注入的 `agents` 列表选择当前以外的已启用 Agent，再选择复制范围（完全复制历史/只复制主要历史/只复制最新提问和结果）后确认执行。
+
+当前会话的手动压缩也在聊天详情中提供同样三档范围，但不新建会话、不复用迁移接口：前端仅在已连接、空闲、可写且无待答请求时，通过既有 `send` 发送 `/compact <对应保留策略>`，由当前 Agent 自己执行原生压缩；请求期间禁用三个按钮，未知送达结果不自动重试。
 
 ### 能力矩阵
 
