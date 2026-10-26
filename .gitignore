@@ -1,6 +1,7 @@
 # 本机运行数据、登录凭据、聊天快照与下载的外部程序
 .local/
 .tmp/
+refs/
 .env
 .env.*
 !.env.example
