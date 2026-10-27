@@ -6,6 +6,7 @@ package jev
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,13 +23,15 @@ var modelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // Settings is safe for concurrent HTTP reads and updates.
 type Settings struct {
-	path   string
-	mu     sync.Mutex
-	values *jsoncompat.Object
+	path      string
+	mu        sync.Mutex
+	values    *jsoncompat.Object
+	cache     *approvalCache
+	journalMu sync.Mutex
 }
 
 func New(path string) *Settings {
-	s := &Settings{path: filepath.Clean(path)}
+	s := &Settings{path: filepath.Clean(path), cache: &approvalCache{}}
 	s.values = s.load()
 	return s
 }
@@ -47,11 +50,21 @@ func (s *Settings) load() *jsoncompat.Object {
 	if !ok {
 		return value
 	}
-	for _, key := range []string{"apiKey", "baseUrl", "model", "proxy", "autoApprove", "autoContinue"} {
+	for _, key := range []string{"apiKey", "baseUrl", "model", "proxy", "autoApprove", "autoContinue", "policy", "threshold"} {
 		if item, exists := object.Get(key); exists {
 			switch key {
 			case "apiKey", "baseUrl", "model", "proxy":
 				if _, ok := item.(string); ok {
+					value.Set(key, item)
+				}
+			case "policy":
+				// Shape-checked only; rule violations stay for the effective
+				// config, which falls back to the built-in default policy.
+				if _, _, ok := parsePolicyValue(item); ok {
+					value.Set(key, item)
+				}
+			case "threshold":
+				if validThreshold(number(item, math.NaN())) {
 					value.Set(key, item)
 				}
 			default:
@@ -93,6 +106,21 @@ func (s *Settings) effectiveLocked() *jsoncompat.Object {
 		value, _ := s.values.Get(field)
 		flag, _ := value.(bool)
 		effective.Set(field, flag)
+	}
+	// Policy and threshold always land in the effective object as their
+	// jsoncompat forms (*Array / json.Number): raw Go floats or slices would
+	// panic in writeValue when the effective object is encoded.
+	threshold := defaultThreshold
+	if raw, exists := s.values.Get("threshold"); exists {
+		if parsed := number(raw, math.NaN()); validThreshold(parsed) {
+			threshold = parsed
+		}
+	}
+	effective.Set("threshold", numFloat(threshold))
+	if policy, _, ok := parsePolicyValue(s.values.MustGet("policy")); !ok || validatePolicy(policy, threshold) != nil {
+		effective.Set("policy", policyValue(defaultPolicy))
+	} else {
+		effective.Set("policy", policyValue(policy))
 	}
 	return effective
 }
@@ -183,6 +211,36 @@ func (s *Settings) Update(input *jsoncompat.Object) (*jsoncompat.Object, error) 
 			parsed.Set(field, value)
 		}
 	}
+	// threshold feeds validatePolicy below: the submitted value when present,
+	// otherwise whatever stays saved (both already validated) or the default.
+	threshold := defaultThreshold
+	if raw, exists := input.Get("threshold"); exists {
+		threshold = number(raw, math.NaN())
+	} else if savedRaw, exists := saved.Get("threshold"); exists {
+		threshold = number(savedRaw, defaultThreshold)
+	}
+	if raw, exists := input.Get("policy"); exists {
+		policy, normalized, ok := parsePolicyValue(raw)
+		if !ok {
+			return nil, errors.New("策略格式不正确")
+		}
+		if err := validatePolicy(policy, threshold); err != nil {
+			return nil, err
+		}
+		parsed.Set("policy", normalized)
+	} else if value, exists := saved.Get("policy"); exists {
+		// Carried verbatim: reserializing an untouched policy would churn the
+		// stored form on every unrelated save.
+		parsed.Set("policy", value)
+	}
+	if _, exists := input.Get("threshold"); exists {
+		if !validThreshold(threshold) {
+			return nil, errors.New("阈值必须在 0 和 1 之间")
+		}
+		parsed.Set("threshold", numFloat(threshold))
+	} else if value, exists := saved.Get("threshold"); exists {
+		parsed.Set("threshold", value)
+	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return nil, err
 	}
@@ -190,6 +248,9 @@ func (s *Settings) Update(input *jsoncompat.Object) (*jsoncompat.Object, error) 
 		return nil, err
 	}
 	s.values = parsed
+	// Settings changed: cached approval verdicts are stale by definition,
+	// even when the effective content happens to land where it was.
+	s.cache.invalidate()
 	return s.publicLocked(), nil
 }
 
@@ -211,6 +272,8 @@ func (s *Settings) publicLocked() *jsoncompat.Object {
 	result.Set("proxy", effective.MustGet("proxy"))
 	result.Set("autoApprove", effective.MustGet("autoApprove"))
 	result.Set("autoContinue", effective.MustGet("autoContinue"))
+	result.Set("policy", effective.MustGet("policy"))
+	result.Set("threshold", effective.MustGet("threshold"))
 	return result
 }
 

@@ -249,3 +249,18 @@
 .team-schedule-enable{display:flex;align-items:center;gap:8px}
 .team-schedule-enable input{width:auto;margin:0}
 @media(max-width:720px){.team-run-head{padding:13px 17px;gap:8px}.team-run-info h1{font-size:15px}.team-run-body{padding:15px 20px}}
+.jev-trial{margin-top:14px;display:flex;flex-direction:column;gap:8px}
+.jev-trial strong{font-size:12px}
+.jev-trial textarea{margin-top:0}
+.jev-trial .actions{display:flex;gap:8px}
+.jev-trial-bar{position:relative;height:10px;border-radius:6px;background:#eef0e9;overflow:hidden;flex:1;min-width:120px}
+.jev-trial-bar-fill{position:absolute;inset:0 auto 0 0;border-radius:6px;transition:width .25s}
+.jev-trial-bar-fill.negative{background:#d9822b}
+.jev-trial-bar-fill.positive{background:#4f6656}
+.jev-trial-threshold{position:absolute;top:0;bottom:0;width:1px;background:#a43b31}
+.jev-trial-row{display:flex;align-items:center;gap:10px;margin:4px 0}
+.jev-trial-row-name{display:flex;align-items:center;gap:6px;min-width:180px;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.jev-trial-row-value{min-width:44px;text-align:right;font-size:11px;color:var(--muted)}
+.jev-trial-badge{flex:none;padding:1px 6px;border-radius:6px;font-size:10px}
+.jev-trial-badge.negative{color:#7a4a12;background:#f4e3d2}
+.jev-trial-badge.positive{color:#4f6656;background:#e4eee2}

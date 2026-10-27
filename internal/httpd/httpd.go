@@ -843,6 +843,67 @@ func (h *handler) handleMethod(write bool) {
 		} else {
 			h.output(http.StatusOK, notifications.ReadSettings(h.server.NotificationDir), contentTypeJSON, "")
 		}
+	case write && path == "/api/jev/trial":
+		if h.session(write) == nil {
+			return
+		}
+		if h.server.Jev == nil {
+			h.fail(http.StatusConflict, errorBody("当前网关未启用 Jev 设置"))
+			return
+		}
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		body := value.(*jsoncompat.Object)
+		// Two shapes: a raw {method, params} pair, or a bare command the
+		// gateway wraps into a simulated permission card (options included
+		// so the response mapping matches the live chain).
+		method := ""
+		if raw, exists := body.Get("method"); exists {
+			if text, isString := raw.(string); isString {
+				method = strings.TrimSpace(text)
+			}
+		}
+		var params *jsoncompat.Object
+		if method != "" {
+			params, _ = body.MustGet("params").(*jsoncompat.Object)
+			if params == nil {
+				h.fail(http.StatusBadRequest, errorBody("params 格式不正确"))
+				return
+			}
+		} else if raw, exists := body.Get("command"); exists {
+			text, isString := raw.(string)
+			if !isString {
+				h.fail(http.StatusBadRequest, errorBody("请提供试评命令或完整请求"))
+				return
+			}
+			command := strings.TrimSpace(text)
+			if command == "" {
+				h.fail(http.StatusBadRequest, errorBody("试评命令不能为空"))
+				return
+			}
+			method = "session/request_permission"
+			params = jsoncompat.NewObject()
+			params.Set("command", command)
+			allow := jsoncompat.NewObject()
+			allow.Set("optionId", "allow_once")
+			allow.Set("kind", "allow_once")
+			reject := jsoncompat.NewObject()
+			reject.Set("optionId", "reject")
+			reject.Set("kind", "reject_once")
+			params.Set("options", &jsoncompat.Array{Items: []any{allow, reject}})
+		} else {
+			h.fail(http.StatusBadRequest, errorBody("请提供试评命令或完整请求"))
+			return
+		}
+		decision, err := h.server.Jev.TrialEvaluate(method, params)
+		if err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
+			return
+		}
+		h.output(http.StatusOK, jev.DecisionPayload(decision), contentTypeJSON, "")
 	case path == "/api/jev":
 		if h.session(write) == nil {
 			return

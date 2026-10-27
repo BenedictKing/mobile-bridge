@@ -461,6 +461,9 @@ async function saveNotificationDefaults(){
 }
 $('notification-requests').onchange=$('notification-completions').onchange=()=>{notificationDirty=true;};
 let jevSettingsRequest=0,jevFormReady=false,jevDirty=false,jevClearPending=false,jevPolicyDirty=false;
+// The effective policy as last loaded; the trial view uses it to badge and
+// sort categories by polarity.
+let jevPolicyCategories=null;
 window.loadJevSettings=async()=>{
   const request=++jevSettingsRequest;
   jevFormReady=false;
@@ -482,6 +485,7 @@ window.loadJevSettings=async()=>{
     // Only an edited policy is submitted on save, so built-in defaults are
     // never frozen into jev.json and future default updates still apply.
     $('jev-policy').value=JSON.stringify({threshold:result.threshold,categories:result.policy},null,2);
+    jevPolicyCategories=Array.isArray(result.policy)?result.policy:null;
     jevFormReady=true;
     jevDirty=false;jevClearPending=false;jevPolicyDirty=false;
   }catch(error){if(request===jevSettingsRequest)$('jev-settings-error').textContent=t(error.message);}
@@ -512,6 +516,66 @@ $('jev-key-remove').onclick=()=>{
 };
 ['jev-auto-approve','jev-auto-continue','jev-base-url','jev-model','jev-proxy'].forEach(id=>$(id).onchange=()=>{jevDirty=true;});
 $('jev-policy').onchange=()=>{jevDirty=true;jevPolicyDirty=true;};
+// Jev trial: dry-run one permission card through the live policy. The server
+// never touches a session cache or the decision journal for trials.
+function jevTrialBody(){
+  const text=$('jev-trial-command').value.trim();
+  switch($('jev-trial-preset').value){
+    case 'commandExecution':return {method:'item/commandExecution/requestApproval',params:{command:text,cwd:'/work'}};
+    case 'fileChange':return {method:'item/fileChange/requestApproval',params:{changes:[{path:text,changeType:'modify'}]}};
+    default:return {command:text};
+  }
+}
+function renderJevTrial(result){
+  const box=$('jev-trial-result');
+  box.textContent='';
+  if(!result.assessed){box.append(el('p','muted',t('未评估')+' · '+(result.reason||'')));return;}
+  const pct=value=>(Math.round(value*1000)/10)+'%';
+  box.append(el('p','muted',
+    t('求和')+' '+pct(result.negative_sum)+' · '+t('阈值')+' '+pct(result.threshold)+' · '+
+    t('可逆性')+' '+pct(result.reversible)+' · '+t('置信度')+' '+pct(result.confidence)+' · '+
+    t('建议')+' '+(result.recommend||'-')+' · '+(result.reason||'')));
+  const sumBar=el('div','jev-trial-bar');
+  const sumFill=el('span','jev-trial-bar-fill negative');
+  sumFill.style.width=pct(Math.min(1,result.negative_sum));
+  sumBar.append(sumFill);
+  const threshold=el('span','jev-trial-threshold');
+  threshold.style.left=pct(Math.min(1,result.threshold));
+  sumBar.append(threshold);
+  box.append(sumBar);
+  const polarityOf=name=>{const hit=(jevPolicyCategories||[]).find(category=>category.name===name);return hit?hit.polarity:'';};
+  const entries=Object.entries(result.categories||{}).sort((a,b)=>{
+    const negativeA=polarityOf(a[0])==='negative'?1:0,negativeB=polarityOf(b[0])==='negative'?1:0;
+    if(negativeA!==negativeB)return negativeB-negativeA;
+    return b[1]-a[1];
+  });
+  for(const[name,value]of entries){
+    const polarity=polarityOf(name);
+    const row=el('div','jev-trial-row');
+    const label=el('span','jev-trial-row-name',name);
+    if(polarity==='negative'||polarity==='positive')
+      label.append(el('span','jev-trial-badge '+polarity,polarity==='negative'?t('拦截倾向'):t('放行倾向')));
+    row.append(label);
+    const bar=el('div','jev-trial-bar');
+    const fill=el('span','jev-trial-bar-fill '+polarity);
+    fill.style.width=pct(value);
+    bar.append(fill);
+    row.append(bar,el('span','jev-trial-row-value',pct(value)));
+    box.append(row);
+  }
+}
+$('jev-trial-run').onclick=async()=>{
+  const button=$('jev-trial-run');
+  if(button.disabled)return;
+  $('jev-trial-error').textContent='';
+  $('jev-trial-result').textContent='';
+  const text=$('jev-trial-command').value.trim();
+  if(!text){$('jev-trial-error').textContent=t('试评命令不能为空');return;}
+  button.disabled=true;
+  try{renderJevTrial(await api('/api/jev/trial',jevTrialBody()));}
+  catch(error){$('jev-trial-error').textContent=t(error.message);}
+  finally{button.disabled=false;}
+};
 $('jev-key').onchange=()=>{if($('jev-key').value.trim())jevDirty=true;};
 let conventionsRequest=0,conventionsDirty=false;
 window.loadConventions=async()=>{

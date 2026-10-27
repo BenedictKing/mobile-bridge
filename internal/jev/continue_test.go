@@ -223,7 +223,9 @@ func TestEvaluateRecordsRejectionReasons(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"risk":{"score":3},"reversible":{"noul":0.99},"recommend":{"choice":"accept_once","confidence":0.99}}}`))
+		_, _ = w.Write([]byte(outcomeAnswers("secret_exposure",
+			fullProbabilities(map[string]string{"secret_exposure": "0.5", "privilege_escalation": "0.1"}, ""),
+			"accept_once", 0.99, 0.99)))
 	}))
 	defer server.Close()
 	value.Set("baseUrl", server.URL)
@@ -231,11 +233,20 @@ func TestEvaluateRecordsRejectionReasons(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision = blank.Evaluate("session/request_permission", jsoncompat.NewObject())
-	if decision.Reason != "risk_too_high" || decision.Approved {
-		t.Fatalf("risky approval must stay manual: %+v", decision)
+	if decision.Reason != "negative_sum_over_threshold" || decision.Approved {
+		t.Fatalf("high negative mass must stay manual: %+v", decision)
 	}
-	if decision.Risk != 3 || decision.Reversible != 0.99 || decision.Confidence != 0.99 || decision.Recommend != "accept_once" {
+	if decision.Categories["secret_exposure"] != 0.5 || decision.Categories["privilege_escalation"] != 0.1 {
+		t.Fatalf("category probabilities must survive for the log: %+v", decision.Categories)
+	}
+	if diff := decision.NegativeSum - 0.6; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("negative sum = %f, want 0.6", decision.NegativeSum)
+	}
+	if decision.Threshold != defaultThreshold || decision.Reversible != 0.99 || decision.Confidence != 0.99 || decision.Recommend != "accept_once" {
 		t.Fatalf("assessment fields must survive for the log: %+v", decision)
+	}
+	if decision.TopCategory != "secret_exposure" {
+		t.Fatalf("top category = %q", decision.TopCategory)
 	}
 }
 
@@ -245,18 +256,25 @@ func TestEvaluateSendsStructuredQuestions(t *testing.T) {
 		body = make([]byte, r.ContentLength)
 		_, _ = r.Body.Read(body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"risk":{"score":0},"reversible":{"noul":1},"recommend":{"choice":"review","confidence":0.5}}}`))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), "review", 1, 0.5)))
 	}))
 	defer server.Close()
-	settings := testSettings(t, server.URL)
-	value := jsoncompat.NewObject()
-	value.Set("apiKey", "test-key-123456")
-	value.Set("baseUrl", server.URL)
-	value.Set("autoApprove", true)
-	if _, err := settings.Update(value); err != nil {
-		t.Fatal(err)
-	}
-	decision := settings.Evaluate("session/request_permission", jsoncompat.NewObject())
+	settings := approvalSettings(t, server.URL)
+	// Raw ACP shape: the subject lives in toolCall, not at the top level.
+	params := jsoncompat.NewObject()
+	toolCall := jsoncompat.NewObject()
+	toolCall.Set("title", "Bash")
+	rawInput := jsoncompat.NewObject()
+	rawInput.Set("command", "rm -rf /tmp/scratch")
+	toolCall.Set("rawInput", rawInput)
+	params.Set("toolCall", toolCall)
+	options := &jsoncompat.Array{}
+	allow := jsoncompat.NewObject()
+	allow.Set("optionId", "allow-once")
+	allow.Set("kind", "allow_once")
+	options.Items = append(options.Items, allow)
+	params.Set("options", options)
+	decision := settings.Evaluate("session/request_permission", params)
 	if decision.Reason != "recommend_review" {
 		t.Fatalf("reason=%s", decision.Reason)
 	}
@@ -264,12 +282,90 @@ func TestEvaluateSendsStructuredQuestions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	questions := decoded.(*jsoncompat.Object).MustGet("questions").(*jsoncompat.Object)
-	risk := questions.MustGet("risk").(*jsoncompat.Object)
-	if risk.MustGet("type") != "score" {
-		t.Fatalf("risk question must stay typed: %s", jsoncompat.EncodeCompact(questions))
+	root := decoded.(*jsoncompat.Object)
+	questions := root.MustGet("questions").(*jsoncompat.Object)
+	outcome := questions.MustGet("outcome").(*jsoncompat.Object)
+	if outcome.MustGet("type") != "choice" {
+		t.Fatalf("outcome question must be a choice: %s", jsoncompat.EncodeCompact(questions))
 	}
-	if criteria, ok := risk.MustGet("criteria").(*jsoncompat.Array); !ok || len(criteria.Items) != 4 {
-		t.Fatalf("risk rubric missing: %s", jsoncompat.EncodeCompact(questions))
+	criteria := outcome.MustGet("criteria").(*jsoncompat.Object)
+	want := map[string]bool{}
+	for _, category := range defaultPolicy {
+		want[category.Name] = true
+	}
+	if criteria.Len() != len(want) {
+		t.Fatalf("criteria keys = %v, want the policy names", criteria.Keys())
+	}
+	for _, name := range criteria.Keys() {
+		if !want[name] {
+			t.Fatalf("unexpected criteria key %q", name)
+		}
+	}
+	if questions.MustGet("reversible").(*jsoncompat.Object).MustGet("type") != "noul" {
+		t.Fatal("reversible question must stay typed")
+	}
+	if questions.MustGet("recommend").(*jsoncompat.Object).MustGet("type") != "choice" {
+		t.Fatal("recommend question must stay typed")
+	}
+	// The state must carry the subject derived from toolCall.
+	state := root.MustGet("state").(*jsoncompat.Object)
+	if state.MustGet("title") != "Bash" || state.MustGet("command") != "rm -rf /tmp/scratch" {
+		t.Fatalf("state subject missing: %s", jsoncompat.EncodeCompact(state))
+	}
+}
+
+func TestAssessFailsClosedOnIncompleteDistribution(t *testing.T) {
+	cases := []struct {
+		name          string
+		choice        string
+		probabilities string
+	}{
+		{"no probabilities", "routine_work", ""},
+		{"probabilities not an object", "routine_work", `"0.9"`},
+		{"missing one category", "routine_work", fullProbabilities(nil, "privilege_escalation")},
+		{"negative value", "routine_work", fullProbabilities(map[string]string{"secret_exposure": "-0.2"}, "")},
+		{"value above one", "routine_work", fullProbabilities(map[string]string{"secret_exposure": "1.5"}, "")},
+		{"non numeric value", "routine_work", fullProbabilities(map[string]string{"secret_exposure": `"high"`}, "")},
+		{"choice outside policy", "definitely_not_a_category", fullProbabilities(nil, "")},
+		{"empty choice", "", fullProbabilities(nil, "")},
+	}
+	for _, item := range cases {
+		item := item
+		t.Run(item.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(outcomeAnswers(item.choice, item.probabilities, "accept_once", 1, 1)))
+			}))
+			defer server.Close()
+			decision := approvalSettings(t, server.URL).Evaluate("session/request_permission", jsoncompat.NewObject())
+			if decision.Reason != "assess_failed" || decision.Approved || decision.Response != nil || decision.Assessed {
+				t.Fatalf("incomplete distribution must fail closed: %+v", decision)
+			}
+		})
+	}
+}
+
+func TestPositiveSumNotCounted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work",
+			fullProbabilities(map[string]string{"routine_work": "0.9"}, ""),
+			"accept_once", 0.99, 0.99)))
+	}))
+	defer server.Close()
+	settings := approvalSettings(t, server.URL)
+	params := jsoncompat.NewObject()
+	options := &jsoncompat.Array{}
+	allow := jsoncompat.NewObject()
+	allow.Set("optionId", "allow-once")
+	allow.Set("kind", "allow_once")
+	options.Items = append(options.Items, allow)
+	params.Set("options", options)
+	decision := settings.Evaluate("session/request_permission", params)
+	if decision.NegativeSum != 0 {
+		t.Fatalf("positive mass leaked into the negative sum: %f", decision.NegativeSum)
+	}
+	if !decision.Approved || decision.Reason != "auto_approved" || decision.TopCategory != "routine_work" {
+		t.Fatalf("all-positive distribution should pass the negative gate: %+v", decision)
 	}
 }

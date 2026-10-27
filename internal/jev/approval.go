@@ -3,34 +3,41 @@ package jev
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
 const (
-	maxRisk       = 1
 	minReversible = 0.8
 	minConfidence = 0.8
 )
 
 // Decision is the auditable outcome of one auto-approval evaluation: what
 // Jev said (when it was asked), why the gateway did or did not auto-approve,
-// and the native response to submit. Callers log it for troubleshooting;
-// it never carries the API key.
+// and the native response to submit. Categories carries the per-policy-class
+// probabilities and NegativeSum their negative total compared against
+// Threshold. Callers log it for troubleshooting; it never carries the API key.
 type Decision struct {
-	Approved   bool
-	Reason     string
-	Assessed   bool
-	Risk       float64
-	Reversible float64
-	Confidence float64
-	Recommend  string
-	Response   *jsoncompat.Object
+	Approved    bool
+	Reason      string
+	Assessed    bool
+	Categories  map[string]float64
+	NegativeSum float64
+	Threshold   float64
+	Reversible  float64
+	Confidence  float64
+	Recommend   string
+	TopCategory string
+	Response    *jsoncompat.Object
 }
 
 // Evaluate runs the auto-approval policy for one permission request and
@@ -50,17 +57,29 @@ func (s *Settings) Evaluate(method string, params *jsoncompat.Object) Decision {
 	if !isApprovalMethod(method) {
 		return Decision{Reason: "unsupported_method"}
 	}
-	assessment, ok := s.assess(config, key, method, params)
+	return s.evaluate(config, key, method, params)
+}
+
+// evaluate is the assessment itself, past the enable/key/method gates: one
+// remote call, then the gate order recommend → negative sum → reversibility
+// → confidence → native response mapping.
+func (s *Settings) evaluate(config *jsoncompat.Object, key, method string, params *jsoncompat.Object) Decision {
+	policy, _, _ := parsePolicyValue(config.MustGet("policy"))
+	threshold := number(config.MustGet("threshold"), defaultThreshold)
+	assessment, ok := s.assess(config, key, method, params, policy)
 	if !ok {
-		return Decision{Reason: "assess_failed"}
+		return Decision{Reason: "assess_failed", Threshold: threshold}
 	}
 	decision := Decision{
-		Assessed:   true,
-		Risk:       number(assessment.MustGet("risk"), 0),
-		Reversible: number(assessment.MustGet("reversible"), 0),
-		Confidence: number(assessment.MustGet("confidence"), 0),
+		Assessed:    true,
+		Categories:  assessment.categories,
+		NegativeSum: assessment.negativeSum,
+		Threshold:   threshold,
+		Reversible:  assessment.reversible,
+		Confidence:  assessment.confidence,
+		Recommend:   assessment.recommend,
+		TopCategory: assessment.topCategory,
 	}
-	decision.Recommend, _ = assessment.MustGet("recommend").(string)
 	switch decision.Recommend {
 	case "accept_once", "accept_session":
 	case "review":
@@ -71,8 +90,8 @@ func (s *Settings) Evaluate(method string, params *jsoncompat.Object) Decision {
 	if decision.Reason != "" {
 		return decision
 	}
-	if decision.Risk > maxRisk {
-		decision.Reason = "risk_too_high"
+	if decision.NegativeSum >= decision.Threshold {
+		decision.Reason = "negative_sum_over_threshold"
 		return decision
 	}
 	if decision.Reversible < minReversible {
@@ -98,6 +117,119 @@ func (s *Settings) Evaluate(method string, params *jsoncompat.Object) Decision {
 // satisfy the narrow automatic-approval policy.
 func (s *Settings) AutoResponse(method string, params *jsoncompat.Object) *jsoncompat.Object {
 	return s.Evaluate(method, params).Response
+}
+
+// DecisionPayload renders a Decision for the trial API: category
+// probabilities, the verdict numbers and the reason. Every float passes
+// through numFloat — writeValue has no float64 branch — and neither the
+// native response nor any key material ever appears here.
+func DecisionPayload(d Decision) *jsoncompat.Object {
+	payload := jsoncompat.NewObject()
+	payload.Set("assessed", d.Assessed)
+	payload.Set("approved", d.Approved)
+	payload.Set("reason", d.Reason)
+	categories := jsoncompat.NewObject()
+	names := make([]string, 0, len(d.Categories))
+	for name := range d.Categories {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		categories.Set(name, numFloat(d.Categories[name]))
+	}
+	payload.Set("categories", categories)
+	payload.Set("negative_sum", numFloat(d.NegativeSum))
+	payload.Set("threshold", numFloat(d.Threshold))
+	payload.Set("reversible", numFloat(d.Reversible))
+	payload.Set("confidence", numFloat(d.Confidence))
+	payload.Set("recommend", d.Recommend)
+	payload.Set("top_category", d.TopCategory)
+	return payload
+}
+
+// TrialEvaluate runs the same assessment chain as a live approval, strictly
+// as a dry run: it never touches the session cache or the decision journal
+// and ignores the auto-approve switch — a configured API key is the only
+// prerequisite.
+func (s *Settings) TrialEvaluate(method string, params *jsoncompat.Object) (Decision, error) {
+	if params == nil {
+		params = jsoncompat.NewObject()
+	}
+	s.mu.Lock()
+	config := s.effectiveLocked()
+	s.mu.Unlock()
+	key, _ := config.MustGet("apiKey").(string)
+	if key == "" {
+		return Decision{}, errors.New("未配置 Jev API Key，无法试评")
+	}
+	if !isApprovalMethod(method) {
+		return Decision{Reason: "unsupported_method"}, nil
+	}
+	return s.evaluate(config, key, method, params), nil
+}
+
+// EvaluateSession runs the approval policy for one live permission request,
+// with the session-scoped approval cache in front of the remote assessment.
+// The cache is keyed by (agent, session, method, normalized subject) and
+// versioned by the effective-config fingerprint, so any settings change
+// invalidates it. Cached entries never store the native response: the hit is
+// remapped onto the current card's options, and a card offering no matching
+// option falls through to a fresh evaluation. Question cards skip the cache
+// entirely — one title can carry many different questions. Every decision
+// that entered the evaluation chain (cache hits included) lands in the
+// decision journal; the pre-evaluation early exits never do.
+func (s *Settings) EvaluateSession(agent, sessionID, requestID, method string, params *jsoncompat.Object) Decision {
+	if params == nil {
+		params = jsoncompat.NewObject()
+	}
+	s.mu.Lock()
+	config := s.effectiveLocked()
+	s.mu.Unlock()
+	if config.MustGet("autoApprove") != true {
+		return Decision{Reason: "auto_approve_off"}
+	}
+	key, _ := config.MustGet("apiKey").(string)
+	if key == "" {
+		return Decision{Reason: "no_api_key"}
+	}
+	if !isApprovalMethod(method) {
+		return Decision{Reason: "unsupported_method"}
+	}
+	subject := normalizeSubject(params)
+	if subject != "" {
+		fingerprint := configFingerprint(config)
+		if entry, ok := s.cache.lookup(fingerprint, agent, sessionID, method, subject); ok {
+			if response := approvalResponse(method, params, entry.recommend); response != nil {
+				decision := Decision{
+					Approved:    true,
+					Reason:      "cache_hit",
+					Assessed:    true,
+					Categories:  entry.categories,
+					NegativeSum: entry.negativeSum,
+					Threshold:   entry.threshold,
+					Reversible:  entry.reversible,
+					Confidence:  entry.confidence,
+					Recommend:   entry.recommend,
+					TopCategory: entry.topCategory,
+					Response:    response,
+				}
+				s.recordDecision(agent, sessionID, requestID, method, decision, params)
+				return decision
+			}
+			// The current card offers no eligible option for the cached
+			// recommendation (fresh option ids on every card): treat the hit
+			// as a miss rather than replying with a stale optionId.
+		}
+		decision := s.evaluate(config, key, method, params)
+		if decision.Approved {
+			s.cache.store(fingerprint, agent, sessionID, method, subject, decision)
+		}
+		s.recordDecision(agent, sessionID, requestID, method, decision, params)
+		return decision
+	}
+	decision := s.evaluate(config, key, method, params)
+	s.recordDecision(agent, sessionID, requestID, method, decision, params)
+	return decision
 }
 
 // approvalResponse maps a Jev recommendation onto the native reply the
@@ -145,14 +277,26 @@ func isApprovalMethod(method string) bool {
 	return false
 }
 
-// assess posts one typed-questions payload and maps the answers to the
-// compact shape the policy reads: risk score, reversibility, recommendation
-// and its confidence.
-func (s *Settings) assess(config *jsoncompat.Object, key, method string, params *jsoncompat.Object) (*jsoncompat.Object, bool) {
+// assessment is one parsed remote verdict: the policy-category probability
+// distribution plus the auxiliary gates' inputs.
+type assessment struct {
+	categories  map[string]float64
+	negativeSum float64
+	topCategory string
+	reversible  float64
+	confidence  float64
+	recommend   string
+}
+
+// assess posts one typed-questions payload and folds the answers into the
+// policy verdict. The outcome answer must carry a full probability
+// distribution over every policy category (mirroring the reference client's
+// normalizeAnswer); anything short of that fails closed instead of guessing.
+func (s *Settings) assess(config *jsoncompat.Object, key, method string, params *jsoncompat.Object, policy []Category) (*assessment, bool) {
 	payload := jsoncompat.NewObject()
 	payload.Set("model", config.MustGet("model"))
 	payload.Set("state", assessmentState(method, params))
-	payload.Set("questions", approvalQuestions(method, params))
+	payload.Set("questions", approvalQuestions(policy, method, params))
 	value, ok := s.post(config, key, payload)
 	if !ok {
 		return nil, false
@@ -162,12 +306,56 @@ func (s *Settings) assess(config *jsoncompat.Object, key, method string, params 
 	if answers == nil {
 		return nil, false
 	}
-	assessment := jsoncompat.NewObject()
-	assessment.Set("risk", answerNumber(answers.MustGet("risk"), "score"))
-	assessment.Set("reversible", answerNumber(answers.MustGet("reversible"), "noul"))
-	assessment.Set("recommend", answerString(answers.MustGet("recommend"), "choice"))
-	assessment.Set("confidence", answerNumber(answers.MustGet("recommend"), "confidence"))
-	return assessment, true
+	outcome, _ := answers.MustGet("outcome").(*jsoncompat.Object)
+	if outcome == nil {
+		return nil, false
+	}
+	probabilities, _ := outcome.MustGet("probabilities").(*jsoncompat.Object)
+	if probabilities == nil {
+		return nil, false
+	}
+	choice, _ := outcome.MustGet("choice").(string)
+	known := map[string]bool{}
+	for _, category := range policy {
+		known[category.Name] = true
+	}
+	if !known[choice] {
+		return nil, false
+	}
+	negative := negativeNames(policy)
+	categories := map[string]float64{}
+	negativeSum := 0.0
+	for _, category := range policy {
+		raw, exists := probabilities.Get(category.Name)
+		if !exists {
+			return nil, false
+		}
+		probability := number(raw, math.NaN())
+		if math.IsNaN(probability) || math.IsInf(probability, 0) || probability < 0 || probability > 1 {
+			return nil, false
+		}
+		probability = math.Min(math.Max(probability, 0), 1)
+		categories[category.Name] = probability
+		if negative[category.Name] {
+			negativeSum += probability
+		}
+	}
+	topCategory := ""
+	topProbability := -1.0
+	for _, category := range policy {
+		if categories[category.Name] > topProbability {
+			topProbability = categories[category.Name]
+			topCategory = category.Name
+		}
+	}
+	return &assessment{
+		categories:  categories,
+		negativeSum: negativeSum,
+		topCategory: topCategory,
+		reversible:  answerNumber(answers.MustGet("reversible"), "noul"),
+		confidence:  answerNumber(answers.MustGet("recommend"), "confidence"),
+		recommend:   stringOf(answerString(answers.MustGet("recommend"), "choice")),
+	}, true
 }
 
 // post sends one assessment request through the optional proxy and decodes
@@ -210,9 +398,36 @@ func (s *Settings) post(config *jsoncompat.Object, key string, payload *jsoncomp
 	return value, true
 }
 
+// permissionRequestTitle is the placeholder title PermissionCard substitutes
+// for tool calls without one; it identifies no subject, so subject derivation
+// falls through to the command.
+const permissionRequestTitle = "权限请求"
+
+// subjectOf derives the card's human subject for state and logs: normalized
+// cards carry title and command at the top level (the codex bridge), while
+// raw ACP session/request_permission params nest them under toolCall.
+func subjectOf(params *jsoncompat.Object) (title, command string, question bool) {
+	if params == nil {
+		return "", "", false
+	}
+	if title, _ := params.MustGet("title").(string); title != "" {
+		command, _ := params.MustGet("command").(string)
+		return title, command, false
+	}
+	if command, _ := params.MustGet("command").(string); command != "" {
+		return "", command, false
+	}
+	if params.MustGet("toolCall") != nil {
+		return acpview.PermissionCard(params)
+	}
+	return "", "", false
+}
+
 // assessmentState is the compact, PII-light description of what the user is
 // asked to allow: identity fields, change paths and option kinds — never
-// secrets, and command text stays capped.
+// secrets, and command text stays capped. Raw ACP requests carry the command
+// inside toolCall, so subjectOf fills title/command when the top level has
+// none (normalized cards already provide them there).
 func assessmentState(method string, params *jsoncompat.Object) *jsoncompat.Object {
 	state := jsoncompat.NewObject()
 	state.Set("request_kind", method)
@@ -222,6 +437,16 @@ func assessmentState(method string, params *jsoncompat.Object) *jsoncompat.Objec
 				state.Set(field, truncateRunes(text, 4000))
 			} else {
 				state.Set(field, jsoncompat.Clone(value))
+			}
+		}
+	}
+	if params.MustGet("toolCall") != nil {
+		if title, command, _ := subjectOf(params); title != "" || command != "" {
+			if _, exists := state.Get("title"); !exists && title != "" {
+				state.Set("title", title)
+			}
+			if _, exists := state.Get("command"); !exists && command != "" {
+				state.Set("command", truncateRunes(command, 4000))
 			}
 		}
 	}
@@ -261,23 +486,19 @@ func assessmentState(method string, params *jsoncompat.Object) *jsoncompat.Objec
 }
 
 // approvalQuestions builds the typed question set the systemone API scores:
-// risk rubric, reversibility, and a recommendation restricted to the
+// a policy-category outcome choice (the answer's probabilities carry the full
+// distribution), reversibility, and a recommendation restricted to the
 // decisions the native card actually offers (review always stays selectable
 // so Jev can punt instead of guessing).
-func approvalQuestions(method string, params *jsoncompat.Object) *jsoncompat.Object {
+func approvalQuestions(policy []Category, method string, params *jsoncompat.Object) *jsoncompat.Object {
 	criteria := jsoncompat.NewObject()
-	for key, text := range availableDecisions(method, params) {
-		criteria.Set(key, text)
+	for _, category := range policy {
+		criteria.Set(category.Name, category.Description)
 	}
-	criteria.Set("review", recommendText["review"])
-	risk := jsoncompat.NewObject()
-	risk.Set("type", "score")
-	risk.Set("instructions", "Rate the risk of allowing the operation described by this permission request.")
-	rubric := &jsoncompat.Array{}
-	for _, item := range riskRubric {
-		rubric.Items = append(rubric.Items, item)
-	}
-	risk.Set("criteria", rubric)
+	outcome := jsoncompat.NewObject()
+	outcome.Set("type", "choice")
+	outcome.Set("instructions", "Which category best describes this permission request? Read it the way the agent will carry it out: the command line with pipes and substitutions, the files and paths changed, the services touched. Prefer a positive category describing ordinary or protective work when it fits.")
+	outcome.Set("criteria", criteria)
 	reversible := jsoncompat.NewObject()
 	reversible.Set("type", "noul")
 	reversible.Set("instructions", "If allowed, can the effects of this operation be undone cheaply and completely?")
@@ -285,22 +506,20 @@ func approvalQuestions(method string, params *jsoncompat.Object) *jsoncompat.Obj
 	reversibleCriteria.Set("true", "The effects stay local and reversible: edited files can be restored, temporary state can be cleaned up, nothing external is modified.")
 	reversibleCriteria.Set("false", "The effects are destructive, external, or persistent: deleted data, published or pushed state, changed permissions, remote side effects.")
 	reversible.Set("criteria", reversibleCriteria)
+	recommendCriteria := jsoncompat.NewObject()
+	for key, text := range availableDecisions(method, params) {
+		recommendCriteria.Set(key, text)
+	}
+	recommendCriteria.Set("review", recommendText["review"])
 	recommend := jsoncompat.NewObject()
 	recommend.Set("type", "choice")
 	recommend.Set("instructions", "Which decision should the user take on this permission request?")
-	recommend.Set("criteria", criteria)
+	recommend.Set("criteria", recommendCriteria)
 	questions := jsoncompat.NewObject()
-	questions.Set("risk", risk)
+	questions.Set("outcome", outcome)
 	questions.Set("reversible", reversible)
 	questions.Set("recommend", recommend)
 	return questions
-}
-
-var riskRubric = []string{
-	"0 - Routine. Read-only or observation-only: listing files, searching, reading configuration, showing a diff that is not applied.",
-	"1 - Low. Routine reversible work inside the current project: editing workspace files, running tests or builds, installing project-local dependencies.",
-	"2 - Elevated. Effects reach beyond the workspace or are hard to undo: network calls to unfamiliar hosts, changing permissions or ownership, pushing or rewriting shared git history, editing user dotfiles or app settings, using credentials.",
-	"3 - High. Destructive or system-level: deleting data broadly, sudo or administrator actions, force operations, credential or security changes, anything that could make the machine or remote service unusable.",
 }
 
 var recommendText = map[string]string{
@@ -380,6 +599,11 @@ func answerString(value any, key string) any {
 
 func answerNumber(value any, key string) float64 {
 	return number(answerString(value, key), 0)
+}
+
+func stringOf(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func number(value any, fallback float64) float64 {

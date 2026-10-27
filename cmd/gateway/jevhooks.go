@@ -20,44 +20,21 @@ import (
 // silently instead of burning through the resume budget unseen.
 const watchedWithin = 2 * time.Minute
 
-// jevApprovalHook wraps one Jev evaluation with the decision audit log.
+// jevApprovalHook wraps one Jev evaluation with the session approval cache,
+// the decision journal and the decision audit log.
 func jevApprovalHook(settings *jev.Settings, agent string) func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
 	return func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
-		decision := settings.Evaluate(method, params)
+		decision := settings.EvaluateSession(agent, sessionID, requestID, method, params)
 		response := "-"
 		if decision.Response != nil {
 			response = string(jsoncompat.EncodeCompact(decision.Response))
 		}
-		log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 结果=%s 风险=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 请求=%q",
+		log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 结果=%s 和=%.2f 阈值=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 请求=%q",
 			agent, sessionID, requestID, method, decision.Reason,
-			decision.Risk, decision.Reversible, decision.Confidence, decision.Recommend,
-			response, approvalSubject(params))
+			decision.NegativeSum, decision.Threshold, decision.Reversible, decision.Confidence, decision.Recommend,
+			response, jev.SubjectPrefix(params))
 		return decision.Response
 	}
-}
-
-// approvalSubject picks the shortest human-recognizable descriptor of the
-// card, capped: titles in full up to 60 runes, commands only as a prefix so
-// the log never carries a complete command line.
-func approvalSubject(params *jsoncompat.Object) string {
-	if params == nil {
-		return ""
-	}
-	if title, _ := params.MustGet("title").(string); title != "" {
-		return truncateForLog(title, 60)
-	}
-	if command, _ := params.MustGet("command").(string); command != "" {
-		return truncateForLog(command, 60)
-	}
-	return ""
-}
-
-func truncateForLog(text string, limit int) string {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	return string(runes[:limit]) + "…"
 }
 
 // jevContinueHook resumes a settled turn when the persisted auto-continue
