@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
 // View mirrors AcpSessionView. now supplies begin_turn's startedAt ms.
@@ -122,9 +123,29 @@ func valueEqual(a, b any) bool {
 	return string(jsoncompat.EncodeCompact(a)) == string(jsoncompat.EncodeCompact(b))
 }
 
+func conversationTitle(turns []*jsoncompat.Object) string {
+	for _, turn := range turns {
+		list, _ := turn.MustGet("messages").(*jsoncompat.Array)
+		for _, item := range list.Items {
+			message, _ := item.(*jsoncompat.Object)
+			if message == nil || message.MustGet("role") != "user" {
+				continue
+			}
+			text, _ := message.MustGet("text").(string)
+			if title := textutil.TitleFromText(text); title != "" {
+				return title
+			}
+		}
+	}
+	return ""
+}
+
 // Snapshot mirrors AcpSessionView.snapshot.
 func (v *View) Snapshot() *jsoncompat.Object {
 	title := v.Title
+	if !jsoncompat.Truthy(title) {
+		title = conversationTitle(v.Turns)
+	}
 	if !jsoncompat.Truthy(title) {
 		title = "未命名聊天"
 	}

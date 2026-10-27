@@ -64,6 +64,19 @@ func TestApplyNativeEmptyIsNoop(t *testing.T) {
 	}
 }
 
+func TestSnapshotFallsBackToFirstUserMessage(t *testing.T) {
+	view := NewView("sess-1", nil, "/w", func() float64 { return 0 })
+	view.BeginTurn("<system-reminder>内部</system-reminder>\n  第一条  用户消息")
+	if got := view.Snapshot().MustGet("title"); got != "第一条 用户消息" {
+		t.Fatalf("fallback title = %v", got)
+	}
+	view.Title = "官方标题"
+	view.BeginTurn("后续消息")
+	if got := view.Snapshot().MustGet("title"); got != "官方标题" {
+		t.Fatalf("official title was replaced: %v", got)
+	}
+}
+
 func TestSessionInfoUpdateChangesTitle(t *testing.T) {
 	view := NewView("sess-1", "旧标题", "/w", func() float64 { return 0 })
 	update := jsoncompat.NewObject()

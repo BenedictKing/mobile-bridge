@@ -119,7 +119,7 @@ func TestManagerSupplementsIncompleteACPListFromNativeStore(t *testing.T) {
 for line in sys.stdin:
  m=json.loads(line); method=m.get("method"); ident=m.get("id")
  if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
- elif method == "session/list": result={"sessions":[{"sessionId":"sess-acp","title":"ACP 标题","cwd":"/acp"}]}
+ elif method == "session/list": result={"sessions":[{"sessionId":"sess-acp","title":"ACP 标题","cwd":"/acp"},{"sessionId":"sess-empty","cwd":"/acp-empty"}]}
  else: result={}
  print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
 `
@@ -133,18 +133,22 @@ for line in sys.stdin:
 		duplicate.Set("sessionId", "sess-acp")
 		duplicate.Set("title", "原生标题")
 		duplicate.Set("cwd", "/native")
+		empty := jsoncompat.NewObject()
+		empty.Set("sessionId", "sess-empty")
+		empty.Set("title", "内容降级标题")
+		empty.Set("cwd", "/native-empty")
 		missing := jsoncompat.NewObject()
 		missing.Set("sessionId", "sess-native")
 		missing.Set("title", "补全会话")
 		missing.Set("cwd", "/native")
-		return []*jsoncompat.Object{duplicate, missing}
+		return []*jsoncompat.Object{duplicate, empty, missing}
 	}
 	rows, err := manager.List(3 * time.Second)
-	if err != nil || len(rows) != 2 {
+	if err != nil || len(rows) != 3 {
 		t.Fatalf("merged rows=%v err=%v", rows, err)
 	}
-	if rows[0].MustGet("title") != "ACP 标题" || rows[0].MustGet("cwd") != "/acp" || rows[1].MustGet("sessionId") != "sess-native" {
-		t.Fatalf("ACP row was not authoritative: %v", rows)
+	if rows[0].MustGet("title") != "ACP 标题" || rows[0].MustGet("cwd") != "/acp" || rows[1].MustGet("title") != "内容降级标题" || rows[1].MustGet("cwd") != "/acp-empty" || rows[2].MustGet("sessionId") != "sess-native" {
+		t.Fatalf("native titles were not merged safely: %v", rows)
 	}
 	manager.Close()
 }

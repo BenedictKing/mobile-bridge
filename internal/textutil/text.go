@@ -17,3 +17,13 @@ func StripInternalReminders(text string) string {
 	}
 	return strings.TrimSpace(cleaned)
 }
+
+// TitleFromText turns conversation content into a compact display title.
+func TitleFromText(text string) string {
+	title := strings.Join(strings.Fields(StripInternalReminders(text)), " ")
+	runes := []rune(title)
+	if len(runes) > 80 {
+		return string(runes[:80]) + "…"
+	}
+	return title
+}

@@ -46,6 +46,33 @@ func TestListSessionsReadsNativeIndex(t *testing.T) {
 	}
 }
 
+func TestListSessionsFallsBackToFirstUserMessage(t *testing.T) {
+	root := t.TempDir()
+	writeSessionState(t, root, "wd", "session-fallback", "state.json", `{"cwd":"/work/fallback"}`)
+	writeSessionState(t, root, "wd", "session-fallback", "agents/main/wire.jsonl", `
+{"type":"turn.prompt","input":"继续","origin":{"kind":"system_trigger"}}
+{"type":"turn.prompt","input":[{"type":"text","text":"<system-reminder>内部</system-reminder>\n修复  Kimi 标题"}],"origin":{"kind":"user"}}
+{"type":"context.append_message","message":{"role":"user","content":"不应使用后面的消息","origin":{"kind":"user"}}}
+`)
+	writeSessionState(t, root, "wd", "session-official", "state.json", `{"title":"官方标题","cwd":"/work/official"}`)
+	writeSessionState(t, root, "wd", "session-official", "agents/main/wire.jsonl", `{not-json`)
+	writeSessionState(t, root, "wd", "session-empty", "state.json", `{"cwd":"/work/empty"}`)
+
+	rows := ListSessions(root)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %v", rows)
+	}
+	byID := map[string]string{}
+	for _, row := range rows {
+		id, _ := row.MustGet("sessionId").(string)
+		title, _ := row.MustGet("title").(string)
+		byID[id] = title
+	}
+	if byID["session-fallback"] != "修复 Kimi 标题" || byID["session-official"] != "官方标题" || byID["session-empty"] != "" {
+		t.Fatalf("titles = %v", byID)
+	}
+}
+
 func TestListSessionsUsesStateMtimeFallback(t *testing.T) {
 	root := t.TempDir()
 	path := writeSessionState(t, root, "wd", "session-mtime", "state.json", `{"workDir":"/work/mtime"}`)

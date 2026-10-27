@@ -4,8 +4,10 @@
 package kimi
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,9 +15,13 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
-const maxSessionStateBytes = 1 << 20
+const (
+	maxSessionStateBytes = 1 << 20
+	maxTitleWireBytes    = 1 << 20
+)
 
 type sessionState struct {
 	Title     string           `json:"title"`
@@ -94,14 +100,89 @@ func readSessionRow(workspaceDir, sessionID string) (*jsoncompat.Object, int64) 
 		}
 		row := jsoncompat.NewObject()
 		row.Set("sessionId", sessionID)
-		if state.Title != "" {
-			row.Set("title", state.Title)
+		title := state.Title
+		if strings.TrimSpace(title) == "" {
+			title = readTitleFromWire(filepath.Join(workspaceDir, sessionID, "agents", "main", "wire.jsonl"))
+		}
+		if title != "" {
+			row.Set("title", title)
 		}
 		row.Set("cwd", cwd)
 		row.Set("updatedAt", jsoncompat.Num(int(updated)))
 		return row, updated
 	}
 	return nil, 0
+}
+
+var internalTitleOrigins = map[string]bool{
+	"injection": true, "system_trigger": true, "compaction_summary": true,
+	"hook_result": true, "cron_job": true, "cron_missed": true, "retry": true,
+}
+
+func internalTitleOrigin(value any) bool {
+	origin, _ := value.(*jsoncompat.Object)
+	if origin == nil {
+		return false
+	}
+	kind, _ := origin.MustGet("kind").(string)
+	return internalTitleOrigins[kind]
+}
+
+func titleContent(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return textutil.TitleFromText(typed)
+	case *jsoncompat.Object:
+		text, _ := typed.MustGet("text").(string)
+		return textutil.TitleFromText(text)
+	case *jsoncompat.Array:
+		parts := []string{}
+		for _, item := range typed.Items {
+			if text := titleContent(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return textutil.TitleFromText(strings.Join(parts, " "))
+	default:
+		return ""
+	}
+}
+
+func readTitleFromWire(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	reader := bufio.NewReader(io.LimitReader(file, maxTitleWireBytes))
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			value, err := jsoncompat.Unmarshal(line)
+			event, _ := value.(*jsoncompat.Object)
+			if err == nil && event != nil {
+				kind, _ := event.MustGet("type").(string)
+				var content any
+				switch kind {
+				case "turn.prompt":
+					if !internalTitleOrigin(event.MustGet("origin")) {
+						content = event.MustGet("input")
+					}
+				case "context.append_message":
+					message, _ := event.MustGet("message").(*jsoncompat.Object)
+					if message != nil && message.MustGet("role") == "user" && !internalTitleOrigin(message.MustGet("origin")) {
+						content = message.MustGet("content")
+					}
+				}
+				if title := titleContent(content); title != "" {
+					return title
+				}
+			}
+		}
+		if readErr != nil {
+			return ""
+		}
+	}
 }
 
 func firstNonEmpty(values ...string) string {

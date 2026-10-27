@@ -370,12 +370,25 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 		params.Set("cursor", cursor)
 	}
 	if m.NativeList != nil {
+		rowsByID := map[string]*jsoncompat.Object{}
+		for _, row := range output {
+			id, _ := row.MustGet("sessionId").(string)
+			rowsByID[id] = row
+		}
 		for _, row := range m.NativeList() {
 			if row == nil {
 				continue
 			}
 			id, _ := row.MustGet("sessionId").(string)
-			if id == "" || seenSessions[id] {
+			if id == "" {
+				continue
+			}
+			if seenSessions[id] {
+				current, _ := rowsByID[id].MustGet("title").(string)
+				title, _ := row.MustGet("title").(string)
+				if strings.TrimSpace(current) == "" && strings.TrimSpace(title) != "" {
+					rowsByID[id].Set("title", title)
+				}
 				continue
 			}
 			seenSessions[id] = true
