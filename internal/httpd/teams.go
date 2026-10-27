@@ -1771,7 +1771,7 @@ func (h *handler) teamStreamRunEvents(feed *team.EventFeed) {
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("X-Frame-Options", "DENY")
-	header.Set("Content-Security-Policy", contentSecurityPolicy)
+	header.Set("Content-Security-Policy", h.contentSecurityPolicy())
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	header.Set("Content-Type", "text/event-stream; charset=utf-8")
 	header.Set("X-Accel-Buffering", "no")

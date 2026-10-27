@@ -78,6 +78,41 @@ Token 相当于这条隧道的连接凭据，只在自己的 App 中填写；不
 
 隧道显示 Healthy 只说明连接器已连接 Cloudflare，仍需完成上述网页检查。固定地址不会因普通重连而改变；电脑关机、休眠或停止网关时，这个地址暂时无法访问。
 
+## 7. 可选：局域网内自动直连，外出自动回退
+
+浏览器不允许 Cloudflare 的 HTTPS 页面直接请求 `http://192.168.x.x`，因此局域网加速需要一个受浏览器信任的 HTTPS 端点。配置后仍从 `https://codex.try2love.com` 打开页面，地址栏和分享链接不变；登录后的 API、附件和实时同步会在局域网可用时自动直连，离开局域网或直连失败时自动回到 Cloudflare。无需再次登录。
+
+### 一次性准备
+
+1. 给电脑设置固定局域网 IP，或在路由器配置 DHCP 地址保留，例如 `192.168.1.20`。
+2. 在 Cloudflare DNS 添加 `lan.codex` 的 A 记录，值为 `192.168.1.20`，设为 **仅 DNS / DNS only**，不要开启橙色云代理。该记录只在局域网内指向电脑；外出时它不可达，浏览器会自动回退。
+3. 为 `lan.codex.try2love.com` 获取浏览器信任的证书。证书名称必须覆盖这个完整主机名，不能只覆盖 `codex.try2love.com`。可使用受信任 CA 的 DNS-01 验证签发，无需把 8788 端口暴露到公网。
+4. 把完整证书链和私钥放到网关数据目录，例如 `.local/direct/lan-chain.pem` 与 `.local/direct/lan-key.pem`，私钥权限设为仅当前用户可读写。
+5. 在数据目录 `desktop.json` 的顶层加入 `direct`，保留已有配置项：
+
+```json
+{
+  "lan": true,
+  "direct": {
+    "publicUrl": "https://codex.try2love.com",
+    "url": "https://lan.codex.try2love.com:8788",
+    "certFile": "direct/lan-chain.pem",
+    "keyFile": "direct/lan-key.pem"
+  }
+}
+```
+
+`certFile` / `keyFile` 的相对路径以数据目录为基准。`url` 不带路径，端口可自定义；这里使用独立于原网关 8787 的 8788。保存后重启网关，并允许本机防火墙接受局域网到该端口的连接。原 Cloudflare Tunnel 的 Public Hostname 仍指向 `localhost:8787`，不要改成 8788。
+
+Cloudflare Tunnel Token 不能充当 TLS 私钥；Cloudflare Origin CA 证书用于“Cloudflare 回源”，通常不被手机浏览器直接信任，不能替代上述受信任证书。局域网地址必须使用证书覆盖的 DNS 名称，不能改成 IP 或自签名证书后关闭浏览器证书校验。
+
+### 切换行为与验收
+
+- 页面先通过公网登录，再在后台用一次性短期凭据建立独立的局域网会话；两端 `instanceId` 一致才启用直连。公网与局域网 Cookie 不共享，Host、Origin 和 CSRF 校验仍生效。
+- 读取和实时同步在断网后自动回退；已经发出的写请求不会跨链路自动重放，遇到中断时按原页面提示重试，避免重复操作。
+- 浏览器首次访问私有网络地址时可能按 Private Network Access 策略询问权限，允许后才会直连。证书无效、DNS 不可达或权限未授予时仍使用公网。
+- 在同一 Wi-Fi 下打开公网域名，确认聊天和实时更新正常；关闭 Wi-Fi 后确认页面继续通过 Cloudflare 更新，再恢复 Wi-Fi 确认自动直连。网关日志出现 `局域网直连: https://…` 才表示 TLS 监听已启用；配置或证书错误时网关只记录错误并保留公网服务。
+
 ## 打不开时，先看卡在哪一步
 
 | 现象 | 优先检查 |

@@ -15,7 +15,7 @@
    run_stalled 顶部提示条、预算停靠（stopReason=budget_exhausted）继续即上调
    上限；TeamsPanel 增预算策略编辑（PATCH policy.budgetUnits）与「定时运行」
    卡（GET/PUT /schedule，模板编辑复用 runDialog 三段流，PUT 400 直出）。
-   依赖 app.js 的全局 csrf / showLogin（team.js 先于 app.js 加载，仅运行时引用）。 */
+   依赖 BridgeConnection 选择传输与 CSRF，以及 app.js 的 showLogin（仅运行时引用）。 */
 
 const TEAM_ROLE_LABELS={lead:'负责人',member:'成员',reviewer:'评审'};
 /* 任务停靠分类（task_stopped/task_failed payload 的 outcome，§6.3 错误策略表）：
@@ -90,7 +90,7 @@ async function teamRequest(path,{method='GET',body}={}){
     options.headers={'Content-Type':'application/json','X-CSRF-Token':typeof csrf==='string'?csrf:''};
     options.body=JSON.stringify(body===undefined?{}:body);
   }
-  const response=await fetch(path,options);
+  const response=await BridgeConnection.request(path,options);
   const data=await response.json().catch(()=>({}));
   if(!response.ok){
     if(response.status===401&&typeof showLogin==='function')showLogin();

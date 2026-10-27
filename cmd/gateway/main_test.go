@@ -1,6 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
@@ -134,5 +141,61 @@ func TestTeamReconcileIntervalFromEnv(t *testing.T) {
 				t.Fatalf("间隔应为 %v，实际 %v", testCase.want, got)
 			}
 		})
+	}
+}
+
+func writeDirectTestCertificate(t *testing.T, dataDir string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "lan.bridge.example"},
+		DNSNames: []string{"lan.bridge.example"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	privateKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(filepath.Join(dataDir, "direct.crt"), cert, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "direct.key"), privateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadDirectSettings(t *testing.T) {
+	dataDir := t.TempDir()
+	writeDirectTestCertificate(t, dataDir)
+	config := `{"direct":{"publicUrl":"https://bridge.example","url":"https://lan.bridge.example:8788/","certFile":"direct.crt","keyFile":"direct.key"}}`
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := loadDirectSettings(dataDir, desktopPreferences(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings == nil || settings.publicOrigin != "https://bridge.example" || settings.directOrigin != "https://lan.bridge.example:8788" || settings.port != 8788 || len(settings.certificate.Certificate) == 0 {
+		t.Fatalf("settings=%+v", settings)
+	}
+}
+
+func TestLoadDirectSettingsRejectsInvalidConfiguration(t *testing.T) {
+	dataDir := t.TempDir()
+	for _, direct := range []string{
+		`{"publicUrl":"http://bridge.example","url":"https://lan.bridge.example:8788","certFile":"a","keyFile":"b"}`,
+		`{"publicUrl":"https://bridge.example","url":"https://bridge.example","certFile":"a","keyFile":"b"}`,
+		`{"publicUrl":"https://bridge.example","url":"https://lan.bridge.example/path","certFile":"a","keyFile":"b"}`,
+		`{"publicUrl":"https://bridge.example","url":"https://lan.bridge.example:8788","certFile":"missing.crt","keyFile":"missing.key"}`,
+	} {
+		config := fmt.Sprintf(`{"direct":%s}`, direct)
+		if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if settings, err := loadDirectSettings(dataDir, desktopPreferences(dataDir)); err == nil || settings != nil {
+			t.Fatalf("invalid config accepted: %s", direct)
+		}
 	}
 }

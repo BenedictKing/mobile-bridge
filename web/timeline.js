@@ -258,9 +258,9 @@ class ChatTimeline {
       const attachments=document.createElement('div');attachments.className='timeline-attachments';
       for(const item of row.attachments){
         if((item.type==='localImage'||item.type==='image')&&(item.uploadId||item.desktopId)){
-          const source=item.uploadId
+          const source=BridgeConnection.url(item.uploadId
             ?this.url('uploads/'+encodeURIComponent(item.uploadId)+'/preview')
-            :this.url('desktop-images/'+encodeURIComponent(item.desktopId));
+            :this.url('desktop-images/'+encodeURIComponent(item.desktopId)));
           const original=item.uploadId
             ?source+'&variant=original'
             :source;
@@ -270,7 +270,7 @@ class ChatTimeline {
           link.dataset.imagePreview=original;link.dataset.imageName=item.name||timelineText('图片附件');
           const image=document.createElement('img');image.className='attachment-image';image.alt=item.name||timelineText('图片附件');
           image.loading='lazy';image.decoding='async';image.src=source;
-          image.onerror=()=>link.remove();link.append(image);attachments.append(link);
+          image.onerror=()=>{if(!image.dataset.publicFallback)link.remove();};link.append(image);attachments.append(link);
         }
       }
       const attachment=document.createElement('small');attachment.className='muted';

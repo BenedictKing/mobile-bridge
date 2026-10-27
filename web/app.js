@@ -11,6 +11,7 @@ const $ = id => document.getElementById(id),t=BridgeI18n.t;
 let csrf='', currentId=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
 let currentHost='local', listRows=[], listGeneration=0;
 let chatTimeline=null;
+BridgeConnection.onchange=()=>{BridgeTransport.wake?.();chatTimeline?.refill?.();refreshActivity();};
 // Keep the tab title on the open chat; user content is never passed through t().
 function syncDocumentTitle(){
   const open=currentId&&!$('app').hidden&&$('app').classList.contains('chat-open');
@@ -72,13 +73,13 @@ let catalogData={models:null,skills:null};let catalogResults={models:null,skills
 let skillSuggestionRows=[],skillSuggestionIndex=0,skillSuggestionRange=null,skillSuggestionQuery='';
 function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
 function toast(text){text=t(text);$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4200);}
-async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);const data=await response.json().catch(()=>({}));if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus});}return data;}
-async function uploadAttachment(key,id,file){const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);const response=await fetch(sessionUrl(thread,'uploads',host)+'&id='+encodeURIComponent(id)+'&name='+encodeURIComponent(file.name),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':csrf},body:file});const result=await response.json();if(!response.ok){if(response.status===401)showLogin();const error=Error(result.error||t('附件上传失败，请重试'));error.retryable=response.status>=500||response.status===429;throw error;}return result;}
+async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await BridgeConnection.request(hostUrl(path),options);const data=await response.json().catch(()=>({}));if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus});}return data;}
+async function uploadAttachment(key,id,file){const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);const response=await BridgeConnection.request(sessionUrl(thread,'uploads',host)+'&id='+encodeURIComponent(id)+'&name='+encodeURIComponent(file.name),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':csrf},body:file});const result=await response.json();if(!response.ok){if(response.status===401)showLogin();const error=Error(result.error||t('附件上传失败，请重试'));error.retryable=response.status>=500||response.status===429;throw error;}return result;}
 async function uploadAttachmentWithRetry(key,id,file){let last;for(let attempt=0;attempt<3;attempt++){try{return await uploadAttachment(key,id,file);}catch(error){last=error;if(error.name==='AbortError'||error.retryable===false||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));}}if(last instanceof TypeError)last.message=t('附件上传中断，请重试');throw last;}
-const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attach-button'),input:$('attachment-input'),paste:$('message'),drop:$('chat'),preview:(key,id)=>{const at=key.indexOf('|'),host=key.slice(0,at),thread=key.slice(at+1);return hostUrl(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/preview',host));},onChange:()=>{if(currentId)syncSendButton();},thumbnail:async(key,id,file)=>{
+const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attach-button'),input:$('attachment-input'),paste:$('message'),drop:$('chat'),preview:(key,id)=>{const at=key.indexOf('|'),host=key.slice(0,at),thread=key.slice(at+1);return BridgeConnection.url(hostUrl(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/preview',host)));},onChange:()=>{if(currentId)syncSendButton();},thumbnail:async(key,id,file)=>{
   const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);
   const image=await attachments.thumbnailBlob(file);
-  const response=await fetch(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/thumb',host)+'&width='+image.width+'&height='+image.height,{method:'POST',credentials:'same-origin',headers:{'Content-Type':image.mime,'X-CSRF-Token':csrf},body:image.data});
+  const response=await BridgeConnection.request(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/thumb',host)+'&width='+image.width+'&height='+image.height,{method:'POST',credentials:'same-origin',headers:{'Content-Type':image.mime,'X-CSRF-Token':csrf},body:image.data});
   const result=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Error(result.error||t('缩略图生成失败'));}return result;
 },upload:uploadAttachmentWithRetry});
 function visibleChat(){return currentId&&!document.hidden&&$('app').classList.contains('chat-open')?chatKey():null;}
@@ -113,6 +114,7 @@ function wakeForeground(){
   if(now-foregroundWakeAt<1000)return;
   foregroundWakeAt=now;
   refreshActivity();
+  BridgeConnection.wake();
   BridgeTransport.wake?.();
   chatTimeline?.refill?.();
 }
@@ -126,22 +128,22 @@ function renderLoginStatus(status=loginStatus){
   $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。');
   $('login-button').disabled=loginStatus.blocked;
 }
-function showLogin(passwordless=false,status){if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
+function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
 async function start(pairingToken=null){
-  const auth=await api('/api/auth');
+  const auth=await api('/api/auth');BridgeConnection.configure(auth);
   if(pairingToken!==null){
-    try{const result=await api('/api/pair',{token:pairingToken});csrf=result.csrf;await enter();return;}
+    try{const result=await api('/api/pair',{token:pairingToken});csrf=result.csrf;BridgeConnection.authenticated(csrf);await enter();return;}
     catch(error){
-      if(auth.authenticated){csrf=auth.csrf;await enter();toast(error.message);}
+      if(auth.authenticated){csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();toast(error.message);}
       else{showLogin(auth.passwordless,auth.loginStatus);$('login-error').textContent=t(error.message);}
       return;
     }finally{pairingToken=null;}
   }
-  if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;await enter();
+  if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();
 }
 async function enter(){$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const runRoute=typeof parseRunHash==='function'?parseRunHash():null;if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}await list;}
-$('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
-$('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;currentId=null;listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
+$('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
+$('logout').onclick=async()=>{await BridgeConnection.logout();csrf='';state=null;currentId=null;listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 let listMode=localStorage.getItem('list-mode')==='project'?'project':'recent';
 function renderListMode(){const label=listMode==='project'?'按项目':'最近交互';$('list-mode-label').textContent=t(label);$('list-mode-label').dataset.i18n=label;}

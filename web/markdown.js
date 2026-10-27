@@ -108,12 +108,13 @@
           } else if (destination?.file?.image) {
             // The lightbox opens the image in place; the anchor keeps the
             // full-size new-tab entry for long-press / modifier clicks.
-            const anchor = link(destination.url, token.attrGet('title'));
-            anchor.dataset.imagePreview = destination.url;
+            const imageUrl = BridgeConnection.url(destination.url);
+            const anchor = link(imageUrl, token.attrGet('title'));
+            anchor.dataset.imagePreview = imageUrl;
             anchor.dataset.imageName = label;
             const image = document.createElement('img');
             image.className = 'artifact-image';
-            image.src = destination.url;
+            image.src = imageUrl;
             image.alt = label;
             image.loading = 'lazy';
             anchor.append(image);

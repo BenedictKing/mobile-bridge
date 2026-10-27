@@ -94,6 +94,9 @@ type Server struct {
 	Codex           *codex.Bridge
 	CodexHome       string
 	SecureHosts     map[string]bool // netloc of trusted HTTPS origins (secure_hosts)
+	DirectByPublic  map[string]string
+	PublicByDirect  map[string]string
+	directGrants    *directGrantStore
 	Uploads         *uploads.Manager
 	ACP             *acpruntime.Manager
 	ACPAgents       map[string]*acpruntime.Manager
@@ -157,8 +160,10 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"localhost:" + strconv.Itoa(port): true},
 		Origins: map[string]bool{"http://127.0.0.1:" + strconv.Itoa(port): true,
 			"http://localhost:" + strconv.Itoa(port): true},
-		SecureHosts: map[string]bool{},
-		Pairing:     pairing.New(nil), projections: map[string]*projectionSlot{},
+		SecureHosts:    map[string]bool{},
+		DirectByPublic: map[string]string{}, PublicByDirect: map[string]string{},
+		directGrants: newDirectGrantStore(),
+		Pairing:      pairing.New(nil), projections: map[string]*projectionSlot{},
 		artifactCache: map[string]*artifactMemo{}, desktopPaths: map[string]map[string]string{}}
 	server.Bridge = server
 	return server
@@ -212,6 +217,10 @@ type handler struct {
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	h := &handler{server: s, writer: writer, request: request}
+	h.decorateDirectResponse()
+	if h.handleDirectPreflight() {
+		return
+	}
 	h.handleMethod(request.Method == http.MethodPost)
 	if h.closeConnection {
 		writer.Header().Set("Connection", "close")
@@ -235,10 +244,10 @@ func (h *handler) output(status int, data any, contentType string, cookie string
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("X-Frame-Options", "DENY")
-	header.Set("Content-Security-Policy", contentSecurityPolicy)
+	header.Set("Content-Security-Policy", h.contentSecurityPolicy())
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 	header.Set("Content-Type", contentType)
-	header.Set("Vary", "Accept-Encoding")
+	header.Add("Vary", "Accept-Encoding")
 	if compressible && len(body) >= 1024 && gzipAccepted(h.request) {
 		compressed := gzipBytes(body)
 		if len(compressed) < len(body) {
@@ -371,6 +380,7 @@ var staticRoutes = map[string]staticRoute{
 	"/timeline.js":                {"timeline.js", "text/javascript; charset=utf-8"},
 	"/diff.js":                    {"diff.js", "text/javascript; charset=utf-8"},
 	"/transport.js":               {"transport.js", "text/javascript; charset=utf-8"},
+	"/connection.js":              {"connection.js", "text/javascript; charset=utf-8"},
 	"/vendor/markdown-it.min.js":  {"vendor/markdown-it.min.js", "text/javascript; charset=utf-8"},
 	"/vendor/texmath.js":          {"vendor/texmath.js", "text/javascript; charset=utf-8"},
 	"/vendor/katex/katex.min.js":  {"vendor/katex/katex.min.js", "text/javascript; charset=utf-8"},
@@ -456,6 +466,13 @@ func (h *handler) handleMethod(write bool) {
 		h.handleLogin()
 	case write && path == "/api/pair":
 		h.handlePair()
+	case write && path == "/api/direct/grant":
+		if h.session(write) == nil {
+			return
+		}
+		h.handleDirectGrant()
+	case write && path == "/api/direct/exchange":
+		h.handleDirectExchange()
 	case write && path == "/api/logout":
 		if h.session(write) == nil {
 			return
@@ -1356,6 +1373,9 @@ func (h *handler) handleAuth() {
 		transport = "poll"
 	}
 	body.Set("transport", transport)
+	if directOrigin := h.directCandidate(); directOrigin != "" {
+		body.Set("direct", directOrigin)
+	}
 	cookie := ""
 	if session != nil {
 		cookie = h.cookieValue(token)
@@ -1413,9 +1433,14 @@ func (h *handler) client() *jsoncompat.Object {
 }
 
 // cookieValue mirrors httpd.py's cookie(): the Secure attribute rides along
-// when the Host is an HTTPS tunnel origin.
+// when the Host is an HTTPS tunnel origin. A direct session is intentionally
+// cross-origin from the public page, so its HostOnly cookie uses SameSite=None.
 func (h *handler) cookieValue(token string) string {
-	return h.server.Auth.CookieValueForHost(token, h.server.SecureHosts[h.request.Host])
+	value := h.server.Auth.CookieValueForHost(token, h.server.SecureHosts[h.request.Host])
+	if h.directPublicOrigin() != "" {
+		value = strings.Replace(value, "SameSite=Strict", "SameSite=None", 1)
+	}
+	return value
 }
 
 var _ = json.Marshal

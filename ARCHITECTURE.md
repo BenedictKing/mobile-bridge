@@ -73,6 +73,14 @@ Windows 使用 CPython 标准库 `_winapi` 的 overlapped I/O 读取原始字节
 
 局域网默认使用 SSE，Cloudflare Quick Tunnel 使用有登录校验的长轮询；传输方式由 `/api/auth` 按入口宣告，SSE 断开后按封顶退避重连（带 `?since=` 游标续传），不回退轮询。切换聊天时用代次标识排除旧连接回包，浏览器草稿和 Skill 选择按主机与会话隔离。
 
+### 固定公网入口下的局域网直连
+
+`desktop.json` 的可选 `direct` 配置把一个固定公网 HTTPS origin 与一个局域网 HTTPS origin 绑定。原 HTTP 监听和 Cloudflare Tunnel 不变，网关另起 TLS listener，复用同一认证与业务实例。公网页面地址不跳转；`web/connection.js` 默认走公网，只有一次性 grant 交换成功且 `/api/auth` 返回相同 `instanceId` 后，才把 API、附件和 SSE 切到直连 origin。
+
+公网会话与直连会话相互独立，不把 Cookie 放宽到父域。`POST /api/direct/grant` 要求公网已登录同源请求与 CSRF；短期单次 grant 绑定 public/direct origin，服务端只保存摘要。`POST /api/direct/exchange` 只接受对应公网 origin，直连 Cookie 为 HostOnly、HttpOnly、Secure、SameSite=None；公网 Cookie 继续 SameSite=Strict。CORS 只允许配置的 origin 和必要请求头，并支持 Private Network Access 预检，公网页面 CSP 只额外加入配置的直连 origin。
+
+直连不可用、认证失效或图片加载失败时立即回到公网，并按退避和前台/online 事件重新探测。GET 与实时游标可以安全续读；POST/PATCH/DELETE 不跨链路自动重放，沿用原有结果未知与人工重试约定。退出登录会尝试撤销两个会话。未配置、配置无效或 TLS 端口不可用时只记录日志，原公网链路不受影响。一次性 DNS、证书与端口配置见 [固定域名教程](docs/fixed-domain.md)。
+
 ## 消息与审批
 
 每条手机消息携带唯一提交 ID；发送前把状态写入私有记录。确认失败时保留 unknown 状态，不自动重放。排队消息在原会话空闲时发送，用户可撤回。SSH 主机分别保存提交记录。

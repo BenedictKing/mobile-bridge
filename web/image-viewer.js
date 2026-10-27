@@ -32,7 +32,7 @@
   }
   function open(target, event) {
     const url = new URL(target.dataset.imagePreview, location.href);
-    if (url.origin !== location.origin || !whitelist.test(url.pathname)) return;
+    if (!BridgeConnection.trusted(url.href) || !whitelist.test(url.pathname)) return;
     event.preventDefault();
     if (!dialog) create();
     opener = target; href = url.href;
@@ -41,8 +41,8 @@
     title.textContent = target.dataset.imageName || target.querySelector('img')?.alt || target.alt || t('图片附件');
     status.textContent = t('正在加载图片…');
     const image = document.createElement('img'); image.alt = title.textContent;
-    image.onload = () => { if (image.isConnected) status.textContent = ''; };
-    image.onerror = () => { if (image.isConnected) { image.hidden = true; status.textContent = t('图片加载失败，请关闭后重试。'); } };
+    image.onload = () => { if (image.isConnected) { image.hidden = false; status.textContent = ''; } };
+    image.onerror = () => { if (image.isConnected && !image.dataset.publicFallback) { image.hidden = true; status.textContent = t('图片加载失败，请关闭后重试。'); } };
     content.replaceChildren(image); image.src = url.href;
     if (!dialog.open) dialog.showModal();
   }

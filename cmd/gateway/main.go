@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -381,6 +382,69 @@ func trustedOrigins(dataDir string, preferences *jsoncompat.Object) []string {
 	return origins
 }
 
+type directSettings struct {
+	publicOrigin string
+	directOrigin string
+	port         int
+	certificate  tls.Certificate
+}
+
+func directOrigin(value string) (string, int, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", 0, errors.New("必须是有效的 HTTPS origin")
+	}
+	port := 443
+	if value := parsed.Port(); value != "" {
+		port, err = strconv.Atoi(value)
+		if err != nil || port < 1 || port > 65535 {
+			return "", 0, errors.New("端口无效")
+		}
+	}
+	return "https://" + parsed.Host, port, nil
+}
+
+func loadDirectSettings(dataDir string, preferences *jsoncompat.Object) (*directSettings, error) {
+	value, exists := preferences.Get("direct")
+	if !exists || value == nil {
+		return nil, nil
+	}
+	root, ok := value.(*jsoncompat.Object)
+	if !ok {
+		return nil, errors.New("direct 必须是对象")
+	}
+	publicValue, _ := root.MustGet("publicUrl").(string)
+	directValue, _ := root.MustGet("url").(string)
+	publicOrigin, _, err := directOrigin(publicValue)
+	if err != nil {
+		return nil, fmt.Errorf("direct.publicUrl: %w", err)
+	}
+	directOriginValue, port, err := directOrigin(directValue)
+	if err != nil {
+		return nil, fmt.Errorf("direct.url: %w", err)
+	}
+	if publicOrigin == directOriginValue {
+		return nil, errors.New("direct.url 必须与 publicUrl 不同")
+	}
+	certFile, _ := root.MustGet("certFile").(string)
+	keyFile, _ := root.MustGet("keyFile").(string)
+	if certFile == "" || keyFile == "" {
+		return nil, errors.New("direct.certFile 与 direct.keyFile 不能为空")
+	}
+	if !filepath.IsAbs(certFile) {
+		certFile = filepath.Join(dataDir, certFile)
+	}
+	if !filepath.IsAbs(keyFile) {
+		keyFile = filepath.Join(dataDir, keyFile)
+	}
+	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("加载直连证书: %w", err)
+	}
+	return &directSettings{publicOrigin: publicOrigin, directOrigin: directOriginValue, port: port, certificate: certificate}, nil
+}
+
 func desktopPreferences(dataDir string) *jsoncompat.Object {
 	preferences := jsoncompat.NewObject()
 	preferences.Set("autoStart", false)
@@ -397,7 +461,7 @@ func desktopPreferences(dataDir string) *jsoncompat.Object {
 	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
 		if value, decodeErr := jsoncompat.Unmarshal(raw); decodeErr == nil {
 			if saved, ok := value.(*jsoncompat.Object); ok {
-				for _, key := range []string{"autoStart", "port", "lan", "lanAddresses", "localAccess", "tunnel", "cloudflared", "codexHome", "ipcPath", "codexBin", "connections"} {
+				for _, key := range []string{"autoStart", "port", "lan", "lanAddresses", "localAccess", "tunnel", "cloudflared", "codexHome", "ipcPath", "codexBin", "connections", "direct"} {
 					if item, exists := saved.Get(key); exists {
 						preferences.Set(key, item)
 					}
@@ -559,8 +623,9 @@ func runGateway(args []string) {
 	if os.Getenv("GATEWAY_DISABLE_STORE") == "1" && os.Getenv("GATEWAY_DISABLE_IPC") == "1" {
 		server.Bridge = httpd.NewScriptedBridge()
 	}
+	preferences := desktopPreferences(dataDir)
 	addresses := gatewayListenAddresses(dataDir)
-	listeners := make([]net.Listener, 0, len(addresses))
+	listeners := make([]net.Listener, 0, len(addresses)*2)
 	for _, address := range addresses {
 		listener, listenErr := net.Listen("tcp", net.JoinHostPort(address, strconv.Itoa(port)))
 		if listenErr != nil {
@@ -572,13 +637,44 @@ func runGateway(args []string) {
 		listeners = append(listeners, listener)
 		server.AddListenHost(address, address == "127.0.0.1" || address == "::1" || address == "localhost")
 	}
+	direct, directErr := loadDirectSettings(dataDir, preferences)
+	if directErr != nil {
+		log.Printf("局域网直连已禁用: %v", directErr)
+	}
+	if direct != nil {
+		directListeners := make([]net.Listener, 0, len(addresses))
+		for _, address := range addresses {
+			listener, listenErr := net.Listen("tcp", net.JoinHostPort(address, strconv.Itoa(direct.port)))
+			if listenErr != nil {
+				directErr = listenErr
+				break
+			}
+			directListeners = append(directListeners, listener)
+		}
+		if directErr != nil {
+			for _, opened := range directListeners {
+				_ = opened.Close()
+			}
+			log.Printf("局域网直连已禁用: %v", directErr)
+		} else if err := server.AddDirect(direct.publicOrigin, direct.directOrigin); err != nil {
+			for _, opened := range directListeners {
+				_ = opened.Close()
+			}
+			log.Printf("局域网直连已禁用: %v", err)
+		} else {
+			tlsConfig := &tls.Config{Certificates: []tls.Certificate{direct.certificate}, MinVersion: tls.VersionTLS12}
+			for _, listener := range directListeners {
+				listeners = append(listeners, tls.NewListener(listener, tlsConfig))
+			}
+			log.Printf("局域网直连: %s", direct.directOrigin)
+		}
+	}
 	server.Uploads = uploads.New(dataDir)
 	server.NotificationDir = dataDir
 	server.Jev = jev.New(filepath.Join(dataDir, "jev.json"))
 	server.Conventions = conventions.New(filepath.Join(dataDir, "conventions.json"))
 	var quickTunnel *tunnel.Quick
 	sshForwards := []*tunnel.SSHForward{}
-	preferences := desktopPreferences(dataDir)
 	for _, origin := range trustedOrigins(dataDir, preferences) {
 		parsed, parseErr := url.Parse(origin)
 		if parseErr != nil || parsed.Scheme == "" || parsed.Host == "" {

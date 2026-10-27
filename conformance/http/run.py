@@ -60,6 +60,7 @@ REQUESTS = [
     ('unknown-session', 'POST', '/api/sessions/abcde/send',
      {'content': 'hi'}, {}, True),
     ('static-timeline-js', 'GET', '/timeline.js', None, {}, True),
+    ('static-connection-js', 'GET', '/connection.js', None, {}, True),
     ('static-missing', 'GET', '/no-such-file.js', None, {}, True),
     ('login-again', 'POST', '/api/login',
      {'username': USERNAME, 'password': PASSWORD}, {}, False),
