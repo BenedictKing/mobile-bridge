@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
 const zcodeTestSecret = "test-secret-for-go-port"
@@ -972,6 +974,36 @@ func stubZcodeResetAPIAt(t *testing.T, cards, usedPercentage int) *atomic.Int32 
 		zcodeMonitorURLs, zcodeResetBaseURL = restoreMonitor, restoreReset
 	})
 	return useHits
+}
+
+func TestZcodeRefreshQuotaIncludesResetCards(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	stubZcodeResetAPI(t, 1)
+	acc, err := m.RefreshQuota(context.Background(), "zcode", "zra")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acc.Quota.ResetCredits == nil || acc.Quota.ResetCredits.FiveHourCards != 1 || acc.Quota.ResetCredits.WeekCards != 0 {
+		t.Fatalf("reset cards: %+v", acc.Quota.ResetCredits)
+	}
+	view := quotaView(acc.Quota)
+	cards, _ := view.MustGet("resetCredits").(*jsoncompat.Object)
+	if cards == nil || cards.MustGet("availableCount") != 1 || cards.MustGet("fiveHourCards") != 1 || cards.MustGet("weekCards") != 0 {
+		t.Fatalf("reset card view: %v", cards)
+	}
+
+	failedStatus := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failedStatus.Close()
+	zcodeResetBaseURL = failedStatus.URL
+	acc, err = m.RefreshQuota(context.Background(), "zcode", "zra")
+	if err != nil {
+		t.Fatalf("reset status failure must not fail quota refresh: %v", err)
+	}
+	if acc.Quota.ResetCredits == nil || acc.Quota.ResetCredits.FiveHourCards != 1 {
+		t.Fatalf("previous reset cards were not preserved: %+v", acc.Quota.ResetCredits)
+	}
 }
 
 func TestAutoSwitchUsesZcodeResetCard(t *testing.T) {

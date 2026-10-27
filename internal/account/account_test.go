@@ -1,6 +1,7 @@
 package account
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ for line in sys.stdin:
  if method=='initialize': result={}
  elif method=='config/read': result={'config':{'model_provider':'openai','desktop':{'agent-usage-reset-enabled':True}}}
  elif method=='account/read': result={'account':{'type':'chatgpt','email':'user@example.com','planType':'plus'},'workspaceRouting':'team'}
- elif method=='account/rateLimits/read': result={'rateLimitsByLimitId':{'codex':{'limitName':'Codex','primary':{'usedPercent':25,'windowDurationMins':60,'resetsAt':10}}}}
+ elif method=='account/rateLimits/read': result={'rateLimitsByLimitId':{'codex':{'limitName':'Codex','primary':{'usedPercent':25,'windowDurationMins':60,'resetsAt':10}}},'rateLimitResetCredits':{'availableCount':2,'credits':[{'id':'credit-1','status':'available'}]}}
  elif method=='account/rateLimitResetCredit/consume': result={'outcome':'reset'}
  else: result={}
  print(json.dumps({'id':ident,'result':result}),flush=True)
@@ -32,6 +33,13 @@ for line in sys.stdin:
 	}
 	if result.MustGet("email") != "user@example.com" {
 		t.Fatalf("email missing: %s", jsoncompat.EncodeCompact(result))
+	}
+	credits := object(result, "resetCredits")
+	if credits == nil || credits.MustGet("availableCount") != json.Number("2") {
+		t.Fatalf("reset credits missing: %s", jsoncompat.EncodeCompact(result))
+	}
+	if rows, ok := credits.MustGet("credits").(*jsoncompat.Array); !ok || len(rows.Items) != 1 {
+		t.Fatalf("reset credit details missing: %s", jsoncompat.EncodeCompact(credits))
 	}
 	accountKey, _ := result.MustGet("accountKey").(string)
 	reset, err := manager.Consume(jsonObject(map[string]any{"confirmed": true, "requestId": "request-1", "accountKey": accountKey}))

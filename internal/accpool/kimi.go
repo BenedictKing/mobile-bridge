@@ -309,9 +309,10 @@ type Quota struct {
 	// Credits is the WorkBuddy credit summary (points-based quota with
 	// per-package expiry); the gating window is the synthetic single
 	// "积分" row in Limits.
-	Credits   *CreditsQuota `json:"credits,omitempty"`
-	LevelName string        `json:"levelName,omitempty"`
-	Region    string        `json:"region,omitempty"`
+	Credits      *CreditsQuota     `json:"credits,omitempty"`
+	ResetCredits *ZcodeResetStatus `json:"resetCredits,omitempty"`
+	LevelName    string            `json:"levelName,omitempty"`
+	Region       string            `json:"region,omitempty"`
 }
 
 var windowUnitMap = map[string]string{

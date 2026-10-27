@@ -857,6 +857,15 @@ func quotaView(q *Quota) *jsoncompat.Object {
 	} else {
 		row.Set("credits", nil)
 	}
+	if q.ResetCredits != nil {
+		cards := jsoncompat.NewObject()
+		cards.Set("availableCount", q.ResetCredits.FiveHourCards+q.ResetCredits.WeekCards)
+		cards.Set("fiveHourCards", q.ResetCredits.FiveHourCards)
+		cards.Set("weekCards", q.ResetCredits.WeekCards)
+		row.Set("resetCredits", cards)
+	} else {
+		row.Set("resetCredits", nil)
+	}
 	return row
 }
 

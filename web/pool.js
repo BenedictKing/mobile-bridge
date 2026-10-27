@@ -176,6 +176,13 @@ class PoolPanel {
       const membership=quota.membership;
       if(membership&&membership.hasTokenPlan===false)box.append(this.node('span',t('未订阅 Coding Plan'),'error'));
       else if(membership&&membership.tier)box.append(this.node('span',membership.tier,'account-muted'));
+      const resets=quota.resetCredits;
+      if(this.kind==='zcode'&&resets){
+        const line=this.node('div',undefined,'accounts-window');
+        line.append(this.node('span',t('重置卡')),this.node('strong',resets.availableCount));
+        line.append(this.node('span',t('5 小时：')+resets.fiveHourCards+' · '+t('周卡：')+resets.weekCards,'account-muted'));
+        box.append(line);
+      }
       const credits=quota.credits;
       if(credits){
         const line=this.node('div',undefined,'accounts-window');

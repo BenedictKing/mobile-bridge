@@ -159,6 +159,7 @@ func (m *Manager) Read(refresh bool) *jsoncompat.Object {
 	}
 	if limits, limitErr := rpc.Request("account/rateLimits/read", nil); limitErr == nil {
 		result.Set("limits", normalizeLimits(limits))
+		result.Set("resetCredits", limits.MustGet("rateLimitResetCredits"))
 	}
 	result.Set("updatedAt", time.Now().Unix())
 	return result

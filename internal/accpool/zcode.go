@@ -988,8 +988,8 @@ func zcodeResetRequest(ctx context.Context, method, endpoint string, auth *zcode
 
 // ZcodeResetStatus reports the reset cards an account currently holds.
 type ZcodeResetStatus struct {
-	FiveHourCards int
-	WeekCards     int
+	FiveHourCards int `json:"fiveHourCards"`
+	WeekCards     int `json:"weekCards"`
 }
 
 // zcodeResetStatus reads the held cards (GET /status).
@@ -1081,6 +1081,11 @@ func (m *Manager) refreshZcodeQuota(ctx context.Context, acc *Account) (*Account
 	}
 	if quota.LevelName == "" {
 		quota.LevelName = acc.LevelName
+	}
+	if cards, cardErr := zcodeResetStatus(ctx, acc); cardErr == nil {
+		quota.ResetCredits = cards
+	} else if acc.Quota != nil {
+		quota.ResetCredits = acc.Quota.ResetCredits
 	}
 	acc.Quota = quota
 	acc.QuotaUpdatedAt = m.now().UnixMilli()

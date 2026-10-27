@@ -1220,6 +1220,8 @@ const en={
   "后恢复": " until reset",
   "等待刷新": "Waiting for refresh",
   "重置卡": "Usage resets",
+  "5 小时：": "5-hour: ",
+  "周卡：": "Weekly: ",
   "暂未提供重置卡信息": "Usage reset information is not available",
   "可用数量：": "Available: ",
   "请先在 Codex 桌面设置中允许使用额度重置": "Allow usage resets in Codex desktop settings first",
