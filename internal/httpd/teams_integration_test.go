@@ -312,6 +312,10 @@ for line in sys.stdin:
 // teamIntegrationEnv 装配带真实 submissions 账本与 team 服务的测试网关
 // （main.go:904-930 的同构装配：LoadStore/OpenJournal/LoadSubmissions 后直赋
 // 字段；SetWaitSlice 必须在任何 Run 启动前调用）。
+// teamIntegrationWait 给全包运行时的 ACP 子进程调度留出余量；单测单独运行
+// 通常远快于此值，但完整 httpd 包会同时启动大量伪 Agent。
+const teamIntegrationWait = 45 * time.Second
+
 type teamIntegrationEnv struct {
 	server   *Server
 	store    team.TeamStore
@@ -562,7 +566,7 @@ func TestTeamIntegrationPipelineAcceptance(t *testing.T) {
 
 	// 中间态：design 已完成且结果入账，而 implement 仍在途（hold 拉宽窗口）。
 	sawDesignResultEarly := false
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		design := teamTaskOf(t, detail, "design")
 		implement := teamTaskOf(t, detail, "implement")
@@ -589,7 +593,7 @@ func TestTeamIntegrationPipelineAcceptance(t *testing.T) {
 	}
 
 	// 终态：三任务全 completed，全带 result 引用。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
@@ -666,7 +670,7 @@ func TestTeamIntegrationFailureSalvage(t *testing.T) {
 		{"id":"implement","memberId":"dev","prompt":"执行 SALVAGE-IMPL 并注入 FAIL 触发失败","dependsOn":["design"],"writeLock":"exclusive"},
 		{"id":"review","memberId":"dev","prompt":"审查 SALVAGE-REVIEW","dependsOn":["implement"],"writeLock":"none"}]}`)
 
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "failed"
 	}) {
 		t.Fatal("Run 未在时限内失败")
@@ -714,7 +718,7 @@ func TestTeamIntegrationCancelMidRun(t *testing.T) {
 		{"id":"implement","memberId":"dev","prompt":"长跑 CANCEL-IMPL HOLDLONG 任务","dependsOn":["design"],"writeLock":"exclusive"}]}`)
 
 	// 等 implement 真正进入 running（watcher 已匹配到进行中的 turn）。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return teamTaskOf(t, env.runDetail(t, teamID, runID), "implement")["status"] == "running"
 	}) {
 		t.Fatal("implement 未在时限内进入 running")
@@ -747,7 +751,7 @@ func TestTeamIntegrationCancelMidRun(t *testing.T) {
 
 	// 伪 Agent 侧 turn 被真正取消：Session.Cancel 立即 EndTurn("cancelled")
 	// （manager.go:1062-1083），轮询快照直到最后一个 turn 落 interrupted。
-	interrupted := env.drive(t, 20*time.Second, func() bool {
+	interrupted := env.drive(t, teamIntegrationWait, func() bool {
 		session := env.manager.Get(sessionB)
 		if session == nil {
 			return false
@@ -818,7 +822,7 @@ func TestTeamIntegrationUnknownOutcomeWaitingInputAndResume(t *testing.T) {
 	// 时即此形态，queue.go:551）。
 	env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
 
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 	}) {
 		t.Fatal("结果未知应把 Run 停进 waiting_input")
@@ -959,7 +963,7 @@ func TestTeamIntegrationRestartRecoveryNoResend(t *testing.T) {
 		dataDir := t.TempDir()
 		state := writeTeamRestartState(t, dataDir, SubUnknown)
 		env := reopenTeamIntegrationEnv(t, dataDir)
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, state.teamID, state.runID)["status"] == "waiting_input"
 		}) {
 			t.Fatal("恢复后 Run 应停 waiting_input")
@@ -980,7 +984,7 @@ func TestTeamIntegrationRestartRecoveryNoResend(t *testing.T) {
 		dataDir := t.TempDir()
 		state := writeTeamRestartState(t, dataDir, "")
 		env := reopenTeamIntegrationEnv(t, dataDir)
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, state.teamID, state.runID)["status"] == "completed"
 		}) {
 			t.Fatal("回 ready 的任务应重新派发并完成")
@@ -1110,7 +1114,7 @@ func TestTeamIntegrationRestartAdoptsWriteLock(t *testing.T) {
 	}
 
 	// w1 的提示词到达伪 Agent（turn 随即 hold 1.5s）。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return promptIndex(readTeamPrompts(t, dataDir), "RESTART-LOCK-ONE") >= 0
 	}) {
 		t.Fatal("w1 未在时限内派发到成员会话")
@@ -1123,7 +1127,7 @@ func TestTeamIntegrationRestartAdoptsWriteLock(t *testing.T) {
 	}
 
 	// w1 落定后 w2 接棒，最终 Run 完成且提示词严格串行。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, state.teamID, state.runID)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
@@ -1159,7 +1163,7 @@ func TestTeamIntegrationWriteLockMutualExclusion(t *testing.T) {
 		{"id":"w2","memberId":"dev2","prompt":"次任务 hold 独占写入 TWO","writeLock":"exclusive"}]}`)
 
 	// w1 持锁期间 w2 必须仍在 planned——互斥完全来自写锁而非并发上限。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		workspace, _ := detail["workspace"].(map[string]any)
 		return workspace["writeLockHeldBy"] == "w1" && teamTaskOf(t, detail, "w2")["status"] == "planned"
@@ -1168,7 +1172,7 @@ func TestTeamIntegrationWriteLockMutualExclusion(t *testing.T) {
 	}
 	// w1 落定后 w2 接棒持锁（hold 拉宽观察窗口），最终 Run 完成、锁清零。
 	sawW2Lock := false
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		workspace, _ := detail["workspace"].(map[string]any)
 		if workspace["writeLockHeldBy"] == "w2" {
@@ -1218,7 +1222,7 @@ func TestTeamIntegrationDeadMemberRequeueLadder(t *testing.T) {
 	runID := env.createRun(t, teamID, `{"goal":"成员失效","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"dev","prompt":"坏成员任务 BROKEN-CHECK","writeLock":"none"}]}`)
 
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "failed"
 	}) {
 		t.Fatal("成员失效未在时限内爬梯至 failed")
@@ -1270,7 +1274,7 @@ func TestTeamIntegrationIdempotentRedispatch(t *testing.T) {
 	runBody := `{"goal":"幂等","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"` + prompt + `","writeLock":"none"}]}`
 	runID := env.createRun(t, teamID, runBody)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
@@ -1308,7 +1312,7 @@ func TestTeamIntegrationIdempotentRedispatch(t *testing.T) {
 	if secondID == runID {
 		t.Fatal("当前接口重复 POST 会创建新 Run，不应复用旧 id")
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, secondID)["status"] == "completed"
 	}) {
 		t.Fatal("第二个 Run 未在时限内完成")
@@ -1471,7 +1475,7 @@ func TestTeamIntegrationEventStreamChangesAndSSE(t *testing.T) {
 		t.Fatal("SSE 未在时限内发出 ready 帧")
 	}
 	// 驱动派发：hold 拉宽窗口，task_running 与 task_completed 事件相继入投影。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
@@ -1684,14 +1688,14 @@ func TestTeamIntegration2BroadcastParallel(t *testing.T) {
 
 	// 并行窗口：两分支同时处于在途（两成员、写锁 none、并发上限 3——互不
 	// 排斥的分支应同时在飞）。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return inFlightTask(teamTaskOf(t, detail, "grp-lead")) &&
 			inFlightTask(teamTaskOf(t, detail, "grp-dev"))
 	}) {
 		t.Fatal("两分支未在时限内并行在途")
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
@@ -1755,7 +1759,7 @@ func TestTeamIntegration2BroadcastBranchFailureSalvage(t *testing.T) {
 		{"id":"grp","memberIds":["dev","dead"],"prompt":"广播分支任务 SALV2-BRANCH","writeLock":"none"},
 		{"id":"merge","memberIds":["dev","rev"],"prompt":"合并任务 SALV2-MERGE 汇总上游结果","writeLock":"none","dependsOn":["grp"]}]}`)
 
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "failed"
 	}) {
 		t.Fatal("含失败分支的 Run 未在时限内折 failed")
@@ -1808,14 +1812,14 @@ func TestTeamIntegration2FirstSuccessEarlyStop(t *testing.T) {
 		{"id":"merge","memberIds":["a","b"],"prompt":"合并任务 FIRST-MERGE QUOTAFAIL HOLDUNTIL:k2","writeLock":"none","dependsOn":["grp"]}]}`)
 
 	// 两分支并行在途后只放行 b：b completed → a 被 superseded 取消。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return inFlightTask(teamTaskOf(t, detail, "grp-a")) && inFlightTask(teamTaskOf(t, detail, "grp-b"))
 	}) {
 		t.Fatal("竞速分支未在时限内并行在途")
 	}
 	releaseAgentTurn(t, env.dataDir, "k1", sessionB)
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return teamTaskOf(t, detail, "grp-b")["status"] == "completed" &&
 			teamTaskOf(t, detail, "grp-a")["status"] == "cancelled"
@@ -1848,12 +1852,12 @@ func TestTeamIntegration2FirstSuccessEarlyStop(t *testing.T) {
 	// 下游合并：首次派发被 quota 文本停靠（任务 stopped+outcome=quota、Run
 	// waiting_input——首个停靠即暂停 Run，另一个在途任务由其 watcher 继续收
 	// 尾停靠）；停靠期间 grp 的终态保持不变（收集策略幂等重推导）。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 	}) {
 		t.Fatal("quota 停靠未在时限内把 Run 停进 waiting_input")
 	}
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return teamTaskOf(t, detail, "merge-a")["status"] == "stopped" &&
 			teamTaskOf(t, detail, "merge-b")["status"] == "stopped"
@@ -1877,14 +1881,14 @@ func TestTeamIntegration2FirstSuccessEarlyStop(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return inFlightTask(teamTaskOf(t, detail, "merge-a")) && inFlightTask(teamTaskOf(t, detail, "merge-b"))
 	}) {
 		t.Fatal("重臂的合并任务未在时限内并行在途")
 	}
 	releaseAgentTurn(t, env.dataDir, "k2", sessionA)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
@@ -1939,7 +1943,7 @@ func TestTeamIntegration2Forward(t *testing.T) {
 	runID := env.createRun(t, teamID, `{"goal":"显式转发","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"产出转发素材 FWD-SRC `+longMaterial+`","writeLock":"none"},
 		{"id":"t2","memberId":"lead","prompt":"长跑占位任务 FWD-HOLD HOLDLONG","writeLock":"none","dependsOn":["t1"]}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return teamTaskOf(t, env.runDetail(t, teamID, runID), "t2")["status"] == "running"
 	}) {
 		t.Fatal("Run 未在时限内推进到长跑任务")
@@ -1961,7 +1965,7 @@ func TestTeamIntegration2Forward(t *testing.T) {
 	if forwarded.SubmissionID == "" || forwarded.Duplicate {
 		t.Fatalf("首次转发应返回新 submissionId: %+v", forwarded)
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return promptIndex(readTeamPrompts(t, env.dataDir), "FWD-NOTE") >= 0
 	}) {
 		t.Fatal("转发消息未在时限内到达目标成员")
@@ -2023,7 +2027,7 @@ func TestTeamIntegration2Forward(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("会话源转发失败: %d %s", response.Code, response.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return promptIndex(readTeamPrompts(t, env.dataDir), "FWD-TRANS") >= 0
 	}) {
 		t.Fatal("会话源转发未在时限内到达目标成员")
@@ -2081,7 +2085,7 @@ func TestTeamIntegration2Worktree(t *testing.T) {
 	// 基线与 diff。
 	runID := env.createRun(t, teamID, `{"goal":"worktree 基线","mode":"pipeline","plan":[
 		{"id":"iso","memberId":"dev","prompt":"写入工作区产出 WT-WRITE-1 WRITEFILE","writeLock":"exclusive","workspaceMode":"isolated_worktree","workspaceId":"wt-alpha"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("isolated 任务未在时限内完成")
@@ -2128,7 +2132,7 @@ func TestTeamIntegration2Worktree(t *testing.T) {
 	// 取消不删用户改动。
 	run2 := env.createRun(t, teamID, `{"goal":"worktree 取消","mode":"pipeline","plan":[
 		{"id":"iso2","memberId":"dev","prompt":"长跑写入 WT-CANCEL-2 WRITEFILE HOLDLONG","writeLock":"exclusive","workspaceMode":"isolated_worktree","workspaceId":"wt-alpha"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return teamTaskOf(t, env.runDetail(t, teamID, run2), "iso2")["status"] == "running"
 	}) {
 		t.Fatal("iso2 未在时限内进入 running")
@@ -2162,7 +2166,7 @@ func TestTeamIntegration2Worktree(t *testing.T) {
 	// cwd 不匹配：会话不在 worktree 的成员接 isolated 任务 → 派发确定性拒绝。
 	run3 := env.createRun(t, teamID, `{"goal":"cwd 校验","mode":"pipeline","plan":[
 		{"id":"iso3","memberId":"dev2","prompt":"错位任务 WT-MISMATCH","writeLock":"exclusive","workspaceMode":"isolated_worktree","workspaceId":"wt-alpha"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, run3)["status"] == "failed"
 	}) {
 		t.Fatal("cwd 不匹配的 isolated 任务未在时限内确定性失败")
@@ -2207,7 +2211,7 @@ func TestTeamIntegration2VerifyGateExitCode(t *testing.T) {
 	runID := env.createRun(t, teamID, `{"goal":"闸门验收","mode":"pipeline","verifyCommand":["make","check"],"plan":[
 		{"id":"t1","memberId":"lead","prompt":"闸门任务 VERIFY-GATE 请汇报完成","writeLock":"none"}]}`)
 
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 	}) {
 		t.Fatal("闸门非零未在时限内把 Run 停进 waiting_input")
@@ -2242,7 +2246,7 @@ func TestTeamIntegration2VerifyGateExitCode(t *testing.T) {
 	if resume := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`); resume.Code != http.StatusOK {
 		t.Fatalf("resume 失败: %d %s", resume.Code, resume.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("修复后 resume 复验未在时限内完成")
@@ -2278,7 +2282,7 @@ func TestTeamIntegration2AIMDErrorPolicy(t *testing.T) {
 	// 限流：一次性 429 → 桶减窗 + 冷却（Retry-After: 2s）。
 	runRL := env.createRun(t, teamID, `{"goal":"限流","mode":"pipeline","plan":[
 		{"id":"t-rl","memberId":"lead","prompt":"限流任务 AIMD-RL RATELIMIT","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return teamEventCount(env.journalEvents(t), team.EventProviderThrottled) == 1
 	}) {
 		t.Fatal("限流未在时限内压桶（provider_throttled）")
@@ -2337,7 +2341,7 @@ func TestTeamIntegration2AIMDErrorPolicy(t *testing.T) {
 
 	// 冷却结束：限流任务 attempt=2 重派（新 submissionID）完成，同桶新任务
 	// 照常派发完成；epoch 只减一次（provider_throttled 恒为 1）。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runRL)["status"] == "completed" &&
 			env.runDetail(t, teamID, runCD)["status"] == "completed"
 	}) {
@@ -2357,7 +2361,7 @@ func TestTeamIntegration2AIMDErrorPolicy(t *testing.T) {
 	// quota：任务停靠 + Run 暂停，桶不变（无减窗、无冷却）。
 	runQuota := env.createRun(t, teamID, `{"goal":"quota 停靠","mode":"pipeline","plan":[
 		{"id":"t-quota","memberId":"lead","prompt":"计费任务 AIMD-QUOTA QUOTAFAIL","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runQuota)["status"] == "waiting_input"
 	}) {
 		t.Fatal("quota 错误未在时限内停靠 Run")
@@ -2410,7 +2414,7 @@ func TestTeamIntegration2AIMDErrorPolicy(t *testing.T) {
 	team2 := env.createTeamWithMembers(t, `[{"id":"rev","sessionId":"`+sessionRev+`","role":"lead"}]`)
 	runOther := env.createRun(t, team2, `{"goal":"共享桶不冻结","mode":"pipeline","plan":[
 		{"id":"t-other","memberId":"rev","prompt":"另一团队任务 AIMD-OTHER","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, team2, runOther)["status"] == "completed"
 	}) {
 		t.Fatal("quota 停靠不应冻结共享桶（另一 Team 的同桶任务应完成）")
@@ -2421,7 +2425,7 @@ func TestTeamIntegration2AIMDErrorPolicy(t *testing.T) {
 	if resume := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runQuota+"/resume", `{}`); resume.Code != http.StatusOK {
 		t.Fatalf("resume 失败: %d %s", resume.Code, resume.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runQuota)["status"] == "completed"
 	}) {
 		t.Fatal("resume 后 quota 任务未在时限内重派完成")
@@ -2690,7 +2694,7 @@ func TestTeamIntegration2IdempotencyAndRestart(t *testing.T) {
 		if first.Code != http.StatusOK {
 			t.Fatalf("创建失败: %d %s", first.Code, first.Body.String())
 		}
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, teamID, requestID)["status"] == "completed"
 		}) {
 			t.Fatal("Run 未在时限内完成")
@@ -2735,7 +2739,7 @@ func TestTeamIntegration2IdempotencyAndRestart(t *testing.T) {
 		env := reopenTeamIntegrationEnv(t, dataDir)
 		// 先等调度循环自身完成收集策略重推导（grp-a 被 superseded 取消、其
 		// 账本条目撤队）——此间不做派发巡检，防把 grp-a 的存量条目推给 Agent。
-		if !awaitCond(t, 20*time.Second, func() bool {
+		if !awaitCond(t, teamIntegrationWait, func() bool {
 			return teamTaskOf(t, env.runDetail(t, fixture.teamC, fixture.runC), "grp-a")["status"] == "cancelled"
 		}) {
 			t.Fatal("重启后 first_success 未在时限内幂等重推导（取消在途落败分支）")
@@ -2747,7 +2751,7 @@ func TestTeamIntegration2IdempotencyAndRestart(t *testing.T) {
 		}
 		// rb 的在途任务收养：驱动派发后按存量 SentText 匹配 turn 完成入账
 		//（策略已收窄——若按当前策略重算必然漂移，任务永不收口）。
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, fixture.teamB, fixture.runB)["status"] == "completed"
 		}) {
 			t.Fatal("sentText 收养未在时限内按存量文本完成")
@@ -2757,7 +2761,7 @@ func TestTeamIntegration2IdempotencyAndRestart(t *testing.T) {
 			t.Fatalf("在途任务应按存量 SentText 完成入账（而非 outcome_unknown）: %v", task)
 		}
 		// 下游合并组释放：merge 双任务派发并 HOLDUNTIL，只放行 merge-a。
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			detail := env.runDetail(t, fixture.teamC, fixture.runC)
 			return inFlightTask(teamTaskOf(t, detail, "merge-a")) && inFlightTask(teamTaskOf(t, detail, "merge-b"))
 		}) {
@@ -2776,7 +2780,7 @@ func TestTeamIntegration2IdempotencyAndRestart(t *testing.T) {
 			t.Fatal("被 superseded 的在途分支不得再派发")
 		}
 		releaseAgentTurn(t, dataDir, "k2", "km-team-3")
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, fixture.teamC, fixture.runC)["status"] == "completed"
 		}) {
 			t.Fatal("重启后的广播 Run 未在时限内完成")
@@ -2849,7 +2853,7 @@ func TestTeamIntegration2EventStreamPhase2Rows(t *testing.T) {
 	writeVerifyMakefile(t, dataDir, 7)
 	runID := env.createRun(t, teamID, `{"goal":"事件流阶段二","mode":"pipeline","verifyCommand":["make","check"],"plan":[
 		{"id":"iso","memberId":"wt","prompt":"事件流工作区任务 GATE-WT WRITEFILE","writeLock":"exclusive","workspaceMode":"isolated_worktree","workspaceId":"wt-gate"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 	}) {
 		t.Fatal("闸门非零未在时限内停靠")
@@ -2860,7 +2864,7 @@ func TestTeamIntegration2EventStreamPhase2Rows(t *testing.T) {
 	if forward.Code != http.StatusOK {
 		t.Fatalf("停靠期转发失败: %d %s", forward.Code, forward.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return promptIndex(readTeamPrompts(t, dataDir), "GATE-FWD") >= 0
 	}) {
 		t.Fatal("转发消息未在时限内到达")
@@ -2904,7 +2908,7 @@ func TestTeamIntegration2EventStreamPhase2Rows(t *testing.T) {
 	if resume := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`); resume.Code != http.StatusOK {
 		t.Fatalf("resume 失败: %d %s", resume.Code, resume.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("修复后 resume 复验未在时限内完成")
@@ -3241,13 +3245,13 @@ func TestTeamIntegration4ScheduledTriggerEndToEnd(t *testing.T) {
 	env.attachScheduler(t)
 
 	// 首轮 sweep 即到期：deadline 轮询等 Run 出现（不经 HTTP 创建）。
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		return len(env.teamRunsList(t, teamID)) == 1
 	}) {
 		t.Fatal("定时触发未在时限内创建 Run")
 	}
 	runID, _ := env.teamRunsList(t, teamID)[0]["id"].(string)
-	drive := env.drive(t, 20*time.Second, func() bool {
+	drive := env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	})
 	if !drive {
@@ -3362,7 +3366,7 @@ func TestTeamIntegration4ScheduledTriggerCrashWindows(t *testing.T) {
 		}
 		env.attachScheduler(t) // 首轮 sweep 即回扫 pending
 		// 回扫裁决：标记清除、lastRunId 指向 journal 里那条 Run（而非新建）。
-		if !awaitCond(t, 20*time.Second, func() bool {
+		if !awaitCond(t, teamIntegrationWait, func() bool {
 			view := env.teamScheduleView(t, crashTeam)
 			pending, _ := view["pendingTriggerId"].(string)
 			return pending == "" && view["lastRunId"] == crashRun
@@ -3376,7 +3380,7 @@ func TestTeamIntegration4ScheduledTriggerCrashWindows(t *testing.T) {
 		//（§10.3），任务全文随快照丢失——重建后回 ready 的任务重派发时入队
 		// 校验拒绝空文本、Run 确定性 failed。触发协议的关键断言是上一段：
 		// journal 事件在，回扫就绝不重触发（哪怕 Run 自身已不可恢复）。
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, crashTeam, crashRun)["status"] == "failed"
 		}) {
 			t.Fatalf("重建的定时 Run 未在时限内确定性收口: %+v", env.runDetail(t, crashTeam, crashRun))
@@ -3407,7 +3411,7 @@ func TestTeamIntegration4ScheduledTriggerCrashWindows(t *testing.T) {
 		})
 		env := reopenTeamIntegrationEnv(t, dataDir)
 		env.attachScheduler(t)
-		if !awaitCond(t, 20*time.Second, func() bool {
+		if !awaitCond(t, teamIntegrationWait, func() bool {
 			return len(env.teamRunsList(t, crashTeam)) == 1
 		}) {
 			t.Fatal("provably 未触发的标记应在回扫后重执行")
@@ -3421,7 +3425,7 @@ func TestTeamIntegration4ScheduledTriggerCrashWindows(t *testing.T) {
 		if payload == nil || payload["scheduledBy"] != triggerID {
 			t.Fatalf("重执行的 run_created 应带 scheduledBy: %v", payload)
 		}
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, crashTeam, runID)["status"] == "completed"
 		}) {
 			t.Fatal("重执行的 Run 未在时限内完成")
@@ -3455,7 +3459,7 @@ func TestTeamIntegration4ScheduledRunRestartRecovery(t *testing.T) {
 		schedule.NextDue = time.Now().Add(-time.Minute)
 	})
 	scheduler := env.attachScheduler(t)
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		return len(env.teamRunsList(t, teamID)) == 1
 	}) {
 		t.Fatal("定时触发未在时限内创建 Run")
@@ -3549,7 +3553,7 @@ func TestTeamIntegration4UnknownOutcomeReconcilerNeverResends(t *testing.T) {
 		t.Fatal("任务未在时限内完成派发记账")
 	}
 	env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 	}) {
 		t.Fatal("结果未知应把 Run 停进 waiting_input")
@@ -3643,12 +3647,12 @@ func TestTeamIntegration4MobileRecoveryViaNotification(t *testing.T) {
 
 	// 停靠：quota 文本 → 任务 stopped(outcome=quota) + run waiting_input +
 	// waiting_input 通知落账。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 	}) {
 		t.Fatal("quota 停靠未在时限内发生")
 	}
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		return kindLog.has(runID, notifications.RunNotifyWaitingInput)
 	}) {
 		t.Fatal("waiting_input 通知未落账")
@@ -3677,7 +3681,7 @@ func TestTeamIntegration4MobileRecoveryViaNotification(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("resume 后 Run 未在时限内完成")
@@ -3686,7 +3690,7 @@ func TestTeamIntegration4MobileRecoveryViaNotification(t *testing.T) {
 	if attempt, _ := teamTaskOf(t, detail, "t1")["attempt"].(float64); attempt != 2 {
 		t.Fatalf("quota 重飞后 attempt 应为 2: %v", attempt)
 	}
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		return kindLog.has(runID, notifications.RunNotifyCompleted)
 	}) {
 		t.Fatal("完成通知未落账")
@@ -3728,7 +3732,7 @@ func TestTeamIntegration4PauseResumeLifecycle(t *testing.T) {
 		{"id":"t2","memberId":"lead","prompt":"暂停剩余任务 PAUSE-TAIL 执行","dependsOn":["t1"],"writeLock":"none"}]}`)
 
 	// t1 在途（闸门未放行）时暂停。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
 	}) {
 		t.Fatal("t1 未在时限内进入 running")
@@ -3747,7 +3751,7 @@ func TestTeamIntegration4PauseResumeLifecycle(t *testing.T) {
 
 	// 暂停期间在途收尾：放行 t1 → completed，Run 仍 paused 不折叠。
 	releaseAgentTurn(t, dataDir, "pl", sessionA)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return detail["status"] == "paused" && teamTaskOf(t, detail, "t1")["status"] == "completed"
 	}) {
@@ -3813,7 +3817,7 @@ func TestTeamIntegration4PauseCorruptRebuildStaysPaused(t *testing.T) {
 	runID := env.createRun(t, teamID, `{"goal":"重建暂停 PAUSE-REBUILD","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"重建暂停在途任务 PAUSE-RB HOLDUNTIL:pr","writeLock":"none"},
 		{"id":"t2","memberId":"lead","prompt":"重建暂停剩余任务 PAUSE-RB-TAIL","dependsOn":["t1"],"writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
 	}) {
 		t.Fatal("t1 未在时限内进入 running")
@@ -3822,7 +3826,7 @@ func TestTeamIntegration4PauseCorruptRebuildStaysPaused(t *testing.T) {
 		t.Fatalf("pause 失败: %d %s", response.Code, response.Body.String())
 	}
 	releaseAgentTurn(t, dataDir, "pr", sessionA)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return detail["status"] == "paused" && teamTaskOf(t, detail, "t1")["status"] == "completed"
 	}) {
@@ -3902,7 +3906,7 @@ func TestTeamIntegration4PauseUpgradesToWaitingInput(t *testing.T) {
 		}
 		// 暂停中「派发结果未知」：账本转 unknown → watcher 升级。
 		env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 		}) {
 			t.Fatal("暂停期间结果未知应把 Run 升级 waiting_input")
@@ -3934,7 +3938,7 @@ func TestTeamIntegration4PauseUpgradesToWaitingInput(t *testing.T) {
 		runID := env.createRun(t, teamID, `{"goal":"暂停配额升级 PAUSE-QUOTA","mode":"pipeline","plan":[
 			{"id":"t1","memberId":"lead","prompt":"暂停配额任务 PAUSE-QUOTA QUOTAGATE:pq","writeLock":"none"}]}`)
 		// QUOTAGATE 首航：闸门放行前 turn 在途。
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
 		}) {
 			t.Fatal("任务未在时限内进入 running")
@@ -3945,7 +3949,7 @@ func TestTeamIntegration4PauseUpgradesToWaitingInput(t *testing.T) {
 		// 放行闸门：在途 turn 以 quota 错误收尾 → watcher 停靠 → 从 paused
 		// 升级 waiting_input。
 		releaseAgentTurn(t, dataDir, "pq", sessionA)
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 		}) {
 			t.Fatal("暂停期间 quota 停靠应把 Run 升级 waiting_input")
@@ -3959,7 +3963,7 @@ func TestTeamIntegration4PauseUpgradesToWaitingInput(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
 		}
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, teamID, runID)["status"] == "completed"
 		}) {
 			t.Fatal("升级后的 resume 未在时限内完成")
@@ -3996,7 +4000,7 @@ func TestTeamIntegration4RunNotificationPayloads(t *testing.T) {
 	// Run 1：单任务完成。
 	doneRun := env.createRun(t, teamID, `{"goal":"通知完成目标 NOTIF-OK","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"通知完成任务 NOTIF-OK","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, doneRun)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
@@ -4008,7 +4012,7 @@ func TestTeamIntegration4RunNotificationPayloads(t *testing.T) {
 		{"id":"c3","memberId":"lead","prompt":"失败挽救三 NOTIF-C3","dependsOn":["c2"],"writeLock":"none"},
 		{"id":"c4","memberId":"lead","prompt":"失败挽救四 NOTIF-C4","dependsOn":["c3"],"writeLock":"none"},
 		{"id":"f5","memberId":"lead","prompt":"失败触发 NOTIF-F5 FAIL 注入","dependsOn":["c4"],"writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, failedRun)["status"] == "failed"
 	}) {
 		t.Fatal("Run 未在时限内失败")
@@ -4016,7 +4020,7 @@ func TestTeamIntegration4RunNotificationPayloads(t *testing.T) {
 	// Run 3：quota 停靠 waiting_input。
 	parkedRun := env.createRun(t, teamID, `{"goal":"通知停靠目标 NOTIF-PARK","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"通知停靠任务 NOTIF-PARK QUOTAFAIL","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, parkedRun)["status"] == "waiting_input"
 	}) {
 		t.Fatal("Run 未在时限内停靠")
@@ -4028,7 +4032,7 @@ func TestTeamIntegration4RunNotificationPayloads(t *testing.T) {
 		{failedRun, notifications.RunNotifyFailed},
 		{parkedRun, notifications.RunNotifyWaitingInput},
 	} {
-		if !awaitCond(t, 20*time.Second, func() bool {
+		if !awaitCond(t, teamIntegrationWait, func() bool {
 			return kindLog.has(want.runID, want.kind)
 		}) {
 			t.Fatalf("Run %s 的 %s 通知未落账", want.runID, want.kind)
@@ -4085,9 +4089,9 @@ func TestTeamIntegration4RunNotificationBackfillAndBackoff(t *testing.T) {
 	// Run A：完成即送达（对照面——此后永不重发）。
 	runA := env.createRun(t, teamID, `{"goal":"补发对照 BACKFILL-A","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"补发对照任务 BACKFILL-A","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runA)["status"] == "completed"
-	}) || !awaitCond(t, 20*time.Second, func() bool {
+	}) || !awaitCond(t, teamIntegrationWait, func() bool {
 		return kindLog.has(runA, notifications.RunNotifyCompleted)
 	}) {
 		t.Fatal("Run A 未完成或通知未落账")
@@ -4114,9 +4118,9 @@ func TestTeamIntegration4RunNotificationBackfillAndBackoff(t *testing.T) {
 	fake.setFailing(true)
 	runB := env.createRun(t, teamID, `{"goal":"补发退避 BACKFILL-B","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"补发退避任务 BACKFILL-B","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runB)["status"] == "completed"
-	}) || !awaitCond(t, 20*time.Second, func() bool {
+	}) || !awaitCond(t, teamIntegrationWait, func() bool {
 		return kindLog.has(runB, notifications.RunNotifyCompleted)
 	}) {
 		t.Fatal("Run B 未完成或通知未落账")
@@ -4145,9 +4149,9 @@ func TestTeamIntegration4RunNotificationBackfillAndBackoff(t *testing.T) {
 	// Run C：关停前落账、未送达——水位窗口内的补发候选。
 	runC := env.createRun(t, teamID, `{"goal":"补发窗口 BACKFILL-C","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"补发窗口任务 BACKFILL-C","writeLock":"none"}]}`)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runC)["status"] == "completed"
-	}) || !awaitCond(t, 20*time.Second, func() bool {
+	}) || !awaitCond(t, teamIntegrationWait, func() bool {
 		return kindLog.has(runC, notifications.RunNotifyCompleted)
 	}) {
 		t.Fatal("Run C 未完成或通知未落账")
@@ -4211,12 +4215,12 @@ func TestTeamIntegration4StallNotifiesWithoutStopping(t *testing.T) {
 		{"id":"t1","memberId":"lead","prompt":"停滞观测任务 STALL-WATCH HOLDUNTIL:sw","writeLock":"none"}]}`)
 
 	// 在途（闸门未放行）→ 跨过判定线 → run_stalled 落账恰好一条。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["status"] == "running"
 	}) {
 		t.Fatal("任务未在时限内进入 running")
 	}
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		return kindLog.has(runID, notifications.RunNotifyStall) &&
 			teamEventCount(env.journalEvents(t), team.EventRunStalled) == 1
 	}) {
@@ -4253,7 +4257,7 @@ func TestTeamIntegration4StallNotifiesWithoutStopping(t *testing.T) {
 
 	// 放行 → 任务完成 → Run 正常终局（成功即恢复；不再报第二条 stall）。
 	releaseAgentTurn(t, dataDir, "sw", sessionA)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("停滞后的 Run 未在时限内正常完成")
@@ -4289,7 +4293,7 @@ func TestTeamIntegration4BudgetParkResumeAndRestart(t *testing.T) {
 
 	// 第一次停靠：a/b 派发记账后，试图派 c 时预算到线（在途的 b 由 watcher
 	// 自然收尾——停靠不 fold，等它落 completed 再断言）。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		reason, _ := detail["stopReason"].(string)
 		return detail["status"] == "waiting_input" &&
@@ -4310,7 +4314,7 @@ func TestTeamIntegration4BudgetParkResumeAndRestart(t *testing.T) {
 	if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`); response.Code != http.StatusOK {
 		t.Fatalf("resume 失败: %d %s", response.Code, response.Body.String())
 	}
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		reason, _ := detail["stopReason"].(string)
 		return detail["status"] == "waiting_input" &&
@@ -4419,7 +4423,7 @@ func TestTeamIntegration4RunStats(t *testing.T) {
 		runID := env.createRun(t, teamID, `{"goal":"统计目标 STATS-FLOW","mode":"pipeline","plan":[
 			{"id":"t1","memberId":"lead","prompt":"统计任务一 STATS-ONE","writeLock":"none"},
 			{"id":"t2","memberId":"lead","prompt":"统计任务二 STATS-TWO","dependsOn":["t1"],"writeLock":"none"}]}`)
-		if !env.drive(t, 20*time.Second, func() bool {
+		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, teamID, runID)["status"] == "completed"
 		}) {
 			t.Fatal("Run 未在时限内完成")
@@ -4554,7 +4558,7 @@ func TestTeamIntegration4RunGraph(t *testing.T) {
 
 	// 中间态：广播组一支放行完成、另一支仍持闸门——聚合节点状态按注意力
 	// 序取在途（dispatching/running 优先于 completed）。
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return inFlightTask(teamTaskOf(t, detail, "grp-lead")) &&
 			inFlightTask(teamTaskOf(t, detail, "grp-dev"))
@@ -4562,7 +4566,7 @@ func TestTeamIntegration4RunGraph(t *testing.T) {
 		t.Fatal("广播分支未在时限内并行在途")
 	}
 	releaseAgentTurn(t, dataDir, "gg", sessionA)
-	if !awaitCond(t, 20*time.Second, func() bool {
+	if !awaitCond(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return teamTaskOf(t, detail, "grp-lead")["status"] == "completed" &&
 			inFlightTask(teamTaskOf(t, detail, "grp-dev"))
@@ -4606,7 +4610,7 @@ func TestTeamIntegration4RunGraph(t *testing.T) {
 
 	// 终态：跑完 → 三节点 completed、分层行序 prep→grp→fin、结果摘要就位。
 	releaseAgentTurn(t, dataDir, "gg", sessionB)
-	if !env.drive(t, 20*time.Second, func() bool {
+	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
 		t.Fatal("Run 未在时限内完成")
