@@ -132,6 +132,7 @@ main{background:var(--page);overflow:hidden}
 .chat-title-button{display:block;width:100%;min-width:0;min-height:40px;border:0;border-radius:7px;background:none;padding:8px 4px;text-align:left;color:var(--text)}
 .chat-title-button:hover{background:var(--surface)}
 #chat-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px;line-height:24px;font-weight:650;letter-spacing:0;margin:0}
+.chat-context{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:12px;line-height:18px;font-weight:400}
 .status{background:var(--soft);color:var(--green);font-size:12px;line-height:18px;padding:3px 8px;max-width:112px;overflow:hidden;text-overflow:ellipsis}
 .status.offline{background:var(--warning-bg);color:var(--warning-text)}
 .timeline{padding:24px max(24px,calc((100% - 780px)/2));scrollbar-width:thin;scrollbar-color:var(--control) transparent}
