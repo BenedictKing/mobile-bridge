@@ -25,6 +25,8 @@
 
 ### Changed / Fixed
 
+- 会话列表活动指示与两轮离线语义修正（`web/activity.js`/`app.js`/`presentation.css` + `internal/httpd/httpd.go` + `internal/codex/bridge.go`，/api/activity 与 codex 桥补出 turnId/turnStatus/pendingRequests，附 httpd 集成测试）：指示点旁显示文字标签；在线会话有待确认请求显示「待确认」（优先于「运行中」），运行中显示「运行中」，回合落定未查看显示「已完成/运行失败/已停止，未查看」（首见即完成的回合不再漏标，terminal token 变更才标未读）。离线语义两轮收窄：第一版对一切离线行显示灰点「运行状态暂不可用」并在重启后给全部历史会话挂上标记（含从未点开的）——现改为从未观测过的会话不建行、不显示任何标记；只有断线前确实在运行（status=active）的会话才显示「运行状态暂不可用」，未读标记在离线期间保留，存量污染行因 status=unknown 自动不再显示。
+
 - 修复 kimi 迁移会话回放的两处空白渲染（`internal/acpview` acpview.go/view.go + 测试）：① `Text()` 此前只读单个内容块的 `text` 字段，kimi 迁移记录会把 ACP 块再包一层 `content/message/data`（或直接给块数组/字符串），导致 `session/load` 回放时助手消息整块丢失——现递归展开字符串、块数组与三种包装键，分段文本以换行拼接。② kimi 把自己的 `<system-reminder>` 内部注入回放成 `user_message_chunk`，`StripInternalReminders` 剥空后视图仍无条件插入空 user 行，手机端渲染成一排空白气泡——现剥空后跳过插行（「关闭上一轮」的副作用保留），真实用户输入（含迁移转录、任务通知）不受影响。新增回归：包装块分段拼接、提醒块不留空行且仍收口助手轮、后续真实输入开新轮。以真实迁移会话（2ff78510，33 条 user chunk 中 28 条纯提醒）经 agent-host socket 回放验证：修复前 7 个空 user 行，修复后每条 user 行均有文本。
 
 - 修复 Jev 两项终审低危债务（`web/app.js`/`web/i18n.js` + `internal/jev/approval.go`）：策略 JSON 文本域在解析后、提交前校验顶层必须为非数组对象，且包含有限数值 `threshold` 与数组 `categories`，输入 `null` 等错误形状时显示明确中英文错误并保留表单，不再因读取 `parsed.categories` 抛异常而卡住保存；深层类别规则仍由后端 `Settings.Update` 权威校验。自动审批的原生选项映射收紧权限语义：`accept_once` 只匹配 kind 含 `once` 的允许选项，不再把 `allow_always` 等更宽权限当作一次性许可；缓存命中复用同一映射，后续卡片只剩 `allow_always` 时缓存无法映射并回退实时评估，最终以 `no_matching_option` 失败关闭。新增回归测试覆盖「先 `allow_once` 获批并缓存、后同命令仅 `allow_always`」场景，断言不自动批准、不缓存命中且重新调用远端评估。
