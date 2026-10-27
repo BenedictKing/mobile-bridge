@@ -148,7 +148,7 @@ func TestSubmissionsLedgerTransitions(t *testing.T) {
 	}
 	row, _ := rows.Items[0].(*jsoncompat.Object)
 	encoded := string(jsoncompat.EncodeCompact(row))
-	for _, needle := range []string{`"id":"9aaaaaaa`, `"text":"带附件"`, `"status":"queued"`, `"editable":true`, `"attachments":["截图.png"]`} {
+	for _, needle := range []string{`"id":"9aaaaaaa`, `"text":"带附件"`, `"status":"queued"`, `"editable":true`, `"attachments":["截图.png"]`, `"attachmentIds":["up-1"]`} {
 		if !strings.Contains(encoded, needle) {
 			t.Fatalf("meta missing %s in %s", needle, encoded)
 		}

@@ -218,6 +218,13 @@ func (q *submissions) meta(threadID string) *jsoncompat.Array {
 			}
 			row.Set("attachments", names)
 		}
+		if len(entry.Attachments) > 0 {
+			ids := &jsoncompat.Array{}
+			for _, id := range entry.Attachments {
+				ids.Items = append(ids.Items, id)
+			}
+			row.Set("attachmentIds", ids)
+		}
 		switch {
 		case entry.Error != "":
 			row.Set("error", entry.Error)

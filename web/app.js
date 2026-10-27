@@ -757,6 +757,20 @@ async function ignoreSubmission(value){
   if(currentId===value.threadId&&currentHost===value.host&&state){state.submissions=(state.submissions||[]).filter(row=>row.id!==value.submissionId);renderQueue(state.submissions);}
   return result;
 }
+function renderQueueAttachments(row,target,host){
+  if(!row.attachments?.length)return null;
+  const root=el('div','queue-attachments');
+  row.attachments.forEach((name,index)=>{
+    const id=row.attachmentIds?.[index];
+    if(!id||!/\.(?:png|jpe?g|gif|webp)$/i.test(name)){root.append(el('small','queue-attachment-name muted',name));return;}
+    const source=sessionUrl(target,'uploads/'+encodeURIComponent(id)+'/preview',host),original=source+'&variant=original';
+    const link=el('a','queue-attachment-image');link.href=original;link.target='_blank';link.rel='noopener';link.dataset.imagePreview=original;link.dataset.imageName=name;
+    const image=el('img','attachment-image');image.alt=name;image.loading='lazy';image.decoding='async';image.src=source;
+    image.onerror=()=>link.replaceWith(el('small','queue-attachment-name muted',name));
+    link.append(image,el('small','queue-attachment-name',name));root.append(link);
+  });
+  return root;
+}
 function renderQueue(rows){
   $('queued').replaceChildren();
   const target=currentId,host=currentHost;
@@ -770,7 +784,7 @@ function renderQueue(rows){
     const reply=row.text.startsWith('<send_user_message_question_reply>');
     const failed=row.status==='failed';
     card.append(el('strong','',failed?t('发送失败：')+(row.error||row.lastQueueError||t('Agent 拒绝了这条消息')):row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):row.text));
-    if(row.attachments?.length)card.append(el('small','muted',t('附件：')+row.attachments.join('、')));
+    const attachments=renderQueueAttachments(row,target,host);if(attachments)card.append(attachments);
     if(row.status==='queued'||failed){
       const sendLabel=failed?t('重试发送'):t('立即发送');
       const actions=el('div','queue-actions');
