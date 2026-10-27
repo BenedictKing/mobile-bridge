@@ -72,6 +72,8 @@ type Session struct {
 	native         func(sessionID string) (*acpview.NativeSnapshot, error)
 	nativeStop     chan struct{}
 	nativeInterval time.Duration
+	retryStatus    func(sessionID string) (*jsoncompat.Object, error)
+	retrying       *jsoncompat.Object
 	// nativeSettle runs when a desktop-driven turn stops running, so queued
 	// phone messages dispatch exactly like after a gateway-sent turn.
 	nativeSettle func(*Session)
@@ -192,6 +194,8 @@ type Manager struct {
 	// (kimi) and is the fallback for agents without session/list (workbuddy).
 	// ACP rows win when the same sessionId appears in both sources.
 	NativeList func() []*jsoncompat.Object
+	// RetryStatus supplements agents whose ACP stream omits provider retries.
+	RetryStatus func(sessionID string) (*jsoncompat.Object, error)
 
 	// Canonical resolves a session/new placeholder to the backend session id
 	// once the agent materializes it under a different id (zcode's lazy
@@ -819,6 +823,7 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.switchResumeRuns = 0
 	}
 	s.promptRunning = true
+	s.retrying = nil
 	s.View.BeginTurn(text)
 	s.signalLocked()
 	slice := s.activitySlice
@@ -1655,7 +1660,11 @@ func (m *Manager) Close() {
 func (s *Session) Snapshot() *jsoncompat.Object {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.View.Snapshot()
+	snapshot := s.View.Snapshot()
+	if s.retrying != nil {
+		snapshot.Set("retrying", jsoncompat.Clone(s.retrying))
+	}
+	return snapshot
 }
 
 // ReadOnly reports whether this view is a native transcript of a session the
@@ -1684,15 +1693,15 @@ func (s *Session) Wait(timeout time.Duration) {
 	}
 }
 
-// startNative wires the optional persisted-store poller. It runs for the
-// session's whole life: a desktop turn can start at any moment, and the ACP
-// handle never learns about it.
+// startNative wires optional persisted-store and retry-state pollers. They run
+// for the session's whole life and share one timer.
 func (m *Manager) startNative(session *Session) {
-	if m == nil || m.Native == nil || session == nil {
+	if m == nil || (m.Native == nil && m.RetryStatus == nil) || session == nil {
 		return
 	}
 	session.native = m.Native
 	session.nativeSettle = m.NativeSettle
+	session.retryStatus = m.RetryStatus
 	m.startPoller(session)
 }
 
@@ -1736,6 +1745,7 @@ func (m *Manager) startPoller(session *Session) {
 	// First fold before the view is exposed so the phone's first paint is the
 	// native conversation (title and settled tip included), not a replay.
 	session.syncNative()
+	session.syncRetry()
 	go session.followNative(stop)
 }
 
@@ -1755,6 +1765,7 @@ func (s *Session) followNative(stop <-chan struct{}) {
 		case <-timer.C:
 		}
 		s.syncNative()
+		s.syncRetry()
 		timer.Reset(s.nativeInterval)
 	}
 }
@@ -1804,6 +1815,35 @@ func (s *Session) syncNative() {
 	if settled && hook != nil {
 		go hook(s)
 	}
+}
+
+func (s *Session) syncRetry() {
+	loader := s.retryStatus
+	if loader == nil {
+		return
+	}
+	s.mu.Lock()
+	skip := s.closed || (s.View.Status != "active" && s.retrying == nil)
+	s.mu.Unlock()
+	if skip {
+		return
+	}
+	next, err := loader(s.ID)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	same := (s.retrying == nil && next == nil) || (s.retrying != nil && next != nil &&
+		string(jsoncompat.EncodeCompact(s.retrying)) == string(jsoncompat.EncodeCompact(next)))
+	if same {
+		return
+	}
+	s.retrying = next
+	s.signalLocked()
 }
 
 // shouldApplyNative keeps the ACP-built tip when both sides describe the

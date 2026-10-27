@@ -860,6 +860,8 @@ func runGateway(args []string) {
 		manager.NativeList = func() []*jsoncompat.Object {
 			return kimi.ListSessions(kimiHome)
 		}
+		retries := kimi.NewRetrySource(kimiHome)
+		manager.RetryStatus = retries.Status
 	}
 	if manager := server.ACPAgents["workbuddy"]; manager != nil && !scriptedMode {
 		// codebuddy --acp implements session/load but not session/list

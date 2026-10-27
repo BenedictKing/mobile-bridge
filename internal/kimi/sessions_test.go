@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"encoding/json"
+	"strings"
 )
 
 func writeSessionState(t *testing.T, root, workspace, session, relative, content string) string {
@@ -89,5 +90,45 @@ func TestListSessionsUsesStateMtimeFallback(t *testing.T) {
 func TestListSessionsMissingStore(t *testing.T) {
 	if rows := ListSessions(t.TempDir()); rows != nil {
 		t.Fatalf("missing store = %v", rows)
+	}
+}
+
+func TestRetrySourceTracksLatestRetry(t *testing.T) {
+	root := t.TempDir()
+	retry := `{"type":"turn.step.retrying","turnId":7,"nextAttempt":8,"maxAttempts":10,"delayMs":1234,"errorName":"APIProviderRateLimitError","errorMessage":"429 overloaded","statusCode":429,"time":123456}`
+	wire := strings.Repeat("x", maxRetryWireBytes) + "\n" +
+		`{"type":"llm.request"}` + "\n" + retry + "\n"
+	path := writeSessionState(t, root, "wd", "session-retry", "agents/main/wire.jsonl", wire)
+	source := NewRetrySource(root)
+
+	status, err := source.Status("session-retry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status == nil || status.MustGet("nextAttempt").(json.Number).String() != "8" ||
+		status.MustGet("maxAttempts").(json.Number).String() != "10" ||
+		status.MustGet("statusCode").(json.Number).String() != "429" ||
+		status.MustGet("errorMessage") != "429 overloaded" {
+		t.Fatalf("retry status = %v", status)
+	}
+
+	wire += `{"type":"context.append_loop_event","event":{"type":"content.part"}}` + "\n"
+	if err := os.WriteFile(path, []byte(wire), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err = source.Status("session-retry")
+	if err != nil || status == nil {
+		t.Fatalf("ordinary activity cleared retry: %v %v", status, err)
+	}
+
+	for _, event := range []string{`{"type":"llm.request"}`, `{"type":"turn.ended"}`, `{"type":"turn.prompt"}`, `{"type":"turn.cancel"}`} {
+		wire = retry + "\n" + event + "\n"
+		if err := os.WriteFile(path, []byte(wire), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		status, err = source.Status("session-retry")
+		if err != nil || status != nil {
+			t.Fatalf("%s did not clear retry: %v %v", event, status, err)
+		}
 	}
 }

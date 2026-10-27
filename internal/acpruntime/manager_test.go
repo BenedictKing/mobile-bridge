@@ -898,3 +898,44 @@ func TestOwnsUpdateAcceptsCanonicalBackendID(t *testing.T) {
 		t.Fatal("unrelated session id accepted")
 	}
 }
+
+func TestSessionSyncRetrySignalsChangesAndSkipsIdleReads(t *testing.T) {
+	session := &Session{ID: "sess-retry", View: acpview.NewView("sess-retry", "Demo", "/work", func() float64 { return 1 }), changed: make(chan struct{})}
+	session.View.BeginTurn("测试")
+	retry := jsoncompat.NewObject()
+	retry.Set("statusCode", jsoncompat.Num(429))
+	retry.Set("nextAttempt", jsoncompat.Num(2))
+	var current *jsoncompat.Object = retry
+	reads := 0
+	session.retryStatus = func(string) (*jsoncompat.Object, error) {
+		reads++
+		return current, nil
+	}
+
+	session.syncRetry()
+	if got := session.Snapshot().MustGet("retrying"); got == nil {
+		t.Fatal("retry state missing from snapshot")
+	}
+	sequence := session.Sequence()
+	session.syncRetry()
+	if session.Sequence() != sequence {
+		t.Fatal("unchanged retry state emitted another notification")
+	}
+
+	current = nil
+	session.syncRetry()
+	if _, exists := session.Snapshot().Get("retrying"); exists {
+		t.Fatal("cleared retry state remained in snapshot")
+	}
+	if session.Sequence() <= sequence {
+		t.Fatal("clearing retry state did not emit a notification")
+	}
+
+	session.View.EndTurn("end_turn")
+	readsAfterSettle := reads
+	current = retry
+	session.syncRetry()
+	if reads != readsAfterSettle {
+		t.Fatal("idle session without displayed retry performed a read")
+	}
+}
