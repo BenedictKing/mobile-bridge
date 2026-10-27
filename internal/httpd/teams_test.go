@@ -1974,6 +1974,20 @@ func TestTeamsRunAmend(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", false)
 	teamID := env.seedAmendTeam(t)
 	parentID := env.createRun(t, teamID, `{"goal":"原始目标","mode":"pipeline",`+amendPlanJSON+`}`)
+	// createRun 返回后，Run 自己的调度循环会异步完成首派推进（created →
+	// dispatching 落一次 SaveRun）。先等这次推进落定再取父 Run 基线，否则
+	// 版本基线与断言窗口内的循环写入相撞（全包负载下偶发 before=2 after=3）。
+	quiesce := time.Now().Add(5 * time.Second)
+	for {
+		parent := env.store.Run(parentID)
+		if parent != nil && parent.Status != "created" {
+			break
+		}
+		if time.Now().After(quiesce) {
+			t.Fatal("父 Run 未在时限内离开 created 状态")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	// 父 Run 的 t1 落 completed 带结果引用（amend 缓存导入的最小凭据）。
 	env.forceRunUpdate(t, parentID, func(run *team.Run) {
 		for i := range run.Tasks {
