@@ -238,9 +238,24 @@ func (v *View) FinishReplay() {
 	v.Status = "idle"
 }
 
+// PermissionCard derives a permission card's subject fields from raw ACP
+// session/request_permission params: the tool call's title, a command
+// summary of its raw input, and whether kimi bridged an AskUserQuestion
+// onto the request. Callers outside the view (e.g. the Jev approval hook)
+// see the same wire params and need the same derivation.
+func PermissionCard(params *jsoncompat.Object) (title, command string, question bool) {
+	if params == nil {
+		return "权限请求", "", false
+	}
+	toolCall := obj(truthyOr(params.MustGet("toolCall"), any(jsoncompat.NewObject())))
+	title, _ = truthyOr(toolCall.MustGet("title"), "权限请求").(string)
+	command = CommandSummary(toolCall.MustGet("rawInput"))
+	question = questionTitle(title) || QuestionSummary(toolCall.MustGet("rawInput")) != ""
+	return title, command, question
+}
+
 // AddPermission mirrors add_permission.
 func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
-	toolCall := obj(truthyOr(params.MustGet("toolCall"), any(jsoncompat.NewObject())))
 	options := &jsoncompat.Array{}
 	if list := arr(truthyOr(params.MustGet("options"), any(&jsoncompat.Array{}))); list != nil {
 		for _, item := range list.Items {
@@ -254,16 +269,17 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 		}
 	}
 	entryParams := jsoncompat.NewObject()
-	titleText, _ := truthyOr(toolCall.MustGet("title"), "权限请求").(string)
+	titleText, command, isQuestion := PermissionCard(params)
 	entryParams.Set("title", titleText)
-	entryParams.Set("command", CommandSummary(toolCall.MustGet("rawInput")))
+	entryParams.Set("command", command)
 	// kimi bridges its AskUserQuestion tool onto session/request_permission:
 	// the question text rides in toolCall.content while the options are the
 	// answer choices (plus a reject_once "Skip"). Flag it so the phone draws
 	// a question card instead of a permission prompt.
-	if questionTitle(titleText) || QuestionSummary(toolCall.MustGet("rawInput")) != "" {
+	if isQuestion {
 		entryParams.Set("question", true)
 	}
+	toolCall := obj(truthyOr(params.MustGet("toolCall"), any(jsoncompat.NewObject())))
 	if text := flattenContentText(toolCall.MustGet("content")); text != "" {
 		entryParams.Set("text", text)
 	}

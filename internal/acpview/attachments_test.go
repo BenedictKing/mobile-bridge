@@ -49,6 +49,17 @@ func attachmentsOf(message *jsoncompat.Object) []*jsoncompat.Object {
 	return items
 }
 
+func TestTextAcceptsMigratedContentWrappers(t *testing.T) {
+	view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+	view.BeginTurn("问题")
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"agent_message_chunk","messageId":"m-1","content":{"content":[{"type":"text","text":"第一段"},{"type":"text","text":"第二段"}]}}`))
+	message := snapshotMessage(t, view, "agentMessage")
+	if text, _ := message.MustGet("text").(string); text != "第一段\n第二段" {
+		t.Fatalf("text=%q", text)
+	}
+}
+
 // Agent message chunks carrying non-text blocks used to vanish outright
 // (Text() only reads the text field); they must become row attachments now.
 func TestNonTextChunksBecomeAttachments(t *testing.T) {

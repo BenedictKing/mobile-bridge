@@ -351,9 +351,28 @@ func Normalize(state *jsoncompat.Object, connected bool) *jsoncompat.Object {
 
 // Text mirrors _text.
 func Text(content any) string {
-	if block := obj(content); block != nil {
-		if text, ok := block.MustGet("text").(string); ok && text != "" {
+	switch typed := content.(type) {
+	case string:
+		return textutil.StripInternalReminders(typed)
+	case *jsoncompat.Array:
+		parts := make([]string, 0, len(typed.Items))
+		for _, item := range typed.Items {
+			if text := Text(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	case *jsoncompat.Object:
+		if text, ok := typed.MustGet("text").(string); ok && text != "" {
 			return textutil.StripInternalReminders(text)
+		}
+		// Kimi migration records may wrap ACP blocks in content/message/data.
+		for _, key := range []string{"content", "message", "data"} {
+			if value, ok := typed.Get(key); ok {
+				if text := Text(value); text != "" {
+					return text
+				}
+			}
 		}
 	}
 	return ""
