@@ -69,6 +69,7 @@ function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
 function hostUrl(path,host=currentHost){return /^\/api\/sessions\/[\w.-]+/.test(path)&&!/[?&]host=/.test(path)?path+(path.includes('?')?'&':'?')+'host='+encodeURIComponent(host):path;}
 let catalogData={models:null,skills:null};let catalogResults={models:null,skills:null};let catalogTasks={models:null,skills:null};let selectedSkills=new Set(),invalidSkills=new Set(),skillIndex=new Map(),skillTotal=0,skillPages=[],skillQuery={q:'',offset:0,limit:200},skillSearchTimer,skillRequest=0;
+let skillSuggestionRows=[],skillSuggestionIndex=0,skillSuggestionRange=null,skillSuggestionQuery='';
 function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
 function toast(text){text=t(text);$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4200);}
 async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await fetch(hostUrl(path),options);const data=await response.json().catch(()=>({}));if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus});}return data;}
@@ -244,7 +245,7 @@ function renderNewChatProjects(){
 function updateNewChatPin(){
   const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
   const pinned=!!project&&projectPinned(project);
-  $('new-chat-pin').textContent=pinned?'★':'☆';$('new-chat-pin').classList.toggle('active',pinned);
+  $('new-chat-pin').classList.toggle('active',pinned);
   $('new-chat-pin').title=t(pinned?'取消置顶此项目':'置顶此项目');
 }
 $('new-chat-filter').oninput=renderNewChatProjects;
@@ -348,13 +349,13 @@ const messageActions=new MessageActions({request:api,openChat,refresh:()=>loadLi
 document.addEventListener('bridge-message-error',event=>toast(event.detail));
 $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-details-dialog').close();openChat(source.id,source.host).catch(e=>toast(e.message));}};
 function saveDraft(){if(currentId)sessionStorage.setItem('draft:'+chatKey(),$('message').value);}
-$('message').oninput=()=>{saveDraft();syncSendButton();};
+$('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();};
 async function openChat(id,host="local"){
 // Run 页与聊天互斥：任何 openChat 路径（含 messageActions pending 早退）都要先
 // 收起 Run 页（停订阅、隐藏区块），否则两块 height:100% 的 section 叠层破版
 // 且 Run 页在后台继续轮询。
 if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';
-if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();$('migrate-control').hidden=true;$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
+if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();$('migrate-control').hidden=true;$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
   window.BridgePresentation?.openChat();
   startCatalog();
   const reading=timeline.start();
@@ -578,7 +579,7 @@ function renderState(view){state=view;renderAPKDownload(view.files);renderContex
   // Agents without steering only have queueing while busy: preselect it once
   // per run so one tap on 发送 queues the message instead of erroring out.
   if(view.status==='active'&&!caps.has('steer')&&$('send-mode').value==='send'&&!autoQueueArmed){autoQueueArmed=true;$('send-mode').value='queue';}
-  if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('send-mode').hidden=readOnly;$('work-mode').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);syncDocumentTitle();}
+  if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('send-mode').hidden=readOnly;$('work-mode').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);updateSkillSuggestions();syncDocumentTitle();}
 $('send-mode').onchange=()=>{autoQueueArmed=false;workModes.render(state,$('send-mode').value,sending);};
 function jsonPretty(value){return typeof value==='string'?value:JSON.stringify(value,null,2);}
 function approvalRisk(params){
@@ -882,9 +883,10 @@ function openQueueEditor(row,target,host){
 }
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
 function syncSendButton(){$('send').disabled=!!state?.readOnly||sending||!state||state.loadingHistory||state.activating||!attachments.ready()||(!$('message').value.trim()&&!attachments.ids().length);}
-$('composer').onsubmit=async event=>{event.preventDefault();if(sending||!currentId||state?.readOnly)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort();const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale()};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
+$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort();const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale()};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
 toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){const busy=/^(.+) 正在执行。(.+)$/.exec(error.message);$('send-error').textContent=busy?busy[1]+t(' 正在执行。')+t(busy[2]):t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);syncSendButton();}};
 $('message').onkeydown=event=>{
+  if(handleSkillKeydown(event))return;
   // IME composition Enter (incl. Safari's post-composition keyCode 229) must not send.
   if(event.key!=='Enter'||event.altKey||event.isComposing||event.keyCode===229)return;
   const enterSends=document.documentElement.dataset.enterMode==='send';
@@ -951,7 +953,7 @@ async function loadSkills({refresh=false,append=false}={}){
     const valid=new Set((Array.isArray(value.selectedSkills)?value.selectedSkills:[]).map(row=>row.id));
     const checked=new Set(ids);
     invalidSkills=new Set([...selectedSkills].filter(id=>checked.has(id)?!valid.has(id):invalidSkills.has(id)));
-    renderSkillPills();renderSkills();renderSkillCache(value);$('skills-error').textContent=[...(value.errors||[]),value.refreshError].filter(Boolean).join('\n');
+    renderSkillPills();renderSkills();renderSkillCache(value);updateSkillSuggestions();$('skills-error').textContent=[...(value.errors||[]),value.refreshError].filter(Boolean).join('\n');
     return value;
   }).finally(()=>{
     if(catalogTasks.skills===request&&generation===skillRequest)catalogTasks.skills=null;
@@ -996,6 +998,55 @@ $('model-form').onsubmit=async event=>{
   }catch(e){if(request===modelRequest&&chatKey(target,host)===chatKey())$('model-error').textContent=t(e.message);}
   finally{modelSaving=false;if(request===modelRequest){$('model-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=false);fastModeControl.setBusy(false);$('model-save').disabled=!state?.connected;}}
 };
+function skillSelectionLimit(){return state?.agent==='codex'||!state?8:1;}
+function selectSkill(id){
+  if(selectedSkills.has(id))return true;
+  const limit=skillSelectionLimit();
+  if(limit===1){selectedSkills.clear();invalidSkills.clear();}
+  else if(selectedSkills.size>=limit){toast('最多选择 8 个 Skill');return false;}
+  selectedSkills.add(id);invalidSkills.delete(id);renderSkillPills();renderSkills();return true;
+}
+function closeSkillSuggestions(){
+  const panel=$('skill-suggestions');panel.hidden=true;skillSuggestionRange=null;skillSuggestionQuery='';skillSuggestionRows=[];
+  $('message').setAttribute('aria-expanded','false');$('message').removeAttribute('aria-activedescendant');
+}
+function updateSkillSuggestions(){
+  const input=$('message');
+  if(!currentId||state?.readOnly||$('skills-button').hidden){closeSkillSuggestions();return;}
+  const caret=input.selectionStart;
+  if(caret!==input.selectionEnd){closeSkillSuggestions();return;}
+  const match=/(?:^|\n)\/([^\s/]*)$/.exec(input.value.slice(0,caret));
+  if(!match){closeSkillSuggestions();return;}
+  const query=match[1].toLocaleLowerCase(),rows=(Array.isArray(catalogData?.skills)?catalogData.skills:[]).filter(skill=>!selectedSkills.has(skill.id)&&[skill.name,skill.displayName,skill.description].join(' ').toLocaleLowerCase().includes(query)).slice(0,8);
+  skillSuggestionRange={start:match.index+match[0].indexOf('/'),end:caret};skillSuggestionRows=rows;
+  if(skillSuggestionQuery!==query)skillSuggestionIndex=0;skillSuggestionQuery=query;
+  skillSuggestionIndex=Math.min(skillSuggestionIndex,Math.max(0,rows.length-1));
+  const panel=$('skill-suggestions');panel.replaceChildren();
+  if(!rows.length){panel.append(el('p','skill-suggestion-empty',t('没有匹配的 Skill')));}
+  rows.forEach((skill,index)=>{
+    const button=el('button','skill-suggestion'+(index===skillSuggestionIndex?' active':''));button.type='button';button.id='skill-suggestion-'+index;button.setAttribute('role','option');button.setAttribute('aria-selected',String(index===skillSuggestionIndex));
+    button.append(el('strong','',skill.displayName||skill.name),el('small','',skill.description||''));
+    button.onpointerdown=event=>{event.preventDefault();chooseSkillSuggestion(index);};panel.append(button);
+  });
+  panel.hidden=false;input.setAttribute('aria-expanded','true');
+  if(rows.length)input.setAttribute('aria-activedescendant','skill-suggestion-'+skillSuggestionIndex);
+  else input.removeAttribute('aria-activedescendant');
+}
+function chooseSkillSuggestion(index){
+  const skill=skillSuggestionRows[index],range=skillSuggestionRange,input=$('message');if(!skill||!range||!selectSkill(skill.id))return;
+  input.value=input.value.slice(0,range.start)+input.value.slice(range.end);input.setSelectionRange(range.start,range.start);
+  closeSkillSuggestions();saveDraft();syncSendButton();window.BridgePresentation?.resizeMessage();input.focus();
+}
+function handleSkillKeydown(event){
+  if($('skill-suggestions').hidden||event.isComposing||event.keyCode===229)return false;
+  if(event.key==='Escape'){event.preventDefault();closeSkillSuggestions();return true;}
+  if(!skillSuggestionRows.length)return false;
+  if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+    event.preventDefault();const delta=event.key==='ArrowDown'?1:-1;skillSuggestionIndex=(skillSuggestionIndex+delta+skillSuggestionRows.length)%skillSuggestionRows.length;updateSkillSuggestions();return true;
+  }
+  if(event.key==='Enter'||event.key==='Tab'){event.preventDefault();chooseSkillSuggestion(skillSuggestionIndex);return true;}
+  return false;
+}
 function renderSkillPills(){
   $('skill-count').textContent=selectedSkills.size?'('+selectedSkills.size+')':'';
   $('skill-pills').replaceChildren();
@@ -1016,9 +1067,8 @@ function renderSkills(){
     const label=el('label','skill-option');
     const input=el('input');input.type='checkbox';input.value=skill.id;input.checked=selectedSkills.has(skill.id);
     input.onchange=()=>{
-      if(input.checked&&selectedSkills.size>=8){input.checked=false;toast('最多选择 8 个 Skill');return;}
-      if(input.checked){selectedSkills.add(skill.id);invalidSkills.delete(skill.id);}else selectedSkills.delete(skill.id);
-      renderSkillPills();
+      if(input.checked&&!selectSkill(skill.id))input.checked=false;
+      else if(!input.checked){selectedSkills.delete(skill.id);renderSkillPills();}
     };
     const content=el('span');content.append(el('strong','',skill.displayName),el('small','',skill.description));
     label.append(input,content);list.append(label);
@@ -1026,7 +1076,7 @@ function renderSkills(){
   if(!visible.length)list.append(el('p','muted',t('没有匹配的 Skill')));
 }
 async function openSkills(refresh=false){
-  if(!currentId)return;$('skills-error').textContent='';if(!$('skills-dialog').open)$('skills-dialog').showModal();
+  if(!currentId)return;closeSkillSuggestions();$('skills-error').textContent='';if(!$('skills-dialog').open)$('skills-dialog').showModal();
   if(catalogData.skills?.length)renderSkills();
   else $('skill-list').textContent=t('正在读取已安装 Skill…');
   try{await loadSkills({refresh});renderSkills();renderSkillPills();}
@@ -1043,6 +1093,8 @@ function skillScroll(){
 $('skills-button').onclick=()=>openSkills();$('skills-refresh').onclick=()=>openSkills(true);
 $('skill-list').onscroll=skillScroll;
 $('skill-search').oninput=()=>{clearTimeout(skillSearchTimer);skillSearchTimer=setTimeout(()=>{skillRequest++;skillQuery.q=$('skill-search').value;skillQuery.offset=0;skillPages=[];catalogData.skills=[];catalogResults.skills=null;catalogTasks.skills=null;$('skill-list').scrollTop=0;renderSkills();loadSkills().catch(e=>{$('skills-error').textContent=t(e.message);});},200);};
+$('message').onclick=updateSkillSuggestions;
+document.addEventListener('pointerdown',event=>{if(!event.target.closest('.composer-input'))closeSkillSuggestions();});
 window.addEventListener('pagehide',saveDraft);
 function startFromLink(token){return start(token).catch(error=>{showLogin();$('login-error').textContent=t(error.message);});}
 startFromLink(initialPairingToken);initialPairingToken=null;
@@ -1085,7 +1137,7 @@ $('phone-language').onchange=()=>{
   $('notify-button').textContent=t(notificationState.watching?'提醒已开':'提醒');
   if(chatTimeline)chatTimeline.relabel();messageActions.relabel();
   window.BridgePresentation?.relabel();attachments.render();renderActivity();
-  renderSkillPills();if(catalogData)renderSkills();
+  renderSkillPills();if(catalogData)renderSkills();updateSkillSuggestions();
 };
 BridgeI18n.apply();
 
