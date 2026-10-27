@@ -408,6 +408,13 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 				}
 			}
 		}
+		// kimi replays its <system-reminder> injections as user_message_chunk;
+		// once stripped they carry no text and must not leave a blank bubble.
+		// The turn close above still applies to empty chunks.
+		text := Text(update.MustGet("content"))
+		if text == "" {
+			break
+		}
 		if turn == nil {
 			turn = v.newTurn(v.nextID("turn"), nil)
 		}
@@ -415,7 +422,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		message.Set("id", v.nextID("user"))
 		message.Set("kind", "userMessage")
 		message.Set("role", "user")
-		message.Set("text", Text(update.MustGet("content")))
+		message.Set("text", text)
 		messages(turn).Items = append(messages(turn).Items, message)
 	case "agent_message_chunk":
 		if text := Text(update.MustGet("content")); text != "" {
