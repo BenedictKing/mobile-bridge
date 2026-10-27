@@ -5,9 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
 func TestActivityAndJevRoutesUseAuthenticatedGoState(t *testing.T) {
@@ -49,5 +52,50 @@ func TestActivityAndJevRoutesUseAuthenticatedGoState(t *testing.T) {
 	server.ServeHTTP(response, update)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"autoContinue": true`) {
 		t.Fatalf("jev update status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestACPActivityIncludesTurnAndPendingRequests(t *testing.T) {
+	dir := t.TempDir()
+	manager := acpruntime.NewCommand(featureAgent(t, dir))
+	defer manager.Close()
+	authenticator := auth.NewAuth(auth.Config{Mode: "none"})
+	token, session, err := authenticator.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf, _ := session.MustGet("csrf").(string)
+	server := New(authenticator, fsys{}, 8790, "instance")
+	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
+	request := func(target, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8790"+target, strings.NewReader(body))
+		req.Host = "127.0.0.1:8790"
+		req.Header.Set("Origin", "http://127.0.0.1:8790")
+		req.Header.Set("X-CSRF-Token", csrf)
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, req)
+		return response
+	}
+	created := request("/api/sessions", `{"agent":"kimi","cwd":`+jsonText(dir)+`,"title":"活动状态","id":"7aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	if sent := request("/api/sessions/km-feature/send", `{"text":"完成一轮"}`); sent.Code != http.StatusOK {
+		t.Fatalf("send status=%d body=%s", sent.Code, sent.Body.String())
+	}
+	time.Sleep(120 * time.Millisecond)
+	live := manager.Get("km-feature")
+	if live == nil {
+		t.Fatal("missing live ACP session")
+	}
+	live.View.Requests = append(live.View.Requests, jsoncompat.NewObject())
+	response := request("/api/activity", `{"hosts":{"local":["km-feature"]}}`)
+	body := response.Body.String()
+	for _, needle := range []string{`"turnId":`, `"turnStatus": "completed"`, `"pendingRequests": 1`} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("activity missing %s: %s", needle, body)
+		}
 	}
 }

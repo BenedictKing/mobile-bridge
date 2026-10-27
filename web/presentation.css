@@ -291,11 +291,13 @@ main{background:var(--page);overflow:hidden}
 .account-card{border-color:var(--line)}
 .account-quota progress{accent-color:var(--accent)}
 .session-indicator{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px;background:#16805b}
+.session-activity-label{font-size:11px;font-weight:600;color:var(--muted);margin-right:7px}
 .agent-badge{font-size:11px;letter-spacing:0;padding:2px 5px;border-radius:5px}
 .session-indicator.completed{background:var(--accent)}
 .session-indicator.ended{background:#b56a12}
 .session-indicator.unknown{background:var(--muted)}
-html[data-show-activity=false] .session-indicator{display:none}
+.session-indicator.waiting{background:var(--warning-text)}
+html[data-show-activity=false] .session-indicator,html[data-show-activity=false] .session-activity-label{display:none}
 :root[data-show-accounts=false] #accounts-button{display:none}
 .team-card,.task-card,.team-stats,.team-graph{background:var(--raised);border-color:var(--line);border-radius:10px}
 .team-run-head{background:var(--page);border-color:var(--line)}

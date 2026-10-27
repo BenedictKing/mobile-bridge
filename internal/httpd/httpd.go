@@ -647,6 +647,21 @@ func (h *handler) handleMethod(write bool) {
 						if snapshot.MustGet("status") == "active" {
 							row.Set("status", "active")
 						}
+						if turns, ok := snapshot.MustGet("turns").(*jsoncompat.Array); ok && len(turns.Items) > 0 {
+							if turn, ok := turns.Items[len(turns.Items)-1].(*jsoncompat.Object); ok {
+								turnID, _ := turn.MustGet("id").(string)
+								turnStatus, _ := turn.MustGet("status").(string)
+								if turnID != "" {
+									row.Set("turnId", turnID)
+								}
+								if turnStatus != "" {
+									row.Set("turnStatus", turnStatus)
+								}
+							}
+						}
+						if requests, ok := snapshot.MustGet("requests").(*jsoncompat.Array); ok && len(requests.Items) > 0 {
+							row.Set("pendingRequests", len(requests.Items))
+						}
 					}
 					// Native-followed agents carry the real last-activity
 					// time in their own store; include it so the list's

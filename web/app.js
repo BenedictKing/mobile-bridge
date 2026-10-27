@@ -83,8 +83,8 @@ const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attac
 },upload:uploadAttachmentWithRetry});
 function visibleChat(){return currentId&&!document.hidden&&$('app').classList.contains('chat-open')?chatKey():null;}
 function renderActivity(){for(const button of document.querySelectorAll('.session')){
-  button.querySelector('.session-indicator')?.remove();const indicator=sessionActivity.indicator(chatKey(button.dataset.id,button.dataset.host));
-  if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-label',t(indicator.label));button.querySelector('strong').prepend(dot);}
+  button.querySelector('.session-activity-label')?.remove();button.querySelector('.session-indicator')?.remove();const indicator=sessionActivity.indicator(chatKey(button.dataset.id,button.dataset.host));
+  if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-hidden','true');const label=el('span','session-activity-label',t(indicator.label));button.querySelector('strong').prepend(label,dot);}
 }}
 async function refreshActivity(){
   if(activityBusy||$('app').hidden||document.hidden)return;activityBusy=true;
