@@ -500,6 +500,9 @@ async function saveJevChanges(){
     let parsed;
     try{parsed=JSON.parse($('jev-policy').value);}
     catch(error){$('jev-settings-error').textContent=t('策略 JSON 解析失败')+error.message;return false;}
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||!Array.isArray(parsed.categories)||typeof parsed.threshold!=='number'||!Number.isFinite(parsed.threshold)){
+      $('jev-settings-error').textContent=t('策略 JSON 必须包含 threshold 数值和 categories 数组');return false;
+    }
     body.policy=parsed.categories;body.threshold=parsed.threshold;
   }
   try{await api('/api/jev',body);}

@@ -168,6 +168,25 @@ func TestCacheHitRemapsCurrentCardOptions(t *testing.T) {
 	}
 }
 
+func TestCacheHitDoesNotEscalateAcceptOnce(t *testing.T) {
+	var calls int32
+	server := echoOutcomeServer(t, &calls)
+	defer server.Close()
+	settings := cacheSettings(t, server.URL)
+	if decision := settings.EvaluateSession("kimi", "s1", "r1", "session/request_permission",
+		permissionCard("Bash", "npm test", "allow_once", "q0_opt_0")); !decision.Approved {
+		t.Fatalf("first decision: %+v", decision)
+	}
+	decision := settings.EvaluateSession("kimi", "s1", "r2", "session/request_permission",
+		permissionCard("Bash", "npm test", "allow_always", "q9_opt_4"))
+	if decision.Approved || decision.Reason != "no_matching_option" {
+		t.Fatalf("accept_once must not select allow_always: %+v", decision)
+	}
+	if count := atomic.LoadInt32(&calls); count != 2 {
+		t.Fatalf("unmappable cache hit must evaluate again: remote calls = %d, want 2", count)
+	}
+}
+
 func TestCacheHitWithChangedOptionsFallsThrough(t *testing.T) {
 	var calls int32
 	server := echoOutcomeServer(t, &calls)

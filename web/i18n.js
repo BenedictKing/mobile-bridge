@@ -813,6 +813,7 @@ const en={
   "Jev 设置已保存": "Jev settings saved",
   "策略（JSON，保存后生效）": "Policy (JSON, applies after saving)",
   "策略 JSON 解析失败": "Failed to parse policy JSON: ",
+  "策略 JSON 必须包含 threshold 数值和 categories 数组": "Policy JSON must contain a numeric threshold and a categories array",
   "试评": "Trial run",
   "模板": "Template",
   "命令（permission 卡）": "Command (permission card)",

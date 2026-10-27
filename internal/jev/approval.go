@@ -250,6 +250,9 @@ func approvalResponse(method string, params *jsoncompat.Object, recommend string
 		}
 		kind := strings.ToLower(jsoncompat.PyStr(option.MustGet("kind")))
 		if strings.Contains(kind, "allow") || strings.Contains(kind, "accept") {
+			if recommend == "accept_once" && !strings.Contains(kind, "once") {
+				continue
+			}
 			if recommend == "accept_session" && !strings.Contains(kind, "session") {
 				continue
 			}
