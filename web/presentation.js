@@ -21,7 +21,7 @@ const ChatAppearance=(()=>{
   }
   function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
   function colors(accent,dark){
-    const background=dark?'#17181c':'#ffffff';
+    const background=dark?'#191a1f':'#ffffff';
     let text=accent;
     const rgb=accent.match(/[0-9a-f]{2}/gi).map(v=>parseInt(v,16));
     for(let step=1;contrast(text,background)<4.5&&step<=20;step++){
@@ -62,7 +62,7 @@ if(typeof document!=='undefined')(()=>{
     root.style.setProperty('--soft',settings.accent+(dark?'29':'12'));
     root.style.setProperty('--message-size',settings.fontSize+'px');
     root.style.setProperty('--code-size',settings.codeSize+'px');
-    document.querySelector('meta[name="theme-color"]').content=dark?'#17181c':'#ffffff';
+    document.querySelector('meta[name="theme-color"]').content=dark?'#111216':'#f3f5f8';
     for(const [id,value] of Object.entries({theme:settings.theme,accent:settings.accent,font:settings.fontSize,code:settings.codeSize,density:settings.density}))get('appearance-'+id).value=value;
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';
     get('appearance-activity').checked=settings.showActivity;get('appearance-reasoning').checked=settings.showReasoning;get('appearance-process').checked=settings.showProcess;

@@ -25,3 +25,20 @@
 .pool-tabs:empty{display:none;padding:0;border:0;margin:0}
 .pool-tab{border:1px solid var(--line,#dfe3eb);border-radius:999px;padding:6px 14px;background:transparent;color:var(--muted,#65705d);font:inherit;font-size:13px;cursor:pointer}
 .pool-tab.active{border-color:var(--accent,#677c45);color:var(--accent,#677c45);font-weight:650}
+
+.account-muted{color:var(--muted)}
+.account-card{border-color:var(--line)}
+.account-quota progress,.accounts-window progress{accent-color:var(--accent)}
+#account-status{font-size:12px}
+.accounts-panel button{min-height:38px;border-color:var(--control,var(--line));border-radius:8px}
+.accounts-panel input,.accounts-panel select{min-height:42px;font-size:14px}
+.accounts-usage button{min-height:36px}
+.account-compact{border-radius:10px;background:var(--surface)}
+.pool-tab{min-height:36px;border-radius:8px}
+.pool-tab.active{background:var(--soft);font-weight:600}
+@media(max-width:720px){
+  .accounts-panel button,.accounts-usage button,.pool-tab{min-height:44px}
+  .accounts-panel input,.accounts-panel select{min-height:44px;font-size:16px}
+  .accounts-identity .accounts-usage{min-width:0;flex-basis:100%}
+  .accounts-window{max-width:none}
+}
