@@ -94,8 +94,15 @@ if(typeof document!=='undefined')(()=>{
   }
   toggle.onclick=()=>setCollapsed(!collapsed);
   message.addEventListener('input',resizeMessage);
-  const composerSize=new ResizeObserver(()=>get('chat').style.setProperty('--composer-height',Math.ceil(composer.getBoundingClientRect().height)+'px'));
-  composerSize.observe(composer);
+  const viewport=window.visualViewport;
+  function syncViewport(){
+    if(!viewport)return;
+    root.style.setProperty('--visual-viewport-height',viewport.height+'px');
+    root.style.setProperty('--visual-viewport-offset',viewport.offsetTop+'px');
+  }
+  viewport?.addEventListener('resize',syncViewport);
+  viewport?.addEventListener('scroll',syncViewport);
+  syncViewport();
   const pageState=new MutationObserver(()=>document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open')));
   pageState.observe(get('app'),{attributes:true,attributeFilter:['hidden','class']});
   document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();window.loadJevSettings?.();window.loadConventions?.();});
