@@ -143,8 +143,10 @@ async function enter(){$('login').hidden=true;$('app').hidden=false;accountsPane
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
 $('logout').onclick=async()=>{await api('/api/logout',{});csrf='';state=null;currentId=null;listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
-$('list-mode').value=localStorage.getItem('list-mode')||'recent';
-$('list-mode').onchange=()=>{localStorage.setItem('list-mode',$('list-mode').value);renderList();};
+let listMode=localStorage.getItem('list-mode')==='project'?'project':'recent';
+function renderListMode(){const label=listMode==='project'?'按项目':'最近交互';$('list-mode-label').textContent=t(label);$('list-mode-label').dataset.i18n=label;}
+renderListMode();
+$('list-mode').onclick=()=>{listMode=listMode==='recent'?'project':'recent';localStorage.setItem('list-mode',listMode);renderListMode();renderList();};
 // 最近交互视图按最后对话时间分段折叠；一周内的分段默认展开，更早的默认收起。
 const TIME_BUCKETS=[{days:1,label:'24 小时内',open:true},{days:3,label:'3 天内',open:true},{days:7,label:'一周内',open:true},{days:15,label:'15 天内',open:false},{days:30,label:'一月内',open:false},{days:90,label:'三月内',open:false},{days:Infinity,label:'更早',open:false}];
 // 项目分组每组默认只显示最近 5 条，点一次“显示更多”追加 10 条，平衡屏幕空间与
@@ -152,7 +154,7 @@ const TIME_BUCKETS=[{days:1,label:'24 小时内',open:true},{days:3,label:'3 天
 const PROJECT_GROUP_PAGE=5,PROJECT_GROUP_STEP=10,projectGroupLimits=new Map();
 function renderList(){
   $('sessions').replaceChildren();
-  const grouped=$('list-mode').value==='project', groups=new Map(), totals=new Map(), shown=new Map();
+  const grouped=listMode==='project', groups=new Map(), totals=new Map(), shown=new Map();
   const now=Date.now();
   for(const chat of listRows){
     let parent=$('sessions');
@@ -1129,7 +1131,7 @@ $('phone-language').value=BridgeI18n.language();
 $('phone-language').onchange=()=>{
   if(approvalBusy||creatingChat)return;
   const replies=[...$('approvals').querySelectorAll('input,textarea,select')].map(node=>({value:node.value,checked:node.checked}));
-  BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();renderList();
+  BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();renderListMode();renderList();
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   renderLoginStatus();
   for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','toast'])$(id).textContent=t($(id).textContent);

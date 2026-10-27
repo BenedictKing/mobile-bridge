@@ -250,7 +250,7 @@ The switch is independent of chat notifications. Messages use current entries ra
 | Progressive history | Show the latest 20 records first, silently fill to 100, then load 100 more near the top; expand large tool content on demand |
 | Original execution | Send, steer, queue; disable queueing per chat, send queued messages now, edit or delete them; stop and respond to supported confirmation cards |
 | Local and SSH | Execute on the chat's original computer or server |
-| Chat navigation | Sort by recent activity or group by expandable projects |
+| Chat navigation | One-tap switching between recent activity and expandable project groups; the browser remembers the selected view |
 | Model and Skills | Choose model/reasoning effort, toggle Fast for eligible official accounts, or send Skills: Codex reads installed skills from the chat's host (up to 8 per message); Kimi lists the skills the agent advertises, one per message |
 | ACP account pools | Per-agent tabs for Kimi / ZCode / MiniMax / WorkBuddy: add or re-login accounts in the panel (device flow / QR / OAuth), capture the current local login, delete snapshots, view window quotas and switch manually; when a window limit (such as Kimi's 5-hour window) runs out, switch to an available account and resume the interrupted session (ZCode spends a reset card first); can be disabled per agent; Codex is shown read-only |
 | Plan and Goal modes | Start a plan or native goal from the composer; implement or revise a completed plan in the browser |
