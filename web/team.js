@@ -565,7 +565,7 @@ class TeamsPanel{
     create.disabled=this.busy;
     // 工作区注册表是无 teamID 前缀的集合端点（teams.go /api/teams/workspaces），
     // 面板底部独立一区：注册与团队无关，没有团队也要能注册。
-    const workspaces=this.button(this.workspaces?t('收起工作区'):t('工作区'),()=>{
+    const workspaces=this.button(this.workspaces?t('收起高级'):t('高级'),()=>{
       if(this.workspaces)this.workspaces=null;
       else{
         // loading 标记由 loadWorkspaces 自置（其入口有 loading 防重入），此处
@@ -971,8 +971,9 @@ class TeamsPanel{
   renderWorkspaces(){
     const t=BridgeI18n.t,entry=this.workspaces;
     const box=this.node('section',undefined,'team-card');
-    box.append(this.node('h3',t('工作区（git worktree 注册表）')));
-    box.append(this.node('p',t('isolated 任务的独立工作区须先在此注册（用 git worktree add 预备）；注册只登记路径，不创建或修改工作区。'),'muted'));
+    box.append(this.node('h3',t('高级：独立任务工作区')));
+    box.append(this.node('p',t('仅当 Run 的任务使用 isolated（独立 worktree）模式时才需要。普通团队直接使用项目空间，无需在这里注册。'),'muted'));
+    box.append(this.node('p',t('这里只登记你已通过 git worktree add 创建的目录，不会自动创建或修改文件。'),'muted'));
     if(entry.notice){box.append(this.node('p',entry.notice,'team-notice'));entry.notice='';}
     if(entry.loading){box.append(this.node('p',t('正在读取工作区…'),'muted'));return box;}
     if(entry.error)box.append(this.node('p',entry.error,'error'));
