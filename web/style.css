@@ -51,6 +51,10 @@
 .context-usage{margin-left:5px;color:var(--muted);font-variant-numeric:tabular-nums}
 .compact-control{margin-top:12px;padding-top:8px;border-top:1px solid var(--line)}
 .compact-control>p{margin-bottom:2px;font-weight:600}
+.compact-methods{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 8px}
+.compact-methods button{border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+.compact-methods button.selected{background:var(--soft);border-color:var(--green)}
+#compact-native-hint,#compact-gateway>p{margin:6px 0}
 .compact-control .migrate-scopes button{text-align:left;white-space:normal;line-height:1.5}
 
 .attachment-list{display:grid;gap:8px;margin-bottom:8px}

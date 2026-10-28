@@ -202,9 +202,9 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 - `full`：完全复制历史。同样的摊平规则，预算放大到 500 条 / 90k 字符（单条 12k，总量仍低于 send 的 100k 上限）。codex 源的保存历史是分页的，`Bridge.migrate` 会先把 `history_limit` 置为 None 重读完整 rollout（读取失败直接报错，不静默截断头部）；ACP 源附接时已是完整历史，无需扩展。
 - `latest`：只复制最新提问和回答。仅保留 user/assistant 角色，从最后一条 user 消息截到结尾（无 user 时只留最后一条助手消息），预算 12 条 / 40k 字符（单条 20k，长计划不被单条上限切断）；注入消息使用独立的"最新问答"头尾文案。
 
-源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`；本机源匹配不到时自动以源目录在目标上创建（合成与 `AcpAdapter.projects()` 同构的 resolved 项目，key 为 `kind:sha256(cwd)[:12]`，结果带 `projectCreated: true`，目标随后列出该会话即自然收录该目录），远端源的 cwd 是远端路径、无法在本机目标上创建，仍报错并要求显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。前端入口在聊天详情弹层：先按 view 注入的 `agents` 列表选择当前以外的已启用 Agent，再选择复制范围（完全复制历史/只复制主要历史/只复制最新提问和结果）后确认执行。
+源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`；本机源匹配不到时自动以源目录在目标上创建（合成与 `AcpAdapter.projects()` 同构的 resolved 项目，key 为 `kind:sha256(cwd)[:12]`，结果带 `projectCreated: true`，目标随后列出该会话即自然收录该目录），远端源的 cwd 是远端路径、无法在本机目标上创建，仍报错并要求显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。前端入口在聊天详情弹层：选择“网关转录压缩”后，按 view 注入的 `agents` 列表选择当前或其他已启用 Agent，再选择复制范围（完全复制历史/只复制主要历史/只复制最新提问和结果）后确认执行；源会话保持不变。
 
-当前会话的手动压缩也在聊天详情中提供同样三档范围，但不新建会话、不复用迁移接口：前端仅在已连接、空闲、可写且无待答请求时，通过既有 `send` 发送 `/compact <对应保留策略>`，由当前 Agent 自己执行原生压缩；请求期间禁用三个按钮，未知送达结果不自动重试。
+聊天详情的“上下文压缩”要求先显式选择执行方式，不默认调用任何压缩：`Agent 原生压缩` 在当前会话通过既有 `send` 发送 `/compact <对应保留策略>`；`网关转录压缩` 复用上述迁移接口创建转录新会话。两种方式都只在已连接、空闲、可写且无待答请求时可用；原生请求期间禁用三个范围按钮，未知送达结果不自动重试。
 
 ### 能力矩阵
 
