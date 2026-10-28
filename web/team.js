@@ -558,7 +558,7 @@ class TeamsPanel{
     const refresh=this.button(t('刷新'),()=>this.refresh());
     refresh.disabled=this.loading||this.busy;
     const create=this.button(this.create?t('收起新建'):t('新建团队'),()=>{
-      this.create=this.create?null:{name:'',error:'',requestId:teamUUID(),attempt:'',members:[{project:'',agent:'',role:'lead',name:''}]};
+      this.create=this.create?null:{name:'',project:'',error:'',requestId:teamUUID(),attempt:'',members:[{agent:'',role:'lead',name:''}]};
       if(this.create)this.loadProjects();
       this.render();
     });
@@ -839,7 +839,7 @@ class TeamsPanel{
     const roleHelp={lead:t('接收团队目标，协调任务并汇总结果。'),member:t('接收分派的任务，在项目空间中执行。'),reviewer:t('检查其他成员的结果并给出评审意见。')};
     const form=this.node('form',undefined,'team-create');
     form.append(this.node('h3',t('新建团队')));
-    form.append(this.node('p',t('无需先创建对话。为每位成员选择项目空间和执行 Agent，网关会自动创建专用会话。'),'muted team-create-intro'));
+    form.append(this.node('p',t('无需先创建对话。团队共用一个项目空间；为每位成员选择执行 Agent，网关会自动创建专用会话。'),'muted team-create-intro'));
     const nameLabel=this.node('label');
     nameLabel.append(this.node('span',t('团队名称')));
     const nameInput=document.createElement('input');
@@ -847,6 +847,22 @@ class TeamsPanel{
     nameInput.oninput=()=>{create.name=nameInput.value;};
     nameLabel.append(nameInput);
     form.append(nameLabel);
+    const projectLabel=this.node('label',undefined,'team-project-field');
+    projectLabel.append(this.node('span',t('项目空间')));
+    const projectSelect=document.createElement('select');
+    if(!projects){
+      projectSelect.disabled=true;projectSelect.append(new Option(t('正在读取项目空间…'),''));
+    }else if(!projects.length){
+      projectSelect.disabled=true;projectSelect.append(new Option(t('没有可用的项目空间'),''));
+    }else{
+      projectSelect.append(new Option(t('请选择项目空间…'),''));
+      for(const project of projects)projectSelect.append(new Option(this.projectLabel(project),project.key));
+      projectSelect.value=create.project||'';
+    }
+    projectSelect.onchange=()=>{create.project=projectSelect.value;this.render();};
+    projectLabel.append(projectSelect);form.append(projectLabel);
+    const selectedProject=projects?.find(project=>project.key===create.project);
+    if(selectedProject)form.append(this.node('p',selectedProject.cwd,'muted team-project-path'));
     const memberHeading=this.node('div',undefined,'team-create-section-title');
     memberHeading.append(this.node('strong',t('团队成员')));
     memberHeading.append(this.node('span',t('至少一位负责人；可继续添加成员或评审。'),'muted'));
@@ -861,22 +877,6 @@ class TeamsPanel{
         remove.className='plain member-remove';head.append(remove);
       }
       box.append(head);
-      const projectLabel=this.node('label');
-      projectLabel.append(this.node('span',t('项目空间')));
-      const projectSelect=document.createElement('select');
-      if(!projects){
-        projectSelect.disabled=true;projectSelect.append(new Option(t('正在读取项目空间…'),''));
-      }else if(!projects.length){
-        projectSelect.disabled=true;projectSelect.append(new Option(t('没有可用的项目空间'),''));
-      }else{
-        projectSelect.append(new Option(t('请选择项目空间…'),''));
-        for(const project of projects)projectSelect.append(new Option(this.projectLabel(project),project.key));
-        projectSelect.value=row.project||'';
-      }
-      projectSelect.onchange=()=>{row.project=projectSelect.value;this.render();};
-      projectLabel.append(projectSelect);box.append(projectLabel);
-      const selectedProject=projects?.find(project=>project.key===row.project);
-      if(selectedProject)box.append(this.node('p',selectedProject.cwd,'muted member-project-path'));
       const agentLabel=this.node('label');
       agentLabel.append(this.node('span',t('执行 Agent')));
       const agentSelect=document.createElement('select');
@@ -910,7 +910,7 @@ class TeamsPanel{
     if(create.error)form.append(this.node('p',create.error,'error'));
     const actions=this.node('div',undefined,'team-create-actions');
     const add=this.button(t('＋ 添加成员'),()=>{
-      create.members.push({project:'',agent:agents.length===1?agents[0].kind:'',role:'member',name:''});
+      create.members.push({agent:agents.length===1?agents[0].kind:'',role:'member',name:''});
       this.render();
     });
     add.className='team-add-member';
@@ -924,11 +924,11 @@ class TeamsPanel{
       create.error='';
       const name=create.name.trim();
       if(!name){create.error=t('请填写团队名称。');this.render();return;}
+      if(!create.project){create.error=t('请选择团队的项目空间。');this.render();return;}
       const members=[];
       for(const [i,item] of create.members.entries()){
-        if(!item.project){create.error=t('请为每位成员选择项目空间。');this.render();return;}
         if(!item.agent){create.error=t('请为每位成员选择执行 Agent。');this.render();return;}
-        const member={id:'member-'+(i+1),project:item.project,agent:item.agent,role:item.role};
+        const member={id:'member-'+(i+1),project:create.project,agent:item.agent,role:item.role};
         if(item.name.trim())member.name=item.name.trim();
         members.push(member);
       }
