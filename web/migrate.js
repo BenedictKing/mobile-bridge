@@ -8,15 +8,15 @@ const MIGRATE_SCOPE_COPY={
   main:' 新会话，并把标题与最近消息转录作为首条消息注入；源会话保持不变。',
   latest:' 新会话，并把最新提问与回答作为首条消息注入；源会话保持不变。'};
 class MigrateControl {
-  constructor({root,request,confirm=()=>true,onMigrated=()=>{},onError=()=>{},includeCurrent=false,enabled=()=>true}){
-    Object.assign(this,{root,request,confirm,onMigrated,onError,includeCurrent,enabled});
+  constructor({root,request,confirm=()=>true,onMigrated=()=>{},onError=()=>{},onBusy=()=>{},enabled=()=>true}){
+    Object.assign(this,{root,request,confirm,onMigrated,onError,onBusy,enabled});
     this.view=null;this.busy=false;this.picked=null;
   }
   text(value){return typeof BridgeI18n==='undefined'?value:BridgeI18n.t(value);}
   locale(){return typeof BridgeI18n==='undefined'?'zh-CN':BridgeI18n.locale();}
   label(kind){return typeof BridgeI18n==='undefined'?kind:BridgeI18n.agentLabel(kind);}
   node(tag,text,className){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(className)n.className=className;return n;}
-  targets(){return (this.view?.agents||[]).filter(agent=>agent&&agent.kind&&(this.includeCurrent||agent.kind!==this.view?.agent));}
+  targets(){return (this.view?.agents||[]).filter(agent=>agent&&agent.kind&&agent.kind!==this.view?.agent);}
   render(view){
     if(view){
       if(this.view&&view.id!==this.view.id)this.picked=null;  // Another chat's details.
@@ -36,11 +36,10 @@ class MigrateControl {
     }
   }
   renderTargets(targets){
-    this.root.append(this.node('p',this.text('选择目标 Agent'),'migrate-heading'));
+    this.root.append(this.node('p',this.text('会话迁移'),'migrate-heading'));
     const row=this.node('div',undefined,'migrate-targets');
     for(const agent of targets){
-      const current=this.includeCurrent&&agent.kind===this.view?.agent?this.text('（当前）'):'';
-      const button=this.node('button',this.text('迁移到 ')+(agent.label||agent.kind)+current);
+      const button=this.node('button',this.text('迁移到 ')+(agent.label||agent.kind));
       button.type='button';button.className='plain migrate-target';button.dataset.agent=agent.kind;button.disabled=!this.enabled();
       button.onclick=()=>{this.picked=agent.kind;this.render();};
       row.append(button);
@@ -62,21 +61,23 @@ class MigrateControl {
     row.append(back);
     this.root.append(row);
   }
-  async migrate(kind,scope='main'){
+  async migrate(kind,scope='main',operation='migrate'){
     if(this.busy||!this.view||!this.enabled())return;
     const label=this.label(kind);
     if(!this.confirm(this.text('将创建指向同一目录的 ')+label+this.text(MIGRATE_SCOPE_COPY[scope]||MIGRATE_SCOPE_COPY.main)))return;
     this.busy=true;
     const buttons=[...this.root.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+    this.onBusy(true);
     try{
       const body={agent:kind,scope,id:(typeof crypto.randomUUID==='function'?crypto.randomUUID():String(Date.now())),uiLocale:this.locale()};
       const result=await this.request(body);
-      this.onMigrated(result,label,body);
+      this.onMigrated(result,label,body,operation);
     }catch(error){
-      this.onError(error);
+      this.onError(error,operation);
     }finally{
       this.busy=false;
       this.render();
+      this.onBusy(false);
     }
   }
 }

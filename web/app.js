@@ -50,10 +50,11 @@ const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),goalRoo
   onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload)});
 const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
-const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),includeCurrent:true,enabled:compactAvailable,
+const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),enabled:()=>compactAvailable()&&!compactChat.busy,
   request:body=>api(sessionUrl(currentId,'migrate',currentHost),body),
   confirm:message=>window.confirm(message),
-  onMigrated:async(result,label,body)=>{$('chat-details-dialog').close();
+  onBusy:()=>renderCompactState(),
+  onMigrated:async(result,label,body,operation)=>{$('chat-details-dialog').close();
     if(!result.sent){
       try{
         const sourceId=currentId,sourceHost=currentHost;
@@ -62,9 +63,9 @@ const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl
         result=await api(sessionUrl(sourceId,'migrate',sourceHost),body);
       }catch(error){result.warning=error.message;}
     }
-    toast(result.sent?t('已迁移到 ')+label+t('，正在打开新会话'):t('目标会话已创建，正在等待 ')+label+t(' 加载：')+(result.warning||''));
+    toast(result.sent?(operation==='compact'?t('网关转录压缩已完成，正在打开新会话'):t('已迁移到 ')+label+t('，正在打开新会话')):t('目标会话已创建，正在等待 ')+label+t(' 加载：')+(result.warning||''));
     if(currentId!==result.id)openChat(result.id,result.host||'local').catch(e=>toast(e.message));},
-  onError:e=>toast(e.message)});
+  onError:(error,operation)=>{if(operation==='compact')$('compact-error').textContent=t(error.message);else toast(error.message);}});
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
@@ -651,11 +652,17 @@ function renderContextUsage(view){
 function compactAvailable(){return !!state?.connected&&state.status==='idle'&&!state.readOnly&&!(state.requests||[]).length;}
 function selectCompactMethod(method){if(!['native','gateway'].includes(method))return;compactMethod=method;$('compact-error').textContent='';renderCompactState();}
 function renderCompactState(){
-  const disabled=compactChat.busy||!compactAvailable();
+  const disabled=compactChat.busy||migrateControl?.busy||!compactAvailable();
   $('compact-native-hint').hidden=compactMethod!=='native';$('compact-native-scopes').hidden=compactMethod!=='native';$('compact-gateway').hidden=compactMethod!=='gateway';
   document.querySelectorAll('[data-compact-method]').forEach(button=>button.classList.toggle('selected',button.dataset.compactMethod===compactMethod));
   document.querySelectorAll('[data-compact]').forEach(button=>button.disabled=disabled||compactMethod!=='native');
+  document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.disabled=disabled||compactMethod!=='gateway');
   migrateControl?.render();
+}
+function compactGateway(scope){
+  if(!COMPACT_PROMPTS[scope]||compactMethod!=='gateway'||compactChat.busy||migrateControl?.busy||!currentId||!compactAvailable())return;
+  $('compact-error').textContent='';
+  migrateControl?.migrate(state.agent,scope,'compact');
 }
 async function compactChat(scope){
   const text=COMPACT_PROMPTS[scope];
@@ -1005,6 +1012,7 @@ $('message').onkeydown=event=>{
 $('stop').onclick=async()=>{try{await api('/api/sessions/'+currentId+'/stop',{});toast('已请求停止');}catch(e){toast(e.message);}};
 document.querySelectorAll('[data-compact-method]').forEach(button=>button.onclick=()=>selectCompactMethod(button.dataset.compactMethod));
 document.querySelectorAll('[data-compact]').forEach(button=>button.onclick=()=>compactChat(button.dataset.compact));
+document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.onclick=()=>compactGateway(button.dataset.gatewayCompact));
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
 $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
 $('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话；请勿同时在桌面端继续此会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};
