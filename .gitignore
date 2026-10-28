@@ -26,5 +26,12 @@ dist/
 
 # Wails 目录内误入的构建产物
 wails/wails
+
+# Android 本地构建与 SDK 配置
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+
 .codegraph/
 .gocache/

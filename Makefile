@@ -22,7 +22,7 @@ ACP_HOST_SOCKETS_JSON := {"$(ACP_HOST_KIND)":"$(ACP_HOST_SOCKET)"}
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build-matrix build-gateway build-gateway-package build-agent-host build-wails serve \
+.PHONY: help build-matrix build-gateway build-gateway-package build-agent-host build-wails build-android serve \
 	install dev-cert start start-agent-host stop stop-agent-host restart status logs uninstall conformance \
 	test test-race check
 
@@ -42,6 +42,12 @@ build-matrix: ## 交叉编译全平台网关二进制到 dist/
 
 build-gateway: ## 编译本机调试二进制 dist/gateway-go
 	go build -o dist/gateway-go ./cmd/gateway
+
+build-android: ## 运行 Android JVM 测试并生成 debug APK
+	@mkdir -p dist
+	cd android && ./gradlew :app:testDebugUnitTest :app:assembleDebug
+	@cp android/app/build/outputs/apk/debug/app-debug.apk dist/mobile-bridge-android-debug.apk
+	@ls -lh dist/mobile-bridge-android-debug.apk
 
 # The Wails desktop shell expects this stable runtime directory/name. The Go
 # binary serves the gateway and exposes the private desktop action protocol.

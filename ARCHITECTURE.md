@@ -81,6 +81,12 @@ Windows 使用 CPython 标准库 `_winapi` 的 overlapped I/O 读取原始字节
 
 直连不可用、认证失效或图片加载失败时立即回到公网，并按退避和前台/online 事件重新探测。GET 与实时游标可以安全续读；POST/PATCH/DELETE 不跨链路自动重放，沿用原有结果未知与人工重试约定。退出登录会尝试撤销两个会话。未配置、配置无效或 TLS 端口不可用时只记录日志，原公网链路不受影响。一次性 DNS、证书与端口配置见 [固定域名教程](docs/fixed-domain.md)。
 
+### Android 原生动态局域网加速
+
+默认 LAN 模式且未显式设置 `lanAddresses` 时，HTTP 使用通配监听，Host/Origin 校验回调按当前网卡动态放行，热点导致 IP 变化后无需重启网关。显式地址列表仍保持静态绑定。已登录且携带 `X-Mobile-Bridge-Native: 1` 的 `/api/auth` 响应额外返回排除回环地址的 `nativeDirect` 候选；普通浏览器响应不变。
+
+Android WebView 只拦截公网 origin 下的 GET/HEAD `/api/`。原生选择器验证候选的 authenticated 与 instanceId 后，复用 App 内公网会话 Cookie 发起局域网 HTTP 读取，本地 Set-Cookie 不回写公网 CookieManager。GET、图片和 SSE 建连失败回退公网；写请求始终由 WebView 走 Cloudflare，避免 WebView 无 POST body 和跨链路重放问题。该模式面向可信热点，局域网 HTTP 令牌暴露边界及构建说明见 [Android 文档](docs/android.md)。
+
 ## 消息与审批
 
 每条手机消息携带唯一提交 ID；发送前把状态写入私有记录。确认失败时保留 unknown 状态，不自动重放。排队消息在原会话空闲时发送，用户可撤回。SSH 主机分别保存提交记录。

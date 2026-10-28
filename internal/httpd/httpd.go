@@ -76,36 +76,39 @@ func (stubBridge) AccountsPublic() any {
 
 // Server mirrors GatewayServer's request-facing behavior.
 type Server struct {
-	Auth            *auth.Auth
-	Creations       *creations
-	Queue           *submissions
-	GoalCmds        *goalLedger
-	Hidden          *hiddenSessions
-	Forks           *forkLedger
-	WebFS           fs.FS
-	InstanceID      string
-	Port            int
-	LocalHosts      map[string]bool // "127.0.0.1:port", "localhost:port"
-	Hosts           map[string]bool
-	Origins         map[string]bool
-	Bridge          SessionBridge
-	Pairing         *pairing.Pairing
-	Store           *store.SessionStore
-	Codex           *codex.Bridge
-	CodexHome       string
-	SecureHosts     map[string]bool // netloc of trusted HTTPS origins (secure_hosts)
-	DirectByPublic  map[string]string
-	PublicByDirect  map[string]string
-	directGrants    *directGrantStore
-	Uploads         *uploads.Manager
-	ACP             *acpruntime.Manager
-	ACPAgents       map[string]*acpruntime.Manager
-	NotificationDir string
-	Jev             *jev.Settings
-	Conventions     *conventions.Settings
-	Account         *account.Manager
-	Pool            *accpool.Manager
-	Goal            *goal.Manager
+	Auth             *auth.Auth
+	Creations        *creations
+	Queue            *submissions
+	GoalCmds         *goalLedger
+	Hidden           *hiddenSessions
+	Forks            *forkLedger
+	WebFS            fs.FS
+	InstanceID       string
+	Port             int
+	LocalHosts       map[string]bool // "127.0.0.1:port", "localhost:port"
+	Hosts            map[string]bool
+	Origins          map[string]bool
+	AllowHost        func(string) bool
+	AllowOrigin      func(string) bool
+	NativeCandidates func() []string
+	Bridge           SessionBridge
+	Pairing          *pairing.Pairing
+	Store            *store.SessionStore
+	Codex            *codex.Bridge
+	CodexHome        string
+	SecureHosts      map[string]bool // netloc of trusted HTTPS origins (secure_hosts)
+	DirectByPublic   map[string]string
+	PublicByDirect   map[string]string
+	directGrants     *directGrantStore
+	Uploads          *uploads.Manager
+	ACP              *acpruntime.Manager
+	ACPAgents        map[string]*acpruntime.Manager
+	NotificationDir  string
+	Jev              *jev.Settings
+	Conventions      *conventions.Settings
+	Account          *account.Manager
+	Pool             *accpool.Manager
+	Goal             *goal.Manager
 	// Team 编排（docs/team-orchestration-plan.md §10）：服务、账本与每 Run
 	// 事件投影由 main.go 装配（构造后直赋，必须在任何 ServeHTTP 之前完成）。
 	Teams     *team.Service
@@ -335,12 +338,13 @@ func (h *handler) session(write bool) *jsoncompat.Object {
 
 func (h *handler) checkRequest(write bool) bool {
 	host := h.request.Host
-	if !h.server.Hosts[host] {
+	if !h.server.Hosts[host] && (h.server.AllowHost == nil || !h.server.AllowHost(host)) {
 		h.fail(http.StatusForbidden, errorBody("此访问地址未在网关配置中允许"))
 		return false
 	}
 	origin := h.request.Header.Get("Origin")
-	if (origin != "" && !h.server.Origins[origin]) || (write && origin == "") {
+	if (origin != "" && !h.server.Origins[origin] &&
+		(h.server.AllowOrigin == nil || !h.server.AllowOrigin(origin))) || (write && origin == "") {
 		h.fail(http.StatusForbidden, errorBody("不允许跨站请求"))
 		return false
 	}
@@ -1375,6 +1379,13 @@ func (h *handler) handleAuth() {
 	body.Set("transport", transport)
 	if directOrigin := h.directCandidate(); directOrigin != "" {
 		body.Set("direct", directOrigin)
+	}
+	if session != nil && h.request.Header.Get("X-Mobile-Bridge-Native") == "1" && h.server.NativeCandidates != nil {
+		candidates := &jsoncompat.Array{}
+		for _, candidate := range h.server.NativeCandidates() {
+			candidates.Items = append(candidates.Items, candidate)
+		}
+		body.Set("nativeDirect", candidates)
 	}
 	cookie := ""
 	if session != nil {

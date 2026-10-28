@@ -626,17 +626,43 @@ func runGateway(args []string) {
 	preferences := desktopPreferences(dataDir)
 	addresses := gatewayListenAddresses(dataDir)
 	listeners := make([]net.Listener, 0, len(addresses)*2)
-	for _, address := range addresses {
-		listener, listenErr := net.Listen("tcp", net.JoinHostPort(address, strconv.Itoa(port)))
+	if gatewayDynamicLAN(dataDir) {
+		listener, listenErr := net.Listen("tcp", ":"+strconv.Itoa(port))
 		if listenErr != nil {
-			for _, opened := range listeners {
-				_ = opened.Close()
-			}
-			log.Fatalf("listen %s: %v", address, listenErr)
+			log.Fatalf("listen :%d: %v", port, listenErr)
 		}
 		listeners = append(listeners, listener)
-		server.AddListenHost(address, address == "127.0.0.1" || address == "::1" || address == "localhost")
+		loopback := false
+		for _, address := range addresses {
+			server.AddListenHost(address, address == "127.0.0.1" || address == "::1" || address == "localhost")
+			loopback = loopback || address == "127.0.0.1" || address == "::1" || address == "localhost"
+		}
+		if !loopback {
+			for _, address := range []string{"127.0.0.1", "localhost", "::1"} {
+				hostPort := net.JoinHostPort(address, strconv.Itoa(port))
+				delete(server.Hosts, hostPort)
+				delete(server.LocalHosts, hostPort)
+				delete(server.Origins, "http://"+hostPort)
+			}
+		}
+		server.AllowHost = func(host string) bool { return gatewayCurrentHost(dataDir, port, host) }
+		server.AllowOrigin = func(origin string) bool {
+			return strings.HasPrefix(origin, "http://") && gatewayCurrentHost(dataDir, port, strings.TrimPrefix(origin, "http://"))
+		}
+	} else {
+		for _, address := range addresses {
+			listener, listenErr := net.Listen("tcp", net.JoinHostPort(address, strconv.Itoa(port)))
+			if listenErr != nil {
+				for _, opened := range listeners {
+					_ = opened.Close()
+				}
+				log.Fatalf("listen %s: %v", address, listenErr)
+			}
+			listeners = append(listeners, listener)
+			server.AddListenHost(address, address == "127.0.0.1" || address == "::1" || address == "localhost")
+		}
 	}
+	server.NativeCandidates = func() []string { return gatewayNativeCandidates(dataDir, port) }
 	direct, directErr := loadDirectSettings(dataDir, preferences)
 	if directErr != nil {
 		log.Printf("局域网直连已禁用: %v", directErr)
@@ -1157,6 +1183,47 @@ func runGateway(args []string) {
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+func gatewayDynamicLAN(dataDir string) bool {
+	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
+		if value, decodeErr := jsoncompat.Unmarshal(raw); decodeErr == nil {
+			if root, ok := value.(*jsoncompat.Object); ok {
+				if lan, ok := root.MustGet("lan").(bool); ok && !lan {
+					return false
+				}
+				if values, ok := root.MustGet("lanAddresses").(*jsoncompat.Array); ok && len(values.Items) > 0 {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+func gatewayCurrentHost(dataDir string, port int, host string) bool {
+	address, portValue, err := net.SplitHostPort(host)
+	if err != nil || portValue != strconv.Itoa(port) {
+		return false
+	}
+	for _, current := range gatewayListenAddresses(dataDir) {
+		if address == current {
+			return true
+		}
+	}
+	return false
+}
+
+func gatewayNativeCandidates(dataDir string, port int) []string {
+	candidates := []string{}
+	for _, address := range gatewayListenAddresses(dataDir) {
+		ip := net.ParseIP(address)
+		if ip == nil || ip.IsLoopback() {
+			continue
+		}
+		candidates = append(candidates, "http://"+net.JoinHostPort(address, strconv.Itoa(port)))
+	}
+	return candidates
 }
 
 // gatewayListenAddresses mirrors the desktop network defaults without

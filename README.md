@@ -44,6 +44,8 @@ Linux x64 / ARM64 实验性适配、Ubuntu 22.04 构建与 VMware 网络说明�
 
 [查看所有版本与更新说明](https://github.com/BenedictKing/mobile-bridge/releases) · [下载 SHA256 校验文件](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.1.0/SHA256SUMS.txt)。两种 Mac 同时提供 ZIP，供应用内更新或手动替换使用。Windows ARM 暂无专用安装包。Mac 版采用本地完整性签名但未公证，首次打开可能需要手动允许；Windows 版未做证书签名。详见下方 macOS 首次打开说明。
 
+Android 原生容器支持热点网络下自动发现局域网网关并加速读取，无需证书或修改 DNS；构建与安装见 [Android 使用说明](docs/android.md)。
+
 1. 在电脑上打开原来的 **Codex App**，再打开 **Mobile Bridge**。
 2. 在“网络与登录”保留局域网访问，保存后点击 **启动网关**。已有配置时沿用原端口。
 3. 手机连接同一局域网，在 App 首页展开对应地址下的 **扫码登录**，用手机相机扫描即可进入，无需输入密码。也可以手动打开地址，使用 App 提供的登录凭据。

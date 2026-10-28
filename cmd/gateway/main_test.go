@@ -199,3 +199,41 @@ func TestLoadDirectSettingsRejectsInvalidConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayDynamicLANAndCurrentHost(t *testing.T) {
+	dataDir := t.TempDir()
+	if !gatewayDynamicLAN(dataDir) {
+		t.Fatal("default LAN should follow interface changes")
+	}
+	if !gatewayCurrentHost(dataDir, 8787, "127.0.0.1:8787") || gatewayCurrentHost(dataDir, 8787, "192.0.2.10:8787") {
+		t.Fatal("default host validation does not match current addresses")
+	}
+	config := `{"lan":true,"localAccess":true,"lanAddresses":["192.0.2.10"]}`
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if gatewayDynamicLAN(dataDir) {
+		t.Fatal("explicit addresses must keep static listeners")
+	}
+	if !gatewayCurrentHost(dataDir, 8787, "192.0.2.10:8787") || gatewayCurrentHost(dataDir, 8787, "192.0.2.10:9999") {
+		t.Fatal("explicit host or port validation failed")
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(`{"lan":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if gatewayDynamicLAN(dataDir) {
+		t.Fatal("disabled LAN must not use wildcard listener")
+	}
+}
+
+func TestGatewayNativeCandidatesExcludeLoopback(t *testing.T) {
+	dataDir := t.TempDir()
+	config := `{"lan":true,"localAccess":true,"lanAddresses":["127.0.0.1","192.0.2.10","::1"]}`
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidates := gatewayNativeCandidates(dataDir, 8787)
+	if len(candidates) != 1 || candidates[0] != "http://192.0.2.10:8787" {
+		t.Fatalf("candidates=%v", candidates)
+	}
+}
