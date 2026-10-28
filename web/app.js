@@ -123,9 +123,13 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)wakeForegr
 // stay silently dead, so an online event must also wake the channel.
 window.addEventListener('online',wakeForeground);
 let loginStatus={attemptsRemaining:5,attemptLimit:5,blocked:false};
+// 网络不通或网关没返回具体原因时，给出能照着做的提示，而不是“请求失败”。
+function loginErrorText(error){return error instanceof TypeError||error?.message===t('请求失败')?t('无法连接电脑网关，请检查网络或确认电脑端正在运行。'):t(error?.message||'请求失败');}
 function renderLoginStatus(status=loginStatus){
   loginStatus=status||loginStatus;
-  $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。');
+  // 还没输错过时不提示次数，免得第一次打开就像在警告。
+  const failed=loginStatus.attemptsRemaining<loginStatus.attemptLimit;
+  $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):failed?t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。'):'';
   $('login-button').disabled=loginStatus.blocked;
 }
 function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
@@ -135,14 +139,14 @@ async function start(pairingToken=null){
     try{const result=await api('/api/pair',{token:pairingToken});csrf=result.csrf;BridgeConnection.authenticated(csrf);await enter();return;}
     catch(error){
       if(auth.authenticated){csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();toast(error.message);}
-      else{showLogin(auth.passwordless,auth.loginStatus);$('login-error').textContent=t(error.message);}
+      else{showLogin(auth.passwordless,auth.loginStatus);$('login-error').textContent=loginErrorText(error);}
       return;
     }finally{pairingToken=null;}
   }
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();
 }
 async function enter(){$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const runRoute=typeof parseRunHash==='function'?parseRunHash():null;if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}await list;}
-$('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=t(error.message);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
+$('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=loginErrorText(error);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
 $('logout').onclick=async()=>{await BridgeConnection.logout();csrf='';state=null;currentId=null;listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 let listMode=localStorage.getItem('list-mode')==='project'?'project':'recent';
@@ -1203,7 +1207,7 @@ $('skill-search').oninput=()=>{clearTimeout(skillSearchTimer);skillSearchTimer=s
 $('message').onclick=updateSkillSuggestions;
 document.addEventListener('pointerdown',event=>{if(!event.target.closest('.composer-input'))closeSkillSuggestions();});
 window.addEventListener('pagehide',saveDraft);
-function startFromLink(token){return start(token).catch(error=>{showLogin();$('login-error').textContent=t(error.message);});}
+function startFromLink(token){return start(token).catch(error=>{showLogin();$('login-error').textContent=loginErrorText(error);});}
 startFromLink(initialPairingToken);initialPairingToken=null;
 window.addEventListener('hashchange',()=>{
   const token=takePairingToken();

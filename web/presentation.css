@@ -434,3 +434,39 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 @media(prefers-reduced-motion:reduce){
   .composer-toggle svg{transition:none}
 }
+
+/* 2026-10-28 细节复查 */
+/* 登录：.login label 的 display:block 盖住了复选框行的 flex，复选框和文字贴在一起。 */
+.login .remember-login{display:flex;align-items:center;gap:10px;margin:14px 0 0;color:var(--text)}
+#login-attempts:empty{display:none}
+#login-error{margin:12px 0 0}
+
+/* 列表：选中项只用一种信号（底色），不再叠加左侧色条；退出登录不和普通入口抢强调色。 */
+.session.selected::before{content:none}
+.sidebar-foot{grid-template-columns:auto auto auto 1fr}
+.sidebar-foot>#logout{color:var(--muted);justify-self:end}
+
+/* 本轮改动：外层不再套虚线框，避免框中框。 */
+.turn-diff-summary{padding:0;border:0}
+
+/* 审批卡：风险标签在警示底色上需要描边才看得出；命令区跟随主题。 */
+.approval-command{background:var(--raised);color:var(--text)}
+.approval-context{color:var(--muted)}
+.approval-risk.risk-elevated,.approval-risk.file{border:1px solid var(--warning-line)}
+.approval select{background:var(--raised)}
+
+/* 输入区：桌面端下拉框按内容取宽，不再拉伸成两条长框；触屏不显示键盘快捷键。 */
+@media(min-width:721px){
+  .compose-bottom{grid-template-columns:36px auto auto minmax(0,1fr) auto}
+  .compose-bottom select{width:auto;max-width:220px}
+  .compose-actions{grid-column:5}
+}
+@media(pointer:coarse){.send-shortcut{display:none}}
+
+/* 设置：第一组不画顶线（标题下已有间距）；外观组内的小标题与其他字段对齐。 */
+#appearance-dialog .picker-body>.appearance-section:first-child{margin-top:0;padding-top:0;border-top:0}
+.conversation-options{margin-bottom:0}
+.appearance-section>.appearance-grid,.appearance-section>.range-label,.appearance-field{clear:both}
+.appearance-section legend{padding:0}
+.appearance-field{margin:10px 0}
+.appearance-field-label{display:block;font-size:14px;margin-bottom:10px}

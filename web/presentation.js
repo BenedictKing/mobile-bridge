@@ -63,6 +63,7 @@ if(typeof document!=='undefined')(()=>{
     root.style.setProperty('--message-size',settings.fontSize+'px');
     root.style.setProperty('--code-size',settings.codeSize+'px');
     document.querySelector('meta[name="theme-color"]').content=dark?'#111216':'#f3f5f8';
+    try{window.MobileBridgeNative?.setTheme(dark);}catch{}
     for(const [id,value] of Object.entries({theme:settings.theme,accent:settings.accent,font:settings.fontSize,code:settings.codeSize,density:settings.density}))get('appearance-'+id).value=value;
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';
     get('appearance-activity').checked=settings.showActivity;get('appearance-reasoning').checked=settings.showReasoning;get('appearance-process').checked=settings.showProcess;
@@ -121,6 +122,8 @@ if(typeof document!=='undefined')(()=>{
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
   get('settings-accounts').onclick=()=>{get('appearance-dialog').close();get('accounts-button').click();};
+  // Android App 注入 MobileBridgeNative；浏览器里没有这一组。
+  if(window.MobileBridgeNative){get('native-app-section').hidden=false;get('native-app-settings').onclick=()=>{get('appearance-dialog').close();window.MobileBridgeNative.openSettings();};}
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);
   system.addEventListener('change',()=>{if(settings.theme==='system')preserveReading(apply);});
   window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false)};

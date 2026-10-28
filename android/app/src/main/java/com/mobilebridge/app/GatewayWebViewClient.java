@@ -16,12 +16,45 @@ import java.util.List;
 import java.util.Map;
 
 final class GatewayWebViewClient extends WebViewClient {
+    interface PageListener {
+        void onLoaded();
+
+        void onFailed(String reason);
+    }
+
     private final URI publicOrigin;
     private final DirectTransport direct;
+    private final PageListener pages;
+    private boolean failed;
 
-    GatewayWebViewClient(URI publicOrigin, DirectTransport direct) {
+    GatewayWebViewClient(URI publicOrigin, DirectTransport direct, PageListener pages) {
         this.publicOrigin = publicOrigin;
         this.direct = direct;
+        this.pages = pages;
+    }
+
+    @Override
+    public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+        failed = false;
+    }
+
+    @Override
+    public void onPageFinished(WebView view, String url) {
+        if (!failed) pages.onLoaded();
+    }
+
+    @Override
+    public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) {
+        if (!request.isForMainFrame()) return;
+        failed = true;
+        pages.onFailed(String.valueOf(error.getDescription()));
+    }
+
+    @Override
+    public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) {
+        if (!request.isForMainFrame() || response.getStatusCode() < 500) return;
+        failed = true;
+        pages.onFailed("HTTP " + response.getStatusCode());
     }
 
     @Override
