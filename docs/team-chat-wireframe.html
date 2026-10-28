@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>团队聊天 · 结构线框</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;color:#252525;background:#f4f4f4;font-size:14px;line-height:1.55;--line:#c8c8c8;--soft:#e9e9e9;--paper:#fff;--muted:#666}
+    *{box-sizing:border-box}[hidden]{display:none!important}body{margin:0}button,textarea{font:inherit}button{cursor:pointer}button:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid #555;outline-offset:3px}button{border:1px solid #999;background:#fff;color:inherit;padding:8px 12px}button[aria-pressed="true"],button.primary{background:#333;color:#fff;border-color:#333}p,h1,h2,h3{margin-top:0}.review-head{max-width:1180px;margin:auto;padding:28px 24px 18px;display:flex;justify-content:space-between;gap:24px;align-items:end}.review-head h1{font-size:26px;margin-bottom:8px}.review-head p{margin-bottom:0;color:var(--muted)}.eyebrow{font-size:11px;letter-spacing:1.5px}.view-switch{display:flex;gap:6px;flex:none}main{max-width:1180px;margin:auto;padding:0 24px 32px}.flow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.flow button{font-size:12px}.flow button.active{outline:2px solid #555;outline-offset:2px}
+    .device{border:2px solid #777;background:var(--paper);min-height:650px;overflow:hidden}.device.mobile{max-width:390px;margin:auto}.shell{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:650px}.sidebar{border-right:1px solid var(--line);padding:16px;background:#efefef}.sidebar h2{font-size:16px}.search{border:1px solid var(--line);padding:9px;color:var(--muted);margin-bottom:18px}.project-name{font-weight:700;margin-bottom:8px}.chat-link{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #ddd;padding:12px 8px}.chat-link strong,.chat-link small{display:block}.chat-link small{color:var(--muted)}.badge{display:inline-block;border:1px solid #888;padding:0 5px;font-size:10px;font-weight:400;vertical-align:1px}.main-chat{display:flex;flex-direction:column;min-width:0;min-height:650px}.chat-head{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line)}.chat-head>div{flex:1;min-width:0}.chat-head h2{font-size:17px;margin:0}.chat-head p{font-size:12px;color:var(--muted);margin:2px 0 0}.back{display:none}.timeline{flex:1;padding:24px}.message{max-width:680px;margin-bottom:24px}.message.user{margin-left:8%;padding:14px;border:1px solid var(--line);background:#f2f2f2}.who{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}.image-placeholder{height:120px;border:1px dashed #888;background:#ddd;display:grid;place-items:center;text-align:center;margin:10px 0;color:#555}.composer{border-top:1px solid var(--line);padding:12px 20px 18px}.tools{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}.tools button{font-size:12px;padding:5px 8px}.input-row{display:flex;gap:8px;align-items:end}.input-row textarea{flex:1;min-width:0;min-height:70px;resize:vertical;border:1px solid #999;padding:10px}.attachment{display:inline-block;padding:6px 9px;background:var(--soft);border:1px solid var(--line);margin-bottom:8px}.notice{padding:10px 14px;border:1px solid #777;background:#e5e5e5;margin-bottom:12px}.run-body{padding:22px;flex:1}.run-body h2{font-size:20px}.dag{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap;margin:24px 0}.task{border:1px solid #888;padding:14px;flex:1;min-width:140px;background:#f1f1f1}.task strong,.task small{display:block}.task small{margin-top:8px;color:var(--muted)}.contract{margin-top:18px;border:1px solid var(--line);background:var(--paper);padding:18px 20px}.contract h2{font-size:17px}.contract pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eee;padding:14px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}.notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.notes p{margin:0;color:var(--muted)}
+    .mobile .shell{display:block;min-height:650px}.mobile .sidebar{display:none;border-right:0;min-height:650px}.mobile .back{display:inline-block;padding:6px 10px}.mobile .chat-head{padding:12px}.mobile .timeline{padding:16px}.mobile .composer{padding:10px 12px}.mobile .message.user{margin-left:0}.mobile .notes{grid-template-columns:1fr}.mobile.show-list .sidebar{display:block}.mobile.show-list .main-chat{display:none}.mobile .run-body{padding:16px}.mobile .view-run{max-width:100%}
+    @media(max-width:720px){.review-head{padding:20px 14px 14px;align-items:start;flex-direction:column}.review-head h1{font-size:22px}main{padding:0 10px 24px}.shell{display:block}.sidebar{display:none;border-right:0;min-height:650px}.back{display:inline-block}.show-list .sidebar{display:block}.show-list .main-chat{display:none}.chat-head{padding:12px}.timeline{padding:16px}.composer{padding:10px 12px}.message.user{margin-left:0}.notes{grid-template-columns:1fr}.device{min-height:620px}.main-chat{min-height:620px}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+  </style>
+</head>
+<body>
+  <header class="review-head">
+    <div>
+      <p class="eyebrow">MOBILE BRIDGE / WIREFRAME</p>
+      <h1>项目里的团队，就是一条主控聊天</h1>
+      <p>评审信息结构与发送路径；灰度样式不代表最终视觉。</p>
+    </div>
+    <div class="view-switch" role="group" aria-label="线框宽度">
+      <button type="button" data-view="desktop" aria-pressed="true">桌面</button>
+      <button type="button" data-view="mobile" aria-pressed="false">手机</button>
+    </div>
+  </header>
+  <main>
+    <nav class="flow" aria-label="评审路径">
+      <button type="button" data-step="chat">1 项目团队</button>
+      <button type="button" data-step="attached">2 图片已上传</button>
+      <button type="button" data-step="accepted">3 团队已受理</button>
+      <button type="button" data-step="run">4 最近 Run</button>
+    </nav>
+    <section id="device" class="device" aria-label="团队聊天线框">
+      <div id="shell" class="shell">
+        <aside class="sidebar" aria-label="项目聊天列表">
+          <h2>聊天</h2>
+          <div class="search">搜索聊天或项目</div>
+          <div class="project-name">▾ mobile-bridge</div>
+          <button id="team-link" class="chat-link" type="button">
+            <strong>食材团队 <span class="badge">团队</span></strong>
+            <small>负责人 · 3 名成员</small>
+          </button>
+          <div class="chat-link"><strong>首页改版</strong><small>普通聊天</small></div>
+          <div class="chat-link"><strong>团队-前端成员</strong><small>成员会话</small></div>
+          <div class="chat-link"><strong>团队-评审成员</strong><small>评审会话</small></div>
+        </aside>
+        <section class="main-chat" aria-label="团队主控聊天">
+          <header class="chat-head">
+            <button id="back-list" class="back" type="button" aria-label="返回项目聊天列表">‹</button>
+            <div><h2 id="chat-title">食材团队 <span class="badge">团队</span></h2><p>mobile-bridge · 此电脑</p></div>
+            <button id="latest-run" type="button">最近 Run</button>
+          </header>
+          <div id="chat-view" class="main-chat">
+            <div class="timeline">
+              <div id="accepted" class="notice" role="status" hidden>团队已受理 · Run 已创建，仍可继续发消息</div>
+              <div class="message user"><span class="who">你</span><span id="user-text">请按这张截图检查首页布局</span><div id="message-image" class="image-placeholder">图片占位<br>homepage.png</div></div>
+              <div class="message"><span class="who">团队负责人</span>我先检查现有实现，再把布局核对交给前端成员，最后由评审检查改动。</div>
+            </div>
+            <form id="composer" class="composer">
+              <div class="tools"><button type="button" disabled title="仅表示复用现有控件">模型</button><button type="button" disabled title="仅表示复用现有控件">提醒</button><button type="button" disabled title="仅表示复用现有控件">权限</button></div>
+              <div id="attachment" class="attachment" hidden>附件 · homepage.png</div>
+              <div class="input-row">
+                <button id="attach" type="button" aria-label="添加图片">附件</button>
+                <textarea id="prompt" aria-label="给团队发消息">请按这张截图检查首页布局</textarea>
+                <button class="primary" type="submit">发送</button>
+              </div>
+            </form>
+          </div>
+          <section id="run-view" class="run-body" aria-label="最近 Run 详情" hidden>
+            <button id="back-chat" type="button">‹ 返回团队聊天</button>
+            <h2>检查首页布局</h2>
+            <p>single + autoPlan · 运行中</p>
+            <div class="dag" aria-label="任务依赖">
+              <div class="task"><strong>负责人</strong><span>理解目标与派发</span><small>已完成</small></div>
+              <div class="task"><strong>前端成员</strong><span>核对首页实现</span><small>运行中</small></div>
+              <div class="task"><strong>评审</strong><span>检查结果与截图</span><small>等待依赖</small></div>
+            </div>
+            <p>这里沿用现有 Run 详情：任务 DAG、成员状态、原始会话和验证结果；聊天页不承载这些高级控制。</p>
+          </section>
+        </section>
+      </div>
+    </section>
+    <section class="contract" aria-labelledby="contract-title">
+      <h2 id="contract-title">网关约定（与线框一一对应）</h2>
+      <div class="notes">
+        <p><strong>复用主控入口</strong><br>团队聊天仍打开负责人会话；上传、时间线、权限审批和消息幂等不另建一套。</p>
+        <p><strong>发送即创建 Run</strong><br>网关识别 teamId 后只创建 single + autoPlan Run，不额外发送普通 Prompt。</p>
+        <p><strong>高级能力不挤进输入区</strong><br>显式流水线、定时 Run 和修订留在团队高级入口；Skill、目标模式和 steer 本轮不出现。</p>
+      </div>
+      <pre>1. POST /api/sessions/:leadId/uploads
+   → { id: "upload-uuid", name: "homepage.png" }
+
+2. POST /api/sessions/:leadId/send
+   {
+     "id": "client-message-uuid",
+     "teamId": "team-uuid",
+     "text": "请按这张截图检查首页布局",
+     "mode": "send",
+     "workMode": "default",
+     "attachments": [{ "id": "upload-uuid" }]
+   }
+
+3. 网关：Lead Task 持久化附件 → submissions → PromptWithBlocks
+   → { "status": "accepted", "teamId": "team-uuid", "runId": "run-uuid" }</pre>
+      <p>线框中的“附件”和“发送”只演示界面状态，不发起网络请求；“最近 Run”用于评审聊天与高级详情的边界。</p>
+    </section>
+  </main>
+  <script>
+    const device=document.getElementById('device');
+    const shell=document.getElementById('shell');
+    const chatView=document.getElementById('chat-view');
+    const runView=document.getElementById('run-view');
+    const attachment=document.getElementById('attachment');
+    const accepted=document.getElementById('accepted');
+    const messageImage=document.getElementById('message-image');
+    const prompt=document.getElementById('prompt');
+    function showList(){shell.classList.add('show-list');document.getElementById('team-link').focus();}
+    function setStep(step){
+      const running=step==='run';
+      chatView.hidden=running;runView.hidden=!running;
+      attachment.hidden=step==='chat';messageImage.hidden=step==='chat';
+      accepted.hidden=step!=='accepted';
+      document.getElementById('user-text').textContent=prompt.value||'请查看这张图片';
+      document.querySelectorAll('[data-step]').forEach(button=>button.classList.toggle('active',button.dataset.step===step));
+      shell.classList.remove('show-list');
+    }
+    document.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>{
+      const mobile=button.dataset.view==='mobile';device.classList.toggle('mobile',mobile);shell.classList.remove('show-list');
+      document.querySelectorAll('[data-view]').forEach(item=>item.setAttribute('aria-pressed',String(item===button)));
+    }));
+    document.querySelectorAll('[data-step]').forEach(button=>button.addEventListener('click',()=>setStep(button.dataset.step)));
+    document.getElementById('team-link').addEventListener('click',()=>setStep('chat'));
+    document.getElementById('attach').addEventListener('click',()=>setStep('attached'));
+    document.getElementById('composer').addEventListener('submit',event=>{event.preventDefault();setStep('accepted');});
+    document.getElementById('latest-run').addEventListener('click',()=>setStep('run'));
+    document.getElementById('back-chat').addEventListener('click',()=>setStep('accepted'));
+    document.getElementById('back-list').addEventListener('click',showList);
+    setStep('chat');
+  </script>
+</body>
+</html>
