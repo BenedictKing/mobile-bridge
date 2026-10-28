@@ -36,6 +36,7 @@ public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private EditText urlInput;
     private TextView status;
+    private LinearLayout settingsPanel;
     private WebView webView;
     private DirectTransport direct;
     private ConnectivityManager.NetworkCallback networkCallback;
@@ -44,18 +45,60 @@ public final class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+        android.widget.FrameLayout root = new android.widget.FrameLayout(this);
         root.setBackgroundColor(0xfff3f5f8);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(0, insets.getSystemWindowInsetTop(), 0, insets.getSystemWindowInsetBottom());
+            int top, bottom;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets systemBars = insets.getInsets(android.view.WindowInsets.Type.systemBars());
+                top = systemBars.top;
+                bottom = systemBars.bottom;
+            } else {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+            }
+            view.setPadding(0, top, 0, bottom);
             return insets;
         });
 
+        webView = new WebView(this);
+        root.addView(webView, new android.widget.FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        int padding = dp(12);
+        status = new TextView(this);
+        status.setPadding(padding, dp(6), padding, dp(6));
+        status.setText("公网连接");
+        status.setTextSize(13);
+        status.setBackground(new android.graphics.drawable.ColorDrawable(0xe0ffffff));
+        status.setElevation(dp(2));
+        android.widget.FrameLayout.LayoutParams statusParams = new android.widget.FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        statusParams.setMargins(padding, padding, padding, 0);
+        root.addView(status, statusParams);
+
+        Button settingsButton = new Button(this);
+        settingsButton.setText("⚙");
+        settingsButton.setContentDescription("设置");
+        settingsButton.setOnClickListener(view -> toggleSettings());
+        android.widget.FrameLayout.LayoutParams settingsParams = new android.widget.FrameLayout.LayoutParams(dp(48), dp(48));
+        settingsParams.gravity = android.view.Gravity.TOP | android.view.Gravity.END;
+        settingsParams.setMargins(0, padding, padding, 0);
+        root.addView(settingsButton, settingsParams);
+
+        settingsPanel = new LinearLayout(this);
+        settingsPanel.setOrientation(LinearLayout.VERTICAL);
+        settingsPanel.setPadding(padding, padding, padding, padding);
+        settingsPanel.setBackground(new android.graphics.drawable.ColorDrawable(0xffffffff));
+        settingsPanel.setElevation(dp(8));
+        settingsPanel.setVisibility(android.view.View.GONE);
+        android.widget.FrameLayout.LayoutParams panelParams = new android.widget.FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        panelParams.setMargins(padding, dp(64), padding, 0);
+        root.addView(settingsPanel, panelParams);
+
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.HORIZONTAL);
-        int padding = dp(8);
-        controls.setPadding(padding, padding, padding, padding);
         urlInput = new EditText(this);
         urlInput.setSingleLine(true);
         urlInput.setHint("https://codex.example.com");
@@ -65,17 +108,10 @@ public final class MainActivity extends Activity {
         connect.setText("连接");
         connect.setOnClickListener(view -> connect());
         controls.addView(connect, new LinearLayout.LayoutParams(dp(88), dp(48)));
-        root.addView(controls);
-
-        status = new TextView(this);
-        status.setPadding(padding, 0, padding, padding);
-        status.setText("公网连接");
-        root.addView(status);
-
-        webView = new WebView(this);
-        root.addView(webView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        settingsPanel.addView(controls);
         setContentView(root);
         configureWebView();
+        registerBackHandler();
         requestLocalNetworkPermission();
         watchNetworks();
         String saved = preferences().getString(PUBLIC_URL, "");
@@ -111,9 +147,19 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void toggleSettings() {
+        if (settingsPanel.getVisibility() == android.view.View.VISIBLE) {
+            settingsPanel.setVisibility(android.view.View.GONE);
+        } else {
+            settingsPanel.setVisibility(android.view.View.VISIBLE);
+            urlInput.requestFocus();
+        }
+    }
+
     private void connect() {
         try {
             URI origin = normalizeOrigin(urlInput.getText().toString().trim());
+            settingsPanel.setVisibility(android.view.View.GONE);
             preferences().edit().putString(PUBLIC_URL, origin.toString()).apply();
             if (direct != null) direct.close();
             direct = new DirectTransport(origin, value -> main.post(() -> status.setText(value)));
@@ -157,6 +203,25 @@ public final class MainActivity extends Activity {
         manager.registerDefaultNetworkCallback(networkCallback);
     }
 
+    private void registerBackHandler() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                () -> {
+                    if (settingsPanel != null && settingsPanel.getVisibility() == android.view.View.VISIBLE) {
+                        settingsPanel.setVisibility(android.view.View.GONE);
+                        return;
+                    }
+                    if (webView != null && webView.canGoBack()) {
+                        webView.goBack();
+                    } else {
+                        finish();
+                    }
+                }
+            );
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -165,16 +230,28 @@ public final class MainActivity extends Activity {
         if (resultCode == RESULT_OK && data != null) {
             if (data.getData() != null) files.add(data.getData());
             ClipData clip = data.getClipData();
-            if (clip != null) for (int i = 0; i < clip.getItemCount(); i++) files.add(clip.getItemAt(i).getUri());
+            if (clip != null) {
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    files.add(clip.getItemAt(i).getUri());
+                }
+            }
         }
         fileCallback.onReceiveValue(files.toArray(new Uri[0]));
         fileCallback = null;
     }
 
     @Override
+    @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        if (webView.canGoBack()) webView.goBack();
-        else super.onBackPressed();
+        if (settingsPanel != null && settingsPanel.getVisibility() == android.view.View.VISIBLE) {
+            settingsPanel.setVisibility(android.view.View.GONE);
+            return;
+        }
+        if (webView != null && webView.canGoBack()) {
+            webView.goBack();
+        } else {
+            super.onBackPressed();
+        }
     }
 
     @Override
