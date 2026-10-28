@@ -9,7 +9,7 @@ function takePairingToken(){
 let initialPairingToken=takePairingToken();
 const $ = id => document.getElementById(id),t=BridgeI18n.t;
 let csrf='', currentId=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
-let currentHost='local', listRows=[], listGeneration=0;
+let currentHost='local', listRows=[], listGeneration=0, listLoading=false, listHasMore=false;
 let chatTimeline=null;
 BridgeConnection.onchange=()=>{BridgeTransport.wake?.();chatTimeline?.refill?.();refreshActivity();};
 // Keep the tab title on the open chat; user content is never passed through t().
@@ -216,19 +216,29 @@ function renderList(){
   if(!listRows.length)$('sessions').append(el('p','muted',t('没有找到聊天。')));renderActivity();
 }
 async function loadList(reset=false){
+  if(listLoading&&!reset)return;
   const generation=++listGeneration;
-  if(reset){listOffset=0;listRows=[];}
+  listLoading=true;
+  if(reset){listOffset=0;listRows=[];listHasMore=false;}
   listQuery=$('search').value;
-  const result=await api('/api/sessions?q='+encodeURIComponent(listQuery)+'&offset='+listOffset+'&archived='+$('archived').checked);
-  if(generation!==listGeneration)return;
-  const rows=new Map(listRows.map(row=>[chatKey(row.id,row.host),row]));
-  for(const row of result.sessions){const key=chatKey(row.id,row.host);row.recency=Math.max(row.recency,recentInteractions.get(key)||0);rows.set(key,row);}
-  listRows=[...rows.values()];listRows.sort((a,b)=>b.recency-a.recency);
-  listOffset+=result.sessions.length;$('more').hidden=result.sessions.length<100;
-  $('host-errors').textContent=(result.unavailableHosts||[]).map(h=>h.label+'：'+h.error).join('\n');
-  $('host-errors').hidden=!(result.unavailableHosts||[]).length;renderList();refreshActivity();
+  try{
+    const result=await api('/api/sessions?q='+encodeURIComponent(listQuery)+'&offset='+listOffset+'&archived='+$('archived').checked);
+    if(generation!==listGeneration)return;
+    const rows=new Map(listRows.map(row=>[chatKey(row.id,row.host),row]));
+    for(const row of result.sessions){const key=chatKey(row.id,row.host);row.recency=Math.max(row.recency,recentInteractions.get(key)||0);rows.set(key,row);}
+    listRows=[...rows.values()];listRows.sort((a,b)=>b.recency-a.recency);
+    listOffset+=result.sessions.length;listHasMore=result.sessions.length===100;
+    $('host-errors').textContent=(result.unavailableHosts||[]).map(h=>h.label+'：'+h.error).join('\n');
+    $('host-errors').hidden=!(result.unavailableHosts||[]).length;renderList();refreshActivity();
+  }finally{if(generation===listGeneration)listLoading=false;}
+  if(generation===listGeneration)loadListOnScroll();
 }
-$('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).catch(e=>toast(e.message));$('more').onclick=()=>loadList().catch(e=>toast(e.message));
+function loadListOnScroll(){
+  const list=$('sessions');
+  if(listHasMore&&!listLoading&&list.scrollHeight-list.clientHeight-list.scrollTop<240)loadList().catch(e=>toast(e.message));
+}
+$('sessions').onscroll=loadListOnScroll;
+$('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).catch(e=>toast(e.message));
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
 let newChatProjects=[],newChatAgents=[],creatingChat=false,approvalBusy=0;
 function projectLabel(project){const kind=project.agent||(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
