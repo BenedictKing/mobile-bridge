@@ -1278,8 +1278,8 @@ func (h *handler) projectList(limit int) *jsoncompat.Object {
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].recency > entries[j].recency })
-	if limit > 0 && len(entries) > limit {
-		entries = entries[:limit]
+	if limit > 0 {
+		entries = recentProjectEntries(entries, limit)
 	}
 	projects := &jsoncompat.Array{}
 	for _, entry := range entries {
@@ -1292,6 +1292,25 @@ func (h *handler) projectList(limit int) *jsoncompat.Object {
 	// mirrors Python's registry.kinds() — every enabled agent plus codex.
 	result.Set("agents", h.server.agentRoster())
 	return result
+}
+
+// recentProjectEntries 按目录去重已按活跃时间排序的项目；内部全量查询保留
+// 各 Agent 的原始键，供迁移和旧项目键解析使用。
+func recentProjectEntries(entries []*projectEntry, limit int) []*projectEntry {
+	unique := make([]*projectEntry, 0, len(entries))
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		cwd, _ := entry.item.MustGet("cwd").(string)
+		if seen[cwd] {
+			continue
+		}
+		seen[cwd] = true
+		unique = append(unique, entry)
+		if len(unique) == limit {
+			break
+		}
+	}
+	return unique
 }
 
 func stubAccount() *jsoncompat.Object {

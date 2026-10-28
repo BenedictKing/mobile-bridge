@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -85,6 +86,38 @@ func TestProjectsLimitKeepsResolvable(t *testing.T) {
 	h := &handler{server: server}
 	if cwd := h.resolveProjectCwd("codex:" + hashProject("/work")); cwd != "/work" {
 		t.Fatalf("resolveProjectCwd(/work)=%q", cwd)
+	}
+}
+
+func TestProjectsDeduplicatesAcrossAgents(t *testing.T) {
+	server, _ := discoveryFixture(t)
+	manager := acpruntime.NewCommand(fakeACPAgent(t, "/work"))
+	defer manager.Close()
+	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
+
+	projects, _ := getProjects(t, server).MustGet("projects").(*jsoncompat.Array)
+	if len(projects.Items) != 1 {
+		t.Fatalf("同目录跨 Agent 应只返回一项，实际 %d 项", len(projects.Items))
+	}
+	project, _ := projects.Items[0].(*jsoncompat.Object)
+	if agent, _ := project.MustGet("agent").(string); agent != "codex" {
+		t.Fatalf("应保留最近活跃的 Codex 项目，实际 agent=%q", agent)
+	}
+	h := &handler{server: server}
+	if cwd := h.resolveProjectCwd("acp:" + hashProject("/work")); cwd != "/work" {
+		t.Fatalf("旧 ACP 项目键无法解析：%q", cwd)
+	}
+}
+
+func TestRecentProjectEntriesDedupesByCwd(t *testing.T) {
+	entries := []*projectEntry{
+		newProjectEntry("codex:shared", "/shared", "codex", 400),
+		newProjectEntry("acp:shared", "/shared", "kimi", 300),
+		newProjectEntry("acp:other", "/other", "kimi", 200),
+	}
+	got := recentProjectEntries(entries, 2)
+	if len(got) != 2 || got[0] != entries[0] || got[1] != entries[2] {
+		t.Fatalf("去重结果=%v，应保留最近活跃的同目录项并在去重后应用上限", got)
 	}
 }
 
