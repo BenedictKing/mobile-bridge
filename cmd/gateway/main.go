@@ -42,6 +42,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpagents"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/claude"
 	"github.com/BenedictKing/mobile-bridge/internal/codebuddy"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/conventions"
@@ -991,6 +992,15 @@ func runGateway(args []string) {
 		manager.NativeList = func() []*jsoncompat.Object {
 			return codebuddy.ListSessions(home)
 		}
+	}
+	if manager := server.ACPAgents["claude"]; manager != nil && !scriptedMode {
+		// claude-agent-acp's session/list reports each transcript's mtime as
+		// updatedAt, and resuming a session (the startup preload does, for
+		// every recent chat) appends timestamp-less cost-state records, so a
+		// restart restamped the preloaded chats as just-used. The transcript's
+		// last timestamped record is the real last interaction. Read-only,
+		// never touches the CLI.
+		manager.NativeMeta = claude.MetaReader(claude.ProjectsRoot(os.Getenv, home))
 	}
 	if len(server.ACPAgents) > 0 {
 		for kind, manager := range server.ACPAgents {

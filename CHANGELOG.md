@@ -27,6 +27,8 @@
 
 ### Changed / Fixed
 
+- 重启网关后 Claude 会话的「最后交互时间」被预热顶成重启时刻（`internal/claude` 新包 + `cmd/gateway` 装配）：claude-agent-acp 的 session/list 以 transcript 文件 mtime 作 updatedAt，而 session/load（resume——启动预热会对最近会话逐个执行）会让 Claude Code 追加无时间戳的 cost-state 记录，文件 mtime 随之前移，于是每次重新部署都被预热的旧会话显示为「刚用过」并浮到列表顶部（本机实测：两会话最后真实消息为 10-23/10-24，mtime 均被顶成重启时刻）。修复：给 claude 装配 NativeMeta（`claude.MetaReader(ProjectsRoot)`，只读 ~/.claude/projects，CLAUDE_CONFIG_DIR 覆盖生效），从 transcript 尾部倒序找最后一条带 timestamp 的记录作为真实最后交互时间（忽略 cost-state/summary 等无时间戳行；尾部窗口 64KB 起按 4 倍增长至 4MB，跨项目目录重名会话取 mtime 最新文件，id→路径索引 30s TTL 内一次枚举服务整页查询），在 fetchListLocked 的 updatedAt 覆盖点与 /api/activity 的 recency 同时生效；查不到时间戳时返回 0 保持 Agent 原值回退。新增回归测试：取最后带时间戳记录而非 mtime、无时间戳/缺失会话回退 0、大体积元数据尾触发窗口增长、跨目录最新副本胜出、CLAUDE_CONFIG_DIR 覆盖。
+
 - 安卓网关入口从悬浮球移到标题栏（`web/index.html`/`presentation.css`/`presentation.js`/`app.js`/`i18n.js` + `android/.../MainActivity.java` + `docs/android.md`）：App 注入 `MobileBridgeNative` 时，登录后的标题栏右侧显示电脑图标，点开「网关」面板可看当前地址、修改网关地址、复制地址、重新连接；原来的悬浮 ⚙（48dp 盖在页面右上角）与设置页「App 连接 → 修改网关地址」同时删除，避免入口既遮内容又藏太深。原生侧不再绘制任何悬浮控件，改为遮罩 + 地址卡：首次启动或打不开地址时自动弹出，背后没有可返回页面时不显示「取消」、返回键直接退出，避免关掉面板只剩空白；状态栏深浅色仍由网页 `setTheme` 驱动。360px 下标题栏只放这一个图标，登录页仍是主题 + 语言两个控件，不挤出横向滚动。
 
 - 手机端三处可用性修正（`web/app.js`/`presentation.css`/`i18n.js`）：① 已连接时状态不再用文字胶囊占标题栏，只在断开、加载、运行中、只读时显示，360px 下聊天标题可用宽度从 192px 回到 236px，390px 下 266px；② 空列表区分「电脑上还没有聊天」与「搜索无结果」，各自给出说明和「＋ 新建聊天」/「清除搜索」；③ 按项目分组时组头已写明项目与主机，行内只留 Agent 与时间，减少每行重复的「此电脑」。
