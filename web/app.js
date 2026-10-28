@@ -637,14 +637,19 @@ $('settings-save').onclick=async()=>{
   toast(ok?t('设置已保存'):t('部分设置保存失败，请检查表单错误'));
 };
 $('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);syncDocumentTitle();loadList(true).catch(e=>toast(e.message));};
+let apkDownloadKey='',apkDownloadTimer=null;
 function renderAPKDownload(files){
   const latest=(files||[]).filter(file=>/\.apk$/i.test(file.reference||file.name||'')&&file.id).sort((a,b)=>(b.modifiedAt||0)-(a.modifiedAt||0))[0];
-  const card=$('apk-download');card.hidden=!latest;
-  if(!latest){card.removeAttribute('href');return;}
+  const card=$('apk-download');
+  if(!latest){clearTimeout(apkDownloadTimer);apkDownloadKey='';card.hidden=true;card.removeAttribute('href');return;}
   card.href=sessionUrl(currentId,'files/'+latest.id,currentHost);card.download=latest.name||'app.apk';
   const size=Number(latest.size),label=latest.name||'app.apk';
   $('apk-download-meta').textContent=label+(size>0?' · '+(size>=1048576?(size/1048576).toFixed(1)+' MB':Math.ceil(size/1024)+' KB'):'');
+  const key=chatKey()+'|'+latest.id;if(key===apkDownloadKey)return;
+  clearTimeout(apkDownloadTimer);apkDownloadKey=key;card.hidden=false;
+  apkDownloadTimer=setTimeout(()=>{card.hidden=true;},5000);
 }
+$('apk-download').onclick=()=>{$('apk-download').hidden=true;};
 const COMPACT_PROMPTS={
   full:'/compact 保留完整关键历史、决策与结果，仅压缩冗余表述和工具输出。',
   main:'/compact 保留主要历史、当前目标、关键决策和最新结果，重点压缩执行过程与工具输出。',
