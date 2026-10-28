@@ -8,7 +8,7 @@
    阶段三增量：Lead 动作预览卡（detail.pendingActions 三态）、成员提问 decision
    卡（POST runUrl(decision)，questionId+version）、修订 Run 入口（amend 复用
    同一 runDialog 三段流，从 detail 预填）、任务缓存命中标记；顺路修阶段二
-   遗留：verify 徽标改读顶层 verifyCommand、工作区注册表/任务清理入口。
+   遗留：verify 徽标改读顶层 verifyCommand、任务工作区清理入口。
    阶段四增量：阶段图（GET runUrl(graph) Kahn 分层，点击节点定位任务卡，
    404/空回退平铺列表）、统计卡（GET runUrl(stats)，coverage=none 明示无耗时
    记录、Token 固定文案）、paused 徽标与暂停/继续（同一 resume 端点）、
@@ -517,7 +517,6 @@ class TeamsPanel{
     this.policyBudgetValue='';
     this.projects=null;     // 新建表单可用的项目空间（打开面板时快照）
     this.agents=[];         // 可创建团队成员会话的 ACP Agent
-    this.workspaces=null;   // 工作区注册表区：null=收起；{loading,error,rows,form,notice}
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
@@ -563,20 +562,7 @@ class TeamsPanel{
       this.render();
     });
     create.disabled=this.busy;
-    // 工作区注册表是无 teamID 前缀的集合端点（teams.go /api/teams/workspaces），
-    // 面板底部独立一区：注册与团队无关，没有团队也要能注册。
-    const workspaces=this.button(this.workspaces?t('收起高级'):t('高级'),()=>{
-      if(this.workspaces)this.workspaces=null;
-      else{
-        // loading 标记由 loadWorkspaces 自置（其入口有 loading 防重入），此处
-        // 只建骨架，否则预置 true 会被防重入守卫挡住、区块停在读取态。
-        this.workspaces={loading:false,error:'',rows:[],form:{id:'',path:'',error:''},notice:''};
-        this.loadWorkspaces();
-      }
-      this.render();
-    });
-    workspaces.disabled=this.busy;
-    toolbar.append(refresh,create,workspaces);
+    toolbar.append(refresh,create);
     root.append(toolbar);
     if(this.error)root.append(this.node('p',this.error,'error'));
     if(this.notice){root.append(this.node('p',this.notice,'team-notice'));this.notice='';}
@@ -587,7 +573,6 @@ class TeamsPanel{
     }else if(!this.create){
       root.append(this.node('p',t('还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
     }
-    if(this.workspaces)root.append(this.renderWorkspaces());
   }
   renderTeam(team){
     const t=BridgeI18n.t;
@@ -955,79 +940,6 @@ class TeamsPanel{
       submit:payload=>this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs',{method:'POST',body:payload}),
       onSuccess:run=>{this.openRun&&this.openRun(team.id,run.id);this.loadRuns(team.id);},
     });
-  }
-  /* ---- 工作区注册表（§6.4 + §16 默认决策 6）----
-     isolated 任务引用的 git worktree 须先在此注册（第一版不自动创建）；
-     服务端校验 id 形制/绝对路径/linked worktree（主检出拒绝），同 id 同路径
-     重放幂等、异路径 400——错误信息在表单区直出。 */
-  async loadWorkspaces(){
-    const entry=this.workspaces;
-    if(!entry||entry.loading)return;
-    entry.loading=true;entry.error='';this.render();
-    try{const result=await this.request('/api/teams/workspaces');entry.rows=result.workspaces||[];}
-    catch(error){entry.error=error.message;}
-    finally{entry.loading=false;this.render();}
-  }
-  renderWorkspaces(){
-    const t=BridgeI18n.t,entry=this.workspaces;
-    const box=this.node('section',undefined,'team-card');
-    box.append(this.node('h3',t('高级：独立任务工作区')));
-    box.append(this.node('p',t('仅当 Run 的任务使用 isolated（独立 worktree）模式时才需要。普通团队直接使用项目空间，无需在这里注册。'),'muted'));
-    box.append(this.node('p',t('这里只登记你已通过 git worktree add 创建的目录，不会自动创建或修改文件。'),'muted'));
-    if(entry.notice){box.append(this.node('p',entry.notice,'team-notice'));entry.notice='';}
-    if(entry.loading){box.append(this.node('p',t('正在读取工作区…'),'muted'));return box;}
-    if(entry.error)box.append(this.node('p',entry.error,'error'));
-    if(!entry.rows.length)box.append(this.node('p',t('还没有注册的工作区。'),'muted'));
-    for(const row of entry.rows){
-      const line=this.node('p',undefined,'team-card-meta');
-      line.append(this.node('code',row.id));
-      line.append(document.createTextNode(' '));
-      line.append(this.node('code',row.path));
-      if(row.createdAt)line.append(document.createTextNode(' · '+t('注册于 ')+teamTimeText(row.createdAt)));
-      box.append(line);
-    }
-    const form=this.node('form',undefined,'team-create');
-    const idLabel=this.node('label');
-    idLabel.append(this.node('span',t('工作区标识')));
-    const idInput=document.createElement('input');
-    idInput.value=entry.form.id;idInput.maxLength=64;
-    idInput.oninput=()=>{entry.form.id=idInput.value;};
-    idLabel.append(idInput);
-    form.append(idLabel);
-    const pathLabel=this.node('label');
-    pathLabel.append(this.node('span',t('工作区绝对路径')));
-    const pathInput=document.createElement('input');
-    pathInput.value=entry.form.path;
-    pathInput.oninput=()=>{entry.form.path=pathInput.value;};
-    pathLabel.append(pathInput);
-    form.append(pathLabel);
-    if(entry.form.error)form.append(this.node('p',entry.form.error,'error'));
-    const submit=document.createElement('button');
-    submit.type='submit';submit.className='primary';submit.textContent=t('注册工作区');
-    submit.disabled=this.busy;
-    form.append(submit);
-    form.onsubmit=async event=>{
-      event.preventDefault();
-      if(this.busy)return;
-      entry.form.error='';
-      const id=entry.form.id.trim(),path=entry.form.path.trim();
-      if(!id||!path){entry.form.error=t('请填写工作区标识与绝对路径。');this.render();return;}
-      this.busy=true;this.render();
-      try{
-        const result=await this.request('/api/teams/workspaces',{method:'POST',body:{id,path}});
-        this.busy=false;
-        entry.form.id='';entry.form.path='';
-        entry.notice=result.duplicate?t('工作区已注册（路径一致），未重复创建。'):t('工作区已注册。');
-        await this.loadWorkspaces();
-      }catch(error){
-        this.busy=false;
-        // 同 id 异路径 / 非 linked worktree / 非绝对路径等 400 直出在表单区。
-        entry.form.error=error.message;
-        this.render();
-      }
-    };
-    box.append(form);
-    return box;
   }
 }
 
