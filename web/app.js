@@ -787,7 +787,10 @@ function renderAcpApproval(request){
   card.dataset.request=String(request.id);card.append(el('h3','',question?t('Agent 提问你'):t('权限请求')),el('p','',params.text||(params.title||'')));
   const badge=question?null:riskBadge(request,params);if(badge)card.append(badge);
   if(!question&&params.command){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
-  const actions=el('div','actions'),error=el('p','error');card.append(actions,error);
+  const options=params.options||[],actions=el('div','actions'),error=el('p','error');
+  const feedback=options.some(option=>option.id==='plan_revise')?el('textarea'):null;
+  if(feedback){const label=el('label','',t('修改意见（可选）'));feedback.rows=3;feedback.maxLength=20000;label.append(feedback);card.append(label);}
+  card.append(actions,error);
   let busy=submittedRequestIds.has(request.id);
   async function submit(response){
     if(busy)return;busy=true;approvalBusy++;setLanguageBusy();actions.querySelectorAll('button').forEach(b=>b.disabled=true);error.textContent='';
@@ -796,13 +799,17 @@ function renderAcpApproval(request){
     finally{approvalBusy--;setLanguageBusy();}
   }
   let firstAllow=true;
-  for(const option of params.options||[]){
+  for(const option of options){
     const allow=String(option.kind||'').includes('allow');
     const label=question&&!allow&&/^skip$/i.test(option.label||'')?t('跳过'):(option.label||option.id);
     const button=el('button',allow&&firstAllow?'primary':'secondary',label);
     if(allow)firstAllow=false;
     markRecommendation(button,option.id,request.recommend);
-    button.type='button';button.disabled=busy;button.onclick=()=>submit({optionId:option.id});actions.append(button);
+    button.type='button';button.disabled=busy;button.onclick=()=>{
+      if(option.id!=='plan_revise'){submit({optionId:option.id});return;}
+      const text=feedback.value;if(!text.trim()){error.textContent=t('请填写修改意见');feedback.focus();return;}
+      submit({optionId:option.id,text});
+    };actions.append(button);
   }
   const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.disabled=busy;cancel.onclick=()=>submit({cancel:true});actions.append(cancel);
   if(busy)card.append(el('p','muted',t('已发送，等待桌面确认…')));

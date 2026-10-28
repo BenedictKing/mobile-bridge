@@ -1250,9 +1250,9 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 }
 
 // respondWire normalizes a phone-side reply into the wire shape the reverse
-// request expects. The permission card answers {optionId}/{cancel} while
+// request expects. The permission card answers {optionId,text}/{cancel} while
 // ACP session/request_permission results are nested {outcome:{outcome,
-// optionId}} — spec agents (kimi at least) read only the nested form and
+// optionId,text}} — spec agents (kimi at least) read only the nested form and
 // treat anything else as rejected/dismissed. Elicitation input replies keep
 // their {action,content} shape verbatim.
 func respondWire(kind string, params, response *jsoncompat.Object) (*jsoncompat.Object, error) {
@@ -1269,9 +1269,13 @@ func respondWire(kind string, params, response *jsoncompat.Object) (*jsoncompat.
 		return nil, errors.New("请求回应格式不正确")
 	}
 	for _, key := range response.Keys() {
-		if key != "optionId" && key != "cancel" {
+		if key != "optionId" && key != "cancel" && key != "text" {
 			return nil, errors.New("请求回应格式不正确")
 		}
+	}
+	text, hasText := response.MustGet("text").(string)
+	if _, exists := response.Get("text"); exists && !hasText {
+		return nil, errors.New("请求回应格式不正确")
 	}
 	if cancel, _ := response.MustGet("cancel").(bool); cancel {
 		outcome := jsoncompat.NewObject()
@@ -1287,6 +1291,9 @@ func respondWire(kind string, params, response *jsoncompat.Object) (*jsoncompat.
 	outcome := jsoncompat.NewObject()
 	outcome.Set("outcome", "selected")
 	outcome.Set("optionId", optionID)
+	if text != "" {
+		outcome.Set("text", text)
+	}
 	result := jsoncompat.NewObject()
 	result.Set("outcome", outcome)
 	return result, nil

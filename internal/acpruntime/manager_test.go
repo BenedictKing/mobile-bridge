@@ -784,7 +784,7 @@ for line in sys.stdin:
 func TestRespondWireTranslatesPermissionReplies(t *testing.T) {
 	params := jsoncompat.NewObject()
 	options := &jsoncompat.Array{}
-	for _, id := range []string{"q0_opt_0", "q0_opt_1", "q0_skip"} {
+	for _, id := range []string{"q0_opt_0", "q0_opt_1", "q0_skip", "plan_revise"} {
 		option := jsoncompat.NewObject()
 		option.Set("optionId", id)
 		option.Set("kind", "allow_once")
@@ -807,6 +807,22 @@ func TestRespondWireTranslatesPermissionReplies(t *testing.T) {
 	outcome, _ := wire.MustGet("outcome").(*jsoncompat.Object)
 	if outcome == nil || outcome.MustGet("outcome") != "selected" || outcome.MustGet("optionId") != "q0_opt_1" {
 		t.Fatalf("selection was not wrapped as ACP outcome: %s", jsoncompat.EncodeCompact(wire))
+	}
+	if _, exists := outcome.Get("text"); exists {
+		t.Fatalf("plain selection gained feedback: %s", jsoncompat.EncodeCompact(wire))
+	}
+
+	wire, err = respondWire("permission", params, reply("optionId", "plan_revise", "text", "补充错误处理"))
+	if err != nil {
+		t.Fatalf("plan feedback rejected: %v", err)
+	}
+	outcome, _ = wire.MustGet("outcome").(*jsoncompat.Object)
+	if outcome == nil || outcome.MustGet("optionId") != "plan_revise" || outcome.MustGet("text") != "补充错误处理" {
+		t.Fatalf("plan feedback was not preserved: %s", jsoncompat.EncodeCompact(wire))
+	}
+	if _, err = respondWire("permission", params, reply("optionId", "plan_revise", "text", 42)); err == nil ||
+		err.Error() != "请求回应格式不正确" {
+		t.Fatalf("non-string feedback must be refused, got %v", err)
 	}
 
 	wire, err = respondWire("permission", params, reply("cancel", true))
