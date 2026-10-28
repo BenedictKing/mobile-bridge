@@ -298,6 +298,21 @@ func (h *handler) serveWorkspaceArtifact(threadID, id string) {
 	h.writeMedia(http.StatusOK, data, serve.Mime, entry.Name, serve.Sandbox)
 }
 
+func contentDisposition(disposition, name string) string {
+	fallback := ""
+	for _, char := range name {
+		if char >= 0x20 && char <= 0x7e && char != '"' && char != '\\' && char != '/' && char != ';' {
+			fallback += string(char)
+		} else {
+			fallback += "_"
+		}
+	}
+	if fallback == "" {
+		fallback = "download"
+	}
+	return disposition + `; filename="` + fallback + `"; filename*=UTF-8''` + url.PathEscape(name)
+}
+
 func (h *handler) serveAPK(entry artifacts.Entry) {
 	file, err := os.Open(entry.Path)
 	if err != nil {
@@ -316,7 +331,7 @@ func (h *handler) serveAPK(entry artifacts.Entry) {
 	header.Set("Referrer-Policy", "no-referrer")
 	header.Set("X-Frame-Options", "DENY")
 	header.Set("Content-Type", "application/vnd.android.package-archive")
-	header.Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(entry.Name))
+	header.Set("Content-Disposition", contentDisposition("attachment", entry.Name))
 	http.ServeContent(h.writer, h.request, entry.Name, info.ModTime(), file)
 }
 
@@ -359,7 +374,7 @@ func (h *handler) writeMedia(status int, data []byte, mime, name, sandbox string
 	if mime == "application/octet-stream" {
 		disposition = "attachment"
 	}
-	header.Set("Content-Disposition", disposition+"; filename*=UTF-8''"+url.PathEscape(name))
+	header.Set("Content-Disposition", contentDisposition(disposition, name))
 	if status != http.StatusNotModified && h.request.Header.Get("If-None-Match") == etag {
 		status = http.StatusNotModified
 		data = nil

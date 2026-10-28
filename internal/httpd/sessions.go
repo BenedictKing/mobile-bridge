@@ -11,7 +11,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -1004,7 +1003,7 @@ func (h *handler) handleUploadHTTP(write bool, path string, query map[string][]s
 			}
 			h.writer.Header().Set("Content-Type", mimeType)
 			h.writer.Header().Set("Content-Length", strconv.Itoa(len(data)))
-			h.writer.Header().Set("Content-Disposition", disposition+"; filename*=UTF-8''"+url.PathEscape(name))
+			h.writer.Header().Set("Content-Disposition", contentDisposition(disposition, name))
 			h.writer.WriteHeader(http.StatusOK)
 			_, _ = h.writer.Write(data)
 			return true

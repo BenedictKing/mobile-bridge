@@ -202,7 +202,7 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 	apk := request(http.MethodGet, "/api/sessions/km-visual/files/"+apkID, "")
 	if apk.Code != http.StatusOK || apk.Body.String() != "apk-binary-content" ||
 		apk.Header().Get("Content-Type") != "application/vnd.android.package-archive" ||
-		!strings.HasPrefix(apk.Header().Get("Content-Disposition"), "attachment;") {
+		apk.Header().Get("Content-Disposition") != `attachment; filename="app.apk"; filename*=UTF-8''app.apk` {
 		t.Fatalf("apk download status=%d headers=%v body=%q", apk.Code, apk.Header(), apk.Body.String())
 	}
 	partial := request(http.MethodGet, "/api/sessions/km-visual/files/"+apkID, "", "Range", "bytes=0-3")
@@ -271,6 +271,24 @@ func TestAnnotateAttachmentsUploadLedger(t *testing.T) {
 	}
 	if _, ok := server.desktopImage("thread-2", desktopID); ok {
 		t.Fatal("desktop image leaked across threads")
+	}
+}
+
+func TestContentDispositionIncludesASCIIFallback(t *testing.T) {
+	tests := []struct {
+		disposition string
+		name        string
+		want        string
+	}{
+		{"attachment", "app-debug.apk", `attachment; filename="app-debug.apk"; filename*=UTF-8''app-debug.apk`},
+		{"inline", "截图.png", `inline; filename="__.png"; filename*=UTF-8''%E6%88%AA%E5%9B%BE.png`},
+		{"attachment", "a\"b\\c/d;e\n.apk", `attachment; filename="a_b_c_d_e_.apk"; filename*=UTF-8''a%22b%5Cc%2Fd%3Be%0A.apk`},
+		{"attachment", "", `attachment; filename="download"; filename*=UTF-8''`},
+	}
+	for _, test := range tests {
+		if got := contentDisposition(test.disposition, test.name); got != test.want {
+			t.Errorf("contentDisposition(%q, %q) = %q, want %q", test.disposition, test.name, got, test.want)
+		}
 	}
 }
 
