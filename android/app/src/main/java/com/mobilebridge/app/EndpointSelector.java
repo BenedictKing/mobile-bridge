@@ -2,7 +2,6 @@ package com.mobilebridge.app;
 
 import java.net.URI;
 import java.util.List;
-import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionService;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
@@ -22,7 +21,7 @@ final class EndpointSelector {
         CompletionService<URI> completion = new ExecutorCompletionService<>(executor);
         try {
             for (URI candidate : candidates) {
-                completion.submit((Callable<URI>) () -> probe.test(candidate) ? candidate : null);
+                completion.submit(() -> probe.test(candidate) ? candidate : null);
             }
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             for (int i = 0; i < candidates.size(); i++) {

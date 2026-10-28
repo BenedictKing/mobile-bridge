@@ -20,7 +20,7 @@ final class DirectTransport {
     private final ExecutorService refreshExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger generation = new AtomicInteger();
     private final Listener listener;
-    private volatile URI publicOrigin;
+    private final URI publicOrigin;
     private volatile String instanceId = "";
     private volatile URI selected;
     private volatile List<URI> lastCandidates = new ArrayList<>();
@@ -63,7 +63,7 @@ final class DirectTransport {
                 return false;
             }
             JSONObject auth = new JSONObject(NativeHttp.readStringAndClose(response));
-            return auth.optBoolean("authenticated") && gatewayInstanceId.equals(auth.optString("instanceId"));
+            return auth.optBoolean("authenticated") && java.util.Objects.equals(gatewayInstanceId, auth.optString("instanceId"));
         } catch (Exception ignored) {
             return false;
         }
