@@ -1302,31 +1302,43 @@ const poolPanels=typeof PoolPanel==='undefined'?[]:[
   new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{}),readLogin:()=>api('/api/pool/zcode/login')}),
   new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{}),readLogin:()=>api('/api/pool/minimax/login')}),
   new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
-  new PoolPanel({root:$('pool-content-codex'),kind:'codex',label:'Codex',read:()=>api('/api/pool/codex'),request:()=>Promise.reject(new Error('只读视图'))}),
 ];
-// 账号池 tab 切换：一次只渲染/刷新激活的池，避免打开弹窗连打 5 个 API。
+// 账号池 tab：Codex 标签就是上方的真实切换面板（原只读列表与它重复，已去掉），
+// 其余每个 ACP 池各一个标签；一次只显示、只刷新当前标签，并记住上次选的标签。
+const poolTabSections=[
+  ...(accountsPanel?[{key:'codex',label:'Codex',root:$('codex-access'),refresh:()=>accountsPanel.refresh()}]:[]),
+  ...poolPanels.map(panel=>({key:panel.kind,label:panel.label,root:panel.root,refresh:()=>panel.refresh()}))
+];
 let activePool=0;
-const poolTabSections=poolPanels.map((panel,index)=>({panel,root:panel.root,button:null}));
+try{activePool=Math.max(0,poolTabSections.findIndex(section=>section.key===localStorage.getItem('bridge-pool-tab')));}catch{}
+function selectPoolTab(index,refresh=true){
+  activePool=index;
+  for(const [other,section] of poolTabSections.entries()){
+    const active=other===index;section.root.hidden=!active;
+    section.button.classList.toggle('active',active);section.button.setAttribute('aria-selected',String(active));section.button.tabIndex=active?0:-1;
+  }
+  try{localStorage.setItem('bridge-pool-tab',poolTabSections[index].key);}catch{}
+  if(refresh)poolTabSections[index].refresh();
+}
 {
   const bar=$('pool-tabs');
   for(const [index,section] of poolTabSections.entries()){
     const button=document.createElement('button');
     button.type='button';
     button.className='pool-tab';
-    button.textContent=poolPanels[index].label;
+    button.textContent=section.label;
+    button.id='pool-tab-'+section.key;
     button.setAttribute('role','tab');
-    button.onclick=()=>{
-      activePool=index;
-      for(const [other,otherSection] of poolTabSections.entries())otherSection.root.hidden=other!==index;
-      for(const [other,otherSection] of poolTabSections.entries())otherSection.button.classList.toggle('active',other===index);
-      section.panel.refresh();
-    };
-    if(index===0)button.classList.add('active');
+    button.setAttribute('aria-controls',section.root.id);
+    section.root.setAttribute('aria-labelledby',button.id);
+    button.onclick=()=>selectPoolTab(index);
+    button.onkeydown=event=>{const step={ArrowRight:1,ArrowLeft:-1}[event.key];if(!step)return;event.preventDefault();const next=(index+step+poolTabSections.length)%poolTabSections.length;selectPoolTab(next);poolTabSections[next].button.focus();};
     bar.append(button);
     section.button=button;
   }
+  if(poolTabSections.length)selectPoolTab(activePool,false);
 }
-if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();accountsPanel.refresh();poolTabSections[activePool]?.panel.refresh();};
+if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();poolTabSections[activePool]?.refresh();};
 
 // Team 编排（阶段一）：面板挂在「团队」弹窗，Run 页挂在 #main 的 #team-run 区块。
 // team.js 未登记进静态路由时不实例化，入口按钮静默无效。

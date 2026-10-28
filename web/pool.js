@@ -226,7 +226,7 @@ class PoolPanel {
   }
   render(){
     const t=BridgeI18n.t,root=this.root;root.replaceChildren();
-    root.append(this.node('h3',t('ACP 账号池')+'（'+this.label+'）'));
+    // 标签已写明是哪个池，这里不再重复“ACP 账号池（xx）”标题。
     if(this.error)root.append(this.node('p',this.error,'error'));
     if(this.loading&&!this.value){root.append(this.node('p',t('正在读取账号池…'),'account-muted'));return;}
     const value=this.value;

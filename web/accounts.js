@@ -16,7 +16,7 @@ class AccountsPanel {
     this.error=this.node('p',undefined,'error');this.error.setAttribute('role','alert');
     this.rows=this.node('div');this.refreshButton=this.button('刷新',()=>this.refresh());
     this.current=this.node('p',undefined,'accounts-current');this.blocked=this.node('div',undefined,'account-muted');this.root.append(this.current,this.status,this.error,this.blocked,this.rows,this.refreshButton);
-    if(!this.desktop){this.root.append(this.node('p','添加、修改与删除账号请在电脑端完成。','account-muted'));return;}
+    if(!this.desktop){this.remoteHint=this.node('p','添加、修改与删除账号请在电脑端完成。','account-muted');this.root.append(this.remoteHint);return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
     this.scanSource=this.field('Codex 配置目录');this.scanSource.input.placeholder=this.text('留空使用当前 Codex 数据目录');
     this.scanButton=this.button('扫描配置',()=>this.perform({action:'scan',source:this.scanSource.input.value}));
@@ -139,14 +139,16 @@ class AccountsPanel {
     const value=this.value;if(!value)return;
     const phase=value.switch?.phase||'idle',labels={idle:'请选择已保存的接入',preparing:'正在准备账号',stopping:'正在退出 Codex 桌面应用',applying:'正在应用接入配置',starting:'正在启动 Codex 桌面应用',verifying:'正在核验账号与桌面连接',complete:'切换完成',restoring:'正在恢复原接入',restored:'已恢复原接入',failed:'切换未完成',interrupted:'需要在桌面端恢复原接入'};
     const switching=!['idle','complete','restored','failed'].includes(phase);
-    this.status.textContent=this.text(labels[phase]||phase)+(value.switch?.error?' · '+this.text(value.switch.error):'');
+    // 没有可选接入时，“请选择已保存的接入”只是噪音；空列表由下方一句话说明。
+    this.status.textContent=phase==='idle'&&!value.accounts.length?'':this.text(labels[phase]||phase)+(value.switch?.error?' · '+this.text(value.switch.error):'');
+    if(this.remoteHint)this.remoteHint.hidden=!value.accounts.length;
     const current=value.current;this.current.textContent=this.text('当前接入：')+(current?.status==='ready'?(current.kind==='signedOut'?this.text('Codex 未登录'):current.name+(current.id?'':this.text('（未保存到列表）'))):this.text(current?.status==='checking'?'正在识别…':'暂未识别'));
     this.blocked.replaceChildren();for(const row of value.blockers||[]){const line=this.node('p');line.textContent=this.text(({approval:'待确认',running:'运行中',queued:'排队中',unknown:'发送结果未确认'})[row.reason]||'运行中')+' · '+row.title;if(row.reason==='unknown'&&row.submissionId){
       const ignore=this.button('忽略',()=>{if(window.confirm(this.text('忽略只会移除未确认提示，不会撤回或重发消息。请先检查聊天记录。')))return this.perform({action:'ignoreSubmission',threadId:row.id,submissionId:row.submissionId,host:row.host||'local'});});
       ignore.disabled=this.busy||switching;line.append(ignore);
     }this.blocked.append(line);}
     this.refreshButton.disabled=this.loading;this.rows.replaceChildren();
-    if(!value.accounts.length)this.rows.append(this.node('p','尚未添加账号。请在电脑端添加官方账号或自定义 API。'));
+    if(!value.accounts.length)this.rows.append(this.node('p','尚未添加账号。请在电脑端添加官方账号或自定义 API。','account-muted'));
     for(const row of [...value.accounts].sort((a,b)=>Number(b.id===value.activeId)-Number(a.id===value.activeId))){
       const card=this.node('section',undefined,'account-bucket'),active=value.activeId===row.id;
       const identity=this.node('div',undefined,'accounts-identity'),name=this.node('div',undefined,'accounts-name');
@@ -164,7 +166,7 @@ class AccountsPanel {
       }
       this.accountModels(card,row);this.rows.append(card);
     }
-    if(!this.desktop&&value.canSwitch===false)this.rows.append(this.node('p','免密访问不能切换账号，请在桌面端操作'));
+    if(!this.desktop&&value.canSwitch===false&&value.accounts.length)this.rows.append(this.node('p','免密访问不能切换账号，请在桌面端操作','account-muted'));
     if(this.desktop){
       this.renameSave.disabled=this.busy||switching;this.scanButton.disabled=this.busy||switching;this.modelsButton.disabled=this.busy||switching;
       this.scanSource.input.placeholder=value.codexHome||this.text('留空使用当前 Codex 数据目录');this.scanRows.replaceChildren();

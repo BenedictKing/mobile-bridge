@@ -462,11 +462,38 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
   .compose-actions{grid-column:5}
 }
 @media(pointer:coarse){.send-shortcut{display:none}}
+.stop{display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.stop-icon{font-size:.9em;line-height:1}
+/* 手机运行中：停止只留图标（名称在 aria-label 里），把宽度还给“发送方式 / 工作模式”，不再截成“发送新…”。 */
+@media(max-width:720px){
+  .compose-actions .stop{width:44px;padding:0}
+  /* “补充当前任务”最长（约 96px），“普通模式”约 72px：按 4:3 分宽，360px 运行中两项都完整显示。 */
+  .compose-bottom{grid-template-columns:44px minmax(0,4fr) minmax(0,3fr) auto}
+  .stop-label{display:none}
+}
 
 /* 设置：第一组不画顶线（标题下已有间距）；外观组内的小标题与其他字段对齐。 */
 #appearance-dialog .picker-body>.appearance-section:first-child{margin-top:0;padding-top:0;border-top:0}
 .conversation-options{margin-bottom:0}
 .appearance-section>.appearance-grid,.appearance-section>.range-label,.appearance-field{clear:both}
 .appearance-section legend{padding:0}
+
+/* 账号与接入：标签不再一格一个描边框（框中框）；选中用中性底色，强调色留给操作。 */
+.pool-tabs{flex-wrap:nowrap;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 0 12px;margin:0 0 16px;border-bottom:1px solid var(--line)}
+.pool-tabs::-webkit-scrollbar{display:none}
+.pool-tab{flex:none;border:0;background:transparent;color:var(--muted);padding:8px 14px;font-size:14px}
+.pool-tab:hover{background:var(--surface);color:var(--text)}
+.pool-tab.active{background:var(--active);color:var(--text);font-weight:600}
+.pool-section>p,.accounts-panel>p{margin:0 0 10px}
+.accounts-panel .account-muted:empty,.accounts-current:empty{display:none}
+.accounts-panel>button{margin:4px 0 12px}
+.pool-section>h3{margin:0 0 12px;font-size:15px}
+.pool-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}
+.accounts-panel .pool-controls .notification-option{display:flex;align-items:center;gap:10px;flex-basis:100%;margin:6px 0 0;min-height:40px;font-size:14px;cursor:pointer}
+.accounts-panel .pool-controls .notification-option input{width:20px;height:20px;min-height:0;margin:0;flex:none}
+.pool-controls .notification-option strong{font-weight:500}
+.accounts-panel .account-bucket{margin-bottom:0}
+.accounts-panel .account-bucket:last-child{border-bottom:0}
+.account-bucket>button{margin:8px 8px 0 0}
 .appearance-field{margin:10px 0}
 .appearance-field-label{display:block;font-size:14px;margin-bottom:10px}
