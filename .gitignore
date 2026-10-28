@@ -35,3 +35,8 @@ android/local.properties
 
 .codegraph/
 .gocache/
+
+# 本机工具与会话工作目录
+.cache/
+.taste-skill/
+.workbuddy/
