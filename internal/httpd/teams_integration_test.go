@@ -40,6 +40,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
+	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
 )
 
@@ -160,6 +161,7 @@ def handle_prompt(m, ident):
  text = next((b.get("text", "") for b in blocks if isinstance(b, dict)), "")
  sid = (m.get("params") or {}).get("sessionId") or "?"
  record("prompts.log", sid + "\x00" + text.replace("\n", "\\n"))
+ record("blocks.log", sid + "\x00" + ",".join(b.get("type", "") for b in blocks if isinstance(b, dict)))
  # 阶段三分支先于 FAIL 族：修复提示词里引用的违规模板可能含 FAIL 等字样。
  repair = re.search(r"动作块第 (\d+) 次解析失败", text)
  script = None if repair else re.search(r"REPLYACTIONS:([A-Za-z0-9_-]+)", text)
@@ -1256,6 +1258,52 @@ func TestTeamIntegrationDeadMemberRequeueLadder(t *testing.T) {
 	if len(teamView.Members) != 1 || teamView.Members[0].ID != "dev" ||
 		teamView.Members[0].SessionID != "broken-sess" {
 		t.Fatalf("失效成员应保留原绑定: %s", response.Body.String())
+	}
+}
+
+func TestTeamConversationIntegrationDeliversImageOnce(t *testing.T) {
+	env := newTeamIntegrationEnv(t, t.TempDir())
+	env.server.Uploads = uploads.New(env.dataDir)
+	sessionA := env.createMemberSession(t, "lead-image", "团队图片会话")
+	session := env.manager.Get(sessionA)
+	promptCapabilities := jsoncompat.NewObject()
+	promptCapabilities.Set("image", true)
+	session.Process.Capabilities.Set("promptCapabilities", promptCapabilities)
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+sessionA+`","role":"lead"}]`)
+	uploadID := uuid.NewString()
+	png := []byte("\x89PNG\r\n\x1a\n" + "team-image")
+	if _, err := env.server.Uploads.Put(sessionA, uploadID, "homepage.png", png); err != nil {
+		t.Fatal(err)
+	}
+	messageID := uuid.NewString()
+	body := fmt.Sprintf(`{"id":%q,"teamId":%q,"text":"按截图检查首页","mode":"send","workMode":"default","attachments":[{"id":%q}]}`, messageID, teamID, uploadID)
+	target := "/api/sessions/" + sessionA + "/send?host=local"
+	response := env.request(http.MethodPost, target, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("团队图片发送失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		return env.runDetail(t, teamID, messageID)["status"] == "completed"
+	}) {
+		t.Fatal("团队图片 Run 未完成")
+	}
+	if got := len(readTeamPrompts(t, env.dataDir)); got != 1 {
+		t.Fatalf("一条团队消息应恰好产生一个 Lead turn: %d", got)
+	}
+	blocks, err := os.ReadFile(filepath.Join(env.dataDir, "blocks.log"))
+	if err != nil || !strings.Contains(string(blocks), "image") {
+		t.Fatalf("Lead 未收到图片内容块: %s (%v)", blocks, err)
+	}
+	response = env.request(http.MethodPost, target, body)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"duplicate": true`) {
+		t.Fatalf("图片消息重放应命中幂等: %d %s", response.Code, response.Body.String())
+	}
+	env.server.dispatchQueuedPass()
+	if got := len(readTeamPrompts(t, env.dataDir)); got != 1 {
+		t.Fatalf("图片消息重放不得产生第二个 turn: %d", got)
+	}
+	if got := len(env.store.RunsByTeam(teamID)); got != 1 {
+		t.Fatalf("图片消息重放不得重复创建 Run: %d", got)
 	}
 }
 

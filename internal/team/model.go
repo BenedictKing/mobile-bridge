@@ -214,6 +214,7 @@ func InstructionsHead(prompt string) string {
 type Team struct {
 	ID        string       `json:"id"`
 	Name      string       `json:"name"`
+	Project   string       `json:"project,omitempty"`
 	Members   []TeamMember `json:"members"`
 	LeadID    string       `json:"leadId,omitempty"`
 	Policy    TeamPolicy   `json:"policy"`
@@ -351,6 +352,7 @@ type Task struct {
 	ID             string      `json:"id"`
 	MemberID       string      `json:"memberId"`
 	Prompt         string      `json:"prompt"`
+	Attachments    []string    `json:"attachments,omitempty"`
 	InputHash      string      `json:"inputHash"`
 	Attempt        int         `json:"attempt"`
 	SiteID         string      `json:"siteId,omitempty"`
@@ -489,7 +491,7 @@ type Event struct {
 // 多余键存入 extra（保持文档顺序与数字字面量），Marshal 时原样回写。
 
 var teamKnownFields = map[string]bool{
-	"id": true, "name": true, "members": true, "leadId": true,
+	"id": true, "name": true, "project": true, "members": true, "leadId": true,
 	"policy": true, "createdAt": true, "updatedAt": true, "version": true,
 }
 
@@ -508,7 +510,7 @@ var verifyResultKnownFields = map[string]bool{
 }
 
 var taskKnownFields = map[string]bool{
-	"id": true, "memberId": true, "prompt": true, "inputHash": true,
+	"id": true, "memberId": true, "prompt": true, "attachments": true, "inputHash": true,
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
 	"baseRevision": true, "writeLock": true,
@@ -549,6 +551,9 @@ func (t *Team) jsonObject() *jsoncompat.Object {
 	object := jsoncompat.NewObject()
 	object.Set("id", t.ID)
 	object.Set("name", t.Name)
+	if t.Project != "" {
+		object.Set("project", t.Project)
+	}
 	members := &jsoncompat.Array{}
 	for i := range t.Members {
 		members.Items = append(members.Items, t.Members[i].jsonObject())
@@ -822,6 +827,13 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	object.Set("id", t.ID)
 	object.Set("memberId", t.MemberID)
 	object.Set("prompt", t.Prompt)
+	if len(t.Attachments) > 0 {
+		attachments := &jsoncompat.Array{}
+		for _, id := range t.Attachments {
+			attachments.Items = append(attachments.Items, id)
+		}
+		object.Set("attachments", attachments)
+	}
 	object.Set("inputHash", t.InputHash)
 	object.Set("attempt", jsoncompat.Num(t.Attempt))
 	if t.SiteID != "" {
@@ -899,6 +911,7 @@ func (t *Task) Clone() *Task {
 	}
 	copied := *t
 	copied.DependsOn = append([]string(nil), t.DependsOn...)
+	copied.Attachments = append([]string(nil), t.Attachments...)
 	copied.ResultDetail = t.ResultDetail.Clone()
 	copied.extra = cloneExtra(t.extra)
 	return &copied

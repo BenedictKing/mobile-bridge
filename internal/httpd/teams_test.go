@@ -34,6 +34,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
+	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
 
 // teamsHoldAgent 起一个可中断的伪 Agent：session/prompt 在后台线程 hold
@@ -120,7 +121,7 @@ func newFakeTeamQueue(status string) *fakeTeamQueue {
 	return &fakeTeamQueue{entries: map[string]fakeTeamQueueEntry{}, defaultStatus: status}
 }
 
-func (q *fakeTeamQueue) Enqueue(threadID, submissionID, text string) (string, bool, error) {
+func (q *fakeTeamQueue) Enqueue(threadID, submissionID, text string, attachments ...string) (string, bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.enqueueCalls++
@@ -559,6 +560,7 @@ func TestTeamsCreateFromProject(t *testing.T) {
 	}
 	var created struct {
 		ID      string `json:"id"`
+		Project string `json:"project"`
 		Members []struct {
 			SessionID string `json:"sessionId"`
 			AgentKind string `json:"agentKind"`
@@ -568,7 +570,7 @@ func TestTeamsCreateFromProject(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.ID != requestID || len(created.Members) != 1 || created.Members[0].SessionID != env.sessionID ||
+	if created.ID != requestID || created.Project != project || len(created.Members) != 1 || created.Members[0].SessionID != env.sessionID ||
 		created.Members[0].AgentKind != "kimi" || created.Members[0].Role != team.RoleLead {
 		t.Fatalf("项目成员投影不正确: %+v", created)
 	}
@@ -591,6 +593,82 @@ func TestTeamsCreateFromProject(t *testing.T) {
 	}
 	if got := creationCount(); got != 2 {
 		t.Fatalf("后续成员校验失败前不应创建会话，总会话数=%d", got)
+	}
+}
+
+func TestTeamConversationSendCreatesRunWithAttachments(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	env.server.Uploads = uploads.New(env.dataDir)
+	teamID, _ := env.createTeam(t)
+	t.Cleanup(func() {
+		for _, run := range env.store.RunsByTeam(teamID) {
+			_, _ = env.server.Teams.Cancel(run.ID)
+		}
+	})
+	const uploadID = "5aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if _, err := env.server.Uploads.Put(env.sessionID, uploadID, "homepage.png", []byte("png")); err != nil {
+		t.Fatal(err)
+	}
+	const messageID = "4aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	body := fmt.Sprintf(`{"id":%q,"teamId":%q,"text":"按截图检查首页","mode":"send","workMode":"default","attachments":[{"id":%q}]}`, messageID, teamID, uploadID)
+	target := "/api/sessions/" + env.sessionID + "/send?host=local"
+	response := env.request(http.MethodPost, target, body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("团队主控发送失败: %d %s", response.Code, response.Body.String())
+	}
+	var accepted map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted["runId"] != messageID || accepted["teamId"] != teamID || accepted["status"] != "accepted" {
+		t.Fatalf("团队发送响应不正确: %v", accepted)
+	}
+	run := env.store.Run(messageID)
+	if run == nil || !run.AutoPlan || len(run.Tasks) != 1 || len(run.Tasks[0].Attachments) != 1 || run.Tasks[0].Attachments[0] != uploadID {
+		t.Fatalf("首个 Lead 任务未持久化附件: %+v", run)
+	}
+	response = env.request(http.MethodPost, target, body)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"duplicate": true`) {
+		t.Fatalf("同 id 重放应返回 duplicate: %d %s", response.Code, response.Body.String())
+	}
+	if got := len(env.store.RunsByTeam(teamID)); got != 1 {
+		t.Fatalf("同 id 重放不得重复创建 Run: %d", got)
+	}
+
+	const imageOnlyID = "6aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	imageOnly := fmt.Sprintf(`{"id":%q,"text":"","mode":"send","workMode":"default","attachments":[{"id":%q}]}`, imageOnlyID, uploadID)
+	response = env.request(http.MethodPost, target, imageOnly)
+	if response.Code != http.StatusOK {
+		t.Fatalf("纯图片团队消息应可发送: %d %s", response.Code, response.Body.String())
+	}
+	if run := env.store.Run(imageOnlyID); run == nil || strings.TrimSpace(run.Goal) == "" {
+		t.Fatalf("纯图片消息缺少明确目标: %+v", run)
+	}
+}
+
+func TestTeamConversationLeadResolution(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	h := &handler{server: env.server}
+	resolved, err := h.teamConversation(env.sessionID, "")
+	if err != nil || resolved == nil || resolved.ID != teamID {
+		t.Fatalf("唯一 Lead 团队应自动识别: %+v %v", resolved, err)
+	}
+	second := env.store.Team(teamID)
+	second.ID = "team-second-lead"
+	second.Version = 0
+	if err := env.store.SaveTeam(second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.teamConversation(env.sessionID, ""); err == nil {
+		t.Fatal("同一 Lead 属于多个团队时必须返回歧义错误")
+	}
+	resolved, err = h.teamConversation(env.sessionID, second.ID)
+	if err != nil || resolved == nil || resolved.ID != second.ID {
+		t.Fatalf("显式 teamId 应消除歧义: %+v %v", resolved, err)
+	}
+	if resolved, err := h.teamConversation("sess-not-lead", ""); err != nil || resolved != nil {
+		t.Fatalf("非 Lead 会话不应进入团队发送: %+v %v", resolved, err)
 	}
 }
 

@@ -693,10 +693,6 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	switch action {
 	case "send":
 		text, _ := object.MustGet("text").(string)
-		if text == "" {
-			h.fail(http.StatusBadRequest, errorBody("消息内容不能为空"))
-			return true
-		}
 		mode, _ := object.MustGet("mode").(string)
 		workMode, _ := object.MustGet("workMode").(string)
 		if workMode == "goal" {
@@ -709,6 +705,13 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				return true
 			}
 			h.handleGoalCreate(transport, threadID, readSubmissionPayload(object))
+			return true
+		}
+		if h.handleTeamConversationSend(threadID, object) {
+			return true
+		}
+		if text == "" {
+			h.fail(http.StatusBadRequest, errorBody("消息内容不能为空"))
 			return true
 		}
 		// Queue semantics (Python send): queue joins the durable ledger;

@@ -652,6 +652,19 @@ DELETE /api/teams/:teamID/members/:memberID
 
 `project` 使用 `GET /api/projects` 返回的项目键，`agent` 必须是网关已启用的非 Codex ACP Agent。网关在该项目目录中为每位成员创建专用会话后保存 `sessionId`；团队请求 `id` 与成员 `id` 共同派生会话幂等键，重放不会重复创建会话。旧客户端仍可直接提交已有 ACP 会话的 `sessionId`。
 
+创建请求可同时携带顶层 `project`，并随 Team 账本持久化；未显式携带时从成员的项目键归一。项目型团队成员必须同属一个项目，后续新增或换绑会话也校验工作目录。旧的无项目 Team 账本继续按原规则读取。
+
+团队主控聊天复用 Lead 会话的既有上传与发送契约：
+
+```http
+POST /api/sessions/:leadSessionID/uploads
+POST /api/sessions/:leadSessionID/send
+```
+
+发送体在普通消息字段上增加可选 `teamId`。网关在 direct-send 记账前识别 Lead，将该消息直接创建为 `single + autoPlan` Run，而不是先发送普通 Prompt 再补 Run；未携带 `teamId` 时仅自动识别唯一 Lead 团队，多团队歧义返回 409。请求 `id` 同时是 Run 幂等键。首条 Lead Task 持久化 `attachments`，附件随 submissions 进入既有 `PromptWithBlocks` 链路，journal 重建和任务重试不丢失；后续 delegate 任务不重复携带这些附件。纯图片消息使用明确的目标占位文案。响应为 `{status:"accepted",teamId,runId,duplicate?}`。
+
+聊天页读取最近 Run 的任务投影，以阶段轨道、成员 pill 和结果摘要展示 workflow，并周期追随刷新；显式 pipeline、定时 Run、修订和高级控制仍走下述 Run API。团队输入区不支持 Skill、计划/目标模式和 steer，普通发送与完成后发送可用。
+
 删除 Team 只删除 Team 账本和聚合事件。若仍有运行中的 Run，接口返回冲突；用户必须先取消 Run 或等待其结束。
 
 ### 10.2 Run 管理

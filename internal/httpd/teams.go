@@ -172,6 +172,11 @@ func (h *handler) handleTeamsCreate() {
 		h.fail(http.StatusBadRequest, errorBody("请输入 1–120 字的团队名称"))
 		return
 	}
+	project := stringField(body, "project")
+	if project != "" && h.resolveProjectCwd(project) == "" {
+		h.fail(http.StatusBadRequest, errorBody("团队的项目空间无效，请刷新项目列表"))
+		return
+	}
 	rawMembers, _ := body.MustGet("members").(*jsoncompat.Array)
 	memberItems := []any{}
 	if rawMembers != nil {
@@ -199,6 +204,13 @@ func (h *handler) handleTeamsCreate() {
 			h.fail(http.StatusBadRequest, errorBody("成员 ID 已存在："+memberID))
 			return
 		}
+		memberProject := stringField(entry, "project")
+		if project == "" {
+			project = memberProject
+		} else if memberProject != "" && memberProject != project {
+			h.fail(http.StatusBadRequest, errorBody("团队成员必须同属一个项目空间"))
+			return
+		}
 		if sessionID := stringField(entry, "sessionId"); sessionID != "" {
 			if holder, held := bound[sessionID]; held {
 				h.fail(http.StatusBadRequest, errorBody(
@@ -209,6 +221,16 @@ func (h *handler) handleTeamsCreate() {
 		}
 		seen[memberID] = true
 		entries = append(entries, entry)
+	}
+	if project != "" {
+		for _, entry := range entries {
+			if sessionID := stringField(entry, "sessionId"); sessionID != "" {
+				if projectErr := h.validateTeamSessionProject(project, sessionID); projectErr != nil {
+					h.fail(http.StatusBadRequest, errorBody(projectErr.Error()))
+					return
+				}
+			}
+		}
 	}
 	leadID := stringField(body, "leadId")
 	if leadID != "" && !seen[leadID] {
@@ -250,7 +272,7 @@ func (h *handler) handleTeamsCreate() {
 	teamID := requestID
 	if teamID != "" {
 		if existing := h.server.TeamStore.Team(teamID); existing != nil {
-			same := existing.Name == name && existing.LeadID == leadID &&
+			same := existing.Name == name && existing.Project == project && existing.LeadID == leadID &&
 				sameTeamMembers(existing.Members, members) && existing.Policy == policy
 			if !same {
 				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
@@ -265,7 +287,7 @@ func (h *handler) handleTeamsCreate() {
 		teamID = uuid.NewString()
 	}
 	now := time.Now()
-	created := &team.Team{ID: teamID, Name: name, Members: members,
+	created := &team.Team{ID: teamID, Name: name, Project: project, Members: members,
 		LeadID: leadID, Policy: policy, CreatedAt: now, UpdatedAt: now}
 	if err := h.server.TeamStore.SaveTeam(created); err != nil {
 		// 版本哨兵 409，磁盘/IO 500（评审遗留①：不再是统一的 409）。
@@ -303,6 +325,10 @@ func (h *handler) handleTeamUpdate(teamID string) {
 	}
 	if version != teamRow.Version {
 		h.fail(http.StatusConflict, errorBody("版本冲突，请刷新后重试"))
+		return
+	}
+	if raw, exists := body.Get("project"); exists && objectString(raw) != teamRow.Project {
+		h.fail(http.StatusBadRequest, errorBody("团队绑定项目后不可修改，请新建团队"))
 		return
 	}
 	if raw, exists := body.Get("name"); exists {
@@ -399,6 +425,12 @@ func (h *handler) handleMemberAdd(teamID string) {
 		h.fail(http.StatusBadRequest, errorBody(memberErr.Error()))
 		return
 	}
+	if teamRow.Project != "" {
+		if projectErr := h.validateTeamSessionProject(teamRow.Project, member.SessionID); projectErr != nil {
+			h.fail(http.StatusBadRequest, errorBody(projectErr.Error()))
+			return
+		}
+	}
 	if teamMemberIndex(teamRow, member.ID) >= 0 {
 		h.fail(http.StatusBadRequest, errorBody("成员 ID 已存在："+member.ID))
 		return
@@ -490,6 +522,12 @@ func (h *handler) handleMemberUpdate(teamID, memberID string) {
 				h.fail(http.StatusBadRequest, errorBody("阶段一 Team 成员仅支持 ACP Agent 会话，请从会话列表选择"))
 				return
 			}
+			if teamRow.Project != "" {
+				if projectErr := h.validateTeamSessionProject(teamRow.Project, sessionID); projectErr != nil {
+					h.fail(http.StatusBadRequest, errorBody(projectErr.Error()))
+					return
+				}
+			}
 			member.SessionID = sessionID
 			member.AgentKind = kind
 		}
@@ -546,6 +584,123 @@ func (h *handler) handleRunList(teamID string) {
 	}
 	result := jsoncompat.NewObject()
 	result.Set("runs", rows)
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+func teamLeadSessionID(teamRow *team.Team) string {
+	if teamRow == nil {
+		return ""
+	}
+	for _, member := range teamRow.Members {
+		if member.ID == teamRow.LeadID {
+			return member.SessionID
+		}
+	}
+	return ""
+}
+
+func (h *handler) teamConversation(threadID, teamID string) (*team.Team, error) {
+	if teamID != "" {
+		teamRow := h.server.TeamStore.Team(teamID)
+		if teamRow == nil {
+			return nil, errors.New("团队不存在，请刷新后重试")
+		}
+		if teamLeadSessionID(teamRow) != threadID {
+			return nil, errors.New("当前会话不是该团队的负责人会话")
+		}
+		return teamRow, nil
+	}
+	var matched *team.Team
+	for _, candidate := range h.server.TeamStore.Teams() {
+		if teamLeadSessionID(candidate) != threadID {
+			continue
+		}
+		if matched != nil {
+			return nil, errors.New("当前负责人会话属于多个团队，请携带 teamId 后重试")
+		}
+		matched = candidate
+	}
+	return matched, nil
+}
+
+// handleTeamConversationSend 把 Lead 主控会话的普通发送直接转换为 autoPlan
+// Run。调用点位于普通 direct-send 记账之前，因此同一条消息绝不会先 Prompt
+// 再补 Run。返回 false 仅表示该会话不属于任何团队 Lead。
+func (h *handler) handleTeamConversationSend(threadID string, object *jsoncompat.Object) bool {
+	if h.server.TeamStore == nil || h.server.Teams == nil {
+		return false
+	}
+	payload := readSubmissionPayload(object)
+	teamRow, resolveErr := h.teamConversation(threadID, stringField(object, "teamId"))
+	if resolveErr != nil {
+		h.fail(http.StatusConflict, errorBody(resolveErr.Error()))
+		return true
+	}
+	if teamRow == nil {
+		return false
+	}
+	if len(payload.skills) > 0 {
+		h.fail(http.StatusBadRequest, errorBody("团队聊天暂不支持 Skill，请使用普通会话或显式 Run"))
+		return true
+	}
+	if payload.workMode != "" && payload.workMode != "default" {
+		h.fail(http.StatusBadRequest, errorBody("团队聊天仅支持普通工作模式"))
+		return true
+	}
+	if payload.mode == "steer" {
+		h.fail(http.StatusBadRequest, errorBody("团队聊天请使用发送新消息或完成后发送"))
+		return true
+	}
+	goal := strings.TrimSpace(payload.text)
+	if goal == "" && len(payload.attachments) > 0 {
+		goal = "请查看用户发送的图片和附件。"
+	}
+	if goal == "" || len([]rune(goal)) > teamGoalMaxRunes {
+		h.fail(http.StatusBadRequest, errorBody("请输入 1–10000 字的团队消息，或附带图片后重试"))
+		return true
+	}
+	if err := validateSubmissionInput(payload.id, goal, payload.mode); err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return true
+	}
+	for _, id := range payload.attachments {
+		if h.server.Uploads == nil {
+			h.fail(http.StatusBadRequest, errorBody("当前网关未启用附件上传"))
+			return true
+		}
+		if _, err := h.server.Uploads.Get(threadID, id); err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return true
+		}
+	}
+	if existing := h.server.TeamStore.Run(payload.id); existing != nil {
+		same := existing.TeamID == teamRow.ID && existing.Goal == goal && existing.Mode == team.ModeSingle &&
+			existing.AutoPlan && len(existing.Tasks) == 1 && sameStringSlices(existing.Tasks[0].Attachments, payload.attachments)
+		if !same {
+			h.fail(http.StatusBadRequest, errorBody("同一消息标识不能用于不同内容"))
+			return true
+		}
+		h.outputTeamConversation(existing, true)
+		return true
+	}
+	run, err := h.server.Teams.CreateConversationRun(teamRow, payload.id, goal, payload.attachments)
+	if err != nil {
+		h.failTeamError(err)
+		return true
+	}
+	h.outputTeamConversation(run, false)
+	return true
+}
+
+func (h *handler) outputTeamConversation(run *team.Run, duplicate bool) {
+	result := jsoncompat.NewObject()
+	result.Set("status", "accepted")
+	result.Set("id", run.ID)
+	result.Set("teamId", run.TeamID)
+	result.Set("runId", run.ID)
+	if duplicate {
+		result.Set("duplicate", true)
+	}
 	h.output(http.StatusOK, result, contentTypeJSON, "")
 }
 
@@ -2264,6 +2419,15 @@ func (h *handler) teamRequestVersion() (uint64, bool, error) {
 		}
 	}
 	return 0, false, nil
+}
+
+func (h *handler) validateTeamSessionProject(project, sessionID string) error {
+	expected := h.resolveProjectCwd(project)
+	actual := (teamSessionResolver{server: h.server}).Cwd(sessionID)
+	if expected == "" || actual == "" || filepath.Clean(expected) != filepath.Clean(actual) {
+		return errors.New("成员会话与团队项目空间不一致")
+	}
+	return nil
 }
 
 // validateTeamMember 在任何会话创建副作用之前校验成员字段。项目成员使用

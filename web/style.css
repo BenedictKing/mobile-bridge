@@ -278,3 +278,26 @@
 .jev-trial-badge{flex:none;padding:1px 6px;border-radius:6px;font-size:10px}
 .jev-trial-badge.negative{color:var(--warning-text);background:var(--warning-bg)}
 .jev-trial-badge.positive{color:var(--muted);background:var(--soft)}
+.team-inline-badge{display:inline-block;border:1px solid var(--line);border-radius:8px;padding:0 5px;font-size:9px;font-weight:400;color:var(--green);vertical-align:1px}
+.team-workflow-card{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:12px 14px;margin:0 0 24px;max-width:760px}
+.team-workflow-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.team-workflow-head strong{flex:1;font-size:13px}
+.team-workflow-head button{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
+.team-workflow-meta{font-size:11px;color:var(--muted)}
+.team-workflow-scroll{overflow-x:auto;padding:14px 0 4px;scrollbar-width:thin}
+.team-workflow-stations{display:flex;align-items:flex-start;min-width:480px}
+.team-workflow-station{position:relative;flex:1;min-width:150px;text-align:center;padding:0 8px}
+.team-workflow-station:not(:last-child):after{content:"";position:absolute;top:8px;left:calc(50% + 10px);width:calc(100% - 20px);border-top:1px solid var(--muted);z-index:0}
+.team-workflow-station.planned:not(:last-child):after{border-top-style:dashed;border-color:var(--line)}
+.team-workflow-lamp{position:relative;z-index:1;display:block;width:12px;height:12px;margin:0 auto 8px;border:2px solid var(--muted);border-radius:50%;background:var(--raised)}
+.team-workflow-station.completed .team-workflow-lamp{background:var(--green);border-color:var(--green)}
+.team-workflow-station.running .team-workflow-lamp,.team-workflow-station.dispatching .team-workflow-lamp{outline:3px solid var(--warning-bg);outline-offset:2px;animation:pulse 1.4s infinite}
+.team-workflow-station.failed .team-workflow-lamp,.team-workflow-station.outcome_unknown .team-workflow-lamp{background:var(--error);border-color:var(--error)}
+.team-workflow-name{display:block;font-size:12px;font-weight:600}
+.team-workflow-state{display:block;font-size:11px;color:var(--muted);margin:2px 0 10px}
+.team-workflow-pills{display:grid;gap:6px;justify-content:center}
+.team-workflow-pill{display:block;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--green);padding:4px 8px;font-size:11px;white-space:nowrap}
+.team-workflow-card.compact .team-workflow-pills{display:none}
+.team-workflow-artifacts{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:10px;margin-top:8px}
+.team-workflow-artifact{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:3px 7px;font-size:10px;color:var(--muted)}
+@media(max-width:720px){.team-workflow-card{padding:10px}.team-workflow-head strong{min-width:110px}.team-workflow-stations{min-width:450px}}

@@ -314,6 +314,16 @@ func (s *Service) stateFor(runID string) *runState {
 // payload.scheduledBy——回扫对账只认 journal 里的该事件，绝不依赖 HTTP 层
 // 的 creations 账本。空串=用户手工创建（HTTP 调用方恒传空串）。
 func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom string) (*Run, error) {
+	return s.createRun(team, runID, goal, mode, collect, verifyCommand, raw, autoPlan, scheduledFrom, nil)
+}
+
+// CreateConversationRun 把一条主控团队消息创建为 autoPlan Run；附件只随首个
+// Lead 任务持久化和派发，后续 delegate 任务不重复携带。
+func (s *Service) CreateConversationRun(team *Team, runID, goal string, attachments []string) (*Run, error) {
+	return s.createRun(team, runID, goal, ModeSingle, "", nil, nil, true, "", attachments)
+}
+
+func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom string, attachments []string) (*Run, error) {
 	if team == nil {
 		return nil, errors.New("team 不能为 nil")
 	}
@@ -328,6 +338,14 @@ func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verif
 	plan, err := ParsePlan(team, goal, mode, collect, raw)
 	if err != nil {
 		return nil, err
+	}
+	if len(attachments) > 0 {
+		if !autoPlan || len(plan.Tasks) != 1 {
+			return nil, errors.New("团队聊天附件只能随首个 Lead 任务创建")
+		}
+		plan.Tasks[0].Attachments = append([]string(nil), attachments...)
+		plan.Tasks[0].InputHash = InputHashFor(&plan.Tasks[0], PolicyDigest(team.Policy), "")
+		plan.PlanHash = PlanHash(plan.Mode, plan.CollectPolicy, plan.Goal, plan.Tasks)
 	}
 	if runID == "" {
 		runID = uuid.NewString()
@@ -379,11 +397,15 @@ func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verif
 	events := []*Event{created}
 	for i := range plan.Tasks {
 		task := &plan.Tasks[i]
-		events = append(events, newEvent(run.ID, EventTaskPlanned, "user", map[string]any{
+		payload := map[string]any{
 			"taskId":           task.ID,
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
-		}))
+		}
+		if len(task.Attachments) > 0 {
+			payload["attachments"] = append([]string(nil), task.Attachments...)
+		}
+		events = append(events, newEvent(run.ID, EventTaskPlanned, "user", payload))
 	}
 	if err := s.accountCreatedRun(run, events); err != nil {
 		return nil, err
@@ -1339,7 +1361,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	}
 	dispatch.bucketKey = bucketKey
 	// (4) 锁外入队（mode=queue，绝不立即派发；duplicate 是幂等重入）。
-	if _, _, err := s.queue.Enqueue(dispatch.sessionID, dispatch.submissionID, dispatch.sentText); err != nil {
+	if _, _, err := s.queue.Enqueue(dispatch.sessionID, dispatch.submissionID, dispatch.sentText, task.Attachments...); err != nil {
 		s.failDispatch(state, runID, taskID, fmt.Sprintf("任务 %s 入队失败: %v", taskID, err))
 		return
 	}

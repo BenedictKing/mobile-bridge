@@ -312,6 +312,8 @@ WorkspaceCreator    创建、登记和解析自动 worktree
 
 ### 7.1 统一团队输入 API
 
+当前已先落地轻量主控聊天入口：`POST /api/sessions/:leadSessionID/send` 携带 `teamId` 与附件，每条消息创建独立 `single + autoPlan` Run，并在原 Lead 会话展示 workflow 摘要。该实现复用现有上传、队列和 Run 账本，但**不实现**本节后续的 TeamInput 持久化、活跃 Run 反馈路由、终态自动 amend、动态成员或自动 worktree；以下仍是后续设计，不是现行契约。
+
 ```http
 POST /api/teams/:teamID/inputs
 GET  /api/teams/:teamID/inputs/:inputID

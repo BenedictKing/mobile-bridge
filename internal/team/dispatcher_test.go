@@ -57,7 +57,7 @@ func newFakeQueue() *fakeQueue {
 	return &fakeQueue{entries: map[string]*fakeQueueEntry{}, calls: map[string]int{}}
 }
 
-func (q *fakeQueue) Enqueue(threadID, submissionID, text string) (string, bool, error) {
+func (q *fakeQueue) Enqueue(threadID, submissionID, text string, attachments ...string) (string, bool, error) {
 	if hook := q.onEnqueue; hook != nil {
 		hook(threadID, submissionID, text)
 	}
@@ -313,6 +313,52 @@ func (h *dispatchHarness) createAutoPlanRun(t *testing.T) *Run {
 		t.Fatalf("创建 autoPlan run 失败: %v", err)
 	}
 	return run
+}
+
+func TestCreateConversationRunAttachmentsSurviveJournalRebuild(t *testing.T) {
+	h := newDispatchHarness(t)
+	attachments := []string{"upload-image-1", "upload-image-2"}
+	run, err := h.service.CreateConversationRun(h.team, "conversation-attachments", "检查这两张截图", attachments)
+	if err != nil {
+		t.Fatalf("创建团队聊天 Run 失败: %v", err)
+	}
+	if !run.AutoPlan || run.Mode != ModeSingle || len(run.Tasks) != 1 {
+		t.Fatalf("团队聊天应创建 single autoPlan Run: %+v", run)
+	}
+	task := &run.Tasks[0]
+	if strings.Join(task.Attachments, ",") != strings.Join(attachments, ",") {
+		t.Fatalf("首个 Lead 任务附件不匹配: %v", task.Attachments)
+	}
+	if task.InputHash != InputHashFor(task, PolicyDigest(h.team.Policy), "") ||
+		run.PlanHash != PlanHash(run.Mode, run.CollectPolicy, run.Goal, run.Tasks) {
+		t.Fatal("附件应纳入 inputHash 与 planHash")
+	}
+	clone := task.Clone()
+	clone.Attachments[0] = "changed"
+	if task.Attachments[0] != attachments[0] {
+		t.Fatal("任务深拷贝不得共享附件切片")
+	}
+	events, err := h.journal.Replay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	teamsPath := filepath.Join(dir, "teams.json")
+	runsPath := filepath.Join(dir, "team-runs.json")
+	seedTeam := h.team.Clone()
+	seedTeam.Version = 0
+	if err := LoadStore(teamsPath, runsPath).SaveTeam(seedTeam); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runsPath, []byte("{torn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := LoadStore(teamsPath, runsPath)
+	fresh.RebuildRunsFromJournal(events)
+	rebuilt := fresh.Run(run.ID)
+	if rebuilt == nil || len(rebuilt.Tasks) != 1 || strings.Join(rebuilt.Tasks[0].Attachments, ",") != strings.Join(attachments, ",") {
+		t.Fatalf("journal 重建丢失附件: %+v", rebuilt)
+	}
 }
 
 // waitForSubmission 等到 threadID 的首条入账并返回 (submissionID, text)。

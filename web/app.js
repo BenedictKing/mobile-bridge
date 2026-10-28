@@ -8,14 +8,14 @@ function takePairingToken(){
 }
 let initialPairingToken=takePairingToken();
 const $ = id => document.getElementById(id),t=BridgeI18n.t;
-let csrf='', currentId=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
+let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
 let currentHost='local', listRows=[], listGeneration=0, listLoading=false, listHasMore=false;
 let chatTimeline=null;
 BridgeConnection.onchange=()=>{BridgeTransport.wake?.();chatTimeline?.refill?.();refreshActivity();};
 // Keep the tab title on the open chat; user content is never passed through t().
 function syncDocumentTitle(){
-  const open=currentId&&!$('app').hidden&&$('app').classList.contains('chat-open');
-  document.title=open&&state?.title&&!state.loadingHistory?state.title+' · '+t('Mobile / Bridge'):t('Mobile / Bridge · 手机连接');
+  const open=currentId&&!$('app').hidden&&$('app').classList.contains('chat-open'),title=currentTeam?.name||state?.title;
+  document.title=open&&title&&!state?.loadingHistory?title+' · '+t('Mobile / Bridge'):t('Mobile / Bridge · 手机连接');
 }
 const submittedRequestIds=new Set();
 const sessionActivity=new SessionActivity();
@@ -146,9 +146,15 @@ async function start(pairingToken=null){
   }
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();
 }
-async function enter(){$('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();const list=loadList(true).catch(e=>toast(e.message));const runRoute=typeof parseRunHash==='function'?parseRunHash():null;if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}await list;}
+async function enter(){
+  $('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();
+  if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);}catch(error){toast(error.message);}
+  const list=loadList(true).catch(e=>toast(e.message)),runRoute=typeof parseRunHash==='function'?parseRunHash():null;
+  if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}
+  await list;
+}
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=loginErrorText(error);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
-$('logout').onclick=async()=>{await BridgeConnection.logout();csrf='';state=null;currentId=null;listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
+$('logout').onclick=async()=>{await BridgeConnection.logout();csrf='';state=null;currentId=null;currentTeam=null;teamChat?.close();listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 let listMode=localStorage.getItem('list-mode')==='project'?'project':'recent';
 function renderListMode(){const label=listMode==='project'?'按项目':'最近交互';$('list-mode-label').textContent=t(label);$('list-mode-label').dataset.i18n=label;}
@@ -199,7 +205,9 @@ function renderList(){
     }
     const button=el('button','session'+(chat.id===currentId&&chat.host===currentHost?' selected':''));
     button.dataset.id=chat.id;button.dataset.host=chat.host;
-    button.append(el('strong','',chat.title));
+    const team=chat.host==='local'?teamChat?.teamForSession(chat.id):null,title=el('strong','',team?team.name:chat.title);
+    if(team)title.append(' ',el('span','team-inline-badge',t('团队')));
+    button.append(title);
     const meta=el('small');
     // 按项目分组时组头已写明项目与主机，行内只留 Agent 与时间，标题更好扫。
     const agentTag=BridgeI18n.agentTag(chat.agent);
@@ -392,7 +400,9 @@ document.addEventListener('bridge-message-error',event=>toast(event.detail));
 $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-details-dialog').close();openChat(source.id,source.host).catch(e=>toast(e.message));}};
 function saveDraft(){if(currentId)sessionStorage.setItem('draft:'+chatKey(),$('message').value);}
 $('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();};
-async function openChat(id,host="local"){
+async function openChat(id,host="local",teamId=""){
+  currentTeam=host==='local'?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
+  teamChat?.open(currentTeam);
 // Run 页与聊天互斥：任何 openChat 路径（含 messageActions pending 早退）都要先
 // 收起 Run 页（停订阅、隐藏区块），否则两块 height:100% 的 section 叠层破版
 // 且 Run 页在后台继续轮询。
@@ -726,7 +736,7 @@ $('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(
   // Agents without steering only have queueing while busy: preselect it once
   // per run so one tap on 发送 queues the message instead of erroring out.
   if(view.status==='active'&&!caps.has('steer')&&$('send-mode').value==='send'&&!autoQueueArmed){autoQueueArmed=true;$('send-mode').value='queue';}
-  if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('send-mode').hidden=readOnly;$('work-mode').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);updateSkillSuggestions();syncDocumentTitle();}
+  if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('send-mode').hidden=readOnly;$('work-mode').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);updateSkillSuggestions();syncTeamComposer();syncDocumentTitle();}
 $('send-mode').onchange=()=>{autoQueueArmed=false;workModes.render(state,$('send-mode').value,sending);};
 function jsonPretty(value){return typeof value==='string'?value:JSON.stringify(value,null,2);}
 function approvalRisk(params){
@@ -1051,8 +1061,8 @@ function openQueueEditor(row,target,host){
 }
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
 function syncSendButton(){$('send').disabled=!!state?.readOnly||sending||!state||state.loadingHistory||state.activating||!attachments.ready()||(!$('message').value.trim()&&!attachments.ids().length);}
-$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort();const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale()};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
-toast(workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){const busy=/^(.+) 正在执行。(.+)$/.exec(error.message);$('send-error').textContent=busy?busy[1]+t(' 正在执行。')+t(busy[2]):t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);syncSendButton();}};
+$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort();const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds)||(pending.teamId||'')!==(currentTeam?.id||''))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale()};if(currentTeam)pending.teamId=currentTeam.id;sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);if(result.runId)teamChat?.accepted(result);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
+toast(result.runId?t('团队已受理'):workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){const busy=/^(.+) 正在执行。(.+)$/.exec(error.message);$('send-error').textContent=busy?busy[1]+t(' 正在执行。')+t(busy[2]):t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);syncSendButton();}};
 $('message').onkeydown=event=>{
   if(handleSkillKeydown(event))return;
   // IME composition Enter (incl. Safari's post-composition keyCode 229) must not send.
@@ -1399,9 +1409,26 @@ function selectPoolTab(index,refresh=true){
 }
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();poolTabSections[activePool]?.refresh();};
 
-// Team 编排（阶段一）：面板挂在「团队」弹窗，Run 页挂在 #main 的 #team-run 区块。
-// team.js 未登记进静态路由时不实例化，入口按钮静默无效。
-const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId)});
+// Team 编排：主控聊天复用 Lead 会话；独立 Run 页继续承载高级编排。
+const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatController({root:$('team-workflow'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId)});
+function openTeamChat(team){
+  const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
+  if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
+  $('teams-dialog').close();openChat(lead.sessionId,'local',team.id).catch(error=>toast(error.message));
+}
+function syncTeamComposer(){
+  const enabled=!!currentTeam;
+  $('skills-button').hidden=enabled;$('work-mode').hidden=enabled;
+  $('send-mode').querySelector('option[value="steer"]').disabled=enabled;
+  if(enabled){
+    if($('send-mode').value==='steer')$('send-mode').value='send';
+    $('work-mode').value='default';selectedSkills.clear();renderSkillPills();
+    $('chat-title').textContent=currentTeam.name;$('details-title').textContent=currentTeam.name;
+    $('chat-context').textContent=t('团队')+' · '+chatProjectLabel(state||{});
+  }
+  teamChat?.refreshRun();
+}
+const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();}});
 const teamRunScreen=typeof TeamRunScreen==='undefined'?null:new TeamRunScreen({root:$('team-run'),request:teamRequest,openChat:sessionId=>openChat(sessionId,'local'),onUnauthorized:()=>showLogin(),onNavigateAway:closeTeamRunView});
 /* #run=teamId/runId 深链（阶段四通知 click 载荷契约）：与 #pair=、#id~host 三
    前缀互斥，enter()/hashchange 统一按 pair→run→聊天 的顺序分发；id 段与聊天

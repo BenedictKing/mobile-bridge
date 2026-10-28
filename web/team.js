@@ -503,8 +503,8 @@ class TeamRunDialogHost{
 const teamRunDialogHost=new TeamRunDialogHost();
 
 class TeamsPanel{
-  constructor({root,request,openRun}){
-    Object.assign(this,{root,request,openRun});
+  constructor({root,request,openRun,openChat,onChange}){
+    Object.assign(this,{root,request,openRun,openChat,onChange});
     this.teams=[];this.loading=false;this.busy=false;this.error='';this.notice='';
     this.create=null;       // 新建团队表单状态
     this.renaming=null;     // 重命名中的 teamId
@@ -524,7 +524,7 @@ class TeamsPanel{
   async refresh(){
     if(this.loading)return;
     this.loading=true;this.error='';this.render();
-    try{const value=await this.request('/api/teams');this.teams=value.teams||[];}
+    try{const value=await this.request('/api/teams');this.teams=value.teams||[];this.onChange&&this.onChange(this.teams);}
     catch(error){this.error=error.message;}
     finally{this.loading=false;this.render();}
   }
@@ -557,7 +557,7 @@ class TeamsPanel{
     const refresh=this.button(t('刷新'),()=>this.refresh());
     refresh.disabled=this.loading||this.busy;
     const create=this.button(this.create?t('收起新建'):t('新建团队'),()=>{
-      this.create=this.create?null:{name:'',project:'',error:'',requestId:teamUUID(),attempt:'',members:[{agent:'',role:'lead',name:''}]};
+      this.create=this.create?null:{name:'',project:'',autoDispatch:true,error:'',requestId:teamUUID(),attempt:'',members:[{agent:'',role:'lead',name:''}]};
       if(this.create)this.loadProjects();
       this.render();
     });
@@ -596,6 +596,7 @@ class TeamsPanel{
     const members=team.members||[];
     const meta=this.node('p',undefined,'muted team-card-meta');
     const parts=[members.length+' '+t('名成员')];
+    if(team.project)parts.push(t('项目 ')+team.project);
     const updated=teamTimeText(team.updatedAt);
     if(updated)parts.push(t('更新于 ')+updated);
     meta.textContent=parts.join(' · ');
@@ -624,7 +625,9 @@ class TeamsPanel{
       this.render();
     });
     const createRun=this.button(t('新建 Run'),()=>this.openRunCreate(team));
-    actions.append(runsBtn,createRun);
+    const openChat=this.button(t('打开团队聊天'),()=>this.openChat&&this.openChat(team));
+    openChat.classList.add('primary');
+    actions.append(openChat,runsBtn,createRun);
     actions.append(this.button(t('预算'),()=>{
       if(this.policyEdit===team.id)this.policyEdit=null;
       else{this.policyEdit=team.id;this.policyBudgetValue=typeof budget==='number'?String(budget):'0';}
@@ -848,6 +851,10 @@ class TeamsPanel{
     projectLabel.append(projectSelect);form.append(projectLabel);
     const selectedProject=projects?.find(project=>project.key===create.project);
     if(selectedProject)form.append(this.node('p',selectedProject.cwd,'muted team-project-path'));
+    const autoLabel=this.node('label',undefined,'notification-option');
+    const autoInput=document.createElement('input');autoInput.type='checkbox';autoInput.checked=create.autoDispatch!==false;
+    autoInput.onchange=()=>{create.autoDispatch=autoInput.checked;};
+    autoLabel.append(autoInput,this.node('span',t('允许负责人自动派发任务')));form.append(autoLabel);
     const memberHeading=this.node('div',undefined,'team-create-section-title');
     memberHeading.append(this.node('strong',t('团队成员')));
     memberHeading.append(this.node('span',t('至少一位负责人；可继续添加成员或评审。'),'muted'));
@@ -918,13 +925,14 @@ class TeamsPanel{
         members.push(member);
       }
       const lead=members.find(m=>m.role==='lead')||members[0];
-      const payload={name,members,leadId:lead.id},fingerprint=JSON.stringify(payload);
+      const payload={name,project:create.project,members,leadId:lead.id,policy:{autoDispatch:create.autoDispatch!==false}},fingerprint=JSON.stringify(payload);
       if(create.attempt!==fingerprint){create.requestId=teamUUID();create.attempt=fingerprint;}
       payload.id=create.requestId;
       const team=await this.send('POST','/api/teams',payload);
       if(team){
         this.create=null;
         await this.notify(team.duplicate?t('团队已存在（内容一致），未重复创建。'):t('团队已创建。'));
+        this.openChat&&this.openChat(team);
       }
     };
     return form;

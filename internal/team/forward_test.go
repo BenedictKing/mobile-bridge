@@ -400,12 +400,12 @@ type crashWindowQueue struct {
 	failFirst bool
 }
 
-func (q *crashWindowQueue) Enqueue(threadID, submissionID, text string) (string, bool, error) {
+func (q *crashWindowQueue) Enqueue(threadID, submissionID, text string, attachments ...string) (string, bool, error) {
 	if q.failFirst {
 		q.failFirst = false
 		return "", false, errors.New("账本暂不可用")
 	}
-	return q.fakeQueue.Enqueue(threadID, submissionID, text)
+	return q.fakeQueue.Enqueue(threadID, submissionID, text, attachments...)
 }
 
 func TestForwardToMemberCrashWindowHealsEnqueueOnly(t *testing.T) {

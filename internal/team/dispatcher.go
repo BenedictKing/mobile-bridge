@@ -133,7 +133,7 @@ func (s *Service) submitTaskLocked(state *runState, team *Team, run *Run, taskID
 	}
 	// 入队（外部副作用）：mode=queue，绝不立即派发。duplicate=true 是既有
 	// 账本的幂等重入（崩溃恢复重放同 id 同内容），无二次副作用。
-	status, _, err := s.queue.Enqueue(dispatch.sessionID, dispatch.submissionID, dispatch.sentText)
+	status, _, err := s.queue.Enqueue(dispatch.sessionID, dispatch.submissionID, dispatch.sentText, task.Attachments...)
 	if err != nil {
 		// 账本确定性拒绝（内容超限/同 id 不同内容）。任务文本不可变，正常
 		// 路径不会走到这里；出现即为对账冲突，任务确定性失败、绝不重发。

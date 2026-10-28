@@ -379,7 +379,7 @@ func PolicyDigest(policy TeamPolicy) string {
 }
 
 // PlanHash 计算规范化计划的摘要：模式 + 收集策略 + 目标 + 每任务的确定性
-// 字段（id/memberId/prompt/dependsOn/workspaceMode/writeLock），拓扑序排列。
+// 字段（id/memberId/prompt/dependsOn/workspaceMode/writeLock/attachments），拓扑序排列。
 // 与任务运行态字段（status/result/submissionId 等）无关，同一计划重算稳定。
 func PlanHash(mode, collect, goal string, tasks []Task) string {
 	object := jsoncompat.NewObject()
@@ -400,6 +400,13 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 		entry.Set("dependsOn", depends)
 		entry.Set("workspaceMode", task.WorkspaceMode)
 		entry.Set("writeLock", task.WriteLock)
+		if len(task.Attachments) > 0 {
+			attachments := &jsoncompat.Array{}
+			for _, id := range task.Attachments {
+				attachments.Items = append(attachments.Items, id)
+			}
+			entry.Set("attachments", attachments)
+		}
 		list.Items = append(list.Items, entry)
 	}
 	object.Set("tasks", list)
@@ -408,7 +415,7 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 }
 
 // InputHashFor 计算任务输入摘要（§8.2）：规范化的成员、Prompt、依赖摘要、
-// 工作区与写锁、策略摘要与上下文文本。planner 版本只覆盖创建期确定性字段
+// 工作区与写锁、附件、策略摘要与上下文文本。planner 版本只覆盖创建期确定性字段
 // （contextText 为空）；完整含上下文的哈希由 dispatcher 派发时用真实注入
 // 上下文重算并落 journal——同一任务槽出现两个不同哈希即 input_hash_mismatch。
 func InputHashFor(task *Task, policyDigest, contextText string) string {
@@ -422,6 +429,13 @@ func InputHashFor(task *Task, policyDigest, contextText string) string {
 	object.Set("dependsOn", depends)
 	object.Set("workspaceMode", task.WorkspaceMode)
 	object.Set("writeLock", task.WriteLock)
+	if len(task.Attachments) > 0 {
+		attachments := &jsoncompat.Array{}
+		for _, id := range task.Attachments {
+			attachments.Items = append(attachments.Items, id)
+		}
+		object.Set("attachments", attachments)
+	}
 	object.Set("policyDigest", policyDigest)
 	object.Set("contextText", contextText)
 	sum := sha256.Sum256(jsoncompat.EncodeCompact(object))

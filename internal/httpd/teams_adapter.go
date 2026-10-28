@@ -88,12 +88,13 @@ type teamQueueAdapter struct{ server *Server }
 // Enqueue 以 mode="queue" 入账（queue.go enqueue）：同 id 同内容返回 prior 与
 // duplicate=true 且零副作用；同 id 不同内容报「同一消息标识不能用于不同内容」；
 // 文本超过账本 100000 字节硬上限同样报错——都映射为任务的确定性失败。
-func (a teamQueueAdapter) Enqueue(threadID, submissionID, text string) (string, bool, error) {
+func (a teamQueueAdapter) Enqueue(threadID, submissionID, text string, attachments ...string) (string, bool, error) {
 	if a.server.Queue == nil {
 		return "", false, errors.New("当前网关未启用排队发送")
 	}
+	names := (&handler{server: a.server}).resolveAttachmentNames(threadID, attachments)
 	entry, duplicate, err := a.server.Queue.enqueue(threadID, submissionID, text,
-		"queue", "", nil, nil, nil)
+		"queue", "", nil, attachments, names)
 	if err != nil {
 		return "", false, err
 	}

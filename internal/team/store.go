@@ -677,6 +677,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.Status = TaskPlanned
 		task.MemberID = payloadString(event.Payload, "memberId")
 		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
+		task.Attachments = payloadStrings(event.Payload, "attachments")
 		// 修复任务（actfix-*）的 task_planned 携带 round 增载（§5.1 修复
 		// 回路随轮次推进）；携带 actionKey 的是执行流落地动作的凭据
 		// （actions-exec 契约），对应动作置 executed。

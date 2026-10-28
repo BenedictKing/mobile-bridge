@@ -40,11 +40,11 @@ type TeamSubmission struct {
 // worker 与 settle 钩子（会话忙时排队、空闲即发），从而天然获得 queueMu
 // 串行化与幂等去重。
 type QueueAdapter interface {
-	// Enqueue 以 mode=queue 入账并返回入账状态。同 id 同内容的重复入账返回
-	// duplicate=true 且无任何副作用（既有账本幂等）；同 id 不同内容返回错误
-	// 「同一消息标识不能用于不同内容」。文本超过账本硬上限（100000 字节，
-	// internal/httpd/queue.go validateSubmissionInput）同样返回错误。
-	Enqueue(threadID, submissionID, text string) (status string, duplicate bool, err error)
+	// Enqueue 以 mode=queue 入账并返回入账状态。attachments 是该 Lead 会话
+	// 上传账本中的附件 ID，普通显式任务为空。同 id 同内容（含附件）的重复入账
+	// 返回 duplicate=true 且无任何副作用；同 id 不同内容返回错误。文本超过
+	// 账本硬上限（100000 字节，internal/httpd/queue.go）同样返回错误。
+	Enqueue(threadID, submissionID, text string, attachments ...string) (status string, duplicate bool, err error)
 	// Submission 返回账本条目；ok=false 只应表示「账本确无该条目」——查询
 	// 本身失败时必须返回 err，伪装成 ok=false 会导致重复发送（recovery.go
 	// Probe 的同款警告）。
