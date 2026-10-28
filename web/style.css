@@ -168,10 +168,20 @@
 .team-run-row:hover{background:var(--active)}
 .team-run-goal{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
 .team-run-row small{flex:none;font-size:10px}
-.team-member-rows{display:grid;gap:8px}
-.member-row{border:1px dashed var(--line);border-radius:10px;padding:10px;background:var(--raised)}
-.member-row label{margin:8px 0 0}
-.member-row label:first-child{margin-top:0}
+.team-create h3{margin:0 0 6px;font-size:16px}
+.team-create-intro{margin:0 0 14px;font-size:12px}
+.team-create-section-title{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:18px 0 10px;font-size:12px}
+.team-create-section-title span{font-size:10px;text-align:right}
+.team-member-rows{display:grid;gap:10px}
+.member-row{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--raised)}
+.member-row label{margin:12px 0 0}
+.member-row-title{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px}
+.member-remove{padding:2px 0 2px 8px;min-height:28px}
+.member-project-path,.member-role-help{margin:6px 0 0;font-size:10px;overflow-wrap:anywhere}
+.team-create-actions{display:flex;align-items:center;gap:10px;margin-top:16px}
+.team-create-actions .primary{flex:1;width:auto}
+.team-add-member{flex:none;border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:11px 13px;color:var(--green)}
+@media(max-width:480px){.team-create-section-title{align-items:flex-start;flex-direction:column;gap:3px}.team-create-section-title span{text-align:left}.team-create-actions{flex-direction:column-reverse;align-items:stretch}.team-create-actions .primary{width:100%}.team-add-member{width:100%}}
 .member-row-head{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start}
 .member-row-head label{flex:1;min-width:130px;margin:0}
 .member-row-head button{flex:none;margin-top:22px}

@@ -639,15 +639,18 @@ DELETE /api/teams/:teamID/members/:memberID
 
 ```json
 {
+  "id": "3aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
   "name": "App 开发团队",
   "leadId": "lead",
   "members": [
-    {"id":"lead","sessionId":"codex-1","role":"lead"},
-    {"id":"reviewer","sessionId":"kimi-1","role":"reviewer"}
+    {"id":"lead","project":"acp:0123456789ab","agent":"kimi","role":"lead"},
+    {"id":"reviewer","project":"acp:0123456789ab","agent":"kimi","role":"reviewer"}
   ],
   "policy": {"autoDispatch":true,"maxRounds":3}
 }
 ```
+
+`project` 使用 `GET /api/projects` 返回的项目键，`agent` 必须是网关已启用的非 Codex ACP Agent。网关在该项目目录中为每位成员创建专用会话后保存 `sessionId`；团队请求 `id` 与成员 `id` 共同派生会话幂等键，重放不会重复创建会话。旧客户端仍可直接提交已有 ACP 会话的 `sessionId`。
 
 删除 Team 只删除 Team 账本和聚合事件。若仍有运行中的 Run，接口返回冲突；用户必须先取消 Run 或等待其结束。
 
@@ -762,7 +765,7 @@ run_failed
 
 ```text
 创建 Team
-→ 绑定两个已有会话
+→ 按项目空间创建两个成员专用会话
 → 创建 design → implement → review pipeline
 → 任务按依赖执行
 → 每个结果可在 Team 和原会话查看
@@ -892,7 +895,7 @@ run_failed
 
 功能验收：
 
-1. 用户能创建 Team、绑定已有会话、配置 Lead 和策略。
+1. 用户能创建 Team、按项目空间创建成员（或绑定已有会话）、配置 Lead 和策略。
 2. 显式 pipeline 能按依赖执行并展示每个成员结果。
 3. broadcast 能并行执行，单个成员失败不会覆盖其他结果。
 4. Team 默认使用共享工作区，并保证共享工作区写任务互斥。

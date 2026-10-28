@@ -181,7 +181,7 @@ func (h *handler) handleTeamsCreate() {
 		h.fail(http.StatusBadRequest, errorBody(fmt.Sprintf("成员数量超过上限：最多 %d 名", teamMaxMembers)))
 		return
 	}
-	members := make([]team.TeamMember, 0, len(memberItems))
+	entries := make([]*jsoncompat.Object, 0, len(memberItems))
 	seen := map[string]bool{}
 	bound := map[string]string{}
 	for index, item := range memberItems {
@@ -190,36 +190,61 @@ func (h *handler) handleTeamsCreate() {
 			h.fail(http.StatusBadRequest, errorBody("成员记录必须是对象"))
 			return
 		}
-		member, memberErr := h.parseTeamMember(entry, index)
-		if memberErr != nil {
+		if memberErr := h.validateTeamMember(entry, index); memberErr != nil {
 			h.fail(http.StatusBadRequest, errorBody(memberErr.Error()))
 			return
 		}
-		if seen[member.ID] {
-			h.fail(http.StatusBadRequest, errorBody("成员 ID 已存在："+member.ID))
+		memberID := stringField(entry, "id")
+		if seen[memberID] {
+			h.fail(http.StatusBadRequest, errorBody("成员 ID 已存在："+memberID))
 			return
 		}
-		if holder, held := bound[member.SessionID]; held {
-			h.fail(http.StatusBadRequest, errorBody(
-				"会话已被成员 "+holder+" 绑定，一个会话同一时间只能属于一个成员"))
-			return
+		if sessionID := stringField(entry, "sessionId"); sessionID != "" {
+			if holder, held := bound[sessionID]; held {
+				h.fail(http.StatusBadRequest, errorBody(
+					"会话已被成员 "+holder+" 绑定，一个会话同一时间只能属于一个成员"))
+				return
+			}
+			bound[sessionID] = memberID
 		}
-		seen[member.ID] = true
-		bound[member.SessionID] = member.ID
-		members = append(members, member)
+		seen[memberID] = true
+		entries = append(entries, entry)
 	}
 	leadID := stringField(body, "leadId")
 	if leadID != "" && !seen[leadID] {
 		h.fail(http.StatusBadRequest, errorBody("负责人必须是团队成员"))
 		return
 	}
-	if leadID == "" && len(members) > 0 {
-		leadID = members[0].ID
+	if leadID == "" && len(entries) > 0 {
+		leadID = stringField(entries[0], "id")
 	}
 	policy, policyErr := parseTeamPolicy(body.MustGet("policy"), team.DefaultPolicy())
 	if policyErr != nil {
 		h.fail(http.StatusBadRequest, errorBody(policyErr.Error()))
 		return
+	}
+	members := make([]team.TeamMember, 0, len(memberItems))
+	for index, entry := range entries {
+		if stringField(entry, "project") != "" {
+			sessionID, status, createErr := h.createTeamProjectSession(entry, name, requestID)
+			if createErr != nil {
+				h.fail(status, errorBody(createErr.Error()))
+				return
+			}
+			entry.Set("sessionId", sessionID)
+		}
+		member, memberErr := h.parseTeamMember(entry, index)
+		if memberErr != nil {
+			h.fail(http.StatusBadRequest, errorBody(memberErr.Error()))
+			return
+		}
+		if holder, held := bound[member.SessionID]; held && holder != member.ID {
+			h.fail(http.StatusBadRequest, errorBody(
+				"会话已被成员 "+holder+" 绑定，一个会话同一时间只能属于一个成员"))
+			return
+		}
+		bound[member.SessionID] = member.ID
+		members = append(members, member)
 	}
 
 	teamID := requestID
@@ -2241,45 +2266,111 @@ func (h *handler) teamRequestVersion() (uint64, bool, error) {
 	return 0, false, nil
 }
 
-// parseTeamMember 校验并组装单个成员（创建数组元素与 member 新增共用）：
-// id 过成员正则、sessionId 过会话 id 形状、角色枚举（默认 member）、备注名
-// ≤120 字，并解析 agentKind——阶段一仅接受本网关可归属的 ACP 会话。
-func (h *handler) parseTeamMember(entry *jsoncompat.Object, index int) (team.TeamMember, error) {
+// validateTeamMember 在任何会话创建副作用之前校验成员字段。项目成员使用
+// project+agent，旧客户端仍可传 sessionId；两者都缺失时拒绝。
+func (h *handler) validateTeamMember(entry *jsoncompat.Object, index int) error {
 	id := stringField(entry, "id")
 	if !team.ValidMemberID(id) {
-		return team.TeamMember{}, fmt.Errorf(
-			"第 %d 个成员 ID 无效：%q（字母/数字/下划线/连字符，1-64 字符）", index+1, id)
+		return fmt.Errorf("第 %d 个成员 ID 无效：%q（字母/数字/下划线/连字符，1-64 字符）", index+1, id)
 	}
 	sessionID := stringField(entry, "sessionId")
-	if !teamIDPattern.MatchString(sessionID) {
-		return team.TeamMember{}, fmt.Errorf("成员 %s 的会话标识无效", id)
+	project := stringField(entry, "project")
+	if sessionID == "" && project == "" {
+		return fmt.Errorf("成员 %s 缺少项目空间或会话标识", id)
+	}
+	if sessionID != "" && !teamIDPattern.MatchString(sessionID) {
+		return fmt.Errorf("成员 %s 的会话标识无效", id)
 	}
 	name := strings.TrimSpace(stringField(entry, "name"))
 	if len([]rune(name)) > 120 {
-		return team.TeamMember{}, fmt.Errorf("成员 %s 的备注名过长：最多 120 字", id)
+		return fmt.Errorf("成员 %s 的备注名过长：最多 120 字", id)
 	}
-	role := stringField(entry, "role")
-	switch role {
-	case "":
-		role = team.RoleMember
-	case team.RoleLead, team.RoleMember, team.RoleReviewer:
+	switch role := stringField(entry, "role"); role {
+	case "", team.RoleLead, team.RoleMember, team.RoleReviewer:
 	default:
-		return team.TeamMember{}, fmt.Errorf("成员 %s 的角色无效：%s", id, role)
+		return fmt.Errorf("成员 %s 的角色无效：%s", id, role)
+	}
+	if raw, exists := entry.Get("enabled"); exists {
+		if _, isBool := raw.(bool); !isBool {
+			return fmt.Errorf("成员 %s 的启用状态必须是布尔值", id)
+		}
+	}
+	if project != "" {
+		agent := stringField(entry, "agent")
+		if agent == "" || agent == "codex" || h.server.acpAgentSet()[agent] == nil {
+			return fmt.Errorf("成员 %s 的执行 Agent 无效或当前网关未启用", id)
+		}
+		if h.resolveProjectCwd(project) == "" {
+			return fmt.Errorf("成员 %s 的项目空间无效，请刷新项目列表", id)
+		}
+	}
+	return nil
+}
+
+// createTeamProjectSession 按新建聊天的项目键与 ACP Manager 创建成员专用会话。
+// 团队请求 ID + 成员 ID 派生会话幂等键，重放团队创建时复用创建账本中的会话。
+func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, requestID string) (string, int, error) {
+	memberID := stringField(entry, "id")
+	project := stringField(entry, "project")
+	agent := stringField(entry, "agent")
+	cwd := h.resolveProjectCwd(project)
+	memberName := strings.TrimSpace(stringField(entry, "name"))
+	if memberName == "" {
+		memberName = memberID
+	}
+	title := truncateSubText(teamName+" · "+memberName, 120)
+	creationID := uuid.NewString()
+	if requestID != "" {
+		creationID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("team:"+requestID+":member:"+memberID)).String()
+	}
+	ledger := h.server.Creations
+	if ledger != nil {
+		if existing := ledger.lookup(creationID); existing != nil {
+			if existing.Agent != agent || existing.Project != project || existing.Title != title {
+				return "", http.StatusBadRequest, errors.New("同一创建请求不能用于不同内容")
+			}
+			if existing.ID == "" {
+				return "", http.StatusConflict, errors.New("上次成员会话创建结果尚不确定，请先刷新聊天列表检查，避免重复创建")
+			}
+			return existing.ID, 0, nil
+		}
+		ledger.begin(creationID, &creationEntry{Agent: agent, Project: project, Title: title,
+			Host: "local", At: ledger.now()})
+	}
+	session, err := h.server.acpAgentSet()[agent].Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
+	if err != nil {
+		return "", http.StatusConflict, err
+	}
+	if ledger != nil {
+		ledger.complete(creationID, session.ID)
+	}
+	return session.ID, 0, nil
+}
+
+// parseTeamMember 组装已绑定会话的成员；项目成员已在创建流程中解析出 sessionId。
+func (h *handler) parseTeamMember(entry *jsoncompat.Object, index int) (team.TeamMember, error) {
+	if err := h.validateTeamMember(entry, index); err != nil {
+		return team.TeamMember{}, err
+	}
+	id := stringField(entry, "id")
+	sessionID := stringField(entry, "sessionId")
+	if sessionID == "" {
+		return team.TeamMember{}, fmt.Errorf("成员 %s 的会话标识无效", id)
 	}
 	kind, ok := h.server.teamMemberKind(sessionID)
 	if !ok {
 		return team.TeamMember{}, errors.New("阶段一 Team 成员仅支持 ACP Agent 会话，请从会话列表选择")
 	}
+	role := stringField(entry, "role")
+	if role == "" {
+		role = team.RoleMember
+	}
 	enabled := true
 	if raw, exists := entry.Get("enabled"); exists {
-		value, isBool := raw.(bool)
-		if !isBool {
-			return team.TeamMember{}, fmt.Errorf("成员 %s 的启用状态必须是布尔值", id)
-		}
-		enabled = value
+		enabled = raw.(bool)
 	}
 	return team.TeamMember{ID: id, SessionID: sessionID, AgentKind: kind,
-		Name: name, Role: role, Enabled: enabled}, nil
+		Name: strings.TrimSpace(stringField(entry, "name")), Role: role, Enabled: enabled}, nil
 }
 
 // teamPolicyIntField 描述 policy 的一个整数字段（校验下限/可选上限与写入

@@ -73,7 +73,10 @@ for line in sys.stdin:
  if method == "initialize":
   result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
  elif method == "session/new":
+  record("created.txt", (m.get("params") or {}).get("cwd", ""))
   result={"sessionId":"km-team","modes":{"currentModeId":"default","availableModes":[{"id":"default"}]},"configOptions":[]}
+ elif method == "session/list":
+  result={"sessions":[{"sessionId":"km-team","cwd":DIR,"title":"成员会话","updatedAt":1}]}
  elif method == "session/prompt":
   with LOCK:
    STATE["event"].clear(); STATE["cancelled"]=False
@@ -531,6 +534,63 @@ func TestTeamsCreateIdempotency(t *testing.T) {
 	response = env.request(http.MethodPost, "/api/teams", `{"id":"not-a-uuid","name":"x","members":[]}`)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "创建请求标识无效") {
 		t.Fatalf("坏请求 id 应 400: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestTeamsCreateFromProject(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	env.server.Creations = LoadCreations(filepath.Join(env.dataDir, "creations.json"))
+	creationCount := func() int {
+		raw, err := os.ReadFile(filepath.Join(env.dataDir, "created.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Count(string(raw), "\n")
+	}
+	if got := creationCount(); got != 1 {
+		t.Fatalf("测试夹具应创建 1 个会话，实际 %d", got)
+	}
+	const requestID = "3aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	project := "acp:" + hashProject(env.dataDir)
+	payload := fmt.Sprintf(`{"id":%q,"name":"项目团队","members":[{"id":"lead","project":%q,"agent":"kimi","role":"lead","name":"负责人"}],"leadId":"lead"}`, requestID, project)
+	response := env.request(http.MethodPost, "/api/teams", payload)
+	if response.Code != http.StatusOK {
+		t.Fatalf("按项目创建团队失败: %d %s", response.Code, response.Body.String())
+	}
+	var created struct {
+		ID      string `json:"id"`
+		Members []struct {
+			SessionID string `json:"sessionId"`
+			AgentKind string `json:"agentKind"`
+			Role      string `json:"role"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != requestID || len(created.Members) != 1 || created.Members[0].SessionID != env.sessionID ||
+		created.Members[0].AgentKind != "kimi" || created.Members[0].Role != team.RoleLead {
+		t.Fatalf("项目成员投影不正确: %+v", created)
+	}
+	if got := creationCount(); got != 2 {
+		t.Fatalf("项目成员应新建 1 个专用会话，总会话数=%d", got)
+	}
+
+	response = env.request(http.MethodPost, "/api/teams", payload)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"duplicate": true`) {
+		t.Fatalf("项目团队重放应返回 duplicate: %d %s", response.Code, response.Body.String())
+	}
+	if got := creationCount(); got != 2 {
+		t.Fatalf("重放不应重复创建会话，总会话数=%d", got)
+	}
+
+	badPayload := fmt.Sprintf(`{"name":"坏团队","members":[{"id":"lead","project":%q,"agent":"kimi","role":"lead"},{"id":"bad","project":%q,"agent":"kimi","role":"unknown"}]}`, project, project)
+	response = env.request(http.MethodPost, "/api/teams", badPayload)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "角色无效") {
+		t.Fatalf("非法成员应 400: %d %s", response.Code, response.Body.String())
+	}
+	if got := creationCount(); got != 2 {
+		t.Fatalf("后续成员校验失败前不应创建会话，总会话数=%d", got)
 	}
 }
 

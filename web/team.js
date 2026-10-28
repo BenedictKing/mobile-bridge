@@ -515,7 +515,8 @@ class TeamsPanel{
     this.schedules=new Map();    // teamId -> {loading,error,cfg,busy,notice}
     this.policyEdit=null;   // 预算策略编辑中的 teamId（§11.7，0=只统计）
     this.policyBudgetValue='';
-    this.sessions=null;     // 新建表单可用的 ACP 会话（打开面板时快照）
+    this.projects=null;     // 新建表单可用的项目空间（打开面板时快照）
+    this.agents=[];         // 可创建团队成员会话的 ACP Agent
     this.workspaces=null;   // 工作区注册表区：null=收起；{loading,error,rows,form,notice}
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
@@ -557,8 +558,8 @@ class TeamsPanel{
     const refresh=this.button(t('刷新'),()=>this.refresh());
     refresh.disabled=this.loading||this.busy;
     const create=this.button(this.create?t('收起新建'):t('新建团队'),()=>{
-      this.create=this.create?null:{name:'',error:'',members:[{sessionId:'',role:'lead',name:''}]};
-      if(this.create)this.loadSessions();
+      this.create=this.create?null:{name:'',error:'',requestId:teamUUID(),attempt:'',members:[{project:'',agent:'',role:'lead',name:''}]};
+      if(this.create)this.loadProjects();
       this.render();
     });
     create.disabled=this.busy;
@@ -584,7 +585,7 @@ class TeamsPanel{
     if(this.teams.length){
       for(const team of this.teams)root.append(this.renderTeam(team));
     }else if(!this.create){
-      root.append(this.node('p',t('还没有团队。点击「新建团队」，把已有的 ACP 会话绑定成成员。'),'muted'));
+      root.append(this.node('p',t('还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
     }
     if(this.workspaces)root.append(this.renderWorkspaces());
   }
@@ -818,88 +819,105 @@ class TeamsPanel{
       onSuccess:()=>{this.loadSchedule(teamId);this.notify(t_safe('定时配置已保存。'));},
     });
   }
-  // 新建表单的会话下拉只列本机 ACP 会话（阶段一 Team 成员仅支持 ACP Agent 会话）。
-  async loadSessions(){
-    if(this.sessions||this._sessionsLoading)return;
-    this._sessionsLoading=true;
+  // 团队成员与新建聊天一致：选择项目空间和 Agent，由网关创建专用 ACP 会话。
+  async loadProjects(){
+    if(this.projects||this._projectsLoading)return;
+    this._projectsLoading=true;
     try{
-      const result=await this.request('/api/sessions?q=&offset=0');
-      this.sessions=(result.sessions||[]).filter(row=>row.host==='local'&&row.agent&&row.agent!=='codex');
-    }catch{this.sessions=[];}
+      const result=await this.request('/api/projects');
+      this.projects=(result.projects||[]).filter(row=>row.cwd);
+      this.agents=(result.agents||[]).filter(row=>row.kind&&row.kind!=='codex');
+    }catch(error){this.projects=[];this.agents=[];if(this.create)this.create.error=error.message;}
     finally{
-      this._sessionsLoading=false;
+      this._projectsLoading=false;
       if(this.create)this.render();
     }
   }
-  sessionLabel(row){
-    const bits=[row.title||row.id];
-    if(row.projectName)bits.push(row.projectName);
-    bits.push(BridgeI18n.agentLabel(row.agent));
-    return bits.join(' · ');
-  }
+  projectLabel(row){return (row.name||row.cwd)+' · '+row.cwd;}
   renderCreateForm(){
-    const t=BridgeI18n.t,create=this.create;
+    const t=BridgeI18n.t,create=this.create,projects=this.projects,agents=this.agents;
+    const roleHelp={lead:t('接收团队目标，协调任务并汇总结果。'),member:t('接收分派的任务，在项目空间中执行。'),reviewer:t('检查其他成员的结果并给出评审意见。')};
     const form=this.node('form',undefined,'team-create');
     form.append(this.node('h3',t('新建团队')));
-    const nameLabel=this.node('label',undefined,'');
+    form.append(this.node('p',t('无需先创建对话。为每位成员选择项目空间和执行 Agent，网关会自动创建专用会话。'),'muted team-create-intro'));
+    const nameLabel=this.node('label');
     nameLabel.append(this.node('span',t('团队名称')));
     const nameInput=document.createElement('input');
-    nameInput.value=create.name;nameInput.maxLength=120;
+    nameInput.value=create.name;nameInput.maxLength=120;nameInput.placeholder=t('例如：App 开发团队');
     nameInput.oninput=()=>{create.name=nameInput.value;};
     nameLabel.append(nameInput);
     form.append(nameLabel);
+    const memberHeading=this.node('div',undefined,'team-create-section-title');
+    memberHeading.append(this.node('strong',t('团队成员')));
+    memberHeading.append(this.node('span',t('至少一位负责人；可继续添加成员或评审。'),'muted'));
+    form.append(memberHeading);
     const rowsBox=this.node('div',undefined,'team-member-rows');
-    const sessions=this.sessions;
     for(const [index,row] of create.members.entries()){
-      const box=this.node('div',undefined,'member-row');
-      const memberLabel=this.node('label');
-      memberLabel.append(this.node('span',t('成员会话')));
-      const select=document.createElement('select');
-      if(!sessions){
-        select.disabled=true;
-        select.append(new Option(t('正在读取会话…'),''));
-      }else if(!sessions.length){
-        select.disabled=true;
-        select.append(new Option(t('没有可用的 ACP 会话'),''));
-      }else{
-        select.append(new Option(t('请选择会话…'),''));
-        for(const session of sessions)select.append(new Option(this.sessionLabel(session),session.id));
-        select.value=row.sessionId||'';
+      const box=this.node('section',undefined,'member-row');
+      const head=this.node('div',undefined,'member-row-title');
+      head.append(this.node('strong',t('成员 ')+(index+1)+' · '+t(TEAM_ROLE_LABELS[row.role]||row.role)));
+      if(create.members.length>1){
+        const remove=this.button(t('移除'),()=>{create.members.splice(index,1);this.render();});
+        remove.className='plain member-remove';head.append(remove);
       }
-      select.onchange=()=>{row.sessionId=select.value;};
-      memberLabel.append(select);
-      box.append(memberLabel);
+      box.append(head);
+      const projectLabel=this.node('label');
+      projectLabel.append(this.node('span',t('项目空间')));
+      const projectSelect=document.createElement('select');
+      if(!projects){
+        projectSelect.disabled=true;projectSelect.append(new Option(t('正在读取项目空间…'),''));
+      }else if(!projects.length){
+        projectSelect.disabled=true;projectSelect.append(new Option(t('没有可用的项目空间'),''));
+      }else{
+        projectSelect.append(new Option(t('请选择项目空间…'),''));
+        for(const project of projects)projectSelect.append(new Option(this.projectLabel(project),project.key));
+        projectSelect.value=row.project||'';
+      }
+      projectSelect.onchange=()=>{row.project=projectSelect.value;this.render();};
+      projectLabel.append(projectSelect);box.append(projectLabel);
+      const selectedProject=projects?.find(project=>project.key===row.project);
+      if(selectedProject)box.append(this.node('p',selectedProject.cwd,'muted member-project-path'));
+      const agentLabel=this.node('label');
+      agentLabel.append(this.node('span',t('执行 Agent')));
+      const agentSelect=document.createElement('select');
+      if(!projects){agentSelect.disabled=true;agentSelect.append(new Option(t('正在读取 Agent…'),''));}
+      else if(!agents.length){agentSelect.disabled=true;agentSelect.append(new Option(t('没有可用的 ACP Agent'),''));}
+      else{
+        if(agents.length===1&&!row.agent)row.agent=agents[0].kind;
+        if(agents.length>1)agentSelect.append(new Option(t('请选择 Agent…'),''));
+        for(const agent of agents)agentSelect.append(new Option(agent.label||agent.kind,agent.kind));
+        agentSelect.value=row.agent||'';
+      }
+      agentSelect.onchange=()=>{row.agent=agentSelect.value;};
+      agentLabel.append(agentSelect);box.append(agentLabel);
       const roleLabel=this.node('label');
       roleLabel.append(this.node('span',t('角色')));
       const roleSelect=document.createElement('select');
       for(const [value,label] of Object.entries(TEAM_ROLE_LABELS))roleSelect.append(new Option(t(label),value));
       roleSelect.value=row.role;
-      roleSelect.onchange=()=>{row.role=roleSelect.value;};
-      roleLabel.append(roleSelect);
-      box.append(roleLabel);
+      roleSelect.onchange=()=>{row.role=roleSelect.value;this.render();};
+      roleLabel.append(roleSelect);box.append(roleLabel);
+      box.append(this.node('p',roleHelp[row.role],'muted member-role-help'));
       const nameLabel2=this.node('label');
       nameLabel2.append(this.node('span',t('备注名（可选）')));
       const nameField=document.createElement('input');
-      nameField.value=row.name||'';nameField.maxLength=120;
+      nameField.value=row.name||'';nameField.maxLength=120;nameField.placeholder=t('例如：后端开发');
       nameField.oninput=()=>{row.name=nameField.value;};
-      nameLabel2.append(nameField);
-      box.append(nameLabel2);
-      if(create.members.length>1){
-        const remove=this.button(t('移除'),()=>{create.members.splice(index,1);this.render();});
-        box.append(remove);
-      }
+      nameLabel2.append(nameField);box.append(nameLabel2);
       rowsBox.append(box);
     }
     form.append(rowsBox);
-    form.append(this.button(t('＋ 添加成员'),()=>{
-      create.members.push({sessionId:'',role:'member',name:''});
-      this.render();
-    }));
     if(create.error)form.append(this.node('p',create.error,'error'));
+    const actions=this.node('div',undefined,'team-create-actions');
+    const add=this.button(t('＋ 添加成员'),()=>{
+      create.members.push({project:'',agent:agents.length===1?agents[0].kind:'',role:'member',name:''});
+      this.render();
+    });
+    add.className='team-add-member';
     const submit=document.createElement('button');
-    submit.type='submit';submit.className='primary';submit.textContent=t('创建团队');
-    submit.disabled=this.busy||!sessions||!sessions.length;
-    form.append(submit);
+    submit.type='submit';submit.className='primary';submit.textContent=this.busy?t('正在创建…'):t('创建团队');
+    submit.disabled=this.busy||!projects||!projects.length||!agents.length;
+    actions.append(add,submit);form.append(actions);
     form.onsubmit=async event=>{
       event.preventDefault();
       if(this.busy)return;
@@ -908,13 +926,17 @@ class TeamsPanel{
       if(!name){create.error=t('请填写团队名称。');this.render();return;}
       const members=[];
       for(const [i,item] of create.members.entries()){
-        if(!item.sessionId){create.error=t('请为每位成员选择一个会话。');this.render();return;}
-        const member={id:'member-'+(i+1),sessionId:item.sessionId,role:item.role};
+        if(!item.project){create.error=t('请为每位成员选择项目空间。');this.render();return;}
+        if(!item.agent){create.error=t('请为每位成员选择执行 Agent。');this.render();return;}
+        const member={id:'member-'+(i+1),project:item.project,agent:item.agent,role:item.role};
         if(item.name.trim())member.name=item.name.trim();
         members.push(member);
       }
       const lead=members.find(m=>m.role==='lead')||members[0];
-      const team=await this.send('POST','/api/teams',{name,members,leadId:lead.id});
+      const payload={name,members,leadId:lead.id},fingerprint=JSON.stringify(payload);
+      if(create.attempt!==fingerprint){create.requestId=teamUUID();create.attempt=fingerprint;}
+      payload.id=create.requestId;
+      const team=await this.send('POST','/api/teams',payload);
       if(team){
         this.create=null;
         await this.notify(team.duplicate?t('团队已存在（内容一致），未重复创建。'):t('团队已创建。'));
