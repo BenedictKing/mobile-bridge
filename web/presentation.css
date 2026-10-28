@@ -292,7 +292,10 @@ main{background:var(--page);overflow:hidden}
 .account-quota progress{accent-color:var(--accent)}
 .session-indicator{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:1px;background:#16805b}
 .session-activity-label{font-size:11px;font-weight:600;color:var(--muted);margin-right:7px}
-.agent-badge{font-size:11px;letter-spacing:0;padding:2px 5px;border-radius:5px}
+.agent-badge{flex:none;font-size:11px;letter-spacing:0;padding:2px 5px;border-radius:5px}
+.session small>.agent-badge{margin-right:0}
+.session-project{min-width:0;color:var(--text);font-size:12px;font-weight:500}
+.session small time{margin-left:auto;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
 .session-indicator.completed{background:var(--accent)}
 .session-indicator.ended{background:#b56a12}
 .session-indicator.unknown{background:var(--muted)}
@@ -464,12 +467,16 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 @media(pointer:coarse){.send-shortcut{display:none}}
 .stop{display:inline-flex;align-items:center;justify-content:center;gap:5px}
 .stop-icon{font-size:.9em;line-height:1}
-/* 手机运行中：停止只留图标（名称在 aria-label 里），把宽度还给“发送方式 / 工作模式”，不再截成“发送新…”。 */
+/* 手机运行中：停止只留图标（名称在 aria-label 里），把宽度还给“发送方式 / 工作模式”。 */
 @media(max-width:720px){
   .compose-actions .stop{width:44px;padding:0}
-  /* “补充当前任务”最长（约 96px），“普通模式”约 72px：按 4:3 分宽，360px 运行中两项都完整显示。 */
   .compose-bottom{grid-template-columns:44px minmax(0,4fr) minmax(0,3fr) auto}
   .stop-label{display:none}
+}
+@media(max-width:420px){
+  .compose-bottom:has(#stop:not([hidden])){grid-template-columns:44px minmax(0,1fr) minmax(76px,auto) auto;gap:3px}
+  .compose-bottom:has(#stop:not([hidden])) .compose-actions{gap:3px}
+  .compose-bottom:has(#stop:not([hidden])) .send-shortcut{display:none}
 }
 
 /* 设置：第一组不画顶线（标题下已有间距）；外观组内的小标题与其他字段对齐。 */
@@ -508,6 +515,31 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 .accounts-panel .accounts-usage>p{margin:0}
 /* 入口统一：登录后设置、账号、团队、退出都在侧栏底部；顶栏只在登录页放主题/语言 */
 body:has(#app:not([hidden])) .phone-header-actions{display:none}
+/* 2026-10-28 网关入口：Android App 里放在标题栏，不再用悬浮球，也不再藏进设置 */
+body:has(#app:not([hidden])) .phone-header-actions:has(.gateway-entry:not([hidden])){display:flex}
+body:has(#app:not([hidden])) .phone-header-actions .appearance-button,
+body:has(#app:not([hidden])) .phone-header-actions .phone-language{display:none}
+.gateway-entry{display:grid;place-items:center;width:40px;min-width:40px;height:40px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
+.gateway-entry:hover{background:var(--active);color:var(--text)}
+.gateway-entry[hidden]{display:none}
+/* 登录页仍只放主题与语言；网关入口属于登录后的标题栏，避免 360px 下三个控件挤在一起 */
+body:not(:has(#app:not([hidden]))) .gateway-entry{display:none}
+.gateway-dialog .picker-body{display:grid;gap:14px}
+.gateway-address{display:grid;gap:4px;margin:0}
+.gateway-address span{font-size:12px;color:var(--muted)}
+.gateway-address strong{font-size:15px;line-height:1.5;font-weight:600;overflow-wrap:anywhere}
+.gateway-actions{display:grid;gap:8px}
+.gateway-actions .primary{width:100%;min-height:44px}
+.gateway-actions .plain{min-height:40px;justify-content:flex-start;text-align:left;padding:8px 2px;color:var(--muted)}
+.gateway-actions .plain:hover{color:var(--text)}
+#gateway-note:empty{display:none}
+/* 一切正常时不占位：断开、连接中、运行中、只读才在标题栏写状态 */
+.status.idle{display:none}
+/* 空列表：说明原因并给出下一步，而不是一句灰字 */
+.list-empty{display:grid;gap:8px;justify-items:start;padding:44px 10px 0}
+.list-empty strong{font-size:15px;font-weight:600}
+.list-empty p{margin:0;font-size:13px;line-height:1.7;color:var(--muted);max-width:32em}
+.list-empty .plain{margin-top:4px;min-height:40px;padding:8px 0;color:var(--green);font-size:14px}
 .sidebar-foot{display:flex;flex-wrap:nowrap;align-items:center;justify-content:flex-start;gap:2px}
 .sidebar-foot>.plain{flex:none;min-height:36px;padding:8px 6px;border-radius:8px;color:var(--text);font-size:13px}
 .sidebar-foot>.plain:hover{background:var(--active)}
@@ -520,3 +552,13 @@ body:has(#app:not([hidden])) .phone-header-actions{display:none}
 .settings-links>button::after{content:"›";grid-column:2;grid-row:1/3;color:var(--muted);font-size:20px}
 .settings-links span{font-size:14px;font-weight:600}
 .settings-links small{grid-column:1;color:var(--muted);font-size:12px}
+@media(max-width:720px){
+  .gateway-entry{width:44px;min-width:44px;height:44px}
+  .list-empty{padding-top:32px}
+}
+.settings-disclosure-summary{min-height:44px;padding:10px 0;font-size:14px;font-weight:650;cursor:pointer}
+.settings-disclosure-summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:4px}
+.settings-disclosure-body{padding-top:4px;clear:both}
+.settings-disclosure-body>.settings-subsection:first-child{margin-top:0;padding-top:0;border-top:0}
+.settings-disclosure-body>.settings-subsection:last-child{margin-bottom:0}
+.settings-disclosure-body>.appearance-grid{clear:both}

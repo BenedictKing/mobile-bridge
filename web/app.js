@@ -200,9 +200,12 @@ function renderList(){
     const button=el('button','session'+(chat.id===currentId&&chat.host===currentHost?' selected':''));
     button.dataset.id=chat.id;button.dataset.host=chat.host;
     button.append(el('strong','',chat.title));
-    const meta=el('small');const metaText=el('span','',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel));
-    const agentTag=BridgeI18n.agentTag(chat.agent);if(agentTag)metaText.prepend(el('em','agent-badge',agentTag));
-    meta.append(metaText,el('time','',dateText(chat.recency/1000)));
+    const meta=el('small');
+    // 按项目分组时组头已写明项目与主机，行内只留 Agent 与时间，标题更好扫。
+    const agentTag=BridgeI18n.agentTag(chat.agent);
+    if(agentTag)meta.append(el('em','agent-badge',agentTag));
+    if(!grouped)meta.append(el('span','session-project',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+    meta.append(el('time','',dateText(chat.recency/1000)));
     button.append(meta);button.onclick=()=>openChat(chat.id,chat.host).catch(e=>toast(e.message));parent.append(button);
   }
   if(grouped)for(const [key,details] of groups){
@@ -213,7 +216,23 @@ function renderList(){
     more.onclick=()=>{projectGroupLimits.set(key,(projectGroupLimits.get(key)||PROJECT_GROUP_PAGE)+PROJECT_GROUP_STEP);renderList();};
     details.append(more);
   }
-  if(!listRows.length)$('sessions').append(el('p','muted',t('没有找到聊天。')));renderActivity();
+  if(!listRows.length){
+    // 空列表要说清原因并给出下一步：搜索无结果和「电脑上还没有聊天」是两件事。
+    const empty=el('div','list-empty');
+    if(listQuery){
+      empty.append(el('strong','',t('没有匹配的聊天')),el('p','',t('换个关键词，或清除搜索查看全部聊天。')));
+      const clear=el('button','plain',t('清除搜索'));clear.type='button';
+      clear.onclick=()=>{$('search').value='';loadList(true).catch(e=>toast(e.message));};
+      empty.append(clear);
+    }else{
+      empty.append(el('strong','',t('还没有聊天')),el('p','',t('在电脑的 Codex 里开始一条聊天，或点右上角「＋ 新建」。')));
+      const fresh=el('button','plain',t('＋ 新建聊天'));fresh.type='button';
+      fresh.onclick=()=>$('new-chat').click();
+      empty.append(fresh);
+    }
+    $('sessions').append(empty);
+  }
+  renderActivity();
 }
 async function loadList(reset=false){
   if(listLoading&&!reset)return;
@@ -634,6 +653,11 @@ $('settings-save').onclick=async()=>{
   else ok=false;
   button.disabled=false;
   if(ok)$('appearance-dialog').close();
+  else{
+    const error=[...document.querySelectorAll('#appearance-dialog .error')].find(node=>node.textContent.trim());
+    const section=error?.closest('details');if(section)section.open=true;
+    error?.scrollIntoView({block:'nearest'});
+  }
   toast(ok?t('设置已保存'):t('部分设置保存失败，请检查表单错误'));
 };
 $('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);syncDocumentTitle();loadList(true).catch(e=>toast(e.message));};
@@ -693,7 +717,12 @@ async function compactChat(scope){
   }catch(error){if(chatKey()===targetKey)$('compact-error').textContent=t(error.message);}
   finally{compactChat.busy=false;renderCompactState();}
 }
-function renderState(view){state=view;renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){sessionActivity.read(chatKey());renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');$('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?(view.agent==='codex'?t('正在加载桌面聊天…'):t('正在加载会话…')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');$('status').classList.toggle('offline',!view.connected);const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';if(retrying){const label=(retrying.statusCode===429?t('模型繁忙 · 重试'):t('请求失败 · 重试'))+retryCount;$('status').textContent=label;$('status').title=[label,retrying.errorMessage].filter(Boolean).join(' · ');}else $('status').removeAttribute('title');if(readOnly)$('status').textContent=t('只读');$('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(view.agent==='codex'?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');const workingSpan=$('working').querySelector('span');if(workingSpan){workingSpan.textContent=retrying?(retrying.statusCode===429?t('模型服务繁忙（429），正在自动重试'):t('模型请求失败，正在自动重试'))+retryCount+'…':agentName+t(' 正在工作…');workingSpan.title=retrying?.errorMessage||'';}$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected||readOnly;syncSendButton();const steerOption=$('send-mode').querySelector('[value=steer]');steerOption.hidden=!caps.has('steer');steerOption.disabled=!caps.has('steer')||view.status!=='active';if((!caps.has('steer')||view.status!=='active')&&$('send-mode').value==='steer')$('send-mode').value='send';
+function renderState(view){state=view;renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){sessionActivity.read(chatKey());renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');$('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?(view.agent==='codex'?t('正在加载桌面聊天…'):t('正在加载会话…')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');$('status').classList.toggle('offline',!view.connected);const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';if(retrying){const label=(retrying.statusCode===429?t('模型繁忙 · 重试'):t('请求失败 · 重试'))+retryCount;$('status').textContent=label;$('status').title=[label,retrying.errorMessage].filter(Boolean).join(' · ');}else $('status').removeAttribute('title');if(readOnly)$('status').textContent=t('只读');
+  // 一切正常时不占用标题栏写「已连接」：收成一个绿点，把宽度还给聊天标题。
+  const idle=$('status').textContent===t('已连接');
+  $('status').classList.toggle('idle',idle);
+  if(idle)$('status').title=t('已连接');
+$('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(view.agent==='codex'?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');const workingSpan=$('working').querySelector('span');if(workingSpan){workingSpan.textContent=retrying?(retrying.statusCode===429?t('模型服务繁忙（429），正在自动重试'):t('模型请求失败，正在自动重试'))+retryCount+'…':agentName+t(' 正在工作…');workingSpan.title=retrying?.errorMessage||'';}$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected||readOnly;syncSendButton();const steerOption=$('send-mode').querySelector('[value=steer]');steerOption.hidden=!caps.has('steer');steerOption.disabled=!caps.has('steer')||view.status!=='active';if((!caps.has('steer')||view.status!=='active')&&$('send-mode').value==='steer')$('send-mode').value='send';
   // Agents without steering only have queueing while busy: preselect it once
   // per run so one tap on 发送 queues the message instead of erroring out.
   if(view.status==='active'&&!caps.has('steer')&&$('send-mode').value==='send'&&!autoQueueArmed){autoQueueArmed=true;$('send-mode').value='queue';}

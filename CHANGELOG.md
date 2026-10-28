@@ -27,6 +27,12 @@
 
 ### Changed / Fixed
 
+- 安卓网关入口从悬浮球移到标题栏（`web/index.html`/`presentation.css`/`presentation.js`/`app.js`/`i18n.js` + `android/.../MainActivity.java` + `docs/android.md`）：App 注入 `MobileBridgeNative` 时，登录后的标题栏右侧显示电脑图标，点开「网关」面板可看当前地址、修改网关地址、复制地址、重新连接；原来的悬浮 ⚙（48dp 盖在页面右上角）与设置页「App 连接 → 修改网关地址」同时删除，避免入口既遮内容又藏太深。原生侧不再绘制任何悬浮控件，改为遮罩 + 地址卡：首次启动或打不开地址时自动弹出，背后没有可返回页面时不显示「取消」、返回键直接退出，避免关掉面板只剩空白；状态栏深浅色仍由网页 `setTheme` 驱动。360px 下标题栏只放这一个图标，登录页仍是主题 + 语言两个控件，不挤出横向滚动。
+
+- 手机端三处可用性修正（`web/app.js`/`presentation.css`/`i18n.js`）：① 已连接时状态不再用文字胶囊占标题栏，只在断开、加载、运行中、只读时显示，360px 下聊天标题可用宽度从 192px 回到 236px，390px 下 266px；② 空列表区分「电脑上还没有聊天」与「搜索无结果」，各自给出说明和「＋ 新建聊天」/「清除搜索」；③ 按项目分组时组头已写明项目与主机，行内只留 Agent 与时间，减少每行重复的「此电脑」。
+
+- 手机端设置、输入区与列表层级继续收敛（`web/index.html`/`presentation.css`/`app.js`/`i18n.js`）：全会话通知与结果可见合并为默认收起的「通知与结果」，Jev 长表单默认收起，保存失败时自动展开并滚动到对应错误；360–420px 运行中输入区为工作模式保留最小宽度，不再截断「普通模式」；列表行的项目/主机、Agent 徽标与时间拆成独立层级，项目更易扫读，长名称省略且不挤压时间。
+
 - 会话列表活动指示与两轮离线语义修正（`web/activity.js`/`app.js`/`presentation.css` + `internal/httpd/httpd.go` + `internal/codex/bridge.go`，/api/activity 与 codex 桥补出 turnId/turnStatus/pendingRequests，附 httpd 集成测试）：指示点旁显示文字标签；在线会话有待确认请求显示「待确认」（优先于「运行中」），运行中显示「运行中」，回合落定未查看显示「已完成/运行失败/已停止，未查看」（首见即完成的回合不再漏标，terminal token 变更才标未读）。离线语义两轮收窄：第一版对一切离线行显示灰点「运行状态暂不可用」并在重启后给全部历史会话挂上标记（含从未点开的）——现改为从未观测过的会话不建行、不显示任何标记；只有断线前确实在运行（status=active）的会话才显示「运行状态暂不可用」，未读标记在离线期间保留，存量污染行因 status=unknown 自动不再显示。
 
 - 修复 kimi 迁移会话回放的两处空白渲染（`internal/acpview` acpview.go/view.go + 测试）：① `Text()` 此前只读单个内容块的 `text` 字段，kimi 迁移记录会把 ACP 块再包一层 `content/message/data`（或直接给块数组/字符串），导致 `session/load` 回放时助手消息整块丢失——现递归展开字符串、块数组与三种包装键，分段文本以换行拼接。② kimi 把自己的 `<system-reminder>` 内部注入回放成 `user_message_chunk`，`StripInternalReminders` 剥空后视图仍无条件插入空 user 行，手机端渲染成一排空白气泡——现剥空后跳过插行（「关闭上一轮」的副作用保留），真实用户输入（含迁移转录、任务通知）不受影响。新增回归：包装块分段拼接、提醒块不留空行且仍收口助手轮、后续真实输入开新轮。以真实迁移会话（2ff78510，33 条 user chunk 中 28 条纯提醒）经 agent-host socket 回放验证：修复前 7 个空 user 行，修复后每条 user 行均有文本。

@@ -2,6 +2,17 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"网关":"Gateway",
+"当前网关":"Current gateway",
+"手机与电脑在同一局域网时直连加速；不在同一网络时走这个地址的公网连接。":"On the same network the phone connects to your computer directly for speed; otherwise it uses this address over the internet.",
+"复制地址":"Copy address",
+"已复制网关地址":"Gateway address copied",
+"还没有聊天":"No chats yet",
+"在电脑的 Codex 里开始一条聊天，或点右上角「＋ 新建」。":"Start a chat in Codex on your computer, or tap ＋ New at the top right.",
+"没有匹配的聊天":"No matching chats",
+"换个关键词，或清除搜索查看全部聊天。":"Try another keyword, or clear the search to see every chat.",
+"清除搜索":"Clear search",
+"＋ 新建聊天":"＋ New chat",
 "记住密码（7 天免登录）":"Remember me (stay signed in for 7 days)",
 "记住密码选项格式不正确":"Invalid remember-me option",
 "剩余尝试次数：":"Attempts remaining: ",
@@ -141,6 +152,7 @@ const en={
 "设置":"Settings",
 "主页快捷入口":"Home shortcuts",
 "显示账户管理入口":"Show account shortcut",
+"通知与结果":"Notifications & results",
 "全会话通知":"Notifications for all chats",
 "请求处理通知":"Action required notifications",
 "运行完毕通知":"Run completion notifications",
