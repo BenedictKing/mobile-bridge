@@ -49,7 +49,6 @@ public final class MainActivity extends Activity {
     private android.widget.FrameLayout root;
     private EditText urlInput;
     private TextView status;
-    private final Runnable hideStatus = () -> status.setVisibility(View.GONE);
     private TextView panelError;
     private Button settingsButton;
     private Button cancelButton;
@@ -88,17 +87,6 @@ public final class MainActivity extends Activity {
         webView = new WebView(this);
         root.addView(webView, new android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        status = new TextView(this);
-        status.setPadding(dp(14), dp(7), dp(14), dp(7));
-        status.setTextSize(13);
-        status.setElevation(dp(3));
-        status.setVisibility(View.GONE);
-        android.widget.FrameLayout.LayoutParams statusParams = new android.widget.FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        statusParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
-        statusParams.setMargins(0, dp(60), 0, 0);
-        root.addView(status, statusParams);
 
         settingsButton = new Button(this);
         settingsButton.setText("⚙");
@@ -148,6 +136,13 @@ public final class MainActivity extends Activity {
         hint.setPadding(0, dp(6), 0, dp(12));
         hint.setTag("muted");
         panel.addView(hint);
+
+        status = new TextView(this);
+        status.setTextSize(13);
+        status.setPadding(0, 0, 0, dp(8));
+        status.setTag("muted");
+        status.setVisibility(View.GONE);
+        panel.addView(status);
 
         urlInput = new EditText(this);
         urlInput.setSingleLine(true);
@@ -254,8 +249,6 @@ public final class MainActivity extends Activity {
         settingsPanel.setBackground(rounded(palette[0], palette[4], 16));
         settingsButton.setBackground(rounded(palette[0], palette[4], 24));
         settingsButton.setTextColor(palette[2]);
-        status.setBackground(rounded(palette[0], palette[4], 16));
-        status.setTextColor(palette[1]);
         panelError.setTextColor(palette[3]);
         cancelButton.setTextColor(palette[2]);
         for (int i = 0; i < settingsPanel.getChildCount(); i++) {
@@ -301,9 +294,6 @@ public final class MainActivity extends Activity {
     private void showStatus(String value) {
         status.setText(value);
         status.setVisibility(View.VISIBLE);
-        main.removeCallbacks(hideStatus);
-        // 探测中的提示一直显示；有结果后停留片刻就收起，不长期压在网页页头上。
-        if (!value.endsWith("…")) main.postDelayed(hideStatus, 2500);
     }
 
     private void connect() {
@@ -427,7 +417,6 @@ public final class MainActivity extends Activity {
         if (networkCallback != null) {
             ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(networkCallback);
         }
-        main.removeCallbacks(hideStatus);
         if (direct != null) direct.close();
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         webView.destroy();
