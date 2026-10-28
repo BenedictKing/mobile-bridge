@@ -1123,6 +1123,7 @@ func runGateway(args []string) {
 	}
 	outcomeWorker := notifications.NewOutcomeLedger(dataDir).StartPublisher(time.Minute, notifications.NewPublisher(nil), nil)
 	server.StartDiscovery()
+	go server.PreloadRecentSessions()
 	httpServer := &http.Server{Handler: server}
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
