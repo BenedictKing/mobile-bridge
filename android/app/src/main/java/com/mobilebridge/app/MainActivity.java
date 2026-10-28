@@ -50,15 +50,13 @@ public final class MainActivity extends Activity {
     private EditText urlInput;
     private TextView status;
     private TextView panelError;
-    private Button settingsButton;
     private Button cancelButton;
     private LinearLayout settingsPanel;
+    private View scrim;
     private WebView webView;
     private DirectTransport direct;
     private ConnectivityManager.NetworkCallback networkCallback;
     private ValueCallback<Uri[]> fileCallback;
-    // 网页正常加载后，原生按钮让位给网页自己的页头；网页设置里的“修改网关地址”再把面板叫出来。
-    private boolean pageLoaded;
     private boolean dark;
 
     @Override
@@ -88,21 +86,19 @@ public final class MainActivity extends Activity {
         root.addView(webView, new android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        settingsButton = new Button(this);
-        settingsButton.setText("⚙");
-        settingsButton.setTextSize(20);
-        settingsButton.setPadding(0, 0, 0, 0);
-        settingsButton.setContentDescription("连接设置");
-        settingsButton.setOnClickListener(view -> toggleSettings());
-        android.widget.FrameLayout.LayoutParams settingsParams = new android.widget.FrameLayout.LayoutParams(dp(48), dp(48));
-        settingsParams.gravity = Gravity.TOP | Gravity.END;
-        settingsParams.setMargins(0, dp(8), dp(12), 0);
-        root.addView(settingsButton, settingsParams);
+        // 网关入口在网页自己的标题栏里（网页检测到 MobileBridgeNative 后显示）；
+        // 这里不再悬浮任何按钮盖在页面上，只在需要输入地址时给一层遮罩。
+        scrim = new View(this);
+        scrim.setBackgroundColor(0x66000000);
+        scrim.setVisibility(View.GONE);
+        scrim.setOnClickListener(view -> { if (canLeaveSettings()) hideSettings(); });
+        root.addView(scrim, new android.widget.FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         settingsPanel = buildSettingsPanel();
         android.widget.FrameLayout.LayoutParams panelParams = new android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        panelParams.setMargins(dp(16), dp(64), dp(16), 0);
+        panelParams.setMargins(dp(16), dp(12), dp(16), 0);
         root.addView(settingsPanel, panelParams);
         setContentView(root);
         applyTheme();
@@ -197,7 +193,7 @@ public final class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
         WebView.setWebContentsDebuggingEnabled((getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0);
-        // 只暴露两个纯界面动作，不读写任何数据；网页据此在设置里显示“修改网关地址”并同步系统栏深浅色。
+        // 只暴露两个纯界面动作，不读写任何数据；网页据此在标题栏显示网关入口并同步系统栏深浅色。
         webView.addJavascriptInterface(new NativeBridge(), "MobileBridgeNative");
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -247,8 +243,6 @@ public final class MainActivity extends Activity {
             decor.setSystemUiVisibility(dark ? decor.getSystemUiVisibility() & ~flags : decor.getSystemUiVisibility() | flags);
         }
         settingsPanel.setBackground(rounded(palette[0], palette[4], 16));
-        settingsButton.setBackground(rounded(palette[0], palette[4], 24));
-        settingsButton.setTextColor(palette[2]);
         panelError.setTextColor(palette[3]);
         cancelButton.setTextColor(palette[2]);
         for (int i = 0; i < settingsPanel.getChildCount(); i++) {
@@ -268,25 +262,25 @@ public final class MainActivity extends Activity {
         return shape;
     }
 
-    private void toggleSettings() {
-        if (settingsPanel.getVisibility() == View.VISIBLE) hideSettings();
-        else showSettings(null);
-    }
-
     private void showSettings(String error) {
         panelError.setText(error == null ? "" : error);
         panelError.setVisibility(error == null ? View.GONE : View.VISIBLE);
-        // 首次使用没有可返回的页面，不给“取消”。
-        cancelButton.setVisibility(preferences().getString(PUBLIC_URL, "").isEmpty() ? View.GONE : View.VISIBLE);
+        // 没有可返回的页面时不给“取消”：面板是唯一的入口，关掉就只剩空白。
+        cancelButton.setVisibility(canLeaveSettings() ? View.VISIBLE : View.GONE);
         settingsPanel.setVisibility(View.VISIBLE);
-        settingsButton.setVisibility(View.GONE);
+        scrim.setVisibility(View.VISIBLE);
         urlInput.requestFocus();
         urlInput.setSelection(urlInput.getText().length());
     }
 
+    private boolean canLeaveSettings() {
+        return webView.getVisibility() == View.VISIBLE
+            && !preferences().getString(PUBLIC_URL, "").isEmpty();
+    }
+
     private void hideSettings() {
         settingsPanel.setVisibility(View.GONE);
-        settingsButton.setVisibility(pageLoaded ? View.GONE : View.VISIBLE);
+        scrim.setVisibility(View.GONE);
         ((android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
             .hideSoftInputFromWindow(urlInput.getWindowToken(), 0);
     }
@@ -305,7 +299,6 @@ public final class MainActivity extends Activity {
             return;
         }
         preferences().edit().putString(PUBLIC_URL, origin.toString()).apply();
-        pageLoaded = false;
         hideSettings();
         if (direct != null) direct.close();
         direct = new DirectTransport(origin, value -> main.post(() -> showStatus(value)));
@@ -314,13 +307,11 @@ public final class MainActivity extends Activity {
         webView.setWebViewClient(new GatewayWebViewClient(origin, direct, new GatewayWebViewClient.PageListener() {
             @Override
             public void onLoaded() {
-                pageLoaded = true;
-                if (settingsPanel.getVisibility() != View.VISIBLE) settingsButton.setVisibility(View.GONE);
+                // 标题栏由网页绘制，网关入口也在网页标题栏里。
             }
 
             @Override
             public void onFailed(String reason) {
-                pageLoaded = false;
                 // 不展示 WebView 自带的错误页，直接给出可修改的地址和原因。
                 webView.setVisibility(View.INVISIBLE);
                 showSettings("无法打开 " + origin.getHost() + "（" + reason + "）。请确认电脑网关在运行、地址正确。");
@@ -367,7 +358,9 @@ public final class MainActivity extends Activity {
                 android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
                 () -> {
                     if (settingsPanel != null && settingsPanel.getVisibility() == View.VISIBLE) {
-                        hideSettings();
+                        // 面板背后没有页面时，返回键直接退出，不留下空白屏。
+                        if (canLeaveSettings()) hideSettings();
+                        else finish();
                         return;
                     }
                     if (webView != null && webView.canGoBack()) {
@@ -402,7 +395,8 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
         if (settingsPanel != null && settingsPanel.getVisibility() == View.VISIBLE) {
-            hideSettings();
+            if (canLeaveSettings()) hideSettings();
+            else super.onBackPressed();
             return;
         }
         if (webView != null && webView.canGoBack()) {
