@@ -36,7 +36,7 @@ class MigrateControl {
     }
   }
   renderTargets(targets){
-    this.root.append(this.node('p',this.text('会话迁移'),'migrate-heading'));
+    this.root.append(this.node('p',this.text('迁移到其他 Agent'),'migrate-heading'));
     const row=this.node('div',undefined,'migrate-targets');
     for(const agent of targets){
       const button=this.node('button',this.text('迁移到 ')+(agent.label||agent.kind));

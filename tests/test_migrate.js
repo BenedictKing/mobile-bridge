@@ -41,7 +41,7 @@ test('migration targets exclude the current agent',()=>{
   const {control,root}=loadControl();
   assert.deepEqual(Array.from(control.targets(),agent=>agent.kind),['codex','kimi']);
   assert.deepEqual(root.querySelectorAll('button').map(button=>button.dataset.agent),['codex','kimi']);
-  assert.equal(root.children[0].textContent,'会话迁移');
+  assert.equal(root.children[0].textContent,'迁移到其他 Agent');
 });
 
 test('migration sends the picked target and scope',async()=>{
@@ -70,10 +70,11 @@ test('gateway compaction keeps its operation type and rejects duplicate submissi
   assert.equal(control.busy,false);
 });
 
-test('chat details keep migration outside the compaction section',()=>{
+test('chat details keep migration before and outside the compaction section',()=>{
   const html=readFileSync(require.resolve('../web/index.html'),'utf8');
   const compact=html.match(/<section id="compact-control"[\s\S]*?<\/section>/)[0];
   assert(!compact.includes('id="migrate-control"'));
   assert.equal((compact.match(/data-gateway-compact=/g)||[]).length,3);
-  assert(html.includes('</section><div id="migrate-control" class="migrate-control compact-control" hidden></div>'));
+  assert(compact.includes('在当前 Agent 创建转录压缩的新会话'));
+  assert(html.indexOf('id="migrate-control"')<html.indexOf('id="compact-control"'));
 });
