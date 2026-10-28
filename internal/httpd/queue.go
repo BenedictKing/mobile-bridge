@@ -734,7 +734,7 @@ func (q *submissions) enqueue(threadID, submissionID, text, mode, workMode strin
 		entry.Status = SubUnknown
 	}
 	q.record(entry)
-	return entry, false, nil
+	return q.get(threadID, submissionID), false, nil
 }
 
 // submissionPayload is the phone composer's send body subset the ledger needs.

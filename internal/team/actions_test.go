@@ -1348,3 +1348,54 @@ func TestPassActionsUnknownSessionRejected(t *testing.T) {
 		t.Fatalf("应恰一条 action_rejected，实际 %d", len(h.eventsOf(t, EventActionRejected)))
 	}
 }
+
+func TestBuildLeadBriefing(t *testing.T) {
+	team := &Team{LeadID: "lead", Members: []TeamMember{
+		{ID: "lead", SessionID: "secret-lead", AgentKind: "kimi", Name: "  主控\n Agent  ", Role: RoleLead, Enabled: true},
+		{ID: "dev", SessionID: "secret-dev", AgentKind: "codex", Role: RoleMember, Enabled: true},
+		{ID: "ghost", SessionID: "secret-ghost", AgentKind: "zcode", Role: RoleMember, Enabled: false},
+	}}
+	run := &Run{AutoPlan: true}
+	task := &Task{ID: "lead", MemberID: "lead"}
+	policy := DefaultPolicy()
+	policy.AutoDispatch = true
+	briefing := BuildLeadBriefing(team, run, task, policy)
+	for _, want := range []string{
+		"[Team delegation]", "id=lead", "name=主控 Agent", "role=lead · Lead",
+		"id=dev", "team-actions", `"sourceTaskId":"lead"`, "autoDispatch=true",
+		"给 Lead 自己一条 delegate 作为后续任务", "不要在该批动作中直接混用 summarize",
+	} {
+		if !strings.Contains(briefing, want) {
+			t.Fatalf("Lead 简报缺少 %q:\n%s", want, briefing)
+		}
+	}
+	for _, unwanted := range []string{"id=ghost", "secret-lead", "secret-dev", "secret-ghost", actionsOpenTag, actionsCloseTag} {
+		if strings.Contains(briefing, unwanted) {
+			t.Fatalf("Lead 简报不应包含 %q:\n%s", unwanted, briefing)
+		}
+	}
+	if again := BuildLeadBriefing(team, run, task, policy); again != briefing {
+		t.Fatal("相同持久配置必须生成确定性 Lead 简报")
+	}
+	policy.AutoDispatch = false
+	if got := BuildLeadBriefing(team, run, task, policy); !strings.Contains(got, "autoDispatch=false") ||
+		!strings.Contains(got, "只生成待确认预览") {
+		t.Fatalf("关闭自动派发时应明确预览语义:\n%s", got)
+	}
+	for name, candidate := range map[string]*Task{
+		"非 Lead 成员": {ID: "dev-task", MemberID: "dev"},
+		"修复任务":      {ID: "actfix-lead-1", MemberID: "lead"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := BuildLeadBriefing(team, run, candidate, policy); got != "" {
+				t.Fatalf("不应注入 Lead 简报: %q", got)
+			}
+		})
+	}
+	if got := BuildLeadBriefing(team, &Run{AutoPlan: false}, task, policy); got != "" {
+		t.Fatalf("显式计划不应注入 Lead 简报: %q", got)
+	}
+	if repair := RepairPrompt([]string{"成员无效"}, 1); !strings.Contains(repair, actionSchemaInstruction()) {
+		t.Fatal("修复提示应继续携带共享动作协议")
+	}
+}

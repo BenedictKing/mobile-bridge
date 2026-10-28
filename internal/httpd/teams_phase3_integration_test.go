@@ -339,6 +339,11 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 	if len(records) != 5 {
 		t.Fatalf("应恰 5 条提示词: %d", len(records))
 	}
+	for _, needle := range []string{"[Team delegation]", "id=reviewer", "id=tester", "team-actions", "验收主线"} {
+		if !strings.Contains(records[0].text, needle) {
+			t.Fatalf("首个 Lead 提示词应包含指派简报 %q:\n%s", needle, records[0].text)
+		}
+	}
 	revAt := promptIndex(records, "PH3-REVIEW")
 	testAt := promptIndex(records, "PH3-TEST")
 	sumCarrierAt := promptIndex(records, "REPLYACTIONS:SUMM")
@@ -350,9 +355,14 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 	if records[revAt].session != sessionRev || records[testAt].session != sessionTest {
 		t.Fatalf("delegate 应落在目标成员会话: %v", records)
 	}
+	for _, index := range []int{revAt, testAt} {
+		if strings.Contains(records[index].text, "[Team delegation]") {
+			t.Fatalf("普通成员任务不得携带 Lead 简报:\n%s", records[index].text)
+		}
+	}
 	// summarize 收到两来源摘要（§12「摘要交回 Lead」）。
 	summarizeText := records[summAt].text
-	for _, needle := range []string{"[Team context]", "来源任务：lead-d1-0", "PH3-REVIEW",
+	for _, needle := range []string{"[Team delegation]", "[Team context]", "来源任务：lead-d1-0", "PH3-REVIEW",
 		"来源任务：lead-d1-1", "PH3-TEST", "[Assigned task]"} {
 		if !strings.Contains(summarizeText, needle) {
 			t.Fatalf("summarize 派发文本应含 %q:\n%s", needle, summarizeText)

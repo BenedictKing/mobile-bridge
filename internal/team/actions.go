@@ -510,6 +510,59 @@ func actionRoundViolation(entry *jsoncompat.Object, policy TeamPolicy, ordinal i
 	return ""
 }
 
+// actionSchemaInstruction 是 Lead 简报与修复提示共用的动作协议说明。
+func actionSchemaInstruction() string {
+	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认 exclusive，纯读任务可声明 none 与写任务并行）。不要输出上述之外的字段；若无需任何动作，请输出 {\"actions\":[]}。"
+}
+
+// BuildLeadBriefing 返回 autoPlan Lead 的任务级成员目录与动作协议。修复提示
+// 已自带协议，普通成员和显式计划不注入；内容只依赖持久配置，保证确定性。
+func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) string {
+	if team == nil || run == nil || task == nil || !run.AutoPlan ||
+		team.LeadID == "" || task.MemberID != team.LeadID || strings.HasPrefix(task.ID, actionRepairPrefix) {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("[Team delegation]\n")
+	builder.WriteString("你是本次自动规划的 Lead。以下是启用成员；委派时 member 必须使用这里的真实 ID：\n")
+	for i := range team.Members {
+		member := &team.Members[i]
+		if !member.Enabled {
+			continue
+		}
+		name := strings.Join(strings.Fields(member.Name), " ")
+		if name == "" {
+			name = member.ID
+		}
+		role := member.Role
+		if role == "" {
+			role = RoleMember
+		}
+		fmt.Fprintf(&builder, "- id=%s · name=%s · agent=%s · role=%s", member.ID, truncateRunes(name, 120), member.AgentKind, role)
+		if member.ID == team.LeadID {
+			builder.WriteString(" · Lead")
+		}
+		builder.WriteString("\n")
+	}
+	builder.WriteString("需要编排时，")
+	builder.WriteString(actionSchemaInstruction())
+	builder.WriteString("\n")
+	if policy.AutoDispatch {
+		builder.WriteString("当前 autoDispatch=true：delegate 与 request_context 校验通过后可自动执行；summarize 由 Lead 汇总。\n")
+	} else {
+		builder.WriteString("当前 autoDispatch=false：delegate 与 request_context 只生成待确认预览，不会自动执行；summarize 仍可执行。\n")
+	}
+	builder.WriteString("如果需要等成员结果后由 Lead 汇总或继续规划，请在首批动作中同时给 Lead 自己一条 delegate 作为后续任务；不要在该批动作中直接混用 summarize。后续 Lead 任务取得结果后，再输出 summarize。\n")
+	actionLimit := policy.MaxTasksPerRun
+	if actionLimit > maxActionsPerBlock {
+		actionLimit = maxActionsPerBlock
+	}
+	fmt.Fprintf(&builder, "当前限制：round 为 1–%d；整个 Run 最多 %d 条任务；单个动作块最多 %d 条动作；团队最多 %d 个在途任务。\n",
+		policy.MaxRounds, policy.MaxTasksPerRun, actionLimit, policy.MaxParallelTasks)
+	fmt.Fprintf(&builder, "单个动作对象示例（仅展示格式，不是要求立即创建任务；把 member_id 替换为上方真实 ID，并按上述说明加上动作信封）：\n{\"type\":\"delegate\",\"sourceTaskId\":%q,\"round\":1,\"member\":\"member_id\",\"task\":\"只读检查并汇报结果\",\"writeLock\":\"none\"}\n", task.ID)
+	return builder.String()
+}
+
 // RepairPrompt 拼装修复回送提示词（§5.1 规则 3：violation 列表回送 Lead
 // 当前会话定向修复）。逐条 violation 先截断（truncateRunes）、条数超限附
 // 省略说明——绝不整包拼接后才检查；文本不含任何易变字段（time.Now 等），
@@ -521,7 +574,7 @@ func RepairPrompt(violations []string, attempt int) string {
 	for i, violation := range boundedViolations(violations) {
 		builder.WriteString(fmt.Sprintf("%d. %s\n", i+1, violation))
 	}
-	builder.WriteString("请重新输出修正后的动作块：放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认 exclusive，纯读任务可声明 none 与写任务并行）。不要输出上述之外的字段；若无需任何动作，请输出 {\"actions\":[]}。")
+	builder.WriteString("请重新输出修正后的动作块：" + actionSchemaInstruction())
 	return builder.String()
 }
 

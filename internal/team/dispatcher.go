@@ -173,16 +173,16 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 		return nil, fmt.Errorf("任务 %s 引用的成员不存在：%s", taskID, task.MemberID)
 	}
 
-	// ① 上下文合成 + 账本硬上限预检（planner 按 rune 预留余量，多字节内容
-	//    仍可能超过账本的 100000 字节校验——此处兜底，任务确定性失败）。
-	context := BuildTaskContext(run, task, team.Policy)
-	sentText := ComposeTaskMessage(context.Text, task.Prompt)
+	// ① 上下文与 Lead 简报合成 + 账本硬上限预检（planner 按 rune 预留余量，
+	//    多字节内容仍可能超过账本的 100000 字节校验——此处兜底，任务确定性失败）。
+	composed := composeTaskDispatchMessage(team, run, task, team.Policy)
+	sentText := composed.text
 	if len(sentText) > promptHardLimit {
 		return nil, fmt.Errorf("任务 %s 内容过长：合成消息 %d 字节，超过账本上限 %d 字节",
 			taskID, len(sentText), promptHardLimit)
 	}
 
-	// ② 幂等键与输入哈希（§6.2/§8.2：含真实上下文的哈希在此落 journal）。
+	// ② 幂等键与输入哈希（§6.2/§8.2：含真实上下文与 Lead 简报的哈希在此落 journal）。
 	//    attempt 语义（§6.3 阶段二）：快照 Attempt 即本次派发的尝试号——
 	//    rate_limited/transient 的受限重试在结算时已递增（task_failed 事实
 	//    + attempt+1 回 ready）；quota/auth/not_configured 停靠任务经 resume
@@ -197,7 +197,7 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 		attempt++
 	}
 	submissionID := TaskSubmissionID(run.TeamID, run.ID, task.ID, attempt)
-	inputHash := InputHashFor(task, PolicyDigest(team.Policy), context.Text)
+	inputHash := InputHashFor(task, PolicyDigest(team.Policy), composed.hashContext)
 
 	// ③ 写锁：exclusive 任务先取 cwd 级写锁（§6.4 规则 1/2）；取不到暂缓。
 	if task.WriteLock != TaskWriteLockNone {
@@ -238,7 +238,7 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 			"submissionId": submissionID,
 			"inputHash":    inputHash,
 			"attempt":      jsoncompat.Num(attempt),
-			"contextChars": jsoncompat.Num(context.InjectedChars),
+			"contextChars": jsoncompat.Num(composed.context.InjectedChars),
 		})
 		event.IdempotencyKey = TaskIdempotencyKey(fresh.TeamID, fresh.ID, taskID, attempt)
 		events := []*Event{event}
@@ -274,18 +274,40 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 	}, nil
 }
 
+type composedTaskMessage struct {
+	text        string
+	hashContext string
+	context     ContextResult
+}
+
+// composeTaskDispatchMessage 是首次派发与旧账本重算共用的文本组合点：Lead
+// 简报位于依赖上下文之前，二者共同进入派发期哈希，事件里的 contextChars
+// 仍只计量依赖结果注入。
+func composeTaskDispatchMessage(team *Team, run *Run, task *Task, policy TeamPolicy) composedTaskMessage {
+	context := BuildTaskContext(run, task, policy)
+	briefing := BuildLeadBriefing(team, run, task, policy)
+	return composedTaskMessage{
+		text:        briefing + ComposeTaskMessage(context.Text, task.Prompt),
+		hashContext: briefing + context.Text,
+		context:     context,
+	}
+}
+
 // sentTextFor 返回任务当前派发全文（遗留④）：Task.SentText 非空直接用——
 // 派发时随 task_dispatching 原子落快照，收养 watcher、超时与取消的副作用
 // （matchTurn 全文匹配、撤账本条目）都按存量文本执行，策略或上下文合成的
 // 任何后续变更（policy 改动、成员转发、轮次摘要）都不再让在途任务错认
 // turn；空串是旧账本的迁移窗口（该版本前派发、尚未终态的任务），退回
-// 「不可变 prompt + 依赖结果」的确定性重算（阶段一语义）。
+// 「不可变 prompt + Lead 简报 + 依赖结果」的确定性重算。
 func (s *Service) sentTextFor(run *Run, task *Task, policy TeamPolicy) string {
 	if task.SentText != "" {
 		return task.SentText
 	}
-	context := BuildTaskContext(run, task, policy)
-	return ComposeTaskMessage(context.Text, task.Prompt)
+	var team *Team
+	if run != nil {
+		team = s.store.Team(run.TeamID)
+	}
+	return composeTaskDispatchMessage(team, run, task, policy).text
 }
 
 // cancelSideEffects 执行取消/超时的事后副作用（不持 state.mu；记账已先行，

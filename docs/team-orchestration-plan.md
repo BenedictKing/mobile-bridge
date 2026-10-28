@@ -39,7 +39,7 @@
 
 1. 不实现新的 Agent runtime。
 2. 不替代 Codex、Claude Code 或 dsh 自己的原生子代理系统。
-3. 不引入 chief/lead 的隐式身份注入，不修改 Agent 的系统提示词。
+3. 不引入 chief/lead 的隐式身份注入，不修改 Agent 的系统提示词；autoPlan Lead 只在具体任务的用户消息中携带可见的编排简报。
 4. 不做无限群聊或自然语言自由接力。
 5. 不在第一阶段引入第三方协调服务或 WebRTC 信令服务。
 6. 不自动合并代码、自动执行高风险命令或自动批准权限请求。
@@ -277,6 +277,10 @@ Lead 可以返回普通回答，也可以在回答中附加：
 ]}
 </team-actions>
 ```
+
+autoPlan Lead 的任务派发文本会在原始 goal 前附加 `[Team delegation]` 简报，列出启用成员的 ID、名称、Agent 类型、角色、动作字段、当前 `autoDispatch` 语义与轮次/任务/并发限制，使 Lead 不必猜测成员和协议。简报只用于 autoPlan 的 Lead 普通任务与派生任务；显式计划、普通成员、转发和修复任务不注入。最终顺序为 `[Team delegation]` → `[Team context]` → `[Assigned task]`/原始 Prompt，原始 goal 保留且只出现一次。
+
+简报中的动作示例只展示 JSON 动作对象，不携带字面 `<team-actions>` 信封，避免 Agent 回显 prompt 时将示例误执行。若成员结果还需 Lead 汇总或继续规划，简报会要求首批动作同时给 Lead 自身安排一条 `delegate` 后续任务，而不是在该批动作中提前混入 `summarize`；后续 Lead 任务取得结果后再发起汇总。简报与依赖上下文共同进入派发期 `InputHash`；创建期哈希、PlanHash 和 amend 缓存规则不变。完整派发文本仍持久化为 `Task.SentText`，重启、收养、取消和 turn 匹配始终优先使用存量文本。
 
 解析规则：
 

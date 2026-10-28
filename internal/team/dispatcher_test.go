@@ -3807,3 +3807,64 @@ func TestResumePausedAppliesLandedVerifyVerdict(t *testing.T) {
 		})
 	}
 }
+
+func TestAutoPlanLeadBriefingDispatchComposition(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := h.createAutoPlanRun(t)
+	_, sentText := h.waitForSubmission(t, "s-lead", "autoPlan Lead 简报")
+	for _, want := range []string{"[Team delegation]", "id=lead", "id=dev", "team-actions", "实现用户头像上传接口"} {
+		if !strings.Contains(sentText, want) {
+			t.Fatalf("首个 Lead prompt 缺少 %q:\n%s", want, sentText)
+		}
+	}
+	if !strings.HasPrefix(sentText, "[Team delegation]\n") {
+		t.Fatalf("Lead 简报应位于派发文本开头:\n%s", sentText)
+	}
+	if strings.Contains(sentText, "id=ghost") {
+		t.Fatalf("停用成员不得进入 Lead 简报:\n%s", sentText)
+	}
+	if strings.Count(sentText, "实现用户头像上传接口") != 1 {
+		t.Fatalf("原始 goal 应恰好保留一次:\n%s", sentText)
+	}
+	task := h.taskOf(run.ID, "lead")
+	if task.SentText != sentText {
+		t.Fatal("Lead 完整派发文本应随任务落盘")
+	}
+	composed := composeTaskDispatchMessage(h.team, run, &task, h.team.Policy)
+	if want := InputHashFor(&task, PolicyDigest(h.team.Policy), composed.hashContext); task.InputHash != want {
+		t.Fatalf("派发期哈希应覆盖 Lead 简报: want %s got %s", want, task.InputHash)
+	}
+	h.team.Members[0].Name = "改名后的 Lead"
+	h.team.Policy.AutoDispatch = !h.team.Policy.AutoDispatch
+	if got := h.service.sentTextFor(run, &task, h.team.Policy); got != sentText {
+		t.Fatal("已有 SentText 在成员或策略变化后仍应原样返回")
+	}
+
+	for name, testCase := range map[string]struct {
+		run  *Run
+		task *Task
+	}{
+		"显式计划 Lead": {&Run{TeamID: h.team.ID}, &Task{ID: "lead", MemberID: "lead", Prompt: "显式任务"}},
+		"普通成员":      {&Run{TeamID: h.team.ID, AutoPlan: true}, &Task{ID: "dev-task", MemberID: "dev", Prompt: "普通任务"}},
+		"修复任务":      {&Run{TeamID: h.team.ID, AutoPlan: true}, &Task{ID: "actfix-lead-1", MemberID: "lead", Prompt: "修复任务"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := composeTaskDispatchMessage(h.team, testCase.run, testCase.task, h.team.Policy).text; got != testCase.task.Prompt {
+				t.Fatalf("不应注入 Lead 简报: want %q got %q", testCase.task.Prompt, got)
+			}
+		})
+	}
+
+	contextRun := &Run{TeamID: h.team.ID, AutoPlan: true, Tasks: []Task{
+		{ID: "dep", MemberID: "dev", Status: TaskCompleted, ResultDetail: &TaskResult{Result: "依赖结果"}},
+		{ID: "lead-d1-0", MemberID: "lead", Prompt: "汇总", DependsOn: []string{"dep"}},
+	}}
+	contextTask := &contextRun.Tasks[1]
+	text := composeTaskDispatchMessage(h.team, contextRun, contextTask, h.team.Policy).text
+	delegation := strings.Index(text, "[Team delegation]")
+	context := strings.Index(text, "[Team context]")
+	assigned := strings.Index(text, "[Assigned task]")
+	if delegation < 0 || context <= delegation || assigned <= context {
+		t.Fatalf("简报、依赖上下文与任务顺序错误:\n%s", text)
+	}
+}
