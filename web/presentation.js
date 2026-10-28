@@ -121,10 +121,22 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
-  get('settings-accounts').onclick=()=>{get('appearance-dialog').close();get('accounts-button').click();};
-  get('settings-teams').onclick=()=>{get('appearance-dialog').close();get('teams-button').click();};
-  // Android App 注入 MobileBridgeNative；浏览器里没有这一组。
-  if(window.MobileBridgeNative){get('native-app-section').hidden=false;get('native-app-settings').onclick=()=>{get('appearance-dialog').close();window.MobileBridgeNative.openSettings();};}
+  // Android App 注入 MobileBridgeNative；网关入口因此出现在标题栏，浏览器里没有这一组。
+  const nativeBridge=window.MobileBridgeNative,gatewayDialog=get('gateway-dialog');
+  for(const button of document.querySelectorAll('[data-open-gateway]'))button.onclick=()=>{
+    get('gateway-note').textContent='';get('gateway-origin').textContent=location.origin;gatewayDialog.showModal();
+  };
+  if(nativeBridge){
+    root.dataset.native='android';
+    for(const button of document.querySelectorAll('.gateway-entry'))button.hidden=false;
+    get('gateway-change').onclick=()=>{gatewayDialog.close();nativeBridge.openSettings();};
+    get('gateway-reconnect').onclick=()=>{gatewayDialog.close();location.reload();};
+    get('gateway-copy').onclick=async()=>{
+      const note=get('gateway-note');
+      try{await navigator.clipboard.writeText(location.origin);note.textContent=BridgeI18n.t('已复制网关地址');}
+      catch{note.textContent=location.origin;}
+    };
+  }else get('gateway-change').hidden=true;
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);
   system.addEventListener('change',()=>{if(settings.theme==='system')preserveReading(apply);});
   window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false)};
