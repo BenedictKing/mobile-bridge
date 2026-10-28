@@ -7,7 +7,8 @@
   <style>
     :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;color:#252525;background:#f4f4f4;font-size:14px;line-height:1.55;--line:#c8c8c8;--soft:#e9e9e9;--paper:#fff;--muted:#666}
     *{box-sizing:border-box}[hidden]{display:none!important}body{margin:0}button,textarea{font:inherit}button{cursor:pointer}button:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid #555;outline-offset:3px}button{border:1px solid #999;background:#fff;color:inherit;padding:8px 12px}button[aria-pressed="true"],button.primary{background:#333;color:#fff;border-color:#333}p,h1,h2,h3{margin-top:0}.review-head{max-width:1180px;margin:auto;padding:28px 24px 18px;display:flex;justify-content:space-between;gap:24px;align-items:end}.review-head h1{font-size:26px;margin-bottom:8px}.review-head p{margin-bottom:0;color:var(--muted)}.eyebrow{font-size:11px;letter-spacing:1.5px}.view-switch{display:flex;gap:6px;flex:none}main{max-width:1180px;margin:auto;padding:0 24px 32px}.flow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.flow button{font-size:12px}.flow button.active{outline:2px solid #555;outline-offset:2px}
-    .device{border:2px solid #777;background:var(--paper);min-height:650px;overflow:hidden}.device.mobile{max-width:390px;margin:auto}.shell{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:650px}.sidebar{border-right:1px solid var(--line);padding:16px;background:#efefef}.sidebar h2{font-size:16px}.search{border:1px solid var(--line);padding:9px;color:var(--muted);margin-bottom:18px}.project-name{font-weight:700;margin-bottom:8px}.chat-link{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #ddd;padding:12px 8px}.chat-link strong,.chat-link small{display:block}.chat-link small{color:var(--muted)}.badge{display:inline-block;border:1px solid #888;padding:0 5px;font-size:10px;font-weight:400;vertical-align:1px}.main-chat{display:flex;flex-direction:column;min-width:0;min-height:650px}.chat-head{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line)}.chat-head>div{flex:1;min-width:0}.chat-head h2{font-size:17px;margin:0}.chat-head p{font-size:12px;color:var(--muted);margin:2px 0 0}.back{display:none}.timeline{flex:1;padding:24px}.message{max-width:680px;margin-bottom:24px}.message.user{margin-left:8%;padding:14px;border:1px solid var(--line);background:#f2f2f2}.who{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}.image-placeholder{height:120px;border:1px dashed #888;background:#ddd;display:grid;place-items:center;text-align:center;margin:10px 0;color:#555}.composer{border-top:1px solid var(--line);padding:12px 20px 18px}.tools{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}.tools button{font-size:12px;padding:5px 8px}.input-row{display:flex;gap:8px;align-items:end}.input-row textarea{flex:1;min-width:0;min-height:70px;resize:vertical;border:1px solid #999;padding:10px}.attachment{display:inline-block;padding:6px 9px;background:var(--soft);border:1px solid var(--line);margin-bottom:8px}.notice{padding:10px 14px;border:1px solid #777;background:#e5e5e5;margin-bottom:12px}.run-body{padding:22px;flex:1}.run-body h2{font-size:20px}.dag{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap;margin:24px 0}.task{border:1px solid #888;padding:14px;flex:1;min-width:140px;background:#f1f1f1}.task strong,.task small{display:block}.task small{margin-top:8px;color:var(--muted)}.contract{margin-top:18px;border:1px solid var(--line);background:var(--paper);padding:18px 20px}.contract h2{font-size:17px}.contract pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eee;padding:14px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}.notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.notes p{margin:0;color:var(--muted)}
+    .device{border:2px solid #777;background:var(--paper);min-height:650px;overflow:hidden}.device.mobile{max-width:390px;margin:auto}.shell{display:grid;grid-template-columns:250px minmax(0,1fr);min-height:650px}.sidebar{border-right:1px solid var(--line);padding:16px;background:#efefef}.sidebar h2{font-size:16px}.search{border:1px solid var(--line);padding:9px;color:var(--muted);margin-bottom:18px}.project-name{font-weight:700;margin-bottom:8px}.chat-link{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #ddd;padding:12px 8px}.chat-link strong,.chat-link small{display:block}.chat-link small{color:var(--muted)}.badge{display:inline-block;border:1px solid #888;padding:0 5px;font-size:10px;font-weight:400;vertical-align:1px}.main-chat{display:flex;flex-direction:column;min-width:0;min-height:650px}.chat-head{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line)}.chat-head>div{flex:1;min-width:0}.chat-head h2{font-size:17px;margin:0}.chat-head p{font-size:12px;color:var(--muted);margin:2px 0 0}.back{display:none}.timeline{flex:1;padding:24px}.message{max-width:680px;margin-bottom:24px}.message.user{margin-left:8%;padding:14px;border:1px solid var(--line);background:#f2f2f2}.who{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}.image-placeholder{height:120px;border:1px dashed #888;background:#ddd;display:grid;place-items:center;text-align:center;margin:10px 0;color:#555}.composer{border-top:1px solid var(--line);padding:12px 20px 18px}.tools{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}.tools button{font-size:12px;padding:5px 8px}.input-row{display:flex;gap:8px;align-items:end}.input-row textarea{flex:1;min-width:0;min-height:70px;resize:vertical;border:1px solid #999;padding:10px}.attachment{display:inline-block;padding:6px 9px;background:var(--soft);border:1px solid var(--line);margin-bottom:8px}.notice{padding:10px 14px;border:1px solid #777;background:#e5e5e5;margin-bottom:12px}.run-body{padding:22px;flex:1}.run-body h2{font-size:20px}.contract{margin-top:18px;border:1px solid var(--line);background:var(--paper);padding:18px 20px}.contract h2{font-size:17px}.contract pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#eee;padding:14px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}.notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.notes p{margin:0;color:var(--muted)}
+    .workflow-card{border:1px solid #aaa;background:#f7f7f7;padding:12px 14px;margin:0 0 24px;max-width:760px}.workflow-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.workflow-head strong{flex:1}.workflow-head button{padding:4px 8px;font-size:12px}.workflow-meta{font-size:11px;color:var(--muted)}.workflow-scroll{overflow-x:auto;padding:14px 0 4px;scrollbar-width:thin}.stations{display:flex;align-items:flex-start;min-width:560px}.station{position:relative;flex:1;min-width:170px;text-align:center;padding:0 8px}.station:not(:last-child):after{content:"";position:absolute;top:10px;left:calc(50% + 12px);width:calc(100% - 24px);border-top:1px solid #777;z-index:0}.station.pending:not(:last-child):after{border-top-style:dashed;border-color:#aaa}.lamp{position:relative;z-index:1;display:block;width:14px;height:14px;margin:0 auto 8px;border:2px solid #666;border-radius:50%;background:var(--paper)}.completed .lamp{background:#555}.running .lamp{outline:3px solid #aaa;outline-offset:2px}.station-name{display:block;font-weight:600}.station-state{display:block;font-size:11px;color:var(--muted);margin:2px 0 10px}.agent-pills{display:grid;gap:6px;justify-content:center}.agent-pill{display:block;border:1px solid #aaa;background:var(--paper);padding:5px 8px;font-size:11px;white-space:nowrap}.workflow-card.compact .agent-pills{display:none}.artifacts{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:10px;margin-top:8px}.artifact-pill{border:1px solid #aaa;background:var(--paper);padding:4px 8px;font-size:11px}.spine{margin:22px 0}.spine-phase{position:relative;border-left:1px solid #888;padding:0 0 24px 28px;margin-left:8px}.spine-phase:last-child{border-left-color:transparent}.spine-phase>.lamp{position:absolute;left:-8px;top:2px;margin:0}.spine-phase h3{font-size:14px;margin:0 0 2px}.spine-phase>p{font-size:11px;color:var(--muted);margin-bottom:10px}.spine-agents{display:grid;gap:6px}.spine-agent{display:flex;justify-content:space-between;gap:12px;border:1px solid var(--line);background:#f4f4f4;padding:9px 11px}.spine-agent small{color:var(--muted);text-align:right}.presentation-note{border-left:2px solid #888;padding-left:10px;color:var(--muted);font-size:12px}
     .mobile .shell{display:block;min-height:650px}.mobile .sidebar{display:none;border-right:0;min-height:650px}.mobile .back{display:inline-block;padding:6px 10px}.mobile .chat-head{padding:12px}.mobile .timeline{padding:16px}.mobile .composer{padding:10px 12px}.mobile .message.user{margin-left:0}.mobile .notes{grid-template-columns:1fr}.mobile.show-list .sidebar{display:block}.mobile.show-list .main-chat{display:none}.mobile .run-body{padding:16px}.mobile .view-run{max-width:100%}
     @media(max-width:720px){.review-head{padding:20px 14px 14px;align-items:start;flex-direction:column}.review-head h1{font-size:22px}main{padding:0 10px 24px}.shell{display:block}.sidebar{display:none;border-right:0;min-height:650px}.back{display:inline-block}.show-list .sidebar{display:block}.show-list .main-chat{display:none}.chat-head{padding:12px}.timeline{padding:16px}.composer{padding:10px 12px}.message.user{margin-left:0}.notes{grid-template-columns:1fr}.device{min-height:620px}.main-chat{min-height:620px}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
@@ -57,6 +58,17 @@
               <div id="accepted" class="notice" role="status" hidden>团队已受理 · Run 已创建，仍可继续发消息</div>
               <div class="message user"><span class="who">你</span><span id="user-text">请按这张截图检查首页布局</span><div id="message-image" class="image-placeholder">图片占位<br>homepage.png</div></div>
               <div class="message"><span class="who">团队负责人</span>我先检查现有实现，再把布局核对交给前端成员，最后由评审检查改动。</div>
+              <section id="workflow-card" class="workflow-card" aria-label="Workflow 运行摘要" hidden>
+                <div class="workflow-head"><strong>Workflow · 运行中</strong><span class="workflow-meta">1/3 阶段 · 2 名成员运行中</span><button id="workflow-toggle" type="button" aria-expanded="true">收起成员</button><button id="workflow-open" type="button">详情</button></div>
+                <div class="workflow-scroll" tabindex="0" aria-label="阶段轨道，可横向滚动">
+                  <div class="stations">
+                    <div class="station completed"><span class="lamp" aria-hidden="true"></span><span class="station-name">理解目标</span><span class="station-state">已完成</span><div class="agent-pills"><span class="agent-pill">负责人 · Kimi</span></div></div>
+                    <div class="station running"><span class="lamp" aria-hidden="true"></span><span class="station-name">并行核对</span><span class="station-state">运行中</span><div class="agent-pills"><span class="agent-pill">前端实现 · ZCode</span><span class="agent-pill">视觉核对 · Kimi</span></div></div>
+                    <div class="station pending"><span class="lamp" aria-hidden="true"></span><span class="station-name">评审</span><span class="station-state">等待依赖</span><div class="agent-pills"><span class="agent-pill">评审 · Kimi</span></div></div>
+                  </div>
+                </div>
+                <div class="artifacts" aria-label="运行产物"><span class="artifact-pill">首页截图</span><span class="artifact-pill">布局 diff</span></div>
+              </section>
             </div>
             <form id="composer" class="composer">
               <div class="tools"><button type="button" disabled title="仅表示复用现有控件">模型</button><button type="button" disabled title="仅表示复用现有控件">提醒</button><button type="button" disabled title="仅表示复用现有控件">权限</button></div>
@@ -72,12 +84,13 @@
             <button id="back-chat" type="button">‹ 返回团队聊天</button>
             <h2>检查首页布局</h2>
             <p>single + autoPlan · 运行中</p>
-            <div class="dag" aria-label="任务依赖">
-              <div class="task"><strong>负责人</strong><span>理解目标与派发</span><small>已完成</small></div>
-              <div class="task"><strong>前端成员</strong><span>核对首页实现</span><small>运行中</small></div>
-              <div class="task"><strong>评审</strong><span>检查结果与截图</span><small>等待依赖</small></div>
+            <p class="presentation-note">与聊天摘要读取同一 Run：横向 station rail 在这里变为纵向 spine；成员、状态和产物不另造一份。</p>
+            <div class="spine" aria-label="Workflow 阶段详情">
+              <section class="spine-phase completed"><span class="lamp" aria-hidden="true"></span><h3>理解目标</h3><p>1/1 任务完成</p><div class="spine-agents"><div class="spine-agent"><span>负责人 · Kimi</span><small>已完成 · 打开原会话</small></div></div></section>
+              <section class="spine-phase running"><span class="lamp" aria-hidden="true"></span><h3>并行核对</h3><p>2 名成员运行中 · 共享项目写锁</p><div class="spine-agents"><div class="spine-agent"><span>前端实现 · ZCode</span><small>运行中 · 打开原会话</small></div><div class="spine-agent"><span>视觉核对 · Kimi</span><small>运行中 · 打开原会话</small></div></div></section>
+              <section class="spine-phase pending"><span class="lamp" aria-hidden="true"></span><h3>评审</h3><p>等待并行核对完成</p><div class="spine-agents"><div class="spine-agent"><span>评审 · Kimi</span><small>等待依赖</small></div></div></section>
             </div>
-            <p>这里沿用现有 Run 详情：任务 DAG、成员状态、原始会话和验证结果；聊天页不承载这些高级控制。</p>
+            <div class="artifacts" aria-label="运行产物"><span class="artifact-pill">首页截图</span><span class="artifact-pill">布局 diff</span></div>
           </section>
         </section>
       </div>
@@ -89,6 +102,7 @@
         <p><strong>发送即创建 Run</strong><br>网关识别 teamId 后只创建 single + autoPlan Run，不额外发送普通 Prompt。</p>
         <p><strong>高级能力不挤进输入区</strong><br>显式流水线、定时 Run 和修订留在团队高级入口；Skill、目标模式和 steer 本轮不出现。</p>
       </div>
+      <p class="presentation-note">呈现参考 ZCode 的 WorkflowTimeline / WorkflowRunDigest：聊天内是 station rail + agent pills + artifacts，Run 详情复用同一状态改为纵向 spine；此处只借鉴信息结构，不引入 ZCode runtime。</p>
       <pre>1. POST /api/sessions/:leadId/uploads
    → { id: "upload-uuid", name: "homepage.png" }
 
@@ -116,12 +130,13 @@
     const accepted=document.getElementById('accepted');
     const messageImage=document.getElementById('message-image');
     const prompt=document.getElementById('prompt');
+    const workflowCard=document.getElementById('workflow-card');
     function showList(){shell.classList.add('show-list');document.getElementById('team-link').focus();}
     function setStep(step){
       const running=step==='run';
       chatView.hidden=running;runView.hidden=!running;
       attachment.hidden=step==='chat';messageImage.hidden=step==='chat';
-      accepted.hidden=step!=='accepted';
+      accepted.hidden=step!=='accepted';workflowCard.hidden=step!=='accepted';
       document.getElementById('user-text').textContent=prompt.value||'请查看这张图片';
       document.querySelectorAll('[data-step]').forEach(button=>button.classList.toggle('active',button.dataset.step===step));
       shell.classList.remove('show-list');
@@ -135,6 +150,12 @@
     document.getElementById('attach').addEventListener('click',()=>setStep('attached'));
     document.getElementById('composer').addEventListener('submit',event=>{event.preventDefault();setStep('accepted');});
     document.getElementById('latest-run').addEventListener('click',()=>setStep('run'));
+    document.getElementById('workflow-open').addEventListener('click',()=>setStep('run'));
+    document.getElementById('workflow-toggle').addEventListener('click',event=>{
+      const compact=workflowCard.classList.toggle('compact');
+      event.currentTarget.setAttribute('aria-expanded',String(!compact));
+      event.currentTarget.textContent=compact?'展开成员':'收起成员';
+    });
     document.getElementById('back-chat').addEventListener('click',()=>setStep('accepted'));
     document.getElementById('back-list').addEventListener('click',showList);
     setStep('chat');
