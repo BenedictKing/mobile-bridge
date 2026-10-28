@@ -95,7 +95,7 @@ class PoolPanel {
     }catch(error){login.phase='pick';login.error=error.message;this.render();}
   }
   async pollLogin(){
-    const login=this.login;
+    const t=BridgeI18n.t,login=this.login;
     if(!login||!this.readLogin)return;
     try{
       const result=await this.readLogin();
@@ -205,8 +205,9 @@ class PoolPanel {
       for(const w of quota.limits||[]){
         const line=this.node('div',undefined,'accounts-window');
         const pct=w.limit>0?Math.max(0,100-Math.round(w.used/w.limit*1000)/10):null;
-        line.append(this.node('span',(w.name||'')+this.windowLabel(w)+(w.auxiliary?' · '+t('辅助，不影响切换'):'')),
+        line.append(this.node('span',t(w.name||'')+this.windowLabel(w)+(w.auxiliary?' · '+t('辅助'):'')),
           this.node('strong',pct==null?t('暂未提供'):t('剩余 ')+pct+'%'));
+        if(w.auxiliary)line.firstChild.title=t('辅助，不影响切换');
         if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('剩余额度'));line.append(progress);}
         if(w.resetAt){const reset=t('恢复时间：')+this.resetTime(w.resetAt);line.title=reset;line.append(this.node('span',reset,'account-muted'));}
         box.append(line);
@@ -281,11 +282,17 @@ class PoolPanel {
       if(row.status&&row.status!=='active')title.append(this.node('span',({reauth_required:t('需重新登录'),disabled:t('已停用'),cooling_down:t('冷却中')})[row.status]||row.status,'error'));
       if(row.region)title.append(this.node('span',String(row.region).toUpperCase(),'account-muted'));
       if(row.tokenEnvelope)title.append(this.node('span',t('信封态'),'error'));
-      name.append(title,this.node('p',row.email||row.nickname||row.userId||row.provider||row.id,'account-muted'));
+      // 副标题与账号名相同时不再重复显示。
+      const subtitle=row.email||row.nickname||row.userId||row.provider||row.id;
+      name.append(title);
+      if(subtitle&&subtitle!==heading.textContent&&String(subtitle).toUpperCase()!==String(row.region||'').toUpperCase())name.append(this.node('p',subtitle,'account-muted'));
       identity.append(name);this.quotaRows(identity,row);card.append(identity);
-      const choose=this.button(row.active?t('当前账号'):t('切换到此账号'),()=>this.switchTo(row));
-      choose.disabled=this.busy||this.loading||row.active||(row.status&&row.status!=='active');
-      card.append(choose);
+      // 当前账号已有“当前使用”标记，不再放一个禁用按钮。
+      if(!row.active){
+        const choose=this.button(t('切换到此账号'),()=>this.switchTo(row));
+        choose.disabled=this.busy||this.loading||(row.status&&row.status!=='active');
+        card.append(choose);
+      }
       const remove=this.button(t('删除'),()=>this.removeAccount(row));
       remove.disabled=this.busy||this.loading;
       card.append(remove);

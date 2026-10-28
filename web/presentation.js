@@ -122,6 +122,7 @@ if(typeof document!=='undefined')(()=>{
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
   get('settings-accounts').onclick=()=>{get('appearance-dialog').close();get('accounts-button').click();};
+  get('settings-teams').onclick=()=>{get('appearance-dialog').close();get('teams-button').click();};
   // Android App 注入 MobileBridgeNative；浏览器里没有这一组。
   if(window.MobileBridgeNative){get('native-app-section').hidden=false;get('native-app-settings').onclick=()=>{get('appearance-dialog').close();window.MobileBridgeNative.openSettings();};}
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);

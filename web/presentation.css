@@ -497,3 +497,26 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 .account-bucket>button{margin:8px 8px 0 0}
 .appearance-field{margin:10px 0}
 .appearance-field-label{display:block;font-size:14px;margin-bottom:10px}
+/* 2026-10-28 真实数据复查 */
+@media(min-width:721px){#accounts-dialog{width:min(94vw,640px)}}
+.accounts-panel .accounts-name-heading .accounts-credit{font-size:12px}
+.sidebar-foot>button{white-space:nowrap}
+:root[data-theme=dark] .mark{border-radius:22%;box-shadow:0 0 0 1px var(--control)}
+@media(max-width:370px){.status{max-width:104px}}
+.accounts-panel .accounts-identity .accounts-usage{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
+.accounts-panel .accounts-window{max-width:none}
+.accounts-panel .accounts-usage>p{margin:0}
+/* 入口统一：登录后设置、账号、团队、退出都在侧栏底部；顶栏只在登录页放主题/语言 */
+body:has(#app:not([hidden])) .phone-header-actions{display:none}
+.sidebar-foot{display:flex;flex-wrap:nowrap;align-items:center;justify-content:flex-start;gap:2px}
+.sidebar-foot>.plain{flex:none;min-height:36px;padding:8px 6px;border-radius:8px;color:var(--text);font-size:13px}
+.sidebar-foot>.plain:hover{background:var(--active)}
+.sidebar-foot>#logout{margin-left:auto;color:var(--muted)}
+@media(max-width:720px){.sidebar-foot>.plain{min-height:44px;padding:10px}}
+.settings-links{display:grid;margin:0 0 18px;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.settings-links>button{display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center;width:100%;min-height:56px;padding:10px 14px;border:0;border-radius:0;background:var(--raised);color:var(--text);text-align:left;font:inherit}
+.settings-links>button+button{border-top:1px solid var(--line)}
+.settings-links>button:hover{background:var(--surface)}
+.settings-links>button::after{content:"›";grid-column:2;grid-row:1/3;color:var(--muted);font-size:20px}
+.settings-links span{font-size:14px;font-weight:600}
+.settings-links small{grid-column:1;color:var(--muted);font-size:12px}
