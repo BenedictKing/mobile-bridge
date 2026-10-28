@@ -571,7 +571,7 @@ func TestWorkbuddyRefusalSurfacesAuthenticationError(t *testing.T) {
 	session.View.BeginTurn("测试")
 	outcome := make(chan acp.Delivery, 1)
 	outcome <- acp.Delivery{Value: result}
-	session.awaitPrompt("prompt-1", outcome, time.Hour, time.Millisecond)
+	session.awaitPrompt("prompt-1", outcome, time.Hour, time.Millisecond, make(chan struct{}))
 	turns := session.Snapshot().MustGet("turns").(*jsoncompat.Array).Items
 	if len(turns) != 1 || turns[0].(*jsoncompat.Object).MustGet("status") != "failed" {
 		t.Fatalf("auth refusal did not fail the turn: %v", turns)

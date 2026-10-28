@@ -905,7 +905,7 @@ func (s *Server) interruptSubmissionTurn(threadID string, resolution acpResoluti
 		if session == nil {
 			return nil
 		}
-		return session.Cancel()
+		return session.CancelAndWait(10 * time.Second)
 	}
 	_, err := s.Codex.Interrupt(threadID)
 	return err

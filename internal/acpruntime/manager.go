@@ -27,6 +27,7 @@ type Session struct {
 
 	mu            sync.Mutex
 	promptRunning bool
+	promptDone    chan struct{}
 	pending       map[string]*jsoncompat.Object
 	pendingIDs    map[string]any
 	pendingKinds  map[string]string
@@ -823,6 +824,8 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.switchResumeRuns = 0
 	}
 	s.promptRunning = true
+	promptDone := make(chan struct{})
+	s.promptDone = promptDone
 	s.retrying = nil
 	s.View.BeginTurn(text)
 	s.signalLocked()
@@ -847,9 +850,10 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.View.FailTurn(submitErr.Error())
 		s.signalLocked()
 		s.mu.Unlock()
+		close(promptDone)
 		return nil
 	}
-	go s.awaitPrompt(ident, channel, idleTimeout, slice)
+	go s.awaitPrompt(ident, channel, idleTimeout, slice, promptDone)
 	return nil
 }
 
@@ -859,7 +863,7 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 // pending reverse requests as cancelled, discards the orphaned answer and
 // fails the turn — otherwise every later prompt is rejected with "another
 // turn is already in progress".
-func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTimeout, slice time.Duration) {
+func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTimeout, slice time.Duration, promptDone chan struct{}) {
 	if slice <= 0 {
 		slice = 30 * time.Second
 	}
@@ -869,6 +873,7 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 	// Every exit below is a settled turn (answered, errored or timed out):
 	// give the auto-continue hook its edge after the final state lands.
 	defer s.fireAutoContinue()
+	defer close(promptDone)
 	for {
 		select {
 		case outcome := <-channel:
@@ -1168,6 +1173,15 @@ func (s *Session) setModeOption(option *jsoncompat.Object, modeID string) error 
 }
 
 func (s *Session) Cancel() error {
+	return s.cancel(0)
+}
+
+// CancelAndWait stops the active turn and waits for its prompt to settle.
+func (s *Session) CancelAndWait(timeout time.Duration) error {
+	return s.cancel(timeout)
+}
+
+func (s *Session) cancel(timeout time.Duration) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -1181,13 +1195,26 @@ func (s *Session) Cancel() error {
 	// is followed from the store; marking it cancelled locally would leave
 	// the phone showing 已停止 while the desktop keeps working.
 	running := s.promptRunning
+	promptDone := s.promptDone
 	s.promptRunning = false
 	if running {
 		s.View.EndTurn("cancelled")
 	}
 	s.signalLocked()
 	s.mu.Unlock()
-	return s.Process.Notify("session/cancel", sessionParams(s.ID))
+	if err := s.Process.Notify("session/cancel", sessionParams(s.ID)); err != nil {
+		return err
+	}
+	if timeout > 0 && running && promptDone != nil {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-promptDone:
+		case <-timer.C:
+			return errors.New("上一任务仍在停止，请稍后重试")
+		}
+	}
+	return nil
 }
 
 func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {

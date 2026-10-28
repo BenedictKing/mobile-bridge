@@ -57,6 +57,64 @@ for line in sys.stdin:
 	return []string{python, "-u", path}
 }
 
+func queueCancelRaceAgent(t *testing.T, dir string) []string {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,os,sys,threading,time
+DIR = "` + dir + `"
+LOCK = threading.Lock()
+ACTIVE = None
+def record(name, value):
+ with open(os.path.join(DIR, name), "a") as fh:
+  fh.write(value + "\n")
+def respond(value):
+ with LOCK:
+  print(json.dumps(value),flush=True)
+def result(ident, value):
+ respond({"jsonrpc":"2.0","id":ident,"result":value})
+def finish_cancel():
+ global ACTIVE
+ time.sleep(0.4)
+ with LOCK:
+  ident=ACTIVE
+  ACTIVE=None
+ if ident is not None:
+  result(ident,{"stopReason":"cancelled"})
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize":
+  result(ident,{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]})
+ elif method == "session/list": result(ident,{"sessions":[]})
+ elif method == "session/new": result(ident,{"sessionId":"km-queue","modes":{"currentModeId":"default","availableModes":[{"id":"default"}]},"configOptions":[]})
+ elif method == "session/cancel":
+  record("cancels.txt", "cancel")
+  threading.Thread(target=finish_cancel,daemon=True).start()
+ elif method == "session/prompt":
+  blocks=(m.get("params") or {}).get("prompt") or []
+  text=next((b.get("text","") for b in blocks if isinstance(b,dict)),"")
+  record("prompts.txt", text)
+  if text.startswith("hold"):
+   with LOCK:
+    ACTIVE=ident
+  else:
+   with LOCK:
+    busy=ACTIVE is not None
+   if busy:
+    record("rejected.txt", text)
+    respond({"jsonrpc":"2.0","id":ident,"error":{"code":-32602,"message":"Invalid request: another turn is already in progress"}})
+   else: result(ident,{"stopReason":"end_turn"})
+ else: result(ident,{})
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return []string{python, "-u", path}
+}
+
 func newFeatureServer(t *testing.T, dataDir string) (*Server, string, string) {
 	t.Helper()
 	authenticator := auth.NewAuth(auth.Config{Mode: "none"})
@@ -302,7 +360,7 @@ func TestACPQueueDispatchOnSettle(t *testing.T) {
 func TestACPQueueSendNowInterruptsActiveTurn(t *testing.T) {
 	dir := t.TempDir()
 	agentDir := t.TempDir()
-	manager := acpruntime.NewCommand(queueAgent(t, agentDir))
+	manager := acpruntime.NewCommand(queueCancelRaceAgent(t, agentDir))
 	defer manager.Close()
 
 	server, token, csrf := newFeatureServer(t, t.TempDir())
@@ -346,6 +404,16 @@ func TestACPQueueSendNowInterruptsActiveTurn(t *testing.T) {
 	}
 	if entry := server.Queue.get("km-queue", "8aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"); entry == nil || entry.Status != SubAccepted {
 		t.Fatalf("send now ledger entry=%+v", entry)
+	}
+	deadline = time.Now().Add(8 * time.Second)
+	for manager.Get("km-queue").PromptRunning() {
+		if time.Now().After(deadline) {
+			t.Fatal("send-now turn never settled")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if rejected := recordedFile(agentDir, "rejected.txt"); rejected != "" {
+		t.Fatalf("prompt raced the cancelled turn: %s", rejected)
 	}
 }
 
