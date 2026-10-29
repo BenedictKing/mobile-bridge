@@ -97,7 +97,7 @@ test('team settings adds an agent with role and optimistic version',async()=>{
   assert.equal(changed.members.length,3);
 });
 
-test('team settings selects a default reviewer like the lead',async()=>{
+test('team settings allows the lead to also be the default reviewer',async()=>{
   const team={...teams[0],project:'acp:project',version:2};
   let patch=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
@@ -110,9 +110,11 @@ test('team settings selects a default reviewer like the lead',async()=>{
   }});
   await settings.open(team);
   const reviewer=find(settings.body,'team-role-select')[1];
-  reviewer.value='dev';reviewer.onchange();await flush();
-  assert.deepEqual(patch,{reviewerId:'dev',version:2});
-  assert.equal(settings.team.reviewerId,'dev');
+  assert.deepEqual(reviewer.children.map(option=>option.value),['','lead','dev']);
+  reviewer.value='lead';reviewer.onchange();await flush();
+  assert.deepEqual(patch,{reviewerId:'lead',version:2});
+  assert.equal(settings.team.reviewerId,'lead');
+  assert.equal(find(settings.body,'team-member-role')[0].textContent,'主控 · 评审');
 });
 
 test('team without runs shows a ready empty state instead of a blank panel',async()=>{

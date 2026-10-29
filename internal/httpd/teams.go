@@ -345,10 +345,6 @@ func (h *handler) handleTeamUpdate(teamID string) {
 			h.fail(http.StatusBadRequest, errorBody("负责人必须是团队成员"))
 			return
 		}
-		if leadID != "" && leadID == teamRow.ReviewerID {
-			h.fail(http.StatusBadRequest, errorBody("主控与默认评审必须是不同成员"))
-			return
-		}
 		if leadID != teamRow.LeadID {
 			for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
 				if !teamRunTerminal(run.Status) {
@@ -363,10 +359,6 @@ func (h *handler) handleTeamUpdate(teamID string) {
 		reviewerID := objectString(raw)
 		if reviewerID != "" && teamMemberIndex(teamRow, reviewerID) < 0 {
 			h.fail(http.StatusBadRequest, errorBody("默认评审必须是团队成员"))
-			return
-		}
-		if reviewerID != "" && reviewerID == teamRow.LeadID {
-			h.fail(http.StatusBadRequest, errorBody("主控与默认评审必须是不同成员"))
 			return
 		}
 		if reviewerID != teamRow.ReviewerID {

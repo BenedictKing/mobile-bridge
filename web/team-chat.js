@@ -237,7 +237,7 @@ class TeamSettingsDialog{
     reviewerField.append(this.node('span',t_safe('默认评审 Agent'),'team-role-label'));
     const reviewerSelect=document.createElement('select');reviewerSelect.className='team-role-select';reviewerSelect.disabled=this.busy;
     reviewerSelect.append(new Option(t_safe('不设置默认评审'),''));
-    for(const member of members)if(member.id!==team.leadId)reviewerSelect.append(new Option(BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind,member.id));
+    for(const member of members)reviewerSelect.append(new Option(BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind,member.id));
     reviewerSelect.value=team.reviewerId||(members.find(member=>member.role==='reviewer')?.id)||'';
     reviewerSelect.onchange=()=>this.changeReviewer(reviewerSelect.value);
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
@@ -247,8 +247,11 @@ class TeamSettingsDialog{
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
       info.append(this.node('strong',BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind));
-      const role=member.id===team.leadId?t_safe('主控'):member.id===team.reviewerId||member.role==='reviewer'?t_safe('评审'):t_safe('成员');
-      info.append(this.node('span',role+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
+      const roleLabels=[];
+      if(member.id===team.leadId)roleLabels.push(t_safe('主控'));
+      if(member.id===team.reviewerId||member.role==='reviewer')roleLabels.push(t_safe('评审'));
+      if(!roleLabels.length)roleLabels.push(t_safe('成员'));
+      info.append(this.node('span',roleLabels.join(' · ')+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
       row.append(info);
       if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}
       memberSection.append(row);
