@@ -287,7 +287,7 @@ func (h *handler) handleTeamsCreate() {
 		teamID = uuid.NewString()
 	}
 	now := time.Now()
-	created := &team.Team{ID: teamID, Name: name, Project: project, Members: members,
+	created := &team.Team{ID: teamID, Name: name, Project: project, ProjectCwd: h.resolveProjectCwd(project), Members: members,
 		LeadID: leadID, Policy: policy, CreatedAt: now, UpdatedAt: now}
 	if err := h.server.TeamStore.SaveTeam(created); err != nil {
 		// 版本哨兵 409，磁盘/IO 500（评审遗留①：不再是统一的 409）。
@@ -2126,6 +2126,9 @@ func (h *handler) teamProject(teamRow *team.Team) *jsoncompat.Object {
 	object, _ := value.(*jsoncompat.Object)
 	if object == nil {
 		return jsoncompat.NewObject()
+	}
+	if cwd := h.teamProjectCwd(teamRow); cwd != "" {
+		object.Set("projectCwd", cwd)
 	}
 	if members, ok := object.MustGet("members").(*jsoncompat.Array); ok {
 		for _, item := range members.Items {

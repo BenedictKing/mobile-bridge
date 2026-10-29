@@ -10,8 +10,10 @@ class TeamChatController{
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
   setTeams(teams){this.teams=Array.isArray(teams)?teams:[];}
   teamById(id){return this.teams.find(team=>team.id===id)||null;}
-  teamForProject(projectKey){
-    return this.teams.find(team=>team.project===projectKey&&team.defaultForProject)||this.teams.find(team=>team.project===projectKey)||null;
+  teamForProject(project){
+    const key=typeof project==='string'?project:project.key,cwd=typeof project==='string'?'':project.cwd;
+    return this.teams.find(team=>team.defaultForProject&&(team.project===key||(cwd&&team.projectCwd===cwd)))
+      ||this.teams.find(team=>team.project===key||(cwd&&team.projectCwd===cwd))||null;
   }
   teamForSession(sessionId){
     const matches=this.teams.filter(team=>(team.members||[]).some(member=>member.id===team.leadId&&member.sessionId===sessionId));

@@ -18,6 +18,7 @@ func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
 	var created struct {
 		ID                string `json:"id"`
 		Project           string `json:"project"`
+		ProjectCwd        string `json:"projectCwd"`
 		DefaultForProject bool   `json:"defaultForProject"`
 		LeadID            string `json:"leadId"`
 		Created           bool   `json:"created"`
@@ -29,7 +30,7 @@ func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.ID == "" || created.Project != project || !created.DefaultForProject || !created.Created || created.LeadID == "" || len(created.Members) == 0 {
+	if created.ID == "" || created.Project != project || created.ProjectCwd != env.dataDir || !created.DefaultForProject || !created.Created || created.LeadID == "" || len(created.Members) == 0 {
 		t.Fatalf("默认团队投影不正确: %+v", created)
 	}
 	for _, member := range created.Members {
@@ -38,6 +39,12 @@ func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
 		}
 	}
 
+	legacy := env.store.Team(created.ID)
+	legacy.Project = "codex:changed-prefix"
+	h := &handler{server: env.server}
+	if got := h.teamProjectCwd(legacy); got != env.dataDir {
+		t.Fatalf("项目键漂移后应按稳定工作目录匹配: %q", got)
+	}
 	response = env.request(http.MethodPut, target, "{}")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"created": false`) ||
 		!strings.Contains(response.Body.String(), `"duplicate": true`) {

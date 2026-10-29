@@ -46,6 +46,8 @@ test('team directory resolves only a unique lead session',()=>{
   assert.equal(controller.teamById('team-1').name,'食材团队');
   assert.equal(controller.teamForSession('sess-lead').id,'team-1');
   assert.equal(controller.teamForSession('sess-dev'),null);
+  controller.setTeams([{...teams[0],project:'acp:old',projectCwd:'/work',defaultForProject:true}]);
+  assert.equal(controller.teamForProject({key:'codex:new',cwd:'/work'}).id,'team-1');
   controller.setTeams([...teams,{...teams[0],id:'team-2'}]);
   assert.equal(controller.teamForSession('sess-lead'),null);
 });

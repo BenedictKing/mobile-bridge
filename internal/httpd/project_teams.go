@@ -103,6 +103,16 @@ func (h *handler) projectAgentCandidates(cwd string) []projectAgentCandidate {
 	return unique
 }
 
+func (h *handler) teamProjectCwd(teamRow *team.Team) string {
+	if teamRow.ProjectCwd != "" {
+		return teamRow.ProjectCwd
+	}
+	if cwd := h.resolveProjectCwd(teamRow.Project); cwd != "" {
+		return cwd
+	}
+	return (teamSessionResolver{server: h.server}).Cwd(teamLeadSessionID(teamRow))
+}
+
 func (h *handler) handleDefaultTeamPut(projectKey string) {
 	cwd := h.resolveProjectCwd(projectKey)
 	if cwd == "" {
@@ -110,13 +120,13 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 		return
 	}
 	for _, existing := range h.server.TeamStore.Teams() {
-		if existing.Project == projectKey && existing.DefaultForProject {
+		if existing.DefaultForProject && (existing.Project == projectKey || h.teamProjectCwd(existing) == cwd) {
 			h.outputDefaultTeam(existing, false)
 			return
 		}
 	}
 	for _, existing := range h.server.TeamStore.Teams() {
-		if existing.Project == projectKey {
+		if existing.Project == projectKey || h.teamProjectCwd(existing) == cwd {
 			h.outputDefaultTeam(existing, false)
 			return
 		}
@@ -157,7 +167,7 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 	}
 	now := time.Now()
 	created := &team.Team{
-		ID: teamID, Name: name, Project: projectKey, DefaultForProject: true,
+		ID: teamID, Name: name, Project: projectKey, ProjectCwd: cwd, DefaultForProject: true,
 		Members: members, LeadID: members[0].ID, Policy: policy, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := h.server.TeamStore.SaveTeam(created); err != nil {

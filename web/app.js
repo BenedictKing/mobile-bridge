@@ -173,7 +173,7 @@ function defaultTeamLeadLabel(team,project){
   return lead?BridgeI18n.agentLabel(lead.agentKind):BridgeI18n.agentLabel(project.agent);
 }
 function renderDefaultTeam(project){
-  const team=teamChat?.teamForProject(project.key),selected=team&&currentTeam?.id===team.id;
+  const team=teamChat?.teamForProject(project),selected=team&&currentTeam?.id===team.id;
   const button=el('button','session default-team'+(selected?' selected':''));
   button.dataset.project=project.key;if(team)button.dataset.teamId=team.id;
   const title=el('strong','',t('项目团队'));
@@ -189,7 +189,7 @@ function renderDefaultTeams(limit){
   for(const project of projectDirectory.slice(0,limit))$('sessions').append(renderDefaultTeam(project));
 }
 async function openDefaultTeam(project){
-  let team=teamChat?.teamForProject(project.key);
+  let team=teamChat?.teamForProject(project);
   if(!team){
     team=await teamRequest('/api/projects/'+encodeURIComponent(project.key)+'/team',{method:'PUT',body:{}});
     const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);
