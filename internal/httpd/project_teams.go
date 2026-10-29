@@ -136,6 +136,27 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 		h.fail(http.StatusConflict, errorBody("项目中还没有可用的 ACP Agent，请先在该项目使用一个 Agent"))
 		return
 	}
+	if h.request.ContentLength != 0 {
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		if leadAgent := stringField(value.(*jsoncompat.Object), "leadAgent"); leadAgent != "" {
+			selected := -1
+			for index, candidate := range candidates {
+				if candidate.Agent == leadAgent {
+					selected = index
+					break
+				}
+			}
+			if selected < 0 {
+				h.fail(http.StatusBadRequest, errorBody("选择的主控 Agent 不在当前项目可用列表中"))
+				return
+			}
+			candidates[0], candidates[selected] = candidates[selected], candidates[0]
+		}
+	}
 	teamID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:default-team:"+projectKey)).String()
 	name := filepath.Base(filepath.Clean(cwd)) + "团队"
 	policy := team.DefaultPolicy()

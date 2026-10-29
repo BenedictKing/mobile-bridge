@@ -191,7 +191,9 @@ function renderDefaultTeams(limit){
 async function openDefaultTeam(project){
   let team=teamChat?.teamForProject(project);
   if(!team){
-    team=await teamRequest('/api/projects/'+encodeURIComponent(project.key)+'/team',{method:'PUT',body:{}});
+    const leadAgent=await new TeamLeadPicker({request:teamRequest}).open(project);
+    if(!leadAgent)return;
+    team=await teamRequest('/api/projects/'+encodeURIComponent(project.key)+'/team',{method:'PUT',body:{leadAgent}});
     const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);
   }
   openTeamChat(team);

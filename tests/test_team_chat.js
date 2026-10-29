@@ -6,15 +6,16 @@ global.teamRunStatusLabel=status=>status;
 global.teamTaskStatusLabel=status=>status;
 global.TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 global.BridgeI18n={agentLabel:kind=>kind};
-const {TeamChatController,TeamSettingsDialog}=require('../web/team-chat.js');
+const {TeamChatController,TeamSettingsDialog,TeamLeadPicker}=require('../web/team-chat.js');
 
 class FakeNode{
-  constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.hidden=false;this.className='';this.textContent='';this.dataset={};}
+  constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
   append(...nodes){this.children.push(...nodes);}
   replaceChildren(...nodes){this.children=[...nodes];}
   setAttribute(name,value){this.attributes[name]=value;}
+  addEventListener(type,listener){(this.listeners[type]||(this.listeners[type]=[])).push(listener);}
   showModal(){this.open=true;}
-  close(){this.open=false;}
+  close(){this.open=false;for(const listener of this.listeners.close||[])listener();}
   get classList(){
     const node=this;
     return{toggle(name,force){node.className=node.className.split(/\s+/).filter(Boolean).filter(part=>part!==name).concat(force===false?[]:[name]).join(' ');}};
@@ -102,4 +103,30 @@ test('team without runs shows a ready empty state instead of a blank panel',asyn
   assert.equal(root.hidden,false);
   assert.equal(find(root,'team-workflow-empty').length,1);
   assert.match(text(root),/团队已就绪/);
+});
+
+test('first team lead picker returns the selected agent kind',async()=>{
+  const calls=[];
+  const picker=new TeamLeadPicker({request:async(path,options={})=>{
+    calls.push({path,options});
+    return{agents:[{agent:'kimi',title:'Kimi'},{agent:'zcode',title:'ZCode'}]};
+  }});
+  const selected=picker.open({key:'acp:project',name:'项目'});await flush();
+  assert.equal(picker._dialog.open,true);
+  find(picker.body,'team-lead-choice')[1].onclick();
+  assert.equal(await selected,'zcode');
+  assert.deepEqual(calls.map(call=>call.path),['/api/projects/acp%3Aproject/agents']);
+  assert.equal(calls.filter(call=>call.options.method==='PUT').length,0);
+});
+
+test('cancelling first team lead picker returns null without creating a team',async()=>{
+  const calls=[];
+  const picker=new TeamLeadPicker({request:async(path,options={})=>{
+    calls.push({path,options});
+    return{agents:[{agent:'kimi',title:'Kimi'}]};
+  }});
+  const selected=picker.open({key:'acp:project',name:'项目'});await flush();
+  find(picker.body,'plain')[0].onclick();
+  assert.equal(await selected,null);
+  assert.equal(calls.filter(call=>call.options.method==='PUT').length,0);
 });

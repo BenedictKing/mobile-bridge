@@ -105,6 +105,33 @@ class TeamChatController{
     root.append(card);
   }
 }
+class TeamLeadPicker{
+  constructor({request}){this.request=request;this._dialog=null;}
+  node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
+  dialog(){
+    if(this._dialog)return this._dialog;
+    const dialog=document.createElement('dialog');dialog.className='picker team-lead-picker';
+    const head=this.node('div',undefined,'picker-head');
+    head.append(this.node('h2',t_safe('选择主控 Agent')));
+    const close=this.node('button','×','icon-button');close.type='button';close.setAttribute('aria-label',t_safe('关闭'));close.onclick=()=>dialog.close();head.append(close);
+    this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);this._dialog=dialog;return dialog;
+  }
+  async open(project){
+    const value=await this.request('/api/projects/'+encodeURIComponent(project.key)+'/agents'),agents=value.agents||[];
+    if(!agents.length)throw new Error(t_safe('项目中还没有可用的 ACP Agent，请先在该项目使用一个 Agent'));
+    const dialog=this.dialog();
+    return new Promise(resolve=>{
+      this.body.replaceChildren(this.node('p',project.name+t_safe(' 的默认团队尚未创建。请选择首次主控，之后可在团队设置中更换。'),'muted'));
+      for(const agent of agents){
+        const button=this.node('button',(agent.title||agent.agent)+' · '+agent.agent,'team-lead-choice');
+        button.type='button';button.onclick=()=>{resolve(agent.agent);dialog.close();};this.body.append(button);
+      }
+      const cancel=this.node('button',t_safe('取消'),'plain');cancel.type='button';cancel.onclick=()=>dialog.close();this.body.append(cancel);
+      dialog.addEventListener('close',()=>resolve(null),{once:true});dialog.showModal();
+    });
+  }
+}
+
 class TeamSettingsDialog{
   constructor({request,onChange}){this.request=request;this.onChange=onChange;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';}
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
@@ -180,4 +207,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog};
+if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker};

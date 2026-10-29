@@ -11,7 +11,7 @@ func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	project := "acp:" + hashProject(env.dataDir)
 	target := "/api/projects/" + project + "/team"
-	response := env.request(http.MethodPut, target, "{}")
+	response := env.request(http.MethodPut, target, `{"leadAgent":"kimi"}`)
 	if response.Code != http.StatusOK {
 		t.Fatalf("创建默认团队失败: %d %s", response.Code, response.Body.String())
 	}
@@ -57,5 +57,17 @@ func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
 	response = env.request(http.MethodGet, "/api/projects/"+project+"/agents", "")
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"agent": "kimi"`) {
 		t.Fatalf("项目 Agent 列表不正确: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDefaultTeamRejectsUnknownLeadAgent(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	project := "acp:" + hashProject(env.dataDir)
+	response := env.request(http.MethodPut, "/api/projects/"+project+"/team", `{"leadAgent":"not-real"}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("未知主控 Agent 应 400: %d %s", response.Code, response.Body.String())
+	}
+	if got := len(env.store.Teams()); got != 0 {
+		t.Fatalf("拒绝主控选择后不得创建团队: %d", got)
 	}
 }
