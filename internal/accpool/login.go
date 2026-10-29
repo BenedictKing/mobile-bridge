@@ -275,6 +275,13 @@ func (m *Manager) persistLogin(kind string, candidate *Account, reauthID string)
 		if candidate.Domain != "" {
 			merged.Domain = candidate.Domain
 		}
+		// 抓取来的信封账号只有占位名（WorkBuddy cn xxxxxxxx）：扫码换成明文
+		// 凭据后把显示名一并换成真实昵称，省得用户再手动重命名。
+		if kind == "workbuddy" && workbuddyPlaceholderLabel(merged.Label) {
+			if identity := firstNonEmpty(candidate.Label, candidate.Nickname, candidate.Email); identity != "" {
+				merged.Label = identity
+			}
+		}
 		merged.Status = StatusActive
 		merged.StatusReason = ""
 		merged.QuotaError = ""

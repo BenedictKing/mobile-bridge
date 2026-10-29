@@ -185,6 +185,47 @@ func TestPoolRemoveRoute(t *testing.T) {
 	}
 }
 
+// WorkBuddy 快照里的积分汇总是 float64，而 jsoncompat 只编码整数：视图层没
+// 取整时 encode 会 panic，连接被直接掐断，网页只能看到「Failed to fetch」。
+func TestPoolWorkbuddyDetailRendersCredits(t *testing.T) {
+	server := newPoolRouteServer(t)
+	t.Setenv("WORKBUDDY_HOME", t.TempDir())
+	storeDir := filepath.Join(server.Pool.DataDir, "pool", "workbuddy")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	account := `{"id":"w_test1","label":"测试账号","userId":"test1","accessToken":"at","refreshToken":"rt",` +
+		`"variant":"cn","status":"active","createdAt":1793075725907,"lastUsedAt":1793075725907,` +
+		`"quota":{"credits":{"totalCapacity":1100.5,"totalRemaining":400.25,"expiringSoonRemaining":12.5,` +
+		`"resources":[{"packageCode":"pkg","packageName":"基础包","total":1000,"remaining":400,"used":600}]}}}`
+	if err := os.WriteFile(filepath.Join(storeDir, "w_test1.json"), []byte(account), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	response := poolRoute(t, server, http.MethodGet, "/api/pool/workbuddy", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	detail := jsonObject(t, response.Body.String())
+	accounts, _ := detail.MustGet("accounts").(*jsoncompat.Array)
+	if accounts == nil || len(accounts.Items) != 1 {
+		t.Fatalf("accounts: %s", response.Body.String())
+	}
+	row, _ := accounts.Items[0].(*jsoncompat.Object)
+	quota, _ := row.MustGet("quota").(*jsoncompat.Object)
+	credits, _ := quota.MustGet("credits").(*jsoncompat.Object)
+	// 积分取整后写进响应，不是 1100.5 这样的浮点字面量。
+	if got := jsoncompat.EncodeCompact(credits.MustGet("totalCapacity")); string(got) != "1101" {
+		t.Fatalf("totalCapacity must be rounded to 1101: %s", got)
+	}
+	if got := jsoncompat.EncodeCompact(credits.MustGet("totalRemaining")); string(got) != "400" {
+		t.Fatalf("totalRemaining must be rounded to 400: %s", got)
+	}
+	if !strings.Contains(response.Body.String(), "基础包") {
+		t.Fatalf("resources missing: %s", response.Body.String())
+	}
+}
+
 func TestPoolCaptureRouteWithoutCredentials(t *testing.T) {
 	server := newPoolRouteServer(t)
 	// KIMI_CODE_HOME points at an empty temp dir: no local login to capture.

@@ -89,7 +89,12 @@ class PoolPanel {
     const captured=this.value&&this.value.captured;
     if(captured&&captured.id){
       this.notice=(captured.created?t('已导入当前登录账号：'):t('已从当前登录态更新账号：'))+captured.id;
-      if(captured.envelope)this.notice+=t('（凭据为加密信封态，请点「添加账号」扫码重新登录获取明文凭据后才能查询额度与切换）');
+      // 5.6 起桌面在磁盘上只留 $wbEncrypted 信封：捕获只能拿到密文，
+      // 既读不到额度也切不了号，要明文必须走网关内扫码登录。
+      if(captured.envelope){
+        this.notice=t('捕获到的是 WorkBuddy 加密信封凭据，读不到额度；请在该账号上点「扫码重新登录」换一份明文凭据。');
+        this.noticeError=true;
+      }
       this.render();
     }
   }
@@ -97,13 +102,16 @@ class PoolPanel {
     if(this.login&&this.login.timer){clearInterval(this.login.timer);}
     if(this.login)this.login.timer=null;
   }
-  openLogin(reauthId){
+  openLogin(reauthId,variant){
     const t=BridgeI18n.t;
     const config=POOL_LOGIN[this.kind];
     if(!config)return;
     this.stopLoginPolling();
-    this.login={session:null,challenge:null,reauthId:reauthId||'',provider:config.providers?config.providers[0].value:'',phase:'pick',error:''};
-    if(!config.providers)this.startLogin();
+    const providers=config.providers||[];
+    // 重新登录时默认选中该账号原来的档位，别把 cn 的号登进 ai 的二维码。
+    const preferred=providers.find(option=>option.value===String(variant||'').toLowerCase())||providers[0];
+    this.login={session:null,challenge:null,reauthId:reauthId||'',provider:preferred?preferred.value:'',phase:'pick',error:''};
+    if(!providers.length)this.startLogin();
     this.render();
   }
   async startLogin(){
@@ -194,7 +202,7 @@ class PoolPanel {
   }
   quotaRows(card,row){
     const t=BridgeI18n.t,box=this.node('div',undefined,'accounts-usage');
-    if(row.quotaError)box.append(this.node('span',row.quotaError,'error'));
+    if(row.quotaError)box.append(this.node('span',t(row.quotaError),'error'));
     const quota=row.quota;
     if(!quota){box.append(this.node('span',row.quotaError?t('额度读取失败'):t('尚未读取额度'),'account-muted'));}
     else{
@@ -295,11 +303,16 @@ class PoolPanel {
     controls.append(autoLabel);root.append(controls);
     this.autoSwitch.checked=value.autoSwitch!==false;
     this.autoSwitch.disabled=this.busy||this.loading;
-    if(this.notice){root.append(this.node('p',this.notice,'accounts-credit'));this.notice='';}
+    if(this.notice){root.append(this.node('p',this.notice,this.noticeError?'error':'accounts-credit'));this.notice='';this.noticeError=false;}
     if(this.login)root.append(this.loginBox());
     if(value.captureError)root.append(this.node('p',t('当前登录态捕获失败：')+value.captureError,'account-muted'));
-    if(value.refreshErrors)for(const[id,msg]of Object.entries(value.refreshErrors))root.append(this.node('p',id+' · '+msg,'error'));
     const accounts=value.accounts||[];
+    // 信封账号在下方卡片里已经写明了原因，这里不再重复同一条红字。
+    const envelopeIds=new Set(accounts.filter(row=>row.tokenEnvelope).map(row=>row.id));
+    if(value.refreshErrors)for(const[id,msg]of Object.entries(value.refreshErrors)){
+      if(envelopeIds.has(id))continue;
+      root.append(this.node('p',id+' · '+msg,'error'));
+    }
     if(!accounts.length){root.append(this.node('p',t('账号池为空。点击上方「捕获当前登录」导入本机已登录的账号。'),'account-muted'));return;}
     for(const row of [...accounts].sort((a,b)=>Number(b.active)-Number(a.active))){
       const card=this.node('section',undefined,'account-bucket');
@@ -324,8 +337,9 @@ class PoolPanel {
       const remove=this.button(t('删除'),()=>this.removeAccount(row));
       remove.disabled=this.busy||this.loading;
       card.append(remove);
-      if(row.status==='reauth_required'&&POOL_LOGIN[this.kind]){
-        const reauth=this.button(t('重新登录'),()=>this.openLogin(row.id));
+      // 信封态账号不用删除再重加：直接走网关内扫码，登录完成后原地换掉密文凭据。
+      if((row.status==='reauth_required'||row.tokenEnvelope)&&POOL_LOGIN[this.kind]){
+        const reauth=this.button(t(row.tokenEnvelope?'扫码重新登录':'重新登录'),()=>this.openLogin(row.id,row.region));
         reauth.disabled=this.busy||this.loading;
         card.append(reauth);
       }

@@ -587,6 +587,106 @@ func TestWorkbuddySwitchWritesSlotAndCLI(t *testing.T) {
 	}
 }
 
+// 5.6 起桌面把 token 写成 {$wbEncrypted} 信封，每次刷新换 nonce，token 文本
+// 比对注定失效：account.uid 兜底保证「当前使用」还认得出来，且换号后不误判。
+func TestWorkbuddyActiveIDFallsBackToSlotUID(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	pooled := workbuddyFixtureAccount("w_useal", "u-seal", "seal")
+	pooled.AccessToken = `{"$wbEncrypted":1,"envelope":"pool-nonce"}`
+	pooled.RefreshToken = `{"$wbEncrypted":1,"envelope":"pool-refresh"}`
+	if err := m.saveAccount("workbuddy", pooled); err != nil {
+		t.Fatal(err)
+	}
+
+	writeWorkbuddySlotJSON(t, "cn", map[string]any{
+		"domain":  "www.workbuddy.cn",
+		"account": map[string]any{"uid": "u-seal"},
+		"auth": map[string]any{
+			"accessToken":  map[string]any{"$wbEncrypted": 1, "envelope": "desktop-nonce"},
+			"refreshToken": map[string]any{"$wbEncrypted": 1, "envelope": "desktop-refresh"},
+		},
+	})
+	if got := m.activeID("workbuddy"); got != "w_useal" {
+		t.Fatalf("uid fallback: %q", got)
+	}
+
+	// 桌面换成了池里没有的账号：宁可空，也不能把别的账号标成当前。
+	writeWorkbuddySlotJSON(t, "cn", map[string]any{
+		"account": map[string]any{"uid": "u-other"},
+		"auth": map[string]any{
+			"accessToken":  map[string]any{"$wbEncrypted": 1, "envelope": "other-nonce"},
+			"refreshToken": map[string]any{"$wbEncrypted": 1, "envelope": "other-refresh"},
+		},
+	})
+	if got := m.activeID("workbuddy"); got != "" {
+		t.Fatalf("unknown slot must not match: %q", got)
+	}
+}
+
+// writeWorkbuddySlotJSON writes a desktop info file verbatim (envelope tokens,
+// plaintext account block) for active-id tests.
+func writeWorkbuddySlotJSON(t *testing.T, variant string, root map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := workbuddyAuthFilePath(variant)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 信封账号原地扫码重登：密文凭据必须被明文替换，占位名也要换成真实昵称，
+// 否则用户重登完还是查不到额度、列表里也一直叫「WorkBuddy cn xxxxxxxx」。
+func TestWorkbuddyReauthReplacesEnvelopeAndPlaceholderLabel(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	sealed := &Account{
+		ID: "w_u1", UserID: "u1", Label: "WorkBuddy cn u1", Variant: "cn",
+		AccessToken:  `{"$wbEncrypted":1,"envelope":"old"}`,
+		RefreshToken: `{"$wbEncrypted":1,"envelope":"old-refresh"}`,
+		Status:       StatusActive,
+	}
+	if err := m.saveAccount("workbuddy", sealed); err != nil {
+		t.Fatal(err)
+	}
+	candidate := &Account{
+		ID: "w_u1", UserID: "u1", Nickname: "真名", Variant: "cn",
+		AccessToken: "plain-at", RefreshToken: "plain-rt", TokenType: "Bearer",
+		ExpiresAt: workbuddyNowMS + 3600_000, Status: StatusActive,
+	}
+	account, err := m.persistLogin("workbuddy", candidate, "w_u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workbuddyEnvelope(account.AccessToken) || account.AccessToken != "plain-at" {
+		t.Fatalf("reauth must store plaintext: %+v", account)
+	}
+	if account.Label != "真名" {
+		t.Fatalf("placeholder label must become the nickname: %q", account.Label)
+	}
+	if account.Nickname != "真名" {
+		t.Fatalf("nickname: %q", account.Nickname)
+	}
+	// 已经手动改过名的账号不能被覆盖。
+	renamed := &Account{ID: "w_u2", UserID: "u2", Label: "我的号", Variant: "cn",
+		AccessToken: `{"$wbEncrypted":1,"envelope":"x"}`, Status: StatusActive}
+	if err := m.saveAccount("workbuddy", renamed); err != nil {
+		t.Fatal(err)
+	}
+	account, err = m.persistLogin("workbuddy", &Account{ID: "w_u2", UserID: "u2", Nickname: "真名2", Variant: "cn",
+		AccessToken: "plain-at-2", RefreshToken: "plain-rt-2", Status: StatusActive}, "w_u2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.Label != "我的号" {
+		t.Fatalf("custom label must survive reauth: %q", account.Label)
+	}
+}
+
 func TestWorkbuddySwitchRollbackOnReattachFailure(t *testing.T) {
 	m, _ := setupWorkbuddyFixture(t)
 	restoreHelper := workbuddyRunHelper

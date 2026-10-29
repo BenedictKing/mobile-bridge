@@ -1147,7 +1147,7 @@ func (m *Manager) queryWorkbuddyCredits(ctx context.Context, acc *Account, now t
 		return &workbuddyCredits{Error: message, Resources: []*CreditsResource{}}
 	}
 	if workbuddyEnvelope(acc.AccessToken) {
-		return fail("该账号凭据为 WorkBuddy 加密信封态，无法调用积分接口；如需该功能请删除后用「添加账号」扫码重新获取明文凭据"), acc
+		return fail("该账号凭据为 WorkBuddy 加密信封态，暂时读不到积分；点「扫码重新登录」可换取明文凭据"), acc
 	}
 	working := *acc
 	// Lazy refresh first (24h window).
@@ -1749,7 +1749,7 @@ func candidateFromWorkbuddyAuthRoot(root map[string]any, variant string) *Accoun
 	}
 	uid := firstNonEmpty(stringValue(accountObj, "uid"), stringValue(accountObj, "id"))
 	candidate := &Account{
-		UserID:   uid,
+		UserID: uid,
 		// Envelope-encrypted identity fields stay empty ({$wbEncrypted} values
 		// are machine-bound ciphertext, not display text); the label is
 		// derived from variant + uid instead.
@@ -1821,8 +1821,15 @@ func (m *Manager) upsertWorkbuddy(candidate *Account, now time.Time) (*Account, 
 	return m.upsert("workbuddy", candidate)
 }
 
-// activeIDWorkbuddy matches the desktop slot's token against pooled
-// accounts per variant (mod.rs current).
+// activeIDWorkbuddy matches the desktop slot against pooled accounts per
+// variant (mod.rs current).
+//
+// Token text is the strongest signal but not a stable one: from 5.6 the
+// desktop writes {"$wbEncrypted":1,...} envelopes whose nonce changes on
+// every refresh, and a local re-login replaces the plain token as well. The
+// slot's account.uid stays in plaintext and the pool stores it as UserID, so
+// it is used as the fallback identity — without it a slot written in envelope
+// form can never match, and the panel silently loses「当前使用」.
 func (m *Manager) activeIDWorkbuddy() string {
 	kind := "workbuddy"
 	for _, variant := range []string{"cn", "ai"} {
@@ -1845,8 +1852,31 @@ func (m *Manager) activeIDWorkbuddy() string {
 		if match != nil {
 			return match.ID
 		}
+		if uid := workbuddySlotUID(root); uid != "" {
+			if match := m.findAccount(kind, func(a *Account) bool {
+				return a.UserID != "" && a.UserID == uid && workbuddyVariantFromAccount(a) == variant
+			}); match != nil {
+				return match.ID
+			}
+		}
 	}
 	return ""
+}
+
+// workbuddySlotUID is the account identity the desktop keeps in plaintext
+// next to the (possibly encrypted) credentials; capture derives pool IDs and
+// UserID from the same field.
+func workbuddySlotUID(root map[string]any) string {
+	account := objectValue(root, "account")
+	return firstNonEmpty(stringValue(account, "uid"), stringValue(account, "id"))
+}
+
+// workbuddyPlaceholderLabel reports whether label is the "WorkBuddy cn xxxxxxxx"
+// name capture falls back to when the desktop only exposes encrypted identity
+// fields. A scan re-login replaces it with the real nickname.
+func workbuddyPlaceholderLabel(label string) bool {
+	parts := strings.Fields(strings.TrimSpace(label))
+	return len(parts) == 3 && parts[0] == "WorkBuddy" && (parts[1] == "cn" || parts[1] == "ai")
 }
 
 // captureWorkbuddyCurrent snapshots whichever variant's desktop slot is

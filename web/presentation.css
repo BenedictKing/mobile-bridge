@@ -488,12 +488,15 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 .appearance-section>.appearance-grid,.appearance-section>.range-label,.appearance-field{clear:both}
 .appearance-section legend{padding:0}
 
-/* 账号与接入：标签不再一格一个描边框（框中框）；选中用中性底色，强调色留给操作。 */
-.pool-tabs{flex-wrap:nowrap;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 0 12px;margin:0 0 16px;border-bottom:1px solid var(--line)}
+/* 账号与接入：标签不再一格一个描边框（框中框）；选中用中性底色，强调色留给操作。
+   焦点环画在胶囊内部（outline-offset:-2px）：.pool-tabs 是横向滚动容器，
+   画在外面的环会被裁掉顶边，只剩三段蓝线，看起来像坏掉的描边。 */
+.pool-tabs{display:flex;flex-wrap:nowrap;gap:4px;overflow-x:auto;scrollbar-width:none;padding:2px 0 12px;margin:0 0 16px;border-bottom:1px solid var(--line)}
 .pool-tabs::-webkit-scrollbar{display:none}
-.pool-tab{flex:none;border:0;background:transparent;color:var(--muted);padding:8px 14px;font-size:14px}
+.pool-tab{flex:none;border:0;border-radius:8px;background:transparent;color:var(--muted);padding:8px 14px;font-size:14px}
 .pool-tab:hover{background:var(--surface);color:var(--text)}
-.pool-tab.active{background:var(--active);color:var(--text);font-weight:600}
+.pool-tab.active,.pool-tab.active:hover{background:var(--active);color:var(--text);font-weight:600}
+.pool-tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .pool-section>p,.accounts-panel>p{margin:0 0 10px}
 .accounts-panel .account-muted:empty,.accounts-current:empty{display:none}
 .accounts-panel>button{margin:4px 0 12px}

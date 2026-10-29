@@ -12,11 +12,13 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -218,8 +220,57 @@ type handler struct {
 	closeConnection bool
 }
 
+// trackedWriter remembers whether the handler already committed a status or
+// body, so a recovered panic can still answer with JSON when nothing went out.
+// Flush keeps SSE (which type-asserts http.Flusher) working through it.
+type trackedWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (w *trackedWriter) WriteHeader(status int) {
+	w.wrote = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *trackedWriter) Write(body []byte) (int, error) {
+	w.wrote = true
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *trackedWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *trackedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// recoverRequest turns a handler panic into a JSON 500 instead of letting
+// net/http drop the connection: a dropped connection reaches the web client as
+// a bare "Failed to fetch" with no status code, which is indistinguishable
+// from a network outage and leaves nothing to debug from the UI side.
+func recoverRequest(writer *trackedWriter, request *http.Request) {
+	problem := recover()
+	if problem == nil {
+		return
+	}
+	log.Printf("panic serving %s %s: %v\n%s", request.Method, request.URL.Path, problem, debug.Stack())
+	if writer.wrote {
+		return // already committed; nothing safe left to send
+	}
+	header := writer.Header()
+	header.Set("Content-Type", contentTypeJSON)
+	header.Set("Cache-Control", "no-store")
+	header.Set("X-Content-Type-Options", "nosniff")
+	writer.WriteHeader(http.StatusInternalServerError)
+	_, _ = writer.Write(jsoncompat.EncodePythonDefault(errorBody("网关内部错误，请重试")))
+}
+
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	h := &handler{server: s, writer: writer, request: request}
+	tracked := &trackedWriter{ResponseWriter: writer}
+	defer recoverRequest(tracked, request)
+	h := &handler{server: s, writer: tracked, request: request}
 	h.decorateDirectResponse()
 	if h.handleDirectPreflight() {
 		return

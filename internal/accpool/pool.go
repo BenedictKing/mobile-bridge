@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -873,12 +874,16 @@ func quotaView(q *Quota) *jsoncompat.Object {
 	return row
 }
 
-// creditsView renders the WorkBuddy credit summary for the API.
+// creditsView renders the WorkBuddy credit summary for the API. Credits are
+// point counts, so the float64 billing aggregates are rounded to integers:
+// jsoncompat only encodes integers and panics on float64, and a panic raised
+// while building this view used to kill the whole response (the web client
+// showed "Failed to fetch" for /api/pool/workbuddy).
 func creditsView(c *CreditsQuota) *jsoncompat.Object {
 	row := jsoncompat.NewObject()
-	row.Set("totalCapacity", c.TotalCapacity)
-	row.Set("totalRemaining", c.TotalRemaining)
-	row.Set("expiringSoonRemaining", c.ExpiringSoonRemaining)
+	row.Set("totalCapacity", int64(math.Round(c.TotalCapacity)))
+	row.Set("totalRemaining", int64(math.Round(c.TotalRemaining)))
+	row.Set("expiringSoonRemaining", int64(math.Round(c.ExpiringSoonRemaining)))
 	if c.SoonestExpireAt > 0 {
 		row.Set("soonestExpireAt", c.SoonestExpireAt)
 	} else {

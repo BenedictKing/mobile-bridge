@@ -21,10 +21,9 @@
 
 .accounts-name-heading{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
 
-.pool-tabs{display:flex;gap:6px;flex-wrap:wrap;padding:10px 0 4px;border-bottom:1px solid var(--line,#e3e6df);margin-bottom:6px}
-.pool-tabs:empty{display:none;padding:0;border:0;margin:0}
-.pool-tab{border:1px solid var(--line,#dfe3eb);border-radius:999px;padding:6px 14px;background:transparent;color:var(--muted,#65705d);font:inherit;font-size:13px;cursor:pointer}
-.pool-tab.active{border-color:var(--accent,#677c45);color:var(--accent,#677c45);font-weight:650}
+/* 账号池标签的视觉统一在 presentation.css；这里只留空态与触控高度，避免两套胶囊规则互相盖。 */
+.pool-tabs:empty{display:none}
+.pool-tab{min-height:36px;cursor:pointer}
 
 .account-muted{color:var(--muted)}
 .account-card{border-color:var(--line)}
@@ -34,8 +33,6 @@
 .accounts-panel input,.accounts-panel select{min-height:42px;font-size:14px}
 .accounts-usage button{min-height:36px}
 .account-compact{border-radius:10px;background:var(--surface)}
-.pool-tab{min-height:36px;border-radius:8px}
-.pool-tab.active{background:var(--soft);font-weight:600}
 @media(max-width:720px){
   .accounts-panel button,.accounts-usage button,.pool-tab{min-height:44px}
   .accounts-panel input,.accounts-panel select{min-height:44px;font-size:16px}
