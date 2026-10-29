@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Mobile Bridge 项目团队宏观设计",
+    "locale": "zh-CN",
+    "output": "mobile-bridge-team.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/BenedictKing/mobile-bridge",
+      "revision": "db9c810935aebc71b06854d8535ada6bff8e62e5"
+    },
+    "viewBox": [1380, 770]
+  },
+  "components": [
+    {
+      "id": "person-start",
+      "type": "external",
+      "label": "人发起任务",
+      "sublabel": "目标 · 要求 · 图片材料",
+      "pos": [600, 20],
+      "size": [240, 82]
+    },
+    {
+      "id": "lead-chat",
+      "type": "frontend",
+      "label": "主控聊天",
+      "sublabel": "复用 Lead 会话 · 普通对话体验",
+      "pos": [575, 130],
+      "size": [290, 88],
+      "sources": [
+        { "path": "web/app.js", "line": 1458, "end_line": 1467, "label": "主控会话入口" }
+      ]
+    },
+    {
+      "id": "team-service",
+      "type": "backend",
+      "label": "Team Service 编排",
+      "sublabel": "创建 Run · 动态调度 · 依赖与并发 · 完成整理",
+      "pos": [500, 270],
+      "size": [440, 104],
+      "sources": [
+        { "path": "internal/team/runner.go", "line": 168, "end_line": 180, "label": "编排服务装配" }
+      ]
+    },
+    {
+      "id": "team-ledger",
+      "type": "database",
+      "label": "Team / Run 账本",
+      "sublabel": "teams.json · team-runs.json · Journal",
+      "pos": [1080, 275],
+      "size": [290, 94],
+      "sources": [
+        { "path": "internal/team/store.go", "line": 42, "end_line": 53, "label": "持久化端口" },
+        { "path": "internal/team/journal.go", "line": 32, "end_line": 38, "label": "事件日志" }
+      ]
+    },
+    {
+      "id": "member-one",
+      "type": "backend",
+      "label": "成员 ACP 会话 1",
+      "sublabel": "独立项目会话 · 整块任务推进",
+      "pos": [80, 475],
+      "size": [280, 92]
+    },
+    {
+      "id": "member-two",
+      "type": "backend",
+      "label": "成员 ACP 会话 2",
+      "sublabel": "PromptWithBlocks · 图片与文本",
+      "pos": [480, 475],
+      "size": [280, 92],
+      "sources": [
+        { "path": "internal/acpruntime/manager.go", "line": 766, "end_line": 768, "label": "内容块提示词" }
+      ]
+    },
+    {
+      "id": "member-n",
+      "type": "backend",
+      "label": "成员 ACP 会话 N",
+      "sublabel": "Kimi · ZCode · 其他 ACP Agent",
+      "pos": [880, 475],
+      "size": [280, 92]
+    },
+    {
+      "id": "workflow-view",
+      "type": "frontend",
+      "label": "Workflow 呈现",
+      "sublabel": "阶段轨道 · 成员状态 · 结果摘要",
+      "pos": [90, 630],
+      "size": [300, 88],
+      "sources": [
+        { "path": "web/team-chat.js", "line": 35, "end_line": 54, "label": "Run 投影刷新" }
+      ]
+    },
+    {
+      "id": "person-review",
+      "type": "external",
+      "label": "人审核成果",
+      "sublabel": "继续追问 · 创建修订 Run · 确认结束",
+      "pos": [600, 630],
+      "size": [280, 88]
+    }
+  ],
+  "connections": [
+    { "id": "start-to-lead", "from": "person-start", "to": "lead-chat", "label": "发起任务", "labelAt": [720, 116], "variant": "emphasis" },
+    { "id": "lead-to-service", "from": "lead-chat", "to": "team-service", "label": "direct-send · 创建 single + autoPlan Run", "labelAt": [720, 244], "variant": "emphasis" },
+    { "id": "service-to-member-one", "from": "team-service", "to": "member-one", "fromSide": "bottom", "toSide": "top", "variant": "default" },
+    { "id": "service-to-member-two", "from": "team-service", "to": "member-two", "label": "动态派发", "fromSide": "bottom", "toSide": "top", "variant": "emphasis" },
+    { "id": "service-to-member-n", "from": "team-service", "to": "member-n", "fromSide": "bottom", "toSide": "top", "variant": "default" },
+    { "id": "member-to-review", "from": "member-two", "to": "person-review", "label": "提交成果", "fromSide": "bottom", "toSide": "top", "variant": "emphasis" },
+    { "id": "service-to-ledger", "from": "team-service", "to": "team-ledger", "label": "持久化 Team · Run · 事件", "labelAt": [1010, 245], "variant": "default" },
+    { "id": "ledger-to-service", "from": "team-ledger", "to": "team-service", "label": "恢复 · 重放", "labelAt": [1010, 390], "variant": "dashed" },
+    { "id": "service-to-workflow", "from": "team-service", "to": "workflow-view", "label": "Run 状态与事件投影", "labelAt": [370, 585], "variant": "default" },
+    { "id": "workflow-to-review", "from": "workflow-view", "to": "person-review", "label": "可读结果", "labelAt": [495, 740], "variant": "default" },
+    { "id": "review-to-service", "from": "person-review", "to": "team-service", "label": "追问与修订反馈", "labelAt": [520, 390], "fromSide": "left", "toSide": "left", "variant": "dashed" }
+  ]
+}
