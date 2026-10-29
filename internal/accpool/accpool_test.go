@@ -615,6 +615,54 @@ func TestRefreshQuotaFlow(t *testing.T) {
 	}
 }
 
+func TestRefreshQuotaRecoversReauthRequired(t *testing.T) {
+	m := newTestManager(t)
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	var usageCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"user_id":"u1","nickname":"昵称"}`))
+	})
+	mux.HandleFunc("/usages", func(w http.ResponseWriter, r *http.Request) {
+		usageCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"used":5,"limit":100}}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	restoreAPI := kimiAPIBase
+	kimiAPIBase = server.URL
+	defer func() { kimiAPIBase = restoreAPI }()
+
+	if _, _, err := m.upsert("kimi", &Account{
+		UserID: "u1", AccessToken: "at", RefreshToken: "rt",
+		ExpiresAt: m.now().Unix() + 86400, ExpiresIn: 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	acc, err := m.loadAccount("kimi", "u_u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc.Status = StatusReauthRequired
+	acc.StatusReason = "旧登录已失效"
+	if err := m.saveAccount("kimi", acc); err != nil {
+		t.Fatal(err)
+	}
+
+	acc, err = m.RefreshQuota(context.Background(), "kimi", "u_u1")
+	if err != nil {
+		t.Fatalf("RefreshQuota: %v", err)
+	}
+	if acc.Status != StatusActive || acc.StatusReason != "" {
+		t.Fatalf("status not recovered: %+v", acc)
+	}
+	if usageCalls.Load() != 1 || acc.Quota == nil || acc.QuotaUpdatedAt == 0 {
+		t.Fatalf("quota not refreshed: calls=%d quota=%+v", usageCalls.Load(), acc.Quota)
+	}
+}
+
 func TestRefreshQuotaAuthFailed(t *testing.T) {
 	m := newTestManager(t)
 	t.Setenv("KIMI_CODE_HOME", t.TempDir())

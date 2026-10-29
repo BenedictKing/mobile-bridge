@@ -649,6 +649,10 @@ func (m *Manager) refreshKimiQuota(ctx context.Context, acc *Account) (*Account,
 	var problems []string
 	if payload, meErr := kimiGet(ctx, kimiAPIBase+"/me", acc.AccessToken); meErr == nil {
 		profile := parseKimiProfile(payload)
+		if acc.Status == StatusReauthRequired {
+			acc.Status = StatusActive
+			acc.StatusReason = ""
+		}
 		acc.UserID = firstNonEmpty(profile.UserID, acc.UserID)
 		acc.Nickname = firstNonEmpty(profile.Nickname, acc.Nickname)
 		acc.Email = firstNonEmpty(profile.Email, acc.Email)

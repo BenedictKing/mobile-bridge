@@ -172,6 +172,10 @@ func TestAutoSwitchNoTarget(t *testing.T) {
 	if err := m.saveAccount("kimi", poolB); err != nil {
 		t.Fatal(err)
 	}
+	stubKimiAPI(t, map[string]string{
+		"at-a": usagesJSON(100, 100, ""),
+		"at-c": usagesJSON(99, 100, ""),
+	})
 	switched, err := auto.HandleQuotaExhaustion(context.Background(), "kimi", "")
 	if err != nil || switched {
 		t.Fatalf("no target must not switch: switched=%v err=%v", switched, err)
