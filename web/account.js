@@ -53,6 +53,14 @@ class AccountPanel {
     const t=BridgeI18n.t,days=Math.floor(minutes/1440),hours=Math.floor(minutes%1440/60),rest=minutes%60;
     return [days?days+t(' 天'):'',hours?hours+t(' 小时'):'',rest?rest+t(' 分钟'):''].filter(Boolean).join(' ');
   }
+  // 「X 分钟前」；不足一分钟视为刚刚（悬浮保留绝对时间）。updatedAt 为秒级时间戳。
+  agoText(seconds){
+    const t=BridgeI18n.t;
+    if(typeof seconds!=='number'||!(seconds>0))return '';
+    const minutes=Math.floor((Date.now()-seconds*1000)/60000);
+    if(minutes<1)return t('刚刚');
+    return this.countdown(minutes)+t('前');
+  }
   render(){
     const value=this.value;
     if(this.status){
@@ -115,7 +123,9 @@ class AccountPanel {
     root.append(section);
     if(this.message){const message=this.node('p',t(this.message));message.setAttribute('role','status');root.append(message);}
     if(this.error){const error=this.node('p',t(this.error),'error');error.setAttribute('role','alert');root.append(error);}
-    root.append(this.node('p',t('更新于：')+this.time(value.updatedAt),'account-muted'));
+    const updated=this.node('p',t('更新于：')+(this.agoText(value.updatedAt)||this.time(value.updatedAt)),'account-muted');
+    if(typeof value.updatedAt==='number')updated.title=this.time(value.updatedAt);
+    root.append(updated);
   }
   async redeem(creditId,retry=false){
     const value=this.value;if(this.busy||!value?.visible||!value.canReset)return;

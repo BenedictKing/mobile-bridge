@@ -24,6 +24,13 @@ class PoolPanel {
   time(ms){return typeof ms==='number'&&ms>0?new Date(ms).toLocaleString():BridgeI18n.t('暂未提供');}
   resetTime(value){if(!value)return BridgeI18n.t('暂未提供');const t=new Date(value);return isNaN(t)?value:t.toLocaleString();}
   // 相对时长：「X 天 X 小时后重置」；不足一分钟或已过期则提示刷新（悬浮仍保留绝对时间）。
+  spanText(minutes){
+    const t=BridgeI18n.t;
+    const days=Math.floor(minutes/1440),hours=Math.floor(minutes%1440/60),rest=minutes%60;
+    const parts=days>0?[days+t(' 天'),hours>0?hours+t(' 小时'):'']:
+      hours>0?[hours+t(' 小时'),rest>0?rest+t(' 分钟'):'']:[rest+t(' 分钟')];
+    return parts.filter(Boolean).join(' ');
+  }
   untilText(value,suffix){
     const t=BridgeI18n.t;
     if(!value)return '';
@@ -31,10 +38,15 @@ class PoolPanel {
     if(isNaN(at))return String(value);
     const minutes=Math.floor((at-Date.now())/60000);
     if(minutes<1)return t('等待刷新');
-    const days=Math.floor(minutes/1440),hours=Math.floor(minutes%1440/60),rest=minutes%60;
-    const parts=days>0?[days+t(' 天'),hours>0?hours+t(' 小时'):'']:
-      hours>0?[hours+t(' 小时'),rest>0?rest+t(' 分钟'):'']:[rest+t(' 分钟')];
-    return parts.filter(Boolean).join(' ')+t(suffix||'后重置');
+    return this.spanText(minutes)+t(suffix||'后重置');
+  }
+  // 「X 分钟前」；不足一分钟视为刚刚（悬浮保留绝对时间）。
+  agoText(ms){
+    const t=BridgeI18n.t;
+    if(typeof ms!=='number'||!(ms>0))return '';
+    const minutes=Math.floor((Date.now()-ms)/60000);
+    if(minutes<1)return t('刚刚');
+    return this.spanText(minutes)+t('前');
   }
   windowLabel(w){
     const t=BridgeI18n.t;
@@ -235,7 +247,9 @@ class PoolPanel {
         box.append(line);
       }
       if(!quota.limits?.length&&!quota.weekly)box.append(this.node('span',t('暂未提供额度信息'),'account-muted'));
-      box.append(this.node('p',t('更新于：')+this.time(row.quotaUpdatedAt),'account-muted'));
+      const updated=this.node('p',t('更新于：')+(this.agoText(row.quotaUpdatedAt)||this.time(row.quotaUpdatedAt)),'account-muted');
+      if(typeof row.quotaUpdatedAt==='number')updated.title=this.time(row.quotaUpdatedAt);
+      box.append(updated);
     }
     card.append(box);
   }

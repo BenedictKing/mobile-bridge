@@ -1257,6 +1257,8 @@ const en={
   "已用额度": "Used quota",
   "后重置": " until reset",
   "后到期": " until expiry",
+  "前": " ago",
+  "刚刚": "just now",
   "辅助，不影响切换": "auxiliary, does not gate switching",
   "辅助": "auxiliary",
   "账号与团队": "Accounts and teams",
