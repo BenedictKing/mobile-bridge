@@ -109,10 +109,11 @@ test('first team lead picker returns the selected agent kind',async()=>{
   const calls=[];
   const picker=new TeamLeadPicker({request:async(path,options={})=>{
     calls.push({path,options});
-    return{agents:[{agent:'kimi',title:'Kimi'},{agent:'zcode',title:'ZCode'}]};
+    return{agents:[{agent:'kimi',title:'旧会话一'},{agent:'zcode',title:'旧会话二'}]};
   }});
   const selected=picker.open({key:'acp:project',name:'项目'});await flush();
   assert.equal(picker._dialog.open,true);
+  assert.deepEqual(find(picker.body,'team-lead-choice').map(node=>node.textContent),['kimi','zcode']);
   find(picker.body,'team-lead-choice')[1].onclick();
   assert.equal(await selected,'zcode');
   assert.deepEqual(calls.map(call=>call.path),['/api/projects/acp%3Aproject/agents']);

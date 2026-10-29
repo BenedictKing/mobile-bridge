@@ -156,7 +156,7 @@ class TeamLeadPicker{
     return new Promise(resolve=>{
       this.body.replaceChildren(this.node('p',project.name+t_safe(' 的默认团队尚未创建。请选择首次主控，之后可在团队设置中更换。'),'muted'));
       for(const agent of agents){
-        const button=this.node('button',(agent.title||agent.agent)+' · '+agent.agent,'team-lead-choice');
+        const button=this.node('button',agent.agent,'team-lead-choice');
         button.type='button';button.onclick=()=>{resolve(agent.agent);dialog.close();};this.body.append(button);
       }
       const cancel=this.node('button',t_safe('取消'),'plain');cancel.type='button';cancel.onclick=()=>dialog.close();this.body.append(cancel);
