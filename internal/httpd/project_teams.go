@@ -197,6 +197,9 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 		ID: teamID, Name: name, Project: projectKey, ProjectCwd: cwd, DefaultForProject: true,
 		Members: members, LeadID: members[0].ID, Policy: policy, CreatedAt: now, UpdatedAt: now,
 	}
+	if len(members) >= 3 {
+		created.ReviewerID = members[len(members)-1].ID
+	}
 	if err := h.server.TeamStore.SaveTeam(created); err != nil {
 		if existing := h.server.TeamStore.Team(teamID); existing != nil {
 			h.outputDefaultTeam(existing, false)

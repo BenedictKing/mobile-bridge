@@ -305,7 +305,7 @@ func (h *handler) handleTeamGet(teamID string) {
 	h.output(http.StatusOK, h.teamProject(teamRow), contentTypeJSON, "")
 }
 
-// handleTeamUpdate 处理 PATCH /api/teams/:id：name/leadId/policy 部分更新，
+// handleTeamUpdate 处理 PATCH /api/teams/:id：name/leadId/reviewerId/policy 部分更新，
 // 携带期望版本（§8.4，不符 409）。
 func (h *handler) handleTeamUpdate(teamID string) {
 	teamRow := h.loadTeam(teamID)
@@ -345,6 +345,10 @@ func (h *handler) handleTeamUpdate(teamID string) {
 			h.fail(http.StatusBadRequest, errorBody("负责人必须是团队成员"))
 			return
 		}
+		if leadID != "" && leadID == teamRow.ReviewerID {
+			h.fail(http.StatusBadRequest, errorBody("主控与默认评审必须是不同成员"))
+			return
+		}
 		if leadID != teamRow.LeadID {
 			for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
 				if !teamRunTerminal(run.Status) {
@@ -354,6 +358,26 @@ func (h *handler) handleTeamUpdate(teamID string) {
 			}
 		}
 		teamRow.LeadID = leadID
+	}
+	if raw, exists := body.Get("reviewerId"); exists {
+		reviewerID := objectString(raw)
+		if reviewerID != "" && teamMemberIndex(teamRow, reviewerID) < 0 {
+			h.fail(http.StatusBadRequest, errorBody("默认评审必须是团队成员"))
+			return
+		}
+		if reviewerID != "" && reviewerID == teamRow.LeadID {
+			h.fail(http.StatusBadRequest, errorBody("主控与默认评审必须是不同成员"))
+			return
+		}
+		if reviewerID != teamRow.ReviewerID {
+			for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
+				if !teamRunTerminal(run.Status) {
+					h.fail(http.StatusConflict, errorBody("仍有未结束的 Run，请先暂停或完成后再更换默认评审"))
+					return
+				}
+			}
+		}
+		teamRow.ReviewerID = reviewerID
 	}
 	policy, policyErr := parseTeamPolicy(body.MustGet("policy"), teamRow.Policy)
 	if policyErr != nil {
@@ -525,6 +549,10 @@ func (h *handler) handleMemberUpdate(teamID, memberID string) {
 			h.fail(http.StatusBadRequest, errorBody("不能停用负责人成员，请先更换负责人"))
 			return
 		}
+		if !enabled && teamRow.ReviewerID == memberID {
+			h.fail(http.StatusBadRequest, errorBody("不能停用默认评审，请先更换默认评审"))
+			return
+		}
 		member.Enabled = enabled
 	}
 	if raw, exists := body.Get("sessionId"); exists {
@@ -591,6 +619,9 @@ func (h *handler) handleMemberDelete(teamID, memberID string) {
 		return
 	}
 	teamRow.Members = append(teamRow.Members[:index], teamRow.Members[index+1:]...)
+	if teamRow.ReviewerID == memberID {
+		teamRow.ReviewerID = ""
+	}
 	teamRow.UpdatedAt = time.Now()
 	if err := h.server.TeamStore.SaveTeam(teamRow); err != nil {
 		h.failTeamStoreError(err)

@@ -310,16 +310,23 @@
 .team-delivery.discarded>strong{color:var(--muted)}
 .default-team{border:1px solid var(--line);background:var(--soft);margin-bottom:8px}
 .default-team strong{color:var(--green)}
-.team-settings-section{margin-bottom:20px}
-.team-settings-section h3{font-size:13px;margin-bottom:8px}
-.team-settings-lead{display:flex;align-items:center;gap:8px;padding:8px 0}
-.team-settings-lead input{width:auto;margin:0}
-.team-settings-member{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding:9px 0;font-size:12px}
-.team-settings-member button{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
-.team-settings-add{display:grid;grid-template-columns:minmax(0,1fr) 100px auto;gap:8px;margin-top:12px}
-.team-settings-add button{border:1px solid var(--line);background:var(--soft);border-radius:8px;color:var(--green)}
+.team-settings-dialog{width:min(94vw,620px)}
+.team-settings-section{margin-bottom:16px}
+.team-settings-section h3{font-size:12px;margin-bottom:8px}
+.team-role-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.picker .team-role-card{display:block;margin:0;border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:12px}
+.team-role-label{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}
+.team-role-select{width:100%;min-height:38px;margin:0;font-size:13px}
+.team-settings-member{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding:8px 0;font-size:12px}
+.team-member-info{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.team-member-info strong{font-size:12px;font-weight:500}
+.team-member-role{border-radius:8px;background:var(--soft);color:var(--green);padding:2px 6px;font-size:10px}
+.team-settings-member .team-member-remove{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
+.team-settings-add{display:grid;grid-template-columns:minmax(0,1fr) 92px auto;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
+.team-settings-add select{min-width:0;font-size:12px;padding:8px}
+.team-settings-add button{border:1px solid var(--line);background:var(--soft);border-radius:8px;color:var(--green);white-space:nowrap}
 .team-workflow-empty{border:1px dashed var(--line);border-radius:12px;background:var(--raised);padding:18px;margin:0 0 24px;max-width:760px}
 .team-workflow-empty strong{display:block;font-size:13px;margin-bottom:10px}
 .team-workflow-empty .team-workflow-pills{justify-content:start;display:flex;flex-wrap:wrap}
 .team-workflow-empty .team-workflow-pills:last-child{margin-top:10px}
-@media(max-width:720px){.team-workflow-card{padding:10px}.team-workflow-head strong{min-width:110px}.team-workflow-stations{min-width:450px}.team-settings-add{grid-template-columns:1fr}.team-settings-add button{padding:10px}}
+@media(max-width:720px){.team-workflow-card{padding:10px}.team-workflow-head strong{min-width:110px}.team-workflow-stations{min-width:450px}.team-role-grid{grid-template-columns:1fr}.team-settings-add{grid-template-columns:minmax(0,1fr) 88px}.team-settings-add button{grid-column:1/-1;padding:10px}}

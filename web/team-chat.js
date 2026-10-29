@@ -226,28 +226,37 @@ class TeamSettingsDialog{
     this.body.replaceChildren();
     if(!this.team){this.body.append(this.node('p',t_safe('正在读取团队…'),'muted'));return;}
     const team=this.team,members=team.members||[];
-    const leadSection=this.node('section',undefined,'team-settings-section');
-    leadSection.append(this.node('h3',t_safe('主控')));
-    for(const member of members){
-      const label=this.node('label',undefined,'team-settings-lead');
-      const radio=document.createElement('input');radio.type='radio';radio.name='team-lead';radio.checked=member.id===team.leadId;radio.disabled=this.busy;
-      radio.onchange=()=>this.changeLead(member.id);
-      label.append(radio,this.node('span',(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind)));
-      leadSection.append(label);
-    }
-    this.body.append(leadSection);
+    const roles=this.node('section',undefined,'team-settings-section team-role-grid');
+    const leadField=this.node('label',undefined,'team-role-card');
+    leadField.append(this.node('span',t_safe('主控 Agent'),'team-role-label'));
+    const leadSelect=document.createElement('select');leadSelect.className='team-role-select';leadSelect.disabled=this.busy;
+    for(const member of members)leadSelect.append(new Option(BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind,member.id));
+    leadSelect.value=team.leadId||'';leadSelect.onchange=()=>this.changeLead(leadSelect.value);
+    leadField.append(leadSelect);
+    const reviewerField=this.node('label',undefined,'team-role-card');
+    reviewerField.append(this.node('span',t_safe('默认评审 Agent'),'team-role-label'));
+    const reviewerSelect=document.createElement('select');reviewerSelect.className='team-role-select';reviewerSelect.disabled=this.busy;
+    reviewerSelect.append(new Option(t_safe('不设置默认评审'),''));
+    for(const member of members)if(member.id!==team.leadId)reviewerSelect.append(new Option(BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind,member.id));
+    reviewerSelect.value=team.reviewerId||(members.find(member=>member.role==='reviewer')?.id)||'';
+    reviewerSelect.onchange=()=>this.changeReviewer(reviewerSelect.value);
+    reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
     const memberSection=this.node('section',undefined,'team-settings-section');
     memberSection.append(this.node('h3',t_safe('成员')));
     for(const member of members){
       const row=this.node('div',undefined,'team-settings-member');
-      row.append(this.node('span',(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind)+(member.available===false?' · '+t_safe('不可用'):'')));
-      if(member.id!==team.leadId)row.append(this.button(t_safe('移除'),()=>this.removeMember(member.id)));
+      const info=this.node('div',undefined,'team-member-info');
+      info.append(this.node('strong',BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind));
+      const role=member.id===team.leadId?t_safe('主控'):member.id===team.reviewerId||member.role==='reviewer'?t_safe('评审'):t_safe('成员');
+      info.append(this.node('span',role+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
+      row.append(info);
+      if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}
       memberSection.append(row);
     }
     const candidates=this.agents.filter(agent=>!members.some(member=>member.agentKind===agent.agent));
-    const select=document.createElement('select');
-    for(const agent of candidates)select.append(new Option((agent.title||agent.agent)+' · '+agent.agent,agent.agent));
-    const role=document.createElement('select');role.append(new Option(t_safe('成员'),'member'),new Option(t_safe('评审'),'reviewer'));
+    const select=document.createElement('select');select.className='team-add-agent';select.disabled=this.busy;
+    for(const agent of candidates)select.append(new Option(agent.agent,agent.agent));
+    const role=document.createElement('select');role.className='team-add-role';role.disabled=this.busy;role.append(new Option(t_safe('成员'),'member'),new Option(t_safe('评审'),'reviewer'));
     const add=this.button(t_safe('＋ 添加 Agent'),()=>this.addMember(select.value,role.value));
     add.disabled=this.busy||!candidates.length;
     const addRow=this.node('div',undefined,'team-settings-add');addRow.append(select,role,add);memberSection.append(addRow);
@@ -257,6 +266,11 @@ class TeamSettingsDialog{
   async changeLead(memberID){
     if(memberID===this.team.leadId)return;
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{leadId:memberID,version:this.team.version}}));
+  }
+  async changeReviewer(memberID){
+    const current=this.team.reviewerId||(this.team.members||[]).find(member=>member.role==='reviewer')?.id||'';
+    if(memberID===current)return;
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{reviewerId:memberID,version:this.team.version}}));
   }
   async addMember(agent,role){
     if(!agent)return;

@@ -226,6 +226,7 @@ type Team struct {
 	DefaultForProject bool         `json:"defaultForProject,omitempty"`
 	Members           []TeamMember `json:"members"`
 	LeadID            string       `json:"leadId,omitempty"`
+	ReviewerID        string       `json:"reviewerId,omitempty"`
 	Policy            TeamPolicy   `json:"policy"`
 	CreatedAt         time.Time    `json:"createdAt"`
 	UpdatedAt         time.Time    `json:"updatedAt"`
@@ -502,7 +503,7 @@ type Event struct {
 // 多余键存入 extra（保持文档顺序与数字字面量），Marshal 时原样回写。
 
 var teamKnownFields = map[string]bool{
-	"id": true, "name": true, "project": true, "projectCwd": true, "defaultForProject": true, "members": true, "leadId": true,
+	"id": true, "name": true, "project": true, "projectCwd": true, "defaultForProject": true, "members": true, "leadId": true, "reviewerId": true,
 	"policy": true, "createdAt": true, "updatedAt": true, "version": true,
 }
 
@@ -578,6 +579,9 @@ func (t *Team) jsonObject() *jsoncompat.Object {
 	object.Set("members", members)
 	if t.LeadID != "" {
 		object.Set("leadId", t.LeadID)
+	}
+	if t.ReviewerID != "" {
+		object.Set("reviewerId", t.ReviewerID)
 	}
 	object.Set("policy", t.Policy.jsonObject())
 	object.Set("createdAt", t.CreatedAt.Format(time.RFC3339Nano))

@@ -79,21 +79,40 @@ test('team settings adds an agent with role and optimistic version',async()=>{
   let added=null,changed=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
     if(path==='/api/teams/team-1'&&!options.method)return team;
-    if(path==='/api/projects/acp:project/agents')return{agents:[{agent:'zcode',sessionId:'sess-new',title:'ZCode'}]};
+    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[{agent:'claude',sessionId:'sess-new',title:'只读排查最近交互项目排序'}]};
     if(path==='/api/teams/team-1/members'){
       added=options.body;
-      return{...team,members:[...team.members,{id:added.id,sessionId:'sess-new',agentKind:'zcode',name:'zcode',role:added.role}]};
+      return{...team,members:[...team.members,{id:added.id,sessionId:'sess-new',agentKind:'claude',name:'claude',role:added.role}]};
     }
     throw new Error('unexpected request '+path);
   },onChange:updated=>{changed=updated;}});
   await settings.open(team);
   assert.equal(settings._dialog.open,true);
-  assert.equal(find(settings.body,'team-settings-lead').length,2);
-  await settings.addMember('zcode','reviewer');
-  assert.equal(added.id,'member-zcode');
+  assert.equal(find(settings.body,'team-role-select').length,2);
+  assert.equal(find(settings.body,'team-add-agent')[0].children[0].textContent,'claude');
+  await settings.addMember('claude','reviewer');
+  assert.equal(added.id,'member-claude');
   assert.equal(added.role,'reviewer');
   assert.equal(added.version,2);
   assert.equal(changed.members.length,3);
+});
+
+test('team settings selects a default reviewer like the lead',async()=>{
+  const team={...teams[0],project:'acp:project',version:2};
+  let patch=null;
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/teams/team-1'&&options.method==='PATCH'){
+      patch=options.body;return{...team,reviewerId:patch.reviewerId,version:3};
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(team);
+  const reviewer=find(settings.body,'team-role-select')[1];
+  reviewer.value='dev';reviewer.onchange();await flush();
+  assert.deepEqual(patch,{reviewerId:'dev',version:2});
+  assert.equal(settings.team.reviewerId,'dev');
 });
 
 test('team without runs shows a ready empty state instead of a blank panel',async()=>{
