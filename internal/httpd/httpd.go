@@ -665,6 +665,7 @@ func (h *handler) handleMethod(write bool) {
 					if session := manager.Get(id); session != nil {
 						row.Set("connected", true)
 						row.Set("status", "idle")
+						row.Set("recency", jsoncompat.Num(int(session.LastActivity())))
 						snapshot := session.Snapshot()
 						if snapshot.MustGet("status") == "active" {
 							row.Set("status", "active")

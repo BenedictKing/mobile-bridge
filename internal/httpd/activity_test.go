@@ -3,6 +3,7 @@ package httpd
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -93,7 +94,7 @@ func TestACPActivityIncludesTurnAndPendingRequests(t *testing.T) {
 	live.View.Requests = append(live.View.Requests, jsoncompat.NewObject())
 	response := request("/api/activity", `{"hosts":{"local":["km-feature"]}}`)
 	body := response.Body.String()
-	for _, needle := range []string{`"turnId":`, `"turnStatus": "completed"`, `"pendingRequests": 1`} {
+	for _, needle := range []string{`"turnId":`, `"turnStatus": "completed"`, `"pendingRequests": 1`, `"recency": ` + strconv.FormatInt(live.LastActivity(), 10)} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("activity missing %s: %s", needle, body)
 		}

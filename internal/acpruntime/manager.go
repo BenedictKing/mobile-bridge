@@ -2169,6 +2169,16 @@ func (s *Session) signalLocked() {
 	s.changed = make(chan struct{})
 }
 
+// LastActivity returns the latest agent signal or local turn mutation in epoch milliseconds.
+func (s *Session) LastActivity() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastActivity.IsZero() {
+		return 0
+	}
+	return s.lastActivity.UnixMilli()
+}
+
 // Touch marks gateway-side interest: HTTP reads and SSE polls call it so the
 // idle sweeper keeps sessions somebody is watching.
 func (s *Session) Touch() {
