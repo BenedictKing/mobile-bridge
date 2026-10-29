@@ -179,7 +179,7 @@ func (v *View) Snapshot() *jsoncompat.Object {
 }
 
 // BeginTurn mirrors begin_turn.
-func (v *View) BeginTurn(text string) {
+func (v *View) BeginTurn(text string, attachments ...*jsoncompat.Object) {
 	turn := v.newTurn(v.nextID("turn"), jsoncompat.Num(int(v.Now()*1000)))
 	list := messages(turn)
 	message := jsoncompat.NewObject()
@@ -187,6 +187,15 @@ func (v *View) BeginTurn(text string) {
 	message.Set("kind", "userMessage")
 	message.Set("role", "user")
 	message.Set("text", text)
+	attachmentList := &jsoncompat.Array{}
+	for _, attachment := range attachments {
+		if attachment != nil {
+			attachmentList.Items = append(attachmentList.Items, jsoncompat.Clone(attachment))
+		}
+	}
+	if len(attachmentList.Items) > 0 {
+		message.Set("attachments", attachmentList)
+	}
 	list.Items = append(list.Items, message)
 	v.Status = "active"
 }

@@ -825,7 +825,7 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		// Result-visibility convention: when enabled, phone-initiated turns
 		// carry the hint as the FIRST extra block so the agent's output stays
 		// previewable on the phone. The user row keeps the raw text —
-		// Session.prompt records BeginTurn(text) from the original string, the
+		// Session.prompt records BeginTurn from the original string, the
 		// hint only rides in the prompt block list. Steer supplements skip it
 		// (the convention already rode with the turn it supplements), and so
 		// does codex: its app-server turn contract exposes developer
@@ -834,7 +834,7 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		if mode != "steer" {
 			extra = h.server.conventionExtras(extra)
 		}
-		callErr := session.PromptWithBlocks(text, extra, 3600*time.Second)
+		callErr := session.PromptWithBlocks(text, extra, 3600*time.Second, attachmentFiles...)
 		if callErr == nil {
 			dispatched = true
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")

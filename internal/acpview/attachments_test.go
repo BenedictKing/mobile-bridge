@@ -141,3 +141,20 @@ func TestToolCallContentAttachments(t *testing.T) {
 		t.Fatalf("after update attachments=%v", attachments)
 	}
 }
+
+func TestBeginTurnKeepsUserAttachments(t *testing.T) {
+	view := NewView("sess-1", nil, "/work", func() float64 { return 0 })
+	image := notification(t, `{"type":"localImage","path":"/tmp/upload.png","name":"截图.png"}`)
+	document := notification(t, `{"type":"file","path":"/tmp/notes.txt","name":"笔记.txt"}`)
+	view.BeginTurn("看附件", image, document)
+
+	message := snapshotMessage(t, view, "userMessage")
+	attachments := attachmentsOf(message)
+	if len(attachments) != 2 {
+		t.Fatalf("user attachments=%v", attachments)
+	}
+	if attachments[0].MustGet("type") != "localImage" || attachments[0].MustGet("path") != "/tmp/upload.png" ||
+		attachments[1].MustGet("type") != "file" || attachments[1].MustGet("name") != "笔记.txt" {
+		t.Fatalf("user attachments=%v", attachments)
+	}
+}

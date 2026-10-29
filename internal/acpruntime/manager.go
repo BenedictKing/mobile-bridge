@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acp"
+	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
@@ -763,8 +764,8 @@ func (s *Session) Prompt(text string, idleTimeout time.Duration) error {
 	return s.PromptWithBlocks(text, nil, idleTimeout)
 }
 
-func (s *Session) PromptWithBlocks(text string, extra []*jsoncompat.Object, idleTimeout time.Duration) error {
-	return s.prompt(text, extra, idleTimeout, budgetHuman)
+func (s *Session) PromptWithBlocks(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, files ...acpadapter.FileSpec) error {
+	return s.prompt(text, extra, idleTimeout, budgetHuman, files...)
 }
 
 // AutoContinuePrompt sends the automatic resume message: the same prompt
@@ -791,7 +792,18 @@ const (
 	budgetSwitchResume
 )
 
-func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget) error {
+func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
+	attachments := make([]*jsoncompat.Object, 0, len(files))
+	for _, file := range files {
+		attachment := jsoncompat.NewObject()
+		attachment.Set("type", "file")
+		if file.Image {
+			attachment.Set("type", "localImage")
+		}
+		attachment.Set("path", file.Path)
+		attachment.Set("name", file.Name)
+		attachments = append(attachments, attachment)
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -827,7 +839,7 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 	promptDone := make(chan struct{})
 	s.promptDone = promptDone
 	s.retrying = nil
-	s.View.BeginTurn(text)
+	s.View.BeginTurn(text, attachments...)
 	s.signalLocked()
 	slice := s.activitySlice
 	s.mu.Unlock()

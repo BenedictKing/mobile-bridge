@@ -12,7 +12,7 @@ import (
 // conventionExtras prepends the artifact-path convention text block to a
 // turn's extra prompt blocks when the switch is on (nil wiring = off). The
 // caller keeps the user's raw text as the leading prompt block, so the
-// timeline's user row (BeginTurn(text)) never shows the convention. Queue
+// timeline's user row (BeginTurn) never shows the convention. Queue
 // drains that bypass the send handler should route through here too so
 // queued turns follow the same rule.
 func (s *Server) conventionExtras(extra []*jsoncompat.Object) []*jsoncompat.Object {

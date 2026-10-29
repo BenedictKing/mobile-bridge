@@ -1,6 +1,7 @@
 package acpruntime
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acp"
+	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -953,5 +955,78 @@ func TestSessionSyncRetrySignalsChangesAndSkipsIdleReads(t *testing.T) {
 	session.syncRetry()
 	if reads != readsAfterSettle {
 		t.Fatal("idle session without displayed retry performed a read")
+	}
+}
+
+func TestPromptWithBlocksProjectsUserAttachments(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	capture := filepath.Join(t.TempDir(), "prompt.json")
+	script := fmt.Sprintf(`import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new": result={"sessionId":"sess-attachments"}
+ elif method == "session/prompt":
+  with open(%q,"w") as f: json.dump(m["params"]["prompt"],f)
+  result={"stopReason":"end_turn"}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`, capture)
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	session, err := manager.Create("seed", "/work", "附件回显", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := jsoncompat.NewObject()
+	extra.Set("type", "image")
+	extra.Set("data", "aW1hZ2U=")
+	extra.Set("mimeType", "image/png")
+	files := []acpadapter.FileSpec{{Image: true, Name: "截图.png", Path: "/tmp/phone-upload.png"}}
+	if err := session.PromptWithBlocks("看图片", []*jsoncompat.Object{extra}, 3*time.Second, files...); err != nil {
+		t.Fatal(err)
+	}
+
+	var submitted *jsoncompat.Array
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(capture)
+		if readErr == nil {
+			value, decodeErr := jsoncompat.Unmarshal(data)
+			if decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			submitted, _ = value.(*jsoncompat.Array)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if submitted == nil || len(submitted.Items) != 2 {
+		t.Fatalf("submitted prompt=%v", submitted)
+	}
+	image, _ := submitted.Items[1].(*jsoncompat.Object)
+	if image == nil || image.MustGet("data") != "aW1hZ2U=" || image.MustGet("path") != nil {
+		t.Fatalf("ACP image block changed: %v", image)
+	}
+
+	snapshot := session.Snapshot()
+	turns, _ := snapshot.MustGet("turns").(*jsoncompat.Array)
+	turn, _ := turns.Items[len(turns.Items)-1].(*jsoncompat.Object)
+	messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+	user, _ := messages.Items[0].(*jsoncompat.Object)
+	attachments, _ := user.MustGet("attachments").(*jsoncompat.Array)
+	if attachments == nil || len(attachments.Items) != 1 {
+		t.Fatalf("user attachments=%v", user)
+	}
+	attachment, _ := attachments.Items[0].(*jsoncompat.Object)
+	if attachment.MustGet("type") != "localImage" || attachment.MustGet("path") != "/tmp/phone-upload.png" || attachment.MustGet("name") != "截图.png" {
+		t.Fatalf("user attachment=%v", attachment)
 	}
 }
