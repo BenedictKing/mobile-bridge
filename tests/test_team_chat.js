@@ -168,3 +168,16 @@ test('workflow stages fan out parallel workers before the merge and final reduct
     ['lead'],['lead-d1-0','lead-d1-1'],['lead-d1-2'],['lead-auto-reduce'],
   ]);
 });
+
+test('legacy delegate tasks without persisted dependencies get the same display topology',()=>{
+  const stages=teamWorkflowStages([
+    {id:'lead',memberId:'kimi'},
+    {id:'lead-d1-0',memberId:'claude'},
+    {id:'lead-d1-1',memberId:'dsh'},
+    {id:'lead-d1-2',memberId:'kimi'},
+    {id:'lead-auto-reduce',memberId:'kimi',dependsOn:['lead','lead-d1-0','lead-d1-1','lead-d1-2']},
+  ]);
+  assert.deepEqual(stages.map(stage=>stage.map(task=>task.id)),[
+    ['lead'],['lead-d1-0','lead-d1-1'],['lead-d1-2'],['lead-auto-reduce'],
+  ]);
+});

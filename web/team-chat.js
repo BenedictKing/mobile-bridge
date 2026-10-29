@@ -4,6 +4,20 @@ function teamSubmissionFields(mode,teamID){
   return mode==='direct'?{teamMode:'direct'}:{teamMode:'team',teamId:teamID};
 }
 
+function teamWorkflowDependencies(task,byId){
+  if(Array.isArray(task.dependsOn)&&task.dependsOn.length)return task.dependsOn;
+  const match=/^(.*)-d\d+-\d+$/.exec(task.id||''),source=match&&byId.get(match[1]);
+  if(!source)return[];
+  const deps=[match[1]];
+  if(source.memberId===task.memberId){
+    for(const candidate of byId.values()){
+      const sibling=/^(.*)-d\d+-\d+$/.exec(candidate.id||'');
+      if(candidate.id!==task.id&&candidate.memberId!==task.memberId&&!candidate.reduction&&sibling&&sibling[1]===match[1])deps.push(candidate.id);
+    }
+  }
+  return deps;
+}
+
 function teamWorkflowStages(tasks){
   const byId=new Map(tasks.map(task=>[task.id,task])),depths=new Map();
   const depth=(task,visiting=new Set())=>{
@@ -11,7 +25,7 @@ function teamWorkflowStages(tasks){
     if(depths.has(task.id))return depths.get(task.id);
     if(visiting.has(task.id))return 0;
     visiting.add(task.id);
-    const deps=Array.isArray(task.dependsOn)?task.dependsOn:[];
+    const deps=teamWorkflowDependencies(task,byId);
     const value=deps.length?1+Math.max(...deps.map(id=>depth(byId.get(id),new Set(visiting)))):0;
     depths.set(task.id,value);return value;
   };
