@@ -6,7 +6,7 @@ global.teamRunStatusLabel=status=>status;
 global.teamTaskStatusLabel=status=>status;
 global.TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 global.BridgeI18n={agentLabel:kind=>kind};
-const {TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields}=require('../web/team-chat.js');
+const {TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages}=require('../web/team-chat.js');
 
 class FakeNode{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
@@ -154,4 +154,17 @@ test('pending delivery accepts a result through the delivery API',async()=>{
   assert.deepEqual(delivery.options.body,{status:'accepted',version:3});
   assert.equal(controller.run.deliveryStatus,'accepted');
   assert.equal(find(root,'team-delivery-actions').length,0);
+});
+
+test('workflow stages fan out parallel workers before the merge and final reduction',()=>{
+  const stages=teamWorkflowStages([
+    {id:'lead'},
+    {id:'lead-d1-0',dependsOn:['lead']},
+    {id:'lead-d1-1',dependsOn:['lead']},
+    {id:'lead-d1-2',dependsOn:['lead-d1-0','lead-d1-1']},
+    {id:'lead-auto-reduce',dependsOn:['lead','lead-d1-0','lead-d1-1','lead-d1-2']},
+  ]);
+  assert.deepEqual(stages.map(stage=>stage.map(task=>task.id)),[
+    ['lead'],['lead-d1-0','lead-d1-1'],['lead-d1-2'],['lead-auto-reduce'],
+  ]);
 });

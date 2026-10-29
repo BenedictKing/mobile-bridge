@@ -971,6 +971,15 @@ func buildActionTask(run *Run, team *Team, action *Action) Task {
 	var deps []string
 	if action.Type == ActionTypeDelegate && action.FromTaskID != "" {
 		deps = []string{action.FromTaskID}
+	} else if action.Type == ActionTypeDelegate {
+		deps = append(deps, action.SourceTaskID)
+		if action.Member == team.LeadID {
+			for i := range run.Tasks {
+				if run.Tasks[i].MemberID != team.LeadID && !run.Tasks[i].Reduction {
+					deps = append(deps, run.Tasks[i].ID)
+				}
+			}
+		}
 	}
 	if action.Type == ActionTypeSummarize {
 		for i := range run.Tasks {

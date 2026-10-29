@@ -1463,6 +1463,8 @@ const en={
   "详情": "Details",
   "任务": "tasks",
   "阶段轨道，可横向滚动": "Stage rail; scroll horizontally",
+  "阶段 ": "Stage ",
+  "并行 ": "Parallel · ",
   "份任务结果": "task results",
   "验证退出码 ": "Verification exit code ",
   "删除团队会移除它的 Run 记录；仍有未结束的 Run 时会被拒绝。确认删除？": "Deleting a team removes its run records and is refused while a run is still unfinished. Delete?",

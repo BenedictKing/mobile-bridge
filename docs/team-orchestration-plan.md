@@ -282,7 +282,7 @@ Lead 可以返回普通回答，也可以在回答中附加：
 
 autoPlan Lead 的任务派发文本会在原始 goal 前附加 `[Team delegation]` 简报，列出启用成员的 ID、名称、Agent 类型、角色、动作字段、当前 `autoDispatch` 语义与轮次/任务/并发限制，使 Lead 不必猜测成员和协议。简报只用于 autoPlan 的 Lead 普通任务与派生任务；显式计划、普通成员、转发和修复任务不注入。最终顺序为 `[Team delegation]` → `[Team context]` → `[Assigned task]`/原始 Prompt，原始 goal 保留且只出现一次。
 
-简报中的动作示例只展示 JSON 动作对象，不携带字面 `<team-actions>` 信封，避免 Agent 回显 prompt 时将示例误执行。若成员结果还需 Lead 汇总或继续规划，简报会要求首批动作同时给 Lead 自身安排一条 `delegate` 后续任务，而不是在该批动作中提前混入 `summarize`；后续 Lead 任务取得结果后再发起汇总。简报与依赖上下文共同进入派发期 `InputHash`；创建期哈希、PlanHash 和 amend 缓存规则不变。完整派发文本仍持久化为 `Task.SentText`，重启、收养、取消和 turn 匹配始终优先使用存量文本。
+简报中的动作示例只展示 JSON 动作对象，不携带字面 `<team-actions>` 信封，避免 Agent 回显 prompt 时将示例误执行。若成员结果还需 Lead 汇总或继续规划，简报会要求首批动作同时给 Lead 自身安排一条 `delegate` 后续任务，而不是在该批动作中提前混入 `summarize`；后续 Lead 任务取得结果后再发起汇总。delegate 未显式携带 `fromTaskId` 时默认依赖 `sourceTaskId`，使 Worker 位于来源 Lead 的下一阶段；Lead 给自己委派的后续任务还会依赖此前已落账的非 Lead 工作任务，保证“先并行 Worker、再由 Lead 合并”的拓扑；显式 `fromTaskId` 仍优先。简报与依赖上下文共同进入派发期 `InputHash`；创建期哈希、PlanHash 和 amend 缓存规则不变。完整派发文本仍持久化为 `Task.SentText`，重启、收养、取消和 turn 匹配始终优先使用存量文本。
 
 autoPlan 一旦存在已完成的非 Lead 任务，成功终局前由 Team Service 确定性补一条 `lead-auto-reduce` 收尾任务，不再依赖 Lead 自觉汇总。该任务依赖全部已完成的非收尾结果、`writeLock=none`、`reduction=true`，汇总目标、改动、验证和遗留问题；自动收尾结果不解析新 `team-actions`，但 Lead 主动 summarize 仍保留原有动作与修复能力。任务满额时落确定性失败，纯 Lead、显式计划及失败/取消路径不补收尾。`task_planned` 持久化 reduction、prompt 和 dependsOn，供 Journal 重建。
 

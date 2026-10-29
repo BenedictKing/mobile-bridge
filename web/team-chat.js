@@ -4,6 +4,22 @@ function teamSubmissionFields(mode,teamID){
   return mode==='direct'?{teamMode:'direct'}:{teamMode:'team',teamId:teamID};
 }
 
+function teamWorkflowStages(tasks){
+  const byId=new Map(tasks.map(task=>[task.id,task])),depths=new Map();
+  const depth=(task,visiting=new Set())=>{
+    if(!task)return 0;
+    if(depths.has(task.id))return depths.get(task.id);
+    if(visiting.has(task.id))return 0;
+    visiting.add(task.id);
+    const deps=Array.isArray(task.dependsOn)?task.dependsOn:[];
+    const value=deps.length?1+Math.max(...deps.map(id=>depth(byId.get(id),new Set(visiting)))):0;
+    depths.set(task.id,value);return value;
+  };
+  const stages=[];
+  for(const task of tasks){const level=depth(task);(stages[level]||(stages[level]=[])).push(task);}
+  return stages.filter(Boolean);
+}
+
 class TeamChatController{
   constructor({root,request,openRun,onChange}){
     Object.assign(this,{root,request,openRun,onChange});
@@ -98,17 +114,22 @@ class TeamChatController{
     const scroller=this.node('div',undefined,'team-workflow-scroll');
     scroller.tabIndex=0;scroller.setAttribute('aria-label',t_safe('阶段轨道，可横向滚动'));
     const stations=this.node('div',undefined,'team-workflow-stations');
-    for(const task of tasks){
-      const member=members.get(task.memberId)||{},status=task.status||'planned';
-      const station=this.node('div',undefined,'team-workflow-station '+status);
-      station.append(this.node('span',undefined,'team-workflow-lamp'));
-      station.append(this.node('span',task.id==='lead'?t_safe('负责人'):(task.id||t_safe('任务')),'team-workflow-name'));
-      station.append(this.node('span',teamTaskStatusLabel(status),'team-workflow-state'));
-      const pills=this.node('div',undefined,'team-workflow-pills');
-      const label=(member.name||member.id||task.memberId||t_safe('成员'))+(member.agentKind?' · '+BridgeI18n.agentLabel(member.agentKind):'');
-      const pill=this.node('span',label,'team-workflow-pill');
-      pill.title=task.instructionsHead||task.prompt||task.id||'';
-      pills.append(pill);station.append(pills);stations.append(station);
+    for(const [index,stageTasks] of teamWorkflowStages(tasks).entries()){
+      const stage=this.node('div',undefined,'team-workflow-stage');
+      stage.append(this.node('span',t_safe('阶段 ')+(index+1)+(stageTasks.length>1?' · '+t_safe('并行 ')+stageTasks.length:''),'team-workflow-stage-label'));
+      for(const task of stageTasks){
+        const member=members.get(task.memberId)||{},status=task.status||'planned';
+        const station=this.node('div',undefined,'team-workflow-station '+status);
+        station.append(this.node('span',undefined,'team-workflow-lamp'));
+        station.append(this.node('span',task.id==='lead'?t_safe('负责人'):(task.id||t_safe('任务')),'team-workflow-name'));
+        station.append(this.node('span',teamTaskStatusLabel(status),'team-workflow-state'));
+        const pills=this.node('div',undefined,'team-workflow-pills');
+        const label=(member.name||member.id||task.memberId||t_safe('成员'))+(member.agentKind?' · '+BridgeI18n.agentLabel(member.agentKind):'');
+        const pill=this.node('span',label,'team-workflow-pill');
+        pill.title=task.instructionsHead||task.prompt||task.id||'';
+        pills.append(pill);station.append(pills);stage.append(station);
+      }
+      stations.append(stage);
     }
     scroller.append(stations);card.append(scroller);
     const results=tasks.filter(task=>task.result).length;
@@ -240,4 +261,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields};
+if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages};

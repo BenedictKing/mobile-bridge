@@ -285,10 +285,12 @@
 .team-workflow-head button{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
 .team-workflow-meta{font-size:11px;color:var(--muted)}
 .team-workflow-scroll{overflow-x:auto;padding:14px 0 4px;scrollbar-width:thin}
-.team-workflow-stations{display:flex;align-items:flex-start;min-width:480px}
-.team-workflow-station{position:relative;flex:1;min-width:150px;text-align:center;padding:0 8px}
-.team-workflow-station:not(:last-child):after{content:"";position:absolute;top:8px;left:calc(50% + 10px);width:calc(100% - 20px);border-top:1px solid var(--muted);z-index:0}
-.team-workflow-station.planned:not(:last-child):after{border-top-style:dashed;border-color:var(--line)}
+.team-workflow-stations{display:flex;align-items:flex-start;min-width:480px;gap:20px}
+.team-workflow-stage{position:relative;flex:1;min-width:160px;display:grid;gap:12px;align-content:start}
+.team-workflow-stage:not(:last-child):after{content:"›";position:absolute;right:-16px;top:24px;color:var(--muted);font-size:20px;line-height:1}
+.team-workflow-stage-label{font-size:10px;color:var(--muted);text-align:center}
+.team-workflow-station{position:relative;min-width:0;text-align:center;padding:0 8px}
+.team-workflow-station:not(:last-child):after{display:none}
 .team-workflow-lamp{position:relative;z-index:1;display:block;width:12px;height:12px;margin:0 auto 8px;border:2px solid var(--muted);border-radius:50%;background:var(--raised)}
 .team-workflow-station.completed .team-workflow-lamp{background:var(--green);border-color:var(--green)}
 .team-workflow-station.running .team-workflow-lamp,.team-workflow-station.dispatching .team-workflow-lamp{outline:3px solid var(--warning-bg);outline-offset:2px;animation:pulse 1.4s infinite}

@@ -431,13 +431,13 @@ func TestActionRepairRootAndCounting(t *testing.T) {
 		"actfix-design-2-1":       "design-2",
 		"actfix-x":                "x",
 		"design-2":                "design-2",
-		"lead-s1-2":               "lead",                  // 根任务的派生子任务归回根链
-		"lead-d2-0":               "lead",                  // delegate 派生同样归回
-		"actfix-lead-1-s1-2":      "lead",                  // 修复任务的派生子任务（复核确认的撞号路径）
-		"actfix-lead-1-d1-0":      "lead",                  //
-		"actfix-lead-1-s1-0-s1-1": "lead",                  // 嵌套派生逐层剥净
-		"actfix-design-2-1-s1-0":  "design-2",              // 带多段根的同款
-		"actfix-lead-1-2":         "lead-1",                // 只剥末段修复序号：根的数字末段保留
+		"lead-s1-2":               "lead",     // 根任务的派生子任务归回根链
+		"lead-d2-0":               "lead",     // delegate 派生同样归回
+		"actfix-lead-1-s1-2":      "lead",     // 修复任务的派生子任务（复核确认的撞号路径）
+		"actfix-lead-1-d1-0":      "lead",     //
+		"actfix-lead-1-s1-0-s1-1": "lead",     // 嵌套派生逐层剥净
+		"actfix-design-2-1-s1-0":  "design-2", // 带多段根的同款
+		"actfix-lead-1-2":         "lead-1",   // 只剥末段修复序号：根的数字末段保留
 	}
 	for taskID, want := range cases {
 		if got := actionRepairRoot(taskID); got != want {
@@ -998,8 +998,8 @@ func TestPassActionsExecutesDelegateAndAdvancesRound(t *testing.T) {
 		derived.WorkspaceMode != WorkspaceShared || derived.InputHash == "" {
 		t.Fatalf("派生任务字段不符: %+v", derived)
 	}
-	if derived.DependsOn != nil {
-		t.Fatalf("无 fromTaskId 的 delegate 不应有依赖: %+v", derived.DependsOn)
+	if len(derived.DependsOn) != 1 || derived.DependsOn[0] != "lead" {
+		t.Fatalf("无 fromTaskId 的 delegate 应依赖来源任务: %+v", derived.DependsOn)
 	}
 	if fresh.Round != 2 {
 		t.Fatalf("Run.Round 应推进到动作轮次 2，实际 %d", fresh.Round)
@@ -1397,5 +1397,26 @@ func TestBuildLeadBriefing(t *testing.T) {
 	}
 	if repair := RepairPrompt([]string{"成员无效"}, 1); !strings.Contains(repair, actionSchemaInstruction()) {
 		t.Fatal("修复提示应继续携带共享动作协议")
+	}
+}
+
+func TestBuildActionTaskLeadFollowUpDependsOnWorkers(t *testing.T) {
+	run := execRunFixture()
+	team := testTeam()
+	for index, member := range []string{"dev", "dev"} {
+		action := Action{Type: ActionTypeDelegate, SourceTaskID: "lead", Round: 1, Member: member, Task: "并行排查",
+			ActionKey: ActionKey(team.ID, run.ID, "lead", 1, index)}
+		run.Tasks = append(run.Tasks, buildActionTask(run, team, &action))
+	}
+	followUp := Action{Type: ActionTypeDelegate, SourceTaskID: "lead", Round: 1, Member: team.LeadID, Task: "合并并修复",
+		ActionKey: ActionKey(team.ID, run.ID, "lead", 1, 2)}
+	task := buildActionTask(run, team, &followUp)
+	if len(task.DependsOn) != 3 || task.DependsOn[0] != "lead" || task.DependsOn[1] != "lead-d1-0" || task.DependsOn[2] != "lead-d1-1" {
+		t.Fatalf("Lead 后续任务应依赖来源与两个 Worker: %+v", task.DependsOn)
+	}
+	followUp.FromTaskID = "lead-d1-1"
+	task = buildActionTask(run, team, &followUp)
+	if len(task.DependsOn) != 1 || task.DependsOn[0] != "lead-d1-1" {
+		t.Fatalf("显式 fromTaskId 应优先: %+v", task.DependsOn)
 	}
 }
