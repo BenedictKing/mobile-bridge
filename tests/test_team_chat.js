@@ -23,6 +23,7 @@ class FakeNode{
 global.Option=class{constructor(text,value){this.textContent=text;this.value=value;this.className='';this.children=[];}};
 global.document={createElement:tag=>new FakeNode(tag),body:new FakeNode('body')};
 function find(node,cls){const rows=[];const visit=current=>{if(current.className.split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}
+function text(node){return node.textContent+node.children.map(text).join('');}
 function flush(){return new Promise(resolve=>setImmediate(resolve));}
 
 const teams=[{id:'team-1',name:'食材团队',leadId:'lead',members:[
@@ -92,4 +93,13 @@ test('team settings adds an agent with role and optimistic version',async()=>{
   assert.equal(added.role,'reviewer');
   assert.equal(added.version,2);
   assert.equal(changed.members.length,3);
+});
+
+test('team without runs shows a ready empty state instead of a blank panel',async()=>{
+  const root=new FakeNode('div');
+  const controller=new TeamChatController({root,request:async()=>({runs:[]}),openRun(){}});
+  controller.setTeams(teams);controller.open(teams[0]);await flush();
+  assert.equal(root.hidden,false);
+  assert.equal(find(root,'team-workflow-empty').length,1);
+  assert.match(text(root),/团队已就绪/);
 });

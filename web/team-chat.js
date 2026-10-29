@@ -56,8 +56,16 @@ class TeamChatController{
   render(){
     const root=this.root,team=this.team,run=this.run;
     root.replaceChildren();
-    if(!this.current||!team||!run){root.hidden=true;return;}
+    if(!this.current||!team){root.hidden=true;return;}
     root.hidden=false;
+    if(!run){
+      const empty=this.node('section',undefined,'team-workflow-empty');
+      empty.append(this.node('strong',t_safe('团队已就绪，给团队发第一条消息')));
+      const members=this.node('div',undefined,'team-workflow-pills');
+      for(const member of team.members||[])members.append(this.node('span',(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind),'team-workflow-pill'));
+      empty.append(members,this.node('p',t_safe('发送后会在这里显示阶段、成员和结果。'),'team-workflow-meta'));
+      root.append(empty);return;
+    }
     const tasks=Array.isArray(run.tasks)?run.tasks:[],members=new Map((team.members||[]).map(member=>[member.id,member]));
     const running=tasks.filter(task=>['dispatching','running','ready'].includes(task.status)).length;
     const completed=tasks.filter(task=>task.status==='completed').length;

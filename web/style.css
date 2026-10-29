@@ -310,4 +310,8 @@
 .team-settings-member button{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
 .team-settings-add{display:grid;grid-template-columns:minmax(0,1fr) 100px auto;gap:8px;margin-top:12px}
 .team-settings-add button{border:1px solid var(--line);background:var(--soft);border-radius:8px;color:var(--green)}
+.team-workflow-empty{border:1px dashed var(--line);border-radius:12px;background:var(--raised);padding:18px;margin:0 0 24px;max-width:760px}
+.team-workflow-empty strong{display:block;font-size:13px;margin-bottom:10px}
+.team-workflow-empty .team-workflow-pills{justify-content:start;display:flex;flex-wrap:wrap}
+.team-workflow-empty .team-workflow-pills:last-child{margin-top:10px}
 @media(max-width:720px){.team-workflow-card{padding:10px}.team-workflow-head strong{min-width:110px}.team-workflow-stations{min-width:450px}.team-settings-add{grid-template-columns:1fr}.team-settings-add button{padding:10px}}

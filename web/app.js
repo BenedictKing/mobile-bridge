@@ -727,7 +727,8 @@ let compactMethod='';
 function formatTokenCount(value){if(value<1000)return String(value);if(value<1000000)return (value/1000).toFixed(value<10000?1:0).replace(/\.0$/,'')+'k';return (value/1000000).toFixed(value<10000000?1:0).replace(/\.0$/,'')+'M';}
 function renderContextUsage(view){
   const node=$('context-usage'),used=Number(view.usage?.used),size=Number(view.usage?.size),valid=Number.isFinite(used)&&used>=0&&Number.isFinite(size)&&size>0;
-  node.hidden=!valid;if(!valid){node.textContent='';node.removeAttribute('title');return;}
+  node.hidden=false;
+  if(!valid){node.textContent='· —';node.title=t('当前会话暂无上下文用量，完成一轮后更新');return;}
   const percent=Math.round(used/size*100),locale=BridgeI18n.locale();
   node.textContent='· '+formatTokenCount(used)+'/'+formatTokenCount(size);
   node.title=t('上下文用量：')+used.toLocaleString(locale)+' / '+size.toLocaleString(locale)+' tokens · '+percent+'%';
