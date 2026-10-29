@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -174,7 +173,7 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 	members := make([]team.TeamMember, 0, len(candidates))
 	for index, candidate := range candidates {
 		entry := jsoncompat.NewObject()
-		memberID := "member-" + strconv.Itoa(index+1)
+		memberID := "member-" + candidate.Agent
 		entry.Set("id", memberID)
 		entry.Set("project", projectKey)
 		entry.Set("agent", candidate.Agent)

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
@@ -86,5 +88,24 @@ func TestDefaultTeamRejectsUnknownLeadAgent(t *testing.T) {
 	}
 	if got := len(env.store.Teams()); got != 0 {
 		t.Fatalf("拒绝主控选择后不得创建团队: %d", got)
+	}
+}
+
+func TestDefaultTeamRetriesAfterPositionalLedgerConflict(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	env.server.Creations = LoadCreations("")
+	project := "acp:" + hashProject(env.dataDir)
+	teamID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:default-team:"+project)).String()
+	legacyCreationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("team:"+teamID+":member:member-1")).String()
+	env.server.Creations.begin(legacyCreationID, &creationEntry{
+		Agent: "zcode", Project: project, Title: "旧主控创建", ID: "sess-old",
+	})
+
+	response := env.request(http.MethodPut, "/api/projects/"+project+"/team", `{"leadAgent":"kimi"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("更换主控后重试不应复用旧位置幂等键: %d %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"leadId": "member-kimi"`) {
+		t.Fatalf("默认团队成员 ID 应按 Agent 稳定派生: %s", response.Body.String())
 	}
 }
