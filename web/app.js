@@ -185,9 +185,6 @@ function renderDefaultTeam(project){
   button.onclick=()=>openDefaultTeam(project).catch(error=>toast(error.message));
   return button;
 }
-function renderDefaultTeams(limit){
-  for(const project of projectDirectory.slice(0,limit))$('sessions').append(renderDefaultTeam(project));
-}
 async function openDefaultTeam(project){
   let team=teamChat?.teamForProject(project);
   if(!team){
@@ -200,7 +197,7 @@ async function openDefaultTeam(project){
 }
 function renderList(){
   const grouped=listMode==='project';
-  $('sessions').replaceChildren();if(!grouped)renderDefaultTeams(5);
+  $('sessions').replaceChildren();
   const groups=new Map(), totals=new Map(), shown=new Map();
   const now=Date.now();
   for(const chat of listRows){
