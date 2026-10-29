@@ -705,6 +705,15 @@ func (h *handler) handleMethod(write bool) {
 			result.Set("listRevision", discovery.Revision())
 		}
 		h.output(http.StatusOK, result, contentTypeJSON, "")
+	case strings.HasPrefix(path, "/api/projects/"):
+		if h.session(h.request.Method != http.MethodGet) == nil {
+			return
+		}
+		if h.server.Teams == nil || h.server.TeamStore == nil {
+			h.fail(http.StatusConflict, errorBody("请启动支持团队编排的新版网关"))
+			return
+		}
+		h.handleProjectTeamRoute(path)
 	case !write && path == "/api/projects":
 		if h.session(write) == nil {
 			return

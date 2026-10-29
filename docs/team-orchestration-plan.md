@@ -654,6 +654,10 @@ DELETE /api/teams/:teamID/members/:memberID
 
 创建请求可同时携带顶层 `project`，并随 Team 账本持久化；未显式携带时从成员的项目键归一。项目型团队成员必须同属一个项目，后续新增或换绑会话也校验工作目录。旧的无项目 Team 账本继续按原规则读取。
 
+项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次按项目历史 ACP Agent 创建专用会话并保存 `defaultForProject=true`，重放复用已有团队且返回 `duplicate:true`。`GET /api/projects/:projectKey/agents` 返回可复用会话及可用状态。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
+
+成员添加接受 `{agent,role}` 并创建项目内专用会话；主控更换和成员移除在非终态 Run 存在时返回 409，避免静默改派在途任务。旧 Lead 会话和历史 Run 保留。
+
 团队主控聊天复用 Lead 会话的既有上传与发送契约：
 
 ```http

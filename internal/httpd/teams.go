@@ -345,6 +345,14 @@ func (h *handler) handleTeamUpdate(teamID string) {
 			h.fail(http.StatusBadRequest, errorBody("负责人必须是团队成员"))
 			return
 		}
+		if leadID != teamRow.LeadID {
+			for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
+				if !teamRunTerminal(run.Status) {
+					h.fail(http.StatusConflict, errorBody("仍有未结束的 Run，请先暂停或完成后再更换主控"))
+					return
+				}
+			}
+		}
 		teamRow.LeadID = leadID
 	}
 	policy, policyErr := parseTeamPolicy(body.MustGet("policy"), teamRow.Policy)
@@ -419,6 +427,19 @@ func (h *handler) handleMemberAdd(teamID string) {
 	if len(teamRow.Members) >= teamMaxMembers {
 		h.fail(http.StatusBadRequest, errorBody(fmt.Sprintf("成员数量超过上限：最多 %d 名", teamMaxMembers)))
 		return
+	}
+	if stringField(body, "sessionId") == "" && stringField(body, "agent") != "" {
+		if teamRow.Project == "" {
+			h.fail(http.StatusBadRequest, errorBody("无项目团队添加成员时必须提供已有会话"))
+			return
+		}
+		body.Set("project", teamRow.Project)
+		sessionID, status, createErr := h.createTeamProjectSession(body, teamRow.Name, teamRow.ID)
+		if createErr != nil {
+			h.fail(status, errorBody(createErr.Error()))
+			return
+		}
+		body.Set("sessionId", sessionID)
 	}
 	member, memberErr := h.parseTeamMember(body, len(teamRow.Members))
 	if memberErr != nil {
@@ -553,6 +574,12 @@ func (h *handler) handleMemberDelete(teamID, memberID string) {
 	if teamRow.LeadID == memberID {
 		h.fail(http.StatusBadRequest, errorBody("不能移除负责人成员，请先更换负责人"))
 		return
+	}
+	for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
+		if !teamRunTerminal(run.Status) {
+			h.fail(http.StatusConflict, errorBody("仍有未结束的 Run，请先暂停或完成后再移除成员"))
+			return
+		}
 	}
 	version, hasVersion, versionErr := h.teamRequestVersion()
 	if versionErr != nil {

@@ -1,8 +1,8 @@
 'use strict';
 
 class TeamChatController{
-  constructor({root,request,openRun}){
-    Object.assign(this,{root,request,openRun});
+  constructor({root,request,openRun,onChange}){
+    Object.assign(this,{root,request,openRun,onChange});
     this.teams=[];this.current=null;this.run=null;this.team=null;
     this.pending=false;this.queued=false;this.lastFetch=0;this.generation=0;this.compact=false;
   }
@@ -10,6 +10,9 @@ class TeamChatController{
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
   setTeams(teams){this.teams=Array.isArray(teams)?teams:[];}
   teamById(id){return this.teams.find(team=>team.id===id)||null;}
+  teamForProject(projectKey){
+    return this.teams.find(team=>team.project===projectKey&&team.defaultForProject)||this.teams.find(team=>team.project===projectKey)||null;
+  }
   teamForSession(sessionId){
     const matches=this.teams.filter(team=>(team.members||[]).some(member=>member.id===team.leadId&&member.sessionId===sessionId));
     return matches.length===1?matches[0]:null;
@@ -20,6 +23,7 @@ class TeamChatController{
     this.render();if(this.current)this.refreshRun(true);
   }
   close(){this.open(null);}
+  openSettings(){if(this.current)new TeamSettingsDialog({request:this.request,onChange:team=>{this.onChange&&this.onChange(team);}}).open(this.current);}
   accepted(){this.refreshRun(true);}
   schedule(){
     clearTimeout(this.timer);if(!this.current)return;
@@ -91,4 +95,79 @@ class TeamChatController{
     root.append(card);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamChatController};
+class TeamSettingsDialog{
+  constructor({request,onChange}){this.request=request;this.onChange=onChange;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';}
+  node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
+  button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
+  dialog(){
+    if(this._dialog)return this._dialog;
+    const dialog=document.createElement('dialog');dialog.className='picker team-settings-dialog';
+    const head=this.node('div','', 'picker-head'),title=this.node('h2',t_safe('团队设置')),close=this.button('×',()=>dialog.close());
+    close.className='icon-button';close.setAttribute('aria-label',t_safe('关闭'));head.append(title,close);
+    this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);this._dialog=dialog;return dialog;
+  }
+  async open(team){
+    const dialog=this.dialog();this.team=team;this.error='';this.render();dialog.showModal();
+    try{
+      const detail=await this.request('/api/teams/'+encodeURIComponent(team.id));this.team=detail;
+      if(detail.project){
+        try{const value=await this.request('/api/projects/'+encodeURIComponent(detail.project)+'/agents');this.agents=value.agents||[];}catch{this.agents=[];}
+      }
+    }catch(error){this.error=error.message;}
+    this.render();
+  }
+  render(){
+    if(!this.body)return;
+    this.body.replaceChildren();
+    if(!this.team){this.body.append(this.node('p',t_safe('正在读取团队…'),'muted'));return;}
+    const team=this.team,members=team.members||[];
+    const leadSection=this.node('section',undefined,'team-settings-section');
+    leadSection.append(this.node('h3',t_safe('主控')));
+    for(const member of members){
+      const label=this.node('label',undefined,'team-settings-lead');
+      const radio=document.createElement('input');radio.type='radio';radio.name='team-lead';radio.checked=member.id===team.leadId;radio.disabled=this.busy;
+      radio.onchange=()=>this.changeLead(member.id);
+      label.append(radio,this.node('span',(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind)));
+      leadSection.append(label);
+    }
+    this.body.append(leadSection);
+    const memberSection=this.node('section',undefined,'team-settings-section');
+    memberSection.append(this.node('h3',t_safe('成员')));
+    for(const member of members){
+      const row=this.node('div',undefined,'team-settings-member');
+      row.append(this.node('span',(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind)+(member.available===false?' · '+t_safe('不可用'):'')));
+      if(member.id!==team.leadId)row.append(this.button(t_safe('移除'),()=>this.removeMember(member.id)));
+      memberSection.append(row);
+    }
+    const candidates=this.agents.filter(agent=>!members.some(member=>member.agentKind===agent.agent));
+    const select=document.createElement('select');
+    for(const agent of candidates)select.append(new Option((agent.title||agent.agent)+' · '+agent.agent,agent.agent));
+    const role=document.createElement('select');role.append(new Option(t_safe('成员'),'member'),new Option(t_safe('评审'),'reviewer'));
+    const add=this.button(t_safe('＋ 添加 Agent'),()=>this.addMember(select.value,role.value));
+    add.disabled=this.busy||!candidates.length;
+    const addRow=this.node('div',undefined,'team-settings-add');addRow.append(select,role,add);memberSection.append(addRow);
+    this.body.append(memberSection);
+    if(this.error)this.body.append(this.node('p',this.error,'error'));
+  }
+  async changeLead(memberID){
+    if(memberID===this.team.leadId)return;
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{leadId:memberID,version:this.team.version}}));
+  }
+  async addMember(agent,role){
+    if(!agent)return;
+    const base='member-'+agent.replace(/[^A-Za-z0-9_-]/g,'-');let id=base,index=2;
+    while((this.team.members||[]).some(member=>member.id===id))id=base+'-'+(index++);
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members',{method:'POST',body:{id,agent,role,name:agent,version:this.team.version}}));
+  }
+  async removeMember(memberID){
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID)+'?version='+this.team.version,{method:'DELETE'}));
+  }
+  async mutate(operation){
+    if(this.busy)return;
+    this.busy=true;this.error='';this.render();
+    try{this.team=await operation();this.onChange&&this.onChange(this.team);}
+    catch(error){this.error=error.message;}
+    finally{this.busy=false;this.render();}
+  }
+}
+if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog};

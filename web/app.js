@@ -9,7 +9,7 @@ function takePairingToken(){
 let initialPairingToken=takePairingToken();
 const $ = id => document.getElementById(id),t=BridgeI18n.t;
 let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
-let currentHost='local', listRows=[], listGeneration=0, listLoading=false, listHasMore=false;
+let currentHost='local', listRows=[], projectDirectory=[], listGeneration=0, listLoading=false, listHasMore=false;
 let chatTimeline=null;
 BridgeConnection.onchange=()=>{BridgeTransport.wake?.();chatTimeline?.refill?.();refreshActivity();};
 // Keep the tab title on the open chat; user content is never passed through t().
@@ -149,8 +149,11 @@ async function start(pairingToken=null){
 async function enter(){
   $('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();
   if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);}catch(error){toast(error.message);}
-  const list=loadList(true).catch(e=>toast(e.message)),runRoute=typeof parseRunHash==='function'?parseRunHash():null;
-  if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}
+  try{const value=await api('/api/projects');projectDirectory=value.projects||[];}catch(error){toast(error.message);}
+  const list=loadList(true).catch(e=>toast(e.message)),runRoute=typeof parseRunHash==='function'?parseRunHash():null,teamRoute=typeof parseTeamHash==='function'?parseTeamHash():null;
+  if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);
+  else if(teamRoute){const team=teamChat?.teamById(teamRoute.teamId);if(team)openTeamChat(team);else toast('团队不存在或已删除');}
+  else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}
   await list;
 }
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=loginErrorText(error);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
@@ -165,9 +168,38 @@ const TIME_BUCKETS=[{days:1,label:'24 小时内',open:true},{days:3,label:'3 天
 // 项目分组每组默认只显示最近 5 条，点一次“显示更多”追加 10 条，平衡屏幕空间与
 // 查找效率；展开量只在内存里，列表轮询重渲染不回跳，刷新页面后回到默认。
 const PROJECT_GROUP_PAGE=5,PROJECT_GROUP_STEP=10,projectGroupLimits=new Map();
+function defaultTeamLeadLabel(team,project){
+  const lead=(team?.members||[]).find(member=>member.id===team.leadId);
+  return lead?BridgeI18n.agentLabel(lead.agentKind):BridgeI18n.agentLabel(project.agent);
+}
+function renderDefaultTeam(project){
+  const team=teamChat?.teamForProject(project.key),selected=team&&currentTeam?.id===team.id;
+  const button=el('button','session default-team'+(selected?' selected':''));
+  button.dataset.project=project.key;if(team)button.dataset.teamId=team.id;
+  const title=el('strong','',t('项目团队'));
+  title.append(' ',el('span','team-inline-badge',t('默认')));
+  const meta=el('small');
+  meta.append(el('span','session-project',project.name+' · '+t('主控 ')+defaultTeamLeadLabel(team,project)));
+  meta.append(el('time','',team?'':t('待创建')));
+  button.append(title,meta);
+  button.onclick=()=>openDefaultTeam(project).catch(error=>toast(error.message));
+  return button;
+}
+function renderDefaultTeams(limit){
+  for(const project of projectDirectory.slice(0,limit))$('sessions').append(renderDefaultTeam(project));
+}
+async function openDefaultTeam(project){
+  let team=teamChat?.teamForProject(project.key);
+  if(!team){
+    team=await teamRequest('/api/projects/'+encodeURIComponent(project.key)+'/team',{method:'PUT',body:{}});
+    const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);
+  }
+  openTeamChat(team);
+}
 function renderList(){
-  $('sessions').replaceChildren();
-  const grouped=listMode==='project', groups=new Map(), totals=new Map(), shown=new Map();
+  const grouped=listMode==='project';
+  $('sessions').replaceChildren();if(!grouped)renderDefaultTeams(5);
+  const groups=new Map(), totals=new Map(), shown=new Map();
   const now=Date.now();
   for(const chat of listRows){
     let parent=$('sessions');
@@ -185,6 +217,8 @@ function renderList(){
         summary.append(add);
         details.append(summary);
         details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
+        const cwd=chat.projectKey.slice(chat.projectKey.indexOf('|')+1),project=chat.host==='local'?projectDirectory.find(row=>row.key===chat.projectKey||row.cwd===cwd):null;
+        if(project)details.append(renderDefaultTeam(project));
         groups.set(chat.projectKey,details);$('sessions').append(details);
       }
       parent=groups.get(chat.projectKey);
@@ -1292,6 +1326,15 @@ window.addEventListener('hashchange',()=>{
       return;
     }
   }
+  if(typeof parseTeamHash==='function'){
+    const teamRoute=parseTeamHash();
+    if(teamRoute){
+      const team=teamChat?.teamById(teamRoute.teamId);
+      if(team&&(currentTeam?.id!==team.id||$('chat').hidden))openTeamChat(team);
+      else if(!team)toast('团队不存在或已删除');
+      return;
+    }
+  }
   const [id,host='local']=location.hash.slice(1).split('~');
   if(/^[\w.-]{1,128}$/.test(id)){
     // chat-open 同时覆盖聊天页与 Run 页（同一手机互斥布局）：只有聊天面板
@@ -1410,14 +1453,19 @@ function selectPoolTab(index,refresh=true){
 if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();poolTabSections[activePool]?.refresh();};
 
 // Team 编排：主控聊天复用 Lead 会话；独立 Run 页继续承载高级编排。
-const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatController({root:$('team-workflow'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId)});
-function openTeamChat(team){
+const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatController({root:$('team-workflow'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),onChange:team=>{
+  const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);openTeamChat(team);
+}});
+async function openTeamChat(team){
   const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
   if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
-  $('teams-dialog').close();openChat(lead.sessionId,'local',team.id).catch(error=>toast(error.message));
+  $('teams-dialog').close();
+  await openChat(lead.sessionId,'local',team.id);
+  history.replaceState(null,'','#team='+encodeURIComponent(team.id));
 }
 function syncTeamComposer(){
   const enabled=!!currentTeam;
+  $('team-settings-button').hidden=!enabled;
   $('skills-button').hidden=enabled;$('work-mode').hidden=enabled;
   $('send-mode').querySelector('option[value="steer"]').disabled=enabled;
   if(enabled){
@@ -1428,12 +1476,18 @@ function syncTeamComposer(){
   }
   teamChat?.refreshRun();
 }
+$('team-settings-button').onclick=()=>teamChat?.openSettings();
 const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();}});
 const teamRunScreen=typeof TeamRunScreen==='undefined'?null:new TeamRunScreen({root:$('team-run'),request:teamRequest,openChat:sessionId=>openChat(sessionId,'local'),onUnauthorized:()=>showLogin(),onNavigateAway:closeTeamRunView});
 /* #run=teamId/runId 深链（阶段四通知 click 载荷契约）：与 #pair=、#id~host 三
    前缀互斥，enter()/hashchange 统一按 pair→run→聊天 的顺序分发；id 段与聊天
    深链同口径 [\w.-]{1,128}（team/run 均为 UUID）。 */
 let openRunRoute=''; // 已打开的 #run= 路由：openTeamRun 用 replaceState 写 hash，此值防 hashchange 回声重开
+function parseTeamHash(){
+  if(!location.hash.startsWith('#team='))return null;
+  const teamId=decodeURIComponent(location.hash.slice(6));
+  return /^[\w.-]{1,128}$/.test(teamId)?{teamId}:null;
+}
 function parseRunHash(){
   if(!location.hash.startsWith('#run='))return null;
   const rest=location.hash.slice(5),slash=rest.indexOf('/');

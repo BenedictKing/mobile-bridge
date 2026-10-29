@@ -672,6 +672,53 @@ func TestTeamConversationLeadResolution(t *testing.T) {
 	}
 }
 
+func TestTeamLeadAndMemberChangesGuardActiveRuns(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	project := "acp:" + hashProject(env.dataDir)
+	createPayload := fmt.Sprintf(`{"name":"保护团队","project":%q,"members":[]}`, project)
+	created := env.request(http.MethodPost, "/api/teams", createPayload)
+	if created.Code != http.StatusOK {
+		t.Fatalf("创建项目团队失败: %d %s", created.Code, created.Body.String())
+	}
+	var teamView struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &teamView); err != nil {
+		t.Fatal(err)
+	}
+	teamID := teamView.ID
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/members",
+		`{"id":"dev","agent":"kimi","role":"member","name":"开发","version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("按 Agent 添加成员失败: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID, `{"leadId":"dev","version":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("空团队应允许指定主控: %d %s", response.Code, response.Body.String())
+	}
+	runID := env.createRun(t, teamID, `{"goal":"持续任务","mode":"single"}`)
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID, `{"leadId":"","version":3}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("活跃 Run 换主控应 409: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodDelete, "/api/teams/"+teamID+"/members/dev?version=3", "{}")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("负责人不能直接移除: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/cancel", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("取消测试 Run 失败: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID, `{"leadId":"","version":3}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("终态后应允许清空主控: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodDelete, "/api/teams/"+teamID+"/members/dev?version=4", "{}")
+	if response.Code != http.StatusOK {
+		t.Fatalf("终态并更换主控后应允许移除成员: %d %s", response.Code, response.Body.String())
+	}
+}
+
 // seedRunTeam 直落一支带 lead 成员的团队（绕过 HTTP 成员校验的 ACP 探测，
 // Run 创建链路只依赖 ParsePlan 的成员存在性检查）。注册收尾清理：取消该
 // 团队全部 Run，让调度循环先于 t.TempDir 的目录清理退出（否则循环写盘撞

@@ -212,15 +212,16 @@ func InstructionsHead(prompt string) string {
 
 // Team 是一个多 Agent 编排单元（§4.1）。extra 保留账本中的未知字段。
 type Team struct {
-	ID        string       `json:"id"`
-	Name      string       `json:"name"`
-	Project   string       `json:"project,omitempty"`
-	Members   []TeamMember `json:"members"`
-	LeadID    string       `json:"leadId,omitempty"`
-	Policy    TeamPolicy   `json:"policy"`
-	CreatedAt time.Time    `json:"createdAt"`
-	UpdatedAt time.Time    `json:"updatedAt"`
-	Version   uint64       `json:"version"`
+	ID                string       `json:"id"`
+	Name              string       `json:"name"`
+	Project           string       `json:"project,omitempty"`
+	DefaultForProject bool         `json:"defaultForProject,omitempty"`
+	Members           []TeamMember `json:"members"`
+	LeadID            string       `json:"leadId,omitempty"`
+	Policy            TeamPolicy   `json:"policy"`
+	CreatedAt         time.Time    `json:"createdAt"`
+	UpdatedAt         time.Time    `json:"updatedAt"`
+	Version           uint64       `json:"version"`
 
 	extra *jsoncompat.Object
 }
@@ -491,7 +492,7 @@ type Event struct {
 // 多余键存入 extra（保持文档顺序与数字字面量），Marshal 时原样回写。
 
 var teamKnownFields = map[string]bool{
-	"id": true, "name": true, "project": true, "members": true, "leadId": true,
+	"id": true, "name": true, "project": true, "defaultForProject": true, "members": true, "leadId": true,
 	"policy": true, "createdAt": true, "updatedAt": true, "version": true,
 }
 
@@ -553,6 +554,9 @@ func (t *Team) jsonObject() *jsoncompat.Object {
 	object.Set("name", t.Name)
 	if t.Project != "" {
 		object.Set("project", t.Project)
+	}
+	if t.DefaultForProject {
+		object.Set("defaultForProject", true)
 	}
 	members := &jsoncompat.Array{}
 	for i := range t.Members {

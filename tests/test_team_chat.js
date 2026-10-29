@@ -6,19 +6,22 @@ global.teamRunStatusLabel=status=>status;
 global.teamTaskStatusLabel=status=>status;
 global.TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 global.BridgeI18n={agentLabel:kind=>kind};
-const {TeamChatController}=require('../web/team-chat.js');
+const {TeamChatController,TeamSettingsDialog}=require('../web/team-chat.js');
 
 class FakeNode{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.hidden=false;this.className='';this.textContent='';this.dataset={};}
   append(...nodes){this.children.push(...nodes);}
   replaceChildren(...nodes){this.children=[...nodes];}
   setAttribute(name,value){this.attributes[name]=value;}
+  showModal(){this.open=true;}
+  close(){this.open=false;}
   get classList(){
     const node=this;
     return{toggle(name,force){node.className=node.className.split(/\s+/).filter(Boolean).filter(part=>part!==name).concat(force===false?[]:[name]).join(' ');}};
   }
 }
-global.document={createElement:tag=>new FakeNode(tag)};
+global.Option=class{constructor(text,value){this.textContent=text;this.value=value;this.className='';this.children=[];}};
+global.document={createElement:tag=>new FakeNode(tag),body:new FakeNode('body')};
 function find(node,cls){const rows=[];const visit=current=>{if(current.className.split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}
 function flush(){return new Promise(resolve=>setImmediate(resolve));}
 
@@ -65,4 +68,26 @@ test('workflow renders run tasks and supports member collapse and details',async
   details.onclick();
   assert.deepEqual(opened,[{teamId:'team-1',runId:'run-1'}]);
   controller.close();assert.equal(root.hidden,true);
+});
+
+test('team settings adds an agent with role and optimistic version',async()=>{
+  const team={...teams[0],project:'acp:project',version:2};
+  let added=null,changed=null;
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/projects/acp:project/agents')return{agents:[{agent:'zcode',sessionId:'sess-new',title:'ZCode'}]};
+    if(path==='/api/teams/team-1/members'){
+      added=options.body;
+      return{...team,members:[...team.members,{id:added.id,sessionId:'sess-new',agentKind:'zcode',name:'zcode',role:added.role}]};
+    }
+    throw new Error('unexpected request '+path);
+  },onChange:updated=>{changed=updated;}});
+  await settings.open(team);
+  assert.equal(settings._dialog.open,true);
+  assert.equal(find(settings.body,'team-settings-lead').length,2);
+  await settings.addMember('zcode','reviewer');
+  assert.equal(added.id,'member-zcode');
+  assert.equal(added.role,'reviewer');
+  assert.equal(added.version,2);
+  assert.equal(changed.members.length,3);
 });
