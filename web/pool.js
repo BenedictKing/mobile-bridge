@@ -23,6 +23,19 @@ class PoolPanel {
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
   time(ms){return typeof ms==='number'&&ms>0?new Date(ms).toLocaleString():BridgeI18n.t('暂未提供');}
   resetTime(value){if(!value)return BridgeI18n.t('暂未提供');const t=new Date(value);return isNaN(t)?value:t.toLocaleString();}
+  // 相对时长：「X 天 X 小时后重置」；不足一分钟或已过期则提示刷新（悬浮仍保留绝对时间）。
+  untilText(value,suffix){
+    const t=BridgeI18n.t;
+    if(!value)return '';
+    const at=new Date(value).getTime();
+    if(isNaN(at))return String(value);
+    const minutes=Math.floor((at-Date.now())/60000);
+    if(minutes<1)return t('等待刷新');
+    const days=Math.floor(minutes/1440),hours=Math.floor(minutes%1440/60),rest=minutes%60;
+    const parts=days>0?[days+t(' 天'),hours>0?hours+t(' 小时'):'']:
+      hours>0?[hours+t(' 小时'),rest>0?rest+t(' 分钟'):'']:[rest+t(' 分钟')];
+    return parts.filter(Boolean).join(' ')+t(suffix||'后重置');
+  }
   windowLabel(w){
     const t=BridgeI18n.t;
     if(w.windowUnit==='minute'&&w.windowDuration){
@@ -186,38 +199,39 @@ class PoolPanel {
       const credits=quota.credits;
       if(credits){
         const line=this.node('div',undefined,'accounts-window');
-        const pct=credits.totalCapacity>0?Math.max(0,100-Math.round(credits.totalRemaining/credits.totalCapacity*1000)/10):null;
+        const pct=credits.totalCapacity>0?Math.min(100,Math.max(0,Math.round((credits.totalCapacity-credits.totalRemaining)/credits.totalCapacity*1000)/10)):null;
         line.append(this.node('span',t('积分')+(credits.expired?' · '+t('已到期'):'')+(credits.expiringSoon?' · '+t('7 天内到期'):'')),
-          this.node('strong',pct==null?t('暂未提供'):t('剩余 ')+pct+'%'));
-        if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('剩余额度'));line.append(progress);}
-        if(credits.soonestExpireAt)line.title=t('恢复时间：')+this.time(credits.soonestExpireAt);
+          this.node('strong',pct==null?t('暂未提供'):t('已用 ')+pct+'%'));
+        if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('已用额度'));line.append(progress);}
+        if(credits.soonestExpireAt){const left=this.untilText(credits.soonestExpireAt,'后到期');line.title=t('到期时间：')+this.time(credits.soonestExpireAt);if(left)line.append(this.node('span',left,'account-muted'));}
         box.append(line);
         for(const r of credits.resources||[]){
           if(!r.packageName&&!r.packageCode)continue;
           const item=this.node('div',undefined,'accounts-window');
-          const remain=r.total>0?Math.round(r.remaining/r.total*1000)/10:null;
+          const usedPct=r.total>0?Math.min(100,Math.max(0,Math.round((r.total-r.remaining)/r.total*1000)/10)):null;
           item.append(this.node('span',(r.packageName||r.packageCode)+(r.expiringSoon?' · '+t('7 天内到期'):'')+(r.expired?' · '+t('已到期'):'')),
-            this.node('strong',remain==null?t('暂未提供'):t('剩余 ')+remain+'%'));
-          if(r.expireAt)item.title=t('恢复时间：')+this.time(r.expireAt);
+            this.node('strong',usedPct==null?t('暂未提供'):t('已用 ')+usedPct+'%'));
+          if(usedPct!=null){const progress=this.node('progress');progress.max=100;progress.value=usedPct;progress.setAttribute('aria-label',t('已用额度'));item.append(progress);}
+          if(r.expireAt){const left=this.untilText(r.expireAt,'后到期');item.title=t('到期时间：')+this.time(r.expireAt);if(left)item.append(this.node('span',left,'account-muted'));}
           box.append(item);
         }
       }
       for(const w of quota.limits||[]){
         const line=this.node('div',undefined,'accounts-window');
-        const pct=w.limit>0?Math.max(0,100-Math.round(w.used/w.limit*1000)/10):null;
+        const pct=w.limit>0?Math.min(100,Math.max(0,Math.round(w.used/w.limit*1000)/10)):null;
         line.append(this.node('span',t(w.name||'')+this.windowLabel(w)+(w.auxiliary?' · '+t('辅助'):'')),
-          this.node('strong',pct==null?t('暂未提供'):t('剩余 ')+pct+'%'));
+          this.node('strong',pct==null?t('暂未提供'):t('已用 ')+pct+'%'));
         if(w.auxiliary)line.firstChild.title=t('辅助，不影响切换');
-        if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('剩余额度'));line.append(progress);}
-        if(w.resetAt){const reset=t('恢复时间：')+this.resetTime(w.resetAt);line.title=reset;line.append(this.node('span',reset,'account-muted'));}
+        if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('已用额度'));line.append(progress);}
+        if(w.resetAt){const left=this.untilText(w.resetAt,'后重置');line.title=t('恢复时间：')+this.resetTime(w.resetAt);if(left)line.append(this.node('span',left,'account-muted'));}
         box.append(line);
       }
       if(quota.weekly&&quota.weekly.limit>0){
         const w=quota.weekly,line=this.node('div',undefined,'accounts-window');
-        const pct=Math.max(0,100-Math.round(w.used/w.limit*1000)/10);
-        line.append(this.node('span',t('周额度')),this.node('strong',t('剩余 ')+pct+'%'));
-        const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('剩余额度'));line.append(progress);
-        if(w.resetAt){const reset=t('恢复时间：')+this.resetTime(w.resetAt);line.title=reset;line.append(this.node('span',reset,'account-muted'));}
+        const pct=Math.min(100,Math.max(0,Math.round(w.used/w.limit*1000)/10));
+        line.append(this.node('span',t('周额度')),this.node('strong',t('已用 ')+pct+'%'));
+        const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('已用额度'));line.append(progress);
+        if(w.resetAt){const left=this.untilText(w.resetAt,'后重置');line.title=t('恢复时间：')+this.resetTime(w.resetAt);if(left)line.append(this.node('span',left,'account-muted'));}
         box.append(line);
       }
       if(!quota.limits?.length&&!quota.weekly)box.append(this.node('span',t('暂未提供额度信息'),'account-muted'));

@@ -8,6 +8,19 @@ class AccountsPanel {
   node(tag,text,className){const n=document.createElement(tag);if(text!==undefined){n.textContent=this.text(text);if(typeof BridgeI18n!=='undefined'&&Object.hasOwn(BridgeI18n.dictionary,text))n.setAttribute('data-i18n',text);}if(className)n.className=className;return n;}
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
   field(label,type='text'){const wrap=this.node('label'),input=document.createElement('input');input.type=type;wrap.append(this.node('span',label),input);return {wrap,input};}
+  // 相对时长：「X 天 X 小时后重置」；不足一分钟或已过期则提示刷新（悬浮仍保留绝对时间）。
+  untilText(value,suffix){
+    const text=value=>this.text(value);
+    if(!value)return '';
+    const at=new Date(value).getTime();
+    if(isNaN(at))return String(value);
+    const minutes=Math.floor((at-Date.now())/60000);
+    if(minutes<1)return text('等待刷新');
+    const days=Math.floor(minutes/1440),hours=Math.floor(minutes%1440/60),rest=minutes%60;
+    const parts=days>0?[days+text(' 天'),hours>0?hours+text(' 小时'):'']:
+      hours>0?[hours+text(' 小时'),rest>0?rest+text(' 分钟'):'']:[rest+text(' 分钟')];
+    return parts.filter(Boolean).join(' ')+text(suffix||'后重置');
+  }
   build(){
     this.root.replaceChildren();this.root.classList.add('accounts-panel');
     if(this.desktop)this.root.append(this.node('h2','账号与接入'));
@@ -104,9 +117,11 @@ class AccountsPanel {
         for(const bucket of usage.limits||[])for(const window of bucket.windows||[]){
           const line=this.node('div',undefined,'accounts-window'),minutes=window.windowDurationMins;
           const label=minutes?minutes%1440===0?minutes/1440+this.text(' 天'):minutes%60===0?minutes/60+this.text(' 小时'):minutes+this.text(' 分钟'):this.text('额度窗口');
-          line.append(this.node('span',bucket.name+' · '+label),this.node('strong',window.remainingPercent==null?this.text('暂未提供'):this.text('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
-          if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',this.text('剩余额度'));line.append(progress);}
-          if(window.resetsAt)line.title=this.text('恢复时间：')+new Date(window.resetsAt*1000).toLocaleString();box.append(line);
+          const used=window.remainingPercent==null?null:Math.min(100,Math.max(0,Math.round((100-window.remainingPercent)*10)/10));
+          line.append(this.node('span',bucket.name+' · '+label),this.node('strong',used==null?this.text('暂未提供'):this.text('已用 ')+used+'%'));
+          if(used!=null){const progress=this.node('progress');progress.max=100;progress.value=used;progress.setAttribute('aria-label',this.text('已用额度'));line.append(progress);}
+          if(window.resetsAt){const left=this.untilText(window.resetsAt*1000,'后重置');line.title=this.text('恢复时间：')+new Date(window.resetsAt*1000).toLocaleString();if(left)line.append(this.node('span',left,'account-muted'));}
+          box.append(line);
         }
         if(!usage.limits?.length)box.append(this.node('span','暂未提供额度信息','account-muted'));
       }

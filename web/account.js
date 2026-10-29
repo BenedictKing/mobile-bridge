@@ -74,13 +74,14 @@ class AccountPanel {
       if(!bucket.windows.length)card.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
       for(const window of bucket.windows){
         const row=this.node('div',undefined,'account-window');
-        row.append(this.node('span',this.duration(window.windowDurationMins)),this.node('strong',window.remainingPercent==null?t('暂未提供'):t('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
+        const used=window.remainingPercent==null?null:Math.min(100,Math.max(0,Math.round((100-window.remainingPercent)*10)/10));
+        row.append(this.node('span',this.duration(window.windowDurationMins)),this.node('strong',used==null?t('暂未提供'):t('已用 ')+used+'%'));
         card.append(row);
-        if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',t('剩余额度'));card.append(progress);}
+        if(used!=null){const progress=this.node('progress');progress.max=100;progress.value=used;progress.setAttribute('aria-label',t('已用额度'));card.append(progress);}
         let reset=t('恢复时间：')+this.time(window.resetsAt);
         if(typeof window.resetsAt==='number'){
-          const minutes=Math.ceil((window.resetsAt*1000-Date.now())/60000);
-          reset+=' · '+(minutes>0?t('约 ')+this.countdown(minutes)+t('后恢复'):t('等待刷新'));
+          const minutes=Math.floor((window.resetsAt*1000-Date.now())/60000);
+          reset=(minutes>0?this.countdown(minutes)+t('后重置'):t('等待刷新'))+' · '+reset;
         }
         card.append(this.node('p',reset,'account-muted'));
       }
