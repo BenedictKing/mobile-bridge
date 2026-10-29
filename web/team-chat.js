@@ -1,10 +1,15 @@
 'use strict';
 
+function teamSubmissionFields(mode,teamID){
+  return mode==='direct'?{teamMode:'direct'}:{teamMode:'team',teamId:teamID};
+}
+
 class TeamChatController{
   constructor({root,request,openRun,onChange}){
     Object.assign(this,{root,request,openRun,onChange});
     this.teams=[];this.current=null;this.run=null;this.team=null;
     this.pending=false;this.queued=false;this.lastFetch=0;this.generation=0;this.compact=false;
+    this.deliveryPending=false;this.deliveryError='';
   }
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
@@ -22,11 +27,22 @@ class TeamChatController{
   open(team){
     clearTimeout(this.timer);
     this.current=team||null;this.team=team||null;this.run=null;this.compact=false;this.generation++;
+    this.deliveryPending=false;this.deliveryError='';
     this.render();if(this.current)this.refreshRun(true);
   }
   close(){this.open(null);}
   openSettings(){if(this.current)new TeamSettingsDialog({request:this.request,onChange:team=>{this.onChange&&this.onChange(team);}}).open(this.current);}
   accepted(){this.refreshRun(true);}
+  async setDelivery(status){
+    const team=this.team,run=this.run;
+    if(!team||!run||this.deliveryPending)return;
+    this.deliveryPending=true;this.deliveryError='';this.render();
+    try{
+      const updated=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(run.id)+'/delivery',{method:'POST',body:{status,version:run.version}});
+      if(this.team?.id===team.id&&this.run?.id===run.id)this.run=updated;
+    }catch(error){this.deliveryError=error.message;}
+    finally{this.deliveryPending=false;this.render();}
+  }
   schedule(){
     clearTimeout(this.timer);if(!this.current)return;
     if(this.run&&TEAM_TERMINAL_RUN_STATUSES.has(this.run.status))return;
@@ -101,6 +117,23 @@ class TeamChatController{
       if(results)artifacts.append(this.node('span',results+' '+t_safe('份任务结果'),'team-workflow-artifact'));
       if(run.verify)artifacts.append(this.node('span',t_safe('验证退出码 ')+run.verify.exitCode,'team-workflow-artifact'));
       card.append(artifacts);
+    }
+    if(run.deliveryStatus){
+      const delivery=this.node('div',undefined,'team-delivery '+run.deliveryStatus);
+      const labels={pending_review:t_safe('执行完成，等待你验收'),accepted:t_safe('成果已接受'),discarded:t_safe('成果已丢弃')};
+      delivery.append(this.node('strong',labels[run.deliveryStatus]||run.deliveryStatus));
+      if(run.deliveryStatus==='pending_review'){
+        const actions=this.node('div',undefined,'team-delivery-actions');
+        const accept=this.button(t_safe('接受成果'),()=>this.setDelivery('accepted'));accept.classList.add('primary');
+        const revise=this.button(t_safe('创建修订 Run'),()=>this.openRun&&this.openRun(team.id,run.id));
+        const discard=this.button(t_safe('丢弃'),()=>{
+          if(typeof window==='undefined'||window.confirm(t_safe('丢弃这份成果？执行记录仍会保留。')))this.setDelivery('discarded');
+        });
+        for(const button of [accept,revise,discard])button.disabled=this.deliveryPending;
+        actions.append(accept,revise,discard);delivery.append(actions);
+      }
+      if(this.deliveryError)delivery.append(this.node('p',this.deliveryError,'error'));
+      card.append(delivery);
     }
     root.append(card);
   }
@@ -207,4 +240,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker};
+if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields};

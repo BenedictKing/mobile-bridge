@@ -6,7 +6,7 @@ global.teamRunStatusLabel=status=>status;
 global.teamTaskStatusLabel=status=>status;
 global.TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 global.BridgeI18n={agentLabel:kind=>kind};
-const {TeamChatController,TeamSettingsDialog,TeamLeadPicker}=require('../web/team-chat.js');
+const {TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields}=require('../web/team-chat.js');
 
 class FakeNode{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
@@ -18,7 +18,7 @@ class FakeNode{
   close(){this.open=false;for(const listener of this.listeners.close||[])listener();}
   get classList(){
     const node=this;
-    return{toggle(name,force){node.className=node.className.split(/\s+/).filter(Boolean).filter(part=>part!==name).concat(force===false?[]:[name]).join(' ');}};
+    return{add(name){if(!node.className.split(/\s+/).includes(name))node.className+=(node.className?' ':'')+name;},toggle(name,force){node.className=node.className.split(/\s+/).filter(Boolean).filter(part=>part!==name).concat(force===false?[]:[name]).join(' ');}};
   }
 }
 global.Option=class{constructor(text,value){this.textContent=text;this.value=value;this.className='';this.children=[];}};
@@ -129,4 +129,28 @@ test('cancelling first team lead picker returns null without creating a team',as
   find(picker.body,'plain')[0].onclick();
   assert.equal(await selected,null);
   assert.equal(calls.filter(call=>call.options.method==='PUT').length,0);
+});
+
+test('team submission fields distinguish direct chat from orchestration',()=>{
+  assert.deepEqual(teamSubmissionFields('direct','team-1'),{teamMode:'direct'});
+  assert.deepEqual(teamSubmissionFields('team','team-1'),{teamMode:'team',teamId:'team-1'});
+});
+
+test('pending delivery accepts a result through the delivery API',async()=>{
+  const root=new FakeNode('div'),calls=[];
+  const run={id:'run-1',status:'completed',deliveryStatus:'pending_review',version:3,tasks:[]};
+  const controller=new TeamChatController({root,request:async(path,options={})=>{
+    calls.push({path,options});
+    if(path.endsWith('/runs'))return{runs:[{id:'run-1'}]};
+    if(path.endsWith('/delivery'))return{...run,deliveryStatus:'accepted',version:4};
+    return run;
+  },openRun(){}});
+  controller.setTeams(teams);controller.open(teams[0]);await flush();
+  assert.equal(find(root,'team-delivery-actions').length,1);
+  find(root,'team-delivery-actions')[0].children[0].onclick();await flush();
+  const delivery=calls.find(call=>call.path.endsWith('/delivery'));
+  assert.equal(delivery.options.method,'POST');
+  assert.deepEqual(delivery.options.body,{status:'accepted',version:3});
+  assert.equal(controller.run.deliveryStatus,'accepted');
+  assert.equal(find(root,'team-delivery-actions').length,0);
 });

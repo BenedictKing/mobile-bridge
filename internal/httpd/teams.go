@@ -652,10 +652,16 @@ func (h *handler) teamConversation(threadID, teamID string) (*team.Team, error) 
 
 // handleTeamConversationSend 把 Lead 主控会话的普通发送直接转换为 autoPlan
 // Run。调用点位于普通 direct-send 记账之前，因此同一条消息绝不会先 Prompt
-// 再补 Run。返回 false 仅表示该会话不属于任何团队 Lead。
+// 再补 Run。teamMode=direct 或非 Lead 会话返回 false，继续普通发送。
 func (h *handler) handleTeamConversationSend(threadID string, object *jsoncompat.Object) bool {
 	if h.server.TeamStore == nil || h.server.Teams == nil {
 		return false
+	}
+	if teamMode := stringField(object, "teamMode"); teamMode == "direct" {
+		return false
+	} else if teamMode != "" && teamMode != "team" {
+		h.fail(http.StatusBadRequest, errorBody("团队消息模式无效"))
+		return true
 	}
 	payload := readSubmissionPayload(object)
 	teamRow, resolveErr := h.teamConversation(threadID, stringField(object, "teamId"))
@@ -907,9 +913,40 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 	case "decision":
 		// 成员提问的回答（§5.4，阶段三）。
 		h.handleRunDecision(teamID, runID)
+	case "delivery":
+		h.handleRunDelivery(teamID, runID)
 	default:
 		h.fail(http.StatusNotFound, errorBody("页面不存在"))
 	}
+}
+
+func (h *handler) handleRunDelivery(teamID, runID string) {
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	body := value.(*jsoncompat.Object)
+	status := stringField(body, "status")
+	if status != team.DeliveryAccepted && status != team.DeliveryDiscarded {
+		h.fail(http.StatusBadRequest, errorBody("交付状态必须是 accepted 或 discarded"))
+		return
+	}
+	version, err := parseTeamVersion(body)
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	run, duplicate, err := h.server.Teams.SetDeliveryStatus(runID, status, version)
+	if err != nil {
+		h.failTeamError(err)
+		return
+	}
+	result := teamRunDetail(run)
+	if duplicate {
+		result.Set("duplicate", true)
+	}
+	h.output(http.StatusOK, result, contentTypeJSON, "")
 }
 
 // ---- 阶段三增量端点（§5.4/§6.4.1/§10.2）----
@@ -2198,6 +2235,9 @@ func teamRunSummary(run *team.Run) *jsoncompat.Object {
 		summary.Set("mode", run.Mode)
 	}
 	summary.Set("status", run.Status)
+	if run.DeliveryStatus != "" {
+		summary.Set("deliveryStatus", run.DeliveryStatus)
+	}
 	if run.StopReason != "" {
 		summary.Set("stopReason", run.StopReason)
 	}
@@ -2231,6 +2271,9 @@ func teamRunMeta(run *team.Run) *jsoncompat.Object {
 		meta.Set("collectPolicy", run.CollectPolicy)
 	}
 	meta.Set("status", run.Status)
+	if run.DeliveryStatus != "" {
+		meta.Set("deliveryStatus", run.DeliveryStatus)
+	}
 	meta.Set("stopReason", run.StopReason)
 	meta.Set("taskCounts", teamTaskCounts(run))
 	open := 0

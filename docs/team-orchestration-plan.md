@@ -261,6 +261,8 @@ created → planning → dispatching → collecting → reducing → completed
                                   └────────────→ outcome_unknown
 ```
 
+执行状态与交付状态分离。成功 `completed` 的新 Run 同时写入 `deliveryStatus=pending_review`；用户接受后为 `accepted`，丢弃后为 `discarded`。交付状态不改变 `terminalRun`、恢复和调度语义，只有 `completed + pending_review` 可接受或丢弃，已接受后不得再丢弃。`run_completed` 与 `run_delivery_updated` 是 Journal 的重建依据，旧快照缺少该字段时不批量改写历史展示。
+
 ## 5. 编排协议
 
 ### 5.1 为什么不能直接解析自然语言
@@ -281,6 +283,8 @@ Lead 可以返回普通回答，也可以在回答中附加：
 autoPlan Lead 的任务派发文本会在原始 goal 前附加 `[Team delegation]` 简报，列出启用成员的 ID、名称、Agent 类型、角色、动作字段、当前 `autoDispatch` 语义与轮次/任务/并发限制，使 Lead 不必猜测成员和协议。简报只用于 autoPlan 的 Lead 普通任务与派生任务；显式计划、普通成员、转发和修复任务不注入。最终顺序为 `[Team delegation]` → `[Team context]` → `[Assigned task]`/原始 Prompt，原始 goal 保留且只出现一次。
 
 简报中的动作示例只展示 JSON 动作对象，不携带字面 `<team-actions>` 信封，避免 Agent 回显 prompt 时将示例误执行。若成员结果还需 Lead 汇总或继续规划，简报会要求首批动作同时给 Lead 自身安排一条 `delegate` 后续任务，而不是在该批动作中提前混入 `summarize`；后续 Lead 任务取得结果后再发起汇总。简报与依赖上下文共同进入派发期 `InputHash`；创建期哈希、PlanHash 和 amend 缓存规则不变。完整派发文本仍持久化为 `Task.SentText`，重启、收养、取消和 turn 匹配始终优先使用存量文本。
+
+autoPlan 一旦存在已完成的非 Lead 任务，成功终局前由 Team Service 确定性补一条 `lead-auto-reduce` 收尾任务，不再依赖 Lead 自觉汇总。该任务依赖全部已完成的非收尾结果、`writeLock=none`、`reduction=true`，汇总目标、改动、验证和遗留问题；自动收尾结果不解析新 `team-actions`，但 Lead 主动 summarize 仍保留原有动作与修复能力。任务满额时落确定性失败，纯 Lead、显式计划及失败/取消路径不补收尾。`task_planned` 持久化 reduction、prompt 和 dependsOn，供 Journal 重建。
 
 解析规则：
 
@@ -654,7 +658,7 @@ DELETE /api/teams/:teamID/members/:memberID
 
 创建请求可同时携带顶层 `project`，并随 Team 账本持久化；未显式携带时从成员的项目键归一。项目型团队成员必须同属一个项目，后续新增或换绑会话也校验工作目录。旧的无项目 Team 账本继续按原规则读取。
 
-项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次打开时先通过 `GET /api/projects/:projectKey/agents` 让用户选择主控，确认后以 `{leadAgent}` 创建团队及项目历史 ACP Agent 的专用会话，取消则不创建；保存 `defaultForProject=true` 与稳定 `projectCwd`，重放复用已有团队且返回 `duplicate:true`。未携带 `leadAgent` 的旧客户端仍按候选首位创建，显式选择不在候选列表中的 Agent 返回 400。默认团队查找同时接受项目键和 `projectCwd` 匹配，因此 `acp:` / `codex:` 前缀随项目去重策略变化时不会误创建或误显示待创建。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
+项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次打开时先通过 `GET /api/projects/:projectKey/agents` 让用户选择主控，确认后以 `{leadAgent}` 创建团队及项目历史 ACP Agent 的专用会话，取消则不创建；保存 `defaultForProject=true` 与稳定 `projectCwd`，重放复用已有团队且返回 `duplicate:true`。未携带 `leadAgent` 的旧客户端仍按候选首位创建，显式选择不在候选列表中的 Agent 返回 400。候选至少 3 个时默认分配主控、执行成员和末位评审；两个时为主控+执行成员，一个时仅主控，不为凑角色取消执行成员。默认团队查找同时接受项目键和 `projectCwd` 匹配，因此 `acp:` / `codex:` 前缀随项目去重策略变化时不会误创建或误显示待创建。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
 
 成员添加接受 `{agent,role}` 并创建项目内专用会话；主控更换和成员移除在非终态 Run 存在时返回 409，避免静默改派在途任务。旧 Lead 会话和历史 Run 保留。
 
@@ -665,7 +669,7 @@ POST /api/sessions/:leadSessionID/uploads
 POST /api/sessions/:leadSessionID/send
 ```
 
-发送体在普通消息字段上增加可选 `teamId`。网关在 direct-send 记账前识别 Lead，将该消息直接创建为 `single + autoPlan` Run，而不是先发送普通 Prompt 再补 Run；未携带 `teamId` 时仅自动识别唯一 Lead 团队，多团队歧义返回 409。请求 `id` 同时是 Run 幂等键。首条 Lead Task 持久化 `attachments`，附件随 submissions 进入既有 `PromptWithBlocks` 链路，journal 重建和任务重试不丢失；后续 delegate 任务不重复携带这些附件。纯图片消息使用明确的目标占位文案。响应为 `{status:"accepted",teamId,runId,duplicate?}`。
+发送体在普通消息字段上增加可选 `teamId` 与 `teamMode`。`teamMode=team` 或缺省时，网关在 direct-send 记账前识别 Lead，将消息直接创建为 `single + autoPlan` Run，而不是先发送普通 Prompt 再补 Run；未携带 `teamId` 时仅自动识别唯一 Lead 团队，多团队歧义返回 409。`teamMode=direct` 明确跳过团队识别，走普通 Lead 会话直答且不创建 Run。请求 `id` 同时是 Run 幂等键，前端把 `teamId` 与 `teamMode` 都纳入消息身份。首条 Lead Task 持久化 `attachments`，附件随 submissions 进入既有 `PromptWithBlocks` 链路，journal 重建和任务重试不丢失；后续 delegate 任务不重复携带这些附件。纯图片消息使用明确的目标占位文案。团队执行响应为 `{status:"accepted",teamId,runId,duplicate?}`，直答沿用普通发送响应。
 
 聊天页读取最近 Run 的任务投影，以阶段轨道、成员 pill 和结果摘要展示 workflow，并周期追随刷新；显式 pipeline、定时 Run、修订和高级控制仍走下述 Run API。团队输入区不支持 Skill、计划/目标模式和 steer，普通发送与完成后发送可用。
 
@@ -680,6 +684,7 @@ GET    /api/teams/:teamID/runs/:runID
 POST   /api/teams/:teamID/runs/:runID/cancel
 POST   /api/teams/:teamID/runs/:runID/resume
 POST   /api/teams/:teamID/runs/:runID/amend
+POST   /api/teams/:teamID/runs/:runID/delivery
 POST   /api/teams/:teamID/runs/:runID/decision
 GET    /api/teams/:teamID/runs/:runID/questions
 GET    /api/teams/:teamID/runs/:runID/events
@@ -704,6 +709,8 @@ GET    /api/teams/:teamID/runs/:runID/events
 `plan` 为空时才允许 Lead 产生 `team-actions`。显式 Plan 优先级高于 Agent 自动计划，便于调试和复现。
 
 `POST .../amend` 创建新的 Run，不修改旧 Run 的 journal；请求必须携带修订后的 Plan 或目标，服务端计算新的 `planHash`，并按 `inputHash` 导入允许复用的前驱结果。`resume` 只用于外因暂停和已回答问题，不得把确定性 `failed` 或 `outcome_unknown` 直接改成 `running`。
+
+`POST .../delivery` 请求体为 `{status:"accepted"|"discarded",version}`，只接受 `completed + pending_review` 的 Run。同目标状态重放返回 `duplicate:true`；版本冲突、未完成或冲突转换返回 409。接受/丢弃不改变执行状态，修订仍通过 amend 创建新 Run。
 
 ### 10.3 事件流
 
@@ -732,6 +739,7 @@ question_opened
 question_resolved
 run_waiting_input
 run_completed
+run_delivery_updated
 run_failed
 ```
 

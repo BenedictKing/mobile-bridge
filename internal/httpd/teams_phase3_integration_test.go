@@ -139,7 +139,7 @@ func phase3OpenQuestionCount(t *testing.T, detail map[string]any, taskID string)
 }
 
 // eventPayloadString / eventPayloadInt 是 journal payload 的宽松取值
-//（journal 重放经 jsoncompat，数字是 json.Number）。
+// （journal 重放经 jsoncompat，数字是 json.Number）。
 func eventPayloadString(payload map[string]any, key string) string {
 	value, _ := payload[key].(string)
 	return value
@@ -389,7 +389,7 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 // TestTeamPhase3InvalidActionRepairLoop 覆盖三条修复回路：非法 JSON → 修复
 // 指令回送 Lead 会话 → 修复回合回合法块 → 派生任务执行；连续 3 次修复仍
 // 非法 → 第 4 次失败 final=true、无第 4 条修复消息、Run 不因动作失败而失败
-//（根结果按普通文本保留）；宽容 JSON（单引号/尾逗号）一次通过（无
+// （根结果按普通文本保留）；宽容 JSON（单引号/尾逗号）一次通过（无
 // invalid_action_block、无修复回合）。
 func TestTeamPhase3InvalidActionRepairLoop(t *testing.T) {
 	t.Run("非法后修复合法并执行", func(t *testing.T) {
@@ -444,8 +444,8 @@ func TestTeamPhase3InvalidActionRepairLoop(t *testing.T) {
 		if derivedAt < 0 || records[derivedAt].session != sessionDev {
 			t.Fatalf("派生任务应派发到 dev 会话: %v", records)
 		}
-		if len(records) != 3 {
-			t.Fatalf("应恰 3 条提示词（根/修复/派生）: %d", len(records))
+		if len(records) != 4 || promptIndex(records, "请汇总本次团队执行成果") < 0 {
+			t.Fatalf("应为根/修复/派生/最终收尾共 4 条提示词: %v", records)
 		}
 	})
 
@@ -535,8 +535,8 @@ func TestTeamPhase3InvalidActionRepairLoop(t *testing.T) {
 			t.Fatalf("派生任务应完成: %v", task)
 		}
 		records := readTeamPrompts(t, env.dataDir)
-		if len(records) != 2 || promptIndex(records, "解析失败") >= 0 {
-			t.Fatalf("应恰 2 条提示词（根+派生）且无修复回合: %v", records)
+		if len(records) != 3 || promptIndex(records, "解析失败") >= 0 || promptIndex(records, "请汇总本次团队执行成果") < 0 {
+			t.Fatalf("应为根/派生/最终收尾共 3 条提示词且无修复回合: %v", records)
 		}
 	})
 }
@@ -561,7 +561,7 @@ func writeTeamPhase3LongIDState(t *testing.T, dataDir string) (string, string) {
 	writeTeamPhase3Files(t, dataDir,
 		map[string]*team.Team{teamID: {ID: teamID, Name: "长 ID 团队",
 			Members: []team.TeamMember{{ID: "lead", SessionID: sessionLead, AgentKind: "kimi", Role: team.RoleLead, Enabled: true}},
-			LeadID: "lead", Policy: policy, CreatedAt: now, UpdatedAt: now}},
+			LeadID:  "lead", Policy: policy, CreatedAt: now, UpdatedAt: now}},
 		map[string]*team.Run{runID: run},
 		[]*team.Event{
 			{ID: uuid.NewString(), RunID: runID, Type: team.EventRunCreated, Source: "user",
@@ -729,7 +729,7 @@ func writeTeamPhase3RejectState(t *testing.T, dataDir string) (teamA, runA, team
 
 // TestTeamPhase3ActionRejectionsExplained：执行侧拒绝各有可解释中文原因——
 // action_rejected 事件 + 快照 pendingActions[].status=rejected/reason 非空
-//（评审硬伤②的前端数据源）；autoDispatch=false 的动作停在 proposed（预览）
+// （评审硬伤②的前端数据源）；autoDispatch=false 的动作停在 proposed（预览）
 // 且不阻塞 Run 终局。
 func TestTeamPhase3ActionRejectionsExplained(t *testing.T) {
 	dataDir := t.TempDir()
@@ -1578,7 +1578,7 @@ func TestTeamPhase3InputHashMismatchVisible(t *testing.T) {
 	writeTeamPhase3Files(t, dataDir,
 		map[string]*team.Team{teamID: {ID: teamID, Name: "漂移团队",
 			Members: []team.TeamMember{{ID: "lead", SessionID: sessionLead, AgentKind: "kimi", Role: team.RoleLead, Enabled: true}},
-			LeadID: "lead", Policy: policy, CreatedAt: now, UpdatedAt: now}},
+			LeadID:  "lead", Policy: policy, CreatedAt: now, UpdatedAt: now}},
 		map[string]*team.Run{runID: run},
 		[]*team.Event{
 			{ID: uuid.NewString(), RunID: runID, Type: team.EventRunCreated, Source: "user", CreatedAt: now,

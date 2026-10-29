@@ -572,6 +572,9 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			}
 		case EventRunCompleted:
 			run.Status = RunCompleted
+			run.DeliveryStatus = DeliveryPendingReview
+		case EventRunDeliveryUpdated:
+			run.DeliveryStatus = payloadString(event.Payload, "deliveryStatus")
 		case EventRunFailed:
 			run.Status = RunFailed
 		case EventRunCancelled:
@@ -678,6 +681,11 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.MemberID = payloadString(event.Payload, "memberId")
 		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
 		task.Attachments = payloadStrings(event.Payload, "attachments")
+		task.Reduction = payloadBool(event.Payload, "reduction")
+		if task.Reduction {
+			task.Prompt = payloadString(event.Payload, "prompt")
+			task.DependsOn = payloadStrings(event.Payload, "dependsOn")
+		}
 		// 修复任务（actfix-*）的 task_planned 携带 round 增载（§5.1 修复
 		// 回路随轮次推进）；携带 actionKey 的是执行流落地动作的凭据
 		// （actions-exec 契约），对应动作置 executed。

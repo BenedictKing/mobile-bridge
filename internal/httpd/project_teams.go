@@ -113,6 +113,16 @@ func (h *handler) teamProjectCwd(teamRow *team.Team) string {
 	return (teamSessionResolver{server: h.server}).Cwd(teamLeadSessionID(teamRow))
 }
 
+func defaultTeamRole(index, count int) string {
+	if index == 0 {
+		return team.RoleLead
+	}
+	if count >= 3 && index == count-1 {
+		return team.RoleReviewer
+	}
+	return team.RoleMember
+}
+
 func (h *handler) handleDefaultTeamPut(projectKey string) {
 	cwd := h.resolveProjectCwd(projectKey)
 	if cwd == "" {
@@ -168,10 +178,7 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 		entry.Set("id", memberID)
 		entry.Set("project", projectKey)
 		entry.Set("agent", candidate.Agent)
-		entry.Set("role", team.RoleMember)
-		if index == 0 {
-			entry.Set("role", team.RoleLead)
-		}
+		entry.Set("role", defaultTeamRole(index, len(candidates)))
 		entry.Set("name", candidate.Agent)
 		sessionID, status, err := h.createTeamProjectSession(entry, name, teamID)
 		if err != nil {

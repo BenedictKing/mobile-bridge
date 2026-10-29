@@ -1011,6 +1011,7 @@ func buildActionTask(run *Run, team *Team, action *Action) Task {
 		WorkspaceMode:    WorkspaceShared,
 		Status:           TaskPlanned,
 		InstructionsHead: InstructionsHead(prompt),
+		Reduction:        action.Type == ActionTypeSummarize,
 	}
 	// 创建期确定性字段（与 planner/修复任务同口径）：contextText 恒空串，
 	// 派发期按真实注入上下文重算（accountDispatchLocked）。

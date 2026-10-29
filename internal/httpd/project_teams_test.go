@@ -60,6 +60,23 @@ func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestDefaultTeamRoles(t *testing.T) {
+	cases := []struct {
+		index, count int
+		want         string
+	}{
+		{0, 1, "lead"},
+		{0, 2, "lead"}, {1, 2, "member"},
+		{0, 3, "lead"}, {1, 3, "member"}, {2, 3, "reviewer"},
+		{1, 4, "member"}, {2, 4, "member"}, {3, 4, "reviewer"},
+	}
+	for _, testCase := range cases {
+		if got := defaultTeamRole(testCase.index, testCase.count); got != testCase.want {
+			t.Fatalf("defaultTeamRole(%d, %d)=%q，期望 %q", testCase.index, testCase.count, got, testCase.want)
+		}
+	}
+}
+
 func TestDefaultTeamRejectsUnknownLeadAgent(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	project := "acp:" + hashProject(env.dataDir)

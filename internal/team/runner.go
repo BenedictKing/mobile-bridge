@@ -1196,6 +1196,9 @@ func (s *Service) passFold(state *runState) bool {
 	if hasRunnableProposedActions(run, policyOf(s.store.Team(run.TeamID))) {
 		return true
 	}
+	if s.ensureAutoPlanReductionLocked(state, run) {
+		return true
+	}
 	if status, stopReason := FoldRunStatus(run.Tasks, run.Mode, run.CollectPolicy); status != "" {
 		// 验证闸门拦截（§6.4.1）：fold 判 completed 且闸门未决 → 不直接终局，
 		// 推进 RunReducing 并启动闸门（退出码交判定，绝不采信 Agent 口头
@@ -2266,7 +2269,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 		events = append(events,
 			withdrawTaskQuestions(fresh, dispatch.taskID, questionWithdrawTaskTerminal, "watcher")...)
 		team := s.store.Team(fresh.TeamID)
-		leadDriven := fresh.AutoPlan && source != nil && team != nil &&
+		leadDriven := fresh.AutoPlan && source != nil && !isAutoReductionTask(source) && team != nil &&
 			team.LeadID != "" && source.MemberID == team.LeadID
 		switch {
 		case leadDriven && len(violations) > 0:
@@ -2795,6 +2798,9 @@ func (s *Service) finishRunLocked(state *runState, run *Run, status, stopReason 
 		}
 		fresh.Status = status
 		fresh.StopReason = stopReason
+		if status == RunCompleted {
+			fresh.DeliveryStatus = DeliveryPendingReview
+		}
 		if eventType := runStatusEvent(status); eventType != "" {
 			payload := map[string]any{}
 			if stopReason != "" {
