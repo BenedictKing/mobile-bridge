@@ -64,6 +64,12 @@ type SessionResolver interface {
 	Cwd(threadID string) string
 }
 
+// SessionRecreator 是可选的会话恢复端口：仅在 session/load 明确报告会话
+// 不存在时创建同 Agent、cwd 的替代会话；调用方负责回写成员绑定。
+type SessionRecreator interface {
+	Recreate(agentKind, threadID, cwd string) (sessionID string, err error)
+}
+
 // TranscriptSource 提取成员会话的有界转录（§7.1「用户可以选择注入最近 N 条
 // 消息」的阶段二实现：按 scope 裁剪，绝不静默注入完整 transcript）。实现方
 // 只读会话快照，不产生任何会话副作用。

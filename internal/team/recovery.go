@@ -10,7 +10,7 @@ package team
 //	task_dispatching: {taskId, sessionId, submissionId, inputHash, attempt}
 //	task_completed:   {taskId, sessionId, turnId, result, resultChars, truncated, stopReason}
 //	task_failed:      {taskId, error}
-//	task_retry_scheduled: {taskId, attempt, outcome}
+//	task_retry_scheduled: {taskId, attempt, outcome, memberId?, prompt?, writeLock?, actionKey?}
 //	task_outcome_unknown / task_stopped: {taskId, stopReason}
 //	task_input_hash_mismatch: {taskId, expected, actual}
 //	task_cache_hit:   {taskId, parentRunId, parentTaskId, inputHash, sessionId, turnId, result, resultChars, truncated}
@@ -125,7 +125,7 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 	// 重放 journal：任务终态、最近派发记录与派发哈希集合。
 	terminal := map[string]*journalTerminal{}
 	dispatch := map[string]*journalDispatch{}
-	retry := map[string]int{} // taskId → 重臂后的下一次尝试号（task_retry_scheduled）
+	retry := map[string]taskRetryAssignment{} // taskId → 重臂/改派事实（task_retry_scheduled）
 	hashes := map[string]map[string]bool{}
 	unknownTaskID := ""
 	for _, event := range events {
@@ -221,7 +221,7 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 			// 预算仍在），后续按快照 ready 交调度循环重派；更高 attempt 的
 			// task_dispatching 到来时标记再被派发事实取代（上方 delete）。
 			delete(terminal, taskID)
-			retry[taskID] = payloadInt(event.Payload, "attempt")
+			retry[taskID] = retryAssignmentFromEvent(event)
 		case EventTaskOutcomeUnknown:
 			terminal[taskID] = &journalTerminal{
 				status:     TaskOutcomeUnknown,
@@ -272,16 +272,12 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 			}
 			continue
 		}
-		if _, retried := retry[task.ID]; retried {
-			// 受限重试的重臂事实未被新派发取代（重试冷却/等待片中重启）：
-			// 任务不是终态，也不按旧 attempt 的派发记录探账本——旧派发的
-			// 结论已随 task_failed 落账，账本状态与重派无关；按 ready 交给
-			// 调度循环按快照 attempt 重派（新 attempt 派全新 submissionID）。
-			if task.Status != TaskReady {
+		if assignment, retried := retry[task.ID]; retried {
+			// 重臂/改派事实未被新派发取代：不按旧 attempt 的派发记录探账本，
+			// 按 journal 中的新成员、新说明与 attempt 恢复后交调度循环。
+			if !taskRetryAssignmentApplied(&task, assignment) {
 				transitions = append(transitions, Transition{
-					Kind:   TransitionTaskStatus,
-					TaskID: task.ID,
-					Status: TaskReady,
+					Kind: TransitionTaskStatus, TaskID: task.ID, Status: TaskReady, Retry: &assignment,
 				})
 			}
 			continue

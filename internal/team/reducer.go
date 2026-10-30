@@ -24,14 +24,15 @@ const (
 // 追加对应类型的 journal 事件（空串表示纯重建——journal 里已有该事实，如
 // 重放恢复的终态，不要重复记账）。
 type Transition struct {
-	Kind       string      // TransitionTaskStatus / TransitionRunStatus / TransitionDispatch
-	TaskID     string      // 任务级转移的目标任务；Run 级与派发指令以外的转移为空
-	Status     string      // 目标状态（任务级与 Run 级通用）
-	StopReason string      // 终止原因（可选）
-	Error      string      // 失败详情（可选）
-	Outcome    string      // 失败分类（可选，§6.3 错误策略表；随任务迁移写快照）
-	EventType  string      // 需随迁移落 journal 的事件类型（可选，见上）
-	Result     *TaskResult // 重建 completed 终态时携带的有界结果（可选）
+	Kind       string               // TransitionTaskStatus / TransitionRunStatus / TransitionDispatch
+	TaskID     string               // 任务级转移的目标任务；Run 级与派发指令以外的转移为空
+	Status     string               // 目标状态（任务级与 Run 级通用）
+	StopReason string               // 终止原因（可选）
+	Error      string               // 失败详情（可选）
+	Outcome    string               // 失败分类（可选，§6.3 错误策略表；随任务迁移写快照）
+	EventType  string               // 需随迁移落 journal 的事件类型（可选，见上）
+	Result     *TaskResult          // 重建 completed 终态时携带的有界结果（可选）
+	Retry      *taskRetryAssignment // 重臂/改派事实（可选，journal 重放专用）
 }
 
 // AssistantFullText 返回 turn.messages 中 assistant 文本块的按序拼接全文

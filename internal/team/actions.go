@@ -929,18 +929,25 @@ func ValidateExecutable(run *Run, team *Team, policy TeamPolicy, action *Action,
 		if runes := len([]rune(prompt)); runes > PromptLimit(policy.MaxContextChars) {
 			return false, fmt.Sprintf("任务内容过长：%d 字，当前上限 %d 字", runes, PromptLimit(policy.MaxContextChars))
 		}
-		derived := ActionDerivedTaskID(action)
-		if derived == "" {
-			return false, "动作幂等键缺少执行序号，无法派生任务 ID：" + action.ActionKey
-		}
-		if !ValidMemberID(derived) {
-			return false, fmt.Sprintf("派生任务 ID 超长或含非法字符（字母/数字/下划线/连字符，1-64 字符）：%s", derived)
-		}
-		if findTaskIn(run, derived) != nil {
-			return false, fmt.Sprintf("派生任务 ID 已存在：%s", derived)
-		}
-		if len(run.Tasks)+1 > policy.MaxTasksPerRun {
-			return false, fmt.Sprintf("任务数已达上限 %d，无法创建派生任务", policy.MaxTasksPerRun)
+		retriageTarget, retriage := failureRetriageTarget(run, action)
+		if retriage {
+			if retriageTarget == nil || retriageTarget.Status != TaskFailed {
+				return false, "分诊改派的原任务已处理或不存在"
+			}
+		} else {
+			derived := ActionDerivedTaskID(action)
+			if derived == "" {
+				return false, "动作幂等键缺少执行序号，无法派生任务 ID：" + action.ActionKey
+			}
+			if !ValidMemberID(derived) {
+				return false, fmt.Sprintf("派生任务 ID 超长或含非法字符（字母/数字/下划线/连字符，1-64 字符）：%s", derived)
+			}
+			if findTaskIn(run, derived) != nil {
+				return false, fmt.Sprintf("派生任务 ID 已存在：%s", derived)
+			}
+			if len(run.Tasks)+1 > policy.MaxTasksPerRun {
+				return false, fmt.Sprintf("任务数已达上限 %d，无法创建派生任务", policy.MaxTasksPerRun)
+			}
 		}
 		if memberBusy != nil && memberBusy[targetMember] {
 			return false, fmt.Sprintf("成员 %s 在本 Run 中已有运行中的任务", targetMember)
@@ -975,7 +982,9 @@ func buildActionTask(run *Run, team *Team, action *Action) Task {
 		deps = append(deps, action.SourceTaskID)
 		if action.Member == team.LeadID {
 			for i := range run.Tasks {
-				if run.Tasks[i].MemberID != team.LeadID && !run.Tasks[i].Reduction {
+				status := run.Tasks[i].Status
+				if run.Tasks[i].MemberID != team.LeadID && !run.Tasks[i].Reduction &&
+					status != TaskFailed && status != TaskCancelled && status != TaskOutcomeUnknown && status != TaskStopped {
 					deps = append(deps, run.Tasks[i].ID)
 				}
 			}

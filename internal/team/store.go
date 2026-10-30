@@ -682,7 +682,8 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
 		task.Attachments = payloadStrings(event.Payload, "attachments")
 		task.Reduction = payloadBool(event.Payload, "reduction")
-		if task.Reduction {
+		task.TriageFor = payloadString(event.Payload, "triageFor")
+		if task.Reduction || task.TriageFor != "" {
 			task.Prompt = payloadString(event.Payload, "prompt")
 			task.DependsOn = payloadStrings(event.Payload, "dependsOn")
 		}
@@ -737,6 +738,10 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.Status = TaskFailed
 		task.Error = payloadString(event.Payload, "error")
 		task.Outcome = payloadString(event.Payload, "outcome")
+	case EventTaskRetryScheduled:
+		applyTaskRetryAssignment(task, retryAssignmentFromEvent(event))
+		advanceRebuildRound(run, event)
+		markRebuildActionExecuted(run, payloadString(event.Payload, "actionKey"))
 	case EventTaskOutcomeUnknown:
 		task.Status = TaskOutcomeUnknown
 	case EventTaskStopped, EventTaskInputHashMismatch:
@@ -814,8 +819,8 @@ func advanceRebuildRound(run *Run, event *Event) {
 }
 
 // markRebuildActionExecuted 把 actionKey 对应的 proposed 动作置 executed
-// （payload.actionKey 非空的 task_planned / task_forwarded 是执行流的落地
-// 凭据；已 rejected 的动作不再改写——拒绝是终局）。
+// （task_planned / task_forwarded / task_retry_scheduled 都是执行流落地凭据；
+// 已 rejected 的动作不再改写——拒绝是终局）。
 func markRebuildActionExecuted(run *Run, actionKey string) {
 	if actionKey == "" {
 		return

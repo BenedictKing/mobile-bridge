@@ -65,7 +65,10 @@ var (
 	quotaRE = regexp.MustCompile(`(?i)额度|余额|配额|充值|积分不足|欠费|insufficient\s+credit|payment\s+required|\b402\b`)
 	// auth：401/403/invalid_grant/invalid_token/unauthorized 及中文等价词
 	// （词表参照 accpool 的判定，internal/accpool/kimi.go:213-215）。
-	authRE = regexp.MustCompile(`(?i)\b401\b|\b403\b|invalid[\s_-]?grant|invalid[\s_-]?token|unauthorized|认证失败|鉴权失败|登录过期|登陆过期`)
+	// 「登录已失效」是 acpruntime.refusalFailure 对 401 的中文改写文案，必须
+	// 命中——否则认证失败会被当成确定性失败，整轮 Run 直接 failed，而 §6.3
+	// 的口径是停靠该任务 + Run 转 waiting_input 等用户处理。
+	authRE = regexp.MustCompile(`(?i)\b401\b|\b403\b|invalid[\s_-]?grant|invalid[\s_-]?token|unauthorized|authentication\s+required|认证失败|鉴权失败|登录已失效|登录失效|登陆已失效|登陆失效|登录过期|登陆过期`)
 	// notConfigured：Agent/账号未配置类文案（acphost/host.go:57 一类）。
 	notConfiguredRE = regexp.MustCompile(`(?i)未配置|没有配置|not\s+configured|请先配置`)
 	// contextOverflow：上下文超限（context length / prompt too long 等）。

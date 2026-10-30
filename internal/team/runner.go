@@ -806,11 +806,10 @@ func (s *Service) executeAction(state *runState, team *Team, policy TeamPolicy, 
 	}
 }
 
-// executePlannedAction 落地 delegate/summarize（§5.2）：判定→拒绝（action_
-// rejected + 快照 Status/Reason）或执行（先扩快照再 task_planned（payload 增载
-// round+actionKey——重建推 Run.Round 与动作 executed 态）+ 动作 executed +
-// Run.Round=max 推进）全部在单批 commitRun 内原子落账。派发零新代码：新任务
-// planned，同 pass 的 passDispatch 经 ReadyTasks/executeDispatch 全套派出。
+// executePlannedAction 落地 delegate/summarize（§5.2）：判定→拒绝或执行，
+// 全部在单批 commitRun 内原子落账。普通 delegate 新建派生任务；分诊 delegate
+// 通过 task_retry_scheduled 重臂原任务并恢复其级联停止的下游。两类结果都交
+// 同 pass 的 ReadyTasks/executeDispatch 全套派出。
 func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -829,21 +828,27 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 			event.IdempotencyKey = action.ActionKey
 			return []*Event{event}, true
 		}
-		task := buildActionTask(fresh, team, action)
-		fresh.Tasks = append(fresh.Tasks, task)
+		var events []*Event
+		if target, retriage := failureRetriageTarget(fresh, action); retriage {
+			events = applyRetriage(fresh, target, action)
+		} else {
+			task := buildActionTask(fresh, team, action)
+			fresh.Tasks = append(fresh.Tasks, task)
+			event := newEvent(fresh.ID, EventTaskPlanned, "runner", map[string]any{
+				"taskId":           task.ID,
+				"memberId":         task.MemberID,
+				"instructionsHead": task.InstructionsHead,
+				"round":            jsoncompat.Num(action.Round),
+				"actionKey":        action.ActionKey,
+			})
+			event.IdempotencyKey = actionExecutionKey(fresh.TeamID, fresh.ID, action.ActionKey)
+			events = []*Event{event}
+		}
 		if action.Round > fresh.Round {
 			fresh.Round = action.Round
 		}
 		fresh.PendingActions[index].Status = ActionStatusExecuted
-		event := newEvent(fresh.ID, EventTaskPlanned, "runner", map[string]any{
-			"taskId":           task.ID,
-			"memberId":         task.MemberID,
-			"instructionsHead": task.InstructionsHead,
-			"round":            jsoncompat.Num(action.Round),
-			"actionKey":        action.ActionKey,
-		})
-		event.IdempotencyKey = actionExecutionKey(fresh.TeamID, fresh.ID, action.ActionKey)
-		return []*Event{event}, true
+		return events, true
 	})
 	if err != nil {
 		log.Printf("team run %s 动作 %s 执行记账失败（下轮重试）: %v", state.runID, action.ActionKey, err)
@@ -947,7 +952,11 @@ func (s *Service) convergeAction(state *runState, team *Team, action *Action, ve
 			return nil, true
 		}
 		fresh.PendingActions[index].Status = ActionStatusExecuted
-		if action.Type == ActionTypeDelegate || action.Type == ActionTypeSummarize {
+		if target, retriage := failureRetriageTarget(fresh, action); retriage {
+			if target != nil && target.Status == TaskFailed {
+				_ = applyRetriage(fresh, target, action)
+			}
+		} else if action.Type == ActionTypeDelegate || action.Type == ActionTypeSummarize {
 			if derived := ActionDerivedTaskID(action); derived != "" && findTaskIn(fresh, derived) == nil {
 				fresh.Tasks = append(fresh.Tasks, buildActionTask(fresh, team, action))
 			}
@@ -990,8 +999,8 @@ func memberBusyOf(run *Run, pendingDispatch map[string]bool) map[string]bool {
 
 // actionJournalFacts 是一次 journal Replay 提取的动作事实：
 //   - proposed：action_proposed 幂等键计数（>1 即同 Run 重复提案，§5.2）；
-//   - settled：动作终局（携带 actionKey 的 task_planned/task_forwarded＝
-//     executed；action_rejected＝rejected）——崩溃窗口（事实已落、快照未存）
+//   - settled：动作终局（携带 actionKey 的 task_planned/task_forwarded/
+//     task_retry_scheduled＝executed；action_rejected＝rejected）——崩溃窗口（事实已落、快照未存）
 //     据此收敛，重复执行由它幂等短路；
 //   - reason：rejected 事实的拒绝原因（快照收敛用）。
 type actionJournalFacts struct {
@@ -1027,7 +1036,7 @@ func (s *Service) actionFacts(runID string) *actionJournalFacts {
 				facts.settled[event.IdempotencyKey] = actionVerdictRejected
 				facts.reason[event.IdempotencyKey] = payloadString(event.Payload, "reason")
 			}
-		case EventTaskPlanned, EventTaskForwarded:
+		case EventTaskPlanned, EventTaskForwarded, EventTaskRetryScheduled:
 			if key := payloadString(event.Payload, "actionKey"); key != "" {
 				facts.settled[key] = actionVerdictExecuted
 			}
@@ -1200,6 +1209,9 @@ func (s *Service) passFold(state *runState) bool {
 		return true
 	}
 	if status, stopReason := FoldRunStatus(run.Tasks, run.Mode, run.CollectPolicy); status != "" {
+		if status == RunFailed && s.ensureFailureTriageLocked(state, run) {
+			return true
+		}
 		// 验证闸门拦截（§6.4.1）：fold 判 completed 且闸门未决 → 不直接终局，
 		// 推进 RunReducing 并启动闸门（退出码交判定，绝不采信 Agent 口头
 		// 声明）。fold 为失败/取消等非完成终局时不拦——run 已失败，闸门无从
@@ -1286,6 +1298,14 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		s.failDispatch(state, runID, taskID, fmt.Sprintf("任务 %s 引用的成员不存在：%s", taskID, task.MemberID))
 		return
 	}
+	_, session, resolveErr := s.resolver.Resolve(member.SessionID)
+	if sessionNotFound(resolveErr) {
+		if err := s.recoverMissingMemberSession(team, member, cwd); err != nil {
+			s.failDispatch(state, runID, taskID, err.Error())
+			return
+		}
+		_, session, _ = s.resolver.Resolve(member.SessionID)
+	}
 	// (2) 锁外慢 I/O：AIMD 桶准入（§6.3）+ 测试注入缝。桶键按会话快照的
 	// latestModel 聚桶，解析不到降级 kind 级（防误聚桶）；Touch 登记该
 	// Team 的 MaxProviderConcurrency/MinParallelTasks 为桶的 ceiling/floor
@@ -1298,7 +1318,6 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	bucketKey := ""
 	aimdReserved := false
 	if s.AIMD != nil || s.Admission != nil {
-		_, session, _ := s.resolver.Resolve(member.SessionID)
 		if s.AIMD != nil {
 			bucketKey = ProviderBucketKey(member, session)
 			s.AIMD.Touch(bucketKey, policy.MaxProviderConcurrency, policy.MinParallelTasks)
@@ -3443,6 +3462,12 @@ func applyTransitions(run *Run, transitions []Transition, source string) ([]*Eve
 				task := &run.Tasks[i]
 				if task.ID != transition.TaskID {
 					continue
+				}
+				if transition.Retry != nil {
+					if !taskRetryAssignmentApplied(task, *transition.Retry) {
+						applyTaskRetryAssignment(task, *transition.Retry)
+					}
+					break
 				}
 				// 幂等重试保护：目标状态已精确应用则跳过。注意不能按
 				// 「当前已终态」拦截——PlanResume 的未决 unknown→stopped 与

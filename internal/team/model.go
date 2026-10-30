@@ -76,13 +76,10 @@ const (
 	EventTaskOutcomeUnknown    = "task_outcome_unknown"
 	EventTaskStopped           = "task_stopped"
 	EventTaskInputHashMismatch = "task_input_hash_mismatch"
-	// EventTaskRetryScheduled 是受限重试的重臂迁移事实（§6.3，阶段二）：
-	// 预算内的 rate_limited/transient 失败在 task_failed 之后「回 ready +
-	// attempt+1」的快照迁移必须与失败事实同批落 journal——重试常因 AIMD
-	// 冷却滞留 ready 数十秒（Retry-After 上限 300s），期间重启的话
-	// ReconcileRun 只有 task_failed 终态可重放，任务会被折成确定性 failed、
-	// 重试预算被静默丢弃（§8.3 第 7 条对可重试分类的豁免依赖本事件）。
-	// payload {taskId, attempt, outcome}，attempt 是重臂后的下一次尝试号。
+	// EventTaskRetryScheduled 是受限重试或 Lead 分诊改派的重臂事实：任务
+	// 回 ready、attempt+1；改派还携带 memberId/prompt/writeLock 与 actionKey。
+	// 它取代之前的失败终态，保证重启后重试预算与改派内容都不丢失。
+	// payload {taskId, attempt, outcome, memberId?, prompt?, writeLock?, actionKey?}。
 	EventTaskRetryScheduled = "task_retry_scheduled"
 	EventRunWaitingInput    = "run_waiting_input"
 	EventRunCompleted       = "run_completed"
@@ -389,6 +386,7 @@ type Task struct {
 	InstructionsHead string `json:"instructionsHead,omitempty"`
 	SentText         string `json:"sentText,omitempty"`
 	Reduction        bool   `json:"reduction,omitempty"`
+	TriageFor        string `json:"triageFor,omitempty"`
 
 	extra *jsoncompat.Object
 }
@@ -529,7 +527,7 @@ var taskKnownFields = map[string]bool{
 	"status": true, "submissionId": true, "result": true, "resultDetail": true,
 	"cachedFrom": true,
 	"error":      true, "outcome": true, "stopReason": true, "instructionsHead": true,
-	"sentText": true, "reduction": true,
+	"sentText": true, "reduction": true, "triageFor": true,
 }
 
 var taskResultKnownFields = map[string]bool{
@@ -926,6 +924,9 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	}
 	if t.Reduction {
 		object.Set("reduction", true)
+	}
+	if t.TriageFor != "" {
+		object.Set("triageFor", t.TriageFor)
 	}
 	mergeExtras(object, t.extra)
 	return object

@@ -66,6 +66,9 @@ func TestClassifyTaskError(t *testing.T) {
 		{"403 forbidden", OutcomeAuth},
 		{"认证失败", OutcomeAuth},
 		{"登录过期", OutcomeAuth},
+		// acpruntime.refusalFailure 的中文改写（401 → 停靠，不得判整轮失败）。
+		{"WorkBuddy 登录已失效，请在 CLI 中执行 /login 后重试", OutcomeAuth},
+		{"401 Authentication required. Please use /login command", OutcomeAuth},
 		// not_configured。
 		{"API key 未配置", OutcomeNotConfigured},
 		{"没有配置模型", OutcomeNotConfigured},

@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
+	"github.com/google/uuid"
 )
 
 // NewTeamAdapters 返回 team 服务所需的队列与会话解析端口。装配发生在任何
@@ -131,6 +133,27 @@ type teamSessionResolver struct{ server *Server }
 func (r teamSessionResolver) Resolve(threadID string) (*acpruntime.Manager, *acpruntime.Session, error) {
 	resolution := r.server.resolveACP(threadID)
 	return resolution.manager, resolution.session, resolution.err
+}
+
+// Recreate 用成员绑定的 Agent 类型创建替代会话；旧 sessionId 已不在任何
+// 列表中也可恢复。懒物化 Agent 继续走既有预热，避免重启后再次丢失。
+func (r teamSessionResolver) Recreate(agentKind, threadID, cwd string) (string, error) {
+	manager := r.server.acpAgentSet()[agentKind]
+	if manager == nil {
+		return "", fmt.Errorf("Agent %s 未配置", agentKind)
+	}
+	if cwd == "" {
+		cwd = r.Cwd(threadID)
+	}
+	if cwd == "" {
+		return "", errors.New("无法确定原会话工作目录")
+	}
+	session, err := manager.Create("sess_"+uuid.NewString(), cwd, "团队会话恢复", 60*time.Second)
+	if err != nil {
+		return "", err
+	}
+	warmupMemberSession(manager, session)
+	return session.ID, nil
 }
 
 // Cwd 返回成员会话的工作目录：只查 live 句柄与既有 list 缓存（CwdFor），
