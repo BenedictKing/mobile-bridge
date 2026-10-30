@@ -999,6 +999,16 @@ func needsWorkbuddyRefresh(expiresAtMS int64, now time.Time) bool {
 	return remain <= 0 || remain < workbuddyFreshWindowMs
 }
 
+// workbuddyAuthDefinitelyRefused reports whether the reply proves the
+// credential itself is dead — the refresh token refused with invalid_grant,
+// or the access token with invalid_token (body or WWW-Authenticate text). A
+// bare 401 without either can be eligibility or WAF noise, so it alone is
+// not enough to retire an account (magpie's workbuddy plugin's discipline).
+func workbuddyAuthDefinitelyRefused(response map[string]any) bool {
+	text := strings.ToLower(jsonRaw(response))
+	return strings.Contains(text, "invalid_grant") || strings.Contains(text, "invalid_token")
+}
+
 // refreshWorkbuddyToken exchanges the refresh token (api.rs
 // refresh_account_token): POST /v2/plugin/auth/token/refresh with an empty
 // JSON body and the X-Refresh-Token / X-Auth-Refresh-Source plugin headers.
@@ -1026,9 +1036,13 @@ func refreshWorkbuddyToken(ctx context.Context, acc *Account, now time.Time) err
 			message = "未知错误"
 		}
 		reason := fmt.Sprintf("刷新失败（code=%d）：%s", code, message)
-		acc.Status = StatusReauthRequired
-		acc.StatusReason = reason
-		if workbuddyUnauthorized(response) {
+		// 只有确定信号才降级账号：端点语义上的 401/403（凭据被拒）或
+		// invalid_grant/invalid_token。网关抖动、5xx 之类瞬态失败不标记，
+		// 保留旧 token 下一轮再试——此前任何业务失败都会把账号打成
+		// 「需重新登录」。
+		if workbuddyAuthDefinitelyRefused(response) || code == 401 || code == 403 {
+			acc.Status = StatusReauthRequired
+			acc.StatusReason = reason
 			return &authFailedError{message: reason}
 		}
 		return errors.New(reason)
@@ -2446,9 +2460,56 @@ func (m *Manager) checkinWorkbuddyLocked(ctx context.Context, acc *Account) (*Ac
 		}
 	}
 	endpoint := workbuddyEndpoint(variant)
-	response := workbuddyPostJSON(ctx, endpoint+"/v2/billing/meter/daily-checkin", http.MethodPost,
-		workbuddyResourceHeaders(acc, variant, workbuddyPlainToken(acc.AccessToken)), map[string]any{})
+	headers := workbuddyResourceHeaders(acc, variant, workbuddyPlainToken(acc.AccessToken))
+	record := func(note string) (*Account, string, error) {
+		acc.CheckinAt = m.now().UnixMilli()
+		acc.CheckinNote = note
+		if err := m.saveAccount("workbuddy", acc); err != nil {
+			return acc, note, err
+		}
+		return acc, note, nil
+	}
+
+	// 先探活动状态：今天已签就不打真实签到接口（每次点击都是一次真实
+	// RPC，轮询整天空打更是），顺带拿今天实际到账的积分做展示；活动未
+	// 开也记一笔今天处理过。探测失败（接口不存在/网络）不拦着，照旧盲签。
+	if probe := workbuddyPostJSON(ctx, endpoint+"/v2/billing/meter/checkin-activity-status", http.MethodPost, headers, map[string]any{}); probe != nil {
+		code, hasCode, _ := workbuddyUnwrapEnvelope(probe)
+		if hasCode && code == 1001 {
+			// 部分构建对探测本身回 1001 = 今日已签。
+			return record("今日已签到")
+		}
+		if data := objectValue(probe, "data"); hasCode && code == 0 && data != nil {
+			if active, isBool := data["active"].(bool); isBool && !active {
+				return record("签到活动当前未开启")
+			}
+			checked := false
+			for _, key := range []string{"today_checked_in", "todayCheckedIn"} {
+				if value, isBool := data[key].(bool); isBool {
+					checked = value
+					break
+				}
+			}
+			if checked {
+				note := "今日已签到"
+				if credit := workbuddyNumberValue(data["today_credit"], data["daily_credit"]); credit > 0 {
+					note += fmt.Sprintf("（今日 +%d 积分）", int64(credit))
+				}
+				return record(note)
+			}
+		}
+	}
+
+	response := workbuddyPostJSON(ctx, endpoint+"/v2/billing/meter/daily-checkin", http.MethodPost, headers, map[string]any{})
 	if workbuddyUnauthorized(response) {
+		// 签到接口的 401 未必是登录死了——有的账号签到只认官方自家 App。
+		// 拿积分汇总复核：两边都 401 才是凭据失效，否则按资格问题报错，
+		// 不给账号降级。
+		summary := workbuddyPostBilling(ctx, acc, variant, workbuddyPlainToken(acc.AccessToken),
+			"/billing/meter/get-user-resource-summary", map[string]any{})
+		if !workbuddyUnauthorized(summary) {
+			return acc, "", errors.New("签到被拒（401）：该账号的签到可能只认官方 App 内进行")
+		}
 		acc.Status = StatusReauthRequired
 		acc.StatusReason = "签到时登录已失效，请重新扫码登录"
 		_ = m.saveAccount("workbuddy", acc)
@@ -2457,7 +2518,17 @@ func (m *Manager) checkinWorkbuddyLocked(ctx context.Context, acc *Account) (*Ac
 	code, hasCode, message := workbuddyUnwrapEnvelope(response)
 	switch {
 	case hasCode && code == 0:
-		message = "签到成功"
+		data := objectValue(response, "data")
+		note := "签到成功"
+		if data != nil {
+			if credit := workbuddyNumberValue(data["credit"]); credit > 0 {
+				note += fmt.Sprintf(" +%d 积分", int64(credit))
+			}
+			if streak := workbuddyNumberValue(data["streak_days"], data["streakDays"]); streak > 1 {
+				note += fmt.Sprintf(" · 连签 %d 天", int64(streak))
+			}
+		}
+		message = note
 	case hasCode && code == 10001 && workbuddyAlreadyCheckinMessage(message):
 		message = "今日已签到"
 	default:
@@ -2466,12 +2537,18 @@ func (m *Manager) checkinWorkbuddyLocked(ctx context.Context, acc *Account) (*Ac
 		}
 		return acc, "", fmt.Errorf("签到失败（code=%d）：%s", code, firstNonEmpty(message, "未知错误"))
 	}
-	acc.CheckinAt = m.now().UnixMilli()
-	acc.CheckinNote = message
-	if err := m.saveAccount("workbuddy", acc); err != nil {
-		return acc, message, err
+	return record(message)
+}
+
+// workbuddyNumberValue returns the first numeric value among the candidates
+// (0 when none) — capacities arrive as numbers or numeric strings.
+func workbuddyNumberValue(values ...any) float64 {
+	for _, value := range values {
+		if n := firstNumberValue(value); n != nil {
+			return float64(*n)
+		}
 	}
-	return acc, message, nil
+	return 0
 }
 
 // --- international (ai) region registration + one-time trial ---------------------

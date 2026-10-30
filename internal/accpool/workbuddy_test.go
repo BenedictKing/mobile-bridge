@@ -710,16 +710,22 @@ func TestWorkbuddyCheckinClientShapedHeaders(t *testing.T) {
 
 	var gotUA, gotMachineID, gotSessionID, gotUserID, gotPlatform string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v2/billing/meter/daily-checkin" {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/billing/meter/checkin-activity-status":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"active":true,"today_checked_in":false}}`))
+			return
+		case "/v2/billing/meter/daily-checkin":
+			gotUA = r.Header.Get("User-Agent")
+			gotMachineID = r.Header.Get("X-Machine-ID")
+			gotSessionID = r.Header.Get("X-Session-ID")
+			gotUserID = r.Header.Get("X-User-Id")
+			gotPlatform = r.Header.Get("X-Client-Platform")
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"credit":7,"streak_days":3}}`))
+			return
+		default:
 			t.Errorf("path: %s", r.URL.Path)
 		}
-		gotUA = r.Header.Get("User-Agent")
-		gotMachineID = r.Header.Get("X-Machine-ID")
-		gotSessionID = r.Header.Get("X-Session-ID")
-		gotUserID = r.Header.Get("X-User-Id")
-		gotPlatform = r.Header.Get("X-Client-Platform")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"msg":"ok"}`))
 	}))
 	defer server.Close()
 	stubWorkbuddyAPI(t, server.URL)
@@ -732,7 +738,7 @@ func TestWorkbuddyCheckinClientShapedHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("checkin: %v", err)
 	}
-	if message != "签到成功" {
+	if message != "签到成功 +7 积分 · 连签 3 天" {
 		t.Fatalf("message: %q", message)
 	}
 	if gotUA != "WorkBuddy/9.9.9" {
@@ -747,30 +753,169 @@ func TestWorkbuddyCheckinClientShapedHeaders(t *testing.T) {
 	if gotUserID != "uid-1" {
 		t.Fatalf("X-User-Id: %q", gotUserID)
 	}
-	if returned.CheckinAt == 0 || returned.CheckinNote != "签到成功" {
+	if returned.CheckinAt == 0 || returned.CheckinNote != message {
 		t.Fatalf("checkin bookkeeping: %+v", returned)
+	}
+}
+
+// 活动状态探测的两个短路：今天已签（带当日到账积分）与活动未开——都不再打
+// 真实签到接口。
+func TestWorkbuddyCheckinProbeShortCircuit(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	claim := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/billing/meter/checkin-activity-status":
+			_, _ = w.Write([]byte(`{"code":0,"data":{"active":true,"today_checked_in":true,"today_credit":7}}`))
+		case "/v2/billing/meter/daily-checkin":
+			claim++
+			_, _ = w.Write([]byte(`{"code":0,"msg":"should not be reached"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_u1", "uid-1", "tok")
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	_, message, err := m.Checkin(context.Background(), "workbuddy", "w_u1")
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	if message != "今日已签到（今日 +7 积分）" {
+		t.Fatalf("message: %q", message)
+	}
+	if claim != 0 {
+		t.Fatalf("probe short-circuit must not hit the claim endpoint, hit %d", claim)
+	}
+}
+
+func TestWorkbuddyCheckinActivityInactive(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	claim := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v2/billing/meter/checkin-activity-status" {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"active":false}}`))
+			return
+		}
+		claim++
+		_, _ = w.Write([]byte(`{"code":0}`))
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_u1", "uid-1", "tok")
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	_, message, err := m.Checkin(context.Background(), "workbuddy", "w_u1")
+	if err != nil || message != "签到活动当前未开启" {
+		t.Fatalf("inactive activity: message=%q err=%v", message, err)
+	}
+	if claim != 0 {
+		t.Fatalf("inactive activity must not claim, hit %d", claim)
+	}
+	saved, _ := m.loadAccount("workbuddy", "w_u1")
+	if saved.CheckinAt == 0 {
+		t.Fatal("inactive activity still records the day as handled")
+	}
+}
+
+// 签到接口的 401 要拿积分汇总复核：单边 401 是资格问题（不降级账号），
+// 两边都 401 才是登录失效。
+func TestWorkbuddyCheckinUnauthorizedCrossCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		summaryStatus int
+		summaryBody   string
+		wantMarked    bool
+		wantErrPart   string
+	}{{
+		name:          "summary ok → eligibility, not expired",
+		summaryStatus: 200,
+		summaryBody:   `{"code":0,"data":{}}`,
+		wantMarked:    false,
+		wantErrPart:   "官方 App",
+	}, {
+		name:          "both 401 → expired",
+		summaryStatus: 401,
+		summaryBody:   `{"code":401,"message":"unauthorized"}`,
+		wantMarked:    true,
+		wantErrPart:   "登录已失效",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := setupWorkbuddyFixture(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/v2/billing/meter/checkin-activity-status":
+					_, _ = w.Write([]byte(`{"code":0,"data":{"active":true,"today_checked_in":false}}`))
+				case "/v2/billing/meter/daily-checkin":
+					w.WriteHeader(401)
+					_, _ = w.Write([]byte(`{"code":401,"message":"unauthorized"}`))
+				case "/billing/meter/get-user-resource-summary":
+					w.WriteHeader(tc.summaryStatus)
+					_, _ = w.Write([]byte(tc.summaryBody))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			stubWorkbuddyAPI(t, server.URL)
+
+			acc := workbuddyFixtureAccount("w_u1", "uid-1", "tok")
+			if err := m.saveAccount("workbuddy", acc); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := m.Checkin(context.Background(), "workbuddy", "w_u1")
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrPart) {
+				t.Fatalf("err: %v", err)
+			}
+			saved, _ := m.loadAccount("workbuddy", "w_u1")
+			if marked := saved.Status == StatusReauthRequired; marked != tc.wantMarked {
+				t.Fatalf("reauth marked=%v want %v (status=%q)", marked, tc.wantMarked, saved.Status)
+			}
+		})
 	}
 }
 
 // 10001 有两副面孔：「今日已签到」按成功记账；其他文案是瞬时限流，必须报错。
 // 真实环境里「今日已签到」还可能走 HTTP 400 + 业务信封（传输层包成
 // {code:400,message:正文}），必须再拆一层才能看到 10001。
+type stubReply struct {
+	status int
+	body   string
+}
+
 func TestWorkbuddyCheckinCode10001Semantics(t *testing.T) {
 	m, _ := setupWorkbuddyFixture(t)
-	responses := []stubReply{
+	claims := []stubReply{
 		{status: 200, body: `{"code":10001,"msg":"今日已签到，请勿重复签到"}`},
 		{status: 400, body: `{"code":10001,"msg":"今天已签到，请明天再来","requestId":"req-1"}`},
 		{status: 200, body: `{"code":10001,"msg":"签到失败，请稍后重试"}`},
 	}
 	var call int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if call < len(responses) {
-			reply := responses[call]
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(reply.status)
-			_, _ = w.Write([]byte(reply.body))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v2/billing/meter/checkin-activity-status":
+			// 探测都说未签，让三种领取回执都被走到。
+			_, _ = w.Write([]byte(`{"code":0,"data":{"active":true,"today_checked_in":false}}`))
+		case "/v2/billing/meter/daily-checkin":
+			if call < len(claims) {
+				reply := claims[call]
+				w.WriteHeader(reply.status)
+				_, _ = w.Write([]byte(reply.body))
+			}
+			call++
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		call++
 	}))
 	defer server.Close()
 	stubWorkbuddyAPI(t, server.URL)
@@ -803,9 +948,56 @@ func TestWorkbuddyCheckinCode10001Semantics(t *testing.T) {
 	}
 }
 
-type stubReply struct {
-	status int
-	body   string
+// 刷新的瞬态失败（网关 5xx、无确定信号）不得把账号降级成「需重新登录」；
+// invalid_grant 是确定信号，照旧降级。
+func TestWorkbuddyRefreshTransientKeepsStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		status     int
+		wantAuth   bool
+		wantStatus string
+	}{{
+		name:     "gateway blip keeps the account",
+		body:     `{"code":500,"message":"upstream busy"}`,
+		status:   200,
+		wantAuth: false,
+	}, {
+		name:     "invalid_grant retires the account",
+		body:     `{"code":401,"message":"invalid_grant"}`,
+		status:   200,
+		wantAuth: true,
+	}, {
+		name:     "code 401 retires the account",
+		body:     `{"code":401,"message":"token 已过期"}`,
+		status:   200,
+		wantAuth: true,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := setupWorkbuddyFixture(t)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+			stubWorkbuddyAPI(t, server.URL)
+
+			acc := workbuddyFixtureAccount("w_uid1", "uid-1", "old")
+			err := refreshWorkbuddyToken(context.Background(), acc, m.now())
+			if err == nil {
+				t.Fatal("refresh must fail")
+			}
+			if got := isAuthFailed(err); got != tc.wantAuth {
+				t.Fatalf("authFailed=%v want %v (err=%v)", got, tc.wantAuth, err)
+			}
+			if tc.wantAuth && acc.Status != StatusReauthRequired {
+				t.Fatalf("status: %q", acc.Status)
+			}
+			if !tc.wantAuth && acc.Status != StatusActive {
+				t.Fatalf("transient failure must keep status active, got %q", acc.Status)
+			}
+		})
+	}
 }
 
 // 国际版没有签到体系：不能把请求打过去（那本身就是风控信号）。
