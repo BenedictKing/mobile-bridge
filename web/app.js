@@ -84,7 +84,9 @@ const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attac
   const result=await response.json();if(!response.ok){if(response.status===401)showLogin();throw Error(result.error||t('缩略图生成失败'));}return result;
 },upload:uploadAttachmentWithRetry});
 function visibleChat(){return currentId&&!document.hidden&&$('app').classList.contains('chat-open')?chatKey():null;}
-function renderActivity(){for(const button of document.querySelectorAll('.session')){
+// 只有真正的会话行带 data-id；项目团队入口复用 .session 外壳但没有自己的聊天，
+// chatKey() 会把它的空 id 兜底成当前打开的会话，于是把「运行中」标到团队卡上。
+function renderActivity(){for(const button of document.querySelectorAll('.session[data-id]')){
   button.querySelector('.session-activity-label')?.remove();button.querySelector('.session-indicator')?.remove();const indicator=sessionActivity.indicator(chatKey(button.dataset.id,button.dataset.host));
   if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-hidden','true');const label=el('span','session-activity-label',t(indicator.label));button.querySelector('strong').prepend(label,dot);}
 }}
