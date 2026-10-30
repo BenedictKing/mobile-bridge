@@ -66,6 +66,52 @@ for line in sys.stdin:
 	manager.Close()
 }
 
+func TestOpenDoesNotTreatHistoryReplayAsInteraction(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/load":
+  print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-existing","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"history"}}}}),flush=True)
+  result={"sessionId":"sess-existing"}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	loaded, err := manager.Open("sess-existing", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recency := loaded.LastActivity(); recency != 0 {
+		t.Fatalf("history replay changed list recency to %d", recency)
+	}
+	message := jsoncompat.NewObject()
+	message.Set("method", "session/update")
+	params := jsoncompat.NewObject()
+	params.Set("sessionId", "sess-existing")
+	update := jsoncompat.NewObject()
+	update.Set("sessionUpdate", "agent_message_chunk")
+	content := jsoncompat.NewObject()
+	content.Set("type", "text")
+	content.Set("text", "new activity")
+	update.Set("content", content)
+	params.Set("update", update)
+	message.Set("params", params)
+	loaded.onNotification(message)
+	if recency := loaded.LastActivity(); recency == 0 {
+		t.Fatal("post-load activity did not update list recency")
+	}
+}
+
 func TestMergePendingKeepsCreatedSessionWithClearedTitle(t *testing.T) {
 	manager := NewCommand(nil)
 	manager.sessions["sess-created"] = &Session{

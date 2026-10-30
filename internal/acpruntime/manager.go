@@ -45,6 +45,10 @@ type Session struct {
 	// lastActivity moves on every agent signal (streamed updates, reverse
 	// requests); the prompt idle timeout measures against it.
 	lastActivity time.Time
+	// lastInteraction is the list recency. It stays unset while session/load
+	// replays history so reopening a chat does not make it look recently used.
+	lastInteraction  time.Time
+	interactionReady bool
 	// touched moves on gateway-side reads (HTTP/SSE polling); the idle
 	// sweeper evicts sessions nobody has read for a while.
 	touched time.Time
@@ -586,6 +590,9 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		return nil, err
 	}
 	session.applySessionResult(value, result)
+	session.mu.Lock()
+	session.interactionReady = true
+	session.mu.Unlock()
 	if m.NativeMeta != nil {
 		if title, _ := m.NativeMeta(id); title != "" {
 			session.Title = title
@@ -680,6 +687,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	createdAt := int64(m.now() * 1000)
 	session := &Session{ID: id, Cwd: cwd, Title: title, CreatedAtMs: createdAt, Process: process,
 		View: acpview.NewView(id, title, cwd, m.now), active: true, mediaDir: m.MediaDir, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+	session.interactionReady = true
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
 	session.modeOptionID = m.ModeOptionID
@@ -1767,7 +1775,7 @@ func (m *Manager) openNative(id, cwd string, cause error) *Session {
 		View:    acpview.NewView(id, nil, cwd, m.now),
 		changed: make(chan struct{}),
 		pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{},
-		touched: time.Now(), lastActivity: time.Now(),
+		touched: time.Now(), lastActivity: time.Now(), interactionReady: true,
 		native: m.NativeTranscript,
 	}
 	if snapshot.Title != "" {
@@ -2164,19 +2172,22 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 func (s *Session) signalLocked() {
 	s.sequence++
 	s.lastActivity = time.Now()
+	if s.interactionReady {
+		s.lastInteraction = s.lastActivity
+	}
 	s.touched = time.Now()
 	close(s.changed)
 	s.changed = make(chan struct{})
 }
 
-// LastActivity returns the latest agent signal or local turn mutation in epoch milliseconds.
+// LastActivity returns the latest post-load interaction in epoch milliseconds.
 func (s *Session) LastActivity() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lastActivity.IsZero() {
+	if s.lastInteraction.IsZero() {
 		return 0
 	}
-	return s.lastActivity.UnixMilli()
+	return s.lastInteraction.UnixMilli()
 }
 
 // Touch marks gateway-side interest: HTTP reads and SSE polls call it so the
@@ -2204,6 +2215,9 @@ func (s *Session) NoteSubagents(revision int64) {
 		s.lastSubagentRevision = revision
 		s.sequence++
 		s.lastActivity = time.Now()
+		if s.interactionReady {
+			s.lastInteraction = s.lastActivity
+		}
 		close(s.changed)
 		s.changed = make(chan struct{})
 	}
