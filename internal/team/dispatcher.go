@@ -333,11 +333,11 @@ type composedTaskMessage struct {
 }
 
 // composeTaskDispatchMessage 是首次派发与旧账本重算共用的文本组合点：Lead
-// 简报位于依赖上下文之前，二者共同进入派发期哈希，事件里的 contextChars
-// 仍只计量依赖结果注入。
+// 简报与评审裁决协议（二者互斥：评审成员不是 Lead）位于依赖上下文之前，
+// 共同进入派发期哈希，事件里的 contextChars 仍只计量依赖结果注入。
 func composeTaskDispatchMessage(team *Team, run *Run, task *Task, policy TeamPolicy) composedTaskMessage {
 	context := BuildTaskContext(run, task, policy)
-	briefing := BuildLeadBriefing(team, run, task, policy)
+	briefing := BuildLeadBriefing(team, run, task, policy) + BuildReviewBriefing(team, task)
 	return composedTaskMessage{
 		text:        briefing + ComposeTaskMessage(context.Text, task.Prompt),
 		hashContext: briefing + context.Text,

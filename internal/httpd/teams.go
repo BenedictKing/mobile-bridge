@@ -974,7 +974,7 @@ func (h *handler) handleRunCreate(teamID string) {
 				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
 				return
 			}
-			result := teamRunDetail(existing)
+			result := h.teamRunDetail(existing)
 			result.Set("duplicate", true)
 			h.output(http.StatusOK, result, contentTypeJSON, "")
 			return
@@ -992,7 +992,7 @@ func (h *handler) handleRunCreate(teamID string) {
 		h.failTeamError(createErr)
 		return
 	}
-	h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
+	h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
 }
 
 func (h *handler) handleRunGet(teamID, runID string) {
@@ -1000,7 +1000,7 @@ func (h *handler) handleRunGet(teamID, runID string) {
 	if run == nil {
 		return
 	}
-	h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
+	h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
 }
 
 // handleRunAction 分发 run 级动作与事件流端点（§10.2/§10.3）。阶段三补齐
@@ -1041,14 +1041,14 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 			h.failTeamError(err)
 			return
 		}
-		h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
+		h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
 	case "resume":
 		run, err := h.server.Teams.Resume(runID)
 		if err != nil {
 			h.failTeamError(err)
 			return
 		}
-		h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
+		h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
 	case "pause":
 		// 用户软停（§12 阶段四工作项 4）：非终态 200 RunDetail，终态/
 		// 已 paused/waiting_input 409（failTeamError 映射哨兵）。续跑走
@@ -1058,7 +1058,7 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 			h.failTeamError(err)
 			return
 		}
-		h.output(http.StatusOK, teamRunDetail(run), contentTypeJSON, "")
+		h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
 	case "refresh":
 		// 运行中状态刷新（§12 阶段四工作项 2 的手动入口；周期 reconciler
 		// 走同一 Service.RefreshRun）：只改任务事实绝不改 run 状态。
@@ -1101,7 +1101,7 @@ func (h *handler) handleRunDelivery(teamID, runID string) {
 		h.failTeamError(err)
 		return
 	}
-	result := teamRunDetail(run)
+	result := h.teamRunDetail(run)
 	if duplicate {
 		result.Set("duplicate", true)
 	}
@@ -1231,7 +1231,7 @@ func (h *handler) handleRunAmend(teamID, runID string) {
 		}
 		return
 	}
-	result := teamRunDetail(run)
+	result := h.teamRunDetail(run)
 	result.Set("cacheImports", teamCacheImports(run))
 	if duplicate {
 		result.Set("duplicate", true)
@@ -1638,7 +1638,7 @@ func (h *handler) handleRunRefresh(teamID, runID string) {
 		return
 	}
 	result := jsoncompat.NewObject()
-	result.Set("run", teamRunDetail(fresh))
+	result.Set("run", h.teamRunDetail(fresh))
 	result.Set("reconciled", fresh.Version != before)
 	h.output(http.StatusOK, result, contentTypeJSON, "")
 }
@@ -2338,10 +2338,115 @@ func (h *handler) teamProject(teamRow *team.Team) *jsoncompat.Object {
 	return object
 }
 
+// teamDeliveryEvidence 组装交付证据投影（§8 阶段三）：「Agent 已完成、
+// Review 已通过、验证已通过、用户已接受交付」四类证据分别落位，不能用
+// Agent 的完成替代审查或验证。全部由 Run 快照派生（零 I/O）：
+//   - agent：任务完成度（completed/total）；
+//   - resultSummary：逐任务结果头的有界摘要（超限置 truncated）；
+//   - review：评审任务（team.ReviewerMemberID）最后一个的显式裁决：只有
+//     completed 且回复末行带裁决标记才是 passed/failed，其余（未完成、执行
+//     失败、未给裁决）都是 unknown——执行失败不等于审查不通过；无评审任务
+//     不带键；
+//   - verify：闸门配置与结果（configured/exitCode/passed/failed/pending）；
+//   - pendingQuestions：仍 open 的问题数；
+//   - workspaces：isolated 任务的 worktree 引用（workspaceId/baseRevision）。
+func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
+	evidence := jsoncompat.NewObject()
+	evidence.Set("runId", run.ID)
+	evidence.Set("deliveryStatus", run.DeliveryStatus)
+	completed := 0
+	heads := make([]string, 0, len(run.Tasks))
+	truncated := false
+	reviewerID := teamRow.ReviewerMemberID()
+	var reviewTask *team.Task
+	taskIDs := &jsoncompat.Array{}
+	workspaces := &jsoncompat.Array{}
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		taskIDs.Items = append(taskIDs.Items, task.ID)
+		if task.Status == team.TaskCompleted {
+			completed++
+			resultText := task.Result
+			if task.ResultDetail != nil {
+				resultText = firstNonEmpty(task.Result, task.ResultDetail.Result)
+			}
+			if head := truncateSubText(resultText, 120); head != "" {
+				heads = append(heads, task.ID+"："+head)
+			}
+		}
+		if task.ResultDetail != nil && task.ResultDetail.Truncated {
+			truncated = true
+		}
+		if reviewerID != "" && reviewerID != teamRow.LeadID && task.MemberID == reviewerID && !task.Reduction {
+			reviewTask = task // Ordinal 递增遍历，留最后一个评审任务
+		}
+		if task.WorkspaceMode == team.WorkspaceIsolatedWorktree && task.WorkspaceID != "" {
+			entry := jsoncompat.NewObject()
+			entry.Set("workspaceId", task.WorkspaceID)
+			entry.Set("taskId", task.ID)
+			if task.BaseRevision != "" {
+				entry.Set("baseRevision", task.BaseRevision)
+			}
+			workspaces.Items = append(workspaces.Items, entry)
+		}
+	}
+	evidence.Set("taskIds", taskIDs)
+	agent := jsoncompat.NewObject()
+	agent.Set("completed", jsoncompat.Num(completed))
+	agent.Set("total", jsoncompat.Num(len(run.Tasks)))
+	evidence.Set("agent", agent)
+	summary := jsoncompat.NewObject()
+	if text := strings.Join(heads, "；"); text != "" {
+		if len([]rune(text)) > 1200 {
+			text = string([]rune(text)[:1200])
+			truncated = true
+		}
+		summary.Set("text", text)
+	}
+	summary.Set("truncated", truncated)
+	evidence.Set("resultSummary", summary)
+	if reviewTask != nil {
+		review := jsoncompat.NewObject()
+		review.Set("taskId", reviewTask.ID)
+		review.Set("taskStatus", reviewTask.Status)
+		verdict := team.ReviewVerdictUnknown
+		if reviewTask.Status == team.TaskCompleted && reviewTask.ResultDetail != nil && reviewTask.ResultDetail.ReviewVerdict != "" {
+			verdict = reviewTask.ResultDetail.ReviewVerdict
+		}
+		review.Set("verdict", verdict)
+		evidence.Set("review", review)
+	}
+	verify := jsoncompat.NewObject()
+	verify.Set("configured", len(run.VerifyCommand) > 0)
+	if run.Verify != nil {
+		verify.Set("exitCode", jsoncompat.Num(run.Verify.ExitCode))
+		if run.Verify.ExitCode == 0 {
+			verify.Set("status", "passed")
+		} else {
+			verify.Set("status", "failed")
+		}
+	} else if len(run.VerifyCommand) > 0 {
+		verify.Set("status", "pending")
+	}
+	evidence.Set("verify", verify)
+	open := 0
+	for i := range run.PendingQuestions {
+		if run.PendingQuestions[i].Status == team.QuestionStatusOpen {
+			open++
+		}
+	}
+	evidence.Set("pendingQuestions", jsoncompat.Num(open))
+	if len(workspaces.Items) > 0 {
+		evidence.Set("workspaces", workspaces)
+	}
+	return evidence
+}
+
 // teamRunDetail 组装 RunDetail 投影：Run 全字段 + workspace.writeLockHeldBy
 // （§12 工作项 5）+ 每任务 result:{sessionId,turnId,result,resultChars,
-// truncated}|null（§6.5，由 TaskResult 组装；无结果为 null）。
-func teamRunDetail(run *team.Run) *jsoncompat.Object {
+// truncated}|null（§6.5，由 TaskResult 组装；无结果为 null）+ delivery
+// 交付证据块（§8 阶段三，按 Run 所属团队解析评审维度）。
+func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 	raw, err := run.MarshalJSON()
 	if err != nil {
 		return jsoncompat.NewObject()
@@ -2380,6 +2485,7 @@ func teamRunDetail(run *team.Run) *jsoncompat.Object {
 	workspace := jsoncompat.NewObject()
 	workspace.Set("writeLockHeldBy", teamWriteLockHolder(run))
 	detail.Set("workspace", workspace)
+	detail.Set("delivery", teamDeliveryEvidence(h.server.TeamStore.Team(run.TeamID), run))
 	// 执行线程投影（阶段一执行线程契约）：threads 随 Run 快照直出，状态按
 	// Run 终态派生（线程随 Run 创建与关闭，关闭态不落盘——重建与运行期
 	// 天然一致）；任务的 executionThreadId 已随 Task 投影携带。

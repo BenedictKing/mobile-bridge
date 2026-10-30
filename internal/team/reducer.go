@@ -102,6 +102,9 @@ func ExtractResult(sessionID string, turn *jsoncompat.Object, maxChars int) Task
 		result.Result = full
 	}
 	result.FileSummary, result.CommandSummary = mineActivitySummaries(turn)
+	if verdict := ExtractReviewVerdict(full); verdict != ReviewVerdictUnknown {
+		result.ReviewVerdict = verdict
+	}
 	return result
 }
 

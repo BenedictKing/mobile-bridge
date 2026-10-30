@@ -739,6 +739,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			StopReason:     payloadString(event.Payload, "stopReason"),
 			FileSummary:    payloadString(event.Payload, "fileSummary"),
 			CommandSummary: payloadString(event.Payload, "commandSummary"),
+			ReviewVerdict:  payloadString(event.Payload, "reviewVerdict"),
 		}
 		result.Truncated, _ = event.Payload["truncated"].(bool)
 		task.Result = result.Result

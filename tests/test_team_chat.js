@@ -177,6 +177,44 @@ test('pending delivery accepts a result through the delivery API',async()=>{
   assert.equal(find(root,'team-delivery-actions').length,0);
 });
 
+test('delivery card renders the four evidence dimensions separately',async()=>{
+  const run={id:'run-1',status:'completed',deliveryStatus:'pending_review',version:2,tasks:[],delivery:{
+    deliveryStatus:'pending_review',
+    agent:{completed:2,total:3},
+    resultSummary:{text:'t1：接口已实现；t2：用例补齐',truncated:false},
+    review:{taskId:'rev',verdict:'passed'},
+    verify:{configured:true,status:'failed',exitCode:1},
+    pendingQuestions:1
+  }};
+  const {root}=setup(run);
+  const controller=new TeamChatController({root,request:async path=>{
+    if(path.endsWith('/runs'))return{runs:[{id:'run-1'}]};
+    return run;
+  },openRun(){}});
+  controller.setTeams(teams);controller.open(teams[0]);await flush();
+  const dims=find(root,'team-delivery-dim');
+  assert.equal(dims.length,3);
+  assert.match(dims[0].textContent,/Agent：2\/3 已完成/);
+  assert.match(dims[1].textContent,/Review：已通过/);
+  assert.match(dims[2].textContent,/验证：未通过/);
+  assert.match(text(find(root,'team-delivery-summary')[0]),/接口已实现/);
+  // 未参与评审 / 未配置闸门的降级展示。
+  const bare={id:'run-2',status:'completed',deliveryStatus:'pending_review',version:1,tasks:[],delivery:{
+    deliveryStatus:'pending_review',agent:{completed:1,total:1},
+    resultSummary:{text:'',truncated:true},verify:{configured:false},pendingQuestions:0
+  }};
+  const root2=new FakeNode('div');
+  const controller2=new TeamChatController({root:root2,request:async path=>{
+    if(path.endsWith('/runs'))return{runs:[{id:'run-2'}]};
+    return bare;
+  },openRun(){}});
+  controller2.setTeams(teams);controller2.open(teams[0]);await flush();
+  const dims2=find(root2,'team-delivery-dim');
+  assert.match(dims2[1].textContent,/Review：未参与/);
+  assert.match(dims2[2].textContent,/验证：未配置/);
+  assert.equal(find(root2,'team-delivery-summary').length,0);
+});
+
 test('workflow stages fan out parallel workers before the merge and final reduction',()=>{
   const stages=teamWorkflowStages([
     {id:'lead'},

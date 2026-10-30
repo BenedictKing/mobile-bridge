@@ -1008,10 +1008,14 @@ func buildActionTask(run *Run, team *Team, action *Action) Task {
 	if action.Type == ActionTypeSummarize {
 		memberID = team.LeadID // summarize 的目标成员是团队 Lead（动作本身不携带 member）。
 	}
-	// 写锁归一（schema 校验后 writeLock ∈ {exclusive, none} 或空）：空值按
-	// 动作类型缺省——summarize 纯读 → none，delegate 保守 → exclusive。
+	// 写锁归一（schema 校验后 writeLock ∈ {exclusive, none} 或空）：空值先按
+	// 评审成员缺省只读（review.go），再按动作类型缺省——summarize 纯读 →
+	// none，delegate 保守 → exclusive。
 	writeLock := action.WriteLock
 	if writeLock != TaskWriteLockExclusive && writeLock != TaskWriteLockNone {
+		writeLock = defaultReviewWriteLock(team, memberID, "")
+	}
+	if writeLock == "" {
 		if action.Type == ActionTypeSummarize {
 			writeLock = TaskWriteLockNone
 		} else {

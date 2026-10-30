@@ -249,6 +249,27 @@ class TeamChatController{
       const delivery=this.node('div',undefined,'team-delivery '+run.deliveryStatus);
       const labels={pending_review:t_safe('执行完成，等待你验收'),accepted:t_safe('成果已接受'),discarded:t_safe('成果已丢弃')};
       delivery.append(this.node('strong',labels[run.deliveryStatus]||run.deliveryStatus));
+      // 交付证据（§8 阶段三）：Agent 完成度、Review 裁决、验证闸门、结果摘要
+      // 分别展示——Agent 的「完成了」不替代审查或验证。
+      if(run.delivery&&typeof run.delivery==='object'){
+        const evidence=this.node('div',undefined,'team-delivery-evidence');
+        const agent=run.delivery.agent;
+        const review=run.delivery.review;
+        const reviewText=!review?null:(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知'));
+        const verify=run.delivery.verify;
+        const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待执行')));
+        const dims=[
+          t_safe('Agent')+'：'+(agent?agent.completed+'/'+agent.total+' '+t_safe('已完成'):'—'),
+          t_safe('Review')+'：'+(reviewText||t_safe('未参与')),
+          t_safe('验证')+'：'+(verifyText||t_safe('未配置'))
+        ];
+        for(const dim of dims)evidence.append(this.node('span',dim,'team-delivery-dim'));
+        delivery.append(evidence);
+        const summary=run.delivery.resultSummary;
+        if(summary&&summary.text){
+          delivery.append(this.node('p',summary.text+(summary.truncated?t_safe('（已截断）'):''),'team-delivery-summary'));
+        }
+      }
       if(run.deliveryStatus==='pending_review'){
         const actions=this.node('div',undefined,'team-delivery-actions');
         const accept=this.button(t_safe('接受成果'),()=>this.setDelivery('accepted'));accept.classList.add('primary');

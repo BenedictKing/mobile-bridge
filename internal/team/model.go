@@ -438,6 +438,9 @@ type TaskResult struct {
 	StopReason     string `json:"stopReason,omitempty"`
 	FileSummary    string `json:"fileSummary,omitempty"`
 	CommandSummary string `json:"commandSummary,omitempty"`
+	// ReviewVerdict 是评审回复末行的显式裁决（review.go，passed/failed；
+	// 未识别不落键，评审任务缺省即 unknown）。从截断前全文解析。
+	ReviewVerdict string `json:"reviewVerdict,omitempty"`
 
 	extra *jsoncompat.Object
 }
@@ -569,7 +572,7 @@ var taskKnownFields = map[string]bool{
 var taskResultKnownFields = map[string]bool{
 	"sessionId": true, "turnId": true, "result": true,
 	"resultChars": true, "truncated": true, "stopReason": true,
-	"fileSummary": true, "commandSummary": true,
+	"fileSummary": true, "commandSummary": true, "reviewVerdict": true,
 }
 
 // UnmarshalJSON 解码 Team 并保留未知字段。
@@ -1062,6 +1065,9 @@ func (tr *TaskResult) jsonObject() *jsoncompat.Object {
 	}
 	if tr.CommandSummary != "" {
 		object.Set("commandSummary", tr.CommandSummary)
+	}
+	if tr.ReviewVerdict != "" {
+		object.Set("reviewVerdict", tr.ReviewVerdict)
 	}
 	mergeExtras(object, tr.extra)
 	return object

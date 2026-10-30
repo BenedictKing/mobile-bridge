@@ -2194,6 +2194,9 @@ func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome
 			if result.CommandSummary != "" {
 				payload["commandSummary"] = result.CommandSummary
 			}
+			if result.ReviewVerdict != "" {
+				payload["reviewVerdict"] = result.ReviewVerdict
+			}
 		}
 	case EventTaskFailed:
 		payload["error"] = errorText
@@ -3515,6 +3518,9 @@ func applyTransitions(run *Run, transitions []Transition, source string) ([]*Eve
 						}
 						if transition.Result.CommandSummary != "" {
 							payload["commandSummary"] = transition.Result.CommandSummary
+						}
+						if transition.Result.ReviewVerdict != "" {
+							payload["reviewVerdict"] = transition.Result.ReviewVerdict
 						}
 					}
 					if transition.StopReason != "" {

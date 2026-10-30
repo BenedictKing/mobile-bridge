@@ -319,7 +319,8 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 	policyDigest := PolicyDigest(team.Policy)
 	tasks := make([]Task, 0, len(order))
 	for ordinal, input := range order {
-		writeLock := input.WriteLock
+		// 评审成员缺省只读（review.go）；其余缺省独占。
+		writeLock := defaultReviewWriteLock(team, input.MemberID, input.WriteLock)
 		if writeLock == "" {
 			writeLock = TaskWriteLockExclusive
 		}

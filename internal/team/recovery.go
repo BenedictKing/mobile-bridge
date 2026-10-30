@@ -183,6 +183,7 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 				StopReason:     payloadString(event.Payload, "stopReason"),
 				FileSummary:    payloadString(event.Payload, "fileSummary"),
 				CommandSummary: payloadString(event.Payload, "commandSummary"),
+				ReviewVerdict:  payloadString(event.Payload, "reviewVerdict"),
 			}
 			if number, ok := event.Payload["resultChars"].(json.Number); ok {
 				if chars, err := strconv.Atoi(number.String()); err == nil {
