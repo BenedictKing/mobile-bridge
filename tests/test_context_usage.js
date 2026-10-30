@@ -28,3 +28,11 @@ test('settled usage keeps exact token count and percentage',()=>{
   assert.equal(node.textContent,'· 13k/960k');
   assert.match(node.title,/1%$/);
 });
+
+test('restored usage is marked as a replay',()=>{
+  const{node,render}=loadRender();
+  render({usage:{used:48066,size:960000,stale:true}});
+  assert.equal(node.textContent,'· ~48k/960k');
+  assert.match(node.title,/上次记录的上下文用量/);
+  assert.match(node.title,/tokens · 5%$/);
+});

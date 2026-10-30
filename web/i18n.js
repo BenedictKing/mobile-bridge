@@ -897,6 +897,7 @@ const en={
   "选择目标 Agent": "Choose target agent",
   "（当前）": " (current)",
   "上下文用量：": "Context usage: ",
+  "上次记录的上下文用量：": "Last recorded context usage: ",
   "已发送上下文压缩请求": "Context compaction request sent",
   "网关转录压缩已完成，正在打开新会话": "Gateway transcript compaction complete. Opening the new session…",
   "压缩请求可能已送达，请检查聊天记录后再重试。": "The compaction request may have been delivered. Check the chat before retrying.",

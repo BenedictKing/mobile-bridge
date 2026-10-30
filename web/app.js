@@ -730,9 +730,12 @@ function renderContextUsage(view){
   const node=$('context-usage'),used=Number(view.usage?.used),size=Number(view.usage?.size),valid=Number.isFinite(used)&&used>=0&&Number.isFinite(size)&&size>0;
   node.hidden=false;
   if(!valid){node.textContent='· —';node.title=t('当前会话暂无上下文用量，完成一轮后更新');return;}
-  const percent=Math.round(used/size*100),locale=BridgeI18n.locale();
-  node.textContent='· '+formatTokenCount(used)+'/'+formatTokenCount(size);
-  node.title=t('上下文用量：')+used.toLocaleString(locale)+' / '+size.toLocaleString(locale)+' tokens · '+percent+'%';
+  // A restored value is the last count the agent reported before the chat was
+  // reopened (gateway restart / idle eviction / reconnect). Mark it so it is
+  // not read as the live context of a session that may have compacted since.
+  const stale=view.usage?.stale===true,percent=Math.round(used/size*100),locale=BridgeI18n.locale();
+  node.textContent='· '+(stale?'~':'')+formatTokenCount(used)+'/'+formatTokenCount(size);
+  node.title=(stale?t('上次记录的上下文用量：'):t('上下文用量：'))+used.toLocaleString(locale)+' / '+size.toLocaleString(locale)+' tokens · '+percent+'%';
 }
 function compactAvailable(){return !!state?.connected&&state.status==='idle'&&!state.readOnly&&!(state.requests||[]).length;}
 function selectCompactMethod(method){if(!['native','gateway'].includes(method))return;compactMethod=method;$('compact-error').textContent='';renderCompactState();}

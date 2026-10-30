@@ -873,6 +873,7 @@ func runGateway(args []string) {
 				manager.SteerMethod = profile.SteerMethod
 				manager.ModeMap = profile.ModeMap
 				manager.ModeOptionID = profile.ModeOptionID
+				manager.LazySessions = profile.LazySessions
 			}
 			server.ACPAgents[kind] = manager
 		}
@@ -925,6 +926,7 @@ func runGateway(args []string) {
 		manager.ModeMap = profile.ModeMap
 		manager.ModeOptionID = profile.ModeOptionID
 		manager.Canonical = profile.Canonical
+		manager.LazySessions = profile.LazySessions
 		manager.Subagents = subagentStoreFor(profile.Kind, home)
 		if server.ACPAgents == nil {
 			server.ACPAgents = map[string]*acpruntime.Manager{}
@@ -1007,9 +1009,11 @@ func runGateway(args []string) {
 		// only report usage inside a live turn and only list a session after
 		// its first turn, so these files are what keep a reopened chat's gauge
 		// populated and a created-but-unused chat resolvable after a restart.
+		contextUsage := acpruntime.LoadUsage(filepath.Join(dataDir, "context-usage.json"))
 		createdSessions := acpruntime.LoadCreated(filepath.Join(dataDir, "created-sessions.json"))
 		for kind, manager := range server.ACPAgents {
 			if manager != nil {
+				manager.Usage = contextUsage
 				manager.Created = createdSessions
 				manager.Kind = kind
 			}

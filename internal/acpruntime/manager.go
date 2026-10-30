@@ -58,6 +58,10 @@ type Session struct {
 	lastSubagentRevision int64
 	// mediaDir (from Manager.MediaDir) receives decoded inline image blocks.
 	mediaDir string
+	// usage / kind (from Manager.Usage / Kind) persist the last context usage
+	// an agent reported so a reopened view can restore it.
+	usage *UsageStore
+	kind  string
 	// canonical (from Manager.Canonical) maps a lazy placeholder id to the
 	// materialized backend id; ownsUpdate consults it so zcode's first-prompt
 	// stream — which may already carry the backend id — is not dropped.
@@ -224,6 +228,11 @@ type Manager struct {
 	// disables persistence and the view drops such blocks like before.
 	MediaDir string
 
+	// Usage remembers the last context usage an agent reported per session.
+	// Agents only report usage inside a live turn and views are rebuilt on
+	// every open, so the ledger is what keeps the phone's gauge populated
+	// across a gateway restart or the idle sweep. Nil disables the feature.
+	Usage *UsageStore
 	// Created remembers the sessions this manager created through session/new
 	// (id → cwd/title). Agents only list a session after its first turn, so
 	// without the ledger a created-but-unused chat would vanish from the list
@@ -629,7 +638,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		return nil, err
 	}
 	session := &Session{ID: id, Cwd: cwd, Process: process,
-		View: acpview.NewView(id, nil, cwd, m.now), active: true, mediaDir: m.MediaDir, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: acpview.NewView(id, nil, cwd, m.now), active: true, mediaDir: m.MediaDir, usage: m.Usage, kind: m.Kind, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
 	session.modeOptionID = m.ModeOptionID
@@ -662,6 +671,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 			session.View.Title = title
 		}
 	}
+	m.seedUsage(session)
 	m.startNative(session)
 	return session, nil
 }
@@ -749,7 +759,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	}
 	createdAt := int64(m.now() * 1000)
 	session := &Session{ID: id, Cwd: cwd, Title: title, CreatedAtMs: createdAt, Process: process,
-		View: acpview.NewView(id, title, cwd, m.now), active: true, mediaDir: m.MediaDir, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: acpview.NewView(id, title, cwd, m.now), active: true, mediaDir: m.MediaDir, usage: m.Usage, kind: m.Kind, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.interactionReady = true
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
@@ -1840,6 +1850,37 @@ func (s *Session) Wait(timeout time.Duration) {
 	}
 }
 
+// seedUsage restores the last recorded context usage into a freshly built
+// view. A session/load replay that already delivered a live usage_update keeps
+// its own (authoritative) value; the ledger only fills the blank gauge a
+// restart, an idle sweep or a transcript-backed open would otherwise leave.
+func (m *Manager) seedUsage(session *Session) {
+	if m == nil || m.Usage == nil || session == nil {
+		return
+	}
+	session.mu.Lock()
+	id := session.ID
+	session.mu.Unlock()
+	usage := m.Usage.Get(m.Kind, id)
+	if usage == nil {
+		return
+	}
+	session.mu.Lock()
+	if session.View != nil && session.View.Usage == nil {
+		session.View.Usage = usage
+	}
+	session.mu.Unlock()
+}
+
+// recordUsage persists the usage an agent just reported. Called outside the
+// session lock: the ledger write must not stall the update stream.
+func (s *Session) recordUsage(sessionID string, used, size any) {
+	if s == nil || s.usage == nil {
+		return
+	}
+	s.usage.Record(s.kind, sessionID, used, size)
+}
+
 // startNative wires optional persisted-store and retry-state pollers. They run
 // for the session's whole life and share one timer.
 func (m *Manager) startNative(session *Session) {
@@ -1867,6 +1908,8 @@ func (m *Manager) openNative(id, cwd string, cause error) *Session {
 		ID: id, Cwd: cwd, active: true, readOnly: true,
 		View:    acpview.NewView(id, nil, cwd, m.now),
 		changed: make(chan struct{}),
+		usage:   m.Usage,
+		kind:    m.Kind,
 		pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{},
 		touched: time.Now(), lastActivity: time.Now(), interactionReady: true,
 		native: m.NativeTranscript,
@@ -1875,6 +1918,7 @@ func (m *Manager) openNative(id, cwd string, cause error) *Session {
 		session.Title = snapshot.Title
 	}
 	session.View.ApplyNative(snapshot)
+	m.seedUsage(session)
 	m.startPoller(session)
 	return session
 }
@@ -2193,17 +2237,27 @@ func (s *Session) onNotification(message *jsoncompat.Object) {
 	// Inline image blocks are decoded to disk before the view folds the
 	// update: snapshots stay small and the phone gets a previewable path.
 	s.prepareMedia(params)
+	var usageUsed, usageSize any
+	var usageID string
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return
 	}
 	s.View.OnUpdate(params)
-	if params.MustGet("sessionUpdate") == "session_info_update" {
+	updateKind, _ := params.MustGet("sessionUpdate").(string)
+	if updateKind == "session_info_update" {
 		s.Title, _ = s.View.Title.(string)
+	} else if updateKind == "usage_update" {
+		// The agent reports the context it is working against; remember it so
+		// reopening this chat (restart, idle sweep, reconnect) keeps the count.
+		usageUsed, usageSize, usageID = params.MustGet("used"), params.MustGet("size"), s.ID
 	}
 	s.signalLocked()
 	s.mu.Unlock()
+	if updateKind == "usage_update" {
+		s.recordUsage(usageID, usageUsed, usageSize)
+	}
 }
 
 func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
@@ -2374,9 +2428,13 @@ func (m *Manager) Drop(id string) {
 		delete(m.sessions, session.ID)
 	}
 	m.mu.Unlock()
-	// A deleted chat must not come back as a list row if its id is reused.
+	// A deleted chat must not come back with an old gauge or list row if its
+	// id is reused (lazy agents may have recorded it under the placeholder id
+	// too).
+	m.Usage.Forget(m.Kind, id)
 	m.Created.Forget(m.Kind, id)
 	if session != nil {
+		m.Usage.Forget(m.Kind, session.ID)
 		m.Created.Forget(m.Kind, session.ID)
 		session.Close()
 	}
