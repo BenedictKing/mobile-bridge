@@ -176,6 +176,20 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 		t.Fatal("短结果不应标截断")
 	}
 
+	// Markdown 结果折成纯文本：强调符、反引号、标题与列表符号不进摘要，标识符里的下划线保留。
+	markdownRun := &team.Run{
+		ID: "run-ev-markdown", TeamID: teamID, Goal: "Markdown", Status: team.RunCompleted,
+		DeliveryStatus: team.DeliveryPendingReview,
+		Tasks: []team.Task{{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Ordinal: 0,
+			Result: "## 结论\n**结论：TEAM_OK。**\n- 改动：`web/app.js`\n- 遗留：无"}},
+	}
+	if err := env.store.SaveRun(markdownRun); err != nil {
+		t.Fatal(err)
+	}
+	if got := fetchDeliveryEvidence(t, env, teamID, markdownRun.ID).ResultSummary.Text; got != "impl：结论 结论：TEAM_OK。 改动：web/app.js 遗留：无" {
+		t.Fatalf("摘要应是去 Markdown 标记的单行纯文本: %q", got)
+	}
+
 	// 单任务结果超过 120 字：逐任务头被截，摘要必须标 truncated。
 	longRun := &team.Run{
 		ID: "run-ev-long", TeamID: teamID, Goal: "长结果", Status: team.RunCompleted,

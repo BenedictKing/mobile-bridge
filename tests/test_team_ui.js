@@ -43,6 +43,8 @@ test('docked stop reasons and fixed task errors render in English',()=>{
   const run={stopReason:reason,tasks:[{id:'lead-d1-0',status:'stopped',outcome:'auth'}]};
   assert.equal(teamRunStopReasonText(run),'Task lead-d1-0 docked: member sign-in failed (fix the account or configuration, then continue)');
   assert.equal(teamRunStopReasonText({stopReason:'用户取消运行'}),'Cancelled by user');
+  // 列表行没有 tasks：按固定版式拆开翻译。
+  assert.equal(teamRunStopReasonText({stopReason:reason}),'Task lead-d1-0 docked: account sign-in failed or expired; task parked (fix the account or configuration, then continue)');
   assert.equal(teamRunStopReasonText({stopReason:'未登记的原文'}),'未登记的原文');
   const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
   screen.team=team;
@@ -56,16 +58,25 @@ test('docked stop reasons and fixed task errors render in English',()=>{
   assert.match(failed,/Queue dispatch failed/);
 });
 
-test('every wrapped Chinese literal in the team UI has an English entry',()=>{
+test('every wrapped Chinese literal in the web UI has an English entry',()=>{
   const missing=[];
-  for(const file of ['team.js','team-chat.js']){
+  const files=fs.readdirSync(path.join(__dirname,'..','web')).filter(name=>name.endsWith('.js')&&name!=='i18n.js');
+  for(const file of files){
     const source=fs.readFileSync(path.join(__dirname,'..','web',file),'utf8');
+    // toast() 内部会 t()：它的字面量参数同样需要词条。
+    for(const match of source.matchAll(/toast\(([^;]*?)\)(?=;|\)|,|\})/g)){
+      for(const quoted of match[1].matchAll(/'([^']*[一-鿿][^']*)'/g))if(!(quoted[1] in BridgeI18n.dictionary))missing.push(file+': '+quoted[1]);
+    }
     for(const match of source.matchAll(/\b(?:t|t_safe|BridgeI18n\.t)\('((?:[^'\\]|\\.)*)'\)/g)){
       const literal=match[1];
       if(/[一-鿿：、（）]/.test(literal)&&!(literal in BridgeI18n.dictionary))missing.push(file+': '+literal);
     }
   }
-  assert.deepEqual(missing,[]);
+  const html=fs.readFileSync(path.join(__dirname,'..','web','index.html'),'utf8');
+  for(const match of html.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)){
+    if(/[一-鿿]/.test(match[1])&&!(match[1] in BridgeI18n.dictionary))missing.push('index.html: '+match[1]);
+  }
+  assert.deepEqual([...new Set(missing)],[]);
 });
 
 test('resume hint follows the actual stop cause',()=>{

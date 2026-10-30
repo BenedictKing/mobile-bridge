@@ -285,7 +285,7 @@
 .team-workflow-card{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:13px 16px 12px;margin:0 0 24px;max-width:760px}
 .team-workflow-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .team-workflow-headline{flex:1;display:flex;align-items:center;gap:8px;min-width:0;font-size:11.5px;font-weight:600;letter-spacing:.01em;color:var(--muted)}
-.team-workflow-outcome{border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:600;line-height:16px;background:var(--soft);color:var(--green)}
+.team-workflow-outcome{white-space:nowrap;border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:600;line-height:16px;background:var(--soft);color:var(--green)}
 .team-workflow-outcome[data-tone="bad"]{background:color-mix(in srgb,var(--error) 13%,transparent);color:var(--error)}
 .team-workflow-outcome[data-tone="warn"]{background:var(--warning-bg);color:var(--warning-text)}
 .team-workflow-outcome[data-tone="idle"]{background:var(--surface);color:var(--muted)}
@@ -349,6 +349,7 @@
 .team-actions-task{margin:4px 0 0;color:inherit;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .team-actions-card details{margin-top:8px;color:var(--muted)}.team-actions-card summary{cursor:pointer}
 .team-actions-card details pre{margin:6px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+.team-delivery.team-delivery-card{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:12px 14px;margin:12px 0}
 .team-delivery-summary{margin:8px 0 0;font-size:12px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
 .team-delivery-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .team-delivery-actions button{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--green);padding:8px 12px;font-size:12px}
@@ -379,6 +380,9 @@
 .team-workflow-empty .team-workflow-meta{margin-top:10px}
 @media(max-width:720px){
   .team-workflow-card{padding:12px 12px 10px}
+  /* 窄屏头部分两行：标题与结论徽标独占一行，计数与按钮换到下一行，徽标不再被挤成逐字竖排。 */
+  .team-workflow-headline{flex:1 1 100%;white-space:nowrap}
+  .team-workflow-meta{flex:1 1 auto}
   /* 手机上轨道改成竖排：一条脊柱从上到下，阶段之间不横向滚动。 */
   .team-workflow-stations{flex-direction:column;gap:0}
   .team-workflow-stage{flex:none;width:100%;min-width:0;padding-bottom:12px}

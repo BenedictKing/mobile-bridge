@@ -309,7 +309,9 @@ function projectLabel(project){const kind=project.agent||(project.key||'').split
 function dirLabel(project){const base=(project.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||project.name;return base+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
 function chatProjectLabel(view){
   const row=listRows.find(item=>item.id===currentId&&item.host===currentHost),base=view.projectName||row?.projectName||(view.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||t('电脑上的聊天');
-  return base+' · '+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'));
+  // 会话还没加载出来（占位视图不带 host）时按当前打开的 host 判断，别把本机聊天标成 SSH 主机。
+  const host=view.host||currentHost;
+  return base+' · '+(host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'));
 }
 // 置顶项目存在 localStorage（按 host+cwd 识别，上限 20 个），渲染时排在最前并带 ★。
 function newChatPins(){try{const pins=JSON.parse(localStorage.getItem('new-chat-pins')||'[]');return Array.isArray(pins)?pins:[];}catch{return[];}}

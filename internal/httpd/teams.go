@@ -2370,8 +2370,9 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 			if task.ResultDetail != nil {
 				resultText = firstNonEmpty(task.Result, task.ResultDetail.Result)
 			}
-			// 逐任务头截到 120 字：截了就置 truncated，前端才会标「（已截断）」。
-			display := team.ResultDisplayText(resultText)
+			// 逐任务头去 Markdown 标记、折成一行再截到 120 字：截了就置 truncated，前端
+			// 才会标「（已截断）」。摘要是纯文本，截断会劈开 ** 成对标记。
+			display := strings.Join(strings.Fields(deliveryPlainText(team.ResultDisplayText(resultText))), " ")
 			if len([]rune(display)) > 120 {
 				truncated = true
 			}
@@ -2401,7 +2402,7 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 	agent.Set("total", jsoncompat.Num(len(run.Tasks)))
 	evidence.Set("agent", agent)
 	summary := jsoncompat.NewObject()
-	if text := strings.Join(heads, "；"); text != "" {
+	if text := strings.Join(heads, "\n"); text != "" {
 		if len([]rune(text)) > 1200 {
 			text = string([]rune(text)[:1200])
 			truncated = true
@@ -2445,6 +2446,15 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 		evidence.Set("workspaces", workspaces)
 	}
 	return evidence
+}
+
+// deliveryMarkdownMarks 匹配交付摘要里要剥掉的 Markdown 标记：成对强调符 **、
+// 行内代码反引号、行首标题井号与列表符号（下划线不动：标识符里常见）。
+var deliveryMarkdownMarks = regexp.MustCompile("(?m)\\*\\*|`+|^\\s{0,3}#{1,6}\\s+|^\\s*[-*+]\\s+")
+
+// deliveryPlainText 把 Agent 的 Markdown 结果转成摘要用的纯文本。
+func deliveryPlainText(text string) string {
+	return deliveryMarkdownMarks.ReplaceAllString(text, "")
 }
 
 // teamRunDetail 组装 RunDetail 投影：Run 全字段 + workspace.writeLockHeldBy

@@ -79,6 +79,7 @@ function renderTeamDeliveryEvidence(container,delivery,make){
     container.append(make('p',t_safe('独立工作区：')+names+' · '+t_safe('不会自动合入主工作区'),'muted team-delivery-dim'));
   }
   const summary=delivery.resultSummary;
+  // 每行一个任务的纯文本结果头（网关已剥 Markdown 标记）。
   if(summary&&summary.text)container.append(make('p',summary.text+(summary.truncated?t_safe('（已截断）'):''),'team-delivery-summary'));
 }
 
@@ -279,7 +280,7 @@ class TeamChatController{
     // 所有非零计数都说出来：失败不能盖住真正卡住流程的停靠任务。
     if(counts.failed)meta.append(this.node('span',counts.failed+' '+t_safe('失败'),'team-workflow-failcount'));
     if(counts.running)meta.append(this.node('span',counts.running+' '+t_safe('进行中'),'team-workflow-runcount'));
-    if(counts.stopped)meta.append(this.node('span',counts.stopped+' '+t_safe('已停止')));
+    if(counts.stopped)meta.append(this.node('span',counts.stopped+' '+t_safe('个停止')));
     head.append(meta);
     const toggle=this.button(this.compact?t_safe('展开成员'):t_safe('收起成员'),()=>{this.compact=!this.compact;this.render();});
     toggle.setAttribute('aria-expanded',String(!this.compact));

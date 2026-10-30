@@ -29,6 +29,9 @@ function teamRunStopReasonText(run){
   if(!BridgeI18n.language||BridgeI18n.language()==='zh')return reason;
   const task=(run&&run.tasks||[]).find(x=>x.status==='stopped'&&TEAM_BLOCKED_OUTCOMES.has(x.outcome)&&reason.startsWith('任务 '+x.id+' 停靠：'));
   if(task)return t('任务 ')+task.id+t(' 停靠：')+t(TEAM_TASK_OUTCOME_LABELS[task.outcome])+t('（处理账号或配置后可继续）');
+  // 列表行不带 tasks：按 runner.go 的固定版式拆开，中段是 blockedStopReason 的固定词条。
+  const parsed=/^任务 (\S+) 停靠：(.+)（处理账号或配置后可继续）$/.exec(reason);
+  if(parsed)return t('任务 ')+parsed[1]+t(' 停靠：')+t(parsed[2])+t('（处理账号或配置后可继续）');
   return t(reason);
 }
 /* broadcast 收集策略（§6.5）：all 保留每个分支结果；first_success 首个成功后取消其余。 */
@@ -1590,7 +1593,7 @@ class TeamRunScreen{
   }
   renderDelivery(){
     const t=BridgeI18n.t,detail=this.detail;
-    const box=this.node('section',undefined,'team-delivery '+detail.deliveryStatus);
+    const box=this.node('section',undefined,'team-delivery team-delivery-card '+detail.deliveryStatus);
     box.append(this.node('strong',typeof teamDeliveryLabel==='function'?teamDeliveryLabel(detail.deliveryStatus):detail.deliveryStatus));
     if(typeof renderTeamDeliveryEvidence==='function')renderTeamDeliveryEvidence(box,detail.delivery,(tag,text,cls)=>this.node(tag,text,cls));
     if(detail.deliveryStatus==='pending_review'){
