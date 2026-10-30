@@ -565,10 +565,10 @@ body:not(:has(#app:not([hidden]))) .gateway-entry{display:none}
 .settings-disclosure-body>.appearance-grid{clear:both}
 .phone-header{min-height:48px;padding-top:6px;padding-bottom:6px}
 .phone-header .wordmark,.phone-header .light{font-size:14px;letter-spacing:0}
-.login-product{display:flex;align-items:center;gap:16px}
-.login-slash{font-size:72px;font-weight:500;line-height:.8;letter-spacing:-.08em;color:var(--green)}
+.login-product{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:16px;align-items:center}
+.login-slash{grid-row:span 2;font-size:72px;font-weight:500;line-height:.8;letter-spacing:-.08em;color:var(--green)}
 .login-product p{margin:0;font-size:20px;font-weight:500;line-height:1.25;letter-spacing:-.02em}
-.login-product small{display:block;margin-top:12px;max-width:38ch;color:var(--muted);font-size:11px;line-height:1.7}
+.login-product small{display:block;grid-column:2;margin-top:8px;max-width:38ch;color:var(--muted);font-size:11px;line-height:1.7}
 .login-card{background:var(--page)}
 #welcome-new-chat{min-height:44px;margin-top:12px;padding:10px 18px}
 .welcome-note{margin-top:24px;font-size:12px;max-width:34ch}
@@ -576,7 +576,7 @@ body:not(:has(#app:not([hidden]))) .gateway-entry{display:none}
 @media(min-width:721px){
   .login{position:relative;width:min(1080px,100%);margin:auto;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:72px;align-items:center;padding:48px 32px 80px}
   .login-product{display:block}
-  .login-slash{display:block;font-size:180px}
+  .login-slash{display:block;margin-bottom:40px;font-size:180px}
   .login-product p{font-size:32px;max-width:12ch}
   .login-product small{font-size:12px;margin-top:24px}
   .login-card{max-width:none;margin:0;padding:36px;border:1px solid var(--line);border-radius:16px}
