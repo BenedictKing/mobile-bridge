@@ -891,6 +891,34 @@ func workbuddyResponseCode(response map[string]any) (int64, bool) {
 	return 0, false
 }
 
+func workbuddyResponseMessage(response map[string]any) string {
+	message, _ := response["message"].(string)
+	if message == "" {
+		message, _ = response["msg"].(string)
+	}
+	return message
+}
+
+// workbuddyUnwrapEnvelope peels one transport layer off Tencent replies: the
+// HTTP client wrapper carries HTTP-status codes, but business envelopes also
+// arrive over HTTP 4xx — check-in's "already signed in today" (code 10001)
+// comes as HTTP 400 with the envelope in the body, so the message text has
+// to be re-parsed as JSON before any code semantics apply.
+func workbuddyUnwrapEnvelope(response map[string]any) (int64, bool, string) {
+	code, hasCode := workbuddyResponseCode(response)
+	message := workbuddyResponseMessage(response)
+	if hasCode && code < 400 {
+		return code, hasCode, message
+	}
+	var inner map[string]any
+	if json.Unmarshal([]byte(message), &inner) == nil {
+		if innerCode, ok := workbuddyResponseCode(inner); ok {
+			return innerCode, true, workbuddyResponseMessage(inner)
+		}
+	}
+	return code, hasCode, message
+}
+
 func firstNumberValue(value any) *int64 {
 	switch v := value.(type) {
 	case float64:
@@ -2426,11 +2454,7 @@ func (m *Manager) checkinWorkbuddyLocked(ctx context.Context, acc *Account) (*Ac
 		_ = m.saveAccount("workbuddy", acc)
 		return acc, "", &authFailedError{message: acc.StatusReason}
 	}
-	code, hasCode := workbuddyResponseCode(response)
-	message, _ := response["message"].(string)
-	if message == "" {
-		message, _ = response["msg"].(string)
-	}
+	code, hasCode, message := workbuddyUnwrapEnvelope(response)
 	switch {
 	case hasCode && code == 0:
 		message = "签到成功"
@@ -2476,7 +2500,7 @@ func (m *Manager) probeWorkbuddyAIRegistration(ctx context.Context, acc *Account
 	probeURL := endpoint + "/auth/realms/copilot/overseas/user/register?userId=" + url.QueryEscape(acc.UserID)
 	response := workbuddyPostJSON(ctx, probeURL, http.MethodGet,
 		workbuddyResourceHeaders(acc, "ai", workbuddyPlainToken(acc.AccessToken)), nil)
-	code, hasCode := workbuddyResponseCode(response)
+	code, hasCode, _ := workbuddyUnwrapEnvelope(response)
 	if !hasCode {
 		return ""
 	}
@@ -2582,22 +2606,18 @@ func (m *Manager) Provision(ctx context.Context, kind, id, region string) (*Acco
 		"countryName":     []string{ios2},
 	}}
 	response := workbuddyPostJSON(ctx, endpoint+"/console/login/account", http.MethodPost, billing, body)
-	if statusCode, ok := workbuddyResponseCode(response); !ok || (statusCode != 0 && statusCode != 200) {
-		message, _ := response["message"].(string)
-		if message == "" {
-			message, _ = response["msg"].(string)
-		}
+	if statusCode, ok, statusMessage := workbuddyUnwrapEnvelope(response); !ok || (statusCode != 0 && statusCode != 200) {
 		codeText := "无 code"
 		if ok {
 			codeText = strconv.FormatInt(statusCode, 10)
 		}
-		return acc, "", fmt.Errorf("提交地区失败（code=%s）：%s", codeText, firstNonEmpty(message, "未知错误"))
+		return acc, "", fmt.Errorf("提交地区失败（code=%s）：%s", codeText, firstNonEmpty(statusMessage, "未知错误"))
 	}
 
 	// 2. One-time trial (14051 = already claimed → idempotent success).
 	trialNote := "trial 已领取"
 	response = workbuddyPostJSON(ctx, endpoint+"/billing/ide/trial", http.MethodPost, billing, map[string]any{})
-	if statusCode, ok := workbuddyResponseCode(response); ok {
+	if statusCode, ok, _ := workbuddyUnwrapEnvelope(response); ok {
 		if statusCode == 0 || statusCode == 14051 {
 			if statusCode == 14051 {
 				trialNote = "trial 此前已领取"

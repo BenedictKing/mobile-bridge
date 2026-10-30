@@ -753,17 +753,22 @@ func TestWorkbuddyCheckinClientShapedHeaders(t *testing.T) {
 }
 
 // 10001 有两副面孔：「今日已签到」按成功记账；其他文案是瞬时限流，必须报错。
+// 真实环境里「今日已签到」还可能走 HTTP 400 + 业务信封（传输层包成
+// {code:400,message:正文}），必须再拆一层才能看到 10001。
 func TestWorkbuddyCheckinCode10001Semantics(t *testing.T) {
 	m, _ := setupWorkbuddyFixture(t)
-	responses := []string{
-		`{"code":10001,"msg":"今日已签到，请勿重复签到"}`,
-		`{"code":10001,"msg":"签到失败，请稍后重试"}`,
+	responses := []stubReply{
+		{status: 200, body: `{"code":10001,"msg":"今日已签到，请勿重复签到"}`},
+		{status: 400, body: `{"code":10001,"msg":"今天已签到，请明天再来","requestId":"req-1"}`},
+		{status: 200, body: `{"code":10001,"msg":"签到失败，请稍后重试"}`},
 	}
 	var call int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if call < len(responses) {
+			reply := responses[call]
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(responses[call]))
+			w.WriteHeader(reply.status)
+			_, _ = w.Write([]byte(reply.body))
 		}
 		call++
 	}))
@@ -784,6 +789,10 @@ func TestWorkbuddyCheckinCode10001Semantics(t *testing.T) {
 	if saved.CheckinAt == 0 || saved.CheckinNote != "今日已签到" {
 		t.Fatalf("already-checkin must be recorded as done: %+v", saved)
 	}
+	// HTTP 400 信封形态的「今日已签到」同样按幂等成功处理。
+	if _, message, err := m.Checkin(context.Background(), "workbuddy", "w_u1"); err != nil || message != "今日已签到" {
+		t.Fatalf("http-400 envelope already-checkin: message=%q err=%v", message, err)
+	}
 	if _, _, err := m.Checkin(context.Background(), "workbuddy", "w_u1"); err == nil {
 		t.Fatal("throttled 10001 must surface as an error")
 	}
@@ -792,6 +801,11 @@ func TestWorkbuddyCheckinCode10001Semantics(t *testing.T) {
 	if saved.CheckinNote != "今日已签到" {
 		t.Fatalf("throttled attempt must not clobber the earlier success: %+v", saved)
 	}
+}
+
+type stubReply struct {
+	status int
+	body   string
 }
 
 // 国际版没有签到体系：不能把请求打过去（那本身就是风控信号）。
