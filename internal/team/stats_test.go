@@ -532,3 +532,32 @@ func TestComputeRunStatsWaitingInputExcludesIdle(t *testing.T) {
 		t.Fatalf("有在途任务时耗时应取 now，得到 %d", stats.RunElapsedMs)
 	}
 }
+
+func TestComputeRunStatsResumedRunExcludesParkedIdle(t *testing.T) {
+	// 跑 5 分钟停靠，2 小时后续跑（Resume 不写事件，以下一次派发为界），再跑 1 分钟完成：
+	// 续跑后与终局后都只计 6 分钟，不随 resume 跳回墙钟。
+	at := func(d time.Duration) time.Time { return statsBase.Add(d) }
+	events := []*Event{
+		statsEvent("r1", EventRunCreated, at(0), nil),
+		statsEvent("r1", EventTaskDispatching, at(time.Second), map[string]any{"taskId": "a", "attempt": jsoncompat.Num(1)}),
+		statsEvent("r1", EventTaskStopped, at(5*time.Minute), map[string]any{"taskId": "a", "attempt": jsoncompat.Num(1)}),
+		statsEvent("r1", EventRunWaitingInput, at(5*time.Minute), nil),
+		statsEvent("r1", EventTaskDispatching, at(2*time.Hour+5*time.Minute), map[string]any{"taskId": "a", "attempt": jsoncompat.Num(2)}),
+	}
+	running := &Run{ID: "r1", Status: RunDispatching, Tasks: []Task{{ID: "a", Status: TaskRunning}}}
+	if stats := ComputeRunStats(events, running, DefaultPolicy(), at(2*time.Hour+5*time.Minute+30*time.Second)); stats.RunElapsedMs != (5*time.Minute + 30*time.Second).Milliseconds() {
+		t.Fatalf("续跑后应扣除停靠空闲，得到 %d", stats.RunElapsedMs)
+	}
+	events = append(events,
+		statsEvent("r1", EventTaskCompleted, at(2*time.Hour+6*time.Minute), map[string]any{"taskId": "a", "attempt": jsoncompat.Num(2)}),
+		statsEvent("r1", EventRunCompleted, at(2*time.Hour+6*time.Minute), nil))
+	done := &Run{ID: "r1", Status: RunCompleted, Tasks: []Task{{ID: "a", Status: TaskCompleted}}}
+	if stats := ComputeRunStats(events, done, DefaultPolicy(), at(5*time.Hour)); stats.RunElapsedMs != (6 * time.Minute).Milliseconds() {
+		t.Fatalf("终局后同样扣除停靠空闲，得到 %d", stats.RunElapsedMs)
+	}
+	// 停靠中被取消：停靠区间同样不算执行时间。
+	cancelled := append(events[:5:5], statsEvent("r1", EventRunCancelled, at(3*time.Hour), nil))
+	if stats := ComputeRunStats(cancelled[:4], &Run{ID: "r1", Status: RunWaitingInput, Tasks: []Task{{ID: "a", Status: TaskStopped}}}, DefaultPolicy(), at(3*time.Hour)); stats.RunElapsedMs != (5 * time.Minute).Milliseconds() {
+		t.Fatalf("停靠中耗时止于最后事件，得到 %d", stats.RunElapsedMs)
+	}
+}

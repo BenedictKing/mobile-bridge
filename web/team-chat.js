@@ -5,32 +5,36 @@ function teamSubmissionFields(mode,teamID){
 }
 
 // Lead 动作信封（internal/team/actions.go §5.1）是编排协议，不是给人读的正文：
-// 只把成对、位于代码围栏之外、且能解析成 {actions:[...]} 的块切成 action 片段，
-// 流式半截块、围栏里的协议示例与解析失败的块一律保持原文（与网关「只认合法
-// 块」同口径，宁可原样显示也不误吞正文）。
-function splitTeamActions(text){
-  const source=String(text||''),open='<team-actions>',close='</team-actions>',parts=[];
-  let cursor=0;
-  while(cursor<source.length){
-    const start=source.indexOf(open,cursor);
-    if(start<0)break;
-    const end=source.indexOf(close,start+open.length);
-    if(end<0)break;
-    const fences=(source.slice(0,start).match(/^[ \t]*(```|~~~)/gm)||[]).length;
-    const raw=source.slice(start,end+close.length);
-    let actions=null;
-    if(fences%2===0){
-      try{const value=JSON.parse(source.slice(start+open.length,end));if(value&&Array.isArray(value.actions))actions=value.actions;}catch{}
-    }
-    if(!actions){cursor=end+close.length;continue;}
-    if(start>0||parts.length)parts.push({type:'text',text:source.slice(parts.length?parts[parts.length-1].end:0,start)});
-    parts.push({type:'actions',actions,raw,end:end+close.length});
-    cursor=end+close.length;
-  }
-  if(!parts.length)return[{type:'text',text:source}];
-  const tail=source.slice(parts[parts.length-1].end);
-  if(tail)parts.push({type:'text',text:tail});
-  return parts.filter(part=>part.type==='actions'||part.text.trim());
+// 与网关 ExtractActionBlock 同一规则——整段恰好一个成对块（取首个闭合标记之前
+// 最后一个开始标记）、能解析成 {actions:[...]}、且不在代码块里，才切成 action
+// 片段；多个块（网关整体拒绝）、孤立标记、流式半截块、代码里的协议示例与非法
+// JSON 一律保持原文，宁可原样显示也不把未执行的动作画成卡片。codeLines 可选：
+// 返回落在代码块（围栏/缩进/引用内）里的 0 基行号集合，markdown.js 用 token.map
+// 提供；缺省按行首围栏粗略推断。
+function teamActionsCodeLines(source){
+  const lines=new Set();let inside=false;
+  source.split('\n').forEach((line,index)=>{
+    const fence=/^(?:\s*>)*\s*(```|~~~)/.test(line);
+    if(fence||inside||/^(?: {4}|\t)/.test(line))lines.add(index);
+    if(fence)inside=!inside;
+  });
+  return lines;
+}
+function splitTeamActions(text,codeLines){
+  const source=String(text||''),open='<team-actions>',close='</team-actions>',whole=[{type:'text',text:source}];
+  const firstOpen=source.indexOf(open),firstClose=source.indexOf(close);
+  if(firstOpen<0||firstClose<0||firstClose<firstOpen)return whole;
+  const rest=source.slice(firstClose+close.length);
+  if(rest.includes(open)||rest.includes(close))return whole;
+  const start=source.lastIndexOf(open,firstClose),end=firstClose+close.length;
+  const lineOf=offset=>source.slice(0,offset).split('\n').length-1;
+  const code=(codeLines||teamActionsCodeLines)(source);
+  if(code.has(lineOf(start))||code.has(lineOf(firstClose)))return whole;
+  let actions=null;
+  try{const value=JSON.parse(source.slice(start+open.length,firstClose));if(value&&Array.isArray(value.actions))actions=value.actions;}catch{}
+  if(!actions)return whole;
+  return [{type:'text',text:source.slice(0,start)},{type:'actions',actions,raw:source.slice(start,end)},{type:'text',text:rest}]
+    .filter(part=>part.type==='actions'||part.text.trim());
 }
 
 const TEAM_ACTIONS_CARD_LABELS={delegate:'委派任务',request_context:'请求上下文',summarize:'请求汇总'};
@@ -230,7 +234,7 @@ class TeamChatController{
     try{
       const listed=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs');
       const rows=listed.runs||[],latest=rows[rows.length-1];
-      if(!latest){if(generation===this.generation){this.run=null;this.render();}return;}
+      if(!latest){if(generation===this.generation){this.run=null;this.refreshError='';this.render();}return;}
       const detail=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(latest.id));
       if(generation===this.generation&&this.current?.id===team.id){this.team=team;this.run=detail;this.refreshError='';this.render();}
     }catch(error){

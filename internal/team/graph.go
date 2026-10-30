@@ -15,7 +15,10 @@ package team
 // 一行，绝不因图数据异常报错）；不做图推送（拉取式端点）、不做 SVG 连线
 // （web/team.js 以层间 ↓ 表达）。
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // graphResultHeadRunes 是节点结果摘要的截断长度（与 instructionsHead 的
 // 240 rune 同口径，§10.3 有界 payload）。
@@ -78,11 +81,33 @@ func BuildRunGraph(run *Run, teamRow *Team) RunGraph {
 	for i := range run.Tasks {
 		taskByID[run.Tasks[i].ID] = &run.Tasks[i]
 	}
+	// 修复任务（actfix-{root}-{n}）的 root 剥掉了派生后缀：派生 Lead 任务 lead-d1-0
+	// 的修复也叫 actfix-lead-1。阶段图把它挂到快照序上最近一个同根、同成员的非修复
+	// 任务（真正触发修复的那个），派发与计数仍按 actionRepairRoot。
+	repairStage := map[string]string{}
+	latestByRoot := map[string]*Task{}
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		root := actionRepairRoot(task.ID)
+		if !strings.HasPrefix(task.ID, actionRepairPrefix) {
+			latestByRoot[root+"\x00"+task.MemberID] = task
+			continue
+		}
+		if source := latestByRoot[root+"\x00"+task.MemberID]; source != nil {
+			repairStage[task.ID] = graphStageRoot(source.ID)
+		}
+	}
+	stageOf := func(task *Task) string {
+		if stage, ok := repairStage[task.ID]; ok {
+			return stage
+		}
+		return graphStageRoot(task.ID)
+	}
 	keyOfTask := func(task *Task) string {
 		if task.BroadcastGroup != "" && groupSize[task.BroadcastGroup] > 1 {
 			return "group:" + task.BroadcastGroup
 		}
-		return "task:" + graphStageRoot(task.ID)
+		return "task:" + stageOf(task)
 	}
 	type nodeBuilder struct {
 		id      string // 展示 ID（重复时加 #N 后缀消歧）
@@ -96,7 +121,7 @@ func BuildRunGraph(run *Run, teamRow *Team) RunGraph {
 		key := keyOfTask(task)
 		builder, exists := builders[key]
 		if !exists {
-			id := graphStageRoot(task.ID)
+			id := stageOf(task)
 			if task.BroadcastGroup != "" && groupSize[task.BroadcastGroup] > 1 {
 				id = task.BroadcastGroup
 				builder = &nodeBuilder{id: id, isGroup: true}

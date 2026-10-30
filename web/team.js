@@ -1680,7 +1680,9 @@ class TeamRunScreen{
       // Lead 结果里的动作信封折叠为卡片（与聊天时间线同一解析），正文仍按原文 pre 展示。
       if(result.result){
         const parts=typeof splitTeamActions==='function'?splitTeamActions(result.result):[{type:'text',text:result.result}];
-        for(const part of parts)box.append(part.type==='actions'?renderTeamActionsCard(part,t):this.node('pre',part.text.trim(),'task-result-text'));
+        // 没切出信封时按原文展示（保留首行缩进与空白）；切出时才修剪信封两侧的空行。
+        if(!parts.some(part=>part.type==='actions'))box.append(this.node('pre',result.result,'task-result-text'));
+        else for(const part of parts)box.append(part.type==='actions'?renderTeamActionsCard(part,t):this.node('pre',part.text.trim(),'task-result-text'));
       }
       card.append(box);
     }

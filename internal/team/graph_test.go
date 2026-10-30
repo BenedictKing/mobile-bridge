@@ -302,3 +302,20 @@ func TestBuildRunGraphStatusPrecedenceTable(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRunGraphRepairAttachesToTriggeringTask(t *testing.T) {
+	// Lead 给自己派生的后续任务 lead-d1-0 动作块解析失败，修复任务仍叫 actfix-lead-1
+	// （修复根剥掉派生后缀）：阶段图要把它挂到 lead-d1-0，而不是第 0 层的 lead。
+	run := &Run{ID: "r1", TeamID: "t1", Status: RunDispatching, Tasks: []Task{
+		{ID: "lead", MemberID: "lead", Status: TaskCompleted, Ordinal: 1},
+		{ID: "lead-d1-0", MemberID: "lead", Status: TaskCompleted, Ordinal: 2, DependsOn: []string{"lead"}},
+		{ID: "actfix-lead-1", MemberID: "lead", Status: TaskRunning, Ordinal: 3},
+	}}
+	graph := BuildRunGraph(run, graphTestTeam())
+	if lead := graphNodeOf(t, graph, "lead"); lead.RunCount != 1 || lead.Status != TaskCompleted {
+		t.Fatalf("根 lead 节点不应吞下派生任务的修复: %+v", lead)
+	}
+	if source := graphNodeOf(t, graph, "lead-d1-0"); source.RunCount != 2 || source.Status != TaskRunning {
+		t.Fatalf("修复应挂到触发它的 lead-d1-0（runCount=2、状态取修复）: %+v", source)
+	}
+}

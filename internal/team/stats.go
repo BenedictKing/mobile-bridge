@@ -105,6 +105,44 @@ func budgetStopReason(threshold, used int) string {
 		"；可继续追加预算运行，或取消本次运行）"
 }
 
+// runIdleDuration 累计 end 之前的停靠/暂停空闲：run_waiting_input / run_paused 开始
+// 停靠；停靠期间在途任务落终态（task_completed/failed/stopped/outcome_unknown）是
+// 收尾而非续跑，把起点顺延到该事件；Resume 不写事件，续跑以之后第一条
+// task_dispatching / run_budget_resumed 为界；终局事件封住仍开着的停靠；到 end 仍
+// 开着的停靠只在没有在途任务时计入（closeOpen），否则任务仍在跑，不算空闲。
+func runIdleDuration(events []*Event, runID string, end time.Time, closeOpen bool) time.Duration {
+	idle := time.Duration(0)
+	parked := time.Time{}
+	closePark := func(at time.Time) {
+		if !parked.IsZero() && at.After(parked) {
+			idle += at.Sub(parked)
+		}
+		parked = time.Time{}
+	}
+	for _, event := range events {
+		if event == nil || event.RunID != runID || event.CreatedAt.IsZero() || event.CreatedAt.After(end) {
+			continue
+		}
+		switch event.Type {
+		case EventRunWaitingInput, EventRunPaused:
+			if parked.IsZero() {
+				parked = event.CreatedAt
+			}
+		case EventTaskCompleted, EventTaskFailed, EventTaskStopped, EventTaskOutcomeUnknown:
+			if !parked.IsZero() && event.CreatedAt.After(parked) {
+				parked = event.CreatedAt
+			}
+		case EventTaskDispatching, EventRunBudgetResumed,
+			EventRunCompleted, EventRunFailed, EventRunCancelled, EventRunStopped:
+			closePark(event.CreatedAt)
+		}
+	}
+	if closeOpen {
+		closePark(end)
+	}
+	return idle
+}
+
 // runHasInFlightTask 判定快照里是否仍有派发中/运行中的任务（这类任务的耗时
 // 仍在增长，Run 耗时不能提前封顶）。
 func runHasInFlightTask(run *Run) bool {
@@ -235,8 +273,9 @@ func ComputeRunStats(events []*Event, run *Run, policy TeamPolicy, now time.Time
 		}
 	}
 	stats.DispatchCount = countRunDispatches(events, run.ID)
-	// Run 耗时：created 有效才有意义；终局取终局事件；停靠/暂停且没有在途任务时
-	// 止于最后一条事件（等人处理的空闲不计入）；其余在途情形按 now。
+	// Run 耗时：created 有效才有意义；终局取终局事件，其余按 now；停靠/暂停且没有
+	// 在途任务时止于最后一条事件。等人处理的停靠区间（runIdleDuration）一律扣除，
+	// 续跑后与终局后口径一致，数值不会因 resume 跳回墙钟。
 	if !created.IsZero() {
 		end := now
 		if !finished.IsZero() {
@@ -244,7 +283,7 @@ func ComputeRunStats(events []*Event, run *Run, policy TeamPolicy, now time.Time
 		} else if (run.Status == RunWaitingInput || run.Status == RunPaused) && !lastEvent.IsZero() && !runHasInFlightTask(run) {
 			end = lastEvent
 		}
-		if elapsed := end.Sub(created); elapsed > 0 {
+		if elapsed := end.Sub(created) - runIdleDuration(events, run.ID, end, !runHasInFlightTask(run)); elapsed > 0 {
 			stats.RunElapsedMs = elapsed.Milliseconds()
 		}
 	}

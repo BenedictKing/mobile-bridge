@@ -299,6 +299,15 @@ test('lead action envelopes split into cards only when well formed',()=>{
   assert.deepEqual(splitTeamActions('```\n'+envelope+'\n```').map(part=>part.type),['text']);
   assert.deepEqual(splitTeamActions('<team-actions>{"actions":[').map(part=>part.type),['text']);
   assert.deepEqual(splitTeamActions('<team-actions>{bad}</team-actions>').map(part=>part.type),['text']);
+  // 与网关 ExtractActionBlock 同一规则：正文提到标签名时取最内层开始标记；多个块整体不执行，保持原文。
+  assert.deepEqual(splitTeamActions('I will emit a <team-actions> block now:\n'+envelope).map(part=>part.type),['text','actions']);
+  assert.deepEqual(splitTeamActions(envelope+'\n再来一个\n'+envelope).map(part=>part.type),['text']);
+  assert.deepEqual(splitTeamActions('</team-actions> '+envelope).map(part=>part.type),['text']);
+  // 缩进代码块与引用里的围栏也算代码：协议示例不画成卡片。
+  assert.deepEqual(splitTeamActions('示例：\n\n    '+envelope.replace(/\n/g,'\n    ')).map(part=>part.type),['text']);
+  assert.deepEqual(splitTeamActions('> ```\n> '+envelope.replace(/\n/g,'\n> ')+'\n> ```').map(part=>part.type),['text']);
+  // 调用方给出的代码行集合优先（markdown.js 用 token.map）。
+  assert.deepEqual(splitTeamActions('前言\n'+envelope,()=>new Set([1])).map(part=>part.type),['text']);
   const card=renderTeamActionsCard(splitTeamActions(envelope)[0]);
   assert.equal(card.className,'team-actions-card');
   assert.match(text(card),/团队动作 · 1/);
@@ -332,4 +341,17 @@ test('a failed refresh keeps the current workflow card',async()=>{
   fail=true;await controller.refreshRun(true);
   assert.ok(find(root,'team-workflow-stations').length,'刷新失败不应退回首次引导');
   assert.match(text(root),/刷新失败：网关重启中/);
+});
+
+test('a recovered refresh clears the error even when the team has no runs yet',async()=>{
+  const root=new FakeNode('div');let fail=false;
+  const controller=new TeamChatController({root,request:async path=>{
+    if(fail)throw new Error('网关重启中');
+    return{runs:[]};
+  },openRun(){}});
+  controller.setTeams(teams);controller.open(teams[0]);await flush();
+  fail=true;await controller.refreshRun(true);
+  assert.match(text(root),/刷新失败：网关重启中/);
+  fail=false;await controller.refreshRun(true);
+  assert.doesNotMatch(text(root),/刷新失败/);
 });

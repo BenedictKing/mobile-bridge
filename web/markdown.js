@@ -4,6 +4,16 @@
   // Math delimiters must be consumed before Markdown removes backslash escapes.
   markdown.use(texmath, {engine:window.katex, delimiters:['brackets','dollars']});
   const tags = new Set(['p','h1','h2','h3','h4','h5','h6','ul','ol','li','strong','em','s','blockquote','hr','br','table','thead','tbody','tr','th','td']);
+  // 代码块（围栏/缩进，含引用与列表内）所占的 0 基行号：动作信封落在其中视为协议示例。
+  const codeLines = source => {
+    const lines = new Set();
+    for (const token of markdown.parse(source, {})) {
+      if ((token.type === 'fence' || token.type === 'code_block') && token.map) for (let line = token.map[0]; line < token.map[1]; line++) lines.add(line);
+    }
+    return lines;
+  };
+  // 渲染与复制共用的切片：Lead 动作信封单独成卡片，其余正文走 Markdown。
+  const segments = text => typeof splitTeamActions === 'function' ? splitTeamActions(text, codeLines) : [{type:'text', text:String(text || '')}];
 
   // Build nodes from parsed tokens; model output never becomes executable HTML.
   window.renderMarkdown = function(node, text, files = [], fileUrl = () => '', options = {}) {
@@ -94,7 +104,8 @@
             button.onclick=()=>window.BridgeClipboard?.copy(async()=>{
               if(!options.fullText)return token.content;
               const complete=await options.fullText();
-              const blocks=markdown.parse(complete,{}).filter(t=>t.type==='fence'||t.type==='code_block');
+              // 与渲染同一切片计数：信封卡片不占代码块序号。
+              const blocks=segments(complete).filter(part=>part.type==='text').flatMap(part=>markdown.parse(part.text,{})).filter(t=>t.type==='fence'||t.type==='code_block');
               if(!blocks[index])throw Error('读取完整正文失败，请重试');
               return blocks[index].content;
             },button);
@@ -164,10 +175,9 @@
         }
       }
     }
-    // Lead 动作信封渲染成折叠卡片（team-chat.js splitTeamActions，只认合法块）；
-    // 其余正文照常走 Markdown。代码块序号跨片段连续，复制按钮仍对齐全文围栏。
-    const parts = typeof splitTeamActions === 'function' ? splitTeamActions(text) : [{type:'text', text:String(text || '')}];
-    for (const part of parts) {
+    // Lead 动作信封渲染成折叠卡片（team-chat.js splitTeamActions，与网关同一规则）；
+    // 其余正文照常走 Markdown。代码块序号跨片段连续，复制按钮按同一切片取全文代码块。
+    for (const part of segments(text)) {
       if (part.type === 'actions') body.append(renderTeamActionsCard(part, t));
       else appendTokens(markdown.parse(part.text, {}), body);
     }

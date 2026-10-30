@@ -18,7 +18,13 @@ var localCommandBlock = regexp.MustCompile(`(?s)<(command-name|command-message|c
 // Kept as literals so textutil stays a leaf package; team tests pin them.
 const assignedTaskHeader = "[Assigned task]"
 
-var teamEnvelopeHeaders = []string{"[Team context]", "[Team delegation]", "[Team review]"}
+// teamEnvelopes 是团队派发信封的头与编排器固定文案：只有头后紧跟固定文案才算
+// 信封，用户正文以「[Team review] …」开头时原样保留。
+var teamEnvelopes = []struct{ header, marker string }{
+	{"[Team context]", "来源成员："},
+	{"[Team delegation]", "你是本次自动规划的 Lead"},
+	{"[Team review]", "你是本团队的评审成员"},
+}
 
 // StripInternalReminders removes harness-only reminder envelopes from the
 // phone timeline. It never changes prompts sent to an agent.
@@ -35,8 +41,8 @@ func StripInternalReminders(text string) string {
 // last `[Assigned task]` header; an envelope without one has no user text).
 func titleBody(text string) string {
 	text = strings.TrimSpace(localCommandBlock.ReplaceAllString(StripInternalReminders(text), ""))
-	for _, header := range teamEnvelopeHeaders {
-		if strings.HasPrefix(text, header) {
+	for _, envelope := range teamEnvelopes {
+		if strings.HasPrefix(text, envelope.header) && strings.HasPrefix(strings.TrimSpace(text[len(envelope.header):]), envelope.marker) {
 			if at := strings.LastIndex(text, "\n"+assignedTaskHeader+"\n"); at >= 0 {
 				return strings.TrimSpace(text[at+len(assignedTaskHeader)+2:])
 			}

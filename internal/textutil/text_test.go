@@ -44,11 +44,13 @@ func TestTitleFromTextStripsProtocolWrappers(t *testing.T) {
 		{"local stdout", "<local-command-stdout>Kept model</local-command-stdout>", ""},
 		{"caveat then prompt", `<system-reminder data-role="command-caveat">x</system-reminder>修复列表标题`, "修复列表标题"},
 		{"member envelope", "[Team context]\n来源成员：a\n来源任务：lead\n结果\n\n[Assigned task]\n排查失败", "排查失败"},
-		{"nested envelope", "[Team context]\n[Assigned task]\n旧任务\n\n[Assigned task]\n新任务", "新任务"},
-		{"briefing with header", "[Team delegation]\n你是 Lead\n[Assigned task]\n实现头像上传", "实现头像上传"},
+		{"nested envelope", "[Team context]\n来源成员：a\n[Assigned task]\n旧任务\n\n[Assigned task]\n新任务", "新任务"},
+		{"briefing with header", "[Team delegation]\n你是本次自动规划的 Lead。\n[Assigned task]\n实现头像上传", "实现头像上传"},
 		{"briefing without header", "[Team delegation]\n你是本次自动规划的 Lead", ""},
-		{"review briefing", "[Team review]\n只做审查\n[Assigned task]\n审查接口", "审查接口"},
+		{"collapsed briefing title", "[Team delegation] 你是本次自动规划的 Lead。以下是启用成员", ""},
+		{"review briefing", "[Team review]\n你是本团队的评审成员，本任务只做审查\n[Assigned task]\n审查接口", "审查接口"},
 		{"ordinary mention", "修复 [Team context] 显示", "修复 [Team context] 显示"},
+		{"user text with envelope word", "[Team review] 帮我整理周报", "[Team review] 帮我整理周报"},
 	}
 	for _, tc := range cases {
 		if got := TitleFromText(tc.input); got != tc.want {
