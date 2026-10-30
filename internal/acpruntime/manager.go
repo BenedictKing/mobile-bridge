@@ -2354,7 +2354,10 @@ func (s *Session) IdleFor() time.Duration {
 
 // NoteSubagents records the latest child-agent roster revision; a change
 // bumps the change counter so downstream projections rebuild with the
-// refreshed subagent rows. Returns the current revision.
+// refreshed subagent rows. Returns the current revision. The refresh rides
+// the view-read path (acpViewState calls it on every read), so it must not
+// advance lastInteraction: opening an unread chat would otherwise stamp the
+// list recency with "now".
 func (s *Session) NoteSubagents(revision int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2362,9 +2365,6 @@ func (s *Session) NoteSubagents(revision int64) {
 		s.lastSubagentRevision = revision
 		s.sequence++
 		s.lastActivity = time.Now()
-		if s.interactionReady {
-			s.lastInteraction = s.lastActivity
-		}
 		close(s.changed)
 		s.changed = make(chan struct{})
 	}
