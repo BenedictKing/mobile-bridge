@@ -201,9 +201,10 @@ function renderList(){
   const groups=new Map(), totals=new Map(), shown=new Map();
   const now=Date.now();
   for(const chat of listRows){
+    const team=chat.host==='local'?teamChat?.teamForSession(chat.id):null;
     let parent=$('sessions');
     if(grouped){
-      totals.set(chat.projectKey,(totals.get(chat.projectKey)||0)+1);
+      const cwd=chat.projectKey.slice(chat.projectKey.indexOf('|')+1),project=chat.host==='local'?projectDirectory.find(row=>row.key===chat.projectKey||row.cwd===cwd):null;
       if(!groups.has(chat.projectKey)){
         const details=el('details','project-group');
         details.open=localStorage.getItem('group:'+chat.projectKey)!=='closed';
@@ -216,11 +217,12 @@ function renderList(){
         summary.append(add);
         details.append(summary);
         details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
-        const cwd=chat.projectKey.slice(chat.projectKey.indexOf('|')+1),project=chat.host==='local'?projectDirectory.find(row=>row.key===chat.projectKey||row.cwd===cwd):null;
         if(project)details.append(renderDefaultTeam(project));
         groups.set(chat.projectKey,details);$('sessions').append(details);
       }
       parent=groups.get(chat.projectKey);
+      if(project&&team&&teamChat?.teamForProject(project)?.id===team.id)continue;
+      totals.set(chat.projectKey,(totals.get(chat.projectKey)||0)+1);
       if((shown.get(chat.projectKey)||0)>=(projectGroupLimits.get(chat.projectKey)||PROJECT_GROUP_PAGE))continue;
       shown.set(chat.projectKey,(shown.get(chat.projectKey)||0)+1);
     }else{
@@ -238,7 +240,7 @@ function renderList(){
     }
     const button=el('button','session'+(chat.id===currentId&&chat.host===currentHost?' selected':''));
     button.dataset.id=chat.id;button.dataset.host=chat.host;
-    const team=chat.host==='local'?teamChat?.teamForSession(chat.id):null,title=el('strong','',team?team.name:chat.title);
+    const title=el('strong','',team?team.name:chat.title);
     if(team)title.append(' ',el('span','team-inline-badge',t('团队')));
     button.append(title);
     const meta=el('small');

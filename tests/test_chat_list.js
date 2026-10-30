@@ -15,7 +15,7 @@ function find(node,cls){
   const visit=current=>{if(typeof current==='string')return;if(current.className.split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};
   visit(node);return rows;
 }
-function loadList(listMode){
+function loadList(listMode,overrides={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const elStart=source.indexOf('function el('),elEnd=source.indexOf('\n',elStart);
   const start=source.indexOf('const TIME_BUCKETS='),end=source.indexOf('async function loadList',start);
@@ -29,6 +29,7 @@ function loadList(listMode){
     t:value=>value,BridgeI18n:{agentLabel:value=>value,agentTag:value=>value},
     dateText:()=> '刚刚',renderActivity(){},openNewChat(){},openChat:async()=>{},
   };
+  Object.assign(context,overrides);
   vm.runInNewContext(source.slice(elStart,elEnd)+'\n'+source.slice(start,end)+'\nthis.render=renderList;',context);
   context.render();
   return sessions;
@@ -45,4 +46,20 @@ test('project groups retain their default team entry',()=>{
   const sessions=loadList('project');
   assert.equal(find(sessions,'default-team').length,1);
   assert.equal(find(sessions,'session').length,2);
+});
+
+test('project groups hide only the pinned team lead from conversation history',()=>{
+  const team={id:'team-1',name:'work团队'};
+  const listRows=[
+    {id:'lead-chat',host:'local',recency:Date.now(),title:'团队 Lead 会话',projectKey:'codex|/work',projectName:'work',agent:'kimi'},
+    {id:'member-chat',host:'local',recency:Date.now(),title:'成员会话',projectKey:'codex|/work',projectName:'work',agent:'mcode'},
+  ];
+  const teamChat={teamForProject:()=>team,teamForSession:id=>id==='lead-chat'?team:null};
+  const grouped=loadList('project',{listRows,teamChat});
+  assert.equal(find(grouped,'default-team').length,1);
+  const rows=find(grouped,'session');
+  assert.equal(rows.length,2);
+  assert.equal(rows[1].children[0].textContent,'成员会话');
+  const recent=loadList('recent',{listRows,teamChat});
+  assert.equal(find(recent,'session').length,2);
 });
