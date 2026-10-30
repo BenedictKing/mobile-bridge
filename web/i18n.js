@@ -1691,7 +1691,28 @@ const en={
   "无法连接电脑网关，请检查网络或确认电脑端正在运行。": "Can't reach the gateway. Check your network or make sure it is running on your computer.",
   "团队动作": "Team actions",
   "无需委派": "No delegation",
-  "查看原文": "View raw"
+  "查看原文": "View raw",
+  "：": ": ",
+  "、": ", ",
+  "审查": "Review",
+  "待验证": "Pending",
+  "执行线程：": "Execution thread: ",
+  "任务 ": "Task ",
+  " 停靠：": " docked: ",
+  "（处理账号或配置后可继续）": " (fix the account or configuration, then continue)",
+  "队列派发失败": "Queue dispatch failed",
+  "CodeBuddy 登录已失效，请在 CLI 中执行 /login 后重试": "CodeBuddy sign-in expired. Run /login in the CLI and try again.",
+  "WorkBuddy 登录已失效，请在 CLI 中执行 /login 后重试": "WorkBuddy sign-in expired. Run /login in the CLI and try again.",
+  "依赖分支已终止，任务不再执行": "A dependency branch ended; this task will not run",
+  "用户取消运行": "Cancelled by user",
+  "用户暂停运行": "Paused by user",
+  "团队已就绪，给团队发第一条消息": "Team ready. Send the team its first message",
+  "发送后会在这里显示阶段、成员和结果。": "After you send, stages, members and results appear here.",
+  "已通过": "Passed",
+  "未通过": "Did not pass",
+  "未参与": "Not involved",
+  "（已截断）": " (truncated)",
+  "主控": "Lead"
 };
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}

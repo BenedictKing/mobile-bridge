@@ -21,6 +21,16 @@ const TEAM_ROLE_LABELS={lead:'负责人',member:'成员',reviewer:'评审'};
 /* 任务停靠分类（task_stopped/task_failed payload 的 outcome，§6.3 错误策略表）：
    quota/auth/not_configured 类停靠落 run waiting_input，处理后 resume 重派。 */
 const TEAM_TASK_OUTCOME_LABELS={rate_limited:'触发限流',quota:'额度不足',auth:'成员认证失败',not_configured:'成员未配置',context_overflow:'上下文超限',transient:'临时错误'};
+// 停靠类 outcome（runner.go blockedStopReason）：Run/任务的 stopReason 是服务端中文整句。中文界面
+// 照原文（保留「登录过期」等细节）；其他语言按停靠任务的结构化 outcome 组装，匹配不上再查固定词条。
+const TEAM_BLOCKED_OUTCOMES=new Set(['quota','auth','not_configured']);
+function teamRunStopReasonText(run){
+  const t=BridgeI18n.t,reason=String(run&&run.stopReason||'');
+  if(!BridgeI18n.language||BridgeI18n.language()==='zh')return reason;
+  const task=(run&&run.tasks||[]).find(x=>x.status==='stopped'&&TEAM_BLOCKED_OUTCOMES.has(x.outcome)&&reason.startsWith('任务 '+x.id+' 停靠：'));
+  if(task)return t('任务 ')+task.id+t(' 停靠：')+t(TEAM_TASK_OUTCOME_LABELS[task.outcome])+t('（处理账号或配置后可继续）');
+  return t(reason);
+}
 /* broadcast 收集策略（§6.5）：all 保留每个分支结果；first_success 首个成功后取消其余。 */
 const TEAM_COLLECT_OPTIONS=[
   {key:'all',label:'全部结果（保留每个分支的结果）'},
@@ -301,6 +311,7 @@ class TeamRunDialogHost{
           head.append(lockLabel);
           if(state.tasks.length>1){
             const remove=this.button(t('移除'),()=>{state.tasks.splice(index,1);for(const other of state.tasks)other.deps.delete(row.id);this.render();});
+            remove.className='plain member-remove';
             head.append(remove);
           }
           box.append(head);
@@ -355,10 +366,12 @@ class TeamRunDialogHost{
           rowsBox.append(box);
         }
         form.append(rowsBox);
-        form.append(this.button(t('＋ 添加任务'),()=>{
+        const addTask=this.button(t('＋ 添加任务'),()=>{
           state.tasks.push({id:'t'+(state.tasks.length+1),memberId:'',memberIds:new Set(),deps:new Set(),prompt:'',writeLock:'none'});
           this.render();
-        }));
+        });
+        addTask.className='team-add-member';
+        form.append(addTask);
       }
     }else{
       const preview=this.node('ol',undefined,'team-plan-preview');
@@ -388,8 +401,8 @@ class TeamRunDialogHost{
           item.append(this.node('strong',(index+1)+'. '+task.id+' · '+t('并行分派')+' '+task.memberIds.length+' '+t('名成员')));
           const meta=this.node('p',undefined,'muted');
           const bits=[t('写锁：')+(task.writeLock==='exclusive'?t('独占'):t('无'))];
-          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join('、'));
-          bits.push(t('展开为：')+task.memberIds.map(memberName).join('、'));
+          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join(t('、')));
+          bits.push(t('展开为：')+task.memberIds.map(memberName).join(t('、')));
           meta.textContent=bits.join(' · ');
           item.append(meta);
           const head=task.prompt.length>80?task.prompt.slice(0,80)+'…':task.prompt;
@@ -406,7 +419,7 @@ class TeamRunDialogHost{
           item.append(this.node('strong',(index+1)+'. '+task.id+' · '+memberName(task.memberId)));
           const meta=this.node('p',undefined,'muted');
           const bits=[t('写锁：')+(task.writeLock==='exclusive'?t('独占'):t('无'))];
-          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join('、'));
+          if(task.dependsOn?.length)bits.push(t('依赖：')+task.dependsOn.join(t('、')));
           meta.textContent=bits.join(' · ');
           item.append(meta);
           const head=task.prompt.length>80?task.prompt.slice(0,80)+'…':task.prompt;
@@ -432,6 +445,7 @@ class TeamRunDialogHost{
         state.phase='edit';
         this.render();
       });
+      back.className='plain';
       back.disabled=state.busy;
       actions.append(back);
     }
@@ -596,7 +610,9 @@ class TeamsPanel{
     const members=team.members||[];
     const meta=this.node('p',undefined,'muted team-card-meta');
     const parts=[members.length+' '+t('名成员')];
-    if(team.project)parts.push(t('项目 ')+team.project);
+    // 项目名同侧栏取 cwd 末段（newProjectEntry 的 filepath.Base），无 cwd 才回落内部 key。
+    const projectName=(team.projectCwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop();
+    if(projectName||team.project)parts.push(t('项目 ')+(projectName||team.project));
     const updated=teamTimeText(team.updatedAt);
     if(updated)parts.push(t('更新于 ')+updated);
     meta.textContent=parts.join(' · ');
@@ -604,7 +620,7 @@ class TeamsPanel{
     const chips=this.node('div',undefined,'team-members');
     for(const m of members){
       const chip=this.node('span',undefined,'team-member'+(m.available===false?' unavailable':'')+(m.enabled===false?' disabled':''));
-      const role=(TEAM_ROLE_LABELS[m.role]||m.role||'member');
+      const role=t(TEAM_ROLE_LABELS[m.role||'member']||m.role);
       chip.textContent=(m.id===team.leadId?'★ ':'')+role+' · '+(m.name||m.id)+' · '+BridgeI18n.agentLabel(m.agentKind)
         +(m.available===false?' · '+t('不可用'):'')+(m.enabled===false?' · '+t('已停用'):'');
       chip.title=t('会话：')+(m.sessionId||'');
@@ -666,7 +682,7 @@ class TeamsPanel{
       row.append(this.node('span',run.goal||run.id,'team-run-goal'));
       const updated=teamTimeText(run.updatedAt);
       if(updated)row.append(this.node('small',updated,'muted'));
-      if(run.stopReason)row.title=teamRunStatusLabel(run.status)+' · '+run.stopReason;
+      if(run.stopReason)row.title=t(teamRunStatusLabel(run.status))+' · '+teamRunStopReasonText(run);
       row.onclick=()=>this.openRun&&this.openRun(team.id,run.id);
       box.append(row);
     }
@@ -1015,7 +1031,8 @@ class TeamRunScreen{
       this.root.replaceChildren();
       const body=this.node('div',undefined,'team-run-body');
       body.append(this.node('p',error.message,'error'));
-      body.append(this.button(BridgeI18n.t('返回'),()=>this.leave()));
+      const back=this.button(BridgeI18n.t('返回'),()=>this.leave());back.className='plain';
+      body.append(back);
       this.root.append(body);
     }
   }
@@ -1349,7 +1366,7 @@ class TeamRunScreen{
       card.append(chips);
     }
     if(Array.isArray(node.dependsOn)&&node.dependsOn.length){
-      card.append(this.node('p',t('依赖：')+node.dependsOn.join('、'),'muted team-graph-deps'));
+      card.append(this.node('p',t('依赖：')+node.dependsOn.join(t('、')),'muted team-graph-deps'));
     }
     if(node.resultHead){
       card.append(this.node('p',node.resultHead,'task-instructions'));
@@ -1394,7 +1411,7 @@ class TeamRunScreen{
     const statusLine=this.node('p',undefined,'team-run-status');
     statusLine.append(this.runBadge(detail.status));
     if(detail.scheduledFrom)statusLine.append(this.node('span',t('定时触发'),'team-badge b-ready'));
-    if(detail.stopReason)statusLine.append(this.node('span',detail.stopReason,'team-stop-reason'));
+    if(detail.stopReason){const reason=this.node('span',teamRunStopReasonText(detail),'team-stop-reason');reason.title=detail.stopReason;statusLine.append(reason);}
     if(this.reconnecting){
       // 断线提示 chip：transport 重试期间置位，成功帧到达自清（对照聊天页
       // #status 的 offline 样式，但 Run 页 DOM 无 #status，就地展示）。
@@ -1421,7 +1438,7 @@ class TeamRunScreen{
     }
     const counts=this.meta?.taskCounts;
     if(counts&&typeof counts==='object'){
-      const summary=Object.entries(counts).map(([key,value])=>teamTaskStatusLabel(key)+' '+value).filter(Boolean).join(' · ');
+      const summary=Object.entries(counts).map(([key,value])=>t(teamTaskStatusLabel(key))+' '+value).filter(Boolean).join(' · ');
       if(summary)body.append(this.node('p',summary,'muted'));
     }
     const workspace=detail.workspace;
@@ -1587,19 +1604,20 @@ class TeamRunScreen{
     if(task.instructionsHead)card.append(this.node('p',task.instructionsHead,'task-instructions'));
     const metaBits=[];
     if(task.broadcastGroup)metaBits.push(t('并行组：')+task.broadcastGroup);
-    if(task.dependsOn&&task.dependsOn.length)metaBits.push(t('依赖：')+task.dependsOn.join('、'));
+    if(task.dependsOn&&task.dependsOn.length)metaBits.push(t('依赖：')+task.dependsOn.join(t('、')));
     if(task.writeLock&&task.writeLock!=='none')metaBits.push(t('写锁：')+(task.writeLock==='exclusive'?t('独占'):task.writeLock));
     if(task.baseRevision)metaBits.push(t('基线：')+String(task.baseRevision).slice(0,12));
     if(task.cachedFrom)metaBits.push(t('缓存复用：')+task.cachedFrom);
     if(task.executionThreadId)metaBits.push(t('执行线程：')+task.executionThreadId);
     if(this.detail.workspace?.writeLockHeldBy===task.id)metaBits.push(t('持有项目写锁'));
     if(metaBits.length)card.append(this.node('p',metaBits.join(' · '),'muted task-meta'));
-    if(task.stopReason&&task.status!=='completed')card.append(this.node('p',t('停止原因：')+task.stopReason,'muted'));
+    // 停靠类 outcome 已由下方「停靠原因」按结构化码本地化，服务端整句不再重复展示。
+    if(task.stopReason&&task.status!=='completed'&&!TEAM_BLOCKED_OUTCOMES.has(task.outcome))card.append(this.node('p',t('停止原因：')+t(task.stopReason),'muted'));
     // 停靠分类（§6.3 错误策略表）：quota/auth/not_configured 等停靠的任务停在
     // 当前分支并等用户处理，提示原因而不自动重试。
     const outcomeLabel=task.outcome?TEAM_TASK_OUTCOME_LABELS[task.outcome]:'';
     if(outcomeLabel)card.append(this.node('p',t('停靠原因：')+t(outcomeLabel),'muted'));
-    if(task.error)card.append(this.node('p',task.error,'error'));
+    if(task.error)card.append(this.node('p',t(task.error),'error'));
     const result=task.result;
     if(result&&typeof result==='object'){
       const box=this.node('div',undefined,'task-result');
@@ -2140,4 +2158,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamRunStopReasonText};

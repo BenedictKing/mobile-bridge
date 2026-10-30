@@ -272,7 +272,7 @@ class TeamChatController{
         const chain=position<stageTasks.length-1?' continued':(index<rows.length-1?' chain':'');
         const station=this.node('div',undefined,'team-workflow-station '+status+chain);
         station.title=String(task.instructionsHead||task.prompt||'').trim();
-        station.setAttribute('aria-label',teamWorkflowTaskTitle(task)+'，'+teamTaskStatusLabel(status));
+        station.setAttribute('aria-label',teamWorkflowTaskTitle(task)+' · '+t_safe(teamTaskStatusLabel(status)));
         station.append(this.node('span',undefined,'team-workflow-lamp'));
         const body=this.node('div',undefined,'team-workflow-body');
         body.append(this.node('span',teamWorkflowTaskTitle(task),'team-workflow-step'));
@@ -282,7 +282,7 @@ class TeamChatController{
         who.append(dot,this.node('span',teamWorkflowMemberLabel(member,task),'team-workflow-member-label'));
         body.append(who);
         // 失败的站点直接说出原因（Run 详情里也是这句），省掉一次跳转。
-        const reason=failed?String(task.error||'').trim():'';
+        const reason=failed?t_safe(String(task.error||'').trim()):'';
         if(reason)body.append(this.node('span',reason,'team-workflow-reason'));
         station.append(body);
         lanes.append(station);
@@ -308,11 +308,11 @@ class TeamChatController{
         const review=run.delivery.review;
         const reviewText=!review?null:(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知'));
         const verify=run.delivery.verify;
-        const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待执行')));
+        const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待验证')));
         const dims=[
-          t_safe('Agent')+'：'+(agent?agent.completed+'/'+agent.total+' '+t_safe('已完成'):'—'),
-          t_safe('Review')+'：'+(reviewText||t_safe('未参与')),
-          t_safe('验证')+'：'+(verifyText||t_safe('未配置'))
+          t_safe('Agent')+t_safe('：')+(agent?agent.completed+'/'+agent.total+' '+t_safe('已完成'):'—'),
+          t_safe('审查')+t_safe('：')+(reviewText||t_safe('未参与')),
+          t_safe('验证')+t_safe('：')+(verifyText||t_safe('未配置'))
         ];
         for(const dim of dims)evidence.append(this.node('span',dim,'team-delivery-dim'));
         delivery.append(evidence);

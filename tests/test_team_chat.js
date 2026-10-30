@@ -195,7 +195,7 @@ test('delivery card renders the four evidence dimensions separately',async()=>{
   const dims=find(root,'team-delivery-dim');
   assert.equal(dims.length,3);
   assert.match(dims[0].textContent,/Agent：2\/3 已完成/);
-  assert.match(dims[1].textContent,/Review：已通过/);
+  assert.match(dims[1].textContent,/审查：已通过/);
   assert.match(dims[2].textContent,/验证：未通过/);
   assert.match(text(find(root,'team-delivery-summary')[0]),/接口已实现/);
   // 未参与评审 / 未配置闸门的降级展示。
@@ -210,7 +210,7 @@ test('delivery card renders the four evidence dimensions separately',async()=>{
   },openRun(){}});
   controller2.setTeams(teams);controller2.open(teams[0]);await flush();
   const dims2=find(root2,'team-delivery-dim');
-  assert.match(dims2[1].textContent,/Review：未参与/);
+  assert.match(dims2[1].textContent,/审查：未参与/);
   assert.match(dims2[2].textContent,/验证：未配置/);
   assert.equal(find(root2,'team-delivery-summary').length,0);
 });
