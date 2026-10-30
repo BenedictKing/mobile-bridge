@@ -1003,7 +1003,16 @@ func runGateway(args []string) {
 		manager.NativeMeta = claude.MetaReader(claude.ProjectsRoot(os.Getenv, home))
 	}
 	if len(server.ACPAgents) > 0 {
+		// Per-agent ledgers shared by every manager of the same kind. Agents
+		// only report usage inside a live turn and only list a session after
+		// its first turn, so these files are what keep a reopened chat's gauge
+		// populated and a created-but-unused chat resolvable after a restart.
+		createdSessions := acpruntime.LoadCreated(filepath.Join(dataDir, "created-sessions.json"))
 		for kind, manager := range server.ACPAgents {
+			if manager != nil {
+				manager.Created = createdSessions
+				manager.Kind = kind
+			}
 			if manager != nil && server.Jev != nil {
 				manager.AutoApprove = jevApprovalHook(server.Jev, kind)
 				manager.AutoContinue = jevContinueHook(server.Jev, kind)

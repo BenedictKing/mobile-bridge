@@ -202,7 +202,8 @@ type teamTestEnv struct {
 
 // newTeamTestEnv 装配测试网关。withAgent 时挂一个伪 Agent 并创建成员会话；
 // queueStatus 控制 fake 账本的默认入账状态。
-func newTeamTestEnv(t *testing.T, queueStatus string, withAgent bool) *teamTestEnv {
+// newTeamTestEnv 搭团队测试环境；agentScript 可选，缺省用 teamsHoldAgent。
+func newTeamTestEnv(t *testing.T, queueStatus string, withAgent bool, agentScript ...func(*testing.T, string) []string) *teamTestEnv {
 	t.Helper()
 	dataDir := t.TempDir()
 	store := team.LoadStore(filepath.Join(dataDir, "teams.json"), filepath.Join(dataDir, "team-runs.json"))
@@ -219,7 +220,11 @@ func newTeamTestEnv(t *testing.T, queueStatus string, withAgent bool) *teamTestE
 	server := New(authenticator, fsys{}, 8791, "instance")
 	env := &teamTestEnv{server: server, store: store, journal: journal, token: token, csrf: csrf, dataDir: dataDir}
 	if withAgent {
-		manager := acpruntime.NewCommand(teamsHoldAgent(t, dataDir))
+		script := teamsHoldAgent
+		if len(agentScript) > 0 && agentScript[0] != nil {
+			script = agentScript[0]
+		}
+		manager := acpruntime.NewCommand(script(t, dataDir))
 		t.Cleanup(func() { manager.Close() })
 		acpSession, createErr := manager.Create("sess-team-1", dataDir, "成员会话", 30*time.Second)
 		if createErr != nil {

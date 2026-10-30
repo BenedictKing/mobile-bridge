@@ -33,6 +33,14 @@ type Profile struct {
 	SteerMethod  string
 	ModeMap      map[string]string
 	ModeOptionID string
+
+	// LazySessions marks agents whose session/new only reserves an id: the
+	// agent materializes the session in its own store on the first prompt
+	// (zcode maps the placeholder to a backend sess_*, workbuddy writes the
+	// transcript's cwd). Until that first turn the session exists only in
+	// this process — session/load fails after a restart — so the gateway
+	// warms such a session up when it is created on someone's behalf.
+	LazySessions bool
 }
 
 // Discover probes the machine like run.py's --agents auto. env abstracts
@@ -238,6 +246,9 @@ func zcodeProfile(env func(string) string, home string) Profile {
 		EffortMap:         map[string]string{"none": "off", "minimal": "enabled", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max", "ultra": "ultra"},
 		Canonical:         zcodeCanonicalFactory(env, home),
 		ModeMap:           map[string]string{"plan": "plan", "default": "yolo"},
+		// The wrapper's placeholder → sess_* mapping (and the backend row in
+		// ~/.zcode/cli/db) is written by the first prompt, not by session/new.
+		LazySessions: true,
 	}
 }
 
@@ -286,6 +297,9 @@ func workbuddyProfile(env func(string) string, home string) Profile {
 		Command:           argv,
 		InitializeTimeout: 60 * time.Second,
 		Capabilities:      []string{},
+		// codebuddy writes its transcript file (with the cwd session/list
+		// filters on) on the first message, not on session/new.
+		LazySessions: true,
 	}
 }
 

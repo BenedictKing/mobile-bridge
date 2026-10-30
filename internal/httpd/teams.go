@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
 	"github.com/google/uuid"
@@ -2597,14 +2598,44 @@ func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, r
 		ledger.begin(creationID, &creationEntry{Agent: agent, Project: project, Title: title,
 			Host: "local", At: ledger.now()})
 	}
-	session, err := h.server.acpAgentSet()[agent].Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
+	manager := h.server.acpAgentSet()[agent]
+	session, err := manager.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
 	if err != nil {
 		return "", http.StatusConflict, err
 	}
 	if ledger != nil {
 		ledger.complete(creationID, session.ID)
 	}
+	warmupMemberSession(manager, session)
 	return session.ID, 0, nil
+}
+
+// warmupMemberSlots bounds concurrent member warm-ups: one request can create
+// several lazy members (the default team adds every agent of the project) and
+// each warm-up costs a model round-trip.
+var warmupMemberSlots = make(chan struct{}, 2)
+
+// warmupMemberSession materializes a member slot nobody has messaged yet.
+// Lazy agents (zcode, workbuddy) only write a new session to their own store
+// on the first prompt, so without one the session lives purely in this
+// process: the idle sweep or a restart drops the handle and session/load has
+// nothing to load, which is what made those members show up as 不可用.
+//
+// The turn runs in the background — creating a team must not wait on a model
+// round-trip — and failures are only logged: the created ledger keeps the
+// member known, and a task dispatched meanwhile queues behind the warm-up
+// turn through the settle hook (`threadActive`).
+func warmupMemberSession(manager *acpruntime.Manager, session *acpruntime.Session) {
+	if manager == nil || session == nil || !manager.LazySessions {
+		return
+	}
+	go func() {
+		warmupMemberSlots <- struct{}{}
+		defer func() { <-warmupMemberSlots }()
+		if err := session.Warmup(2 * time.Minute); err != nil {
+			log.Printf("成员会话预热未发出（%s / %s）: %v", manager.Label, session.ID, err)
+		}
+	}()
 }
 
 // parseTeamMember 组装已绑定会话的成员；项目成员已在创建流程中解析出 sessionId。

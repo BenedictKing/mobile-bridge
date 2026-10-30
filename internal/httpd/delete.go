@@ -109,6 +109,14 @@ func (h *handler) handleSessionDelete(threadID string) {
 		// gateway's child process; the agent's own stored session stays.
 		resolution.manager.Drop(threadID)
 		h.server.Hidden.hide(threadID)
+		// A lazy agent lists the chat under the backend id it materialized on
+		// the first turn (or still under the placeholder recorded at
+		// creation): hide and drop every alias, or the row reappears as soon
+		// as the agent's list is read again.
+		for _, alias := range resolution.manager.Aliases(threadID) {
+			resolution.manager.Drop(alias)
+			h.server.Hidden.hide(alias)
+		}
 		result.Set("mode", "hidden")
 		h.finishSessionDelete(threadID, result)
 		return

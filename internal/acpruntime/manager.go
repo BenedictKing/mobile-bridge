@@ -208,6 +208,13 @@ type Manager struct {
 	// sessions). List coverage checks consult it; nil disables resolution.
 	Canonical func(id string) string
 
+	// LazySessions marks agents that only materialize a session in their own
+	// store after the first prompt (see acpagents.Profile.LazySessions). A
+	// session created on someone's behalf — a team member slot nobody has
+	// messaged yet — is unloadable after a restart, so callers that create
+	// one without sending anything right away call Session.Warmup.
+	LazySessions bool
+
 	// ListTTL bounds how long one session/list read is trusted, mirroring
 	// Python's LIST_CACHE_SECONDS (30s).
 	ListTTL time.Duration
@@ -216,6 +223,16 @@ type Manager struct {
 	// base64 data) as per-session files so the phone can preview them; empty
 	// disables persistence and the view drops such blocks like before.
 	MediaDir string
+
+	// Created remembers the sessions this manager created through session/new
+	// (id → cwd/title). Agents only list a session after its first turn, so
+	// without the ledger a created-but-unused chat would vanish from the list
+	// and its team member would read as unavailable. Nil disables the feature.
+	Created *CreatedStore
+	// Kind namespaces the per-agent ledgers (Usage, Created) and the discovery
+	// probes: session ids are unique per agent, and the same id string may
+	// belong to different agents.
+	Kind string
 
 	mu         sync.Mutex
 	sessions   map[string]*Session
@@ -478,6 +495,20 @@ func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
 		row.Set("cwd", session.Cwd)
 		row.Set("updatedAt", jsoncompat.Num(int(session.CreatedAtMs)))
 		rows = append(rows, row)
+		listed[id] = true
+	}
+	// Sessions created earlier keep their list row through an idle sweep, a
+	// reopen (open has no creation timestamp) or a restart.
+	for _, row := range m.Created.Rows(m.Kind) {
+		id, _ := row.MustGet("sessionId").(string)
+		if id == "" || listed[id] {
+			continue
+		}
+		if canonical := m.canonicalLocked(id); canonical != "" && listed[canonical] {
+			continue
+		}
+		listed[id] = true
+		rows = append(rows, row)
 	}
 	return rows
 }
@@ -506,6 +537,11 @@ func (m *Manager) Knows(id string) bool {
 	if live {
 		return true
 	}
+	// A chat this gateway created but the agent does not list yet (no first
+	// turn) is still ours: the created ledger carries its cwd.
+	if _, created := m.Created.Lookup(m.Kind, id); created {
+		return true
+	}
 	m.listMu.Lock()
 	defer m.listMu.Unlock()
 	if m.listIDs == nil {
@@ -520,6 +556,30 @@ func (m *Manager) Knows(id string) bool {
 	}
 	_, listed := m.listIDs[canonical]
 	return listed
+}
+
+// Aliases returns the other ids the same chat is listed under: a lazy
+// session/new placeholder and the backend id it materialized into on the
+// first turn. Deleting a chat must hide every alias, or the row comes back
+// under whichever id the agent's own list uses.
+func (m *Manager) Aliases(id string) []string {
+	if id == "" {
+		return nil
+	}
+	aliases := []string{}
+	if canonical := m.canonicalLocked(id); canonical != "" && canonical != id {
+		aliases = append(aliases, canonical)
+	}
+	for _, row := range m.Created.Rows(m.Kind) {
+		other, _ := row.MustGet("sessionId").(string)
+		if other == "" || other == id {
+			continue
+		}
+		if m.canonicalLocked(other) == id {
+			aliases = append(aliases, other)
+		}
+	}
+	return aliases
 }
 
 // HasListCache reports whether at least one session/list read succeeded.
@@ -537,6 +597,9 @@ func (m *Manager) CwdFor(id string) string {
 	m.mu.Unlock()
 	if session != nil {
 		return session.Cwd
+	}
+	if record, created := m.Created.Lookup(m.Kind, id); created && record.Cwd != "" {
+		return record.Cwd
 	}
 	m.listMu.Lock()
 	defer m.listMu.Unlock()
@@ -725,6 +788,9 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	session.mu.Lock()
 	session.signalLocked()
 	session.mu.Unlock()
+	// The agent only lists this session after its first turn; remember it so
+	// the chat stays in the phone list and resolvable until then.
+	m.Created.Remember(m.Kind, session.ID, cwd, title, createdAt)
 	m.startNative(session)
 	return session, nil
 }
@@ -791,6 +857,22 @@ func (s *Session) ResumeAfterSwitchPrompt(text string, idleTimeout time.Duration
 	return s.prompt(text, nil, idleTimeout, budgetSwitchResume)
 }
 
+// WarmupPrompt is the throwaway first turn sent to a freshly created session
+// of a lazy agent. It asks for the shortest possible answer and forbids work
+// so the turn costs one tiny exchange and leaves the workspace untouched.
+const WarmupPrompt = "（会话初始化）这是网关自动发送的预热消息，用于确认会话可用。" +
+	"请只回复「待命」，不要调用任何工具，不要读写或修改任何文件，也不要追问。"
+
+// Warmup runs the first turn of a session nobody is going to prompt right
+// away (a team member slot created by the gateway). Lazy agents only
+// materialize a session on its first prompt; without one the session cannot
+// be reloaded after an idle sweep or a restart, and the member shows as
+// unavailable. The turn is a system action: it neither re-arms the human
+// budgets nor triggers auto-continue when it settles.
+func (s *Session) Warmup(idleTimeout time.Duration) error {
+	return s.prompt(WarmupPrompt, nil, idleTimeout, budgetWarmup)
+}
+
 // promptBudget selects which consecutive-send budget a prompt draws on.
 type promptBudget int
 
@@ -798,6 +880,7 @@ const (
 	budgetHuman promptBudget = iota
 	budgetAutoContinue
 	budgetSwitchResume
+	budgetWarmup
 )
 
 func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
@@ -825,6 +908,7 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.mu.Unlock()
 		return errors.New("当前已有任务正在运行")
 	}
+	warmup := budget == budgetWarmup
 	switch budget {
 	case budgetAutoContinue:
 		if s.autoContinueRuns >= MaxAutoContinue {
@@ -838,6 +922,9 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 			return errors.New("切换后自动继续已达上限")
 		}
 		s.switchResumeRuns++
+	case budgetWarmup:
+		// A warm-up is neither a human message nor a resume: leave both
+		// budgets exactly as they are.
 	default:
 		// Any human message re-arms both budgets.
 		s.autoContinueRuns = 0
@@ -873,7 +960,7 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		close(promptDone)
 		return nil
 	}
-	go s.awaitPrompt(ident, channel, idleTimeout, slice, promptDone)
+	go s.awaitPrompt(ident, channel, idleTimeout, slice, promptDone, warmup)
 	return nil
 }
 
@@ -883,7 +970,7 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 // pending reverse requests as cancelled, discards the orphaned answer and
 // fails the turn — otherwise every later prompt is rejected with "another
 // turn is already in progress".
-func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTimeout, slice time.Duration, promptDone chan struct{}) {
+func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTimeout, slice time.Duration, promptDone chan struct{}, warmup bool) {
 	if slice <= 0 {
 		slice = 30 * time.Second
 	}
@@ -892,7 +979,13 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 	}
 	// Every exit below is a settled turn (answered, errored or timed out):
 	// give the auto-continue hook its edge after the final state lands.
-	defer s.fireAutoContinue()
+	// A warm-up is a synthetic turn nobody asked to resume, so it never
+	// reaches the hook.
+	defer func() {
+		if !warmup {
+			s.fireAutoContinue()
+		}
+	}()
 	defer close(promptDone)
 	for {
 		select {
@@ -2281,7 +2374,10 @@ func (m *Manager) Drop(id string) {
 		delete(m.sessions, session.ID)
 	}
 	m.mu.Unlock()
+	// A deleted chat must not come back as a list row if its id is reused.
+	m.Created.Forget(m.Kind, id)
 	if session != nil {
+		m.Created.Forget(m.Kind, session.ID)
 		session.Close()
 	}
 }
