@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -36,12 +37,22 @@ func TaskSubmissionID(teamID, runID, taskID string, attempt int) string {
 		[]byte("mobile-bridge:"+TaskIdempotencyKey(teamID, runID, taskID, attempt))).String()
 }
 
+// ExecutionThreadIDFor 生成成员在 Run 内的执行线程 ID（阶段一契约：一个
+// Run + Member 默认一条线程）。确定性派生保证 journal 重建与重派幂等；
+// memberID 在 Team 内唯一，故线程 ID 在 Run 内唯一。
+func ExecutionThreadIDFor(memberID string) string {
+	return "th_" + memberID
+}
+
 // taskDispatch 是一次成功派发的产物（watcher 的输入）。bucketKey 是该次
 // 派发归属的 AIMD 桶（executeDispatch 在锁外解析会话后传入；收养路径可能
-// 为空——空键的 watcher 不做桶的成败/在途记账，§6.3）。
+// 为空——空键的 watcher 不做桶的成败/在途记账，§6.3）。threadID 是该次
+// 派发归属的执行线程：pollTask 据此与任务快照比对，旧线程的迟到 watcher
+// 不得结算新任务（升级前的存量快照线程字段为空，不触发防护）。
 type taskDispatch struct {
 	taskID       string
 	sessionID    string
+	threadID     string
 	submissionID string
 	sentText     string
 	bucketKey    string
@@ -217,8 +228,10 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 	//    run 终态后调度循环也不再运行），同 cwd 的 exclusive 任务从此永远无法
 	//    派发（Cancel 的注释警告过的残留场景，本路径曾是漏网实现）。
 	applied := false
+	boundThreadID := ""
 	err := s.commitRun(run.ID, func(fresh *Run) ([]*Event, bool) {
 		applied = false // 版本冲突重试会在新副本上重跑：以最后一次复查为准
+		boundThreadID = ""
 		current := findTaskIn(fresh, taskID)
 		if current == nil || (current.Status != TaskPlanned && current.Status != TaskReady) {
 			return nil, false
@@ -232,16 +245,54 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 		// 派发全文随快照落盘（遗留④）：收养/超时/取消路径复用存量文本，
 		// 策略或上下文合成的后续变更不再让在途任务的 matchTurn 漂移。
 		current.SentText = sentText
+		// 执行线程绑定（阶段一契约）：成员在本 Run 的首派创建线程并落
+		// thread_bound 事实，线程事件先于派发事件落账；成员绑定会话被恢复
+		// 流程改写（session_recovery.go）后重派按新会话重落绑定。run 级事件
+		// 不带 taskId 键（provider_throttled 同款约定），来源任务用 sourceTaskId。
+		threadID := ExecutionThreadIDFor(current.MemberID)
+		events := []*Event{}
+		if thread := findThreadIn(fresh, threadID); thread == nil {
+			now := time.Now()
+			fresh.Threads = append(fresh.Threads, ExecutionThread{
+				ID:                threadID,
+				MemberID:          current.MemberID,
+				AgentKind:         member.AgentKind,
+				ProviderSessionID: member.SessionID,
+				SourceTaskID:      taskID,
+				CreatedAt:         now,
+				UpdatedAt:         now,
+			})
+			events = append(events, newEvent(fresh.ID, EventThreadBound, "runner", map[string]any{
+				"threadId":          threadID,
+				"memberId":          current.MemberID,
+				"providerSessionId": member.SessionID,
+				"agentKind":         member.AgentKind,
+				"sourceTaskId":      taskID,
+			}))
+		} else if thread.ProviderSessionID != member.SessionID || thread.AgentKind != member.AgentKind {
+			thread.ProviderSessionID = member.SessionID
+			thread.AgentKind = member.AgentKind
+			thread.UpdatedAt = time.Now()
+			events = append(events, newEvent(fresh.ID, EventThreadBound, "runner", map[string]any{
+				"threadId":          threadID,
+				"memberId":          current.MemberID,
+				"providerSessionId": member.SessionID,
+				"agentKind":         member.AgentKind,
+			}))
+		}
+		current.ExecutionThreadID = threadID
+		boundThreadID = threadID
 		event := newEvent(fresh.ID, EventTaskDispatching, "runner", map[string]any{
 			"taskId":       taskID,
 			"sessionId":    member.SessionID,
+			"threadId":     threadID,
 			"submissionId": submissionID,
 			"inputHash":    inputHash,
 			"attempt":      jsoncompat.Num(attempt),
 			"contextChars": jsoncompat.Num(composed.context.InjectedChars),
 		})
 		event.IdempotencyKey = TaskIdempotencyKey(fresh.TeamID, fresh.ID, taskID, attempt)
-		events := []*Event{event}
+		events = append(events, event)
 		if binding != nil && current.BaseRevision == "" {
 			current.BaseRevision = binding.baseRevision
 			events = append(events, newEvent(fresh.ID, EventWorkspaceBound, "runner", map[string]any{
@@ -269,6 +320,7 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 	return &taskDispatch{
 		taskID:       taskID,
 		sessionID:    member.SessionID,
+		threadID:     boundThreadID,
 		submissionID: submissionID,
 		sentText:     sentText,
 	}, nil

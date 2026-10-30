@@ -1591,6 +1591,7 @@ class TeamRunScreen{
     if(task.writeLock&&task.writeLock!=='none')metaBits.push(t('写锁：')+(task.writeLock==='exclusive'?t('独占'):task.writeLock));
     if(task.baseRevision)metaBits.push(t('基线：')+String(task.baseRevision).slice(0,12));
     if(task.cachedFrom)metaBits.push(t('缓存复用：')+task.cachedFrom);
+    if(task.executionThreadId)metaBits.push(t('执行线程：')+task.executionThreadId);
     if(this.detail.workspace?.writeLockHeldBy===task.id)metaBits.push(t('持有项目写锁'));
     if(metaBits.length)card.append(this.node('p',metaBits.join(' · '),'muted task-meta'));
     if(task.stopReason&&task.status!=='completed')card.append(this.node('p',t('停止原因：')+task.stopReason,'muted'));
@@ -1612,7 +1613,11 @@ class TeamRunScreen{
       card.append(box);
     }
     const actions=this.node('div',undefined,'task-actions');
-    const sessionId=result?.sessionId||(member?member.sessionId:null);
+    // 原会话跳转的兜底链：结果引用的会话 > 任务所属执行线程的绑定会话 >
+    // 成员绑定会话（阶段一执行线程契约：任务经线程派发，线程绑定是跳转的
+    // 权威来源；旧网关无线程投影时退回成员会话）。
+    const thread=(this.detail?.threads||[]).find(th=>th.id===task.executionThreadId);
+    const sessionId=result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null);
     if(sessionId){
       const open=this.button(t('打开原会话'),()=>{
         // 打开会话前先退出 Run 页（停订阅、隐藏区块），再走全局 openChat。
@@ -2027,9 +2032,12 @@ class TeamRunScreen{
   openForwardDialog(task){
     const dialog=this.forwardDialog();
     const member=this.teamMember(task.memberId);
+    // 来源会话兜底链与任务卡的原会话跳转一致（阶段一执行线程契约）：
+    // 结果引用 > 执行线程绑定 > 成员绑定。
+    const thread=(this.detail?.threads||[]).find(th=>th.id===task.executionThreadId);
     dialog.forwardState={
       taskId:task.id,
-      sourceSessionId:task.result?.sessionId||(member?member.sessionId:null),
+      sourceSessionId:task.result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null),
       source:'task',scope:'main',
       target:'',note:'',
       busy:false,error:'',

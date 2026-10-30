@@ -1174,12 +1174,13 @@ func TestPipelineRunsByDependencyWithBoundedContext(t *testing.T) {
 	if holder := h.service.locks.Holder("/tmp/dev"); holder != "" {
 		t.Fatalf("写锁应随终态释放，实际持有者 %q", holder)
 	}
-	// 完整事件序（每任务 dispatching → running → completed，run 收尾）。
+	// 完整事件序（每任务 dispatching → running → completed，run 收尾）；
+	// thread_bound（阶段一执行线程契约）先于各成员首条 dispatching。
 	want := []string{
 		EventRunCreated, EventTaskPlanned, EventTaskPlanned, EventTaskPlanned,
-		EventTaskDispatching, EventTaskRunning, EventTaskCompleted,
-		EventTaskDispatching, EventTaskRunning, EventTaskCompleted,
-		EventTaskDispatching, EventTaskRunning, EventTaskCompleted,
+		EventThreadBound, EventTaskDispatching, EventTaskRunning, EventTaskCompleted,
+		EventThreadBound, EventTaskDispatching, EventTaskRunning, EventTaskCompleted,
+		EventThreadBound, EventTaskDispatching, EventTaskRunning, EventTaskCompleted,
 		EventRunCompleted,
 	}
 	if got := h.runEventTypes(run.ID); !equalStrings(got, want) {

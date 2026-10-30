@@ -102,6 +102,13 @@ const (
 	EventWorkspaceBound         = "workspace_bound"
 	EventWorkspaceLost          = "workspace_lost"
 	EventWorkspaceCleanupFailed = "workspace_cleanup_failed"
+	// EventThreadBound 是执行线程绑定事实（阶段一执行线程契约，docs/
+	// team-overall-design.md §11）：Run 内某成员的首个任务派发前落账，
+	// payload {threadId, memberId, providerSessionId, agentKind, sourceTaskId}。
+	// 成员绑定会话被恢复流程改写（session_recovery.go）后重派按同 threadId
+	// 落新绑定，重建取最新。run 级事件不带 taskId 键（provider_throttled
+	// 同款约定），来源任务用 sourceTaskId。
+	EventThreadBound = "thread_bound"
 	// EventRunVerify 是确定性验证闸门的执行事实（§6.4.1，阶段二）：payload
 	// {exitCode, durationMs, outputHead, truncated[, reason]}，run 级事件（无
 	// taskId）；VerifyResult 随 Run 快照持久化，resume 复验后再次落账。
@@ -242,6 +249,25 @@ type TeamMember struct {
 	Enabled   bool   `json:"enabled"`
 }
 
+// ExecutionThread 是某个 Run 中成员的一次独立工作上下文（三层分离的中间层：
+// memberId → executionThreadId → providerSessionId）。阶段一契约：一个
+// Run + Member 默认一条线程，首个任务派发时创建并绑定 Provider 会话——当前
+// 取成员绑定会话，专用会话分配（成员私人上下文隔离）属后续阶段，届时只改
+// 绑定来源、契约不变。生命周期随 Run：线程关闭态由 Run 终态派生（投影侧
+// 计算），不落盘、重建与运行期天然一致。ProviderSessionID 是绑定快照，
+// 成员会话被恢复流程改写后重派按新会话重落 thread_bound。
+type ExecutionThread struct {
+	ID                string `json:"id"`
+	MemberID          string `json:"memberId"`
+	AgentKind         string `json:"agentKind,omitempty"`
+	ProviderSessionID string `json:"providerSessionId"`
+	// SourceTaskID 是触发线程创建的首个任务（任务来源血缘）：审计与 UI
+	// 定位用，不参与调度判定。
+	SourceTaskID string    `json:"sourceTaskId,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
 // TeamPolicy 是编排策略（§4.2）。零值不可直接使用，请用 DefaultPolicy。
 type TeamPolicy struct {
 	MaxParallelTasks       int    `json:"maxParallelTasks"`
@@ -324,11 +350,16 @@ type Run struct {
 	//（teamRunDetail 自动携带），绝不进 changes meta（meta 逐键变更触发整页
 	// 重渲染契约，teams.go teamRunMeta）。
 	PendingQuestions []PendingQuestion `json:"pendingQuestions,omitempty"`
-	VerifyCommand    []string          `json:"verifyCommand,omitempty"`
-	Verify           *VerifyResult     `json:"verify,omitempty"`
-	CreatedAt        time.Time         `json:"createdAt"`
-	UpdatedAt        time.Time         `json:"updatedAt"`
-	Version          uint64            `json:"version"`
+	// Threads 是本 Run 的执行线程投影（阶段一执行线程契约）：每成员至多
+	// 一条，首派时随 thread_bound 事实创建；当前绑定成员会话，专用会话
+	// 分配属后续阶段。快照四处同步纪律同 BudgetCeiling：runKnownFields /
+	// jsonObject Set / Clone / applyJournalEventToRun。
+	Threads       []ExecutionThread `json:"threads,omitempty"`
+	VerifyCommand []string          `json:"verifyCommand,omitempty"`
+	Verify        *VerifyResult     `json:"verify,omitempty"`
+	CreatedAt     time.Time         `json:"createdAt"`
+	UpdatedAt     time.Time         `json:"updatedAt"`
+	Version       uint64            `json:"version"`
 
 	extra *jsoncompat.Object
 }
@@ -357,24 +388,27 @@ type VerifyResult struct {
 // 或上下文合成的任何变更都不再让在途任务错认 turn。HTTP 投影不外发（§10.3
 // 有界 payload，teams.go teamRunDetail 显式剔除）。
 type Task struct {
-	ID             string      `json:"id"`
-	MemberID       string      `json:"memberId"`
-	Prompt         string      `json:"prompt"`
-	Attachments    []string    `json:"attachments,omitempty"`
-	InputHash      string      `json:"inputHash"`
-	Attempt        int         `json:"attempt"`
-	SiteID         string      `json:"siteId,omitempty"`
-	Ordinal        int         `json:"ordinal,omitempty"`
-	DependsOn      []string    `json:"dependsOn,omitempty"`
-	BroadcastGroup string      `json:"broadcastGroup,omitempty"`
-	WorkspaceMode  string      `json:"workspaceMode,omitempty"`
-	WorkspaceID    string      `json:"workspaceId,omitempty"`
-	BaseRevision   string      `json:"baseRevision,omitempty"`
-	WriteLock      string      `json:"writeLock,omitempty"`
-	Status         string      `json:"status"`
-	SubmissionID   string      `json:"submissionId,omitempty"`
-	Result         string      `json:"result,omitempty"`
-	ResultDetail   *TaskResult `json:"resultDetail,omitempty"`
+	ID             string   `json:"id"`
+	MemberID       string   `json:"memberId"`
+	Prompt         string   `json:"prompt"`
+	Attachments    []string `json:"attachments,omitempty"`
+	InputHash      string   `json:"inputHash"`
+	Attempt        int      `json:"attempt"`
+	SiteID         string   `json:"siteId,omitempty"`
+	Ordinal        int      `json:"ordinal,omitempty"`
+	DependsOn      []string `json:"dependsOn,omitempty"`
+	BroadcastGroup string   `json:"broadcastGroup,omitempty"`
+	WorkspaceMode  string   `json:"workspaceMode,omitempty"`
+	WorkspaceID    string   `json:"workspaceId,omitempty"`
+	BaseRevision   string   `json:"baseRevision,omitempty"`
+	WriteLock      string   `json:"writeLock,omitempty"`
+	Status         string   `json:"status"`
+	SubmissionID   string   `json:"submissionId,omitempty"`
+	// ExecutionThreadID 是本任务所属的执行线程（阶段一契约）：派发时随
+	// task_dispatching 落账；结算侧按它防旧线程/旧 attempt 的迟到事件。
+	ExecutionThreadID string      `json:"executionThreadId,omitempty"`
+	Result            string      `json:"result,omitempty"`
+	ResultDetail      *TaskResult `json:"resultDetail,omitempty"`
 	// CachedFrom 是 amend 缓存导入的来源任务 ID（§6.4.1，阶段三）：本 Run 的
 	// 新节点实例在创建批次内直接落 completed，Result/ResultDetail 深拷贝自
 	// 父 Run 的同名任务，SubmissionID/SentText 留空——缓存任务绝不重派发。
@@ -511,6 +545,7 @@ var runKnownFields = map[string]bool{
 	"stopReason": true, "round": true, "planHash": true, "parentRunId": true,
 	"scheduledFrom": true, "budgetCeiling": true,
 	"tasks": true, "pendingActions": true, "pendingQuestions": true,
+	"threads":       true,
 	"verifyCommand": true, "verify": true,
 	"createdAt": true, "updatedAt": true, "version": true,
 }
@@ -524,7 +559,8 @@ var taskKnownFields = map[string]bool{
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
 	"baseRevision": true, "writeLock": true,
-	"status": true, "submissionId": true, "result": true, "resultDetail": true,
+	"status": true, "submissionId": true, "executionThreadId": true,
+	"result": true, "resultDetail": true,
 	"cachedFrom": true,
 	"error":      true, "outcome": true, "stopReason": true, "instructionsHead": true,
 	"sentText": true, "reduction": true, "triageFor": true,
@@ -720,6 +756,15 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 		}
 		object.Set("pendingQuestions", questions)
 	}
+	// Threads（执行线程投影，阶段一）必须落盘：漏 Set 或漏 runKnownFields 会让
+	// 重启后的线程血缘静默清零——任务的线程归属防护与 UI 原会话跳转都依赖它。
+	if len(r.Threads) > 0 {
+		threads := &jsoncompat.Array{}
+		for i := range r.Threads {
+			threads.Items = append(threads.Items, r.Threads[i].jsonObject())
+		}
+		object.Set("threads", threads)
+	}
 	object.Set("createdAt", r.CreatedAt.Format(time.RFC3339Nano))
 	object.Set("updatedAt", r.UpdatedAt.Format(time.RFC3339Nano))
 	object.Set("version", json.Number(strconv.FormatUint(r.Version, 10)))
@@ -797,7 +842,32 @@ func (q *PendingQuestion) Clone() *PendingQuestion {
 	return &copied
 }
 
-// Clone 深拷贝 Run（含任务、动作、问题登记、验证闸门与未知字段）。
+func (t *ExecutionThread) jsonObject() *jsoncompat.Object {
+	object := jsoncompat.NewObject()
+	object.Set("id", t.ID)
+	object.Set("memberId", t.MemberID)
+	if t.AgentKind != "" {
+		object.Set("agentKind", t.AgentKind)
+	}
+	object.Set("providerSessionId", t.ProviderSessionID)
+	if t.SourceTaskID != "" {
+		object.Set("sourceTaskId", t.SourceTaskID)
+	}
+	object.Set("createdAt", t.CreatedAt.Format(time.RFC3339Nano))
+	object.Set("updatedAt", t.UpdatedAt.Format(time.RFC3339Nano))
+	return object
+}
+
+// Clone 深拷贝 ExecutionThread（全值类型字段，结构体直拷即可）。
+func (t *ExecutionThread) Clone() *ExecutionThread {
+	if t == nil {
+		return nil
+	}
+	copied := *t
+	return &copied
+}
+
+// Clone 深拷贝 Run（含任务、动作、问题登记、执行线程、验证闸门与未知字段）。
 func (r *Run) Clone() *Run {
 	if r == nil {
 		return nil
@@ -815,6 +885,12 @@ func (r *Run) Clone() *Run {
 		copied.PendingQuestions = make([]PendingQuestion, len(r.PendingQuestions))
 		for i := range r.PendingQuestions {
 			copied.PendingQuestions[i] = *r.PendingQuestions[i].Clone()
+		}
+	}
+	if len(r.Threads) > 0 {
+		copied.Threads = make([]ExecutionThread, len(r.Threads))
+		for i := range r.Threads {
+			copied.Threads[i] = *r.Threads[i].Clone()
 		}
 	}
 	copied.VerifyCommand = append([]string(nil), r.VerifyCommand...)
@@ -892,6 +968,11 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	object.Set("status", t.Status)
 	if t.SubmissionID != "" {
 		object.Set("submissionId", t.SubmissionID)
+	}
+	// ExecutionThreadID（执行线程血缘，阶段一）必须落盘：漏 Set 会让重启后
+	// 任务失去线程归属——迟到事件防护与 UI 原会话跳转都依赖它。
+	if t.ExecutionThreadID != "" {
+		object.Set("executionThreadId", t.ExecutionThreadID)
 	}
 	if t.Result != "" {
 		object.Set("result", t.Result)

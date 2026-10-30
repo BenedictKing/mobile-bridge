@@ -1539,6 +1539,7 @@ func (s *Service) adoptWatchersLocked(state *runState, team *Team, run *Run, pol
 		s.spawnWatcherLocked(state, &taskDispatch{
 			taskID:       task.ID,
 			sessionID:    member.SessionID,
+			threadID:     task.ExecutionThreadID,
 			submissionID: task.SubmissionID,
 			sentText:     s.sentTextFor(run, task, policy),
 		}, policy, time.Now())
@@ -1828,10 +1829,21 @@ func (s *Service) taskTimeoutExpired(state *runState, dispatch *taskDispatch, ta
 func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamPolicy, session *acpruntime.Session) (bool, *acpruntime.Session) {
 	// 任务已被外部（取消/resume/超时）落终态 → no-op 退出（与用户在原会话
 	// 手动停止不存在竞争：先记账者的结论生效）。Run 被删除同样退出。
+	// 血缘防护（阶段一执行线程契约）：watcher 携带的 submissionID/线程与任务
+	// 当前值不一致＝旧 attempt 或旧线程的迟到观察者——重派已发生，迟到事件
+	// 绝不能完成新任务，退出不结算。空值（升级前的存量快照）不触发防护。
 	if run := s.store.Run(state.runID); run == nil {
 		return true, session
-	} else if task := findTaskIn(run, dispatch.taskID); task != nil && terminalTask(task.Status) {
-		return true, session
+	} else if task := findTaskIn(run, dispatch.taskID); task != nil {
+		if terminalTask(task.Status) {
+			return true, session
+		}
+		if task.SubmissionID != "" && task.SubmissionID != dispatch.submissionID {
+			return true, session
+		}
+		if task.ExecutionThreadID != "" && dispatch.threadID != "" && task.ExecutionThreadID != dispatch.threadID {
+			return true, session
+		}
 	}
 	sub, ok := s.queue.Submission(dispatch.sessionID, dispatch.submissionID)
 	if !ok {
@@ -3570,6 +3582,10 @@ func terminalRun(status string) bool {
 	return false
 }
 
+// RunTerminal 是 terminalRun 的导出包装：HTTP 投影按 Run 终态派生执行线程
+// 的关闭态（线程随 Run 关闭，不落盘）；内部路径继续用 terminalRun。
+func RunTerminal(status string) bool { return terminalRun(status) }
+
 func terminalTask(status string) bool {
 	switch status {
 	case TaskCompleted, TaskFailed, TaskCancelled, TaskOutcomeUnknown, TaskStopped:
@@ -3585,6 +3601,18 @@ func findTaskIn(run *Run, taskID string) *Task {
 	for i := range run.Tasks {
 		if run.Tasks[i].ID == taskID {
 			return &run.Tasks[i]
+		}
+	}
+	return nil
+}
+
+func findThreadIn(run *Run, threadID string) *ExecutionThread {
+	if run == nil || threadID == "" {
+		return nil
+	}
+	for i := range run.Threads {
+		if run.Threads[i].ID == threadID {
+			return &run.Threads[i]
 		}
 	}
 	return nil

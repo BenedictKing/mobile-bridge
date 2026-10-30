@@ -2245,6 +2245,20 @@ func teamRunDetail(run *team.Run) *jsoncompat.Object {
 	workspace := jsoncompat.NewObject()
 	workspace.Set("writeLockHeldBy", teamWriteLockHolder(run))
 	detail.Set("workspace", workspace)
+	// 执行线程投影（阶段一执行线程契约）：threads 随 Run 快照直出，状态按
+	// Run 终态派生（线程随 Run 创建与关闭，关闭态不落盘——重建与运行期
+	// 天然一致）；任务的 executionThreadId 已随 Task 投影携带。
+	if threads, ok := detail.MustGet("threads").(*jsoncompat.Array); ok {
+		status := "active"
+		if team.RunTerminal(run.Status) {
+			status = "closed"
+		}
+		for _, item := range threads.Items {
+			if thread, isObject := item.(*jsoncompat.Object); isObject {
+				thread.Set("status", status)
+			}
+		}
+	}
 	return detail
 }
 

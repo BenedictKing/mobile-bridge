@@ -549,6 +549,33 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		switch event.Type {
 		case EventRunWaitingInput:
 			run.Status = RunWaitingInput
+		case EventThreadBound:
+			// 执行线程绑定事实（阶段一契约）：按 threadId 幂等 upsert，最新
+			// 绑定覆盖旧值（成员会话被恢复流程改写后重派重落绑定）。缺了它，
+			// team-runs.json 损坏后的 journal 重建会静默丢线程血缘——任务的
+			// 线程归属防护与 UI 原会话跳转从此无从谈起。
+			if threadID := payloadString(event.Payload, "threadId"); threadID != "" {
+				if thread := findThreadIn(run, threadID); thread == nil {
+					run.Threads = append(run.Threads, ExecutionThread{
+						ID:                threadID,
+						MemberID:          payloadString(event.Payload, "memberId"),
+						AgentKind:         payloadString(event.Payload, "agentKind"),
+						ProviderSessionID: payloadString(event.Payload, "providerSessionId"),
+						SourceTaskID:      payloadString(event.Payload, "sourceTaskId"),
+						CreatedAt:         event.CreatedAt,
+						UpdatedAt:         event.CreatedAt,
+					})
+				} else {
+					thread.ProviderSessionID = payloadString(event.Payload, "providerSessionId")
+					if kind := payloadString(event.Payload, "agentKind"); kind != "" {
+						thread.AgentKind = kind
+					}
+					if thread.MemberID == "" {
+						thread.MemberID = payloadString(event.Payload, "memberId")
+					}
+					thread.UpdatedAt = event.CreatedAt
+				}
+			}
 		case EventRunPaused:
 			// 用户软停事实（§12 阶段四工作项 4）：缺了它，team-runs.json 损坏
 			// 重建后的 paused Run 会在 run_created 锚点上以 Status=created 复活，
@@ -695,6 +722,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	case EventTaskDispatching:
 		task.Status = TaskDispatching
 		task.SubmissionID = payloadString(event.Payload, "submissionId")
+		task.ExecutionThreadID = payloadString(event.Payload, "threadId")
 		task.InputHash = payloadString(event.Payload, "inputHash")
 		if attempt := payloadInt(event.Payload, "attempt"); attempt > 0 {
 			task.Attempt = attempt
