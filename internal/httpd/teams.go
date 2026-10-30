@@ -38,6 +38,17 @@ const (
 	teamGoalMaxRunes = 10000
 )
 
+// TeamInput 路由状态（§5 路由词汇，阶段二只落地 new_task；其余留给阶段四
+// 的持续反馈路由——届时 GET 投影附带路由理由）。
+const (
+	TeamInputRouteNewTask  = "new_task"
+	TeamInputRouteFollowUp = "follow_up"
+	TeamInputRouteAmend    = "amend"
+	TeamInputRouteAnswer   = "answer"
+	TeamInputRouteClarify  = "clarify"
+	TeamInputRouteSteer    = "steer"
+)
+
 // handleTeams 分发 /api/teams* 路由。method 由挂载点传入（PATCH/DELETE 是
 // web/team.js 契约使用的真实 HTTP 方法）；认证与 CSRF 已在挂载点完成。
 func (h *handler) handleTeams(method string) {
@@ -110,6 +121,16 @@ func (h *handler) handleTeams(method string) {
 		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}
+	case len(segments) == 2 && segments[1] == "inputs":
+		// TeamInput 长期入口（§10 阶段二）：POST 202 {inputId, routeStatus}，
+		// 同 id 幂等重放；GET 按 inputId 回查路由结果。
+		if method == http.MethodPost {
+			h.handleTeamInputsCreate(teamID)
+		} else {
+			h.fail(http.StatusNotFound, errorBody("页面不存在"))
+		}
+	case len(segments) == 3 && segments[1] == "inputs" && method == http.MethodGet:
+		h.handleTeamInputGet(teamID, segments[2])
 	case len(segments) == 2 && segments[1] == "schedule":
 		// 定时触发配置（§12 阶段四工作项 1 的 HTTP 配置面）：GET 无配置
 		// 404（前端据此展示未配置态）、PUT 全量模板写。
@@ -674,6 +695,54 @@ func (h *handler) teamConversation(threadID, teamID string) (*team.Team, error) 
 	return matched, nil
 }
 
+// teamInputError 是 TeamInput 入口的可展示错误（HTTP 层按 status 落响应）。
+type teamInputError struct {
+	status  int
+	message string
+}
+
+func (e *teamInputError) Error() string { return e.message }
+
+// createTeamInput 是两条 TeamInput 入口（POST /api/teams/:id/inputs 与主控
+// 会话 direct-send 拦截）的共用核心：目标/附件校验 → 按 inputID 幂等创建
+// single+autoPlan Run。inputID 即 runID（主控聊天 payload.id 的同款先例），
+// 幂等重放由 Run 账本承载（journal run_created 可重建），不另设 inputs 存储；
+// 阶段二路由恒为 new_task，后续阶段的 follow_up/amend/answer 路由在此扩展。
+// threadID 是附件上传账本的归属会话（Lead 会话）。
+func (h *handler) createTeamInput(teamRow *team.Team, threadID, inputID, rawGoal string, attachments []string) (*team.Run, bool, error) {
+	goal := strings.TrimSpace(rawGoal)
+	if goal == "" && len(attachments) > 0 {
+		goal = "请查看用户发送的图片和附件。"
+	}
+	if goal == "" || len([]rune(goal)) > teamGoalMaxRunes {
+		return nil, false, &teamInputError{http.StatusBadRequest, "请输入 1–10000 字的团队消息，或附带图片后重试"}
+	}
+	if err := validateSubmissionInput(inputID, goal, "send"); err != nil {
+		return nil, false, &teamInputError{http.StatusBadRequest, err.Error()}
+	}
+	for _, id := range attachments {
+		if h.server.Uploads == nil {
+			return nil, false, &teamInputError{http.StatusBadRequest, "当前网关未启用附件上传"}
+		}
+		if _, err := h.server.Uploads.Get(threadID, id); err != nil {
+			return nil, false, &teamInputError{http.StatusBadRequest, err.Error()}
+		}
+	}
+	if existing := h.server.TeamStore.Run(inputID); existing != nil {
+		same := existing.TeamID == teamRow.ID && existing.Goal == goal && existing.Mode == team.ModeSingle &&
+			existing.AutoPlan && len(existing.Tasks) == 1 && sameStringSlices(existing.Tasks[0].Attachments, attachments)
+		if !same {
+			return nil, false, &teamInputError{http.StatusBadRequest, "同一消息标识不能用于不同内容"}
+		}
+		return existing, true, nil
+	}
+	run, err := h.server.Teams.CreateConversationRun(teamRow, inputID, goal, attachments)
+	if err != nil {
+		return nil, false, err
+	}
+	return run, false, nil
+}
+
 // handleTeamConversationSend 把 Lead 主控会话的普通发送直接转换为 autoPlan
 // Run。调用点位于普通 direct-send 记账之前，因此同一条消息绝不会先 Prompt
 // 再补 Run。teamMode=direct 或非 Lead 会话返回 false，继续普通发送。
@@ -708,44 +777,25 @@ func (h *handler) handleTeamConversationSend(threadID string, object *jsoncompat
 		h.fail(http.StatusBadRequest, errorBody("团队聊天请使用发送新消息或完成后发送"))
 		return true
 	}
-	goal := strings.TrimSpace(payload.text)
-	if goal == "" && len(payload.attachments) > 0 {
-		goal = "请查看用户发送的图片和附件。"
-	}
-	if goal == "" || len([]rune(goal)) > teamGoalMaxRunes {
-		h.fail(http.StatusBadRequest, errorBody("请输入 1–10000 字的团队消息，或附带图片后重试"))
+	// mode 合法性沿用发送侧词汇（validateSubmissionInput 原地校验的等价物，
+	// steer 已在上面单独拒绝）。
+	switch payload.mode {
+	case "send", "queue":
+	default:
+		h.fail(http.StatusBadRequest, errorBody("未知发送方式"))
 		return true
 	}
-	if err := validateSubmissionInput(payload.id, goal, payload.mode); err != nil {
-		h.fail(http.StatusBadRequest, errorBody(err.Error()))
-		return true
-	}
-	for _, id := range payload.attachments {
-		if h.server.Uploads == nil {
-			h.fail(http.StatusBadRequest, errorBody("当前网关未启用附件上传"))
-			return true
+	run, duplicate, createErr := h.createTeamInput(teamRow, threadID, payload.id, payload.text, payload.attachments)
+	if createErr != nil {
+		var inputErr *teamInputError
+		if errors.As(createErr, &inputErr) {
+			h.fail(inputErr.status, errorBody(inputErr.message))
+		} else {
+			h.failTeamError(createErr)
 		}
-		if _, err := h.server.Uploads.Get(threadID, id); err != nil {
-			h.fail(http.StatusBadRequest, errorBody(err.Error()))
-			return true
-		}
-	}
-	if existing := h.server.TeamStore.Run(payload.id); existing != nil {
-		same := existing.TeamID == teamRow.ID && existing.Goal == goal && existing.Mode == team.ModeSingle &&
-			existing.AutoPlan && len(existing.Tasks) == 1 && sameStringSlices(existing.Tasks[0].Attachments, payload.attachments)
-		if !same {
-			h.fail(http.StatusBadRequest, errorBody("同一消息标识不能用于不同内容"))
-			return true
-		}
-		h.outputTeamConversation(existing, true)
 		return true
 	}
-	run, err := h.server.Teams.CreateConversationRun(teamRow, payload.id, goal, payload.attachments)
-	if err != nil {
-		h.failTeamError(err)
-		return true
-	}
-	h.outputTeamConversation(run, false)
+	h.outputTeamConversation(run, duplicate)
 	return true
 }
 
@@ -758,6 +808,91 @@ func (h *handler) outputTeamConversation(run *team.Run, duplicate bool) {
 	if duplicate {
 		result.Set("duplicate", true)
 	}
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// handleTeamInputsCreate 是 TeamInput 长期入口（§10 阶段二）：POST
+// /api/teams/:teamId/inputs → 202 {inputId, routeStatus}。请求体与主控聊天
+// 发送同词汇（{id, text, attachments}，text 亦接受 goal 别名）；id 必填
+// （UUID）——幂等重放由客户端持 id 驱动。附件在 Lead 会话的上传账本校验
+// （与主控聊天同一账本，两个入口互通）。当前路由恒为 new_task（single +
+// autoPlan Run）；后续阶段的 follow_up/amend/answer/clarify 在此扩展并在
+// GET 投影中外发理由。
+func (h *handler) handleTeamInputsCreate(teamID string) {
+	teamRow := h.loadTeam(teamID)
+	if teamRow == nil {
+		return
+	}
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	body := value.(*jsoncompat.Object)
+	payload := readSubmissionPayload(body)
+	if len(payload.skills) > 0 {
+		h.fail(http.StatusBadRequest, errorBody("团队输入暂不支持 Skill，请使用普通会话或显式 Run"))
+		return
+	}
+	if payload.workMode != "" && payload.workMode != "default" {
+		h.fail(http.StatusBadRequest, errorBody("团队输入仅支持普通工作模式"))
+		return
+	}
+	if payload.mode != "send" {
+		h.fail(http.StatusBadRequest, errorBody("团队输入请使用普通发送方式"))
+		return
+	}
+	goal := payload.text
+	if strings.TrimSpace(goal) == "" {
+		goal = stringField(body, "goal")
+	}
+	run, duplicate, createErr := h.createTeamInput(teamRow, teamLeadSessionID(teamRow), payload.id, goal, payload.attachments)
+	if createErr != nil {
+		var inputErr *teamInputError
+		if errors.As(createErr, &inputErr) {
+			h.fail(inputErr.status, errorBody(inputErr.message))
+		} else {
+			h.failTeamError(createErr)
+		}
+		return
+	}
+	result := jsoncompat.NewObject()
+	result.Set("status", "accepted")
+	result.Set("inputId", run.ID)
+	result.Set("teamId", run.TeamID)
+	result.Set("runId", run.ID)
+	result.Set("routeStatus", TeamInputRouteNewTask)
+	if duplicate {
+		result.Set("duplicate", true)
+	}
+	h.output(http.StatusAccepted, result, contentTypeJSON, "")
+}
+
+// handleTeamInputGet 回查一条 TeamInput 的路由结果（§10 阶段二）：inputId
+// 即 runID，投影按 Run 现势派生；非 input 产出的 Run（显式计划/其他团队）
+// 一律 404——输入的身份由「single + autoPlan + 归属团队」界定。
+func (h *handler) handleTeamInputGet(teamID, inputID string) {
+	teamRow := h.loadTeam(teamID)
+	if teamRow == nil {
+		return
+	}
+	run := h.server.TeamStore.Run(inputID)
+	if run == nil || run.TeamID != teamID || !run.AutoPlan || run.Mode != team.ModeSingle {
+		h.fail(http.StatusNotFound, errorBody("输入不存在，请刷新后重试"))
+		return
+	}
+	result := jsoncompat.NewObject()
+	result.Set("inputId", run.ID)
+	result.Set("teamId", run.TeamID)
+	result.Set("runId", run.ID)
+	result.Set("routeStatus", TeamInputRouteNewTask)
+	result.Set("goal", run.Goal)
+	result.Set("runStatus", run.Status)
+	if len(run.Tasks) == 1 {
+		result.Set("taskId", run.Tasks[0].ID)
+	}
+	result.Set("createdAt", run.CreatedAt.Format(time.RFC3339Nano))
+	result.Set("updatedAt", run.UpdatedAt.Format(time.RFC3339Nano))
 	h.output(http.StatusOK, result, contentTypeJSON, "")
 }
 
