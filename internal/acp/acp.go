@@ -384,6 +384,17 @@ func (p *Process) dispatch(message *jsoncompat.Object) {
 			if message, ok := failure.MustGet("message").(string); ok && message != "" {
 				text = message
 			}
+			// ACP SDK 把 Agent 抛出的普通 Error 包成 -32603「Internal error」，真实原因只在
+			// data.details（zcode 会话被后端清理即此形态）：仅对这个空泛文案拼回 details
+			// （有界 300 rune），其余错误文本原样保留，既有子串判定与 parity 不受影响。
+			if data := objOf(failure.MustGet("data")); data != nil && text == "Internal error" {
+				if details, _ := data.MustGet("details").(string); strings.TrimSpace(details) != "" {
+					if runes := []rune(details); len(runes) > 300 {
+						details = string(runes[:300])
+					}
+					text += ": " + details
+				}
+			}
 			kind := KindError
 			code := failure.MustGet("code")
 			if number, ok := code.(json.Number); ok {

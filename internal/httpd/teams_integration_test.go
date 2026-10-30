@@ -1234,8 +1234,10 @@ func TestTeamIntegrationDeadMemberRequeueLadder(t *testing.T) {
 	if task["status"] != "failed" {
 		t.Fatalf("任务应 failed: %v", task["status"])
 	}
-	if text, _ := task["error"].(string); !strings.Contains(text, "队列派发失败") {
-		t.Fatalf("失败原因应来自账本爬梯: %q", text)
+	// 爬梯原因随错误透出（重试次数 + Agent 原文），用户能据此处理。
+	if text, _ := task["error"].(string); !strings.Contains(text, "队列派发失败") ||
+		!strings.Contains(text, "会话无法恢复：broken-sess") || !strings.Contains(text, "重试 10 次") {
+		t.Fatalf("失败原因应来自账本爬梯并带底层原因: %q", text)
 	}
 	entry := env.server.Queue.get("broken-sess", task["submissionId"].(string))
 	if entry == nil || entry.Status != SubFailed || entry.QueueAttempts != maxQueueAttempts {

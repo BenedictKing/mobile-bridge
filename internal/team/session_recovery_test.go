@@ -78,4 +78,12 @@ func TestSessionNotFoundMatchIsSpecific(t *testing.T) {
 	if sessionNotFound(errors.New("permission denied")) || sessionNotFound(nil) {
 		t.Fatal("其他打开失败不得触发会话重建")
 	}
+	// zcode 后端已清理会话（ACP SDK 包成 Internal error，details 由 acp.go 拼回）。
+	if !sessionNotFound(errors.New("Internal error: ⚠ 会话 x 已被后端清理，该线程无法恢复——请新建会话")) ||
+		!sessionNotFound(errors.New("Internal error: ⚠ session x no longer exists in the backend")) {
+		t.Fatal("后端已清理的会话属确定缺失，应触发恢复")
+	}
+	if sessionNotFound(errors.New("Internal error")) {
+		t.Fatal("空泛的 Internal error 不得触发会话重建")
+	}
 }

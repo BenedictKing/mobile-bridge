@@ -112,7 +112,14 @@ func (a teamQueueAdapter) Submission(threadID, submissionID string) (team.TeamSu
 	if entry == nil {
 		return team.TeamSubmission{}, false
 	}
-	return team.TeamSubmission{Status: entry.Status, Error: entry.Error}, true
+	// 爬梯耗尽（requeueEntry 第 10 次置 failed）只写 LastQueueError、Error 为空：带上
+	// 底层原因（账本已截断至 500 rune），保留「队列派发失败」前缀，否则 team 侧只剩
+	// 兜底文案，用户无从处理。
+	errorText := entry.Error
+	if errorText == "" && entry.Status == SubFailed && entry.LastQueueError != "" {
+		errorText = fmt.Sprintf("队列派发失败（重试 %d 次）：%s", entry.QueueAttempts, entry.LastQueueError)
+	}
+	return team.TeamSubmission{Status: entry.Status, Error: errorText}, true
 }
 
 // CancelSubmission 撤销仍处 queued 的条目（queue.go cancel）；条目已离开队列

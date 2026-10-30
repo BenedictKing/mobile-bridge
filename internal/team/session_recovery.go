@@ -11,8 +11,11 @@ func sessionNotFound(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
+	// zcode-acp-server 的 sessionEvicted（占位映射仍在、后端会话已被清理，zh/en 两种
+	// 文案）同属确定的会话缺失；通用的 "Internal error" 不在此列。
 	return strings.Contains(text, "session not found") || strings.Contains(text, "session_not_found") ||
-		strings.Contains(text, "会话不存在") || strings.Contains(text, "找不到会话")
+		strings.Contains(text, "会话不存在") || strings.Contains(text, "找不到会话") ||
+		strings.Contains(text, "已被后端清理") || strings.Contains(text, "no longer exists in the backend")
 }
 
 // recoverMissingMemberSession 为已确认丢失的成员会话创建替代会话并回写绑定。
