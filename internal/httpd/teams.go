@@ -2370,7 +2370,12 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 			if task.ResultDetail != nil {
 				resultText = firstNonEmpty(task.Result, task.ResultDetail.Result)
 			}
-			if head := truncateSubText(team.ResultDisplayText(resultText), 120); head != "" {
+			// 逐任务头截到 120 字：截了就置 truncated，前端才会标「（已截断）」。
+			display := team.ResultDisplayText(resultText)
+			if len([]rune(display)) > 120 {
+				truncated = true
+			}
+			if head := truncateSubText(display, 120); head != "" {
 				heads = append(heads, task.ID+"："+head)
 			}
 		}

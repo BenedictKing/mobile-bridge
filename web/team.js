@@ -675,10 +675,13 @@ class TeamsPanel{
     if(!entry||entry.loading){box.append(this.node('p',t('正在读取 Run…'),'muted'));return box;}
     if(entry.error){box.append(this.node('p',entry.error,'error'));return box;}
     if(!entry.rows.length){box.append(this.node('p',t('还没有 Run。'),'muted'));return box;}
-    for(const run of entry.rows){
+    // 新的在上：RunsByTeam 按创建序返回，Run 多了最新的会沉到底部。
+    for(const run of [...entry.rows].reverse()){
       const row=this.button('');
       row.className='team-run-row';
       row.append(this.runBadge(run.status));
+      // 已完成的 Run 再区分验收结果（等你验收 / 已接受 / 已丢弃）。
+      if(run.deliveryStatus&&typeof teamDeliveryLabel==='function')row.append(this.node('span',teamDeliveryLabel(run.deliveryStatus),'team-run-delivery '+run.deliveryStatus));
       row.append(this.node('span',run.goal||run.id,'team-run-goal'));
       const updated=teamTimeText(run.updatedAt);
       if(updated)row.append(this.node('small',updated,'muted'));
@@ -1002,7 +1005,7 @@ class TeamRunScreen{
     this.close();
     const generation=++this.generation;
     this.teamId=teamId;this.runId=runId;
-    this.team=null;this.detail=null;this.meta=null;this.actionError='';this.actionNotice='';
+    this.team=null;this.detail=null;this.meta=null;this.actionError='';this.actionNotice='';this.deliveryPending=false;this.deliveryError='';
     this.epoch='';this.lastSeq=-1;this._lastMetaJSON='';
     this.terminalSynced=false;this.refetchFailures=0;
     this.reconnecting=false;this.taskDiffs.clear();this.diffOpen.clear();
@@ -1450,6 +1453,9 @@ class TeamRunScreen{
       line.append(holder?this.node('code',holder):this.node('span',t('无')));
       body.append(line);
     }
+    // 交付（§8 阶段三）：Run 页也能验收——团队聊天卡只显示最近一个 Run，
+    // 较早的 pending_review Run 只能在这里接受或丢弃。
+    if(detail.deliveryStatus)body.append(this.renderDelivery());
     // 统计卡（阶段四）：进页拉一次，手动刷新按钮重拉；404（旧网关）整块不显示。
     if(this.stats)body.append(this.renderStats());
     // 成员提问（§5.4，detail.pendingQuestions 是权威快照）：open 画应答卡，
@@ -1581,6 +1587,37 @@ class TeamRunScreen{
     if(this.actionNotice)box.append(this.node('span',this.actionNotice,'team-notice'));
     if(this.actionError)box.append(this.node('span',this.actionError,'error'));
     return box;
+  }
+  renderDelivery(){
+    const t=BridgeI18n.t,detail=this.detail;
+    const box=this.node('section',undefined,'team-delivery '+detail.deliveryStatus);
+    box.append(this.node('strong',typeof teamDeliveryLabel==='function'?teamDeliveryLabel(detail.deliveryStatus):detail.deliveryStatus));
+    if(typeof renderTeamDeliveryEvidence==='function')renderTeamDeliveryEvidence(box,detail.delivery,(tag,text,cls)=>this.node(tag,text,cls));
+    if(detail.deliveryStatus==='pending_review'){
+      const actions=this.node('div',undefined,'team-delivery-actions');
+      const accept=this.button(t('接受成果'),()=>this.setDelivery('accepted'));accept.classList.add('primary');
+      const discard=this.button(t('丢弃'),()=>{
+        if(typeof window==='undefined'||window.confirm(t('丢弃这份成果？执行记录仍会保留。')))this.setDelivery('discarded');
+      });
+      for(const button of [accept,discard])button.disabled=!!this.deliveryPending;
+      actions.append(accept,discard);box.append(actions);
+    }
+    if(this.deliveryError)box.append(this.node('p',this.deliveryError,'error'));
+    return box;
+  }
+  async setDelivery(status){
+    if(!this.detail||this.deliveryPending)return;
+    const runId=this.runId,teamId=this.teamId;
+    this.deliveryPending=true;this.deliveryError='';this.render();
+    try{
+      const detail=await this.request(this.runUrl('delivery'),{method:'POST',body:{status,version:this.detail.version}});
+      if(teamId===this.teamId&&runId===this.runId){this.detail=detail;this.meta=null;}
+    }catch(error){
+      if(teamId===this.teamId&&runId===this.runId)this.deliveryError=error.message;
+    }finally{
+      this.deliveryPending=false;
+      if(teamId===this.teamId&&runId===this.runId)this.render();
+    }
   }
   async postAction(action){
     if(!this.detail)return;

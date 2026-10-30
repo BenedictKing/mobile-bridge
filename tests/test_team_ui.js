@@ -80,3 +80,23 @@ test('resume hint follows the actual stop cause',()=>{
   assert.match(hint({stopReason:'verify_failed（退出码 1）',tasks:[]}),/reruns the verify command/);
   assert.equal(hint({stopReason:'',tasks:[{status:'planned'}]}),'Continue dispatches the remaining runnable tasks.');
 });
+
+test('run page lets the user accept an older pending result',async()=>{
+  global.t_safe=value=>BridgeI18n.t(value);
+  const chat=require('../web/team-chat.js');
+  global.renderTeamDeliveryEvidence=chat.renderTeamDeliveryEvidence;global.teamDeliveryLabel=chat.teamDeliveryLabel;
+  const calls=[];
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async(path,options)=>{calls.push([path,options]);return{...screen.detail,deliveryStatus:'accepted',version:3};}});
+  screen.teamId='t1';screen.runId='r1';screen.team=team;
+  screen.detail={id:'r1',teamId:'t1',status:'completed',deliveryStatus:'pending_review',version:2,tasks:[],
+    delivery:{agent:{completed:1,total:1},verify:{configured:false},pendingQuestions:0}};
+  screen.render=()=>{};
+  const box=screen.renderDelivery();
+  assert.match(text(box),/Execution finished; review the result/);
+  assert.match(text(box),/Agent: 1\/1 Completed/);
+  await screen.setDelivery('accepted');
+  assert.equal(calls[0][0],'/api/teams/t1/runs/r1/delivery');
+  assert.deepEqual(calls[0][1],{method:'POST',body:{status:'accepted',version:2}});
+  assert.equal(screen.detail.deliveryStatus,'accepted');
+  assert.equal(find(screen.renderDelivery(),'team-delivery-actions').length,0,'已接受后不再显示验收按钮');
+});

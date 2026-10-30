@@ -55,6 +55,36 @@ function renderTeamActionsCard(part,translate){
   return card;
 }
 
+// 交付卡（§8 阶段三）：团队聊天卡与 Run 页共用。Agent 完成度、Review 裁决、验证闸门、
+// 待答问题与独立工作区分别落位——Agent 的「完成了」不替代审查或验证。
+const TEAM_DELIVERY_LABELS={pending_review:'执行完成，等待你验收',accepted:'成果已接受',discarded:'成果已丢弃'};
+function teamDeliveryLabel(status){return t_safe(TEAM_DELIVERY_LABELS[status]||status||'');}
+function renderTeamDeliveryEvidence(container,delivery,make){
+  if(!delivery||typeof delivery!=='object')return;
+  const evidence=make('div',undefined,'team-delivery-evidence');
+  const agent=delivery.agent,review=delivery.review,verify=delivery.verify;
+  const reviewText=!review?null:(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知'));
+  const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待验证')));
+  const dims=[
+    t_safe('Agent')+t_safe('：')+(agent?agent.completed+'/'+agent.total+' '+t_safe('已完成'):'—'),
+    t_safe('审查')+t_safe('：')+(reviewText||t_safe('未参与')),
+    t_safe('验证')+t_safe('：')+(verifyText||t_safe('未配置'))
+  ];
+  if(delivery.pendingQuestions>0)dims.push(t_safe('待回答问题')+t_safe('：')+delivery.pendingQuestions);
+  for(const dim of dims)evidence.append(make('span',dim,'team-delivery-dim'));
+  container.append(evidence);
+  // isolated 任务的改动留在独立 worktree，验收前要让用户知道它尚未进入主工作区。
+  if(Array.isArray(delivery.workspaces)&&delivery.workspaces.length){
+    const names=delivery.workspaces.map(entry=>entry.workspaceId+(entry.taskId?' ('+entry.taskId+')':'')).join(t_safe('、'));
+    container.append(make('p',t_safe('独立工作区：')+names+' · '+t_safe('不会自动合入主工作区'),'muted team-delivery-dim'));
+  }
+  const summary=delivery.resultSummary;
+  if(summary&&summary.text)container.append(make('p',summary.text+(summary.truncated?t_safe('（已截断）'):''),'team-delivery-summary'));
+}
+
+// 停靠类 outcome 的站点原因（与 team.js TEAM_TASK_OUTCOME_LABELS 同一词条）。
+const TEAM_WORKFLOW_OUTCOME_LABELS={rate_limited:'触发限流',quota:'额度不足',auth:'成员认证失败',not_configured:'成员未配置',context_overflow:'上下文超限',transient:'临时错误'};
+
 function teamWorkflowDependencies(task,byId){
   if(Array.isArray(task.dependsOn)&&task.dependsOn.length)return task.dependsOn;
   const match=/^(.*)-d\d+-\d+$/.exec(task.id||''),source=match&&byId.get(match[1]);
@@ -167,7 +197,7 @@ class TeamChatController{
   open(team){
     clearTimeout(this.timer);
     this.current=team||null;this.team=team||null;this.run=null;this.compact=false;this.generation++;
-    this.deliveryPending=false;this.deliveryError='';
+    this.deliveryPending=false;this.deliveryError='';this.refreshError='';
     this.render();if(this.current)this.refreshRun(true);
   }
   close(){this.open(null);}
@@ -201,9 +231,10 @@ class TeamChatController{
       const rows=listed.runs||[],latest=rows[rows.length-1];
       if(!latest){if(generation===this.generation){this.run=null;this.render();}return;}
       const detail=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(latest.id));
-      if(generation===this.generation&&this.current?.id===team.id){this.team=team;this.run=detail;this.render();}
+      if(generation===this.generation&&this.current?.id===team.id){this.team=team;this.run=detail;this.refreshError='';this.render();}
     }catch(error){
-      if(generation===this.generation&&this.current?.id===team.id){this.run=null;this.render();}
+      // 临时失败保留已有卡片（否则运行中的团队会闪回「从没跑过」的引导），只提示刷新失败。
+      if(generation===this.generation&&this.current?.id===team.id){this.refreshError=error.message;this.render();}
     }finally{
       this.pending=false;
       if(this.queued&&this.current)this.refreshRun(true);else this.schedule();
@@ -226,6 +257,7 @@ class TeamChatController{
         roster.append(row);
       }
       empty.append(roster,this.node('p',t_safe('发送后会在这里显示阶段、成员和结果。'),'team-workflow-meta'));
+      if(this.refreshError)empty.append(this.node('p',t_safe('刷新失败：')+this.refreshError,'error'));
       root.append(empty);return;
     }
     const tasks=Array.isArray(run.tasks)?run.tasks:[],members=new Map((team.members||[]).map(member=>[member.id,member]));
@@ -244,9 +276,10 @@ class TeamChatController{
     // 计数从任务本身算：Run 说「已完成」时也可能有失败任务，头部必须把它们说出来。
     const meta=this.node('span',undefined,'team-workflow-meta');
     meta.append(this.node('span',counts.total+' '+t_safe('个任务')));
+    // 所有非零计数都说出来：失败不能盖住真正卡住流程的停靠任务。
     if(counts.failed)meta.append(this.node('span',counts.failed+' '+t_safe('失败'),'team-workflow-failcount'));
-    else if(counts.running)meta.append(this.node('span',counts.running+' '+t_safe('进行中'),'team-workflow-runcount'));
-    else if(counts.stopped)meta.append(this.node('span',counts.stopped+' '+t_safe('已停止')));
+    if(counts.running)meta.append(this.node('span',counts.running+' '+t_safe('进行中'),'team-workflow-runcount'));
+    if(counts.stopped)meta.append(this.node('span',counts.stopped+' '+t_safe('已停止')));
     head.append(meta);
     const toggle=this.button(this.compact?t_safe('展开成员'):t_safe('收起成员'),()=>{this.compact=!this.compact;this.render();});
     toggle.setAttribute('aria-expanded',String(!this.compact));
@@ -281,9 +314,10 @@ class TeamChatController{
         if(member.agentKind)dot.setAttribute('data-agent',member.agentKind);
         who.append(dot,this.node('span',teamWorkflowMemberLabel(member,task),'team-workflow-member-label'));
         body.append(who);
-        // 失败的站点直接说出原因（Run 详情里也是这句），省掉一次跳转。
-        const reason=failed?t_safe(String(task.error||'').trim()):'';
-        if(reason)body.append(this.node('span',reason,'team-workflow-reason'));
+        // 失败/停靠的站点直接说出原因（Run 详情里也是这句），省掉一次跳转；全文放 title。
+        const outcome=status==='stopped'&&TEAM_WORKFLOW_OUTCOME_LABELS[task.outcome];
+        const reason=failed?t_safe(String(task.error||'').trim()):outcome?t_safe(outcome):'';
+        if(reason){const line=this.node('span',reason,'team-workflow-reason');line.title=reason;body.append(line);}
         station.append(body);
         lanes.append(station);
       }
@@ -298,33 +332,13 @@ class TeamChatController{
     }
     if(run.deliveryStatus){
       const delivery=this.node('div',undefined,'team-delivery '+run.deliveryStatus);
-      const labels={pending_review:t_safe('执行完成，等待你验收'),accepted:t_safe('成果已接受'),discarded:t_safe('成果已丢弃')};
-      delivery.append(this.node('strong',labels[run.deliveryStatus]||run.deliveryStatus));
-      // 交付证据（§8 阶段三）：Agent 完成度、Review 裁决、验证闸门、结果摘要
-      // 分别展示——Agent 的「完成了」不替代审查或验证。
-      if(run.delivery&&typeof run.delivery==='object'){
-        const evidence=this.node('div',undefined,'team-delivery-evidence');
-        const agent=run.delivery.agent;
-        const review=run.delivery.review;
-        const reviewText=!review?null:(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知'));
-        const verify=run.delivery.verify;
-        const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待验证')));
-        const dims=[
-          t_safe('Agent')+t_safe('：')+(agent?agent.completed+'/'+agent.total+' '+t_safe('已完成'):'—'),
-          t_safe('审查')+t_safe('：')+(reviewText||t_safe('未参与')),
-          t_safe('验证')+t_safe('：')+(verifyText||t_safe('未配置'))
-        ];
-        for(const dim of dims)evidence.append(this.node('span',dim,'team-delivery-dim'));
-        delivery.append(evidence);
-        const summary=run.delivery.resultSummary;
-        if(summary&&summary.text){
-          delivery.append(this.node('p',summary.text+(summary.truncated?t_safe('（已截断）'):''),'team-delivery-summary'));
-        }
-      }
+      delivery.append(this.node('strong',teamDeliveryLabel(run.deliveryStatus)));
+      renderTeamDeliveryEvidence(delivery,run.delivery,(tag,text,cls)=>this.node(tag,text,cls));
       if(run.deliveryStatus==='pending_review'){
         const actions=this.node('div',undefined,'team-delivery-actions');
         const accept=this.button(t_safe('接受成果'),()=>this.setDelivery('accepted'));accept.classList.add('primary');
-        const revise=this.button(t_safe('创建修订 Run'),()=>this.openRun&&this.openRun(team.id,run.id));
+        // 修订入口在 Run 页（三段流对话框），这里只负责带过去。
+        const revise=this.button(t_safe('去 Run 页修订'),()=>this.openRun&&this.openRun(team.id,run.id));
         const discard=this.button(t_safe('丢弃'),()=>{
           if(typeof window==='undefined'||window.confirm(t_safe('丢弃这份成果？执行记录仍会保留。')))this.setDelivery('discarded');
         });
@@ -334,6 +348,7 @@ class TeamChatController{
       if(this.deliveryError)delivery.append(this.node('p',this.deliveryError,'error'));
       card.append(delivery);
     }
+    if(this.refreshError)card.append(this.node('p',t_safe('刷新失败：')+this.refreshError,'error'));
     root.append(card);
   }
 }
@@ -461,4 +476,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={splitTeamActions,renderTeamActionsCard,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};
+if(typeof module!=='undefined')module.exports={splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,teamDeliveryLabel,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};

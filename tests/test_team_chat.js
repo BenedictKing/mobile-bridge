@@ -6,7 +6,7 @@ global.teamRunStatusLabel=status=>status;
 global.teamTaskStatusLabel=status=>status;
 global.TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 global.BridgeI18n={agentLabel:kind=>kind};
-const {splitTeamActions,renderTeamActionsCard,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages}=require('../web/team-chat.js');
+const {splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages}=require('../web/team-chat.js');
 
 class FakeNode{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.style={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
@@ -193,7 +193,8 @@ test('delivery card renders the four evidence dimensions separately',async()=>{
   },openRun(){}});
   controller.setTeams(teams);controller.open(teams[0]);await flush();
   const dims=find(root,'team-delivery-dim');
-  assert.equal(dims.length,3);
+  assert.equal(dims.length,4);
+  assert.match(dims[3].textContent,/待回答问题：1/);
   assert.match(dims[0].textContent,/Agent：2\/3 已完成/);
   assert.match(dims[1].textContent,/审查：已通过/);
   assert.match(dims[2].textContent,/验证：未通过/);
@@ -307,4 +308,28 @@ test('lead action envelopes split into cards only when well formed',()=>{
   assert.match(text(card),/实现接口/);
   assert.match(text(card),/查看原文/);
   assert.match(text(card),/<team-actions>/,'原文保留在折叠区');
+});
+
+test('delivery evidence names isolated workspaces that are not merged',()=>{
+  const box=new FakeNode('div'),make=(tag,value,cls)=>{const node=new FakeNode(tag);if(value!==undefined)node.textContent=value;if(cls)node.className=cls;return node;};
+  renderTeamDeliveryEvidence(box,{agent:{completed:1,total:1},verify:{configured:false},pendingQuestions:0,
+    workspaces:[{workspaceId:'ws-1',taskId:'iso'}],resultSummary:{text:'',truncated:false}},make);
+  assert.match(text(box),/独立工作区：ws-1 \(iso\)/);
+  assert.match(text(box),/不会自动合入主工作区/);
+  assert.doesNotMatch(text(box),/待回答问题/,'没有待答问题时不显示该维度');
+});
+
+test('a failed refresh keeps the current workflow card',async()=>{
+  const run={id:'run-1',status:'running',version:1,tasks:[{id:'lead',memberId:'lead',status:'running'}]};
+  const root=new FakeNode('div');let fail=false;
+  const controller=new TeamChatController({root,request:async path=>{
+    if(fail)throw new Error('网关重启中');
+    if(path.endsWith('/runs'))return{runs:[{id:'run-1'}]};
+    return run;
+  },openRun(){}});
+  controller.setTeams(teams);controller.open(teams[0]);await flush();
+  assert.ok(find(root,'team-workflow-stations').length,'首次加载显示工作流卡');
+  fail=true;await controller.refreshRun(true);
+  assert.ok(find(root,'team-workflow-stations').length,'刷新失败不应退回首次引导');
+  assert.match(text(root),/刷新失败：网关重启中/);
 });

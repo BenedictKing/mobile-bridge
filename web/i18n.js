@@ -1716,7 +1716,13 @@ const en={
   "继续会重新运行验证命令。": "Continue reruns the verify command.",
   "处理账号或配置后，继续会重新派发停靠的任务。": "Fix the account or configuration, then Continue resends the parked tasks.",
   "失败的任务不会重试，依赖它的分支会终止。": "Failed tasks are not retried; branches that depend on them will stop.",
-  "继续会派发剩余可运行的任务。": "Continue dispatches the remaining runnable tasks."
+  "继续会派发剩余可运行的任务。": "Continue dispatches the remaining runnable tasks.",
+  "待回答问题": "Open questions",
+  "独立工作区：": "Isolated workspace: ",
+  "不会自动合入主工作区": "not merged into the main workspace automatically",
+  "刷新失败：": "Refresh failed: ",
+  "去 Run 页修订": "Revise on the run page",
+  "交付": "Delivery"
 };
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}

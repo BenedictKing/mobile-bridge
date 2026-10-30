@@ -172,6 +172,22 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	if actionEvidence.ResultSummary.Text != "lead-d1-0：汇总如下" {
 		t.Fatalf("混排结果应只留正文: %q", actionEvidence.ResultSummary.Text)
 	}
+	if actionEvidence.ResultSummary.Truncated {
+		t.Fatal("短结果不应标截断")
+	}
+
+	// 单任务结果超过 120 字：逐任务头被截，摘要必须标 truncated。
+	longRun := &team.Run{
+		ID: "run-ev-long", TeamID: teamID, Goal: "长结果", Status: team.RunCompleted,
+		DeliveryStatus: team.DeliveryPendingReview,
+		Tasks: []team.Task{{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Result: strings.Repeat("长", 130), Ordinal: 0}},
+	}
+	if err := env.store.SaveRun(longRun); err != nil {
+		t.Fatal(err)
+	}
+	if long := fetchDeliveryEvidence(t, env, teamID, longRun.ID); !long.ResultSummary.Truncated {
+		t.Fatalf("逐任务头被截时摘要应标 truncated: %+v", long.ResultSummary)
+	}
 
 	// 评审任务 completed：无裁决标记 → unknown（Agent 完成不替代 Review 通过）；
 	// 显式 failed 裁决 → failed。
