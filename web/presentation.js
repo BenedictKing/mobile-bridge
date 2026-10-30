@@ -1,7 +1,7 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
+  const defaults={theme:'system',accent:'#38450f',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
     return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
@@ -62,7 +62,7 @@ if(typeof document!=='undefined')(()=>{
     root.style.setProperty('--soft',settings.accent+(dark?'29':'12'));
     root.style.setProperty('--message-size',settings.fontSize+'px');
     root.style.setProperty('--code-size',settings.codeSize+'px');
-    document.querySelector('meta[name="theme-color"]').content=dark?'#111216':'#f3f5f8';
+    document.querySelector('meta[name="theme-color"]').content=dark?'#121310':'#ecebe7';
     try{window.MobileBridgeNative?.setTheme(dark);}catch{}
     for(const [id,value] of Object.entries({theme:settings.theme,accent:settings.accent,font:settings.fontSize,code:settings.codeSize,density:settings.density}))get('appearance-'+id).value=value;
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';

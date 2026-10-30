@@ -20,12 +20,13 @@ function renderChapters(){
 function setLanguage(value,persist=false){
   language=value==='en'?'en':'zh';document.documentElement.lang=language==='en'?'en':'zh-CN';
   for(const item of translations)item.node.textContent=item[language];
+  document.querySelector('.hero h1').innerHTML=language==='en'?'Your workspace.<br>Beyond your desk.':'你的工作台，<br>不止在电脑前。';
   for(const item of attributes)item.node.setAttribute(item.name,item[language]);
   languageButtons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===language)));
   document.querySelectorAll('[data-doc-link]').forEach(link=>link.href=language==='en'?repo+'/blob/main/README_EN.md':repo);
   document.querySelectorAll('[data-setup-link]').forEach(link=>{const url=new URL(link.href);url.searchParams.set('lang',language);link.href=url;});
-  const title=language==='en'?'Mobile / Bridge | Your workspace, across screens':'Mobile / Bridge｜随身接力你的 Codex 工作台';
-  const description=language==='en'?'Explore the v2.0 remote workbench for Web, Android and iOS. Try interactive demos of chat, files, terminal, Git and side chats.':'从手机 Web、Android、iOS 和电脑浏览器继续 Codex 工作。体验 v2.0 文件、终端、Git、侧边聊天与分屏工作台的交互演示。';
+  const title=language==='en'?'Mobile / Bridge | Your multi-agent workspace, across screens':'Mobile / Bridge｜随身接力你的多 Agent 工作台';
+  const description=language==='en'?'Continue Codex, Kimi, Claude and other agent work from mobile Web, Android, iOS and desktop browsers. Try chat, files, terminal, Git and side chats.':'从手机 Web、Android、iOS 和电脑浏览器继续 Codex、Kimi、Claude 等多 Agent 工作。体验文件、终端、Git、侧边聊天与分屏工作台。';
   document.title=title;document.querySelector('meta[name=description]').content=description;document.querySelector('meta[property="og:title"]').content=title;document.querySelector('meta[property="og:description"]').content=description;
   const canonical='https://BenedictKing.github.io/mobile-bridge/'+(language==='en'?'?lang=en':'');
   document.querySelector('link[rel=canonical]').href=canonical;document.querySelector('meta[property="og:url"]').content=canonical;
@@ -85,3 +86,16 @@ document.querySelectorAll('[data-demo-jump]').forEach(b=>b.onclick=()=>showDemoS
 demoFrame.onload=refreshExperience;
 window.addEventListener('message',e=>{if(e.source!==demoFrame.contentWindow||e.origin!=='null'||e.data?.type!=='bridge-demo-handoff')return;selectDevice('ios','chat');});
 selectDevice('ios');
+
+document.documentElement.classList.add('js');
+if(!matchMedia('(prefers-reduced-motion: reduce)').matches&&'IntersectionObserver'in window){
+ const groups=[['.section-head','rise'],['.v2-feature','rise'],['.mobile-feature-grid article','rise'],['.preview-install-grid article','rise'],['.capability','rise'],['.faq details','rise'],['.support>*','rise'],['.media-shell','settle'],['.account-gallery figure','settle'],['.steps li','slide'],['.download','slide']];
+ const items=[];
+ for(const [selector,mode]of groups)document.querySelectorAll(selector).forEach((node,i)=>{if(node.dataset.reveal)return;node.dataset.reveal=mode;node.style.setProperty('--delay',(i%4)*70+'ms');items.push(node);});
+ const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){entry.target.classList.add('is-in');observer.unobserve(entry.target);}},{rootMargin:'0px 0px -10% 0px',threshold:.08});
+ items.forEach(node=>observer.observe(node));
+ const heroMedia=document.querySelector('.hero-media');
+ const syncHeroMotion=()=>heroMedia.classList.toggle('is-paused',document.hidden||!heroMedia.isIntersecting);
+ new IntersectionObserver(entries=>{heroMedia.isIntersecting=entries[0].isIntersecting;syncHeroMotion();}).observe(heroMedia);
+ document.addEventListener('visibilitychange',syncHeroMotion);
+}

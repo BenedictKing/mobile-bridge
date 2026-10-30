@@ -1,21 +1,21 @@
 /* Web appearance and compact conversation layout. */
 :root {
   color-scheme: light;
-  --frame: #f3f5f8;
+  --frame: #ecebe7;
   --page: #ffffff;
-  --surface: #f5f6f8;
+  --surface: #f1f2eb;
   --raised: #ffffff;
-  --active: #e9edf4;
-  --text: #20242c;
-  --muted: #626975;
-  --line: #e3e6ec;
-  --control: #cbd1dc;
-  --user: #edf1f7;
-  --code: #f3f4f6;
-  --accent: #4664ed;
+  --active: #e4e7db;
+  --text: #283210;
+  --muted: #5d683a;
+  --line: #dfe3d6;
+  --control: #c4cbb6;
+  --user: #edf0e4;
+  --code: #f1f2eb;
+  --accent: #38450f;
   --accent-ink: #ffffff;
-  --green: #405bdc;
-  --soft: #edf0fc;
+  --green: #38450f;
+  --soft: #e8ecdc;
   --warning-bg: #fff7e6;
   --warning-text: #765514;
   --warning-line: #e7d5aa;
@@ -27,24 +27,26 @@
   --safe-area-top: 0px;
   color: var(--text);
   background: var(--frame);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 @media (display-mode:standalone){:root{--safe-area-top:env(safe-area-inset-top)}}
 :root[data-theme=dark] {
   color-scheme: dark;
-  --frame: #111216;
-  --page: #191a1f;
-  --surface: #22242a;
-  --raised: #24262d;
-  --active: #2c303a;
-  --text: #ececf1;
-  --muted: #a8adba;
-  --line: #32353e;
-  --control: #4b505d;
-  --user: #292d36;
-  --code: #22242a;
-  --green: #9aafff;
-  --soft: #292f49;
+  --frame: #121310;
+  --page: #1a1c17;
+  --surface: #252820;
+  --raised: #24271f;
+  --active: #303529;
+  --text: #f1f3ea;
+  --muted: #b2b8a5;
+  --line: #34382e;
+  --control: #515849;
+  --user: #2b3023;
+  --code: #22251d;
+  --accent: #c3d491;
+  --accent-ink: #1a1c17;
+  --green: #c3d491;
+  --soft: #303827;
   --warning-bg: #332c20;
   --warning-text: #e0be79;
   --warning-line: #665234;
@@ -274,7 +276,7 @@ main{background:var(--page);overflow:hidden}
 .accent-options{display:flex;align-items:center;gap:10px;clear:both}
 .accent-swatch{appearance:none;-webkit-appearance:none;width:32px;min-width:32px;max-width:32px;height:32px;min-height:32px;max-height:32px;aspect-ratio:1;padding:0;border-radius:50%;border:4px solid var(--page);box-shadow:0 0 0 1px var(--control);flex:none;overflow:hidden;touch-action:manipulation}
 .accent-swatch[aria-pressed=true]{box-shadow:0 0 0 2px var(--accent)}
-.accent-swatch[data-accent="#4664ed"]{background:#4664ed}.accent-swatch[data-accent="#24836b"]{background:#24836b}.accent-swatch[data-accent="#9565d6"]{background:#9565d6}.accent-swatch[data-accent="#d77b37"]{background:#d77b37}
+.accent-swatch[data-accent="#38450f"]{background:#38450f}.accent-swatch[data-accent="#4664ed"]{background:#4664ed}.accent-swatch[data-accent="#24836b"]{background:#24836b}.accent-swatch[data-accent="#9565d6"]{background:#9565d6}.accent-swatch[data-accent="#d77b37"]{background:#d77b37}
 .picker .custom-accent{display:flex;align-items:center;gap:8px;margin:0 0 0 auto;font-size:12px;color:var(--muted)}
 .custom-accent input[type=color]{width:32px;height:32px;padding:3px;margin:0;border-radius:8px;cursor:pointer}
 .picker .range-label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0 6px}
@@ -561,3 +563,31 @@ body:not(:has(#app:not([hidden]))) .gateway-entry{display:none}
 .settings-disclosure-body>.settings-subsection:first-child{margin-top:0;padding-top:0;border-top:0}
 .settings-disclosure-body>.settings-subsection:last-child{margin-bottom:0}
 .settings-disclosure-body>.appearance-grid{clear:both}
+.phone-header{min-height:48px;padding-top:6px;padding-bottom:6px}
+.phone-header .wordmark,.phone-header .light{font-size:14px;letter-spacing:0}
+.login-product{display:flex;align-items:center;gap:16px}
+.login-slash{font-size:72px;font-weight:500;line-height:.8;letter-spacing:-.08em;color:var(--green)}
+.login-product p{margin:0;font-size:20px;font-weight:500;line-height:1.25;letter-spacing:-.02em}
+.login-product small{display:block;margin-top:12px;max-width:38ch;color:var(--muted);font-size:11px;line-height:1.7}
+.login-card{background:var(--page)}
+#welcome-new-chat{min-height:44px;margin-top:12px;padding:10px 18px}
+.welcome-note{margin-top:24px;font-size:12px;max-width:34ch}
+.welcome-symbol{display:none}
+@media(min-width:721px){
+  .login{position:relative;width:min(1080px,100%);margin:auto;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:72px;align-items:center;padding:48px 32px 80px}
+  .login-product{display:block}
+  .login-slash{display:block;font-size:180px}
+  .login-product p{font-size:32px;max-width:12ch}
+  .login-product small{font-size:12px;margin-top:24px}
+  .login-card{max-width:none;margin:0;padding:36px;border:1px solid var(--line);border-radius:16px}
+  .login-foot{position:absolute;right:0;bottom:28px;left:0}
+  .welcome{display:grid;grid-template-columns:180px minmax(0,400px);gap:48px;align-content:center;max-width:880px;margin:auto;padding:48px;text-align:left}
+  .welcome-symbol{display:block;font-size:180px;font-weight:500;line-height:.8;letter-spacing:-.08em;color:var(--green)}
+  .welcome-content .large{width:56px;height:56px}
+}
+@media(max-width:720px){
+  .login-product{margin:16px 0 0}
+  .login-card{padding:32px 0;background:transparent}
+  .login-product small{max-width:30ch}
+  .welcome-content{display:flex;flex-direction:column;align-items:center}
+}

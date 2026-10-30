@@ -270,7 +270,7 @@ function renderList(){
       clear.onclick=()=>{$('search').value='';loadList(true).catch(e=>toast(e.message));};
       empty.append(clear);
     }else{
-      empty.append(el('strong','',t('还没有聊天')),el('p','',t('在电脑的 Codex 里开始一条聊天，或点右上角「＋ 新建」。')));
+      empty.append(el('strong','',t('还没有聊天')),el('p','',t('在电脑上的 Agent 里开始一条聊天，或点右上角「＋ 新建」。')));
       const fresh=el('button','plain',t('＋ 新建聊天'));fresh.type='button';
       fresh.onclick=()=>$('new-chat').click();
       empty.append(fresh);
@@ -348,6 +348,7 @@ function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agen
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 $('new-chat').onclick=()=>openNewChat();
+$('welcome-new-chat').onclick=()=>openNewChat();
 // preferred 是项目分组头“＋”传入的组内最近会话行：优先于当前打开的聊天，
 // 用于预选项目（cwd 匹配）与 Agent。
 async function openNewChat(preferred){
