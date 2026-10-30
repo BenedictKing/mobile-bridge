@@ -1070,7 +1070,7 @@ func TestTeamsWatcherInterruptedTurnNotCompleted(t *testing.T) {
 	// 先制造运行中 turn，再创建 Run，避免 watcher 与回合创建的时序竞争。
 	teamRow := env.store.Team(teamID)
 	sentText := team.BuildLeadBriefing(teamRow, &team.Run{AutoPlan: true},
-		&team.Task{ID: "lead", MemberID: "lead"}, teamRow.Policy) + taskPrompt
+		&team.Task{ID: "lead", MemberID: "lead"}, teamRow.Policy) + "[Assigned task]\n" + taskPrompt
 	if err := env.session.PromptWithBlocks(sentText, nil, 60*time.Second); err != nil {
 		t.Fatalf("制造运行中 turn 失败: %v", err)
 	}

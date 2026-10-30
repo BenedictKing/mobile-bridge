@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
 // listReadCap bounds how much of one transcript's head is scanned for the
@@ -104,8 +105,11 @@ func readSessionRow(path, fallbackID string) *jsoncompat.Object {
 					title = strings.TrimSpace(entry.AiTitle)
 				}
 				if title == "" && entry.Type == "message" && entry.Role == "user" {
+					// The first user rows can be local-command caveats/echoes or a Team
+					// envelope; blocks that clean to "" are skipped so the scan reaches
+					// the first real prompt.
 					for _, block := range entry.Content {
-						if text := strings.TrimSpace(block.Text); text != "" {
+						if text := textutil.TitleFromText(block.Text); text != "" {
 							title = text
 							break
 						}

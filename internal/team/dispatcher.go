@@ -338,8 +338,13 @@ type composedTaskMessage struct {
 func composeTaskDispatchMessage(team *Team, run *Run, task *Task, policy TeamPolicy) composedTaskMessage {
 	context := BuildTaskContext(run, task, policy)
 	briefing := BuildLeadBriefing(team, run, task, policy) + BuildReviewBriefing(team, task)
+	message := ComposeTaskMessage(context.Text, task.Prompt)
+	if briefing != "" && context.Text == "" {
+		// 简报后无依赖上下文时也补 [Assigned task] 头：会话标题清洗（textutil）与人工阅读都靠它切出真实任务。
+		message = assignedTaskHeader + "\n" + task.Prompt
+	}
 	return composedTaskMessage{
-		text:        briefing + ComposeTaskMessage(context.Text, task.Prompt),
+		text:        briefing + message,
 		hashContext: briefing + context.Text,
 		context:     context,
 	}

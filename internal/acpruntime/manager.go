@@ -14,6 +14,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
 type Session struct {
@@ -422,7 +423,9 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 			if seenSessions[id] {
 				current, _ := rowsByID[id].MustGet("title").(string)
 				title, _ := row.MustGet("title").(string)
-				if strings.TrimSpace(current) == "" && strings.TrimSpace(title) != "" {
+				// A protocol-only title (e.g. a Lead briefing echoed by session/list)
+				// yields to a clean one from another source.
+				if strings.TrimSpace(textutil.CleanTitle(current)) == "" && strings.TrimSpace(textutil.CleanTitle(title)) != "" {
 					rowsByID[id].Set("title", title)
 				}
 				continue
@@ -439,7 +442,7 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 			}
 			title, updated := m.NativeMeta(id)
 			if title != "" {
-				if current, _ := row.MustGet("title").(string); strings.TrimSpace(current) == "" {
+				if current, _ := row.MustGet("title").(string); strings.TrimSpace(textutil.CleanTitle(current)) == "" {
 					row.Set("title", title)
 				}
 			}

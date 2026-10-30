@@ -101,7 +101,7 @@ func readSessionRow(workspaceDir, sessionID string) (*jsoncompat.Object, int64) 
 		}
 		row := jsoncompat.NewObject()
 		row.Set("sessionId", sessionID)
-		title := state.Title
+		title := textutil.CleanTitle(state.Title)
 		if strings.TrimSpace(title) == "" {
 			title = readTitleFromWire(filepath.Join(workspaceDir, sessionID, "agents", "main", "wire.jsonl"))
 		}

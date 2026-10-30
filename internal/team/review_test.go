@@ -3,6 +3,8 @@ package team
 import (
 	"strings"
 	"testing"
+
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
 func reviewTestTeam() *Team {
@@ -103,5 +105,26 @@ func TestExtractResultCarriesReviewVerdictBeforeTruncation(t *testing.T) {
 	result := ExtractResult("s-rev", turn, 10)
 	if !result.Truncated || result.ReviewVerdict != ReviewVerdictPassed {
 		t.Fatalf("截断前解析裁决: truncated=%v verdict=%q", result.Truncated, result.ReviewVerdict)
+	}
+}
+
+// 派发文本经会话标题清洗（textutil.TitleFromText）后应是真实任务：钉住
+// textutil 里复制的信封字面量与本包常量同步。
+func TestDispatchTextTitleIsAssignedTask(t *testing.T) {
+	team := reviewTestTeam()
+	run := &Run{ID: "r1", TeamID: team.ID, AutoPlan: true, Tasks: []Task{
+		{ID: "lead", MemberID: "lead", Prompt: "实现头像上传"},
+		{ID: "review", MemberID: "rev", Prompt: "审查头像上传"},
+		{ID: "impl", MemberID: "dev", Prompt: "写接口", DependsOn: []string{"lead"}},
+	}}
+	run.Tasks[0].Status, run.Tasks[0].Result = TaskCompleted, "规划完成"
+	for i, want := range []string{"实现头像上传", "审查头像上传", "写接口"} {
+		text := composeTaskDispatchMessage(team, run, &run.Tasks[i], team.Policy).text
+		if got := textutil.TitleFromText(text); got != want {
+			t.Fatalf("任务 %s 的派发文本标题应为 %q，得到 %q\n%s", run.Tasks[i].ID, want, got, text)
+		}
+		if strings.Count(text, assignedTaskHeader) != 1 {
+			t.Fatalf("任务 %s 的派发文本应恰有一个 [Assigned task] 头:\n%s", run.Tasks[i].ID, text)
+		}
 	}
 }

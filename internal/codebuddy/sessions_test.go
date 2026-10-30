@@ -77,3 +77,33 @@ func TestListSessionsMissingStoreIsEmpty(t *testing.T) {
 		t.Fatalf("rows = %v", rows)
 	}
 }
+
+func TestListSessionsSkipsProtocolTitles(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(ProjectsDir(home), "Users-test-work-demo")
+	writeTranscript(t, filepath.Join(dir, "sess-caveat.jsonl"),
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"<system-reminder data-role=\"command-caveat\">Caveat: local command.</system-reminder>"}],"cwd":"/work/demo"}
+{"type":"message","role":"user","content":[{"type":"input_text","text":"<command-name>/status</command-name>"}],"cwd":"/work/demo"}
+{"type":"message","role":"user","content":[{"type":"input_text","text":"修复列表标题"}],"cwd":"/work/demo"}
+`)
+	writeTranscript(t, filepath.Join(dir, "sess-only-protocol.jsonl"),
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"<local-command-stdout>ok</local-command-stdout>"}],"cwd":"/work/demo"}
+`)
+	writeTranscript(t, filepath.Join(dir, "sess-team.jsonl"),
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"[Team context]\n来源成员：lead\n\n[Assigned task]\n只读检查交付语义"}],"cwd":"/work/demo"}
+`)
+	titles := map[string]any{}
+	for _, row := range ListSessions(home) {
+		id, _ := row.MustGet("sessionId").(string)
+		titles[id] = row.MustGet("title")
+	}
+	if titles["sess-caveat"] != "修复列表标题" {
+		t.Fatalf("caveat/command rows must be skipped: %v", titles["sess-caveat"])
+	}
+	if titles["sess-only-protocol"] != nil {
+		t.Fatalf("protocol-only transcript must carry no title: %v", titles["sess-only-protocol"])
+	}
+	if titles["sess-team"] != "只读检查交付语义" {
+		t.Fatalf("team envelope title must be the assigned task: %v", titles["sess-team"])
+	}
+}

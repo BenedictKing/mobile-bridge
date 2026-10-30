@@ -39,6 +39,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
 )
@@ -1161,6 +1162,9 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 				for _, row := range rows {
 					id, _ := row.MustGet("sessionId").(string)
 					title, _ := row.MustGet("title").(string)
+					// Agent-generated titles (kimi state.json, ACP session/list) may echo
+					// protocol text; clean before search filtering and the 未命名聊天 fallback.
+					title = textutil.CleanTitle(title)
 					cwd, _ := row.MustGet("cwd").(string)
 					if id == "" || h.server.hiddenSession(id) || (text != "" && !strings.Contains(strings.ToLower(title+" "+cwd), strings.ToLower(text))) {
 						continue
