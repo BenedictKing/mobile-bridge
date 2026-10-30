@@ -4,6 +4,57 @@ function teamSubmissionFields(mode,teamID){
   return mode==='direct'?{teamMode:'direct'}:{teamMode:'team',teamId:teamID};
 }
 
+// Lead 动作信封（internal/team/actions.go §5.1）是编排协议，不是给人读的正文：
+// 只把成对、位于代码围栏之外、且能解析成 {actions:[...]} 的块切成 action 片段，
+// 流式半截块、围栏里的协议示例与解析失败的块一律保持原文（与网关「只认合法
+// 块」同口径，宁可原样显示也不误吞正文）。
+function splitTeamActions(text){
+  const source=String(text||''),open='<team-actions>',close='</team-actions>',parts=[];
+  let cursor=0;
+  while(cursor<source.length){
+    const start=source.indexOf(open,cursor);
+    if(start<0)break;
+    const end=source.indexOf(close,start+open.length);
+    if(end<0)break;
+    const fences=(source.slice(0,start).match(/^[ \t]*(```|~~~)/gm)||[]).length;
+    const raw=source.slice(start,end+close.length);
+    let actions=null;
+    if(fences%2===0){
+      try{const value=JSON.parse(source.slice(start+open.length,end));if(value&&Array.isArray(value.actions))actions=value.actions;}catch{}
+    }
+    if(!actions){cursor=end+close.length;continue;}
+    if(start>0||parts.length)parts.push({type:'text',text:source.slice(parts.length?parts[parts.length-1].end:0,start)});
+    parts.push({type:'actions',actions,raw,end:end+close.length});
+    cursor=end+close.length;
+  }
+  if(!parts.length)return[{type:'text',text:source}];
+  const tail=source.slice(parts[parts.length-1].end);
+  if(tail)parts.push({type:'text',text:tail});
+  return parts.filter(part=>part.type==='actions'||part.text.trim());
+}
+
+const TEAM_ACTIONS_CARD_LABELS={delegate:'委派任务',request_context:'请求上下文',summarize:'请求汇总'};
+function renderTeamActionsCard(part,translate){
+  const t=translate||(value=>value),make=(tag,text,className)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;};
+  const card=make('div',undefined,'team-actions-card');
+  card.append(make('strong',t('团队动作')+' · '+(part.actions.length?part.actions.length:t('无需委派'))));
+  if(part.actions.length){
+    const list=make('ul');
+    for(const action of part.actions){
+      const item=make('li');
+      item.append(make('span',t(TEAM_ACTIONS_CARD_LABELS[action&&action.type]||String(action&&action.type||'')),'team-actions-type'));
+      if(action&&action.member)item.append(make('span',String(action.member),'team-actions-member'));
+      if(action&&action.writeLock==='none')item.append(make('span',t('只读'),'team-actions-member'));
+      if(action&&action.task)item.append(make('p',String(action.task),'team-actions-task'));
+      list.append(item);
+    }
+    card.append(list);
+  }
+  const raw=make('details');raw.append(make('summary',t('查看原文')),make('pre',part.raw));
+  card.append(raw);
+  return card;
+}
+
 function teamWorkflowDependencies(task,byId){
   if(Array.isArray(task.dependsOn)&&task.dependsOn.length)return task.dependsOn;
   const match=/^(.*)-d\d+-\d+$/.exec(task.id||''),source=match&&byId.get(match[1]);
@@ -410,4 +461,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};
+if(typeof module!=='undefined')module.exports={splitTeamActions,renderTeamActionsCard,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};

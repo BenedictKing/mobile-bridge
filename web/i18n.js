@@ -1688,7 +1688,10 @@ const en={
   "App 连接": "App connection",
   "修改网关地址": "Change gateway address",
   "Android App 通过此 HTTPS 地址连接电脑，局域网可用时自动加速。": "The Android app reaches your computer at this HTTPS address and speeds up automatically on the same LAN.",
-  "无法连接电脑网关，请检查网络或确认电脑端正在运行。": "Can't reach the gateway. Check your network or make sure it is running on your computer."
+  "无法连接电脑网关，请检查网络或确认电脑端正在运行。": "Can't reach the gateway. Check your network or make sure it is running on your computer.",
+  "团队动作": "Team actions",
+  "无需委派": "No delegation",
+  "查看原文": "View raw"
 };
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}

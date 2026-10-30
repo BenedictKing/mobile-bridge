@@ -340,6 +340,14 @@
 .team-delivery>strong{font-size:12px;color:var(--green)}
 .team-delivery-evidence{display:flex;gap:6px 14px;flex-wrap:wrap;margin-top:8px}
 .team-delivery-dim{font-size:12px;color:var(--muted)}
+.team-actions-card{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:10px 12px;margin:0 0 14px;font-size:12px;white-space:normal}
+.team-actions-card>strong{display:block;font-size:12px;color:var(--green)}
+.team-actions-card ul{list-style:none;margin:8px 0 0;padding:0}.team-actions-card li{margin:6px 0;padding:0}
+.team-actions-type{display:inline-block;border-radius:6px;background:var(--soft);color:var(--green);padding:1px 6px;margin-right:6px}
+.team-actions-member{color:var(--muted);margin-right:6px}
+.team-actions-task{margin:4px 0 0;color:inherit;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.team-actions-card details{margin-top:8px;color:var(--muted)}.team-actions-card summary{cursor:pointer}
+.team-actions-card details pre{margin:6px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
 .team-delivery-summary{margin:8px 0 0;font-size:12px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
 .team-delivery-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .team-delivery-actions button{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--green);padding:8px 12px;font-size:12px}

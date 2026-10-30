@@ -164,7 +164,13 @@
         }
       }
     }
-    appendTokens(markdown.parse(String(text || ''), {}), body);
+    // Lead 动作信封渲染成折叠卡片（team-chat.js splitTeamActions，只认合法块）；
+    // 其余正文照常走 Markdown。代码块序号跨片段连续，复制按钮仍对齐全文围栏。
+    const parts = typeof splitTeamActions === 'function' ? splitTeamActions(text) : [{type:'text', text:String(text || '')}];
+    for (const part of parts) {
+      if (part.type === 'actions') body.append(renderTeamActionsCard(part, t));
+      else appendTokens(markdown.parse(part.text, {}), body);
+    }
     node.append(body);
   };
 })();

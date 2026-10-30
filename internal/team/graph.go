@@ -214,18 +214,19 @@ func graphAggregateStatus(tasks []*Task) string {
 // 截断或摘要再截断时为 true（用户据此知道看到的不是全文）。无结果返回
 // found=false。
 func graphResultHead(task *Task) (string, bool, bool) {
-	if task == nil || task.Result == "" {
+	if task == nil {
 		return "", false, false
 	}
-	runes := []rune(task.Result)
-	truncated := false
-	if len(runes) > graphResultHeadRunes {
-		truncated = true
+	// 只含动作块的 Lead 结果没有可读正文：视为无结果，节点回退链上更早的结果。
+	text := ResultDisplayText(task.Result)
+	if text == "" {
+		return "", false, false
 	}
+	truncated := len([]rune(text)) > graphResultHeadRunes
 	if task.ResultDetail != nil && task.ResultDetail.Truncated {
 		truncated = true
 	}
-	return truncateRunes(task.Result, graphResultHeadRunes), truncated, true
+	return truncateRunes(text, graphResultHeadRunes), truncated, true
 }
 
 // graphLayers 按 Kahn 算法分层：节点入层当且仅当其（节点集内的）依赖全部

@@ -723,6 +723,12 @@ func stripActionBlocks(text string) string {
 	}
 }
 
+// ResultDisplayText 返回给人看的结果正文：剥离成对动作块并去首尾空白（交付
+// 摘要、阶段图预览等投影共用；动作本身由 Lead 动作列表单独展示）。
+func ResultDisplayText(text string) string {
+	return strings.TrimSpace(stripActionBlocks(text))
+}
+
 // ---- 动作执行（§5.2，阶段三 actions-exec）：判定与派生构造（纯函数）----
 //
 // 执行入口在 runner.go 的 passActions（loop 驱动）；本段只做可复判的决策：

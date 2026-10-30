@@ -151,6 +151,28 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 		t.Fatalf("失败任务不进结果摘要: %q", evidence.ResultSummary.Text)
 	}
 
+	// Lead 结果只有动作信封：不进摘要（协议 JSON 不是给人读的结果）；正文与
+	// 信封混排时只留正文。
+	envelope := "<team-actions>\n{\"actions\":[{\"type\":\"delegate\",\"member\":\"rev\",\"task\":\"审查\"}]}\n</team-actions>"
+	actionRun := &team.Run{
+		ID: "run-ev-actions", TeamID: teamID, Goal: "动作信封", Status: team.RunCompleted,
+		DeliveryStatus: team.DeliveryPendingReview,
+		Tasks: []team.Task{
+			{ID: "lead", MemberID: "lead", Status: team.TaskCompleted, Result: envelope, Ordinal: 0},
+			{ID: "lead-d1-0", MemberID: "lead", Status: team.TaskCompleted, Result: "汇总如下\n" + envelope, Ordinal: 1},
+		},
+	}
+	if err := env.store.SaveRun(actionRun); err != nil {
+		t.Fatal(err)
+	}
+	actionEvidence := fetchDeliveryEvidence(t, env, teamID, actionRun.ID)
+	if strings.Contains(actionEvidence.ResultSummary.Text, "team-actions") || strings.Contains(actionEvidence.ResultSummary.Text, "lead：") {
+		t.Fatalf("动作信封不应进入结果摘要: %q", actionEvidence.ResultSummary.Text)
+	}
+	if actionEvidence.ResultSummary.Text != "lead-d1-0：汇总如下" {
+		t.Fatalf("混排结果应只留正文: %q", actionEvidence.ResultSummary.Text)
+	}
+
 	// 评审任务 completed：无裁决标记 → unknown（Agent 完成不替代 Review 通过）；
 	// 显式 failed 裁决 → failed。
 	for _, tc := range []struct {

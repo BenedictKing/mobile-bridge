@@ -6,7 +6,7 @@ global.teamRunStatusLabel=status=>status;
 global.teamTaskStatusLabel=status=>status;
 global.TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 global.BridgeI18n={agentLabel:kind=>kind};
-const {TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages}=require('../web/team-chat.js');
+const {splitTeamActions,renderTeamActionsCard,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages}=require('../web/team-chat.js');
 
 class FakeNode{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.style={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
@@ -288,4 +288,23 @@ test('workflow member label does not say the agent name twice',()=>{
   assert.equal(teamWorkflowMemberLabel({id:'member-claude',agentKind:'claude'}),'member-claude · claude');
   assert.equal(teamWorkflowMemberLabel({}, {memberId:'member-1'}),'member-1');
   assert.equal(teamWorkflowMemberLabel({agentKind:'kimi'}),'kimi');
+});
+
+test('lead action envelopes split into cards only when well formed',()=>{
+  const envelope='<team-actions>\n{"actions":[{"type":"delegate","member":"dev","task":"实现接口","writeLock":"none"}]}\n</team-actions>';
+  assert.deepEqual(splitTeamActions('计划如下\n'+envelope+'\n完毕').map(part=>part.type),['text','actions','text']);
+  assert.deepEqual(splitTeamActions(envelope).map(part=>part.type),['actions']);
+  // 围栏里的协议示例、半截流式块、非法 JSON 都保持原文。
+  assert.deepEqual(splitTeamActions('```\n'+envelope+'\n```').map(part=>part.type),['text']);
+  assert.deepEqual(splitTeamActions('<team-actions>{"actions":[').map(part=>part.type),['text']);
+  assert.deepEqual(splitTeamActions('<team-actions>{bad}</team-actions>').map(part=>part.type),['text']);
+  const card=renderTeamActionsCard(splitTeamActions(envelope)[0]);
+  assert.equal(card.className,'team-actions-card');
+  assert.match(text(card),/团队动作 · 1/);
+  assert.match(text(card),/委派任务/);
+  assert.match(text(card),/dev/);
+  assert.match(text(card),/只读/);
+  assert.match(text(card),/实现接口/);
+  assert.match(text(card),/查看原文/);
+  assert.match(text(card),/<team-actions>/,'原文保留在折叠区');
 });

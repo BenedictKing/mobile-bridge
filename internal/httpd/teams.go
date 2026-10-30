@@ -2370,7 +2370,7 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 			if task.ResultDetail != nil {
 				resultText = firstNonEmpty(task.Result, task.ResultDetail.Result)
 			}
-			if head := truncateSubText(resultText, 120); head != "" {
+			if head := truncateSubText(team.ResultDisplayText(resultText), 120); head != "" {
 				heads = append(heads, task.ID+"："+head)
 			}
 		}

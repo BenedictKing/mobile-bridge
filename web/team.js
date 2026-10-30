@@ -1609,7 +1609,11 @@ class TeamRunScreen{
       resultHead.append(this.node('span',chars+' '+t('字符'),'muted'));
       if(result.truncated)resultHead.append(this.node('span',t('已截断'),'team-truncated'));
       box.append(resultHead);
-      if(result.result)box.append(this.node('pre',result.result,'task-result-text'));
+      // Lead 结果里的动作信封折叠为卡片（与聊天时间线同一解析），正文仍按原文 pre 展示。
+      if(result.result){
+        const parts=typeof splitTeamActions==='function'?splitTeamActions(result.result):[{type:'text',text:result.result}];
+        for(const part of parts)box.append(part.type==='actions'?renderTeamActionsCard(part,t):this.node('pre',part.text.trim(),'task-result-text'));
+      }
       card.append(box);
     }
     const actions=this.node('div',undefined,'task-actions');

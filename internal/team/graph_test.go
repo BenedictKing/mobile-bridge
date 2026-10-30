@@ -181,6 +181,22 @@ func TestBuildRunGraphResultHeadBounded(t *testing.T) {
 	}
 }
 
+func TestBuildRunGraphResultHeadStripsActionBlocks(t *testing.T) {
+	envelope := "<team-actions>\n{\"actions\":[{\"type\":\"delegate\",\"member\":\"dev\",\"task\":\"实现\"}]}\n</team-actions>"
+	run := &Run{ID: "r1", TeamID: "t1", Status: RunCompleted, Tasks: []Task{
+		{ID: "only", MemberID: "lead", Status: TaskCompleted, Result: envelope},
+		{ID: "mixed", MemberID: "lead", Status: TaskCompleted, Result: "先说明计划\n" + envelope + "\n"},
+	}}
+	graph := BuildRunGraph(run, graphTestTeam())
+	// 只含动作块的结果没有可读正文：不出摘要，绝不把协议 JSON 当预览。
+	if node := graphNodeOf(t, graph, "only"); node.ResultHead != "" || node.Truncated {
+		t.Fatalf("纯动作块结果不应产出摘要: %+v", node)
+	}
+	if node := graphNodeOf(t, graph, "mixed"); node.ResultHead != "先说明计划" {
+		t.Fatalf("摘要应剥离动作块只留正文: %q", node.ResultHead)
+	}
+}
+
 func TestBuildRunGraphUnknownDependencySkipped(t *testing.T) {
 	run := &Run{ID: "r1", TeamID: "t1", Status: RunDispatching, Tasks: []Task{
 		{ID: "a", MemberID: "lead", Status: TaskPlanned, DependsOn: []string{"ghost", "a"}},
