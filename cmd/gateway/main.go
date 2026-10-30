@@ -985,6 +985,11 @@ func runGateway(args []string) {
 		manager.NativeList = func() []*jsoncompat.Object {
 			return kimi.ListSessions(kimiHome)
 		}
+		// Kimi Code rewrites state.json's updatedAt on every session/load, so
+		// the startup preload restamped the recent chats as just-used after
+		// each restart. The wire transcript's last event time is the real
+		// last interaction; read-only, never touches the CLI.
+		manager.NativeMeta = kimi.MetaReader(kimiHome)
 		retries := kimi.NewRetrySource(kimiHome)
 		manager.RetryStatus = retries.Status
 	}

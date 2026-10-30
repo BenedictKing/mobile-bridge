@@ -1129,3 +1129,79 @@ for line in sys.stdin:
 		t.Fatalf("user attachment=%v", attachment)
 	}
 }
+
+// The first native fold after a load re-presents existing conversation state
+// (title, desktop-driven history); like the load replay itself it must not
+// stamp the list recency — otherwise the startup preload restamps every
+// recently opened chat and the list floats them to the top after a restart.
+func TestNativeFoldAfterLoadDoesNotRefreshListRecency(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/load": result={"sessionId":"sess-existing"}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	manager.Native = func(string) (*acpview.NativeSnapshot, error) {
+		return &acpview.NativeSnapshot{Title: "Desktop title"}, nil
+	}
+	loaded, err := manager.Open("sess-existing", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Title != "Desktop title" {
+		t.Fatalf("first native fold did not apply the title: %q", loaded.Title)
+	}
+	if recency := loaded.LastActivity(); recency != 0 {
+		t.Fatalf("first native fold changed list recency to %d", recency)
+	}
+	// Real post-load activity still advances recency.
+	message := jsoncompat.NewObject()
+	message.Set("method", "session/update")
+	params := jsoncompat.NewObject()
+	params.Set("sessionId", "sess-existing")
+	update := jsoncompat.NewObject()
+	update.Set("sessionUpdate", "agent_message_chunk")
+	content := jsoncompat.NewObject()
+	content.Set("type", "text")
+	content.Set("text", "new activity")
+	update.Set("content", content)
+	params.Set("update", update)
+	message.Set("params", params)
+	loaded.onNotification(message)
+	if recency := loaded.LastActivity(); recency == 0 {
+		t.Fatal("post-load activity did not update list recency")
+	}
+}
+
+// The idle sweeper closes evicted handles through the same markProcessClosed
+// path a dying process takes; closing must not restamp the list recency as
+// if the session had just been used.
+func TestCloseDoesNotRefreshListRecency(t *testing.T) {
+	stale := time.Now().Add(-time.Hour)
+	session := &Session{
+		ID:     "sess-closing",
+		View:   acpview.NewView("sess-closing", nil, "/work", func() float64 { return 0 }),
+		changed: make(chan struct{}),
+		interactionReady: true,
+		lastInteraction:  stale,
+	}
+	session.markProcessClosed()
+	session.mu.Lock()
+	stamped := session.lastInteraction
+	session.mu.Unlock()
+	if !stamped.Equal(stale) {
+		t.Fatalf("closing the handle moved the list recency from %v to %v", stale, stamped)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -192,6 +193,155 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// metaIndexTTL bounds how long one session-id → wire map serves lookups
+// before the sessions tree is re-enumerated. A list refresh asks for every
+// row in one burst; the TTL keeps that at a single readdir pass.
+const metaIndexTTL = 30 * time.Second
+
+// MetaReader returns a resolver for (title, last interaction in ms) keyed by
+// session id. Kimi Code rewrites state.json's updatedAt on every
+// session/load — the gateway's startup preload issues one per recent chat and
+// so does opening a chat on the phone — so rows built from that file floated
+// to the top of the list after each restart. The wire transcript is not
+// touched by a load and its last timestamped event is the real last
+// interaction. Titles stay empty: state.json already carries them.
+func MetaReader(home string) func(sessionID string) (string, int64) {
+	index := &wireIndex{root: filepath.Join(home, "sessions")}
+	return func(sessionID string) (string, int64) {
+		if sessionID == "" || strings.ContainsAny(sessionID, `/\`) {
+			return "", 0
+		}
+		return "", lastWireTimeMs(index.resolve(sessionID))
+	}
+}
+
+// wireIndex maps session ids to their agents/main/wire.jsonl transcript.
+// Workspace directories group sessions by project; a session belongs to one
+// workspace, but a relocated project can leave copies behind — newest mtime
+// wins, mirroring the claude transcript index.
+type wireIndex struct {
+	root  string
+	mu    sync.Mutex
+	at    time.Time
+	files map[string]string
+}
+
+func (i *wireIndex) resolve(sessionID string) string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.files == nil || time.Since(i.at) > metaIndexTTL {
+		i.rebuild()
+	}
+	return i.files[sessionID]
+}
+
+func (i *wireIndex) rebuild() {
+	i.files = map[string]string{}
+	i.at = time.Now()
+	newest := map[string]time.Time{}
+	workspaces, err := os.ReadDir(i.root)
+	if err != nil {
+		return
+	}
+	for _, workspace := range workspaces {
+		if !workspace.IsDir() || strings.HasPrefix(workspace.Name(), ".") {
+			continue
+		}
+		sessions, err := os.ReadDir(filepath.Join(i.root, workspace.Name()))
+		if err != nil {
+			continue
+		}
+		for _, session := range sessions {
+			if !session.IsDir() {
+				continue
+			}
+			wire := filepath.Join(i.root, workspace.Name(), session.Name(), "agents", "main", "wire.jsonl")
+			info, err := os.Lstat(wire)
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			if known, ok := newest[session.Name()]; ok && !info.ModTime().After(known) {
+				continue
+			}
+			newest[session.Name()] = info.ModTime()
+			i.files[session.Name()] = wire
+		}
+	}
+}
+
+const (
+	wireTailFirstScan = 64 << 10
+	wireTailMaxScan   = 4 << 20
+)
+
+// lastWireTimeMs walks a wire transcript's tail backwards for the newest
+// event carrying a time. session/load appends nothing here, so the value
+// only moves on real conversation traffic. 0 when the transcript is missing
+// or holds no time at all, leaving the row's own fields in place.
+func lastWireTimeMs(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return 0
+	}
+	size := info.Size()
+	for window := int64(wireTailFirstScan); ; window *= 4 {
+		if window > size {
+			window = size
+		}
+		buffer := make([]byte, window)
+		if _, err := file.ReadAt(buffer, size-window); err != nil && err != io.EOF {
+			return 0
+		}
+		if ms := scanLastWireTime(buffer, window < size); ms > 0 {
+			return ms
+		}
+		if window >= size || window >= wireTailMaxScan {
+			return 0
+		}
+	}
+}
+
+// scanLastWireTime parses complete lines of a tail buffer from the end. The
+// leading element may be an event cut at the window edge; skip it unless the
+// buffer starts the file.
+func scanLastWireTime(buffer []byte, partialFirst bool) int64 {
+	lines := bytes.Split(buffer, []byte{'\n'})
+	start := 0
+	if partialFirst {
+		start = 1
+	}
+	end := len(lines)
+	if end > start && len(lines[end-1]) == 0 {
+		end--
+	}
+	for index := end - 1; index >= start; index-- {
+		line := lines[index]
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		var record struct {
+			Time any `json:"time"`
+		}
+		if decoder.Decode(&record) != nil {
+			continue
+		}
+		if ms := parseSessionTime(record.Time); ms > 0 {
+			return ms
+		}
+	}
+	return 0
 }
 
 func parseSessionTime(value any) int64 {

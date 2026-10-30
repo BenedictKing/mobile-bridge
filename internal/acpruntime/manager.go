@@ -1998,7 +1998,7 @@ func (s *Session) syncNative() {
 		changed = true
 	}
 	if changed {
-		s.signalLocked()
+		s.signalViewLocked()
 	}
 	settled := wasActive && s.View.Status != "active"
 	hook := s.nativeSettle
@@ -2034,7 +2034,7 @@ func (s *Session) syncRetry() {
 		return
 	}
 	s.retrying = next
-	s.signalLocked()
+	s.signalViewLocked()
 }
 
 // shouldApplyNative keeps the ACP-built tip when both sides describe the
@@ -2183,7 +2183,9 @@ func (s *Session) markProcessClosed() {
 		close(s.nativeStop)
 		s.nativeStop = nil
 	}
-	s.signalLocked()
+	// The sweeper's idle eviction closes handles too; closing must not
+	// restamp the list recency as if the session had just been used.
+	s.signalViewLocked()
 	s.mu.Unlock()
 }
 
@@ -2322,6 +2324,19 @@ func (s *Session) signalLocked() {
 	if s.interactionReady {
 		s.lastInteraction = s.lastActivity
 	}
+	s.touched = time.Now()
+	close(s.changed)
+	s.changed = make(chan struct{})
+}
+
+// signalViewLocked announces a view change without counting it as an
+// interaction: the list recency stays put. Native-store folds (the first
+// fold after a load, title syncs, retry state, closing the handle) re-present
+// existing state — the gateway's own open (the startup preload, or opening a
+// chat on the phone) must not restamp it, exactly like history replay.
+func (s *Session) signalViewLocked() {
+	s.sequence++
+	s.lastActivity = time.Now()
 	s.touched = time.Now()
 	close(s.changed)
 	s.changed = make(chan struct{})
