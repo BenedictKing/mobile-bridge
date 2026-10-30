@@ -1527,3 +1527,24 @@ func TestWorkbuddyEnvelopeCaptureLabel(t *testing.T) {
 		t.Fatalf("view nickname must be sanitized: %q", nickname)
 	}
 }
+
+// www.workbuddy.cn (the WorkBuddy desktop app's domestic login) shares the
+// cn account system with www.codebuddy.cn; only *.workbuddy.ai is ai.
+func TestWorkbuddyDomesticDomainsAreCN(t *testing.T) {
+	for domain, want := range map[string]string{
+		"www.codebuddy.cn": "cn",
+		"www.workbuddy.cn": "cn",
+		"www.workbuddy.ai": "ai",
+	} {
+		root := map[string]any{"auth": map[string]any{"domain": domain}}
+		if got := workbuddyCLILoginVariant(root); got != want {
+			t.Fatalf("%s: login variant %q, want %q", domain, got, want)
+		}
+		if got := workbuddyVariantFromAccount(&Account{Domain: domain}); got != want {
+			t.Fatalf("%s: account variant %q, want %q", domain, got, want)
+		}
+		if !workbuddyVariantMatchesDomain(want, domain) {
+			t.Fatalf("%s should match variant %s", domain, want)
+		}
+	}
+}

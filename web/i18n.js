@@ -295,7 +295,7 @@ const en={
   "登录未完成": "Sign-in not completed",
   "国内版": "China",
   "国际版": "Global",
-  "国内版（CodeBuddy）": "China (CodeBuddy)",
+  "国内版（CodeBuddy / WorkBuddy）": "China (CodeBuddy / WorkBuddy)",
   "国际版（WorkBuddy AI）": "Global (WorkBuddy AI)",
   "BigModel（智谱）": "BigModel (Zhipu)",
   "请先启动支持账号管理的新版网关": "Start the updated gateway to manage accounts.",

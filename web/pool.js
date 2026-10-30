@@ -9,7 +9,7 @@
 const POOL_LOGIN={
   kimi:{},
   minimax:{providers:[{value:'cn',label:'国内版'},{value:'en',label:'国际版'}]},
-  workbuddy:{providers:[{value:'cn',label:'国内版（CodeBuddy）'},{value:'ai',label:'国际版（WorkBuddy AI）'}]},
+  workbuddy:{providers:[{value:'cn',label:'国内版（CodeBuddy / WorkBuddy）'},{value:'ai',label:'国际版（WorkBuddy AI）'}]},
   zcode:{providers:[{value:'zai',label:'z.ai'},{value:'bigmodel',label:'BigModel（智谱）'}]},
 };
 

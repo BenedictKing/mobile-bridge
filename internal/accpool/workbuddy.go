@@ -3,8 +3,9 @@ package accpool
 // WorkBuddy / CodeBuddy account management — the fourth pool kind, ported
 // from zcode-switcher's src-tauri/src/workbuddy (mod/api/cli/process/rotate).
 //
-// Two variants share one CLI: cn (www.codebuddy.cn, desktop app
-// WorkBuddy.app) and ai (www.workbuddy.ai, desktop app "WorkBuddy AI.app").
+// Two variants share one CLI: cn (www.codebuddy.cn / www.workbuddy.cn, one
+// account system; desktop app WorkBuddy.app) and ai (www.workbuddy.ai,
+// desktop app "WorkBuddy AI.app").
 //
 // The desktop slot is the desktop app's four-segment JSON
 // (~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/
@@ -2209,7 +2210,7 @@ func (m *Manager) activeIDFromCLILogin() string {
 }
 
 // workbuddyCLILoginVariant derives the variant from the login's auth domain
-// (www.codebuddy.cn → cn, *.workbuddy.ai → ai).
+// (www.codebuddy.cn / www.workbuddy.cn → cn, *.workbuddy.ai → ai).
 func workbuddyCLILoginVariant(root map[string]any) string {
 	auth := objectValue(root, "auth")
 	domain := firstNonEmpty(stringValue(auth, "domain"), stringValue(root, "domain"))
