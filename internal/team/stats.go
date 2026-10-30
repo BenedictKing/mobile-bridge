@@ -105,6 +105,18 @@ func budgetStopReason(threshold, used int) string {
 		"；可继续追加预算运行，或取消本次运行）"
 }
 
+// runHasInFlightTask 判定快照里是否仍有派发中/运行中的任务（这类任务的耗时
+// 仍在增长，Run 耗时不能提前封顶）。
+func runHasInFlightTask(run *Run) bool {
+	for i := range run.Tasks {
+		switch run.Tasks[i].Status {
+		case TaskDispatching, TaskRunning:
+			return true
+		}
+	}
+	return false
+}
+
 // countRunDispatches 数 journal 里该 Run 的 task_dispatching 事实数（按
 // taskId+attempt 去重）：预算计量（§9）与 DispatchCount 共用——派发是
 // journal 可精确重放的事实，运行期增量、重启恢复、Resume 重算都从同一
@@ -136,6 +148,7 @@ func ComputeRunStats(events []*Event, run *Run, policy TeamPolicy, now time.Time
 	created := time.Time{}
 	createdSeen := false
 	finished := time.Time{}
+	lastEvent := time.Time{} // 本 run 最后一条事件：停靠/暂停且无在途任务时的耗时终点
 	type timingPair struct {
 		dispatch  time.Time
 		terminal  time.Time
@@ -147,6 +160,9 @@ func ComputeRunStats(events []*Event, run *Run, policy TeamPolicy, now time.Time
 	for _, event := range events {
 		if event == nil || event.RunID != run.ID {
 			continue
+		}
+		if event.CreatedAt.After(lastEvent) {
+			lastEvent = event.CreatedAt
 		}
 		switch event.Type {
 		case EventRunCreated:
@@ -219,11 +235,14 @@ func ComputeRunStats(events []*Event, run *Run, policy TeamPolicy, now time.Time
 		}
 	}
 	stats.DispatchCount = countRunDispatches(events, run.ID)
-	// Run 耗时：created 有效才有意义；终局时间缺失（在途/停靠）按 now。
+	// Run 耗时：created 有效才有意义；终局取终局事件；停靠/暂停且没有在途任务时
+	// 止于最后一条事件（等人处理的空闲不计入）；其余在途情形按 now。
 	if !created.IsZero() {
 		end := now
 		if !finished.IsZero() {
 			end = finished
+		} else if (run.Status == RunWaitingInput || run.Status == RunPaused) && !lastEvent.IsZero() && !runHasInFlightTask(run) {
+			end = lastEvent
 		}
 		if elapsed := end.Sub(created); elapsed > 0 {
 			stats.RunElapsedMs = elapsed.Milliseconds()

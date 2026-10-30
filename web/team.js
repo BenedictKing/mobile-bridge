@@ -1194,8 +1194,9 @@ class TeamRunScreen{
   }
   /* ---- 阶段图（§11.3，GET runUrl(graph)）----
      节点卡：状态徽标（单任务节点——非聚合且 runCount===1——用 detail 实时
-     状态覆盖服务端快照；聚合节点 runCount>1 时以服务端归并状态为准，本地
-     detail 只含根任务本人的陈旧终态，覆盖会误显）、成员 agentKind 徽标、
+     状态覆盖服务端快照；修复链聚合节点 runCount>1 时以服务端归并状态为准，
+     本地 detail 只含根任务本人的陈旧终态，覆盖会误显；动作派生任务各自成
+     节点）、成员 agentKind 徽标、
      runCount「×N」（循环阶段只显示一个稳定节点+运行次数）、依赖以文本表达；
      broadcast/autoPlan 聚合节点（memberIds>1）点击展开成员小列表，普通节点
      点击 scrollIntoView 高亮对应任务卡（revealTask）。 */
@@ -1527,18 +1528,27 @@ class TeamRunScreen{
     badge.append(this.node('code',verify.command));
     return badge;
   }
+  /* 「继续」提示按停靠原因分流（与 Runner.Resume/PlanResume 同口径）：预算停靠上调上限
+     （服务端额外落 run_budget_resumed）；verify_failed 重跑闸门；quota/auth/not_configured
+     停靠按 attempt+1 重派；outcome_unknown 落 stopped 不重发；已失败任务不重试，依赖它的分支终止。 */
+  resumeHint(){
+    const t=BridgeI18n.t,stopReason=this.detail.stopReason||'',tasks=Array.isArray(this.detail.tasks)?this.detail.tasks:[];
+    if(stopReason.startsWith('budget_exhausted'))return t('预算已用尽；继续会提高预算上限并恢复运行。');
+    if(stopReason.startsWith('verify_failed'))return t('继续会重新运行验证命令。');
+    const parts=[];
+    if(tasks.some(task=>task.status==='stopped'&&TEAM_BLOCKED_OUTCOMES.has(task.outcome)))parts.push(t('处理账号或配置后，继续会重新派发停靠的任务。'));
+    if(tasks.some(task=>task.status==='outcome_unknown'))parts.push(t('结果未知任务已核查，不再重发；继续可继续的分支。'));
+    if(tasks.some(task=>task.status==='failed'))parts.push(t('失败的任务不会重试，依赖它的分支会终止。'));
+    return parts.join(' ')||t('继续会派发剩余可运行的任务。');
+  }
   renderActions(){
     const t=BridgeI18n.t;
     const box=this.node('div',undefined,'team-run-actions');
     const status=this.detail.status;
     const stopReason=this.detail.stopReason||'';
     if(status==='waiting_input'){
-      if(stopReason.indexOf('budget_exhausted')===0){
-        // §9 预算停靠：resume 即上调上限并恢复（服务端额外落 run_budget_resumed）。
-        box.append(this.node('span',t('预算已用尽；继续会提高预算上限并恢复运行。'),'muted team-resume-hint'));
-      }else{
-        box.append(this.node('span',t('结果未知任务已核查，不再重发；继续可继续的分支。'),'muted team-resume-hint'));
-      }
+      const hint=this.resumeHint();
+      if(hint)box.append(this.node('span',hint,'muted team-resume-hint'));
       // 验证闸门失败停靠（stopReason 以 verify_failed 开头）时，resume 即重跑闸门。
       const verifyFailed=stopReason.startsWith('verify_failed');
       const resume=this.button(verifyFailed?t('重新验证'):t('继续'),async()=>{

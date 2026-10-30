@@ -1712,7 +1712,11 @@ const en={
   "未通过": "Did not pass",
   "未参与": "Not involved",
   "（已截断）": " (truncated)",
-  "主控": "Lead"
+  "主控": "Lead",
+  "继续会重新运行验证命令。": "Continue reruns the verify command.",
+  "处理账号或配置后，继续会重新派发停靠的任务。": "Fix the account or configuration, then Continue resends the parked tasks.",
+  "失败的任务不会重试，依赖它的分支会终止。": "Failed tasks are not retried; branches that depend on them will stop.",
+  "继续会派发剩余可运行的任务。": "Continue dispatches the remaining runnable tasks."
 };
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}

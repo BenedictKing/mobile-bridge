@@ -509,3 +509,26 @@ func TestBudgetRebuildFromJournalRestoresCeiling(t *testing.T) {
 		t.Fatalf("team-runs.json 应含 budgetCeiling:3: %v %s", err, raw)
 	}
 }
+
+func TestComputeRunStatsWaitingInputExcludesIdle(t *testing.T) {
+	events := []*Event{
+		statsEvent("r1", EventRunCreated, statsBase, nil),
+		statsEvent("r1", EventTaskDispatching, statsBase.Add(time.Second),
+			map[string]any{"taskId": "a", "attempt": jsoncompat.Num(1)}),
+		statsEvent("r1", EventRunWaitingInput, statsBase.Add(60*time.Second), nil),
+		statsEvent("r1", EventTaskFailed, statsBase.Add(90*time.Second),
+			map[string]any{"taskId": "a", "attempt": jsoncompat.Num(1)}),
+	}
+	now := statsBase.Add(11 * time.Hour)
+	for _, status := range []string{RunWaitingInput, RunPaused} {
+		run := &Run{ID: "r1", Status: status, Tasks: []Task{{ID: "a", Status: TaskFailed}}}
+		if stats := ComputeRunStats(events, run, DefaultPolicy(), now); stats.RunElapsedMs != 90_000 {
+			t.Fatalf("%s 且无在途任务时耗时应止于最后一条事件 90000ms，得到 %d", status, stats.RunElapsedMs)
+		}
+	}
+	// 停靠期间仍有任务在跑：耗时继续按 now 增长。
+	run := &Run{ID: "r1", Status: RunWaitingInput, Tasks: []Task{{ID: "a", Status: TaskRunning}}}
+	if stats := ComputeRunStats(events, run, DefaultPolicy(), now); stats.RunElapsedMs != (11 * time.Hour).Milliseconds() {
+		t.Fatalf("有在途任务时耗时应取 now，得到 %d", stats.RunElapsedMs)
+	}
+}

@@ -3436,25 +3436,26 @@ func TestTeamsRunGraphEndpoint(t *testing.T) {
 		}
 		return graph.Nodes[0], false
 	}
-	if len(graph.Nodes) != 2 {
-		t.Fatalf("应聚合成两节点（派生链归并根任务、broadcast 组聚合单节点）: %s", response.Body.String())
+	if len(graph.Nodes) != 4 {
+		t.Fatalf("动作派生任务各自成节点、broadcast 组聚合单节点，应有四节点: %s", response.Body.String())
 	}
-	chain, ok := nodeOf("lead")
-	if !ok || chain.RunCount != 3 || chain.Status != team.TaskRunning {
-		t.Fatalf("派生链应聚合 runCount=3 且状态取最新: %s", response.Body.String())
+	lead, ok := nodeOf("lead")
+	if !ok || lead.RunCount != 1 || lead.Status != team.TaskCompleted || len(lead.AgentKinds) != 1 || lead.AgentKinds[0] != "kimi" {
+		t.Fatalf("lead 节点只含根任务本身: %s", responseText(t, lead))
 	}
-	if len(chain.MemberIDs) != 3 || len(chain.AgentKinds) != 3 || chain.AgentKinds[0] != "kimi" {
-		t.Fatalf("链节点成员/类型应跨实例聚合: %s", responseText(t, chain))
+	if summary, ok := nodeOf("lead-s2-0"); !ok || summary.Status != team.TaskRunning ||
+		len(summary.DependsOn) != 1 || summary.DependsOn[0] != "lead-d1-0" {
+		t.Fatalf("汇总任务应独立成节点并依赖委派任务: %s", response.Body.String())
 	}
-	if chain.ResultHead != "委派完成" {
-		t.Fatalf("链结果取最近一次带结果的执行: %s", responseText(t, chain))
+	if delegated, ok := nodeOf("lead-d1-0"); !ok || delegated.ResultHead != "委派完成" {
+		t.Fatalf("委派节点结果取自身: %s", response.Body.String())
 	}
 	group, ok := nodeOf("scan")
 	if !ok || len(group.MemberIDs) != 2 || group.RunCount != 1 || group.Status != team.TaskFailed {
 		t.Fatalf("broadcast 组应聚合单节点: %s", response.Body.String())
 	}
-	if len(group.DependsOn) != 1 || group.DependsOn[0] != "lead" {
-		t.Fatalf("组依赖应映射到派生链根节点: %s", responseText(t, group))
+	if len(group.DependsOn) != 1 || group.DependsOn[0] != "lead-d1-0" {
+		t.Fatalf("组依赖应映射到委派任务节点: %s", responseText(t, group))
 	}
 	if len(graph.Layers) < 2 || graph.Layers[0][0] != "lead" {
 		t.Fatalf("Kahn 分层应 lead 在首层: %+v", graph.Layers)

@@ -67,3 +67,16 @@ test('every wrapped Chinese literal in the team UI has an English entry',()=>{
   }
   assert.deepEqual(missing,[]);
 });
+
+test('resume hint follows the actual stop cause',()=>{
+  const hint=detail=>Object.assign(Object.create(TeamRunScreen.prototype),{detail}).resumeHint();
+  // d157 形态：认证停靠 + 一个失败分支，不能再显示「结果未知」。
+  const docked=hint({stopReason:'任务 lead-d1-0 停靠：…',tasks:[{status:'stopped',outcome:'auth'},{status:'failed'}]});
+  assert.match(docked,/resends the parked tasks/);
+  assert.match(docked,/Failed tasks are not retried/);
+  assert.doesNotMatch(docked,/Outcome-unknown/);
+  assert.match(hint({stopReason:'',tasks:[{status:'outcome_unknown'}]}),/Outcome-unknown tasks are treated as verified/);
+  assert.match(hint({stopReason:'budget_exhausted（…）',tasks:[]}),/budget/i);
+  assert.match(hint({stopReason:'verify_failed（退出码 1）',tasks:[]}),/reruns the verify command/);
+  assert.equal(hint({stopReason:'',tasks:[{status:'planned'}]}),'Continue dispatches the remaining runnable tasks.');
+});

@@ -262,7 +262,7 @@
 .team-budget-note{font-size:11px;margin:6px 0 0}
 .team-schedule-enable{display:flex;align-items:center;gap:8px}
 .team-schedule-enable input{width:auto;margin:0}
-@media(max-width:720px){.team-run-head{padding:13px 17px;gap:8px}.team-run-info h1{font-size:15px}.team-run-body{padding:15px 20px}}
+@media(max-width:720px){.team-run-head{padding:13px 17px;gap:8px;align-items:flex-start}.team-run-info{min-width:0;flex:1 1 calc(100% - 52px)}.team-run-info h1{font-size:15px}.team-stop-reason{flex-basis:100%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.team-run-actions{flex:1 1 100%;gap:6px}.team-resume-hint{flex:1 1 100%;max-width:none}.team-run-actions button{flex:1 1 0;min-width:0;padding:9px 8px}.team-run-body{padding:15px 20px}}
 .jev-trial{margin-top:14px;display:flex;flex-direction:column;gap:8px}
 .jev-trial strong{font-size:12px}
 .jev-trial textarea{margin-top:0}

@@ -113,10 +113,10 @@ func TestBuildRunGraphSingleMemberGroupCollapsesToTaskNode(t *testing.T) {
 	}
 }
 
-func TestBuildRunGraphDerivedChainAggregatesRunCount(t *testing.T) {
+func TestBuildRunGraphRepairChainAggregatesRunCount(t *testing.T) {
 	run := &Run{ID: "r1", TeamID: "t1", Status: RunDispatching, Tasks: []Task{
-		// §11.3 循环阶段：根任务 + 两个派生 + 一个修复，同根聚合、runCount=4，
-		// 状态取链上最新（快照序即创建序），成员跨链去重。
+		// §11.3 循环阶段只指同一阶段的重跑：根任务 + 修复任务（actfix-）聚合为
+		// 稳定节点、runCount=2、状态取链上最新；动作派生任务是新阶段，各自成节点。
 		{ID: "lead", MemberID: "lead", Status: TaskCompleted, Ordinal: 1, Result: "第一轮规划"},
 		{ID: "lead-d1-0", MemberID: "dev", Status: TaskCompleted, Ordinal: 2,
 			DependsOn: []string{"lead"}, Result: "委派执行完成"},
@@ -124,29 +124,46 @@ func TestBuildRunGraphDerivedChainAggregatesRunCount(t *testing.T) {
 		{ID: "lead-s2-0", MemberID: "rev", Status: TaskRunning, Ordinal: 4, DependsOn: []string{"lead-d1-0"}},
 	}}
 	graph := BuildRunGraph(run, graphTestTeam())
-	if len(graph.Nodes) != 1 {
-		t.Fatalf("派生链/修复链应按根任务聚合为单节点: %+v", graph.Nodes)
+	if len(graph.Nodes) != 3 {
+		t.Fatalf("修复链聚合、派生任务独立成节点，应有三节点: %+v", graph.Nodes)
 	}
-	node := graph.Nodes[0]
-	if node.ID != "lead" || node.RunCount != 4 {
-		t.Fatalf("稳定阶段节点 id=根任务、runCount=链长: %+v", node)
+	lead := graphNodeOf(t, graph, "lead")
+	if lead.RunCount != 2 || lead.Status != TaskFailed || lead.ResultHead != "第一轮规划" {
+		t.Fatalf("修复链节点 runCount=2、状态取最新、结果取最近带结果的执行: %+v", lead)
 	}
-	if node.Status != TaskRunning {
-		t.Fatalf("链状态应取最新一次执行: %+v", node.Status)
+	if delegated := graphNodeOf(t, graph, "lead-d1-0"); delegated.RunCount != 1 || delegated.Status != TaskCompleted ||
+		len(delegated.DependsOn) != 1 || delegated.DependsOn[0] != "lead" {
+		t.Fatalf("委派任务应独立成节点并依赖 lead: %+v", delegated)
 	}
-	if len(node.MemberIDs) != 3 || node.MemberIDs[0] != "lead" || node.MemberIDs[1] != "dev" || node.MemberIDs[2] != "rev" {
-		t.Fatalf("链成员跨实例去重保序: %+v", node.MemberIDs)
+	if summary := graphNodeOf(t, graph, "lead-s2-0"); summary.Status != TaskRunning ||
+		len(summary.DependsOn) != 1 || summary.DependsOn[0] != "lead-d1-0" {
+		t.Fatalf("汇总任务应独立成节点并依赖委派任务: %+v", summary)
 	}
-	// 最新实例（lead-s2-0）无结果 → 回取链上最近一次带结果的执行。
-	if node.ResultHead != "委派执行完成" {
-		t.Fatalf("链结果应取最近一次带结果的执行: %+v", node.ResultHead)
+	if len(graph.Layers) != 3 || graph.Layers[0][0] != "lead" || graph.Layers[1][0] != "lead-d1-0" || graph.Layers[2][0] != "lead-s2-0" {
+		t.Fatalf("派生任务按真实依赖分层: %+v", graph.Layers)
 	}
-	// 链内依赖（lead-d1-0 依赖 lead）折叠；跨节点依赖保留。
-	if len(node.DependsOn) != 0 {
-		t.Fatalf("链内依赖应折叠: %+v", node.DependsOn)
+}
+
+func TestBuildRunGraphDelegateFanOutKeepsPerTaskStatus(t *testing.T) {
+	// 一轮委派扇出（d157 形态）：每个任务保持自己的状态，绝不被末个 planned 覆盖。
+	run := &Run{ID: "r1", TeamID: "t1", Status: RunWaitingInput, Tasks: []Task{
+		{ID: "lead", MemberID: "lead", Status: TaskCompleted, Ordinal: 1},
+		{ID: "lead-d1-0", MemberID: "dev", Status: TaskStopped, Outcome: "auth", Ordinal: 2, DependsOn: []string{"lead"}},
+		{ID: "lead-d1-1", MemberID: "rev", Status: TaskFailed, Ordinal: 3, DependsOn: []string{"lead"}},
+		{ID: "lead-d1-2", MemberID: "lead", Status: TaskPlanned, Ordinal: 4, DependsOn: []string{"lead", "lead-d1-0", "lead-d1-1"}},
+	}}
+	graph := BuildRunGraph(run, graphTestTeam())
+	want := map[string]string{"lead": TaskCompleted, "lead-d1-0": TaskStopped, "lead-d1-1": TaskFailed, "lead-d1-2": TaskPlanned}
+	if len(graph.Nodes) != len(want) {
+		t.Fatalf("扇出任务应各自成节点: %+v", graph.Nodes)
 	}
-	if len(graph.Layers) != 1 || graph.Layers[0][0] != "lead" {
-		t.Fatalf("单节点单层: %+v", graph.Layers)
+	for id, status := range want {
+		if node := graphNodeOf(t, graph, id); node.Status != status || node.RunCount != 1 || len(node.MemberIDs) != 1 {
+			t.Fatalf("节点 %s 应保持自身状态 %s: %+v", id, status, node)
+		}
+	}
+	if len(graph.Layers) != 3 || len(graph.Layers[1]) != 2 || graph.Layers[2][0] != "lead-d1-2" {
+		t.Fatalf("应分三层（Lead / 并行 2 / 汇总）: %+v", graph.Layers)
 	}
 }
 

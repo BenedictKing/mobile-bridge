@@ -5,9 +5,10 @@ package team
 // 次数」的阶段图。两条聚合规则：
 //   - broadcast 组（BroadcastGroup 相同且成员 >1）聚合为单节点——并行分支
 //     是一个阶段的多路执行，不是一个阶段的多次执行；
-//   - autoPlan 派生链/修复链（ActionDerivedTaskID 的 {source}-{s|d}{round}-
-//     {index} 与 actfix-{root}-{n}）按根任务聚合，runCount=链上任务数——
-//     循环阶段只显示一个稳定阶段节点和运行次数（§11.3）。
+//   - autoPlan 修复链（actfix-{root}-{n}）按根任务聚合，runCount=链上任务数——
+//     循环阶段只显示一个稳定阶段节点和运行次数（§11.3）；动作派生任务
+//     （{source}-{s|d}{round}-{index}）是 Lead 新开的阶段，各自成节点
+//     （graphStageRoot）。
 //
 // 边界（阶段四范围）：纯函数零 I/O、不落账、不发事件；分层用 Kahn 算法
 // （planner 已拒绝显式环，防御性兜底把无法分层的剩余节点按原序追加为最后
@@ -81,7 +82,7 @@ func BuildRunGraph(run *Run, teamRow *Team) RunGraph {
 		if task.BroadcastGroup != "" && groupSize[task.BroadcastGroup] > 1 {
 			return "group:" + task.BroadcastGroup
 		}
-		return "task:" + actionRepairRoot(task.ID)
+		return "task:" + graphStageRoot(task.ID)
 	}
 	type nodeBuilder struct {
 		id      string // 展示 ID（重复时加 #N 后缀消歧）
@@ -95,7 +96,7 @@ func BuildRunGraph(run *Run, teamRow *Team) RunGraph {
 		key := keyOfTask(task)
 		builder, exists := builders[key]
 		if !exists {
-			id := actionRepairRoot(task.ID)
+			id := graphStageRoot(task.ID)
 			if task.BroadcastGroup != "" && groupSize[task.BroadcastGroup] > 1 {
 				id = task.BroadcastGroup
 				builder = &nodeBuilder{id: id, isGroup: true}
@@ -188,6 +189,17 @@ func BuildRunGraph(run *Run, teamRow *Team) RunGraph {
 	}
 	graph.Layers = graphLayers(graph.Nodes)
 	return graph
+}
+
+// graphStageRoot 返回任务在阶段图上的稳定阶段 ID：只有修复任务本体
+// （actfix-{root}-{n}，同一阶段的重跑）折回 root；动作派生任务（{source}-
+// {s|d}{round}-{index}）成员/提示词/依赖各异，是新阶段，保持自身 ID——按
+// actionRepairRoot 剥派生后缀会把整轮委派压成一个「lead ×N」节点。
+func graphStageRoot(taskID string) string {
+	if stripDerivedTaskSuffix(taskID) != taskID {
+		return taskID
+	}
+	return actionRepairRoot(taskID)
 }
 
 // graphAggregateStatus 归并聚合节点的成员状态：按 graphStatusPrecedence 取
