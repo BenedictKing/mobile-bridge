@@ -34,6 +34,65 @@ function teamWorkflowStages(tasks){
   return stages.filter(Boolean);
 }
 
+// teamWorkflowTaskTitle 取轨道上展示的任务标题：优先提示词首行——任务 id
+// 只是内部标识（lead-d1-0 这类），对用户没有意义；首行过长交给 CSS 两行截断。
+function teamWorkflowTaskTitle(task){
+  if(task.id==='lead')return t_safe('负责人');
+  const text=String(task.instructionsHead||task.prompt||'');
+  let line=(text.split(/\r?\n/).find(row=>row.trim())||'').trim().replace(/^[#>\-*\s]+/,'');
+  // 提示词常以绝对路径开头（「在 /Users/… 只读排查 …」）。路径在窄列里会吃掉整行，
+  // 显示时按词剔除；换行与省略交给 CSS 两行截断，完整原文仍在 title 里。
+  // 逐词判断而不是正则：路径里斜杠多，嵌套量词在长提示词上会回溯到卡死页面。
+  line=line.split(/\s+/)
+    .filter(token=>token.split('/').length<3||!token.startsWith('/'))
+    .map(token=>token.length>26&&/^[\x21-\x7E]+$/.test(token)?token.slice(0,14)+'…'+token.slice(-10):token)
+    .join(' ')
+    .replace(/^(?:在|对|到|from|at|in)\s+/i,'').trim();
+  return line||task.id||t_safe('任务');
+}
+
+// teamWorkflowCounts 把任务按展示语义分桶：Run 的 status 只表示编排走到哪，
+// 失败/停止要从任务本身数，否则「已完成」会把 2 个失败任务说成成功。
+function teamWorkflowCounts(tasks){
+  const counts={total:0,completed:0,failed:0,running:0,stopped:0,pending:0};
+  for(const task of tasks||[]){
+    const status=String(task&&task.status||'planned');
+    counts.total++;
+    if(status==='completed')counts.completed++;
+    else if(status==='failed'||status==='outcome_unknown')counts.failed++;
+    else if(status==='running'||status==='dispatching'||status==='ready')counts.running++;
+    else if(status==='stopped'||status==='cancelled')counts.stopped++;
+    else counts.pending++;
+  }
+  return counts;
+}
+
+// teamWorkflowOutcome 决定头部那枚结论：tone 只有 ok/warn/bad/idle 四档，
+// 颜色只表达「好了没有」，不表达进度。
+function teamWorkflowOutcome(run,counts){
+  const status=String(run&&run.status||''),failed=Number(counts&&counts.failed||0);
+  const terminal=typeof TEAM_TERMINAL_RUN_STATUSES!=='undefined'?TEAM_TERMINAL_RUN_STATUSES.has(status):false;
+  if(status==='outcome_unknown')return{label:'结果未知',tone:'bad'};
+  if(status==='failed')return{label:'已失败',tone:'bad'};
+  if(status==='cancelled')return{label:'已取消',tone:'idle'};
+  if(status==='stopped')return{label:'已停止',tone:'idle'};
+  if(status==='waiting_input')return{label:'等待确认',tone:'warn'};
+  if(failed&&(terminal||!status))return{label:'部分失败',tone:'bad'};
+  if(status==='created')return{label:'已创建',tone:'idle'};
+  if(!terminal)return{label:teamRunStatusLabel(status),tone:'warn'};
+  return{label:'已完成',tone:'ok'};
+}
+
+// teamWorkflowMemberLabel 避免「kimi · Kimi」这种同一句话写两遍：
+// 成员名与 Agent 名相同时只留一个。
+function teamWorkflowMemberLabel(member,task){
+  const owner=member||{},name=String(owner.name||owner.id||(task&&task.memberId)||'').trim();
+  const agent=owner.agentKind?BridgeI18n.agentLabel(owner.agentKind):'';
+  if(!name)return agent||t_safe('成员');
+  if(!agent||name.toLowerCase()===String(agent).toLowerCase())return name;
+  return name+' · '+agent;
+}
+
 class TeamChatController{
   constructor({root,request,openRun,onChange}){
     Object.assign(this,{root,request,openRun,onChange});
@@ -107,19 +166,37 @@ class TeamChatController{
     if(!run){
       const empty=this.node('section',undefined,'team-workflow-empty');
       empty.append(this.node('strong',t_safe('团队已就绪，给团队发第一条消息')));
-      const members=this.node('div',undefined,'team-workflow-pills');
-      for(const member of team.members||[])members.append(this.node('span',(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind),'team-workflow-pill'));
-      empty.append(members,this.node('p',t_safe('发送后会在这里显示阶段、成员和结果。'),'team-workflow-meta'));
+      const roster=this.node('div',undefined,'team-workflow-roster');
+      for(const member of team.members||[]){
+        const row=this.node('span',undefined,'team-workflow-roster-member');
+        const dot=this.node('i',undefined,'team-workflow-agent');
+        if(member.agentKind)dot.setAttribute('data-agent',member.agentKind);
+        row.append(dot,this.node('span',teamWorkflowMemberLabel(member)));
+        roster.append(row);
+      }
+      empty.append(roster,this.node('p',t_safe('发送后会在这里显示阶段、成员和结果。'),'team-workflow-meta'));
       root.append(empty);return;
     }
     const tasks=Array.isArray(run.tasks)?run.tasks:[],members=new Map((team.members||[]).map(member=>[member.id,member]));
-    const running=tasks.filter(task=>['dispatching','running','ready'].includes(task.status)).length;
-    const completed=tasks.filter(task=>task.status==='completed').length;
+    const counts=teamWorkflowCounts(tasks),outcome=teamWorkflowOutcome(run,counts);
     const card=this.node('section',undefined,'team-workflow-card'+(this.compact?' compact':''));
     card.setAttribute('aria-label',t_safe('Workflow 运行摘要'));
     const head=this.node('div',undefined,'team-workflow-head');
-    head.append(this.node('strong','Workflow · '+teamRunStatusLabel(run.status)));
-    head.append(this.node('span',completed+'/'+tasks.length+' '+t_safe('任务')+(running?' · '+running+' '+t_safe('运行中'):''),'team-workflow-meta'));
+    const headline=this.node('strong',undefined,'team-workflow-headline');
+    headline.append(this.node('span','Workflow'));
+    const badge=this.node('span',t_safe(outcome.label),'team-workflow-outcome');
+    badge.setAttribute('data-tone',outcome.tone);
+    // 与其它团队徽标一致：切语言时 BridgeI18n.apply 能就地刷新这枚结论。
+    badge.setAttribute('data-i18n',outcome.label);
+    headline.append(badge);
+    head.append(headline);
+    // 计数从任务本身算：Run 说「已完成」时也可能有失败任务，头部必须把它们说出来。
+    const meta=this.node('span',undefined,'team-workflow-meta');
+    meta.append(this.node('span',counts.total+' '+t_safe('个任务')));
+    if(counts.failed)meta.append(this.node('span',counts.failed+' '+t_safe('失败'),'team-workflow-failcount'));
+    else if(counts.running)meta.append(this.node('span',counts.running+' '+t_safe('进行中'),'team-workflow-runcount'));
+    else if(counts.stopped)meta.append(this.node('span',counts.stopped+' '+t_safe('已停止')));
+    head.append(meta);
     const toggle=this.button(this.compact?t_safe('展开成员'):t_safe('收起成员'),()=>{this.compact=!this.compact;this.render();});
     toggle.setAttribute('aria-expanded',String(!this.compact));
     head.append(toggle);
@@ -128,29 +205,44 @@ class TeamChatController{
     const scroller=this.node('div',undefined,'team-workflow-scroll');
     scroller.tabIndex=0;scroller.setAttribute('aria-label',t_safe('阶段轨道，可横向滚动'));
     const stations=this.node('div',undefined,'team-workflow-stations');
-    for(const [index,stageTasks] of teamWorkflowStages(tasks).entries()){
+    const rows=teamWorkflowStages(tasks);
+    for(const [index,stageTasks] of rows.entries()){
       const stage=this.node('div',undefined,'team-workflow-stage');
-      stage.append(this.node('span',t_safe('阶段 ')+(index+1)+(stageTasks.length>1?' · '+t_safe('并行 ')+stageTasks.length:''),'team-workflow-stage-label'));
-      for(const task of stageTasks){
+      // 并行阶段内任务多，给宽一点：等宽列会让两行的任务名被硬折在词中间。
+      if(stageTasks.length>1)stage.style.flexGrow=String(Math.min(stageTasks.length,3));
+      const caption=this.node('div',undefined,'team-workflow-stage-head');
+      caption.append(this.node('span',t_safe('阶段')+' '+(index+1),'team-workflow-stage-index'));
+      if(stageTasks.length>1)caption.append(this.node('span',t_safe('并行')+' '+stageTasks.length,'team-workflow-stage-parallel'));
+      stage.append(caption);
+      const lanes=this.node('div',undefined,'team-workflow-lanes');
+      for(const [position,task] of stageTasks.entries()){
         const member=members.get(task.memberId)||{},status=task.status||'planned';
-        const station=this.node('div',undefined,'team-workflow-station '+status);
+        const failed=status==='failed'||status==='outcome_unknown';
+        const chain=position<stageTasks.length-1?' continued':(index<rows.length-1?' chain':'');
+        const station=this.node('div',undefined,'team-workflow-station '+status+chain);
+        station.title=String(task.instructionsHead||task.prompt||'').trim();
+        station.setAttribute('aria-label',teamWorkflowTaskTitle(task)+'，'+teamTaskStatusLabel(status));
         station.append(this.node('span',undefined,'team-workflow-lamp'));
-        station.append(this.node('span',task.id==='lead'?t_safe('负责人'):(task.id||t_safe('任务')),'team-workflow-name'));
-        station.append(this.node('span',teamTaskStatusLabel(status),'team-workflow-state'));
-        const pills=this.node('div',undefined,'team-workflow-pills');
-        const label=(member.name||member.id||task.memberId||t_safe('成员'))+(member.agentKind?' · '+BridgeI18n.agentLabel(member.agentKind):'');
-        const pill=this.node('span',label,'team-workflow-pill');
-        pill.title=task.instructionsHead||task.prompt||task.id||'';
-        pills.append(pill);station.append(pills);stage.append(station);
+        const body=this.node('div',undefined,'team-workflow-body');
+        body.append(this.node('span',teamWorkflowTaskTitle(task),'team-workflow-step'));
+        const who=this.node('span',undefined,'team-workflow-member');
+        const dot=this.node('i',undefined,'team-workflow-agent');
+        if(member.agentKind)dot.setAttribute('data-agent',member.agentKind);
+        who.append(dot,this.node('span',teamWorkflowMemberLabel(member,task),'team-workflow-member-label'));
+        body.append(who);
+        // 失败的站点直接说出原因（Run 详情里也是这句），省掉一次跳转。
+        const reason=failed?String(task.error||'').trim():'';
+        if(reason)body.append(this.node('span',reason,'team-workflow-reason'));
+        station.append(body);
+        lanes.append(station);
       }
+      stage.append(lanes);
       stations.append(stage);
     }
     scroller.append(stations);card.append(scroller);
-    const results=tasks.filter(task=>task.result).length;
-    if(results||run.verify){
+    if(run.verify){
       const artifacts=this.node('div',undefined,'team-workflow-artifacts');
-      if(results)artifacts.append(this.node('span',results+' '+t_safe('份任务结果'),'team-workflow-artifact'));
-      if(run.verify)artifacts.append(this.node('span',t_safe('验证退出码 ')+run.verify.exitCode,'team-workflow-artifact'));
+      artifacts.append(this.node('span',t_safe('验证退出码')+' '+run.verify.exitCode,'team-workflow-artifact'));
       card.append(artifacts);
     }
     if(run.deliveryStatus){
@@ -246,7 +338,7 @@ class TeamSettingsDialog{
     for(const member of members){
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
-      info.append(this.node('strong',BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind));
+      info.append(this.node('strong',BridgeI18n.agentLabel(member.agentKind)+' · '+(member.name&&member.name!==member.agentKind?member.name:member.agentKind)));
       const roleLabels=[];
       if(member.id===team.leadId)roleLabels.push(t_safe('主控'));
       if(member.id===team.reviewerId||member.role==='reviewer')roleLabels.push(t_safe('评审'));
@@ -256,7 +348,9 @@ class TeamSettingsDialog{
       if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}
       memberSection.append(row);
     }
-    const candidates=this.agents.filter(agent=>!members.some(member=>member.agentKind===agent.agent));
+    // 同一 Agent 允许出现多名成员（主控兼任兜底成员）：只按成员 id/会话去重，
+    // 不按 agent kind 去重。
+    const candidates=this.agents;
     const select=document.createElement('select');select.className='team-add-agent';select.disabled=this.busy;
     for(const agent of candidates)select.append(new Option(agent.agent,agent.agent));
     const role=document.createElement('select');role.className='team-add-role';role.disabled=this.busy;role.append(new Option(t_safe('成员'),'member'),new Option(t_safe('评审'),'reviewer'));
@@ -279,7 +373,10 @@ class TeamSettingsDialog{
     if(!agent)return;
     const base='member-'+agent.replace(/[^A-Za-z0-9_-]/g,'-');let id=base,index=2;
     while((this.team.members||[]).some(member=>member.id===id))id=base+'-'+(index++);
-    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members',{method:'POST',body:{id,agent,role,name:agent,version:this.team.version}}));
+    // 同名 Agent 的多名成员用后缀区分，便于主控在成员目录里认人。
+    const sameKind=(this.team.members||[]).filter(member=>member.agentKind===agent).length;
+    const name=sameKind?agent+'-'+(sameKind+1):agent;
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members',{method:'POST',body:{id,agent,role,name,version:this.team.version}}));
   }
   async removeMember(memberID){
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID)+'?version='+this.team.version,{method:'DELETE'}));
@@ -292,4 +389,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages};
+if(typeof module!=='undefined')module.exports={TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};

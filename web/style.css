@@ -279,29 +279,63 @@
 .jev-trial-badge.negative{color:var(--warning-text);background:var(--warning-bg)}
 .jev-trial-badge.positive{color:var(--muted);background:var(--soft)}
 .team-inline-badge{display:inline-block;border:1px solid var(--line);border-radius:8px;padding:0 5px;font-size:9px;font-weight:400;color:var(--green);vertical-align:1px}
-.team-workflow-card{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:12px 14px;margin:0 0 24px;max-width:760px}
-.team-workflow-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.team-workflow-head strong{flex:1;font-size:13px}
-.team-workflow-head button{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
-.team-workflow-meta{font-size:11px;color:var(--muted)}
-.team-workflow-scroll{overflow-x:auto;padding:14px 0 4px;scrollbar-width:thin}
-.team-workflow-stations{display:flex;align-items:flex-start;min-width:480px;gap:20px}
-.team-workflow-stage{position:relative;flex:1;min-width:160px;display:grid;gap:12px;align-content:start}
-.team-workflow-stage:not(:last-child):after{content:"›";position:absolute;right:-16px;top:24px;color:var(--muted);font-size:20px;line-height:1}
-.team-workflow-stage-label{font-size:10px;color:var(--muted);text-align:center}
-.team-workflow-station{position:relative;min-width:0;text-align:center;padding:0 8px}
-.team-workflow-station:not(:last-child):after{display:none}
-.team-workflow-lamp{position:relative;z-index:1;display:block;width:12px;height:12px;margin:0 auto 8px;border:2px solid var(--muted);border-radius:50%;background:var(--raised)}
-.team-workflow-station.completed .team-workflow-lamp{background:var(--green);border-color:var(--green)}
-.team-workflow-station.running .team-workflow-lamp,.team-workflow-station.dispatching .team-workflow-lamp{outline:3px solid var(--warning-bg);outline-offset:2px;animation:pulse 1.4s infinite}
-.team-workflow-station.failed .team-workflow-lamp,.team-workflow-station.outcome_unknown .team-workflow-lamp{background:var(--error);border-color:var(--error)}
-.team-workflow-name{display:block;font-size:12px;font-weight:600}
-.team-workflow-state{display:block;font-size:11px;color:var(--muted);margin:2px 0 10px}
-.team-workflow-pills{display:grid;gap:6px;justify-content:center}
-.team-workflow-pill{display:block;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--green);padding:4px 8px;font-size:11px;white-space:nowrap}
-.team-workflow-card.compact .team-workflow-pills{display:none}
-.team-workflow-artifacts{display:flex;gap:6px;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:10px;margin-top:8px}
-.team-workflow-artifact{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:3px 7px;font-size:10px;color:var(--muted)}
+/* Workflow 运行摘要：结论在头部，进度就是轨道上那些灯。
+   轨道按阶段分列，每列首灯落在同一条天轨上，同阶段并行的任务从天轨分支往下走。 */
+.team-workflow-card{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:13px 16px 12px;margin:0 0 24px;max-width:760px}
+.team-workflow-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.team-workflow-headline{flex:1;display:flex;align-items:center;gap:8px;min-width:0;font-size:11.5px;font-weight:600;letter-spacing:.01em;color:var(--muted)}
+.team-workflow-outcome{border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:600;line-height:16px;background:var(--soft);color:var(--green)}
+.team-workflow-outcome[data-tone="bad"]{background:color-mix(in srgb,var(--error) 13%,transparent);color:var(--error)}
+.team-workflow-outcome[data-tone="warn"]{background:var(--warning-bg);color:var(--warning-text)}
+.team-workflow-outcome[data-tone="idle"]{background:var(--surface);color:var(--muted)}
+.team-workflow-meta{display:inline-flex;align-items:baseline;gap:10px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.team-workflow-failcount{color:var(--text);font-weight:600}
+.team-workflow-runcount{color:var(--text);font-weight:600}
+.team-workflow-head button{min-height:0;padding:2px 0;border:0;border-radius:0;background:none;font-size:11.5px;color:var(--muted)}
+.team-workflow-head button:hover{color:var(--green)}
+.team-workflow-head button:focus-visible{outline-offset:3px}
+.team-workflow-scroll{overflow-x:auto;overflow-y:hidden;margin:14px -2px 0;padding:2px 2px 0;scrollbar-width:thin;scrollbar-color:var(--control) transparent}
+.team-workflow-stations{display:flex;align-items:flex-start;gap:28px;min-width:0}
+.team-workflow-stage{position:relative;flex:1 0 128px;min-width:128px}
+.team-workflow-stage-head{display:flex;align-items:baseline;padding:0 0 9px 26px;font-size:11px;line-height:15px;color:var(--muted);white-space:nowrap;overflow:hidden}
+.team-workflow-stage-parallel::before{content:"·";margin:0 6px 0 5px;color:var(--control)}
+.team-workflow-lanes{display:flex;flex-direction:column;gap:12px}
+.team-workflow-station{position:relative;display:flex;align-items:flex-start;gap:10px;min-width:0}
+.team-workflow-lamp{position:relative;flex:none;display:grid;place-items:center;width:16px;height:16px;border:1.5px solid var(--control);border-radius:50%;background:var(--raised);color:transparent;font-size:9px;font-weight:700;line-height:1}
+.team-workflow-station.completed .team-workflow-lamp{border-color:var(--green);background:var(--green);color:var(--raised)}
+.team-workflow-station.completed .team-workflow-lamp::after{content:"✓"} /* taste-skill-ignore emoji */
+.team-workflow-station.running .team-workflow-lamp,.team-workflow-station.dispatching .team-workflow-lamp{border-color:var(--warning-text);background:var(--warning-text);box-shadow:0 0 0 4px var(--warning-bg);animation:workflow-pulse 1.6s ease-in-out infinite}
+.team-workflow-station.ready .team-workflow-lamp{border-color:var(--warning-text);background:var(--warning-bg)}
+.team-workflow-station.failed .team-workflow-lamp,.team-workflow-station.outcome_unknown .team-workflow-lamp{border-color:var(--error);background:var(--error);color:var(--raised)}
+.team-workflow-station.failed .team-workflow-lamp::after,.team-workflow-station.outcome_unknown .team-workflow-lamp::after{content:"✕"} /* taste-skill-ignore emoji */
+.team-workflow-station.stopped .team-workflow-lamp,.team-workflow-station.cancelled .team-workflow-lamp{border-color:var(--control);background:var(--control)}
+.team-workflow-station.stopped .team-workflow-lamp::after,.team-workflow-station.cancelled .team-workflow-lamp::after{content:"";width:6px;height:1.5px;border-radius:1px;background:currentColor}
+.team-workflow-body{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.team-workflow-step{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:12.5px;font-weight:600;line-height:17px;color:var(--text);overflow-wrap:anywhere}
+.team-workflow-member{display:flex;align-items:center;gap:5px;min-width:0;font-size:11px;line-height:15px;color:var(--muted)}
+.team-workflow-agent{flex:none;width:5px;height:5px;border-radius:50%;background:var(--agent-dot,var(--control))}
+.team-workflow-member-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-workflow-reason{font-size:11px;line-height:15px;color:var(--error);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-workflow-agent[data-agent="kimi"]{--agent-dot:#7a74e0}
+.team-workflow-agent[data-agent="claude"]{--agent-dot:#cf8b3f}
+.team-workflow-agent[data-agent="workbuddy"]{--agent-dot:#3f97c9}
+.team-workflow-agent[data-agent="zcode"]{--agent-dot:#3aa88c}
+.team-workflow-agent[data-agent="dsh"]{--agent-dot:#a86bc4}
+.team-workflow-agent[data-agent="mcode"]{--agent-dot:#8a90a0}
+.team-workflow-agent[data-agent="codex"]{--agent-dot:#5f6b7a}
+.team-workflow-agent[data-agent="opencode"]{--agent-dot:#d1704a}
+/* 分支：同阶段并行的下一站从本站的灯往下接（本站高度不定，所以从灯底拉到下一站顶端）。 */
+.team-workflow-station.continued::after{content:"";position:absolute;left:8px;top:16px;bottom:-12px;width:1px;transform:translateX(-.5px);background:var(--line)}
+/* 暗色下不加实心亮圆：用同色淡底 + 同色字，符号仍然读得出来。 */
+:root[data-theme="dark"] .team-workflow-station.completed .team-workflow-lamp{background:color-mix(in srgb,var(--green) 16%,transparent);border-color:transparent;color:var(--green)}
+:root[data-theme="dark"] .team-workflow-station.failed .team-workflow-lamp,
+:root[data-theme="dark"] .team-workflow-station.outcome_unknown .team-workflow-lamp{background:color-mix(in srgb,var(--error) 18%,transparent);border-color:transparent;color:var(--error)}
+:root[data-theme="dark"] .team-workflow-station.stopped .team-workflow-lamp,
+:root[data-theme="dark"] .team-workflow-station.cancelled .team-workflow-lamp{background:color-mix(in srgb,var(--control) 40%,transparent);border-color:transparent;color:var(--muted)}
+.team-workflow-card.compact .team-workflow-member{display:none}
+.team-workflow-artifacts{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.team-workflow-artifact{display:inline-flex;align-items:center;gap:5px}
+@keyframes workflow-pulse{0%,100%{box-shadow:0 0 0 3px var(--warning-bg)}50%{box-shadow:0 0 0 5px var(--warning-bg)}}
 .team-delivery{border-top:1px solid var(--line);margin-top:10px;padding-top:12px}
 .team-delivery>strong{font-size:12px;color:var(--green)}
 .team-delivery-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
@@ -327,6 +361,15 @@
 .team-settings-add button{border:1px solid var(--line);background:var(--soft);border-radius:8px;color:var(--green);white-space:nowrap}
 .team-workflow-empty{border:1px dashed var(--line);border-radius:12px;background:var(--raised);padding:18px;margin:0 0 24px;max-width:760px}
 .team-workflow-empty strong{display:block;font-size:13px;margin-bottom:10px}
-.team-workflow-empty .team-workflow-pills{justify-content:start;display:flex;flex-wrap:wrap}
-.team-workflow-empty .team-workflow-pills:last-child{margin-top:10px}
-@media(max-width:720px){.team-workflow-card{padding:10px}.team-workflow-head strong{min-width:110px}.team-workflow-stations{min-width:450px}.team-role-grid{grid-template-columns:1fr}.team-settings-add{grid-template-columns:minmax(0,1fr) 88px}.team-settings-add button{grid-column:1/-1;padding:10px}}
+.team-workflow-roster{display:flex;flex-wrap:wrap;gap:8px 16px}
+.team-workflow-roster-member{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
+.team-workflow-empty .team-workflow-meta{margin-top:10px}
+@media(max-width:720px){
+  .team-workflow-card{padding:12px 12px 10px}
+  /* 手机上轨道改成竖排：一条脊柱从上到下，阶段之间不横向滚动。 */
+  .team-workflow-stations{flex-direction:column;gap:0}
+  .team-workflow-stage{flex:none;width:100%;min-width:0;padding-bottom:12px}
+  .team-workflow-stage+.team-workflow-stage::before{content:"";position:absolute;left:8px;top:0;width:1px;height:24px;transform:translateX(-.5px);background:var(--line)}
+  .team-workflow-station.chain::after{content:"";position:absolute;left:8px;top:16px;bottom:-12px;width:1px;transform:translateX(-.5px);background:var(--line)}
+  .team-role-grid{grid-template-columns:1fr}.team-settings-add{grid-template-columns:minmax(0,1fr) 88px}.team-settings-add button{grid-column:1/-1;padding:10px}
+}

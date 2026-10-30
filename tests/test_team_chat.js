@@ -9,7 +9,7 @@ global.BridgeI18n={agentLabel:kind=>kind};
 const {TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages}=require('../web/team-chat.js');
 
 class FakeNode{
-  constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
+  constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.style={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
   append(...nodes){this.children.push(...nodes);}
   replaceChildren(...nodes){this.children=[...nodes];}
   setAttribute(name,value){this.attributes[name]=value;}
@@ -63,7 +63,7 @@ test('workflow renders run tasks and supports member collapse and details',async
   controller.setTeams(teams);controller.open(teams[0]);await flush();
   assert.equal(root.hidden,false);
   assert.equal(find(root,'team-workflow-station').length,2);
-  assert.match(find(root,'team-workflow-pill')[1].textContent,/前端 · zcode/);
+  assert.match(text(find(root,'team-workflow-member')[1]),/前端 · zcode/);
   const toggle=find(root,'team-workflow-head')[0].children[2];
   toggle.onclick();
   assert.equal(find(root,'team-workflow-head')[0].children[2].attributes['aria-expanded'],'false');
@@ -201,4 +201,53 @@ test('legacy delegate tasks without persisted dependencies get the same display 
   assert.deepEqual(stages.map(stage=>stage.map(task=>task.id)),[
     ['lead'],['lead-d1-0','lead-d1-1'],['lead-d1-2'],['lead-auto-reduce'],
   ]);
+});
+
+test('workflow station title prefers the prompt over the internal id',()=>{
+  const {teamWorkflowTaskTitle}=require('../web/team-chat.js');
+  // 任务 id 是内部标识（lead-d1-0），轨道上要展示提示词首行。
+  assert.equal(teamWorkflowTaskTitle({id:'lead-d1-0',instructionsHead:'## 重构登录接口\n补充测试'}),'重构登录接口');
+  assert.equal(teamWorkflowTaskTitle({id:'lead-d1-1',prompt:'## 只读排查\n细节'}),'只读排查');
+  // 提示词开头的绝对路径在窄列里只会占满两行，展示时去掉，正文交给 CSS 两行截断。
+  assert.equal(teamWorkflowTaskTitle({id:'t',prompt:'在 /Users/petaflops/works/unsorted/mobile-bridge 只读排查 internal/httpd'}),
+    '只读排查 internal/httpd');
+  assert.equal(teamWorkflowTaskTitle({id:'t',prompt:'一'.repeat(60)}),'一'.repeat(60));
+  // 超长英文标识（测试名、路径段）在窄列里会被折在词中间，显示时中截，原文仍在 title。
+  assert.equal(teamWorkflowTaskTitle({id:'t',prompt:'排查 TestTeamIntegration2IdempotencyAndRestart 的失败'}),
+    '排查 TestTeamIntegr…AndRestart 的失败');
+  // 主控站点保留角色名，没有提示词时回落到任务 id。
+  assert.equal(teamWorkflowTaskTitle({id:'lead',prompt:'汇总成果'}),'负责人');
+  assert.equal(teamWorkflowTaskTitle({id:'custom'}),'custom');
+});
+
+test('workflow counts come from the tasks, not from the run status',()=>{
+  const {teamWorkflowCounts}=require('../web/team-chat.js');
+  const counts=teamWorkflowCounts([
+    {status:'completed'},{status:'failed'},{status:'outcome_unknown'},
+    {status:'running'},{status:'ready'},{status:'stopped'},{status:'planned'},
+  ]);
+  assert.deepEqual(counts,{total:7,completed:1,failed:2,running:2,stopped:1,pending:1});
+  assert.deepEqual(teamWorkflowCounts([]),{total:0,completed:0,failed:0,running:0,stopped:0,pending:0});
+});
+
+test('workflow outcome never reports a run with failed tasks as completed',()=>{
+  const {teamWorkflowOutcome}=require('../web/team-chat.js');
+  const failed={total:3,failed:1,completed:2,running:0,stopped:0,pending:0};
+  // Run 的 completed 只表示编排走完，任务里有失败就必须说「部分失败」。
+  assert.deepEqual(teamWorkflowOutcome({status:'completed'},failed),{label:'部分失败',tone:'bad'});
+  assert.deepEqual(teamWorkflowOutcome({status:'completed'},{total:3,failed:0,stopped:0}),
+    {label:'已完成',tone:'ok'});
+  assert.deepEqual(teamWorkflowOutcome({status:'failed'},{total:3,failed:2}),{label:'已失败',tone:'bad'});
+  assert.deepEqual(teamWorkflowOutcome({status:'stopped'},{total:3,failed:0}),{label:'已停止',tone:'idle'});
+  assert.deepEqual(teamWorkflowOutcome({status:'collecting'},{total:3,failed:0}),{label:'collecting',tone:'warn'});
+  assert.deepEqual(teamWorkflowOutcome({status:'outcome_unknown'},{total:1,failed:1}),{label:'结果未知',tone:'bad'});
+});
+
+test('workflow member label does not say the agent name twice',()=>{
+  const {teamWorkflowMemberLabel}=require('../web/team-chat.js');
+  assert.equal(teamWorkflowMemberLabel({name:'kimi',agentKind:'kimi'}),'kimi');
+  assert.equal(teamWorkflowMemberLabel({name:'前端',agentKind:'zcode'}),'前端 · zcode');
+  assert.equal(teamWorkflowMemberLabel({id:'member-claude',agentKind:'claude'}),'member-claude · claude');
+  assert.equal(teamWorkflowMemberLabel({}, {memberId:'member-1'}),'member-1');
+  assert.equal(teamWorkflowMemberLabel({agentKind:'kimi'}),'kimi');
 });
