@@ -84,6 +84,17 @@ var (
 	}
 )
 
+// workbuddyKnownPackageNames fills the gap when only the summary endpoint
+// answered: it reports package codes without any display name, which used to
+// surface as a raw "TCACA_code_008_cfWoLwvjU4" row in the account panel.
+var workbuddyKnownPackageNames = map[string]string{
+	"TCACA_code_008_cfWoLwvjU4": "CodeBuddy个人体验版",
+}
+
+// workbuddyCreditWindowName labels the synthetic aggregate window built from
+// the credit summary; the UI renders the same numbers from the credits block.
+const workbuddyCreditWindowName = "积分"
+
 // local_storage runtime caches that must be rewritten on a region switch
 // (cli.rs): env/endpoint caches are rewritten, the product cache is dropped.
 const (
@@ -981,6 +992,74 @@ func workbuddyResolveExpireAt(raw map[string]any, nowMS int64) int64 {
 	return expireAt
 }
 
+// workbuddyResourceIdentity keys one credit package across the three billing
+// endpoints. The summary rollup answers with Packages rows that carry only a
+// PackageCode, while the paid/free detail answers with the same package plus
+// its PackageName — keying on the code is what folds those two reports into
+// one row (keying on ResourceId would not match, the rollup omits it).
+func workbuddyResourceIdentity(raw map[string]any) string {
+	if code := strings.TrimSpace(stringValue(raw, "PackageCode", "packageCode")); code != "" {
+		return "pkg:" + code
+	}
+	if id := strings.TrimSpace(stringValue(raw, "ResourceId", "resourceId", "AccountId", "accountId")); id != "" {
+		return "rid:" + id
+	}
+	return ""
+}
+
+// workbuddyMergeResourceRow fills the gaps of dst with src's values. The first
+// report of a package keeps its numbers (the summary rollup is the
+// authoritative capacity), the later detail only contributes what the rollup
+// lacks — the display name and the cycle timestamps.
+func workbuddyMergeResourceRow(dst, src map[string]any) {
+	for key, value := range src {
+		if value == nil {
+			continue
+		}
+		if !workbuddyEmptyJSONValue(dst[key]) {
+			continue
+		}
+		dst[key] = value
+	}
+}
+
+func workbuddyEmptyJSONValue(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(v) == ""
+	case float64:
+		return v == 0
+	case int:
+		return v == 0
+	case bool:
+		return false
+	}
+	return false
+}
+
+// workbuddyPackageDisplayName prefers the server name, falls back to the known
+// code table, and degrades unknown codes to a short "积分包 002" label instead
+// of dumping the 24-character billing code into the account panel.
+func workbuddyPackageDisplayName(code, name string) string {
+	if display := strings.TrimSpace(name); display != "" {
+		return display
+	}
+	code = strings.TrimSpace(code)
+	if display, ok := workbuddyKnownPackageNames[code]; ok {
+		return display
+	}
+	if code == "" {
+		return ""
+	}
+	suffix := strings.TrimPrefix(code, "TCACA_code_")
+	if index := strings.Index(suffix, "_"); index > 0 {
+		suffix = suffix[:index]
+	}
+	return "积分包 " + suffix
+}
+
 func workbuddyResourceSummary(raw map[string]any, nowMS int64) *CreditsResource {
 	var slice map[string]any
 	if details, ok := raw["SlicePeriodUsageDetails"].([]any); ok && len(details) > 0 {
@@ -1039,7 +1118,7 @@ func workbuddyResourceSummary(raw map[string]any, nowMS int64) *CreditsResource 
 	expiringSoon := expireAt > nowMS && expireAt-nowMS <= workbuddyExpiringSoonDays*24*3600*1000
 	resource := &CreditsResource{
 		PackageCode:  stringValue(raw, "PackageCode", "packageCode"),
-		PackageName:  stringValue(raw, "PackageName", "packageName"),
+		PackageName:  workbuddyPackageDisplayName(stringValue(raw, "PackageCode", "packageCode"), stringValue(raw, "PackageName", "packageName")),
 		Total:        int64(total + 0.5),
 		Remaining:    int64(remaining + 0.5),
 		Used:         int64(used + 0.5),
@@ -1128,6 +1207,7 @@ func workbuddyRouteMissing(response map[string]any) bool {
 type workbuddyCredits struct {
 	OK                    bool
 	Error                 string
+	SubscriptionName      string // e.g. "体验版" (summary SubscriptionPackageName)
 	TotalCapacity         float64
 	TotalRemaining        float64
 	ExpiringSoonRemaining float64
@@ -1162,14 +1242,34 @@ func (m *Manager) queryWorkbuddyCredits(ctx context.Context, acc *Account, now t
 	variant := workbuddyVariantFromAccount(&working)
 	nowMS := now.UnixMilli()
 	accessToken := workbuddyPlainToken(working.AccessToken)
-	var resources []*CreditsResource
+	// The three billing endpoints overlap: the summary rollup already lists
+	// every package (code + capacity, no name) and the paid/free detail lists
+	// the same packages again (name + cycle). Rows are therefore collected by
+	// package identity — appending them verbatim double-counted the same
+	// package into two rows and doubled the account's total capacity.
+	var rawRows []map[string]any
+	rowIndex := map[string]int{}
+	subscription := ""
 
 	collect := func(response map[string]any) {
 		if !workbuddySuccess(response) {
 			return
 		}
+		if subscription == "" {
+			if data := objectValue(response, "data"); data != nil {
+				subscription = strings.TrimSpace(stringValue(data, "SubscriptionPackageName", "subscriptionPackageName"))
+			}
+		}
 		for _, raw := range workbuddyCollectArrays(response) {
-			resources = append(resources, workbuddyResourceSummary(raw, nowMS))
+			key := workbuddyResourceIdentity(raw)
+			if key != "" {
+				if at, seen := rowIndex[key]; seen {
+					workbuddyMergeResourceRow(rawRows[at], raw)
+					continue
+				}
+				rowIndex[key] = len(rawRows)
+			}
+			rawRows = append(rawRows, raw)
 		}
 	}
 
@@ -1199,7 +1299,7 @@ func (m *Manager) queryWorkbuddyCredits(ctx context.Context, acc *Account, now t
 	}
 
 	// ai single path, or the cn three-path empty fallback.
-	if len(resources) == 0 {
+	if len(rawRows) == 0 {
 		response := workbuddyPostBilling(ctx, &working, variant, accessToken, "/v2/billing/meter/get-user-resource", workbuddyLegacyResourceBody())
 		if workbuddyUnauthorized(response) && working.RefreshToken != "" {
 			refreshed := working
@@ -1212,10 +1312,14 @@ func (m *Manager) queryWorkbuddyCredits(ctx context.Context, acc *Account, now t
 		}
 		collect(response)
 	}
-	if len(resources) == 0 {
+	if len(rawRows) == 0 {
 		return fail("积分查询失败：接口未返回任何资源数据"), &working
 	}
-	summary := &workbuddyCredits{OK: true, Resources: resources}
+	resources := make([]*CreditsResource, 0, len(rawRows))
+	for _, raw := range rawRows {
+		resources = append(resources, workbuddyResourceSummary(raw, nowMS))
+	}
+	summary := &workbuddyCredits{OK: true, Resources: resources, SubscriptionName: subscription}
 	for _, resource := range resources {
 		summary.TotalCapacity += float64(resource.Total)
 		summary.TotalRemaining += float64(resource.Remaining)
@@ -1235,22 +1339,24 @@ func (m *Manager) queryWorkbuddyCredits(ctx context.Context, acc *Account, now t
 }
 
 // normalizeWorkbuddyCredits folds the credit summary into the pool Quota
-// shape: one synthetic "积分" window (used = capacity - remaining) plus the
-// detail block for the UI.
+// shape: one synthetic "积分" window (used = capacity - remaining, the switch
+// gate) plus the detail block the panel renders. The window keeps its name
+// constant so quotaView can drop it from the API view — the credits block
+// already carries the same numbers.
 func normalizeWorkbuddyCredits(summary *workbuddyCredits) *Quota {
 	used := summary.TotalCapacity - summary.TotalRemaining
 	if used < 0 {
 		used = 0
 	}
 	window := &WindowQuota{
-		Name:  "积分",
+		Name:  workbuddyCreditWindowName,
 		Used:  int64(used + 0.5),
 		Limit: int64(summary.TotalCapacity + 0.5),
 	}
 	if summary.SoonestExpireAt > 0 {
 		window.ResetAt = epochToRFC3339(summary.SoonestExpireAt)
 	}
-	return &Quota{
+	quota := &Quota{
 		Limits: []*WindowQuota{window},
 		Credits: &CreditsQuota{
 			TotalCapacity:         summary.TotalCapacity,
@@ -1262,6 +1368,12 @@ func normalizeWorkbuddyCredits(summary *workbuddyCredits) *Quota {
 			Resources:             summary.Resources,
 		},
 	}
+	// "体验版"/"专业版" — the plan these credits belong to. Rendered as the
+	// muted tier label next to the account name.
+	if tier := strings.TrimSpace(summary.SubscriptionName); tier != "" {
+		quota.Membership = &QuotaMembership{Tier: tier}
+	}
+	return quota
 }
 
 // --- CLI apiKeyHelper mode (cli.rs) --------------------------------------------------

@@ -328,6 +328,67 @@ func TestWorkbuddyCreditsThreePaths(t *testing.T) {
 	}
 }
 
+// The cn endpoints overlap: the summary rollup reports the package without a
+// name, the free-package detail reports the same package again with one. The
+// two reports must collapse into a single resource (they used to be summed,
+// doubling the account's capacity and showing a raw package code as a row).
+func TestWorkbuddyCreditsDedupeSamePackage(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "get-user-resource-summary"):
+			_, _ = w.Write([]byte(`{"code":0,"data":{"Packages":[{"PackageCode":"TCACA_code_008_cfWoLwvjU4","CycleTotalCapacity":500,"CycleRemainCapacity":494.96,"CycleUsedCapacity":5.04,"CapacityUnit":"credits","TotalCount":1}],"TotalCredits":494.96,"SubscriptionPackageName":"体验版","IsPaidUser":false}}`))
+		case strings.HasSuffix(r.URL.Path, "get-user-resource-paid-packages"):
+			_, _ = w.Write([]byte(`{"code":0,"data":{"Accounts":[],"TotalCount":0}}`))
+		case strings.HasSuffix(r.URL.Path, "get-user-resource-free-packages"):
+			_, _ = w.Write([]byte(`{"code":0,"data":{"Accounts":[{"PackageCode":"TCACA_code_008_cfWoLwvjU4","PackageName":"CodeBuddy个人体验版","CycleCapacitySizePrecise":500,"CycleCapacityRemainPrecise":494.96,"CycleCapacityUsedPrecise":5.04,"CycleCapacitySize":500,"CycleCapacityRemain":494,"CycleCapacityUsed":5,"CycleStartTime":"2026-10-01 00:00:00","CycleEndTime":"2026-10-31 23:59:59","DeductionEndTime":2047680986000,"ResourceId":"codebuddy-k6e011veumjgvdt"}],"TotalCount":1}}`))
+		default:
+			t.Errorf("unexpected billing path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+	if _, _, err := m.upsert("workbuddy", workbuddyFixtureAccount("w_uid1", "uid-1", "fixture")); err != nil {
+		t.Fatal(err)
+	}
+	acc, err := m.RefreshQuota(context.Background(), "workbuddy", "w_uid1")
+	if err != nil {
+		t.Fatalf("RefreshQuota: %v", err)
+	}
+	if acc.Quota == nil || acc.Quota.Credits == nil {
+		t.Fatalf("credits missing: %+v", acc.Quota)
+	}
+	credits := acc.Quota.Credits
+	if len(credits.Resources) != 1 {
+		t.Fatalf("the same package must collapse into one resource: %+v", credits.Resources)
+	}
+	if credits.TotalCapacity != 500 || credits.TotalRemaining != 495 {
+		t.Fatalf("capacity must not double-count the package: %+v", credits)
+	}
+	resource := credits.Resources[0]
+	if resource.PackageName != "CodeBuddy个人体验版" {
+		t.Fatalf("package name not merged from the detail endpoint: %+v", resource)
+	}
+	if resource.PackageCode != "TCACA_code_008_cfWoLwvjU4" {
+		t.Fatalf("package code: %+v", resource)
+	}
+	if acc.Quota.Membership == nil || acc.Quota.Membership.Tier != "体验版" {
+		t.Fatalf("subscription tier: %+v", acc.Quota.Membership)
+	}
+	// The aggregate window stays on the snapshot (auto-switch gates on it) but
+	// is not part of the API view — the credits block already renders it.
+	if len(acc.Quota.Limits) != 1 {
+		t.Fatalf("synthetic window missing from the snapshot: %+v", acc.Quota.Limits)
+	}
+	view := quotaView(acc.Quota)
+	limits, _ := view.MustGet("limits").(*jsoncompat.Array)
+	if limits == nil || len(limits.Items) != 0 {
+		t.Fatalf("aggregate window must not repeat in the view: %v", limits)
+	}
+}
+
 func TestWorkbuddyCreditsLegacyFallbacks(t *testing.T) {
 	// cn: three paths all empty → legacy get-user-resource.
 	m, _ := setupWorkbuddyFixture(t)

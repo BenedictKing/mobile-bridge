@@ -821,6 +821,12 @@ func quotaView(q *Quota) *jsoncompat.Object {
 	}
 	limits := &jsoncompat.Array{}
 	for _, w := range q.Limits {
+		// The WorkBuddy aggregate window is derived from Credits; the credits
+		// block below renders the same used/total pair, so emitting the window
+		// here produced a second, identical "积分" row in the panel.
+		if q.Credits != nil && w.Name == workbuddyCreditWindowName {
+			continue
+		}
 		limits.Items = append(limits.Items, windowView(w))
 	}
 	row.Set("limits", limits)

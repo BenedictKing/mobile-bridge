@@ -218,22 +218,31 @@ class PoolPanel {
       }
       const credits=quota.credits;
       if(credits){
-        const line=this.node('div',undefined,'accounts-window');
-        const pct=credits.totalCapacity>0?Math.min(100,Math.max(0,Math.round((credits.totalCapacity-credits.totalRemaining)/credits.totalCapacity*1000)/10)):null;
-        line.append(this.node('span',t('积分')+(credits.expired?' · '+t('已到期'):'')+(credits.expiringSoon?' · '+t('7 天内到期'):'')),
-          this.node('strong',pct==null?t('暂未提供'):t('已用 ')+pct+'%'));
-        if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('已用额度'));line.append(progress);}
-        if(credits.soonestExpireAt){const left=this.untilText(credits.soonestExpireAt,'后到期');line.title=t('到期时间：')+this.time(credits.soonestExpireAt);if(left)line.append(this.node('span',left,'account-muted'));}
-        box.append(line);
-        for(const r of credits.resources||[]){
-          if(!r.packageName&&!r.packageCode)continue;
-          const item=this.node('div',undefined,'accounts-window');
-          const usedPct=r.total>0?Math.min(100,Math.max(0,Math.round((r.total-r.remaining)/r.total*1000)/10)):null;
-          item.append(this.node('span',(r.packageName||r.packageCode)+(r.expiringSoon?' · '+t('7 天内到期'):'')+(r.expired?' · '+t('已到期'):'')),
-            this.node('strong',usedPct==null?t('暂未提供'):t('已用 ')+usedPct+'%'));
-          if(usedPct!=null){const progress=this.node('progress');progress.max=100;progress.value=usedPct;progress.setAttribute('aria-label',t('已用额度'));item.append(progress);}
-          if(r.expireAt){const left=this.untilText(r.expireAt,'后到期');item.title=t('到期时间：')+this.time(r.expireAt);if(left)item.append(this.node('span',left,'account-muted'));}
-          box.append(item);
+        const asNumber=value=>typeof value==='number'?value:(Number(value)||0);
+        const badges=(expired,expiringSoon)=>(expired?' · '+t('已到期'):'')+(expiringSoon?' · '+t('7 天内到期'):'');
+        // 一条额度行：标题 + 「已用 x / y · z%」+ 进度条 + 到期倒计时。
+        const addRow=(label,used,limit,flags,expireAt)=>{
+          const line=this.node('div',undefined,'accounts-window');
+          const pct=limit>0?Math.min(100,Math.max(0,Math.round(used/limit*1000)/10)):null;
+          const amount=limit>0?Math.max(0,Math.round(used))+' / '+Math.round(limit):null;
+          line.append(this.node('span',label+(flags||'')),
+            this.node('strong',amount==null?t('暂未提供'):t('已用 ')+amount+(pct==null?'':' · '+pct+'%')));
+          if(pct!=null){const progress=this.node('progress');progress.max=100;progress.value=pct;progress.setAttribute('aria-label',t('已用额度'));line.append(progress);}
+          if(expireAt){const left=this.untilText(expireAt,'后到期');line.title=t('到期时间：')+this.time(expireAt);if(left)line.append(this.node('span',left,'account-muted'));}
+          box.append(line);
+        };
+        const resources=(credits.resources||[]).filter(r=>r.packageName||r.packageCode);
+        if(resources.length===1&&asNumber(resources[0].total)>0){
+          // 只有一个积分包时，汇总行与明细行是同一组数字，只留带包名的一条。
+          const r=resources[0],total=asNumber(r.total),remaining=asNumber(r.remaining);
+          addRow(r.packageName||r.packageCode,total-remaining,total,badges(r.expired,r.expiringSoon),r.expireAt);
+        }else{
+          const total=asNumber(credits.totalCapacity),remaining=asNumber(credits.totalRemaining);
+          addRow(t('积分'),total-remaining,total,badges(credits.expired,credits.expiringSoon),credits.soonestExpireAt);
+          for(const r of resources){
+            const itemTotal=asNumber(r.total),itemRemaining=asNumber(r.remaining);
+            addRow(r.packageName||r.packageCode,itemTotal-itemRemaining,itemTotal,badges(r.expired,r.expiringSoon),r.expireAt);
+          }
         }
       }
       for(const w of quota.limits||[]){
@@ -254,7 +263,7 @@ class PoolPanel {
         if(w.resetAt){const left=this.untilText(w.resetAt,'后重置');line.title=t('恢复时间：')+this.resetTime(w.resetAt);if(left)line.append(this.node('span',left,'account-muted'));}
         box.append(line);
       }
-      if(!quota.limits?.length&&!quota.weekly)box.append(this.node('span',t('暂未提供额度信息'),'account-muted'));
+      if(!quota.limits?.length&&!quota.weekly&&!quota.credits)box.append(this.node('span',t('暂未提供额度信息'),'account-muted'));
       const updated=this.node('p',t('更新于：')+(this.agoText(row.quotaUpdatedAt)||this.time(row.quotaUpdatedAt)),'account-muted');
       if(typeof row.quotaUpdatedAt==='number')updated.title=this.time(row.quotaUpdatedAt);
       box.append(updated);
