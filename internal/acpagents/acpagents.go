@@ -293,7 +293,9 @@ func workbuddyProfile(env func(string) string, home string) Profile {
 		argv = []string{executable, "--acp"}
 	}
 	return Profile{
-		Kind: "workbuddy", Label: "WorkBuddy",
+		// 用户可见名跟随 CLI 品牌（CodeBuddy）；kind 仍为 workbuddy（池与
+		// 存储标识，历史兼容）。桌面 App 才叫 WorkBuddy。
+		Kind: "workbuddy", Label: "CodeBuddy",
 		Command:           argv,
 		InitializeTimeout: 60 * time.Second,
 		Capabilities:      []string{},

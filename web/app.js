@@ -1421,7 +1421,7 @@ const poolPanels=typeof PoolPanel==='undefined'?[]:[
   new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{}),readLogin:()=>api('/api/pool/kimi/login')}),
   new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{}),readLogin:()=>api('/api/pool/zcode/login')}),
   new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{}),readLogin:()=>api('/api/pool/minimax/login')}),
-  new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
+  new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'CodeBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
 ];
 // 账号池 tab：Codex 标签就是上方的真实切换面板（原只读列表与它重复，已去掉），
 // 其余每个 ACP 池各一个标签；一次只显示、只刷新当前标签，并记住上次选的标签。

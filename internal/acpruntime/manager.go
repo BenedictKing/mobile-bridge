@@ -1068,7 +1068,7 @@ func refusalFailure(result *jsoncompat.Object) string {
 	category, _ := data.MustGet("category").(string)
 	statusCode, _ := data.MustGet("statusCode").(json.Number)
 	if category == "auth" || statusCode.String() == "401" {
-		return "WorkBuddy 登录已失效，请在 CLI 中执行 /login 后重试"
+		return "CodeBuddy 登录已失效，请在 CLI 中执行 /login 后重试"
 	}
 	if message, _ := failure.MustGet("message").(string); message != "" {
 		return message

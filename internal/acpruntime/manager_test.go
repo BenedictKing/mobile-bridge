@@ -679,7 +679,7 @@ func TestWorkbuddyRefusalSurfacesAuthenticationError(t *testing.T) {
 	}
 	messages := turns[0].(*jsoncompat.Object).MustGet("messages").(*jsoncompat.Array).Items
 	last := messages[len(messages)-1].(*jsoncompat.Object)
-	if last.MustGet("kind") != "error" || last.MustGet("text") != "WorkBuddy 登录已失效，请在 CLI 中执行 /login 后重试" {
+	if last.MustGet("kind") != "error" || last.MustGet("text") != "CodeBuddy 登录已失效，请在 CLI 中执行 /login 后重试" {
 		t.Fatalf("missing visible login guidance: %v", last)
 	}
 

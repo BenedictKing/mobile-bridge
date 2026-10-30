@@ -688,16 +688,144 @@ func TestWorkbuddyActiveIDFallsBackToSlotUID(t *testing.T) {
 // plaintext account block) for active-id tests.
 func writeWorkbuddySlotJSON(t *testing.T, variant string, root map[string]any) {
 	t.Helper()
+	writeWorkbuddyAuthJSONAt(t, workbuddyAuthFilePath(variant), root)
+}
+
+func writeWorkbuddyAuthJSONAt(t *testing.T, path string, root map[string]any) {
+	t.Helper()
 	raw, err := json.Marshal(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := workbuddyAuthFilePath(variant)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 未接管 apiKeyHelper 时，CLI 跑在自己的登录槽（Tencent-Cloud.coding-copilot.info）
+// 上——它和桌面 App 的槽是两个账号、两个文件，「当前使用」必须跟 CLI 走。
+func TestWorkbuddyActiveIDPrefersCLILogin(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	cliAcc := workbuddyFixtureAccount("w_ucli", "u-cli", "cli")
+	if err := m.saveAccount("workbuddy", cliAcc); err != nil {
+		t.Fatal(err)
+	}
+	deskAcc := workbuddyFixtureAccount("w_udesk", "u-desk", "desk")
+	if err := m.saveAccount("workbuddy", deskAcc); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkbuddySlotJSON(t, "cn", map[string]any{
+		"account": map[string]any{"uid": "u-desk"},
+		"auth": map[string]any{
+			"accessToken":  "at-desk",
+			"refreshToken": "rt-desk",
+		},
+	})
+
+	// CLI 自己登录了另一个账号：当前使用应跟 CLI，而不是桌面槽。
+	writeWorkbuddyAuthJSONAt(t, workbuddyCLILoginPath(), map[string]any{
+		"account": map[string]any{"uid": "u-cli", "nickname": "CLI 本人"},
+		"auth": map[string]any{
+			"accessToken":  "at-cli-own",
+			"refreshToken": "rt-cli-own",
+			"domain":       "www.codebuddy.cn",
+		},
+	})
+	if got := m.activeID("workbuddy"); got != "w_ucli" {
+		t.Fatalf("cli login must win: %q", got)
+	}
+
+	// CLI 登录的是池外账号：如实返回空，不得误标桌面槽匹配的账号。
+	writeWorkbuddyAuthJSONAt(t, workbuddyCLILoginPath(), map[string]any{
+		"account": map[string]any{"uid": "u-outside"},
+		"auth": map[string]any{
+			"accessToken":  "at-outside",
+			"refreshToken": "rt-outside",
+			"domain":       "www.codebuddy.cn",
+		},
+	})
+	if got := m.activeID("workbuddy"); got != "" {
+		t.Fatalf("unpooled cli login must not fall back to the desktop slot: %q", got)
+	}
+}
+
+// 已接管 apiKeyHelper 时，CLI 的账号来自 state.json，当前使用以它为准。
+func TestWorkbuddyActiveIDFromCLIState(t *testing.T) {
+	m, home := setupWorkbuddyFixture(t)
+	stateAcc := workbuddyFixtureAccount("w_ustate", "u-state", "state")
+	if err := m.saveAccount("workbuddy", stateAcc); err != nil {
+		t.Fatal(err)
+	}
+	deskAcc := workbuddyFixtureAccount("w_udesk2", "u-desk2", "desk2")
+	if err := m.saveAccount("workbuddy", deskAcc); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkbuddySlotJSON(t, "cn", map[string]any{
+		"account": map[string]any{"uid": "u-desk2"},
+		"auth": map[string]any{
+			"accessToken":  "at-desk2",
+			"refreshToken": "rt-desk2",
+		},
+	})
+	settings := filepath.Join(home, ".codebuddy", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"apiKeyHelper":"`+workbuddyHelperPath()+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rotate := workbuddyRotateDir()
+	if err := os.MkdirAll(rotate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workbuddyCLIStatePath(), []byte(`{"active":1,"activeAccountId":"w_ustate","updatedAt":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.activeID("workbuddy"); got != "w_ustate" {
+		t.Fatalf("state.json must win: %q", got)
+	}
+	// activeAccountId 失效时按 active 下标兜底。
+	if err := os.WriteFile(workbuddyCLIStatePath(), []byte(`{"active":1,"updatedAt":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second := m.list("workbuddy")[1].ID
+	if got := m.activeID("workbuddy"); got != second {
+		t.Fatalf("active index fallback: %q (list[1]=%q)", got, second)
+	}
+}
+
+// 「捕获当前登录」承诺读 CLI 的登录态：未接管时必须先捕 CLI 自己的槽，
+// 桌面 App 的槽只作兜底。
+func TestWorkbuddyCapturePrefersCLILogin(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	writeWorkbuddySlotJSON(t, "cn", map[string]any{
+		"account": map[string]any{"uid": "u-desk"},
+		"auth": map[string]any{
+			"accessToken":  "at-desk",
+			"refreshToken": "rt-desk",
+		},
+	})
+	writeWorkbuddyAuthJSONAt(t, workbuddyCLILoginPath(), map[string]any{
+		"account": map[string]any{"uid": "u-cli", "nickname": "CLI 本人"},
+		"auth": map[string]any{
+			"accessToken":  "at-cli",
+			"refreshToken": "rt-cli",
+			"domain":       "www.codebuddy.cn",
+		},
+	})
+	acc, created, err := m.CaptureCurrent(context.Background(), "workbuddy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || acc.ID != "w_u-cli" || acc.AccessToken != "at-cli" {
+		t.Fatalf("capture must import the CLI login first: created=%v acc=%+v", created, acc)
+	}
+	if acc.Variant != "cn" {
+		t.Fatalf("variant from domain: %+v", acc)
 	}
 }
 

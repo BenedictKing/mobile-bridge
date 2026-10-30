@@ -9,12 +9,16 @@ package accpool
 // The desktop slot is the desktop app's four-segment JSON
 // (~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/
 // workbuddy-desktop[|-ai].info = {account, auth, accounts, allAccounts}), so
-// a switch stops and relaunches the app. The CLI consumers (the gateway's ACP
-// sessions) use the apiKeyHelper mode: ~/.codebuddy/settings.json points at
-// ~/.codebuddy-rotate/helper.cjs, which prints the active account's plain
-// access token from the pool per ~/.codebuddy-rotate/state.json. Switching
-// the CLI = writing state.json + the region env (cn: internal; ai: public +
-// CODEBUDDY_BASE_URL) + rewriting the local_storage runtime caches.
+// a switch stops and relaunches the app. Separately, without the takeover
+// the CodeBuddy CLI keeps its OWN login in the same directory
+// (Tencent-Cloud.coding-copilot.info, plain tokens) — the desktop app does
+// not feed it, so pool capture and「当前使用」track that file first.
+// The CLI consumers (the gateway's ACP sessions) use the apiKeyHelper mode:
+// ~/.codebuddy/settings.json points at ~/.codebuddy-rotate/helper.cjs, which
+// prints the active account's plain access token from the pool per
+// ~/.codebuddy-rotate/state.json. Switching the CLI = writing state.json +
+// the region env (cn: internal; ai: public + CODEBUDDY_BASE_URL) + rewriting
+// the local_storage runtime caches.
 //
 // Token timestamps are Unix MILLISECONDS (unlike kimi/minimax seconds). A
 // token may be a WorkBuddy 5.6 encrypted envelope ({$wbEncrypted, envelope})
@@ -151,7 +155,7 @@ func workbuddyHome() string {
 	return ""
 }
 
-func workbuddyAuthFilePath(variant string) string {
+func workbuddyAuthDir() string {
 	sub := ".local/share/CodeBuddyExtension/Data/Public/auth"
 	switch runtime.GOOS {
 	case "darwin":
@@ -159,11 +163,25 @@ func workbuddyAuthFilePath(variant string) string {
 	case "windows":
 		sub = "AppData/Local/CodeBuddyExtension/Data/Public/auth"
 	}
+	return filepath.Join(workbuddyHome(), sub)
+}
+
+func workbuddyAuthFilePath(variant string) string {
 	name := "workbuddy-desktop.info"
 	if variant == "ai" {
 		name = "workbuddy-desktop-ai.info"
 	}
-	return filepath.Join(workbuddyHome(), sub, name)
+	return filepath.Join(workbuddyAuthDir(), name)
+}
+
+// workbuddyCLILoginPath is the CodeBuddy CLI's own credential slot
+// ("Tencent-Cloud.coding-copilot.info") — the login `codebuddy` runs on when
+// the apiKeyHelper takeover is NOT installed. It is a separate account from
+// the WorkBuddy desktop app slots: the CLI refreshes this file itself
+// (plain tokens), while the desktop keeps its own (often envelope-encrypted)
+// login, and the two may be different accounts.
+func workbuddyCLILoginPath() string {
+	return filepath.Join(workbuddyAuthDir(), "Tencent-Cloud.coding-copilot.info")
 }
 
 func workbuddyCodebuddyHome() string { return filepath.Join(workbuddyHome(), ".codebuddy") }
@@ -268,7 +286,11 @@ func abs64(v int64) int64 {
 // --- slot reading ---------------------------------------------------------------
 
 func readWorkbuddyAuthFile(variant string) map[string]any {
-	raw, err := os.ReadFile(workbuddyAuthFilePath(variant))
+	return readWorkbuddyAuthFileAt(workbuddyAuthFilePath(variant))
+}
+
+func readWorkbuddyAuthFileAt(path string) map[string]any {
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -1933,8 +1955,21 @@ func (m *Manager) upsertWorkbuddy(candidate *Account, now time.Time) (*Account, 
 	return m.upsert("workbuddy", candidate)
 }
 
-// activeIDWorkbuddy matches the desktop slot against pooled accounts per
-// variant (mod.rs current).
+// activeIDWorkbuddy reports which pooled account the CodeBuddy CLI actually
+// runs on (mod.rs current, adapted: the bridge drives the CLI, not the
+// desktop app).
+//
+// Priority:
+//  1. apiKeyHelper takeover installed → the CLI reads tokens from the pool per
+//     ~/.codebuddy-rotate/state.json; that marker is the truth.
+//  2. No takeover → the CLI runs on its own login slot
+//     (Tencent-Cloud.coding-copilot.info), which the desktop app does NOT
+//     keep in sync — the two may hold different accounts, so this file wins
+//     over the desktop slot. A CLI login that matches nothing in the pool
+//     means the agent runs on an unpooled account: report none rather than
+//     mislabeling a desktop-matched record as「当前使用」.
+//  3. No CLI login at all → fall back to matching the desktop slots (uid >
+//     token, per variant).
 //
 // Token text is the strongest signal but not a stable one: from 5.6 the
 // desktop writes {"$wbEncrypted":1,...} envelopes whose nonce changes on
@@ -1944,6 +1979,14 @@ func (m *Manager) upsertWorkbuddy(candidate *Account, now time.Time) (*Account, 
 // form can never match, and the panel silently loses「当前使用」.
 func (m *Manager) activeIDWorkbuddy() string {
 	kind := "workbuddy"
+	if helper := workbuddyConfiguredHelper(); helper != "" {
+		if id := m.activeIDFromCLIState(); id != "" {
+			return id
+		}
+	} else if workbuddyCLILoginExists() {
+		// CLI 自有登录存在：池外登录时如实返回空，不能误标桌面槽匹配的账号。
+		return m.activeIDFromCLILogin()
+	}
 	for _, variant := range []string{"cn", "ai"} {
 		root := readWorkbuddyAuthFile(variant)
 		if root == nil {
@@ -1975,6 +2018,59 @@ func (m *Manager) activeIDWorkbuddy() string {
 	return ""
 }
 
+// activeIDFromCLIState maps ~/.codebuddy-rotate/state.json (what the
+// apiKeyHelper prints tokens for) back onto a pooled account.
+func (m *Manager) activeIDFromCLIState() string {
+	state := readMinimaxJSON(workbuddyCLIStatePath())
+	if state == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(stringValue(state, "activeAccountId")); id != "" {
+		if acc, err := m.loadAccount("workbuddy", id); err == nil && acc != nil {
+			return acc.ID
+		}
+	}
+	index := int(int64Or(state["active"], -1))
+	accounts := m.list("workbuddy")
+	if index >= 0 && index < len(accounts) {
+		return accounts[index].ID
+	}
+	return ""
+}
+
+func workbuddyCLILoginExists() bool {
+	_, err := os.Stat(workbuddyCLILoginPath())
+	return err == nil
+}
+
+// activeIDFromCLILogin matches the CLI's own login slot against the pool
+// (uid > email > refreshToken, the upsert dedupe order).
+func (m *Manager) activeIDFromCLILogin() string {
+	root := readWorkbuddyAuthFileAt(workbuddyCLILoginPath())
+	if root == nil {
+		return ""
+	}
+	candidate := candidateFromWorkbuddyAuthRoot(root, workbuddyCLILoginVariant(root))
+	if candidate == nil {
+		return ""
+	}
+	if match := m.findWorkbuddyAccount(candidate); match != nil {
+		return match.ID
+	}
+	return ""
+}
+
+// workbuddyCLILoginVariant derives the variant from the login's auth domain
+// (www.codebuddy.cn → cn, *.workbuddy.ai → ai).
+func workbuddyCLILoginVariant(root map[string]any) string {
+	auth := objectValue(root, "auth")
+	domain := firstNonEmpty(stringValue(auth, "domain"), stringValue(root, "domain"))
+	if strings.HasSuffix(strings.ToLower(strings.TrimSpace(domain)), ".workbuddy.ai") {
+		return "ai"
+	}
+	return "cn"
+}
+
 // workbuddySlotUID is the account identity the desktop keeps in plaintext
 // next to the (possibly encrypted) credentials; capture derives pool IDs and
 // UserID from the same field.
@@ -1991,9 +2087,23 @@ func workbuddyPlaceholderLabel(label string) bool {
 	return len(parts) == 3 && parts[0] == "WorkBuddy" && (parts[1] == "cn" || parts[1] == "ai")
 }
 
-// captureWorkbuddyCurrent snapshots whichever variant's desktop slot is
-// logged in (mod.rs capture_current/sync_current scan both variants).
+// captureWorkbuddyCurrent snapshots the login the CodeBuddy CLI actually
+// runs on (mod.rs capture_current/sync_current, adapted).
+//
+// Without the apiKeyHelper takeover the CLI keeps its own login slot
+// (Tencent-Cloud.coding-copilot.info) — the WorkBuddy desktop app does NOT
+// feed it, and the two may be different accounts — so that file is captured
+// first. With the takeover (or no CLI login at all) fall back to scanning
+// both desktop slot variants, as before.
 func (m *Manager) captureWorkbuddyCurrent(_ context.Context) (*Account, bool, error) {
+	if workbuddyConfiguredHelper() == "" {
+		if root := readWorkbuddyAuthFileAt(workbuddyCLILoginPath()); root != nil {
+			candidate := candidateFromWorkbuddyAuthRoot(root, workbuddyCLILoginVariant(root))
+			if candidate != nil {
+				return m.upsertWorkbuddy(candidate, m.now())
+			}
+		}
+	}
 	for _, variant := range []string{"cn", "ai"} {
 		root := readWorkbuddyAuthFile(variant)
 		if root == nil {
@@ -2005,7 +2115,7 @@ func (m *Manager) captureWorkbuddyCurrent(_ context.Context) (*Account, bool, er
 		}
 		return m.upsertWorkbuddy(candidate, m.now())
 	}
-	return nil, false, errors.New("未读取到本机 WorkBuddy 登录信息（请先打开 WorkBuddy 登录，或扫码登录）")
+	return nil, false, errors.New("未读取到本机 CodeBuddy / WorkBuddy 登录信息（请先在 CodeBuddy CLI 执行 /login，或打开 WorkBuddy 登录，或扫码登录）")
 }
 
 // importWorkbuddy folds zcode-switcher's accounts-workbuddy single-file
