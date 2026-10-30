@@ -207,6 +207,12 @@ func (p *Poller) tickAll(ctx context.Context) {
 	cutoff := p.Manager.now().Add(-p.AllInterval)
 	for _, kind := range p.Manager.Kinds() {
 		for _, acc := range p.Manager.list(kind) {
+			// CN daily check-in rides along with the all-accounts sweep:
+			// once per local calendar day, best-effort (a failed attempt
+			// stays due and retries on the next sweep).
+			if kind == "workbuddy" && workbuddyCheckinEligible(acc) && workbuddyCheckinDue(acc, p.Manager.now()) {
+				_, _, _ = p.Manager.Checkin(ctx, kind, acc.ID)
+			}
 			if acc.QuotaUpdatedAt > 0 && time.UnixMilli(acc.QuotaUpdatedAt).After(cutoff) {
 				continue
 			}

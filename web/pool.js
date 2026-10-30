@@ -13,6 +13,13 @@ const POOL_LOGIN={
   zcode:{providers:[{value:'zai',label:'z.ai'},{value:'bigmodel',label:'BigModel（智谱）'}]},
 };
 
+/* 国际版（WorkBuddy AI）新号要先提交地区再领一次性 trial 才能对话，
+   否则腾讯回 14017 trial not activated。地区由使用者决定，这里只给官网短名单。 */
+const WORKBUDDY_AI_REGIONS=[
+  {code:'HK',label:'中国香港'},{code:'MO',label:'中国澳门'},{code:'SG',label:'新加坡'},
+  {code:'TH',label:'泰国'},{code:'PH',label:'菲律宾'},{code:'MY',label:'马来西亚'},{code:'ID',label:'印度尼西亚'},
+];
+
 class PoolPanel {
   constructor({root,read,request,readLogin,kind,label}){
     Object.assign(this,{root,read,request,readLogin,kind,label});
@@ -82,6 +89,18 @@ class PoolPanel {
     const t=BridgeI18n.t;
     if(!window.confirm(t('仅删除池中保存的账号快照，不影响本机当前的登录态。确认删除？')+'\n'+(row.label||row.id)))return;
     this.perform('remove',{id:row.id,confirmed:true});
+  }
+  // CodeBuddy CN 每日签到：成功后后端顺带刷新额度，回执 message 作为通知。
+  async checkin(row){
+    await this.perform('checkin',{id:row.id});
+    const done=this.value&&this.value.checkin;
+    if(done&&done.message){this.notice=done.message;this.render();}
+  }
+  // 国际版待开通账号：提交所选地区并领取一次性 trial。
+  async provision(row,region){
+    await this.perform('provision',{id:row.id,region});
+    const done=this.value&&this.value.provision;
+    if(done&&done.message){this.notice=done.message;this.render();}
   }
   async capture(){
     const t=BridgeI18n.t;
@@ -351,6 +370,34 @@ class PoolPanel {
         const reauth=this.button(t(row.tokenEnvelope?'扫码重新登录':'重新登录'),()=>this.openLogin(row.id,row.region));
         reauth.disabled=this.busy||this.loading;
         card.append(reauth);
+      }
+      // CodeBuddy 国内版：每日签到（当天已签则只显示状态，悬浮可见回执）。
+      if(this.kind==='workbuddy'&&String(row.region||'').toLowerCase()!=='ai'){
+        const checkedToday=row.checkinAt&&new Date(row.checkinAt).toDateString()===new Date().toDateString();
+        if(checkedToday){
+          const done=this.node('span',t('已签到'),'account-muted pool-checkin-done');
+          done.title=row.checkinNote||'';
+          card.append(done);
+        }else{
+          const checkinBtn=this.button(t('签到'),()=>this.checkin(row));
+          checkinBtn.disabled=this.busy||this.loading;
+          card.append(checkinBtn);
+        }
+      }
+      // 国际版未开通：选地区 + 领 trial（14017 trial not activated 的出口）。
+      if(this.kind==='workbuddy'&&String(row.region||'').toLowerCase()==='ai'&&row.aiProvision==='pending'){
+        const wrap=this.node('div',undefined,'pool-provision');
+        const select=document.createElement('select');
+        select.setAttribute('aria-label',t('地区'));
+        for(const region of WORKBUDDY_AI_REGIONS){
+          const option=document.createElement('option');
+          option.value=region.code;option.textContent=t(region.label);
+          select.append(option);
+        }
+        const go=this.button(t('开通并领 Trial'),()=>this.provision(row,select.value));
+        go.disabled=this.busy||this.loading;
+        wrap.append(select,go);
+        card.append(wrap);
       }
       root.append(card);
     }

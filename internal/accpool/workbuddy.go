@@ -27,14 +27,18 @@ package accpool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -49,7 +53,18 @@ var workbuddyEndpoints = map[string]string{
 }
 
 const (
-	workbuddyUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+	// Client-shaped request headers (mirror of the official desktop client,
+	// per ithtelab/workbuddy-manager's protocol notes): the billing domain
+	// sees the client override the UA to a single "WorkBuddy/<ver>" segment,
+	// while chat/login carry the three-segment "WorkBuddy/<v> <platform>/<v>
+	// CLI/<cli>" form. A browser-shaped UA is the least official-looking
+	// form and a risk-control signal once more than one account is pooled.
+	workbuddyUAHeader = "User-Agent"
+	// Fallbacks when the installed app bundle cannot be read (tests, SSH
+	// hosts without the app).
+	workbuddyClientVersionFallback = "5.9.3"
+	workbuddyCLIVersionFallback    = "2.178.1"
+
 	// workbuddyFreshWindowMs: lazy-refresh the access token when fewer than
 	// 24h remain (api.rs FRESH_WINDOW_MS).
 	workbuddyFreshWindowMs = int64(24 * time.Hour / time.Millisecond)
@@ -686,13 +701,99 @@ func workbuddyEndpoint(variant string) string {
 	return workbuddyEndpoints["cn"]
 }
 
+// workbuddyAuthHeaders mimics the official client's base request shape for
+// the chat/login domain (Origin/Referer, three-segment UA, risk-control
+// gate headers, per-account device fingerprint). The browser-shaped form we
+// used before (Chrome UA + X-Client-Platform: web) is the least
+// official-looking traffic and gets accounts flagged for device-fingerprint
+// correlation once there is more than one.
+// --- client-shaped UA & device fingerprint --------------------------------------
+
+// workbuddyInstalledVersion reads the installed desktop app's bundle version
+// (per variant); package variable so tests can pin it.
+var workbuddyInstalledVersion = func(variant string) string {
+	name := "WorkBuddy.app"
+	if variant == "ai" {
+		name = "WorkBuddy AI.app"
+	}
+	raw, err := os.ReadFile(filepath.Join("/Applications", name, "Contents", "Info.plist"))
+	if err != nil {
+		return workbuddyClientVersionFallback
+	}
+	match := regexp.MustCompile(`<key>CFBundleShortVersionString</key>\s*<string>([^<]+)</string>`).FindSubmatch(raw)
+	if len(match) != 2 {
+		return workbuddyClientVersionFallback
+	}
+	if version := strings.TrimSpace(string(match[1])); version != "" {
+		return version
+	}
+	return workbuddyClientVersionFallback
+}
+
+// workbuddyBillingUA is the single-segment UA the official client pins on
+// whitelisted billing endpoints (credits / check-in / trial / registration).
+func workbuddyBillingUA(variant string) string {
+	return "WorkBuddy/" + workbuddyInstalledVersion(variant)
+}
+
+// workbuddyLoginUA is the three-segment chat/login-domain UA; the platform
+// segment differs per variant ("WorkBuddy" vs "WorkBuddy AI").
+func workbuddyLoginUA(variant string) string {
+	version := workbuddyInstalledVersion(variant)
+	platform := "WorkBuddy"
+	if variant == "ai" {
+		platform = "WorkBuddy AI"
+	}
+	return fmt.Sprintf("WorkBuddy/%s %s/%s CLI/%s", version, platform, version, workbuddyCLIVersionFallback)
+}
+
+func workbuddyAcceptLanguage(variant string) string {
+	if variant == "ai" {
+		return "en-US"
+	}
+	return "zh-CN"
+}
+
+// workbuddyFingerprintHeaders derives the per-account stable device identity
+// the official desktop client sends on every authenticated call
+// (X-Machine-ID / X-Machine-ID's sibling X-Session-ID): sha256 of
+// "wb2a:<purpose>:<uid>" truncated to 36 hex chars — constant across
+// restarts, distinct between accounts, so pooled accounts don't collapse
+// into one "device with drifting fingerprint" for risk control.
+func workbuddyFingerprintHeaders(uid string) map[string]string {
+	if strings.TrimSpace(uid) == "" {
+		return nil
+	}
+	derive := func(purpose string) string {
+		sum := sha256.Sum256([]byte("wb2a:" + purpose + ":" + uid))
+		return hex.EncodeToString(sum[:])[:36]
+	}
+	return map[string]string{
+		"X-Machine-ID": derive("machine"),
+		"X-Session-ID": derive("session"),
+	}
+}
+
 func workbuddyAuthHeaders(acc *Account, accessToken string) map[string]string {
+	variant := workbuddyVariantFromAccount(acc)
+	origin := workbuddyEndpoint(variant)
 	headers := map[string]string{
-		"Authorization": "Bearer " + accessToken,
-		"Accept":        "application/json",
+		"Accept":                "application/json",
+		"Accept-Language":       workbuddyAcceptLanguage(variant),
+		"X-Requested-With":      "XMLHttpRequest",
+		"X-CodeBuddy-Request":   "1",
+		workbuddyUAHeader:       workbuddyLoginUA(variant),
+		"Origin":                origin,
+		"Referer":               origin + "/",
+	}
+	if accessToken != "" {
+		headers["Authorization"] = "Bearer " + accessToken
 	}
 	if acc.UserID != "" {
 		headers["X-User-Id"] = acc.UserID
+		for key, value := range workbuddyFingerprintHeaders(acc.UserID) {
+			headers[key] = value
+		}
 	}
 	if acc.EnterpriseID != "" {
 		headers["X-Enterprise-Id"] = acc.EnterpriseID
@@ -704,15 +805,16 @@ func workbuddyAuthHeaders(acc *Account, accessToken string) map[string]string {
 	return headers
 }
 
-// workbuddyResourceHeaders mimics the web user-center Axios interceptor
-// shape for billing endpoints.
+// workbuddyResourceHeaders is the billing-domain shape (credits, check-in,
+// trial, region registration): the official client explicitly overrides the
+// UA to the single-segment "WorkBuddy/<ver>" on these whitelisted endpoints
+// and always carries the X-User-Id identity block.
 func workbuddyResourceHeaders(acc *Account, variant, accessToken string) map[string]string {
 	headers := workbuddyAuthHeaders(acc, accessToken)
-	origin := workbuddyEndpoint(variant)
-	headers["X-Client-Platform"] = "web"
-	headers["Accept"] = "application/json, text/plain, */*"
-	headers["Origin"] = origin
-	headers["Referer"] = origin + "/profile/plans-usage"
+	if variant == "" {
+		variant = workbuddyVariantFromAccount(acc)
+	}
+	headers[workbuddyUAHeader] = workbuddyBillingUA(variant)
 	return headers
 }
 
@@ -725,9 +827,13 @@ func workbuddyPostJSON(ctx context.Context, url, method string, headers map[stri
 		return map[string]any{"code": -1.0, "message": err.Error()}
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("User-Agent", workbuddyUserAgent)
 	for key, value := range headers {
 		request.Header.Set(key, value)
+	}
+	// Callers shape the UA per domain (billing vs login); the fallback keeps
+	// even header-less callers on a client-shaped UA, never a browser one.
+	if request.Header.Get(workbuddyUAHeader) == "" {
+		request.Header.Set(workbuddyUAHeader, workbuddyLoginUA("cn"))
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
@@ -2215,6 +2321,16 @@ func (m *Manager) refreshWorkbuddyQuota(ctx context.Context, acc *Account) (*Acc
 	} else {
 		merged.QuotaError = credits.Error
 	}
+	// International accounts are unusable for chat until region registration
+	// + trial land (Tencent returns 14017 "trial not activated"); probe the
+	// registration state opportunistically on each quota refresh so the UI
+	// can offer the region picker.
+	if workbuddyVariantFromAccount(&merged) == "ai" && merged.AiProvision != aiProvisionDone &&
+		workbuddyPlainToken(merged.AccessToken) != "" {
+		if state := m.probeWorkbuddyAIRegistration(ctx, &merged); state != "" && state != merged.AiProvision {
+			merged.AiProvision = state
+		}
+	}
 	if err := m.saveAccount(kind, &merged); err != nil {
 		return &merged, err
 	}
@@ -2222,4 +2338,279 @@ func (m *Manager) refreshWorkbuddyQuota(ctx context.Context, acc *Account) (*Acc
 		return &merged, errors.New(credits.Error)
 	}
 	return &merged, nil
+}
+
+// --- daily check-in (billing/meter daily-checkin) --------------------------------
+
+// workbuddyAlreadyCheckinMessage separates 10001's two meanings: "already
+// checked in today" (idempotent success) vs "try again later" (transient
+// throttling) — same code, distinguished only by the message text.
+func workbuddyAlreadyCheckinMessage(message string) bool {
+	if message == "" {
+		return true // upstream omits msg → treat as the idempotent success
+	}
+	lower := strings.ToLower(message)
+	for _, marker := range []string{"已签到", "已经签到", "already checked in", "already signed in", "already checkin"} {
+		if strings.Contains(message, marker) || strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// workbuddyCheckinDue reports whether the account still owes a check-in for
+// today's local calendar day (Tencent counts check-ins per natural day).
+func workbuddyCheckinDue(acc *Account, now time.Time) bool {
+	if acc.CheckinAt == 0 {
+		return true
+	}
+	return !sameLocalDay(acc.CheckinAt, now.UnixMilli())
+}
+
+func sameLocalDay(aMS, bMS int64) bool {
+	a := time.UnixMilli(aMS).Local()
+	b := time.UnixMilli(bMS).Local()
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
+}
+
+// workbuddyCheckinEligible gates the poller's automatic check-in: CN variant
+// only (the international realm has no check-in system — calling it there is
+// itself a risk-control signal), active, with plain tokens.
+func workbuddyCheckinEligible(acc *Account) bool {
+	return workbuddyVariantFromAccount(acc) == "cn" &&
+		acc.Status == StatusActive && !workbuddyEnvelope(acc.AccessToken)
+}
+
+// Checkin performs the CN daily check-in for one pooled account. Returns the
+// (possibly token-refreshed) account and the outcome message.
+func (m *Manager) Checkin(ctx context.Context, kind, id string) (*Account, string, error) {
+	if kind != "workbuddy" {
+		return nil, "", errUnsupported(kind)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, err := m.loadAccount("workbuddy", id)
+	if err != nil {
+		return nil, "", err
+	}
+	return m.checkinWorkbuddyLocked(ctx, acc)
+}
+
+func (m *Manager) checkinWorkbuddyLocked(ctx context.Context, acc *Account) (*Account, string, error) {
+	variant := workbuddyVariantFromAccount(acc)
+	if variant == "ai" {
+		return acc, "", errors.New("国际版无签到体系，无需签到")
+	}
+	if workbuddyPlainToken(acc.AccessToken) == "" {
+		return acc, "", errors.New("该账号凭据为加密信封态，请先扫码重新登录")
+	}
+	if needsWorkbuddyRefresh(acc.ExpiresAt, m.now()) {
+		if err := refreshWorkbuddyToken(ctx, acc, m.now()); err != nil {
+			if isAuthFailed(err) {
+				_ = m.saveAccount("workbuddy", acc)
+				return acc, "", err
+			}
+			// keep the old token and try the check-in anyway
+		} else if err := m.saveAccount("workbuddy", acc); err != nil {
+			return acc, "", err
+		}
+	}
+	endpoint := workbuddyEndpoint(variant)
+	response := workbuddyPostJSON(ctx, endpoint+"/v2/billing/meter/daily-checkin", http.MethodPost,
+		workbuddyResourceHeaders(acc, variant, workbuddyPlainToken(acc.AccessToken)), map[string]any{})
+	if workbuddyUnauthorized(response) {
+		acc.Status = StatusReauthRequired
+		acc.StatusReason = "签到时登录已失效，请重新扫码登录"
+		_ = m.saveAccount("workbuddy", acc)
+		return acc, "", &authFailedError{message: acc.StatusReason}
+	}
+	code, hasCode := workbuddyResponseCode(response)
+	message, _ := response["message"].(string)
+	if message == "" {
+		message, _ = response["msg"].(string)
+	}
+	switch {
+	case hasCode && code == 0:
+		message = "签到成功"
+	case hasCode && code == 10001 && workbuddyAlreadyCheckinMessage(message):
+		message = "今日已签到"
+	default:
+		if !hasCode {
+			code = -1
+		}
+		return acc, "", fmt.Errorf("签到失败（code=%d）：%s", code, firstNonEmpty(message, "未知错误"))
+	}
+	acc.CheckinAt = m.now().UnixMilli()
+	acc.CheckinNote = message
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		return acc, message, err
+	}
+	return acc, message, nil
+}
+
+// --- international (ai) region registration + one-time trial ---------------------
+
+// aiProvision values for Account.AiProvision.
+const (
+	aiProvisionPending = "pending" // registered? no — needs region + trial
+	aiProvisionDone    = "done"    // region registered (trial claimed or already taken)
+)
+
+// workbuddyAIRegions mirrors the international site's shortlist of selectable
+// regions (IOS2 + label).
+var workbuddyAIRegions = []struct{ Code, Label string }{
+	{"HK", "中国香港"}, {"MO", "中国澳门"}, {"SG", "新加坡"}, {"TH", "泰国"},
+	{"PH", "菲律宾"}, {"MY", "马来西亚"}, {"ID", "印度尼西亚"},
+}
+
+// probeWorkbuddyAIRegistration asks whether the account has completed region
+// registration: 200/0 = done, 500 or "region required" = pending, anything
+// else stays unknown ("" so the next refresh probes again).
+func (m *Manager) probeWorkbuddyAIRegistration(ctx context.Context, acc *Account) string {
+	if acc.UserID == "" {
+		return ""
+	}
+	endpoint := workbuddyEndpoint("ai")
+	probeURL := endpoint + "/auth/realms/copilot/overseas/user/register?userId=" + url.QueryEscape(acc.UserID)
+	response := workbuddyPostJSON(ctx, probeURL, http.MethodGet,
+		workbuddyResourceHeaders(acc, "ai", workbuddyPlainToken(acc.AccessToken)), nil)
+	code, hasCode := workbuddyResponseCode(response)
+	if !hasCode {
+		return ""
+	}
+	if code == 0 || code == 200 {
+		return aiProvisionDone
+	}
+	if code == 500 {
+		return aiProvisionPending
+	}
+	if data := strings.ToLower(fmt.Sprint(response["data"])); strings.Contains(data, "region required") {
+		return aiProvisionPending
+	}
+	return ""
+}
+
+// workbuddyRegionFields resolves an IOS2 code to the (IOS2, English name,
+// numeric code) triple the registration endpoint wants. The country table
+// comes from /billing/area/get-country-code, whose data may arrive as an
+// embedded JSON string; on any failure we degrade to the IOS2-only triple —
+// submitting an invalid value is rejected upstream, which is better than
+// guessing a different region than the user picked.
+func (m *Manager) workbuddyRegionFields(ctx context.Context, code string) (ios2, enName, numeric string) {
+	fallback := code
+	empty := &Account{Variant: "ai"}
+	response := workbuddyPostJSON(ctx, workbuddyEndpoint("ai")+"/billing/area/get-country-code",
+		http.MethodPost, workbuddyResourceHeaders(empty, "ai", ""), map[string]any{"filterForbidden": 1})
+	if codeValue, ok := workbuddyResponseCode(response); !ok || codeValue != 0 {
+		return fallback, fallback, fallback
+	}
+	data := response["data"]
+	if text, isString := data.(string); isString {
+		var parsed any
+		if json.Unmarshal([]byte(text), &parsed) == nil {
+			data = parsed
+		}
+	}
+	root, _ := data.(map[string]any)
+	inner := objectValue(root, "data")
+	items, _ := inner["list"].([]any)
+	for _, item := range items {
+		entry, _ := item.(map[string]any)
+		if strings.EqualFold(stringValue(entry, "IOS2"), code) {
+			return firstNonEmpty(stringValue(entry, "IOS2"), fallback),
+				firstNonEmpty(stringValue(entry, "EnName"), fallback),
+				firstNonEmpty(stringValue(entry, "Code"), fallback)
+		}
+	}
+	return fallback, fallback, fallback
+}
+
+// Provision completes an international account's login provisioning: submit
+// the chosen region, then claim the one-time trial package. After this the
+// account can actually chat (before it, Tencent rejects with 14017 "trial
+// not activated").
+func (m *Manager) Provision(ctx context.Context, kind, id, region string) (*Account, string, error) {
+	if kind != "workbuddy" {
+		return nil, "", errUnsupported(kind)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc, err := m.loadAccount("workbuddy", id)
+	if err != nil {
+		return nil, "", err
+	}
+	variant := workbuddyVariantFromAccount(acc)
+	if variant != "ai" {
+		return acc, "", errors.New("国内版账号无需地区开通")
+	}
+	code := strings.ToUpper(strings.TrimSpace(region))
+	valid := ""
+	for _, r := range workbuddyAIRegions {
+		if r.Code == code {
+			valid = r.Label
+			break
+		}
+	}
+	if valid == "" {
+		return acc, "", fmt.Errorf("不支持的地域代码 %q", region)
+	}
+	if workbuddyPlainToken(acc.AccessToken) == "" {
+		return acc, "", errors.New("该账号凭据为加密信封态，请先扫码重新登录")
+	}
+	if needsWorkbuddyRefresh(acc.ExpiresAt, m.now()) {
+		if err := refreshWorkbuddyToken(ctx, acc, m.now()); err != nil {
+			if isAuthFailed(err) {
+				_ = m.saveAccount("workbuddy", acc)
+				return acc, "", err
+			}
+		} else if err := m.saveAccount("workbuddy", acc); err != nil {
+			return acc, "", err
+		}
+	}
+	endpoint := workbuddyEndpoint("ai")
+	billing := workbuddyResourceHeaders(acc, "ai", workbuddyPlainToken(acc.AccessToken))
+
+	// 1. Region: the three attribute fields take DIFFERENT values (numeric
+	// code / English full name / IOS2 short code) — all three as one-element
+	// arrays under an "attributes" wrapper.
+	ios2, enName, numeric := m.workbuddyRegionFields(ctx, code)
+	body := map[string]any{"attributes": map[string]any{
+		"countryCode":     []string{numeric},
+		"countryFullName": []string{enName},
+		"countryName":     []string{ios2},
+	}}
+	response := workbuddyPostJSON(ctx, endpoint+"/console/login/account", http.MethodPost, billing, body)
+	if statusCode, ok := workbuddyResponseCode(response); !ok || (statusCode != 0 && statusCode != 200) {
+		message, _ := response["message"].(string)
+		if message == "" {
+			message, _ = response["msg"].(string)
+		}
+		codeText := "无 code"
+		if ok {
+			codeText = strconv.FormatInt(statusCode, 10)
+		}
+		return acc, "", fmt.Errorf("提交地区失败（code=%s）：%s", codeText, firstNonEmpty(message, "未知错误"))
+	}
+
+	// 2. One-time trial (14051 = already claimed → idempotent success).
+	trialNote := "trial 已领取"
+	response = workbuddyPostJSON(ctx, endpoint+"/billing/ide/trial", http.MethodPost, billing, map[string]any{})
+	if statusCode, ok := workbuddyResponseCode(response); ok {
+		if statusCode == 0 || statusCode == 14051 {
+			if statusCode == 14051 {
+				trialNote = "trial 此前已领取"
+			}
+		} else {
+			// Region registration itself succeeded; a soft trial failure
+			// must not mark the whole provision failed.
+			trialNote = "trial 领取未成功（code=" + strconv.FormatInt(statusCode, 10) + "），可稍后在「刷新额度」后重试"
+		}
+	}
+	acc.AiProvision = aiProvisionDone
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		return acc, "", err
+	}
+	return acc, fmt.Sprintf("地区已提交（%s），%s", valid, trialNote), nil
 }

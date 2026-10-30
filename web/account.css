@@ -39,3 +39,7 @@
   .accounts-identity .accounts-usage{min-width:0;flex-basis:100%}
   .accounts-window{max-width:none}
 }
+/* CodeBuddy 池：国际版待开通的「选地区 + 领 trial」行与签到完成态 */
+.pool-provision{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
+.pool-provision select{width:auto;flex:0 1 auto}
+.pool-checkin-done{display:inline-block;margin:4px 6px 4px 0}

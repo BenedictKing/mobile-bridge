@@ -67,6 +67,13 @@ type Account struct {
 	RefreshExpiresAt int64  `json:"refreshExpiresAt,omitempty"`
 	AuthRaw          string `json:"authRaw,omitempty"`
 	ProfileRaw       string `json:"profileRaw,omitempty"`
+	// WorkBuddy lifecycle bookkeeping: CheckinAt/CheckinNote record the last
+	// daily check-in (CN only; grants credits); AiProvision tracks the
+	// international region-registration + one-time trial ("" unknown,
+	// "pending" unregistered, "done" usable).
+	CheckinAt   int64  `json:"checkinAt,omitempty"`
+	CheckinNote string `json:"checkinNote,omitempty"`
+	AiProvision string `json:"aiProvision,omitempty"`
 	Status           string `json:"status,omitempty"`
 	StatusReason     string `json:"statusReason,omitempty"`
 	Quota            *Quota `json:"quota,omitempty"`
@@ -791,6 +798,17 @@ func (m *Manager) view(acc *Account, activeID string) *jsoncompat.Object {
 		row.Set("quotaUpdatedAt", nil)
 	}
 	row.Set("quotaError", acc.QuotaError)
+	// WorkBuddy lifecycle: check-in state (CN) and the international
+	// provisioning state drive the account card's 签到 / 开通 controls.
+	if acc.Variant != "" {
+		if acc.CheckinAt != 0 {
+			row.Set("checkinAt", acc.CheckinAt)
+		} else {
+			row.Set("checkinAt", nil)
+		}
+		row.Set("checkinNote", acc.CheckinNote)
+		row.Set("aiProvision", acc.AiProvision)
+	}
 	return row
 }
 

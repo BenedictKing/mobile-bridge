@@ -219,6 +219,53 @@ func (h *handler) handlePool(write bool) {
 		captured.Set("envelope", accpool.IsEnvelopeAccount(acc))
 		detail.Set("captured", captured)
 		h.output(http.StatusOK, detail, contentTypeJSON, "")
+	case "checkin":
+		id, _ := body.MustGet("id").(string)
+		if id == "" {
+			h.fail(http.StatusBadRequest, errorBody("缺少目标账号 id"))
+			return
+		}
+		acc, message, err := pool.Checkin(h.request.Context(), kind, id)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		// A successful check-in changes the balance; re-read the quota so the
+		// panel shows the new credits without a second tap.
+		_, _ = pool.RefreshQuota(h.request.Context(), kind, acc.ID)
+		detail, err := pool.Detail(kind)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		checkin := jsoncompat.NewObject()
+		checkin.Set("id", acc.ID)
+		checkin.Set("message", message)
+		detail.Set("checkin", checkin)
+		h.output(http.StatusOK, detail, contentTypeJSON, "")
+	case "provision":
+		id, _ := body.MustGet("id").(string)
+		region, _ := body.MustGet("region").(string)
+		if id == "" || region == "" {
+			h.fail(http.StatusBadRequest, errorBody("缺少目标账号 id 或 region"))
+			return
+		}
+		acc, message, err := pool.Provision(h.request.Context(), kind, id, region)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		_, _ = pool.RefreshQuota(h.request.Context(), kind, acc.ID)
+		detail, err := pool.Detail(kind)
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		provision := jsoncompat.NewObject()
+		provision.Set("id", acc.ID)
+		provision.Set("message", message)
+		detail.Set("provision", provision)
+		h.output(http.StatusOK, detail, contentTypeJSON, "")
 	case "remove":
 		id, _ := body.MustGet("id").(string)
 		if id == "" {

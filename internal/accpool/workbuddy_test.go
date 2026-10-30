@@ -3,6 +3,7 @@ package accpool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -222,19 +223,22 @@ type workbuddyBillingStub struct {
 func (stub *workbuddyBillingStub) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.Method != http.MethodPost {
-			stub.t.Errorf("billing must be POST, got %s", r.Method)
+		if r.Method != http.MethodPost && r.Method != http.MethodGet {
+			stub.t.Errorf("billing must be POST (or GET for the region probe), got %s", r.Method)
 		}
-		for key, want := range map[string]string{
-			"X-Client-Platform": "web",
-			"Authorization":     "Bearer at-fixture",
-		} {
-			if got := r.Header.Get(key); got != want {
-				stub.t.Errorf("header %s: got %q want %q", key, got, want)
-			}
+		// 客户端形态：billing 域单段 UA，不带网页端的 X-Client-Platform，
+		// Referer 是域名根而非网页中心路径。
+		if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "WorkBuddy/") || strings.Contains(ua, "CLI/") {
+			stub.t.Errorf("billing UA must be the single-segment client form: %q", ua)
 		}
-		if !strings.HasSuffix(r.Header.Get("Referer"), "/profile/plans-usage") {
-			stub.t.Errorf("Referer: %q", r.Header.Get("Referer"))
+		if got := r.Header.Get("X-Client-Platform"); got != "" {
+			stub.t.Errorf("billing must not carry the web platform header: %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer at-fixture" {
+			stub.t.Errorf("Authorization: %q", got)
+		}
+		if referer := r.Header.Get("Referer"); strings.Contains(referer, "plans-usage") || !strings.HasSuffix(referer, "/") {
+			stub.t.Errorf("Referer: %q", referer)
 		}
 		if got := r.Header.Get("X-User-Id"); got != stub.uid {
 			stub.t.Errorf("X-User-Id: %q (want %q)", got, stub.uid)
@@ -244,6 +248,9 @@ func (stub *workbuddyBillingStub) handler() http.Handler {
 		}
 		body, _ := io.ReadAll(r.Body)
 		switch {
+		case strings.Contains(r.URL.Path, "/auth/realms/copilot/overseas/user/register"):
+			// 国际版注册状态探测（refreshWorkbuddyQuota 顺带）。
+			_, _ = w.Write([]byte(`{"code":200,"msg":"ok"}`))
 		case strings.HasSuffix(r.URL.Path, "get-user-resource-summary"):
 			stub.summaryBody = string(body)
 			if stub.emptyThree {
@@ -689,6 +696,271 @@ func TestWorkbuddyActiveIDFallsBackToSlotUID(t *testing.T) {
 func writeWorkbuddySlotJSON(t *testing.T, variant string, root map[string]any) {
 	t.Helper()
 	writeWorkbuddyAuthJSONAt(t, workbuddyAuthFilePath(variant), root)
+}
+
+// --- daily check-in ---------------------------------------------------------------
+
+// 签到请求必须是官方客户端形态：billing 域单段 UA、每账号设备指纹头与
+// X-User-Id 身份头（workbuddy-manager 对齐官方客户端的口径）。
+func TestWorkbuddyCheckinClientShapedHeaders(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	restoreVersion := workbuddyInstalledVersion
+	workbuddyInstalledVersion = func(string) string { return "9.9.9" }
+	t.Cleanup(func() { workbuddyInstalledVersion = restoreVersion })
+
+	var gotUA, gotMachineID, gotSessionID, gotUserID, gotPlatform string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/billing/meter/daily-checkin" {
+			t.Errorf("path: %s", r.URL.Path)
+		}
+		gotUA = r.Header.Get("User-Agent")
+		gotMachineID = r.Header.Get("X-Machine-ID")
+		gotSessionID = r.Header.Get("X-Session-ID")
+		gotUserID = r.Header.Get("X-User-Id")
+		gotPlatform = r.Header.Get("X-Client-Platform")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok"}`))
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_u1", "uid-1", "tok")
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	returned, message, err := m.Checkin(context.Background(), "workbuddy", "w_u1")
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+	if message != "签到成功" {
+		t.Fatalf("message: %q", message)
+	}
+	if gotUA != "WorkBuddy/9.9.9" {
+		t.Fatalf("billing UA must be the single-segment client form: %q", gotUA)
+	}
+	if gotPlatform != "" {
+		t.Fatalf("billing must not carry the web platform header: %q", gotPlatform)
+	}
+	if len(gotMachineID) != 36 || len(gotSessionID) != 36 || gotMachineID == gotSessionID {
+		t.Fatalf("fingerprint headers: machine=%q session=%q", gotMachineID, gotSessionID)
+	}
+	if gotUserID != "uid-1" {
+		t.Fatalf("X-User-Id: %q", gotUserID)
+	}
+	if returned.CheckinAt == 0 || returned.CheckinNote != "签到成功" {
+		t.Fatalf("checkin bookkeeping: %+v", returned)
+	}
+}
+
+// 10001 有两副面孔：「今日已签到」按成功记账；其他文案是瞬时限流，必须报错。
+func TestWorkbuddyCheckinCode10001Semantics(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	responses := []string{
+		`{"code":10001,"msg":"今日已签到，请勿重复签到"}`,
+		`{"code":10001,"msg":"签到失败，请稍后重试"}`,
+	}
+	var call int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if call < len(responses) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(responses[call]))
+		}
+		call++
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_u1", "uid-1", "tok")
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	if _, message, err := m.Checkin(context.Background(), "workbuddy", "w_u1"); err != nil || message != "今日已签到" {
+		t.Fatalf("already-checkin: message=%q err=%v", message, err)
+	}
+	saved, err := m.loadAccount("workbuddy", "w_u1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.CheckinAt == 0 || saved.CheckinNote != "今日已签到" {
+		t.Fatalf("already-checkin must be recorded as done: %+v", saved)
+	}
+	if _, _, err := m.Checkin(context.Background(), "workbuddy", "w_u1"); err == nil {
+		t.Fatal("throttled 10001 must surface as an error")
+	}
+	// 限流失败不得覆盖此前「今日已签到」的记账。
+	saved, _ = m.loadAccount("workbuddy", "w_u1")
+	if saved.CheckinNote != "今日已签到" {
+		t.Fatalf("throttled attempt must not clobber the earlier success: %+v", saved)
+	}
+}
+
+// 国际版没有签到体系：不能把请求打过去（那本身就是风控信号）。
+func TestWorkbuddyCheckinSkipsInternational(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("no request expected for the ai variant: %s", r.URL.Path)
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_ai1", "uid-ai", "tok")
+	acc.Variant = "ai"
+	acc.Domain = "www.workbuddy.ai"
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Checkin(context.Background(), "workbuddy", "w_ai1"); err == nil || !strings.Contains(err.Error(), "国际版") {
+		t.Fatalf("ai checkin must be refused: %v", err)
+	}
+}
+
+// 签到按本地自然日计：今天签过不再催，跨天重新欠签。
+func TestWorkbuddyCheckinDueDayGate(t *testing.T) {
+	acc := &Account{Variant: "cn", Status: StatusActive, AccessToken: "plain"}
+	if !workbuddyCheckinDue(acc, time.Unix(1700000000, 0)) {
+		t.Fatal("never checked in must be due")
+	}
+	acc.CheckinAt = 1700000000000 // fixture clock, same local day
+	if workbuddyCheckinDue(acc, time.Unix(1700000000, 0)) {
+		t.Fatal("same-day checkin must not be due")
+	}
+	acc.CheckinAt = 1700000000000 - 48*3600*1000
+	if !workbuddyCheckinDue(acc, time.Unix(1700000000, 0)) {
+		t.Fatal("previous-day checkin must be due again")
+	}
+}
+
+// 全量轮询顺带补签：当天只打一次签到接口，跨天（或失败）才再打。
+func TestWorkbuddyPollerAutoCheckin(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	checkins := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/billing/meter/daily-checkin":
+			checkins++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok"}`))
+		default:
+			// 额度接口：空成功即可（轮询忽略额度失败）。
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+		}
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_u1", "uid-1", "tok")
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	poller := NewPoller(m)
+	poller.AllInterval = time.Hour
+	poller.tickAll(context.Background())
+	poller.tickAll(context.Background())
+	if checkins != 1 {
+		t.Fatalf("checkin must fire once per calendar day, got %d", checkins)
+	}
+	saved, _ := m.loadAccount("workbuddy", "w_u1")
+	if saved.CheckinAt == 0 {
+		t.Fatal("auto checkin must be recorded")
+	}
+}
+
+// --- international region registration + trial ------------------------------------
+
+// 额度刷新时探测国际版注册状态：500/region required → pending。
+func TestWorkbuddyAIRegistrationProbe(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	probes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/auth/realms/copilot/overseas/user/register") {
+			probes++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"code":500,"msg":"region required"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_ai1", "uid-ai", "tok")
+	acc.Variant = "ai"
+	acc.Domain = "www.workbuddy.ai"
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.RefreshQuota(context.Background(), "workbuddy", "w_ai1"); err != nil {
+		t.Logf("quota refresh error tolerated: %v", err)
+	}
+	saved, _ := m.loadAccount("workbuddy", "w_ai1")
+	if saved.AiProvision != aiProvisionPending {
+		t.Fatalf("probe must mark pending: %q", saved.AiProvision)
+	}
+	if probes != 1 {
+		t.Fatalf("probe calls: %d", probes)
+	}
+}
+
+// 开通流程：地区三字段的取值各不相同（数字码/英文全名/IOS2），trial 14051 幂等。
+func TestWorkbuddyProvisionRegionAndTrial(t *testing.T) {
+	m, _ := setupWorkbuddyFixture(t)
+	var gotRegionBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/billing/area/get-country-code":
+			// data 是内嵌 JSON 字符串——上游脚本明确处理了这一层。
+			inner := `{"data":{"list":[{"IOS2":"HK","EnName":"China Hong Kong","Code":"810000"},{"IOS2":"SG","EnName":"Singapore","Code":"702000"}]}}`
+			_, _ = w.Write([]byte(`{"code":0,"data":"` + strings.ReplaceAll(inner, `"`, `\"`) + `"}`))
+		case "/console/login/account":
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &gotRegionBody)
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok"}`))
+		case "/billing/ide/trial":
+			_, _ = w.Write([]byte(`{"code":14051,"msg":"already claimed"}`))
+		default:
+			_, _ = w.Write([]byte(`{"code":0,"data":{}}`))
+		}
+	}))
+	defer server.Close()
+	stubWorkbuddyAPI(t, server.URL)
+
+	acc := workbuddyFixtureAccount("w_ai1", "uid-ai", "tok")
+	acc.Variant = "ai"
+	acc.Domain = "www.workbuddy.ai"
+	acc.AiProvision = aiProvisionPending
+	if err := m.saveAccount("workbuddy", acc); err != nil {
+		t.Fatal(err)
+	}
+	returned, message, err := m.Provision(context.Background(), "workbuddy", "w_ai1", "hk")
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if !strings.Contains(message, "中国香港") || !strings.Contains(message, "此前已领取") {
+		t.Fatalf("message: %q", message)
+	}
+	if returned.AiProvision != aiProvisionDone {
+		t.Fatalf("provision state: %q", returned.AiProvision)
+	}
+	attrs, _ := gotRegionBody["attributes"].(map[string]any)
+	if attrs == nil {
+		t.Fatalf("region body missing attributes wrapper: %v", gotRegionBody)
+	}
+	if fmt.Sprint(attrs["countryCode"]) != "[810000]" ||
+		fmt.Sprint(attrs["countryFullName"]) != "[China Hong Kong]" ||
+		fmt.Sprint(attrs["countryName"]) != "[HK]" {
+		t.Fatalf("region attributes take three different values: %v", attrs)
+	}
+	// 国内版账号不允许走开通。
+	cn := workbuddyFixtureAccount("w_cn1", "uid-cn", "tok")
+	if err := m.saveAccount("workbuddy", cn); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.Provision(context.Background(), "workbuddy", "w_cn1", "HK"); err == nil {
+		t.Fatal("cn provision must be refused")
+	}
 }
 
 func writeWorkbuddyAuthJSONAt(t *testing.T, path string, root map[string]any) {
