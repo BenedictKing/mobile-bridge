@@ -1396,25 +1396,10 @@ func TestTeamIntegrationEventStreamChangesAndSSE(t *testing.T) {
 	runID := env.createRun(t, teamID, `{"goal":"事件流","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"lead","prompt":"事件流任务 EVSTREAM hold","writeLock":"none"}]}`)
 
-	// 先做游标断言（此时尚未驱动派发，事件集稳定在创建期三事件）。
-	var page map[string]any
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/changes?after=-1", "")
-		if response.Code != http.StatusOK {
-			t.Fatalf("changes 应 200: %d %s", response.Code, response.Body.String())
-		}
-		page = map[string]any{}
-		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
-			t.Fatal(err)
-		}
-		if rows, _ := page["rows"].([]any); len(rows) >= 3 {
-			break
-		}
-		time.Sleep(120 * time.Millisecond)
-	}
+	// 先做游标断言：等 t1 首派批次完整进入 feed（原因见 awaitDispatchedChangesPage）。
+	page := awaitDispatchedChangesPage(t, env.journal, env.request, teamID, runID, "t1")
 	if rows, _ := page["rows"].([]any); len(rows) < 3 {
-		t.Fatalf("创建期事件不足: %v", page)
+		t.Fatalf("创建与派发事件不足: %v", page)
 	}
 	if reset, _ := page["reset"].(bool); !reset {
 		t.Fatalf("无 epoch 首读应 reset 整页: %v", page)
@@ -1577,6 +1562,57 @@ func (e *teamIntegrationEnv) journalEvents(t *testing.T) []*team.Event {
 		t.Fatalf("journal 重放失败: %v", err)
 	}
 	return events
+}
+
+// awaitDispatchedChangesPage 等 taskID 的首派批次完整进入 feed，返回此时的
+// after=-1 整页（游标断言的稳定起点）。
+//
+// 创建 Run 只写 run_created + task_planned；CreateRun 随即启动调度循环，约 1ms
+// 内在同一次 commitRun 里写入 thread_bound 与 task_dispatching，不受测试驱动。
+// commitRun 逐条追加、逐条推入 feed，按「至少 N 行」轮询可能停在批次中间（只有
+// thread_bound），拿它当最新游标会在增量里读到随后落账的 task_dispatching。
+// 本函数先等 journal 出现 task_dispatching，再等 feed 头部追上该序号（journal
+// 先写、feed 后推）。此后不推进派发巡检就不会再有事件，事件集稳定。
+func awaitDispatchedChangesPage(t *testing.T, journal *team.Journal, request func(method, target, body string) *httptest.ResponseRecorder, teamID, runID, taskID string) map[string]any {
+	t.Helper()
+	dispatchSeq := int64(-1)
+	var page map[string]any
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if dispatchSeq < 0 {
+			events, err := journal.Replay()
+			if err != nil {
+				t.Fatalf("journal 重放失败: %v", err)
+			}
+			for _, event := range events {
+				if event.RunID == runID && event.Type == team.EventTaskDispatching {
+					if id, _ := event.Payload["taskId"].(string); id == taskID {
+						dispatchSeq = int64(event.Sequence)
+						break
+					}
+				}
+			}
+		}
+		if dispatchSeq > 0 {
+			response := request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/changes?after=-1", "")
+			if response.Code != http.StatusOK {
+				t.Fatalf("changes 应 200: %d %s", response.Code, response.Body.String())
+			}
+			page = map[string]any{}
+			if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			if sequence, _ := page["sequence"].(float64); int64(sequence) >= dispatchSeq {
+				if int64(sequence) != dispatchSeq {
+					t.Fatalf("feed 头部应停在 %s 的 task_dispatching（序号 %d）: %v", taskID, dispatchSeq, page)
+				}
+				return page
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("任务 %s 的首派批次未在时限内进入 feed（task_dispatching 序号 %d）: %v", taskID, dispatchSeq, page)
+	return nil
 }
 
 // teamEventSeq 返回首个（类型, taskId）匹配事件的序号（-1=不存在；taskID 空

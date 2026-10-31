@@ -1131,21 +1131,9 @@ func TestTeamsRunChangesCursor(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	teamID, _ := env.createTeam(t)
 	runID := env.createRun(t, teamID, `{"goal":"游标","mode":"single"}`)
-	// 等 run_created/task_planned/task_dispatching 三条事件入投影。
-	deadline := time.Now().Add(8 * time.Second)
-	var page map[string]any
-	for time.Now().Before(deadline) {
-		response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/changes?after=-1", "")
-		if response.Code != http.StatusOK {
-			t.Fatalf("changes 应 200: %d %s", response.Code, response.Body.String())
-		}
-		page = map[string]any{}
-		json.Unmarshal(response.Body.Bytes(), &page)
-		if rows, _ := page["rows"].([]any); len(rows) >= 3 {
-			break
-		}
-		time.Sleep(120 * time.Millisecond)
-	}
+	// 等 lead 首派批次（run_created/task_planned/thread_bound/task_dispatching）
+	// 完整入投影，原因见 awaitDispatchedChangesPage。
+	page := awaitDispatchedChangesPage(t, env.journal, env.request, teamID, runID, "lead")
 	if rows, _ := page["rows"].([]any); len(rows) < 3 {
 		t.Fatalf("事件不足: %s", page)
 	}
@@ -1198,21 +1186,8 @@ func TestTeamsRunChangesLongPoll(t *testing.T) {
 	env.server.TeamChangesWait = 600 * time.Millisecond
 	teamID, _ := env.createTeam(t)
 	runID := env.createRun(t, teamID, `{"goal":"长轮询","mode":"single"}`)
-	// 取当前游标（等 run_created/task_planned/task_dispatching 三条事件）。
-	deadline := time.Now().Add(8 * time.Second)
-	var page map[string]any
-	for time.Now().Before(deadline) {
-		response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+runID+"/changes?after=-1", "")
-		if response.Code != http.StatusOK {
-			t.Fatalf("changes 应 200: %d %s", response.Code, response.Body.String())
-		}
-		page = map[string]any{}
-		json.Unmarshal(response.Body.Bytes(), &page)
-		if rows, _ := page["rows"].([]any); len(rows) >= 3 {
-			break
-		}
-		time.Sleep(120 * time.Millisecond)
-	}
+	// 取当前游标：等 lead 首派批次完整入投影，原因见 awaitDispatchedChangesPage。
+	page := awaitDispatchedChangesPage(t, env.journal, env.request, teamID, runID, "lead")
 	epoch, _ := page["epoch"].(string)
 	sequence, _ := page["sequence"].(float64)
 	if epoch == "" || sequence < 3 {
