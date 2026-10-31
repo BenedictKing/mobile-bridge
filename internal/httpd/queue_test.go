@@ -562,3 +562,57 @@ func TestSafeDispatchQueuedPassRecovers(t *testing.T) {
 	server := &Server{}
 	server.safeDispatchQueuedPass() // s.Queue is nil: panics inside, recovers
 }
+
+// 有 steer 能力的 Agent（Claude/DeepSeek/MiniMax）运行中时，前端不会自动切到
+// 排队，「发送新消息」直接打到忙碌会话。Agent 拒收后条目已回到队列、会在当前
+// 回合结束后自动派发，响应必须如实返回 queued，前端才会清空输入框并显示队列卡；
+// 返回 409 会让用户看到「当前已有任务正在运行」，草稿却已经排进队列。
+func TestACPDirectSendWhileBusyReportsQueued(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := t.TempDir()
+	manager := acpruntime.NewCommand(queueCancelRaceAgent(t, agentDir))
+	defer manager.Close()
+
+	server, token, csrf := newFeatureServer(t, t.TempDir())
+	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
+	manager.AutoContinue = func(session *acpruntime.Session) {
+		server.QueueSettleACP("kimi", session)
+	}
+	request := func(method, target, body string) *httptest.ResponseRecorder {
+		return featureRequest(server, token, csrf, method, target, body)
+	}
+	create := request(http.MethodPost, "/api/sessions",
+		`{"agent":"kimi","cwd":"`+dir+`","title":"忙碌发送","id":"6bbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`)
+	if create.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	if send := request(http.MethodPost, "/api/sessions/km-queue/send",
+		`{"text":"hold","mode":"send","id":"7bbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`); send.Code != http.StatusOK {
+		t.Fatalf("send status=%d body=%s", send.Code, send.Body.String())
+	}
+	const busyID = "8bbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	busy := request(http.MethodPost, "/api/sessions/km-queue/send",
+		`{"text":"完善这个计划","mode":"send","id":"`+busyID+`"}`)
+	if busy.Code != http.StatusOK || !strings.Contains(busy.Body.String(), `"status": "queued"`) {
+		t.Fatalf("忙碌时直接发送应如实返回 queued: status=%d body=%s", busy.Code, busy.Body.String())
+	}
+	if entry := server.Queue.get("km-queue", busyID); entry == nil || entry.Status != SubQueued {
+		t.Fatalf("忙碌被拒的消息应回到队列: %+v", entry)
+	}
+	// 同一 id 重试走幂等重放，不得重复入队或报错。
+	if retry := request(http.MethodPost, "/api/sessions/km-queue/send",
+		`{"text":"完善这个计划","mode":"send","id":"`+busyID+`"}`); retry.Code != http.StatusOK {
+		t.Fatalf("重试应幂等: status=%d body=%s", retry.Code, retry.Body.String())
+	}
+	// 当前回合结束后，排队的消息由 settle 钩子派发。
+	if stop := request(http.MethodPost, "/api/sessions/km-queue/stop", `{}`); stop.Code != http.StatusOK {
+		t.Fatalf("stop status=%d body=%s", stop.Code, stop.Body.String())
+	}
+	deadline := time.Now().Add(8 * time.Second)
+	for !strings.Contains(recordedFile(agentDir, "prompts.txt"), "完善这个计划") {
+		if time.Now().After(deadline) {
+			t.Fatalf("排队的消息未在回合结束后派发: prompts=%s", recordedFile(agentDir, "prompts.txt"))
+		}
+		time.Sleep(120 * time.Millisecond)
+	}
+}

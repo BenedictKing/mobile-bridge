@@ -726,6 +726,9 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		// before the prompt provably left the agent untouched, so the entry
 		// returns to the queue instead of reporting a phantom acceptance.
 		dispatched := false
+		// requeueID is the ledger entry a refused prompt goes back to (only
+		// fresh direct sends, which are recorded as unknown).
+		requeueID := ""
 		if h.server.Queue != nil {
 			if mode == "queue" {
 				h.handleQueuedSend(threadID, object)
@@ -740,13 +743,19 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				h.output(http.StatusOK, submissionDuplicateResponse(prior), contentTypeJSON, "")
 				return true
 			}
+			if prior.Status == SubUnknown {
+				requeueID = prior.ID
+			}
 			defer func() {
 				if dispatched {
 					h.server.Queue.setStatus(threadID, prior.ID, SubAccepted)
 					return
 				}
-				if prior.Status == SubUnknown {
-					h.server.Queue.requeueEntry(threadID, prior.ID, "消息未送达，已回到队列")
+				// Cleared once the busy branch has requeued: by then the queue
+				// worker may already own the entry, and requeuing it again
+				// could resend a message that is being dispatched.
+				if requeueID != "" {
+					h.server.Queue.requeueEntry(threadID, requeueID, "消息未送达，已回到队列")
 				}
 			}()
 		}
@@ -845,6 +854,24 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		if callErr == nil {
 			dispatched = true
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+		} else if requeueID != "" && strings.Contains(callErr.Error(), "当前已有任务正在运行") {
+			// The agent refused the prompt because another turn is running
+			// (steer-capable agents skip the phone's auto-queue, so 发送新消息
+			// lands here). It was provably not delivered and goes back to the
+			// queue, which dispatches it when the turn settles; answer queued
+			// so the phone clears the draft and shows the queue card instead
+			// of an error for a message that will still be sent.
+			id := requeueID
+			requeueID = ""
+			h.server.Queue.requeueEntry(threadID, id, "当前任务完成后发送")
+			if entry := h.server.Queue.get(threadID, id); entry != nil && entry.Status == SubQueued {
+				result := jsoncompat.NewObject()
+				result.Set("status", entry.Status)
+				result.Set("id", entry.ID)
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+			} else {
+				h.fail(http.StatusConflict, errorBody(callErr.Error()))
+			}
 		} else {
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		}
