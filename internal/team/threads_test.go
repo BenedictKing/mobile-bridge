@@ -311,7 +311,7 @@ func TestPollTaskStaleWatcherDoesNotSettleRedispatchedTask(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			settled, _ := h.service.pollTask(state, testCase.dispatch, h.team.Policy, nil)
+			settled, _, _ := h.service.pollTask(state, testCase.dispatch, h.team.Policy, nil)
 			if !settled {
 				t.Fatal("迟到 watcher 应立即退出（settled=true）")
 			}

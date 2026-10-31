@@ -1855,8 +1855,29 @@ func (s *Session) Sequence() int {
 	return s.sequence
 }
 
+// Wait blocks until the next view change or timeout. It picks up the change
+// channel only when called, so a change landing between the caller's last
+// read and this call is missed; callers that act on a read use WaitAfter.
 func (s *Session) Wait(timeout time.Duration) {
 	s.mu.Lock()
+	changed := s.changed
+	s.mu.Unlock()
+	select {
+	case <-changed:
+	case <-time.After(timeout):
+	}
+}
+
+// WaitAfter blocks until the change counter moves past sequence or timeout.
+// Pass the Sequence read before the snapshot the caller acted on: a change
+// that already happened returns at once instead of being lost. Every change
+// bumps the counter before replacing the channel, under the same lock.
+func (s *Session) WaitAfter(sequence int, timeout time.Duration) {
+	s.mu.Lock()
+	if s.sequence != sequence {
+		s.mu.Unlock()
+		return
+	}
 	changed := s.changed
 	s.mu.Unlock()
 	select {

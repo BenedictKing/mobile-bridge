@@ -1776,14 +1776,16 @@ func (s *Service) watchTask(state *runState, dispatch *taskDispatch, policy Team
 	taskTimeout := time.Duration(policy.TaskTimeoutSecs) * time.Second
 	var session *acpruntime.Session
 	for {
-		settled, live := s.pollTask(state, dispatch, policy, session)
+		settled, live, observed := s.pollTask(state, dispatch, policy, session)
 		if settled {
 			return
 		}
 		session = live
-		// 等待一片：会话可读时用 changed 通道（turn 落定即醒），否则定时。
+		// 等待一片：会话可读时等会话序号越过本轮观察点（turn 落定即醒），否则
+		// 定时。不能用「进入等待时才取通道」的 Wait：pollTask 读快照之后、这里
+		// 进入等待之前落定的 turn 会被漏掉，watcher 要等满一片（生产 25s）才发现。
 		if session != nil && !session.IsClosed() {
-			session.Wait(slice)
+			session.WaitAfter(observed, slice)
 			select {
 			case <-state.done:
 				return
@@ -1825,46 +1827,53 @@ func (s *Service) taskTimeoutExpired(state *runState, dispatch *taskDispatch, ta
 
 // pollTask 观察一轮并尽可能把任务落终态。不持 state.mu（Resolve/Snapshot 是
 // 慢 I/O）；落账走 settle 包装（内部短暂持锁）。返回 (settled, 供等待用的
-// 会话句柄)。
-func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamPolicy, session *acpruntime.Session) (bool, *acpruntime.Session) {
+// 会话句柄, 本轮观察依据的会话序号)。序号在读快照之前取：watcher 拿它调
+// WaitAfter，观察之后、进入等待之前落定的 turn 会立即唤醒，不再等满一片。
+func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamPolicy, session *acpruntime.Session) (bool, *acpruntime.Session, int) {
+	observed := -1
+	if session != nil {
+		observed = session.Sequence()
+	}
 	// 任务已被外部（取消/resume/超时）落终态 → no-op 退出（与用户在原会话
 	// 手动停止不存在竞争：先记账者的结论生效）。Run 被删除同样退出。
 	// 血缘防护（阶段一执行线程契约）：watcher 携带的 submissionID/线程与任务
 	// 当前值不一致＝旧 attempt 或旧线程的迟到观察者——重派已发生，迟到事件
 	// 绝不能完成新任务，退出不结算。空值（升级前的存量快照）不触发防护。
 	if run := s.store.Run(state.runID); run == nil {
-		return true, session
+		return true, session, observed
 	} else if task := findTaskIn(run, dispatch.taskID); task != nil {
 		if terminalTask(task.Status) {
-			return true, session
+			return true, session, observed
 		}
 		if task.SubmissionID != "" && task.SubmissionID != dispatch.submissionID {
-			return true, session
+			return true, session, observed
 		}
 		if task.ExecutionThreadID != "" && dispatch.threadID != "" && task.ExecutionThreadID != dispatch.threadID {
-			return true, session
+			return true, session, observed
 		}
 	}
 	sub, ok := s.queue.Submission(dispatch.sessionID, dispatch.submissionID)
 	if !ok {
 		// 账本条目丢失（数据目录被清理等）：无法确认发送结果，绝不重发。
 		s.settleUnknown(state, state.runID, dispatch.taskID, "账本条目丢失，无法确认发送结果，需人工对账")
-		return true, session
+		return true, session, observed
 	}
 	switch sub.Status {
 	case SubStatusQueued:
-		return false, session // 交给既有 3s worker / settle 钩子派发
+		return false, session, observed // 交给既有 3s worker / settle 钩子派发
 	case SubStatusFailed:
 		s.settleTaskFailure(state, dispatch, policy, firstNonEmpty(sub.Error, "队列派发失败"))
-		return true, session
+		return true, session, observed
 	case SubStatusCancelled, SubStatusIgnored:
 		s.stopTask(state, state.runID, dispatch.taskID, "消息已在队列中移除")
-		return true, session
+		return true, session, observed
 	}
 	// accepted / unknown：进入会话观察。
 	if _, resolved, _ := s.resolver.Resolve(dispatch.sessionID); resolved != nil {
 		session = resolved
 		session.Touch()
+		// 先取序号、后读快照：两者之间的变更最多让 watcher 多观察一轮，不会漏掉。
+		observed = session.Sequence()
 		snapshot := session.Snapshot()
 		if turn := matchTurn(snapshot, dispatch.sentText); turn != nil {
 			if task := findTaskIn(s.store.Run(state.runID), dispatch.taskID); task != nil && task.Status == TaskDispatching {
@@ -1878,7 +1887,7 @@ func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamP
 				// pendingQuestions（任务保持 running，普通权限卡不登记——
 				// questions.go 的边界声明）。
 				s.observeQuestions(state, dispatch, snapshot)
-				return false, session
+				return false, session, observed
 			case "completed":
 				result := ExtractResult(dispatch.sessionID, turn, policy.MaxResultChars)
 				// 成功 settle → 桶记账（§6.3 规则 b：连续 4 次成功增长窗口）。
@@ -1888,21 +1897,21 @@ func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamP
 				// 未 settled，watcher 下一片整套重试。其余任务走 completeTask。
 				if s.settlesLeadActions(state, dispatch.taskID) {
 					if !s.settleLeadTaskLocked(state, dispatch, policy, turn, &result) {
-						return false, session
+						return false, session, observed
 					}
-					return true, session
+					return true, session, observed
 				}
 				s.completeTask(state, state.runID, dispatch.taskID, &result)
-				return true, session
+				return true, session, observed
 			case "failed":
 				s.settleTaskFailure(state, dispatch, policy, turnErrorText(turn))
-				return true, session
+				return true, session, observed
 			default:
 				if cancelledTurn(turn) {
 					s.stopTask(state, state.runID, dispatch.taskID, "cancelled")
-					return true, session
+					return true, session, observed
 				}
-				return false, session // 未知形态：继续观察
+				return false, session, observed // 未知形态：继续观察
 			}
 		}
 		// 找不到本任务 turn：账本未确认且会话空闲 → 结果未知（§8.3 第 6 条）。
@@ -1914,13 +1923,13 @@ func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamP
 		if status, _ := snapshot.MustGet("status").(string); status != "active" &&
 			sub.Status == SubStatusUnknown && s.confirmUnknownIdle(state, dispatch) {
 			s.settleUnknown(state, state.runID, dispatch.taskID, "发送结果未知，需人工对账")
-			return true, session
+			return true, session, observed
 		}
 		// 会话忙于其他 turn（用户手动发起）：继续等，超时兜底。
-		return false, session
+		return false, session, observed
 	}
 	// 会话暂不可达（进程打不开等）：继续等，任务超时兜底。
-	return false, session
+	return false, session, observed
 }
 
 // outcomeDebounce 是「结果未知」判定的去抖间隔：账本的 unknown 在派发期间
