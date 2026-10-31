@@ -359,7 +359,14 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			if h.server.Creations != nil {
 				if requestID, pending := h.server.Creations.pendingForTarget(threadID); pending != nil {
 					submissionID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:migrate:"+requestID)).String()
-					if _, retryErr := h.server.Codex.StartTurnWithOptions(threadID, submissionID, pending.Message, "send", "", nil, nil); retryErr == nil {
+					var retryErr error
+					if pending.Model != "" {
+						_, retryErr = h.server.Codex.UpdateSettings(threadID, pending.Model, pending.Effort, nil)
+					}
+					if retryErr == nil {
+						_, retryErr = h.server.Codex.StartTurnWithOptions(threadID, submissionID, pending.Message, "send", "", nil, nil)
+					}
+					if retryErr == nil {
 						h.server.Creations.markSent(requestID)
 					} else {
 						h.server.Creations.markWaiting(requestID, retryErr.Error())

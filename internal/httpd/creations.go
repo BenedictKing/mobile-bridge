@@ -23,6 +23,10 @@ type creationEntry struct {
 	Warning  string  `json:"warning,omitempty"`
 	Attempts int     `json:"attempts,omitempty"`
 	Message  string  `json:"message,omitempty"`
+	// Model/Effort are the target settings chosen in the migrate dialog; they
+	// are applied before the transcript is injected, on every send path.
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
 }
 
 // creations deduplicates create retries by the phone's request id: the same
@@ -82,6 +86,42 @@ func (c *creations) markSent(requestID string) {
 		entry.Warning = ""
 		c.saveLocked()
 	}
+}
+
+// markPrepared records that the target session exists but the transcript has
+// not been sent: the phone is choosing model/effort from its real catalog.
+func (c *creations) markPrepared(requestID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.entries[requestID]; entry != nil && !entry.Sent {
+		entry.State = "prepared"
+		c.saveLocked()
+	}
+}
+
+// setSettings remembers the chosen model/effort so a deferred send (Codex
+// waiting for the desktop App) still applies them.
+func (c *creations) setSettings(requestID, model, effort string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.entries[requestID]; entry != nil {
+		entry.Model, entry.Effort = model, effort
+		c.saveLocked()
+	}
+}
+
+// forgetPrepared removes a prepared, never-sent entry and reports the target
+// session id it had created. Anything else is left untouched.
+func (c *creations) forgetPrepared(requestID, agent string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.entries[requestID]
+	if entry == nil || entry.Sent || entry.State != "prepared" || entry.Agent != agent {
+		return "", false
+	}
+	delete(c.entries, requestID)
+	c.saveLocked()
+	return entry.ID, true
 }
 
 func (c *creations) markWaiting(requestID, warning string) {

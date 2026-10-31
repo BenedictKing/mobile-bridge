@@ -331,6 +331,17 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 	uiLocale := stringField(body, "uiLocale")
+	phase := stringField(body, "phase")
+	if phase != "" && phase != "prepare" && phase != "abandon" {
+		h.fail(http.StatusBadRequest, errorBody("未知的迁移阶段"))
+		return
+	}
+	modelName := strings.TrimSpace(stringField(body, "model"))
+	effort := strings.TrimSpace(stringField(body, "effort"))
+	if modelName == "" && effort != "" {
+		h.fail(http.StatusBadRequest, errorBody("选择思考强度前请先选择模型"))
+		return
+	}
 
 	targetKind := stringField(body, "agent")
 	var target *acpruntime.Manager
@@ -343,6 +354,24 @@ func (h *handler) handleMigrate(threadID string) {
 		target = manager
 	} else {
 		h.fail(http.StatusBadRequest, errorBody("未知的 Agent 类型"))
+		return
+	}
+
+	if phase == "abandon" {
+		// The phone backed out of the settings step: drop the empty target
+		// session that prepare created. A Codex prepare creates nothing.
+		status := "none"
+		if h.server.Creations != nil {
+			if id, ok := h.server.Creations.forgetPrepared(requestID, targetKind); ok {
+				status = "abandoned"
+				if id != "" && target != nil {
+					target.Drop(id)
+				}
+			}
+		}
+		result := jsoncompat.NewObject()
+		result.Set("status", status)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 		return
 	}
 
@@ -404,6 +433,22 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 
+	// Codex lists its models without a thread, so the settings step needs no
+	// target session at all; the thread is created when the phone confirms.
+	if phase == "prepare" && target == nil {
+		result := jsoncompat.NewObject()
+		result.Set("host", "local")
+		result.Set("agent", targetKind)
+		result.Set("project", projectKey)
+		result.Set("status", "prepared")
+		result.Set("sent", false)
+		result.Set("projectCreated", projectCreated)
+		result.Set("state", "prepared")
+		result.Set("catalog", h.migrationCatalog(nil, nil, cwd))
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return
+	}
+
 	ledger := h.server.Creations
 	createdID := ""
 	alreadySent := false
@@ -451,6 +496,32 @@ func (h *handler) handleMigrate(threadID string) {
 		}
 	}
 
+	// ACP agents only advertise their models once a session exists, so
+	// prepare creates the target (or reopens the one a previous prepare made)
+	// and returns its real catalog. The transcript is not sent yet.
+	if phase == "prepare" && !alreadySent {
+		session, openErr := target.Open(createdID, cwd, target.InitializeTimeout)
+		if openErr != nil {
+			h.fail(http.StatusConflict, errorBody(openErr.Error()))
+			return
+		}
+		if ledger != nil {
+			ledger.markPrepared(requestID)
+		}
+		result := jsoncompat.NewObject()
+		result.Set("id", createdID)
+		result.Set("host", "local")
+		result.Set("agent", targetKind)
+		result.Set("project", projectKey)
+		result.Set("status", "prepared")
+		result.Set("sent", false)
+		result.Set("projectCreated", projectCreated)
+		result.Set("state", "prepared")
+		result.Set("catalog", h.migrationCatalog(target, session, cwd))
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return
+	}
+
 	message := migrationMessage(sourceLabel, view, uiLocale, scope)
 	if ledger != nil {
 		ledger.setMessage(requestID, message)
@@ -470,6 +541,9 @@ func (h *handler) handleMigrate(threadID string) {
 		result.Set("sent", true)
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 		return
+	}
+	if ledger != nil && modelName != "" {
+		ledger.setSettings(requestID, modelName, effort)
 	}
 	// Codex creates the thread through a short-lived app-server, but the
 	// desktop App must own it before follower IPC can inject the transcript.
@@ -521,9 +595,25 @@ func (h *handler) handleMigrate(threadID string) {
 		if openErr != nil {
 			sendErr = openErr
 		} else {
+			// A chosen model/effort that the agent rejects must stop the
+			// migration: sending the transcript on the default model would
+			// silently ignore the user's choice. The entry stays unsent, so
+			// the phone can retry with other settings.
+			if modelName != "" {
+				if settingsErr := target.UpdateSettings(session, modelName, effort, nil); settingsErr != nil {
+					h.fail(http.StatusConflict, errorBody(settingsErr.Error()))
+					return
+				}
+			}
 			sendErr = session.Prompt(message, 3600*time.Second)
 		}
 	} else {
+		if modelName != "" {
+			if _, settingsErr := h.server.Codex.UpdateSettings(createdID, modelName, effort, nil); settingsErr != nil {
+				h.fail(http.StatusConflict, errorBody(settingsErr.Error()))
+				return
+			}
+		}
 		_, sendErr = h.server.Codex.StartTurnWithOptions(createdID, submissionID, message, "send", "", nil, nil)
 	}
 	if sendErr != nil {
@@ -541,4 +631,31 @@ func (h *handler) handleMigrate(threadID string) {
 	result.Set("status", "sent")
 	result.Set("sent", true)
 	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
+// migrationCatalog is the model catalog the phone offers in the settings
+// step: the target session's advertised options for ACP agents, the
+// thread-independent app-server list for Codex. A failed Codex listing
+// degrades to an empty list plus catalogError, so the phone can still
+// migrate on the target's defaults and say so.
+func (h *handler) migrationCatalog(target *acpruntime.Manager, session *acpruntime.Session, cwd string) *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	var catalog *jsoncompat.Object
+	if target != nil {
+		catalog = target.Catalog(session, "models", "", nil)
+	} else {
+		value, err := h.server.Codex.Catalog().Models(cwd, "", false)
+		if err != nil {
+			result.Set("models", &jsoncompat.Array{})
+			result.Set("catalogError", err.Error())
+			return result
+		}
+		catalog = value
+	}
+	for _, key := range []string{"models", "currentModel", "currentEffort", "modelError"} {
+		if value, ok := catalog.Get(key); ok {
+			result.Set(key, value)
+		}
+	}
+	return result
 }

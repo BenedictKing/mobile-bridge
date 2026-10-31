@@ -66,6 +66,7 @@ const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl
     toast(result.sent?(operation==='compact'?t('网关转录压缩已完成，正在打开新会话'):t('已迁移到 ')+label+t('，正在打开新会话')):t('目标会话已创建，正在等待 ')+label+t(' 加载：')+(result.warning||''));
     if(currentId!==result.id)openChat(result.id,result.host||'local').catch(e=>toast(e.message));},
   onError:(error,operation)=>{if(operation==='compact')$('compact-error').textContent=t(error.message);else toast(error.message);}});
+$('chat-details-dialog').addEventListener('close',()=>migrateControl?.dismiss());
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
@@ -800,7 +801,27 @@ function assessmentBadge(request){
   let text=t(label)+' · Jev';
   if(a.confidence!=null)text+=' '+Math.round(a.confidence*100)+'%';
   if(a.reversible!=null)text+=a.reversible>=0.5?' · '+t('可撤销'):' · '+t('难以撤销');
-  return el('p','approval-risk risk-'+a.riskLabel,text);
+  const badge=el('p','approval-risk risk-'+a.riskLabel,text);
+  const reason=jevHoldReason(a);
+  if(!reason)return badge;
+  const box=document.createDocumentFragment();
+  box.append(badge,el('p','approval-context jev-reason',t('未自动审核：')+t(reason)));
+  return box;
+}
+// Why an assessed card still waits for a tap; the gateway reports the gate
+// that stopped auto-approval (internal/jev/approval.go).
+function jevHoldReason(a){
+  const pct=value=>Math.round(Number(value||0)*100)+'%';
+  switch(a.reason){
+    case 'recommend_review':return 'Jev 建议人工查看';
+    case 'recommend_decline':return 'Jev 建议拒绝';
+    case 'recommend_accept_always':return '永久授权需手动确认';
+    case 'negative_sum_over_threshold':return t('风险倾向')+' '+pct(a.negativeSum)+' ≥ '+t('阈值')+' '+pct(a.threshold);
+    case 'not_reversible_enough':return t('可撤销性')+' '+pct(a.reversible)+' < 80%';
+    case 'low_confidence':return t('置信度')+' '+pct(a.confidence)+' < 80%';
+    case 'no_matching_option':return '卡片没有可匹配的允许选项';
+  }
+  return '';
 }
 function riskBadge(request,params){
   const fallback=approvalRisk(params);
