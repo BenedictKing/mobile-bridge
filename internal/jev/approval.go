@@ -18,7 +18,14 @@ import (
 
 const (
 	minReversible = 0.8
-	minConfidence = 0.8
+	// 两个 Noul 信号的路由带（对齐 jev-guard 的 approval≥0.75 ask 与官方
+	// 0.7/0.3 双侧带）：needs_human 是「该停下来找人看」的概率，0.5 以上
+	// 复核；unsafe 是「不安全/离题、该拒绝」的信号，0.6 以上推荐拒绝。
+	// 不再设独立的置信度闸：Choice 的 confidence 是集中度指标
+	// (p_max−1/n)/(1−1/n)，三选项下过 0.8 需要 p_max≈0.87，数学上几乎
+	// 不可达，正是自动审核从不放行的旧根因；Noul 的 p 本身就是不确定度。
+	holdHumanAt     = 0.5
+	declineUnsafeAt = 0.6
 )
 
 // Decision is the auditable outcome of one auto-approval evaluation: what
@@ -70,22 +77,32 @@ func (s *Settings) evaluate(config *jsoncompat.Object, key, method string, param
 	if !ok {
 		return Decision{Reason: "assess_failed", Threshold: threshold}
 	}
+	// 建议由两个 Noul 信号在代码里推导（控制流留在代码侧，问题只做窄判断）：
+	// unsafe 高 → 拒绝；needs_human 高 → 人工复核；否则本次允许。
+	recommend := "accept_once"
+	switch {
+	case assessment.unsafe >= declineUnsafeAt:
+		recommend = "decline"
+	case assessment.needsHuman >= holdHumanAt:
+		recommend = "review"
+	}
 	decision := Decision{
 		Assessed:    true,
 		Categories:  assessment.categories,
 		NegativeSum: assessment.negativeSum,
 		Threshold:   threshold,
 		Reversible:  assessment.reversible,
-		Confidence:  assessment.confidence,
-		Recommend:   assessment.recommend,
+		// 徽章上的「Jev N%」语义是放行把握：不需要人看的概率。
+		Confidence:  1 - assessment.needsHuman,
+		Recommend:   recommend,
 		TopCategory: assessment.topCategory,
 	}
-	switch decision.Recommend {
-	case "accept_once", "accept_session":
+	switch recommend {
+	case "accept_once":
 	case "review":
 		decision.Reason = "recommend_review"
 	default:
-		decision.Reason = "recommend_" + decision.Recommend
+		decision.Reason = "recommend_" + recommend
 	}
 	if decision.Reason != "" {
 		return decision
@@ -96,10 +113,6 @@ func (s *Settings) evaluate(config *jsoncompat.Object, key, method string, param
 	}
 	if decision.Reversible < minReversible {
 		decision.Reason = "not_reversible_enough"
-		return decision
-	}
-	if decision.Confidence < minConfidence {
-		decision.Reason = "low_confidence"
 		return decision
 	}
 	if response := approvalResponse(method, params, decision.Recommend); response != nil {
@@ -287,8 +300,8 @@ type assessment struct {
 	negativeSum float64
 	topCategory string
 	reversible  float64
-	confidence  float64
-	recommend   string
+	needsHuman  float64
+	unsafe      float64
 }
 
 // assess posts one typed-questions payload and folds the answers into the
@@ -351,14 +364,37 @@ func (s *Settings) assess(config *jsoncompat.Object, key, method string, params 
 			topCategory = category.Name
 		}
 	}
+	needsHuman, ok := noulAnswer(answers, "needs_human")
+	if !ok {
+		return nil, false
+	}
+	unsafe, ok := noulAnswer(answers, "unsafe")
+	if !ok {
+		return nil, false
+	}
 	return &assessment{
 		categories:  categories,
 		negativeSum: negativeSum,
 		topCategory: topCategory,
 		reversible:  answerNumber(answers.MustGet("reversible"), "noul"),
-		confidence:  answerNumber(answers.MustGet("recommend"), "confidence"),
-		recommend:   stringOf(answerString(answers.MustGet("recommend"), "choice")),
+		needsHuman:  needsHuman,
+		unsafe:      unsafe,
 	}, true
+}
+
+// noulAnswer reads one yes-probability. A missing or out-of-range answer fails
+// closed the way pi-jev-auto-mode treats malformed responses: the gate never
+// silently turns a broken reply into an approval.
+func noulAnswer(answers *jsoncompat.Object, key string) (float64, bool) {
+	object, _ := answers.MustGet(key).(*jsoncompat.Object)
+	if object == nil {
+		return 0, false
+	}
+	value := number(object.MustGet("noul"), math.NaN())
+	if math.IsNaN(value) || value < 0 || value > 1 {
+		return 0, false
+	}
+	return value, true
 }
 
 // post sends one assessment request through the optional proxy and decodes
@@ -488,11 +524,13 @@ func assessmentState(method string, params *jsoncompat.Object) *jsoncompat.Objec
 	return state
 }
 
-// approvalQuestions builds the typed question set the systemone API scores:
-// a policy-category outcome choice (the answer's probabilities carry the full
-// distribution), reversibility, and a recommendation restricted to the
-// decisions the native card actually offers (review always stays selectable
-// so Jev can punt instead of guessing).
+// approvalQuestions builds the typed question set the systemone API scores
+// atomically (one narrow judgment each, the way the TypeSafe guide and the
+// jev-guard/pi-jev-auto-mode gates phrase theirs): a policy-category outcome
+// choice (the answer's probabilities carry the full distribution),
+// reversibility, and two yes/no signals — needs_human for routing to a human
+// and unsafe for recommending refusal. The recommendation itself is derived
+// in code from those answers, never asked.
 func approvalQuestions(policy []Category, method string, params *jsoncompat.Object) *jsoncompat.Object {
 	criteria := jsoncompat.NewObject()
 	for _, category := range policy {
@@ -500,88 +538,35 @@ func approvalQuestions(policy []Category, method string, params *jsoncompat.Obje
 	}
 	outcome := jsoncompat.NewObject()
 	outcome.Set("type", "choice")
-	outcome.Set("instructions", "Which category best describes this permission request? Read it the way the agent will carry it out: the command line with pipes and substitutions, the files and paths changed, the services touched. Prefer a positive category describing ordinary or protective work when it fits.")
+	outcome.Set("instructions", "Which category best describes this permission request? Read it the way the agent will carry it out — the command line with pipes and substitutions, the files and paths changed, the services touched — and judge by effects, not by verbs: fetched content counts as code only when a later stage executes or evaluates it. Probabilities are what a careful reviewer would bet, so when one category plainly fits, give it most of the mass and split only a small remainder; do not spread probability across negative categories defensively. Prefer a positive category describing ordinary or protective work when it fits.")
 	outcome.Set("criteria", criteria)
 	reversible := jsoncompat.NewObject()
 	reversible.Set("type", "noul")
 	reversible.Set("instructions", "If allowed, can the effects of this operation be undone cheaply and completely?")
 	reversibleCriteria := jsoncompat.NewObject()
-	reversibleCriteria.Set("true", "The effects stay local and reversible: edited files can be restored, temporary state can be cleaned up, nothing external is modified.")
+	reversibleCriteria.Set("true", "The effects stay local and reversible: edited files can be restored, temporary state can be cleaned up, nothing external is modified. Read-only lookups and network fetches that change no remote state are fully reversible.")
 	reversibleCriteria.Set("false", "The effects are destructive, external, or persistent: deleted data, published or pushed state, changed permissions, remote side effects.")
 	reversible.Set("criteria", reversibleCriteria)
-	recommendCriteria := jsoncompat.NewObject()
-	for key, text := range availableDecisions(method, params) {
-		recommendCriteria.Set(key, text)
-	}
-	recommendCriteria.Set("review", recommendText["review"])
-	recommend := jsoncompat.NewObject()
-	recommend.Set("type", "choice")
-	recommend.Set("instructions", "Which decision should the user take on this permission request?")
-	recommend.Set("criteria", recommendCriteria)
+	needsHuman := jsoncompat.NewObject()
+	needsHuman.Set("type", "noul")
+	needsHuman.Set("instructions", "Should a careful engineer pause and ask a human before this exact call runs? Judge by effects: destroying data, exposing secrets, weakening security, running fetched content as code, escalating privileges, disrupting services, or writing outside the expected scope all warrant a human — so does a command you genuinely cannot decode. Ordinary read-only lookups, plainly reversible work, and requests that match the agent's stated task do not.")
+	needsHumanCriteria := jsoncompat.NewObject()
+	needsHumanCriteria.Set("true", "A human should look at this before it runs: destructive, secret-revealing, security-weakening, executing fetched code, privilege-escalating, service-disrupting, out of scope — or genuinely unreadable.")
+	needsHumanCriteria.Set("false", "The call is ordinary or plainly reversible and matches the work the agent described; letting it run unattended is fine.")
+	needsHuman.Set("criteria", needsHumanCriteria)
+	unsafe := jsoncompat.NewObject()
+	unsafe.Set("type", "noul")
+	unsafe.Set("instructions", "Is this call unsafe, unexplained, or unrelated to the requested work — something to refuse outright rather than merely confirm?")
+	unsafeCriteria := jsoncompat.NewObject()
+	unsafeCriteria.Set("true", "The command or change should be refused: unsafe, unexplained, or unrelated to the requested work.")
+	unsafeCriteria.Set("false", "The call is a reasonable part of the requested work.")
+	unsafe.Set("criteria", unsafeCriteria)
 	questions := jsoncompat.NewObject()
 	questions.Set("outcome", outcome)
 	questions.Set("reversible", reversible)
-	questions.Set("recommend", recommend)
+	questions.Set("needs_human", needsHuman)
+	questions.Set("unsafe", unsafe)
 	return questions
-}
-
-var recommendText = map[string]string{
-	"accept_once":    "Allow this one operation only. Prefer when the action is reasonable but the pattern is not established.",
-	"accept_session": "Allow for this session when the same action will clearly repeat and stays reversible.",
-	"accept_always":  "Allow permanently. Only when the action is routine and low risk for any future context.",
-	"decline":        "Refuse the operation. The command or change is unsafe, unexplained, or unrelated to the requested work.",
-	"review":         "No safe automatic recommendation; the user must read the details before choosing.",
-}
-
-// availableDecisions normalizes what the native card offers into
-// recommendation keys with their rubric text.
-func availableDecisions(method string, params *jsoncompat.Object) map[string]string {
-	available := map[string]string{}
-	switch method {
-	case "session/request_permission", "session/requestPermission":
-		for _, value := range arrayValues(params.MustGet("options")) {
-			option, _ := value.(*jsoncompat.Object)
-			if option == nil {
-				continue
-			}
-			kind := strings.ToLower(jsoncompat.PyStr(option.MustGet("kind")))
-			switch {
-			case strings.Contains(kind, "always") && strings.Contains(kind, "allow"):
-				available["accept_always"] = recommendText["accept_always"]
-			case strings.Contains(kind, "allow") || strings.Contains(kind, "accept"):
-				available["accept_once"] = recommendText["accept_once"]
-			case strings.Contains(kind, "reject") || strings.Contains(kind, "deny") || strings.Contains(kind, "decline"):
-				available["decline"] = recommendText["decline"]
-			}
-		}
-	default:
-		sawAccept, sawDecline := false, false
-		for _, value := range arrayValues(params.MustGet("availableDecisions")) {
-			decision := jsoncompat.PyStr(value)
-			switch decision {
-			case "accept":
-				sawAccept = true
-			case "decline", "cancel":
-				sawDecline = true
-			}
-		}
-		if !sawAccept && !sawDecline {
-			return map[string]string{
-				"accept_once": recommendText["accept_once"],
-				"decline":     recommendText["decline"],
-			}
-		}
-		if sawAccept {
-			available["accept_once"] = recommendText["accept_once"]
-		}
-		if sawDecline {
-			available["decline"] = recommendText["decline"]
-		}
-	}
-	if len(available) == 0 {
-		available["review"] = recommendText["review"]
-	}
-	return available
 }
 
 func arrayValues(value any) []any {

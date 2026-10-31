@@ -45,20 +45,20 @@ func fullProbabilities(overrides map[string]string, skip string) string {
 
 // outcomeAnswers builds one systemone reply: the outcome choice with its
 // probability distribution (omitted when probabilities is empty) plus the
-// auxiliary gate answers.
-func outcomeAnswers(choice, probabilities, recommend string, reversible, confidence float64) string {
+// auxiliary gate answers (reversible / needs_human / unsafe nouls).
+func outcomeAnswers(choice, probabilities string, reversible, needsHuman, unsafe float64) string {
 	distribution := ""
 	if probabilities != "" {
 		distribution = fmt.Sprintf(`,"probabilities":%s`, probabilities)
 	}
-	return fmt.Sprintf(`{"answers":{"outcome":{"choice":%q%s},"reversible":{"noul":%s},"recommend":{"choice":%q,"confidence":%s}}}`,
-		choice, distribution, numFloat(reversible).String(), recommend, numFloat(confidence).String())
+	return fmt.Sprintf(`{"answers":{"outcome":{"choice":%q%s},"reversible":{"noul":%s},"needs_human":{"noul":%s},"unsafe":{"noul":%s}}}`,
+		choice, distribution, numFloat(reversible).String(), numFloat(needsHuman).String(), numFloat(unsafe).String())
 }
 
 func TestAutoResponseMapsSafeACPRecommendation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(map[string]string{"routine_work": "0.9"}, ""), "accept_once", 0.95, 0.96)))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(map[string]string{"routine_work": "0.9"}, ""), 0.95, 0.04, 0.01)))
 	}))
 	defer server.Close()
 	settings := approvalSettings(t, server.URL)

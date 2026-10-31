@@ -61,7 +61,7 @@ func TestRecordDecisionWritesFullLine(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(outcomeAnswers("routine_work",
 			fullProbabilities(map[string]string{"routine_work": "0.9"}, ""),
-			"accept_once", 0.95, 0.96)))
+			0.95, 0.04, 0.01)))
 	}))
 	defer server.Close()
 	dir := t.TempDir()
@@ -180,7 +180,7 @@ func TestJournalSkipsPreEvaluationReasons(t *testing.T) {
 func TestJournalFileMode0600(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), "accept_once", 0.99, 0.99)))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), 0.99, 0.01, 0.01)))
 	}))
 	defer server.Close()
 	dir := t.TempDir()
@@ -199,7 +199,7 @@ func TestJournalFileMode0600(t *testing.T) {
 func TestJournalRotatesAt20MB(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), "accept_once", 0.99, 0.99)))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), 0.99, 0.01, 0.01)))
 	}))
 	defer server.Close()
 	dir := t.TempDir()
@@ -265,7 +265,7 @@ func TestJournalRotatesAt20MB(t *testing.T) {
 func TestJournalFailureNeverBlocksApproval(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), "accept_once", 0.99, 0.99)))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), 0.99, 0.01, 0.01)))
 	}))
 	defer server.Close()
 	dir := t.TempDir()

@@ -3,6 +3,7 @@ package httpd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,7 +33,7 @@ func trialAnswers() string {
 	for _, name := range trialDefaultCategories {
 		parts = append(parts, fmt.Sprintf("%q:0", name))
 	}
-	return fmt.Sprintf(`{"answers":{"outcome":{"choice":"routine_work","probabilities":{%s}},"reversible":{"noul":0.99},"recommend":{"choice":"accept_once","confidence":0.99}}}`,
+	return fmt.Sprintf(`{"answers":{"outcome":{"choice":"routine_work","probabilities":{%s}},"reversible":{"noul":0.99},"needs_human":{"noul":0.01},"unsafe":{"noul":0.01}}}`,
 		strings.Join(parts, ","))
 }
 
@@ -144,9 +145,7 @@ func TestJevTrialAcceptsRawMethodParams(t *testing.T) {
 	var calls int32
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&calls, 1)
-		chunk := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(chunk)
-		captured = chunk
+		captured, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(trialAnswers()))
 	}))

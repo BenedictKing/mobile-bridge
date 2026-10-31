@@ -94,7 +94,7 @@ func echoOutcomeServer(t *testing.T, calls *int32) *httptest.Server {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(fmt.Sprintf(
-			`{"answers":{"outcome":{"choice":%q,"probabilities":{%s}},"reversible":{"noul":0.99},"recommend":{"choice":"accept_once","confidence":0.99}}}`,
+			`{"answers":{"outcome":{"choice":%q,"probabilities":{%s}},"reversible":{"noul":0.99},"needs_human":{"noul":0.01},"unsafe":{"noul":0.01}}}`,
 			names[len(names)-1], strings.Join(parts, ","))))
 	}))
 }
@@ -116,10 +116,10 @@ func TestOnlyApprovedDecisionsCached(t *testing.T) {
 		if atomic.LoadInt32(&blocking) > 0 {
 			_, _ = w.Write([]byte(outcomeAnswers("secret_exposure",
 				fullProbabilities(map[string]string{"secret_exposure": "0.5"}, ""),
-				"accept_once", 0.99, 0.99)))
+				0.99, 0.01, 0.01)))
 			return
 		}
-		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), "accept_once", 0.99, 0.99)))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), 0.99, 0.01, 0.01)))
 	}))
 	defer server.Close()
 	settings := cacheSettings(t, server.URL)
@@ -315,7 +315,7 @@ func TestStoreDropsStaleFingerprint(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), "accept_once", 0.99, 0.99)))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), 0.99, 0.01, 0.01)))
 	}))
 	defer server.Close()
 	settings = cacheSettings(t, server.URL)

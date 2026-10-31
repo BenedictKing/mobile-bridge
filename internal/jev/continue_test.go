@@ -1,6 +1,7 @@
 package jev
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -225,7 +226,7 @@ func TestEvaluateRecordsRejectionReasons(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(outcomeAnswers("secret_exposure",
 			fullProbabilities(map[string]string{"secret_exposure": "0.5", "privilege_escalation": "0.1"}, ""),
-			"accept_once", 0.99, 0.99)))
+			0.99, 0.01, 0.01)))
 	}))
 	defer server.Close()
 	value.Set("baseUrl", server.URL)
@@ -253,10 +254,9 @@ func TestEvaluateRecordsRejectionReasons(t *testing.T) {
 func TestEvaluateSendsStructuredQuestions(t *testing.T) {
 	var body []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body = make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(body)
+		body, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), "review", 1, 0.5)))
+		_, _ = w.Write([]byte(outcomeAnswers("routine_work", fullProbabilities(nil, ""), 1, 0.9, 0.1)))
 	}))
 	defer server.Close()
 	settings := approvalSettings(t, server.URL)
@@ -304,8 +304,11 @@ func TestEvaluateSendsStructuredQuestions(t *testing.T) {
 	if questions.MustGet("reversible").(*jsoncompat.Object).MustGet("type") != "noul" {
 		t.Fatal("reversible question must stay typed")
 	}
-	if questions.MustGet("recommend").(*jsoncompat.Object).MustGet("type") != "choice" {
-		t.Fatal("recommend question must stay typed")
+	if questions.MustGet("needs_human").(*jsoncompat.Object).MustGet("type") != "noul" {
+		t.Fatal("needs_human question must stay typed")
+	}
+	if questions.MustGet("unsafe").(*jsoncompat.Object).MustGet("type") != "noul" {
+		t.Fatal("unsafe question must stay typed")
 	}
 	// The state must carry the subject derived from toolCall.
 	state := root.MustGet("state").(*jsoncompat.Object)
@@ -334,7 +337,7 @@ func TestAssessFailsClosedOnIncompleteDistribution(t *testing.T) {
 		t.Run(item.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(outcomeAnswers(item.choice, item.probabilities, "accept_once", 1, 1)))
+				_, _ = w.Write([]byte(outcomeAnswers(item.choice, item.probabilities, 1, 0.01, 0.01)))
 			}))
 			defer server.Close()
 			decision := approvalSettings(t, server.URL).Evaluate("session/request_permission", jsoncompat.NewObject())
@@ -350,7 +353,7 @@ func TestPositiveSumNotCounted(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(outcomeAnswers("routine_work",
 			fullProbabilities(map[string]string{"routine_work": "0.9"}, ""),
-			"accept_once", 0.99, 0.99)))
+			0.99, 0.01, 0.01)))
 	}))
 	defer server.Close()
 	settings := approvalSettings(t, server.URL)

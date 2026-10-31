@@ -818,7 +818,6 @@ function jevHoldReason(a){
     case 'recommend_accept_always':return '永久授权需手动确认';
     case 'negative_sum_over_threshold':return t('风险倾向')+' '+pct(a.negativeSum)+' ≥ '+t('阈值')+' '+pct(a.threshold);
     case 'not_reversible_enough':return t('可撤销性')+' '+pct(a.reversible)+' < 80%';
-    case 'low_confidence':return t('置信度')+' '+pct(a.confidence)+' < 80%';
     case 'no_matching_option':return '卡片没有可匹配的允许选项';
   }
   return '';

@@ -29,6 +29,8 @@
 
 ### Changed / Fixed
 
+- Jev 自动审核重构为原子问题 + 代码侧裁决（`internal/jev` approval/policy 重写 + 测试迁移 + `web/app.js`，参照 TypeSafe 官方 how-to/confidence 文档与 jev-guard、pi-jev-auto-mode 两个同类门禁的问法）：决策日志 77 条里仅 3 条自动放行——42% 卡在置信度闸、31% 卡模型主动 review，连 grep 本地文件、curl 公开文档这类纯只读命令也从不放行，结构性根因有二：①「建议」作为多选项 Choice 交给模型，而 systemone 的 confidence 是集中度指标 (p_max−1/n)/(1−1/n)，三选项过 0.8 需要 p_max≈0.87，几乎不可达；②旧类别描述按动词而非效果判级（curl 字面命中 code_from_elsewhere、/tmp 落盘命中 scratch_misplaced）。现改为：类别分布保留（12 类描述全部重写为按效果判级——fetch 的内容只有在被执行时才算 code、/tmp 是常规落点、routine_work 明确收入网络读取），「建议」Choice 删除，换两个 Noul 原子问题 needs_human（「工程师是否会想让人先看这次调用」）与 unsafe（「是否不安全/离题该直接拒绝」）；建议由代码从两信号推导（unsafe≥0.6 推荐拒绝并星标、needs_human≥0.5 复核、否则 accept_once），独立置信度闸删除（Noul 的 p 本身即不确定度，缺失/越界答案一律 fail-closed 拒评）；徽章「Jev N%」语义改为放行把握（1−needs_human），前端移除 low_confidence 文案分支。测试答案构造器随之迁移，顺带修掉两处测试里单次 `Body.Read` 截留载荷的预存缺陷（改 `io.ReadAll`）。真实 API A/B：截图两例（grep、curl 文档）从卡人工变为自动放行（负面和 0–0.02、把握 0.85–0.93），curl|sh、sudo rm -rf、读私钥、force push、写 dotfile 六个危险对照全部拒绝（负面和 ≥0.86）。
+
 - Claude、DeepSeek、MiniMax 会话运行中点“发送新消息”不再报“当前已有任务正在运行”却仍把消息排进队列（`internal/httpd/sessions.go`）：这三类 Agent 支持补充当前任务，前端运行中不会自动切到排队，消息直接发给忙碌的会话被拒收。网关此前已把条目放回队列、回合结束后照常派发，接口却返回 409，输入框保留草稿并显示错误。现在拒收时返回 `{status:"queued", id}`，手机端清空输入框、提示“已加入待发送队列”并显示队列卡。
 
 - 团队任务的 turn 落定后不再偶发延迟 25 秒才结算（`internal/acpruntime` 新增 `Session.WaitAfter` + `internal/team` watcher 改用它）：watcher 读完会话快照后才取变更通道，turn 恰好在两者之间完成、失败或被中断时，这次通知被漏掉，要等满一个等待片（生产 25s）才发现，下一个任务也跟着晚派发。现在 `pollTask` 在读快照前记下会话序号，watcher 等序号越过该值，已发生的变更立即唤醒。

@@ -30,8 +30,8 @@ func TestAnnotateSkipsUnassessedDecisions(t *testing.T) {
 func TestAnnotateCarriesVerdictAndRecommendedOption(t *testing.T) {
 	params := acpOptions("allow_always", "allow_once", "reject_once")
 	got := Annotate("session/request_permission", params, Decision{
-		Assessed: true, Reason: "low_confidence", NegativeSum: 0.02, Threshold: 0.3,
-		Reversible: 0.96, Confidence: 0.59, Recommend: "accept_once",
+		Assessed: true, Reason: "negative_sum_over_threshold", NegativeSum: 0.02, Threshold: 0.3,
+		Reversible: 0.96, Confidence: 0.62, Recommend: "accept_once",
 	})
 	if got == nil {
 		t.Fatal("assessed decision should annotate")
@@ -40,10 +40,10 @@ func TestAnnotateCarriesVerdictAndRecommendedOption(t *testing.T) {
 		t.Fatalf("accept_once should star allow_once, got %q", got.RecommendOption)
 	}
 	a := got.Assessment
-	if a.MustGet("source") != "jev" || a.MustGet("riskLabel") != "routine" || a.MustGet("reason") != "low_confidence" {
+	if a.MustGet("source") != "jev" || a.MustGet("riskLabel") != "routine" || a.MustGet("reason") != "negative_sum_over_threshold" {
 		t.Fatalf("assessment fields wrong: %s", jsoncompat.EncodeCompact(a))
 	}
-	if number(a.MustGet("confidence"), -1) != 0.59 || number(a.MustGet("reversible"), -1) != 0.96 {
+	if number(a.MustGet("confidence"), -1) != 0.62 || number(a.MustGet("reversible"), -1) != 0.96 {
 		t.Fatalf("numbers wrong: %s", jsoncompat.EncodeCompact(a))
 	}
 }
