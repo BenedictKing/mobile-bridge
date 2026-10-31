@@ -123,9 +123,20 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
   // Android App 注入 MobileBridgeNative；网关入口因此出现在标题栏，浏览器里没有这一组。
   const nativeBridge=window.MobileBridgeNative,gatewayDialog=get('gateway-dialog');
-  for(const button of document.querySelectorAll('[data-open-gateway]'))button.onclick=()=>{
-    get('gateway-note').textContent='';get('gateway-origin').textContent=location.origin;gatewayDialog.showModal();
+  // 页面始终从公网地址加载，局域网直连发生在 App 的请求拦截层，只能由 App 告知当前线路；旧版 App 没有该接口时不显示这一行。
+  const showRoute=route=>{
+    if(!route||typeof route.mode!=='string')return;
+    const label=route.mode==='lan'?BridgeI18n.t('局域网直连')+(route.host?' · '+route.host:'')
+      :route.mode==='probing'?BridgeI18n.t('正在探测局域网…'):BridgeI18n.t('公网连接');
+    get('gateway-route').textContent=label;get('gateway-route-row').hidden=false;
   };
+  const readRoute=()=>{try{showRoute(JSON.parse(nativeBridge.connection()));}catch{}};
+  for(const button of document.querySelectorAll('[data-open-gateway]'))button.onclick=()=>{
+    get('gateway-note').textContent='';get('gateway-origin').textContent=location.origin;
+    if(nativeBridge?.connection)readRoute();
+    gatewayDialog.showModal();
+  };
+  window.addEventListener('mobilebridge-route',event=>showRoute(event.detail));
   if(nativeBridge){
     root.dataset.native='android';
     for(const button of document.querySelectorAll('.gateway-entry'))button.hidden=false;

@@ -31,6 +31,8 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -58,6 +60,8 @@ public final class MainActivity extends Activity {
     private ConnectivityManager.NetworkCallback networkCallback;
     private ValueCallback<Uri[]> fileCallback;
     private boolean dark;
+    // 网页在 JS 线程读取当前线路，主线程写入；整体替换一个 JSON 串，避免读到半更新的 mode/host。
+    private volatile String route = routeJson("public", "");
 
     @Override
     public void onCreate(Bundle state) {
@@ -217,6 +221,12 @@ public final class MainActivity extends Activity {
             main.post(() -> showSettings(null));
         }
 
+        // 页面始终加载公网地址，局域网直连只发生在请求拦截层，网页自己看不出来，需由这里告知。
+        @JavascriptInterface
+        public String connection() {
+            return route;
+        }
+
         @JavascriptInterface
         public void setTheme(boolean value) {
             main.post(() -> {
@@ -285,9 +295,22 @@ public final class MainActivity extends Activity {
             .hideSoftInputFromWindow(urlInput.getWindowToken(), 0);
     }
 
-    private void showStatus(String value) {
-        status.setText(value);
+    private void showRoute(String mode, String host) {
+        route = routeJson(mode, host);
+        if ("lan".equals(mode)) status.setText("局域网直连 · " + host);
+        else if ("probing".equals(mode)) status.setText("正在探测局域网…");
+        else status.setText("公网连接");
         status.setVisibility(View.VISIBLE);
+        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('mobilebridge-route',{detail:"
+            + route + "}))", null);
+    }
+
+    private static String routeJson(String mode, String host) {
+        try {
+            return new JSONObject().put("mode", mode).put("host", host).toString();
+        } catch (Exception impossible) {
+            return "{\"mode\":\"public\",\"host\":\"\"}";
+        }
     }
 
     private void connect() {
@@ -301,7 +324,8 @@ public final class MainActivity extends Activity {
         preferences().edit().putString(PUBLIC_URL, origin.toString()).apply();
         hideSettings();
         if (direct != null) direct.close();
-        direct = new DirectTransport(origin, value -> main.post(() -> showStatus(value)));
+        route = routeJson("public", "");
+        direct = new DirectTransport(origin, (mode, host) -> main.post(() -> showRoute(mode, host)));
         webView.stopLoading();
         webView.setVisibility(View.VISIBLE);
         webView.setWebViewClient(new GatewayWebViewClient(origin, direct, new GatewayWebViewClient.PageListener() {

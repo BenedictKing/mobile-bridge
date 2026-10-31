@@ -12,8 +12,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 final class DirectTransport {
+    // 线路状态：public 走公网地址，probing 正在验证局域网候选，lan 已切到 host 直连。
     interface Listener {
-        void onStatus(String status);
+        void onRoute(String mode, String host);
     }
 
     private final EndpointSelector selector = new EndpointSelector();
@@ -42,15 +43,16 @@ final class DirectTransport {
         instanceId = gatewayInstanceId;
         selected = null;
         if (candidates.isEmpty() || cookie.isEmpty()) {
-            listener.onStatus("公网连接");
+            listener.onRoute("public", "");
             return;
         }
-        listener.onStatus("正在探测局域网…");
+        listener.onRoute("probing", "");
         refreshExecutor.execute(() -> {
             URI found = selector.select(candidates, candidate -> verify(candidate, cookie, gatewayInstanceId));
             if (current != generation.get()) return;
             selected = found;
-            listener.onStatus(found == null ? "公网连接" : "局域网加速 · " + found.getHost());
+            if (found == null) listener.onRoute("public", "");
+            else listener.onRoute("lan", found.getHost());
         });
     }
 
@@ -102,12 +104,12 @@ final class DirectTransport {
         lastCandidates = new ArrayList<>();
         lastCookie = "";
         instanceId = "";
-        listener.onStatus("公网连接");
+        listener.onRoute("public", "");
     }
 
     private void invalidate() {
         selected = null;
-        listener.onStatus("公网连接");
+        listener.onRoute("public", "");
         if (!lastCandidates.isEmpty() && !lastCookie.isEmpty()) refresh(lastCandidates, lastCookie, instanceId);
     }
 
