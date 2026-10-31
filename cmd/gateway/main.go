@@ -758,7 +758,7 @@ func runGateway(args []string) {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
 		server.Codex.Executable = os.Getenv("GATEWAY_CODEX_BIN")
 		if server.Jev != nil {
-			server.Codex.AutoApprove = jevApprovalHook(server.Jev, "codex")
+			server.Codex.AutoApprove = jevCodexApprovalHook(server.Jev)
 		}
 	}
 	server.Account = account.NewWithData(codexHome, dataDir, os.Getenv("GATEWAY_CODEX_BIN"))

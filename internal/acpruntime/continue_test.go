@@ -131,7 +131,7 @@ func TestNoteHumanActionRearmsWithoutPrompt(t *testing.T) {
 func TestAutoApproveReceivesSessionContext(t *testing.T) {
 	session := &Session{ID: "sess-approve", View: acpview.NewView("sess-approve", nil, "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{})}
 	seen := make(chan [3]string, 1)
-	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
+	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object) *ApprovalVerdict {
 		seen <- [3]string{sessionID, requestID, method}
 		return nil
 	}
@@ -154,4 +154,37 @@ func TestAutoApproveReceivesSessionContext(t *testing.T) {
 		t.Fatal("request should stay pending without an auto response")
 	default:
 	}
+}
+
+func TestAutoApproveVerdictAnnotatesPendingCard(t *testing.T) {
+	session := &Session{ID: "sess-note", View: acpview.NewView("sess-note", nil, "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{})}
+	assessment := jsoncompat.NewObject()
+	assessment.Set("source", "jev")
+	assessment.Set("reason", "low_confidence")
+	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object) *ApprovalVerdict {
+		return &ApprovalVerdict{Assessment: assessment, RecommendOption: "approve_once"}
+	}
+	request := jsoncompat.NewObject()
+	request.Set("id", "perm-8")
+	request.Set("method", "session/request_permission")
+	request.Set("params", jsoncompat.NewObject())
+	session.onRequest(request, func(any) { t.Error("annotated card must stay pending") })
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		session.mu.Lock()
+		var card *jsoncompat.Object
+		if len(session.View.Requests) == 1 {
+			card = session.View.Requests[0]
+		}
+		annotated := card != nil && card.MustGet("assessment") != nil
+		session.mu.Unlock()
+		if annotated {
+			if card.MustGet("recommend") != "approve_once" {
+				t.Fatalf("recommend not set: %s", jsoncompat.EncodeCompact(card))
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("verdict never reached the pending card")
 }

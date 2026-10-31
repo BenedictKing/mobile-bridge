@@ -67,7 +67,7 @@ type Session struct {
 	// materialized backend id; ownsUpdate consults it so zcode's first-prompt
 	// stream — which may already carry the backend id — is not dropped.
 	canonical   func(id string) string
-	autoApprove func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
+	autoApprove ApprovalHook
 	// autoContinue runs asynchronously once a live turn settles; the gateway
 	// installs it to resume unfinished work. autoContinueRuns is the
 	// consecutive-resume budget any human action re-arms.
@@ -135,11 +135,23 @@ type Subagents interface {
 	Activity(parentID string) subagents.Activity
 }
 
+// ApprovalVerdict is what the auto-approve hook returns for one permission
+// request: a native Response to submit, or — when Jev assessed the card but
+// did not approve it — the Assessment and RecommendOption the phone renders.
+// Nil, or a verdict with neither, leaves the card untouched.
+type ApprovalVerdict struct {
+	Response        *jsoncompat.Object
+	Assessment      *jsoncompat.Object
+	RecommendOption string
+}
+
+type ApprovalHook func(sessionID, requestID, method string, params *jsoncompat.Object) *ApprovalVerdict
+
 type Manager struct {
 	Executable  string
 	Command     []string
 	HostSocket  string
-	AutoApprove func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
+	AutoApprove ApprovalHook
 
 	// AutoContinue, when set, is invoked (in its own goroutine) every time a
 	// live turn settles — completion, failure or idle timeout — so the
@@ -2314,10 +2326,32 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 	s.mu.Unlock()
 	if s.autoApprove != nil && (method == "session/request_permission" || method == "session/requestPermission") {
 		go func() {
-			if response := s.autoApprove(s.ID, requestID, method, params); response != nil {
-				_ = s.Respond(requestID, response)
+			verdict := s.autoApprove(s.ID, requestID, method, params)
+			if verdict == nil {
+				return
 			}
+			if verdict.Response != nil && s.Respond(requestID, verdict.Response) == nil {
+				return
+			}
+			s.annotateRequest(requestID, verdict)
 		}()
+	}
+}
+
+// annotateRequest pins a Jev verdict onto a still-pending card and pushes it
+// to watchers. It re-presents state rather than recording an interaction, so
+// the chat's list recency stays put.
+func (s *Session) annotateRequest(requestID string, verdict *ApprovalVerdict) {
+	if verdict.Assessment == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, pending := s.pending[requestID]; !pending {
+		return
+	}
+	if s.View.AnnotateRequest(requestID, verdict.Assessment, verdict.RecommendOption) {
+		s.signalViewLocked()
 	}
 }
 

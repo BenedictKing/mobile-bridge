@@ -333,6 +333,24 @@ func (v *View) replaceRequest(requestID string, entry *jsoncompat.Object) {
 	v.Requests = append(kept, entry)
 }
 
+// AnnotateRequest attaches a Jev verdict to a pending card: assessment drives
+// the phone's risk badge, recommend stars the matching option. It reports
+// whether the card was still pending. Snapshots clone requests, so the
+// in-place set never reaches an already-served view.
+func (v *View) AnnotateRequest(requestID string, assessment *jsoncompat.Object, recommend string) bool {
+	for _, request := range v.Requests {
+		if id, _ := request.MustGet("id").(string); id != requestID {
+			continue
+		}
+		request.Set("assessment", assessment)
+		if recommend != "" {
+			request.Set("recommend", recommend)
+		}
+		return true
+	}
+	return false
+}
+
 // RemovePermission mirrors remove_permission.
 func (v *View) RemovePermission(requestID string) {
 	kept := v.Requests[:0:0]

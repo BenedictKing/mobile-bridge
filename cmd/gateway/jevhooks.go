@@ -21,20 +21,40 @@ import (
 const watchedWithin = 2 * time.Minute
 
 // jevApprovalHook wraps one Jev evaluation with the session approval cache,
-// the decision journal and the decision audit log.
-func jevApprovalHook(settings *jev.Settings, agent string) func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
-	return func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
-		decision := settings.EvaluateSession(agent, sessionID, requestID, method, params)
-		response := "-"
-		if decision.Response != nil {
-			response = string(jsoncompat.EncodeCompact(decision.Response))
+// the decision journal and the decision audit log. Cards Jev assessed but did
+// not approve come back annotated so the phone shows the verdict.
+func jevApprovalHook(settings *jev.Settings, agent string) acpruntime.ApprovalHook {
+	return func(sessionID, requestID, method string, params *jsoncompat.Object) *acpruntime.ApprovalVerdict {
+		decision := jevEvaluate(settings, agent, sessionID, requestID, method, params)
+		verdict := &acpruntime.ApprovalVerdict{Response: decision.Response}
+		if annotation := jev.Annotate(method, params, decision); annotation != nil {
+			verdict.Assessment = annotation.Assessment
+			verdict.RecommendOption = annotation.RecommendOption
 		}
-		log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 结果=%s 和=%.2f 阈值=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 请求=%q",
-			agent, sessionID, requestID, method, decision.Reason,
-			decision.NegativeSum, decision.Threshold, decision.Reversible, decision.Confidence, decision.Recommend,
-			response, jev.SubjectPrefix(params))
-		return decision.Response
+		return verdict
 	}
+}
+
+// jevCodexApprovalHook is the Codex bridge's response-only variant: Codex
+// re-normalizes its desktop snapshot on every read, so there is no pending
+// card to annotate yet.
+func jevCodexApprovalHook(settings *jev.Settings) func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
+	return func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
+		return jevEvaluate(settings, "codex", sessionID, requestID, method, params).Response
+	}
+}
+
+func jevEvaluate(settings *jev.Settings, agent, sessionID, requestID, method string, params *jsoncompat.Object) jev.Decision {
+	decision := settings.EvaluateSession(agent, sessionID, requestID, method, params)
+	response := "-"
+	if decision.Response != nil {
+		response = string(jsoncompat.EncodeCompact(decision.Response))
+	}
+	log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 结果=%s 和=%.2f 阈值=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 请求=%q",
+		agent, sessionID, requestID, method, decision.Reason,
+		decision.NegativeSum, decision.Threshold, decision.Reversible, decision.Confidence, decision.Recommend,
+		response, jev.SubjectPrefix(params))
+	return decision
 }
 
 // jevContinueHook resumes a settled turn when the persisted auto-continue
