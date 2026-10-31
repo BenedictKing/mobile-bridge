@@ -515,6 +515,13 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 .appearance-field-label{display:block;font-size:14px;margin-bottom:10px}
 /* 2026-10-28 真实数据复查 */
 @media(min-width:721px){#accounts-dialog{width:min(94vw,640px)}}
+/* 文件差异弹窗：桌面端按屏幕放宽加高，代码行少折行；手机端仍是底部全宽面板。 */
+@media(min-width:721px){
+  #diff-dialog{width:min(94vw,1200px);max-height:90dvh}
+  #diff-dialog .diff-view{max-height:calc(90dvh - 150px)}
+}
+/* .picker h2 的字号会压过标题自身的等宽小字，标题被放大成多行大字；这里提高优先级还原。 */
+.picker .diff-review-title{font:600 13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:0}
 .accounts-panel .accounts-name-heading .accounts-credit{font-size:12px}
 .sidebar-foot>button{white-space:nowrap}
 :root[data-theme=dark] .mark{border-radius:22%;box-shadow:0 0 0 1px var(--control)}
