@@ -1432,3 +1432,23 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		t.Fatalf("竞争链版本应为 %d，得到 %d", 1+contenders*winsEach, got.Version)
 	}
 }
+
+// 验收已移除：旧快照里的 deliveryStatus 读入即丢弃，不随 extra 回写；其他
+// 未知字段照常保留。
+func TestRunDropsLegacyDeliveryStatus(t *testing.T) {
+	var run Run
+	raw := `{"id":"r1","teamId":"t1","goal":"g","status":"completed","deliveryStatus":"accepted","futureField":1,"round":1,"planHash":"h","tasks":[],"createdAt":"2026-10-31T00:00:00Z","updatedAt":"2026-10-31T00:00:00Z","version":2}`
+	if err := json.Unmarshal([]byte(raw), &run); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(&run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "deliveryStatus") {
+		t.Fatalf("旧验收字段应被丢弃: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), "futureField") {
+		t.Fatalf("其他未知字段应保留: %s", encoded)
+	}
+}

@@ -32,25 +32,21 @@ func TestTeamConversationDirectModeDoesNotCreateRun(t *testing.T) {
 	_, _ = env.server.Teams.Cancel(teamIDForMessage)
 }
 
-func TestRunDeliveryHTTPAcceptAndDuplicate(t *testing.T) {
+// 验收已移除：旧客户端调用 delivery 端点返回 404，Run 投影不再带验收状态。
+func TestRunDeliveryEndpointRemoved(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	teamID, _ := env.createTeam(t)
-	run := &team.Run{ID: "delivery-http-run", TeamID: teamID, Goal: "交付", Status: team.RunCompleted, DeliveryStatus: team.DeliveryPendingReview}
+	run := &team.Run{ID: "delivery-http-run", TeamID: teamID, Goal: "交付", Status: team.RunCompleted}
 	if err := env.store.SaveRun(run); err != nil {
 		t.Fatal(err)
 	}
 	target := "/api/teams/" + teamID + "/runs/" + run.ID + "/delivery"
-	body := `{"status":"accepted","version":1}`
-	response := env.request(http.MethodPost, target, body)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"deliveryStatus": "accepted"`) {
-		t.Fatalf("接受成果 API 失败: %d %s", response.Code, response.Body.String())
+	response := env.request(http.MethodPost, target, `{"status":"accepted","version":1}`)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("验收端点应已移除: %d %s", response.Code, response.Body.String())
 	}
-	response = env.request(http.MethodPost, target, body)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"duplicate": true`) {
-		t.Fatalf("交付重放应返回 duplicate: %d %s", response.Code, response.Body.String())
-	}
-	response = env.request(http.MethodPost, target, `{"status":"discarded","version":2}`)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("已接受成果不得丢弃: %d %s", response.Code, response.Body.String())
+	response = env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+run.ID, "")
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "deliveryStatus") {
+		t.Fatalf("Run 详情不应再带 deliveryStatus: %d %s", response.Code, response.Body.String())
 	}
 }

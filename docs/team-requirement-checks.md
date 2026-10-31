@@ -18,7 +18,9 @@
 
 核心规则：**只有 `met` 计为满足。`unknown` 不能折算为通过，缺项、无证据或格式错误一律按 `unknown` 处理。**
 
-不在范围内：任务来源导入（Issue、Roadmap）、自动修复回路、diff 绑定的验收。见 §12。
+逐项结论是给用户看的信息，不是门槛。团队不设用户验收（已移除，见 §2）：结果有问题时，用户在 Team Chat 继续反馈。
+
+不在范围内：任务来源导入（Issue、Roadmap）、自动修复回路。见 §12。
 
 ## 2. 现状复核
 
@@ -36,7 +38,7 @@
 | 交付各维度分开展示 | 交付卡分别显示 Agent 完成度、审查、验证、待答问题（`web/team-chat.js`） | 已具备 |
 | 定时任务忙时策略 | 团队忙时跳过到期点并留痕（`schedule.go`），无排队 / 合并选项 | 部分具备 |
 | 执行快照 | 保存 `SentText` 全文和 `inputHash`（含 `PolicyDigest`）；**未记录成员实际模型、思考强度、Agent 版本** | 部分具备 |
-| 人工决定绑定产物版本 | `SetDeliveryStatus` 只校验 `Run.Version`；`diffHash` 只出现在设计文档，代码未实现。共享工作区在 Run 完成后被改动，验收无法察觉 | **未具备**，此前说法需更正 |
+| 人工决定绑定产物版本 | 原验收只校验 `Run.Version`，`diffHash` 未实现；接受不让改动生效，丢弃也不回滚文件 | 验收只是标签，**已移除**（2026-10-31） |
 | 软件需求逐项验证 | Review 只解析末行 `<team-review>passed/failed</team-review>`（`review.go`），无逐项结论 | 未具备，本文设计 |
 
 另有两点影响本设计：
@@ -249,7 +251,7 @@ TaskResult.RequirementChecks:   // 仅 Review 任务
 - `reason` 映射为短文案：未报告、无证据、重复、格式无效、审查后有新改动。
 - `source=reviewer` 标注“评审自拟”；`total=0` 显示“未列出可检查的需求”。
 - `reviewTag=passed` 而 `verdict` 不是 `passed` 时，显示“评审标记为通过，但存在未满足或无法判断的需求”。
-- 验收按钮保持可用：是否接受由用户决定。存在 `unmet` 或 `unknown` 时，在按钮上方显示一行提示，不弹确认框。
+- 存在 `unmet` 或 `unknown` 时，交付卡底部提示“可在团队聊天继续反馈”，不阻止任何操作。
 - 文案进 `web/i18n.js`，英文界面同步。
 
 ## 9. 兼容与边界
@@ -325,6 +327,5 @@ TaskResult.RequirementChecks:   // 仅 Review 任务
 - **清单编辑**：用修订或新输入代替。
 - **跨 Run 回归检查**：新意见是否破坏前一 Run 已满足的需求。需要团队级需求台账，等持续反馈路由（`autonomous-feedback-plan` 阶段一）落地后再评估。
 - **`unmet` 自动触发修复**：属于 `autonomous-feedback-plan` §6.1 修复回路。
-- **验收绑定 diff**：`SetDeliveryStatus` 目前只校验 `Run.Version`，共享工作区在 Run 完成后被改动不可察觉。这是独立问题，建议单独立项。
 - **执行快照补记模型与思考强度**：同样独立，可在 `ExecutionThread` 投影中补充。
 - **网关核验证据真实性**（例如检查 `path:line` 是否存在）：可作为后续增强，本版只校验证据非空。

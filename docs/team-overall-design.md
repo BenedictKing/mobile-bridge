@@ -220,10 +220,12 @@ Delivery 是独立投影，至少包含：
 ```text
 runId, taskIds, workspaceIds, diffHash
 resultSummary, reviewVerdict, verifyExitCode
-truncated, pendingQuestions, deliveryStatus
+truncated, pendingQuestions
 ```
 
-“Agent 已完成”“Review 已通过”“验证已通过”“用户已接受交付”必须分别展示。
+“Agent 已完成”“Review 已通过”“验证已通过”必须分别展示。
+
+不设用户验收：成员直接写工作区，接受或丢弃都不改变文件，只是一个标签。用户认为结果有问题时，在 Team Chat 继续反馈即可（2026-10-31 移除）。
 
 ## 9. 前端交互
 
@@ -234,7 +236,7 @@ truncated, pendingQuestions, deliveryStatus
 3. Run 摘要：显示阶段轨道、依赖、当前状态、结果和等待原因。
 4. Task 卡：显示成员、Prompt 摘要、workspace、输入哈希、停止原因和原会话入口。
 5. 操作卡：预览、开始、暂停、继续、回答问题、取消、修订和打开原会话。
-6. Delivery 卡：显示 diff、Review、Verify 和“应用/清理”入口；应用与清理由用户触发。
+6. Delivery 卡：显示 diff、Review、Verify；独立 worktree 的“应用/清理”是实际的文件操作，由用户触发，不是验收。
 
 用户不需要判断反馈属于哪个 Run。系统自动路由后必须明确展示“续作、追加任务、修订、仅回答或需要澄清”及理由。
 

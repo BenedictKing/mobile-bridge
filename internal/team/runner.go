@@ -2832,9 +2832,6 @@ func (s *Service) finishRunLocked(state *runState, run *Run, status, stopReason 
 		}
 		fresh.Status = status
 		fresh.StopReason = stopReason
-		if status == RunCompleted {
-			fresh.DeliveryStatus = DeliveryPendingReview
-		}
 		if eventType := runStatusEvent(status); eventType != "" {
 			payload := map[string]any{}
 			if stopReason != "" {

@@ -599,9 +599,8 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			}
 		case EventRunCompleted:
 			run.Status = RunCompleted
-			run.DeliveryStatus = DeliveryPendingReview
-		case EventRunDeliveryUpdated:
-			run.DeliveryStatus = payloadString(event.Payload, "deliveryStatus")
+		// 已移除的 run_delivery_updated（验收）事件留在旧 journal 里，不匹配任何
+		// case，重建时自然忽略。
 		case EventRunFailed:
 			run.Status = RunFailed
 		case EventRunCancelled:

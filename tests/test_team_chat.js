@@ -158,28 +158,26 @@ test('team submission fields distinguish direct chat from orchestration',()=>{
   assert.deepEqual(teamSubmissionFields('team','team-1'),{teamMode:'team',teamId:'team-1'});
 });
 
-test('pending delivery accepts a result through the delivery API',async()=>{
-  const root=new FakeNode('div'),calls=[];
-  const run={id:'run-1',status:'completed',deliveryStatus:'pending_review',version:3,tasks:[]};
+test('completed run shows evidence without accept or discard',async()=>{
+  const root=new FakeNode('div'),calls=[],opened=[];
+  const run={id:'run-1',status:'completed',version:3,tasks:[],delivery:{agent:{completed:1,total:1},verify:{configured:false},pendingQuestions:0}};
   const controller=new TeamChatController({root,request:async(path,options={})=>{
     calls.push({path,options});
     if(path.endsWith('/runs'))return{runs:[{id:'run-1'}]};
-    if(path.endsWith('/delivery'))return{...run,deliveryStatus:'accepted',version:4};
     return run;
-  },openRun(){}});
+  },openRun(teamId,runId){opened.push([teamId,runId]);}});
   controller.setTeams(teams);controller.open(teams[0]);await flush();
-  assert.equal(find(root,'team-delivery-actions').length,1);
-  find(root,'team-delivery-actions')[0].children[0].onclick();await flush();
-  const delivery=calls.find(call=>call.path.endsWith('/delivery'));
-  assert.equal(delivery.options.method,'POST');
-  assert.deepEqual(delivery.options.body,{status:'accepted',version:3});
-  assert.equal(controller.run.deliveryStatus,'accepted');
-  assert.equal(find(root,'team-delivery-actions').length,0);
+  const actions=find(root,'team-delivery-actions');
+  assert.equal(actions.length,1);
+  assert.equal(actions[0].children.length,1,'只保留去 Run 页修订');
+  assert.doesNotMatch(text(root),/接受成果|丢弃|等待你验收/);
+  actions[0].children[0].onclick();
+  assert.deepEqual(opened,[[teams[0].id,'run-1']]);
+  assert.equal(calls.some(call=>call.path.endsWith('/delivery')),false);
 });
 
 test('delivery card renders the four evidence dimensions separately',async()=>{
-  const run={id:'run-1',status:'completed',deliveryStatus:'pending_review',version:2,tasks:[],delivery:{
-    deliveryStatus:'pending_review',
+  const run={id:'run-1',status:'completed',version:2,tasks:[],delivery:{
     agent:{completed:2,total:3},
     resultSummary:{text:'t1：接口已实现；t2：用例补齐',truncated:false},
     review:{taskId:'rev',verdict:'passed'},
@@ -200,8 +198,8 @@ test('delivery card renders the four evidence dimensions separately',async()=>{
   assert.match(dims[2].textContent,/验证：未通过/);
   assert.match(text(find(root,'team-delivery-summary')[0]),/接口已实现/);
   // 未参与评审 / 未配置闸门的降级展示。
-  const bare={id:'run-2',status:'completed',deliveryStatus:'pending_review',version:1,tasks:[],delivery:{
-    deliveryStatus:'pending_review',agent:{completed:1,total:1},
+  const bare={id:'run-2',status:'completed',version:1,tasks:[],delivery:{
+    agent:{completed:1,total:1},
     resultSummary:{text:'',truncated:true},verify:{configured:false},pendingQuestions:0
   }};
   const root2=new FakeNode('div');

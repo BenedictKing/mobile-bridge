@@ -1072,40 +1072,9 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 	case "decision":
 		// 成员提问的回答（§5.4，阶段三）。
 		h.handleRunDecision(teamID, runID)
-	case "delivery":
-		h.handleRunDelivery(teamID, runID)
 	default:
 		h.fail(http.StatusNotFound, errorBody("页面不存在"))
 	}
-}
-
-func (h *handler) handleRunDelivery(teamID, runID string) {
-	value, err := h.readJSON()
-	if err != nil {
-		h.fail(http.StatusBadRequest, errorBody(err.Error()))
-		return
-	}
-	body := value.(*jsoncompat.Object)
-	status := stringField(body, "status")
-	if status != team.DeliveryAccepted && status != team.DeliveryDiscarded {
-		h.fail(http.StatusBadRequest, errorBody("交付状态必须是 accepted 或 discarded"))
-		return
-	}
-	version, err := parseTeamVersion(body)
-	if err != nil {
-		h.fail(http.StatusBadRequest, errorBody(err.Error()))
-		return
-	}
-	run, duplicate, err := h.server.Teams.SetDeliveryStatus(runID, status, version)
-	if err != nil {
-		h.failTeamError(err)
-		return
-	}
-	result := h.teamRunDetail(run)
-	if duplicate {
-		result.Set("duplicate", true)
-	}
-	h.output(http.StatusOK, result, contentTypeJSON, "")
 }
 
 // ---- 阶段三增量端点（§5.4/§6.4.1/§10.2）----
@@ -2339,8 +2308,9 @@ func (h *handler) teamProject(teamRow *team.Team) *jsoncompat.Object {
 }
 
 // teamDeliveryEvidence 组装交付证据投影（§8 阶段三）：「Agent 已完成、
-// Review 已通过、验证已通过、用户已接受交付」四类证据分别落位，不能用
-// Agent 的完成替代审查或验证。全部由 Run 快照派生（零 I/O）：
+// Review 已通过、验证已通过」分别落位，不能用 Agent 的完成替代审查或验证。
+// 没有用户验收：成果直接落在工作区，有问题由用户继续反馈。全部由 Run 快照
+// 派生（零 I/O）：
 //   - agent：任务完成度（completed/total）；
 //   - resultSummary：逐任务结果头的有界摘要（超限置 truncated）；
 //   - review：评审任务（team.ReviewerMemberID）最后一个的显式裁决：只有
@@ -2353,7 +2323,6 @@ func (h *handler) teamProject(teamRow *team.Team) *jsoncompat.Object {
 func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
 	evidence := jsoncompat.NewObject()
 	evidence.Set("runId", run.ID)
-	evidence.Set("deliveryStatus", run.DeliveryStatus)
 	completed := 0
 	heads := make([]string, 0, len(run.Tasks))
 	truncated := false
@@ -2529,9 +2498,6 @@ func teamRunSummary(run *team.Run) *jsoncompat.Object {
 		summary.Set("mode", run.Mode)
 	}
 	summary.Set("status", run.Status)
-	if run.DeliveryStatus != "" {
-		summary.Set("deliveryStatus", run.DeliveryStatus)
-	}
 	if run.StopReason != "" {
 		summary.Set("stopReason", run.StopReason)
 	}
@@ -2565,9 +2531,6 @@ func teamRunMeta(run *team.Run) *jsoncompat.Object {
 		meta.Set("collectPolicy", run.CollectPolicy)
 	}
 	meta.Set("status", run.Status)
-	if run.DeliveryStatus != "" {
-		meta.Set("deliveryStatus", run.DeliveryStatus)
-	}
 	meta.Set("stopReason", run.StopReason)
 	meta.Set("taskCounts", teamTaskCounts(run))
 	open := 0

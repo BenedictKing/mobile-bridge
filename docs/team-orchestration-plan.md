@@ -261,7 +261,7 @@ created → planning → dispatching → collecting → reducing → completed
                                   └────────────→ outcome_unknown
 ```
 
-执行状态与交付状态分离。成功 `completed` 的新 Run 同时写入 `deliveryStatus=pending_review`；用户接受后为 `accepted`，丢弃后为 `discarded`。交付状态不改变 `terminalRun`、恢复和调度语义，只有 `completed + pending_review` 可接受或丢弃，已接受后不得再丢弃。`run_completed` 与 `run_delivery_updated` 是 Journal 的重建依据，旧快照缺少该字段时不批量改写历史展示。
+Run 没有用户验收状态（2026-10-31 移除 `deliveryStatus`）。成员直接写工作区，“接受”不会让改动生效，“丢弃”也不会回滚文件，这样的验收只是一个标签。完成的 Run 只展示交付证据，用户认为有问题时在团队聊天继续反馈，或通过 amend 修订。旧快照中的 `deliveryStatus` 读入即丢弃，旧 journal 中的 `run_delivery_updated` 事件在重建时忽略。
 
 ## 5. 编排协议
 
@@ -710,7 +710,7 @@ GET    /api/teams/:teamID/runs/:runID/events
 
 `POST .../amend` 创建新的 Run，不修改旧 Run 的 journal；请求必须携带修订后的 Plan 或目标，服务端计算新的 `planHash`，并按 `inputHash` 导入允许复用的前驱结果。`resume` 只用于外因暂停和已回答问题，不得把确定性 `failed` 或 `outcome_unknown` 直接改成 `running`。
 
-`POST .../delivery` 请求体为 `{status:"accepted"|"discarded",version}`，只接受 `completed + pending_review` 的 Run。同目标状态重放返回 `duplicate:true`；版本冲突、未完成或冲突转换返回 409。接受/丢弃不改变执行状态，修订仍通过 amend 创建新 Run。
+原 `POST .../delivery`（接受/丢弃）已移除，旧客户端调用返回 404。修订通过 amend 创建新 Run。
 
 ### 10.3 事件流
 

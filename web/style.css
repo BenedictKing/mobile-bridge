@@ -168,7 +168,6 @@
 .team-runs{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
 .team-run-row{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;padding:8px;border-radius:8px;text-align:left;color:inherit}
 .team-run-row:hover{background:var(--active)}
-.team-run-delivery{flex:none;font-size:10px;border-radius:6px;padding:1px 6px;background:var(--soft);color:var(--green)}.team-run-delivery.pending_review{background:var(--warning-bg);color:var(--warning-text)}.team-run-delivery.discarded{background:var(--surface);color:var(--muted)}
 .team-run-goal{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
 .team-run-row small{flex:none;font-size:10px}
 .team-create h3{margin:0 0 6px;font-size:16px}
@@ -340,7 +339,6 @@
 .team-workflow-artifact{display:inline-flex;align-items:center;gap:5px}
 @keyframes workflow-pulse{0%,100%{box-shadow:0 0 0 3px var(--warning-bg)}50%{box-shadow:0 0 0 5px var(--warning-bg)}}
 .team-delivery{border-top:1px solid var(--line);margin-top:10px;padding-top:12px}
-.team-delivery>strong{font-size:12px;color:var(--green)}
 .team-delivery-evidence{display:flex;gap:6px 14px;flex-wrap:wrap;margin-top:8px}
 .team-delivery-dim{font-size:12px;color:var(--muted)}
 .team-actions-card{border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:10px 12px;margin:0 0 14px;font-size:12px;white-space:normal}
@@ -355,8 +353,6 @@
 .team-delivery-summary{margin:8px 0 0;font-size:12px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
 .team-delivery-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .team-delivery-actions button{border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--green);padding:8px 12px;font-size:12px}
-.team-delivery-actions .primary{background:var(--green);color:#fff;border-color:var(--green)}
-.team-delivery.discarded>strong{color:var(--muted)}
 /* 未选中的团队入口用白底：--soft 与 .session.selected 同色，会被误读成选中态。 */
 .default-team{border:1px solid var(--line);background:var(--raised);margin-bottom:8px}
 .default-team strong{color:var(--green)}

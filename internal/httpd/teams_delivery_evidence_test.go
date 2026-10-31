@@ -14,9 +14,8 @@ import (
 )
 
 type deliveryEvidenceView struct {
-	RunID          string `json:"runId"`
-	DeliveryStatus string `json:"deliveryStatus"`
-	Agent          struct {
+	RunID string `json:"runId"`
+	Agent struct {
 		Completed int `json:"completed"`
 		Total     int `json:"total"`
 	} `json:"agent"`
@@ -70,9 +69,8 @@ func TestRunDetailDeliveryEvidenceDimensions(t *testing.T) {
 	}
 	run := &team.Run{
 		ID: "run-evidence", TeamID: teamID, Goal: "交付证据", Status: team.RunCompleted,
-		DeliveryStatus: team.DeliveryPendingReview,
-		VerifyCommand:  []string{"make", "check"},
-		Verify:         &team.VerifyResult{ExitCode: 0},
+		VerifyCommand: []string{"make", "check"},
+		Verify:        &team.VerifyResult{ExitCode: 0},
 		Tasks: []team.Task{
 			{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Result: "接口完成", Ordinal: 0},
 			{ID: "rev", MemberID: "rev", Status: team.TaskCompleted, Result: "审查通过", Ordinal: 1,
@@ -85,8 +83,8 @@ func TestRunDetailDeliveryEvidenceDimensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	evidence := fetchDeliveryEvidence(t, env, teamID, run.ID)
-	if evidence.RunID != run.ID || evidence.DeliveryStatus != team.DeliveryPendingReview {
-		t.Fatalf("deliveryStatus 应为 pending_review: %+v", evidence)
+	if evidence.RunID != run.ID {
+		t.Fatalf("runId 应指向本 Run: %+v", evidence)
 	}
 	if evidence.Agent.Completed != 3 || evidence.Agent.Total != 3 {
 		t.Fatalf("Agent 完成度应 3/3: %+v", evidence.Agent)
@@ -125,9 +123,8 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	}
 	run := &team.Run{
 		ID: "run-ev-fail", TeamID: teamID, Goal: "失败形态", Status: team.RunCompleted,
-		DeliveryStatus: team.DeliveryPendingReview,
-		VerifyCommand:  []string{"make", "check"},
-		Verify:         &team.VerifyResult{ExitCode: 2},
+		VerifyCommand: []string{"make", "check"},
+		Verify:        &team.VerifyResult{ExitCode: 2},
 		Tasks: []team.Task{
 			{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Result: "实现完成", Ordinal: 0},
 			{ID: "rev", MemberID: "rev", Status: team.TaskFailed, Error: "发现问题", Ordinal: 1},
@@ -156,7 +153,6 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	envelope := "<team-actions>\n{\"actions\":[{\"type\":\"delegate\",\"member\":\"rev\",\"task\":\"审查\"}]}\n</team-actions>"
 	actionRun := &team.Run{
 		ID: "run-ev-actions", TeamID: teamID, Goal: "动作信封", Status: team.RunCompleted,
-		DeliveryStatus: team.DeliveryPendingReview,
 		Tasks: []team.Task{
 			{ID: "lead", MemberID: "lead", Status: team.TaskCompleted, Result: envelope, Ordinal: 0},
 			{ID: "lead-d1-0", MemberID: "lead", Status: team.TaskCompleted, Result: "汇总如下\n" + envelope, Ordinal: 1},
@@ -179,7 +175,6 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	// Markdown 结果折成纯文本：强调符、反引号、标题与列表符号不进摘要，标识符里的下划线保留。
 	markdownRun := &team.Run{
 		ID: "run-ev-markdown", TeamID: teamID, Goal: "Markdown", Status: team.RunCompleted,
-		DeliveryStatus: team.DeliveryPendingReview,
 		Tasks: []team.Task{{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Ordinal: 0,
 			Result: "## 结论\n**结论：TEAM_OK。**\n- 改动：`web/app.js`\n- 遗留：无"}},
 	}
@@ -193,7 +188,6 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	// 单任务结果超过 120 字：逐任务头被截，摘要必须标 truncated。
 	longRun := &team.Run{
 		ID: "run-ev-long", TeamID: teamID, Goal: "长结果", Status: team.RunCompleted,
-		DeliveryStatus: team.DeliveryPendingReview,
 		Tasks: []team.Task{{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Result: strings.Repeat("长", 130), Ordinal: 0}},
 	}
 	if err := env.store.SaveRun(longRun); err != nil {
@@ -213,7 +207,6 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	} {
 		verdictRun := &team.Run{
 			ID: tc.id, TeamID: teamID, Goal: "裁决", Status: team.RunCompleted,
-			DeliveryStatus: team.DeliveryPendingReview,
 			Tasks: []team.Task{{ID: "rev", MemberID: "rev", Status: team.TaskCompleted, Result: "看过了", Ordinal: 0,
 				ResultDetail: &team.TaskResult{Result: "看过了", ReviewVerdict: tc.verdict}}},
 		}
@@ -237,8 +230,7 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	}
 	bareRun := &team.Run{
 		ID: "run-ev-bare", TeamID: bareTeam, Goal: "裸交付", Status: team.RunCompleted,
-		DeliveryStatus: team.DeliveryPendingReview,
-		Tasks:          []team.Task{{ID: "solo", MemberID: "lead", Status: team.TaskCompleted, Result: "完成", Ordinal: 0}},
+		Tasks: []team.Task{{ID: "solo", MemberID: "lead", Status: team.TaskCompleted, Result: "完成", Ordinal: 0}},
 	}
 	if err := env.store.SaveRun(bareRun); err != nil {
 		t.Fatal(err)
@@ -253,7 +245,6 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	// 截断：结果引用标记 truncated 时摘要置 truncated。
 	bareRun2 := &team.Run{
 		ID: "run-ev-trunc", TeamID: bareTeam, Goal: "截断", Status: team.RunCompleted,
-		DeliveryStatus: team.DeliveryPendingReview,
 		Tasks: []team.Task{{ID: "big", MemberID: "lead", Status: team.TaskCompleted, Result: strings.Repeat("长", 200), Ordinal: 0,
 			ResultDetail: &team.TaskResult{Result: strings.Repeat("长", 200), Truncated: true}}},
 	}

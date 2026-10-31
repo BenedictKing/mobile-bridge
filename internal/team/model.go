@@ -56,12 +56,6 @@ const (
 	RunOutcomeUnknown = "outcome_unknown"
 )
 
-const (
-	DeliveryPendingReview = "pending_review"
-	DeliveryAccepted      = "accepted"
-	DeliveryDiscarded     = "discarded"
-)
-
 // 事件类型（§10.3 的阶段一子集）。task_cache_hit 等留给后续阶段；
 // action_* / invalid_action_block 属阶段三（§5.1，本包 actions.go 是唯一
 // 写入方——动作的解析与落账不经过 httpd 或执行侧直写）；question_* 属
@@ -83,7 +77,6 @@ const (
 	EventTaskRetryScheduled = "task_retry_scheduled"
 	EventRunWaitingInput    = "run_waiting_input"
 	EventRunCompleted       = "run_completed"
-	EventRunDeliveryUpdated = "run_delivery_updated"
 	EventRunFailed          = "run_failed"
 	EventRunCancelled       = "run_cancelled"
 	// EventProviderThrottled 是 AIMD 窗口实际减小时的限流事实（§6.3，
@@ -314,17 +307,16 @@ func DefaultPolicy() TeamPolicy {
 // completed 时先过闸门再终局，绝不采信 Agent 的口头成功声明；Verify 持久化
 // 闸门结果，resume 清空后重跑即复验。
 type Run struct {
-	ID             string `json:"id"`
-	TeamID         string `json:"teamId"`
-	Goal           string `json:"goal"`
-	Mode           string `json:"mode,omitempty"`
-	CollectPolicy  string `json:"collectPolicy,omitempty"`
-	AutoPlan       bool   `json:"autoPlan,omitempty"`
-	Status         string `json:"status"`
-	DeliveryStatus string `json:"deliveryStatus,omitempty"`
-	StopReason     string `json:"stopReason,omitempty"`
-	Round          int    `json:"round"`
-	PlanHash       string `json:"planHash"`
+	ID            string `json:"id"`
+	TeamID        string `json:"teamId"`
+	Goal          string `json:"goal"`
+	Mode          string `json:"mode,omitempty"`
+	CollectPolicy string `json:"collectPolicy,omitempty"`
+	AutoPlan      bool   `json:"autoPlan,omitempty"`
+	Status        string `json:"status"`
+	StopReason    string `json:"stopReason,omitempty"`
+	Round         int    `json:"round"`
+	PlanHash      string `json:"planHash"`
 	// ParentRunID 是 amend 修订链的父 Run（§6.4.1/§10.2 amend 段，阶段三）：
 	// 创建新 Run、绝不改写父 Run 的 journal；父 Run 的可复用前驱结果按
 	// inputHash 匹配导入（amend.go），随 run_created payload 落账供
@@ -542,6 +534,8 @@ var teamKnownFields = map[string]bool{
 	"policy": true, "createdAt": true, "updatedAt": true, "version": true,
 }
 
+// deliveryStatus 是已移除的验收状态：仍列为已知字段，旧快照读入时直接丢弃，
+// 不进 extra 原样回写。
 var runKnownFields = map[string]bool{
 	"id": true, "teamId": true, "goal": true, "mode": true,
 	"collectPolicy": true, "autoPlan": true, "status": true, "deliveryStatus": true,
@@ -709,9 +703,6 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 		object.Set("autoPlan", true)
 	}
 	object.Set("status", r.Status)
-	if r.DeliveryStatus != "" {
-		object.Set("deliveryStatus", r.DeliveryStatus)
-	}
 	if r.StopReason != "" {
 		object.Set("stopReason", r.StopReason)
 	}

@@ -61,8 +61,6 @@ function renderTeamActionsCard(part,translate){
 
 // 交付卡（§8 阶段三）：团队聊天卡与 Run 页共用。Agent 完成度、Review 裁决、验证闸门、
 // 待答问题与独立工作区分别落位——Agent 的「完成了」不替代审查或验证。
-const TEAM_DELIVERY_LABELS={pending_review:'执行完成，等待你验收',accepted:'成果已接受',discarded:'成果已丢弃'};
-function teamDeliveryLabel(status){return t_safe(TEAM_DELIVERY_LABELS[status]||status||'');}
 function renderTeamDeliveryEvidence(container,delivery,make){
   if(!delivery||typeof delivery!=='object')return;
   const evidence=make('div',undefined,'team-delivery-evidence');
@@ -184,7 +182,6 @@ class TeamChatController{
     Object.assign(this,{root,request,openRun,onChange});
     this.teams=[];this.current=null;this.run=null;this.team=null;
     this.pending=false;this.queued=false;this.lastFetch=0;this.generation=0;this.compact=false;
-    this.deliveryPending=false;this.deliveryError='';
   }
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
@@ -202,22 +199,12 @@ class TeamChatController{
   open(team){
     clearTimeout(this.timer);
     this.current=team||null;this.team=team||null;this.run=null;this.compact=false;this.generation++;
-    this.deliveryPending=false;this.deliveryError='';this.refreshError='';
+    this.refreshError='';
     this.render();if(this.current)this.refreshRun(true);
   }
   close(){this.open(null);}
   openSettings(){if(this.current)new TeamSettingsDialog({request:this.request,onChange:team=>{this.onChange&&this.onChange(team);}}).open(this.current);}
   accepted(){this.refreshRun(true);}
-  async setDelivery(status){
-    const team=this.team,run=this.run;
-    if(!team||!run||this.deliveryPending)return;
-    this.deliveryPending=true;this.deliveryError='';this.render();
-    try{
-      const updated=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(run.id)+'/delivery',{method:'POST',body:{status,version:run.version}});
-      if(this.team?.id===team.id&&this.run?.id===run.id)this.run=updated;
-    }catch(error){this.deliveryError=error.message;}
-    finally{this.deliveryPending=false;this.render();}
-  }
   schedule(){
     clearTimeout(this.timer);if(!this.current)return;
     if(this.run&&TEAM_TERMINAL_RUN_STATUSES.has(this.run.status))return;
@@ -335,22 +322,14 @@ class TeamChatController{
       artifacts.append(this.node('span',t_safe('验证退出码')+' '+run.verify.exitCode,'team-workflow-artifact'));
       card.append(artifacts);
     }
-    if(run.deliveryStatus){
-      const delivery=this.node('div',undefined,'team-delivery '+run.deliveryStatus);
-      delivery.append(this.node('strong',teamDeliveryLabel(run.deliveryStatus)));
+    // 完成的 Run 只展示证据，不设验收：成果已在工作区，有问题直接在团队聊天继续反馈。
+    if(run.status==='completed'&&run.delivery){
+      const delivery=this.node('div',undefined,'team-delivery');
       renderTeamDeliveryEvidence(delivery,run.delivery,(tag,text,cls)=>this.node(tag,text,cls));
-      if(run.deliveryStatus==='pending_review'){
-        const actions=this.node('div',undefined,'team-delivery-actions');
-        const accept=this.button(t_safe('接受成果'),()=>this.setDelivery('accepted'));accept.classList.add('primary');
-        // 修订入口在 Run 页（三段流对话框），这里只负责带过去。
-        const revise=this.button(t_safe('去 Run 页修订'),()=>this.openRun&&this.openRun(team.id,run.id));
-        const discard=this.button(t_safe('丢弃'),()=>{
-          if(typeof window==='undefined'||window.confirm(t_safe('丢弃这份成果？执行记录仍会保留。')))this.setDelivery('discarded');
-        });
-        for(const button of [accept,revise,discard])button.disabled=this.deliveryPending;
-        actions.append(accept,revise,discard);delivery.append(actions);
-      }
-      if(this.deliveryError)delivery.append(this.node('p',this.deliveryError,'error'));
+      const actions=this.node('div',undefined,'team-delivery-actions');
+      // 修订入口在 Run 页（三段流对话框），这里只负责带过去。
+      actions.append(this.button(t_safe('去 Run 页修订'),()=>this.openRun&&this.openRun(team.id,run.id)));
+      delivery.append(actions);
       card.append(delivery);
     }
     if(this.refreshError)card.append(this.node('p',t_safe('刷新失败：')+this.refreshError,'error'));
@@ -481,4 +460,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,teamDeliveryLabel,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};
+if(typeof module!=='undefined')module.exports={splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};
