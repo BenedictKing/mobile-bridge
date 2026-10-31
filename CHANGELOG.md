@@ -29,6 +29,8 @@
 
 ### Changed / Fixed
 
+- Claude、DeepSeek、MiniMax 会话运行中点“发送新消息”不再报“当前已有任务正在运行”却仍把消息排进队列（`internal/httpd/sessions.go`）：这三类 Agent 支持补充当前任务，前端运行中不会自动切到排队，消息直接发给忙碌的会话被拒收。网关此前已把条目放回队列、回合结束后照常派发，接口却返回 409，输入框保留草稿并显示错误。现在拒收时返回 `{status:"queued", id}`，手机端清空输入框、提示“已加入待发送队列”并显示队列卡。
+
 - 团队任务的 turn 落定后不再偶发延迟 25 秒才结算（`internal/acpruntime` 新增 `Session.WaitAfter` + `internal/team` watcher 改用它）：watcher 读完会话快照后才取变更通道，turn 恰好在两者之间完成、失败或被中断时，这次通知被漏掉，要等满一个等待片（生产 25s）才发现，下一个任务也跟着晚派发。现在 `pollTask` 在读快照前记下会话序号，watcher 等序号越过该值，已发生的变更立即唤醒。
 
 - 团队移除“接受成果 / 丢弃”验收（`internal/team` 删除 `delivery.go` 与 `Run.DeliveryStatus` + `internal/httpd` 删除 `POST .../delivery` + web 交付卡与 Run 列表）：成员直接写工作区，接受不会让改动生效，丢弃也不回滚文件，验收只是一个标签。完成的 Run 仍展示 Agent、审查、验证等交付证据，聊天卡保留“去 Run 页修订”；结果有问题时在团队聊天继续反馈。旧快照里的 `deliveryStatus` 读入即丢弃，旧 journal 的 `run_delivery_updated` 事件重建时忽略，旧客户端调用验收端点返回 404。
