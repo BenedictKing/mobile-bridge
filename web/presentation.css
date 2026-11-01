@@ -155,6 +155,10 @@ main{background:var(--page);overflow:hidden}
 .activity{margin:0;font-size:13px}
 .activity summary{padding:5px 0;min-height:32px;border-radius:6px}
 .activity.timeline-row:has(summary:first-child){border-left-color:var(--control)}
+/* Chrome 131+ 把折叠 details 的全部子节点收进 ::details-content 并用
+   content-visibility:hidden 隐藏：只覆写子元素的 display 已经不起作用，
+   三行预览会整块看不见、还留下同样高的空白。这里把该伪元素显式放开。 */
+.activity::details-content{content-visibility:visible}
 .activity:not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
 .activity-body{max-height:60vh;overflow:auto}
 .activity-body:empty{display:none}
