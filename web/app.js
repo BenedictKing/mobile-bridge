@@ -439,6 +439,39 @@ $('new-chat-form').onsubmit=async event=>{
 const messageActions=new MessageActions({request:api,openChat,refresh:()=>loadList(true).catch(e=>toast(e.message)),uuid,notify:toast,busy:value=>{approvalBusy+=value?1:-1;setLanguageBusy();}});
 document.addEventListener('bridge-message-error',event=>toast(event.detail));
 $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-details-dialog').close();openChat(source.id,source.host).catch(e=>toast(e.message));}};
+/* 视图导航与历史栈。整个界面只有一份 HTML 文档，换屏只是切 #app.chat-open
+   类名；若一律写 replaceState，WebView 的历史栈永远只有一条，安卓返回手势
+   （webView.canGoBack）就会判成“没有可返回的页面”而直接退出 App，浏览器后退
+   同样退不出聊天。因此从列表进详情压一条历史，详情内互跳（会话↔团队↔Run）
+   仍只替换当前条目：返回一次必回列表，栈里也不会堆出中间层。 */
+let detailPushed=false; // 当前详情条目是否由本次从列表压入；popstate 退回后清零
+// 只有窄屏（与 style.css 的 max-width:720px 同一断点）才是「列表 与 详情 互相
+// 独占」的手机布局；桌面和平板是两栏并排，退回列表没有意义，仍沿用只替换
+// hash 的老办法，避免浏览器后退把并排的聊天面板状态拆掉。
+const compactLayout=()=>window.matchMedia('(max-width:720px)').matches;
+function showDetailRoute(hash){
+  // 只有“列表（hash 为空）→ 详情”这一次压栈；除此之外（详情内互跳、深链
+  // 落 URL 后 enter() 补开）都替换当前条目，避免返回时多退一层。
+  if(!compactLayout()||location.hash||detailPushed)history.replaceState(null,'',hash);
+  else{history.pushState(null,'',hash);detailPushed=true;}
+}
+function closeDetailView(){
+  if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();
+  $('team-run').hidden=true;openRunRoute='';
+  $('app').classList.remove('chat-open');
+  // 桌面端（无 chat-open 媒体查询）也走同一条退路：Run 页关闭后没有聊天面板
+  // 可见时回欢迎页，避免主区留白。
+  if($('chat').hidden)$('welcome').hidden=false;
+  if(location.hash)history.replaceState(null,'',location.pathname+location.search);
+  syncDocumentTitle();
+  loadList(true).catch(error=>toast(error.message));
+}
+// 有本次压入的详情条目就交给历史栈退回，收尾统一在 popstate 里做；深链直接
+// 落在详情页时栈里没有列表条目，退栈会退出页面，只能就地关面板。
+function leaveDetail(){
+  if(detailPushed&&location.hash){history.back();return;}
+  closeDetailView();
+}
 function saveDraft(){if(currentId)sessionStorage.setItem('draft:'+chatKey(),$('message').value);}
 $('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();};
 async function openChat(id,host="local",teamId=""){
@@ -448,7 +481,7 @@ async function openChat(id,host="local",teamId=""){
 // 收起 Run 页（停订阅、隐藏区块），否则两块 height:100% 的 section 叠层破版
 // 且 Run 页在后台继续轮询。
 if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';
-if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();history.replaceState(null,'','#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
+if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();showDetailRoute('#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
   window.BridgePresentation?.openChat();
   startCatalog();
   const reading=timeline.start();
@@ -711,7 +744,7 @@ $('settings-save').onclick=async()=>{
   }
   toast(ok?t('设置已保存'):t('部分设置保存失败，请检查表单错误'));
 };
-$('back').onclick=()=>{$('app').classList.remove('chat-open');history.replaceState(null,'',location.pathname);syncDocumentTitle();loadList(true).catch(e=>toast(e.message));};
+$('back').onclick=()=>leaveDetail();
 let apkDownloadKey='',apkDownloadTimer=null;
 function renderAPKDownload(files){
   const latest=(files||[]).filter(file=>/\.apk$/i.test(file.reference||file.name||'')&&file.id).sort((a,b)=>(b.modifiedAt||0)-(a.modifiedAt||0))[0];
@@ -1342,12 +1375,11 @@ document.addEventListener('pointerdown',event=>{if(!event.target.closest('.compo
 window.addEventListener('pagehide',saveDraft);
 function startFromLink(token){return start(token).catch(error=>{showLogin();$('login-error').textContent=loginErrorText(error);});}
 startFromLink(initialPairingToken);initialPairingToken=null;
-window.addEventListener('hashchange',()=>{
-  const token=takePairingToken();
-  if(token!==null){startFromLink(token);return;}
-  // 深链分发顺序（阶段四）：#pair=（上方已处理）→ #run= → #id~host 默认。
-  // 通知 click 落 #run= 时页面可能早已打开，直接切到对应 Run 页；聊天深链
-  // 只在不同会话时重开（openChat 自身 replaceState 不回发 hashchange）。
+/* 深链分发顺序（阶段四）：#pair=（上方已处理）→ #run= → #team= → #id~host 默认。
+   同一套分发同时服务两个事件：hashchange（转发/通知 click 落 URL，页面可能早已
+   打开）和 popstate（安卓返回手势、浏览器后退）。hash 变空即表示退回列表；
+   popstate 之后浏览器还会补发一次 hashchange，靠各分支的可见性判断保持幂等。 */
+function routeFromLocation(){
   if(typeof parseRunHash==='function'){
     const runRoute=parseRunHash();
     if(runRoute){
@@ -1371,7 +1403,16 @@ window.addEventListener('hashchange',()=>{
     // 本身可见且是同一会话才跳过，Run 页可见时回到聊天需显式 openChat。
     const decodedHost=decodeURIComponent(host);
     if($('chat').hidden||currentId!==id||currentHost!==decodedHost)openChat(id,decodedHost).catch(e=>toast(e.message));
+    return;
   }
+  // hash 为空：从详情退回列表。认不出的 hash 一律不动（沿用原行为）。
+  if(!location.hash&&$('app').classList.contains('chat-open'))closeDetailView();
+}
+window.addEventListener('popstate',()=>{detailPushed=false;routeFromLocation();});
+window.addEventListener('hashchange',()=>{
+  const token=takePairingToken();
+  if(token!==null){startFromLink(token);return;}
+  routeFromLocation();
 });
 function setLanguageBusy(){$('phone-language').disabled=!!(approvalBusy||creatingChat);$('appearance-language').disabled=$('phone-language').disabled;}
 $('phone-language').value=BridgeI18n.language();
@@ -1491,7 +1532,9 @@ async function openTeamChat(team){
   if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
   $('teams-dialog').close();
   await openChat(lead.sessionId,'local',team.id);
-  history.replaceState(null,'','#team='+encodeURIComponent(team.id));
+  // 团队会话复用 Lead 会话：openChat 已按列表→详情压过栈，这里只把 hash 换成
+  // #team=，转发/通知落 URL 时能还原成团队视图。
+  showDetailRoute('#team='+encodeURIComponent(team.id));
 }
 function syncTeamComposer(){
   const enabled=!!currentTeam;
@@ -1525,7 +1568,10 @@ function parseRunHash(){
   const teamId=decodeURIComponent(rest.slice(0,slash)),runId=decodeURIComponent(rest.slice(slash+1));
   return /^[\w.-]{1,128}$/.test(teamId)&&/^[\w.-]{1,128}$/.test(runId)?{teamId,runId}:null;
 }
+// Run 页的返回按钮（TeamRunScreen 的 leave→onNavigateAway）：栈里有本次压入的
+// 详情条目时交给 history.back()，由 popstate 统一收尾，否则就地关面板。
 function closeTeamRunView(){
+  if(detailPushed&&location.hash){history.back();return;}
   $('team-run').hidden=true;
   $('app').classList.remove('chat-open');
   openRunRoute='';
@@ -1536,9 +1582,9 @@ function closeTeamRunView(){
 function openTeamRun(teamId,runId){
   if(!teamRunScreen)return;
   openRunRoute='#run='+encodeURIComponent(teamId)+'/'+encodeURIComponent(runId);
-  // replaceState 写 hash：不产生 hashchange（openChat 的 '#id~host' 同款），
+  // 从列表进 Run 页压一条历史（返回手势可退回列表），深链落 URL 时只替换；
   // 分享/通知 click 落 URL 的场景由 enter()/hashchange 显式解析。
-  if(location.hash!==openRunRoute)history.replaceState(null,'',openRunRoute);
+  if(location.hash!==openRunRoute)showDetailRoute(openRunRoute);
   $('teams-dialog').close();
   $('welcome').hidden=true;$('chat').hidden=true;$('team-run').hidden=false;
   $('app').classList.add('chat-open');

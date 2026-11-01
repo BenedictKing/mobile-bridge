@@ -1665,8 +1665,10 @@ class TeamRunScreen{
     const sessionId=result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null);
     if(sessionId){
       const open=this.button(t('打开原会话'),()=>{
-        // 打开会话前先退出 Run 页（停订阅、隐藏区块），再走全局 openChat。
-        this.leave();
+        // 直接衔接 openChat：openChat 自己会停订阅并隐藏 Run 区块。不走 leave()，
+        // 因为 leave() 会先把 Run 的历史条目退栈，紧接着的 openChat 再压入会话，
+        // 退回列表的那一步会落空。
+        this.close();
         this.openChat&&this.openChat(sessionId);
       });
       actions.append(open);

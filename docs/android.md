@@ -21,6 +21,10 @@ Android App 复用现有 Mobile Bridge 网页、Cloudflare 登录和会话。普
 - 公网 TLS 始终使用系统证书校验，没有忽略证书错误。
 - Android 新版本可能要求“局域网”运行时权限，请按系统提示允许；拒绝后仍可使用 Cloudflare。
 
+## 返回手势
+
+系统返回手势和返回键按 WebView 的历史栈处理：聊天页、团队会话和 Run 页各压一条历史，返回一次回到会话列表，列表页再返回才退出 App。网页侧因此不再只用 `replaceState` 换屏（那会让历史栈永远只有一条，`webView.canGoBack()` 恒为 false，返回手势会直接退出 App）；压栈只在手机宽度（≤720px）生效，桌面和平板的双栏布局仍按原来的方式只替换 hash。深链（通知或转发链接落在某个聊天、`#team=`、`#run=`）没有可退的列表条目，此时页内返回按钮就地关闭面板，系统返回直接退出。
+
 ## 构建
 
 需要 JDK 17、Android SDK Platform 36 和对应构建工具。设置 `ANDROID_HOME` 后，在仓库根目录运行：
