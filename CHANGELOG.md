@@ -2,6 +2,8 @@
 
 ### Added
 
+- 选中对话文字直接评论（`web/selection.js` 新文件 + `web/app.js` 接线 + `web/index.html`/`web/style.css`/`web/i18n.js`/`internal/httpd` 静态路由）：在消息正文里划选一段文字，选区下方浮出「评论」，点一下即把选区转成 Markdown 引用写进输入框，光标停在引用之后空行，省掉「复制 → 粘贴 → 再敲意见」。只在同一条消息的正文（含执行过程正文）内成立，跨消息或落在操作栏按钮上的选区不出浮条——引用没有唯一归属时宁可不给入口；手机拖选区手柄期间以 160ms 防抖重新定位，`pointerdown` 先存快照，点击时选区被清掉也能照常插入；选区折叠、滚动、视口尺寸变化都会收起浮条。只读会话只提示不写输入框；选中超过 4000 字在换行处截断并提示。插入走 `input` 事件，草稿保存、发送按钮状态与输入框高度自适应沿用既有链路；发出去仍是普通 Markdown 引用块，用户气泡与 Agent 侧都按引用渲染，无需新增协议字段。新增 16 例测试：引用格式（单行/多行/空行/CRLF/缩进/超长截断/与草稿拼接）+ 假 DOM 驱动的浮条出现、跨消息不出现、按钮上不出现、点击写入并留光标、只读提示。交互参照 `refs/zcode` 的 `useTextSelection`+`SelectionActionMenu`，按本项目的纯 JS 前端收敛为单文件模块。
+
 - 上下文用量跨重启保留（`internal/acpruntime/usage.go` 新文件 + `cmd/gateway` 装配 + web 头顶用量标识）：ACP Agent 只在实时回合的 `usage_update` 里报上下文用量，而视图在每次打开时重建（网关重启、300s 空闲回收、重连、桌面独占的只读转录），此前重启后旧会话只剩「· —」。新增按 Agent + 会话 ID 记账的 `dataDir/context-usage.json`（0600、tmp+rename 原子写、512 条按更新时间淘汰，删除会话时 Forget），`session/load`、`Reconcile` 与只读转录打开时回填 `View.Usage` 并标 `stale`，实时 `usage_update` 覆盖为最新值；手机端回填值以「~」前缀和「上次记录的上下文用量」悬浮说明区别于实时值。新增账本往返、重启后重开仍带用量、残缺/负值上报不覆盖的回归测试。
 
 - 网关启动后后台预热最近 ACP 会话（`internal/httpd/preload.go` + `cmd/gateway` 装配）：复用会话列表的合并、过滤与 recency 排序，先选全局最近 15 个对话，再补足最近 5 个项目各自最近 3 个对话，按 Agent + 会话 ID 去重；串行执行 `session/load`，单个失败只记录日志并继续，不阻塞 HTTP 启动。预热句柄沿用现有 5 分钟空闲回收；Codex 保持本地历史回读，不为预热激活桌面端 owner。新增选择规则、去重、失败续跑与重复打开不再次 load 的回归测试。

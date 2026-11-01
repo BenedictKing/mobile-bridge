@@ -388,3 +388,8 @@
   .team-workflow-station.chain::after{content:"";position:absolute;left:8px;top:16px;bottom:-12px;width:1px;transform:translateX(-.5px);background:var(--line)}
   .team-role-grid{grid-template-columns:1fr}.team-settings-add{grid-template-columns:minmax(0,1fr) 88px}.team-settings-add button{grid-column:1/-1;padding:10px}
 }
+
+/* 选中对话文字后的「评论」浮条：位置由 selection.js 计算，这里只管外观。 */
+.selection-bar{position:fixed;z-index:20;display:flex;padding:3px;border:1px solid var(--line);border-radius:999px;background:var(--raised);box-shadow:0 8px 24px #0000001f;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+.selection-bar button{border:0;background:none;color:var(--green);font-size:13px;font-weight:600;line-height:1.1;padding:9px 15px;border-radius:999px;white-space:nowrap}
+.selection-bar button:hover,.selection-bar button:active{background:var(--soft)}

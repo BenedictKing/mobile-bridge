@@ -1766,6 +1766,10 @@ const en={
   "Agent 或账号未配置，任务已停靠": "agent or account not configured; task parked",
   "账号或配置问题，任务已停靠": "account or configuration problem; task parked",
   "接口不存在": "Endpoint not found",
+  "评论": "Comment",
+  "引用选中的文字并评论": "Quote the selected text and comment",
+  "选中的内容较长，只引用了前面一部分": "The selection is long; only the beginning was quoted",
+  "这条聊天当前只读，不能引用评论": "This chat is read-only; quoting is unavailable",
   "个停止": "stopped"
 };
 let lang='zh';
