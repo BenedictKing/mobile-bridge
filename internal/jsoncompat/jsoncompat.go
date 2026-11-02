@@ -151,8 +151,8 @@ func EncodePythonDefault(value any) []byte { return encode(value, ", ", ": ", fa
 
 // EncodePythonDefaultASCII serializes with json.dumps defaults including
 // ensure_ascii=True: (", ", ": ") separators and \uXXXX escaping for all
-// non-ASCII (astral runes as surrogate pairs). This is the control-file and
-// pairing-response format.
+// non-ASCII (astral runes as surrogate pairs). This is the control-file
+// format.
 func EncodePythonDefaultASCII(value any) []byte { return encode(value, ", ", ": ", true) }
 
 // EncodePythonIndent2 mirrors json.dumps(value, ensure_ascii=False, indent=2):

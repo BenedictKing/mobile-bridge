@@ -35,7 +35,6 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
-	"github.com/BenedictKing/mobile-bridge/internal/pairing"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
@@ -95,7 +94,6 @@ type Server struct {
 	AllowOrigin      func(string) bool
 	NativeCandidates func() []string
 	Bridge           SessionBridge
-	Pairing          *pairing.Pairing
 	Store            *store.SessionStore
 	Codex            *codex.Bridge
 	CodexHome        string
@@ -169,7 +167,7 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 		SecureHosts:    map[string]bool{},
 		DirectByPublic: map[string]string{}, PublicByDirect: map[string]string{},
 		directGrants: newDirectGrantStore(),
-		Pairing:      pairing.New(nil), projections: map[string]*projectionSlot{},
+		projections:  map[string]*projectionSlot{},
 		artifactCache: map[string]*artifactMemo{}, desktopPaths: map[string]map[string]string{}}
 	server.Bridge = server
 	return server
@@ -522,8 +520,6 @@ func (h *handler) handleMethod(write bool) {
 		h.handleAuth()
 	case write && path == "/api/login":
 		h.handleLogin()
-	case write && path == "/api/pair":
-		h.handlePair()
 	case write && path == "/api/direct/grant":
 		if h.session(write) == nil {
 			return
@@ -1392,57 +1388,6 @@ func stubAccount() *jsoncompat.Object {
 func hashProject(cwd string) string {
 	sum := sha256.Sum256([]byte(cwd))
 	return hex.EncodeToString(sum[:])[:12]
-}
-
-// handlePair exchanges a one-time QR grant for a normal authenticated session.
-// The grant registry is populated by the desktop control path; keeping the
-// exchange here preserves the Python gateway's origin binding and cookie
-// semantics without giving the phone a second authentication mechanism.
-func (h *handler) handlePair() {
-	value, err := h.readJSON()
-	if err != nil {
-		h.fail(http.StatusBadRequest, errorBody(err.Error()))
-		return
-	}
-	host := h.request.Host
-	origin := "http://" + host
-	if h.request.Header.Get("Origin") == "https://"+host {
-		origin = "https://" + host
-	}
-	if h.request.Header.Get("Origin") != origin {
-		h.fail(http.StatusForbidden, errorBody("不允许的请求来源"))
-		return
-	}
-	token, _ := value.(*jsoncompat.Object).MustGet("token").(string)
-	if h.server.Pairing == nil {
-		h.fail(http.StatusForbidden, errorBody("二维码已失效或已使用，请在电脑上刷新二维码，或使用账号密码登录"))
-		return
-	}
-	issued, err := h.server.Pairing.Exchange(token, origin, clientIP(h.request), float64(time.Now().Unix()), func(address string) any {
-		sessionToken, session, issueErr := h.server.Auth.NewSessionWithClient(h.client(), h.request.UserAgent(), true)
-		if issueErr != nil {
-			return issueErr
-		}
-		return []any{sessionToken, session}
-	})
-	if err != nil {
-		h.fail(http.StatusForbidden, errorBody(err.Error()))
-		return
-	}
-	parts, ok := issued.([]any)
-	if !ok || len(parts) != 2 {
-		h.fail(http.StatusForbidden, errorBody("二维码已失效或已使用，请在电脑上刷新二维码，或使用账号密码登录"))
-		return
-	}
-	sessionToken, _ := parts[0].(string)
-	session, _ := parts[1].(*jsoncompat.Object)
-	if session == nil {
-		h.fail(http.StatusForbidden, errorBody("二维码已失效或已使用，请在电脑上刷新二维码，或使用账号密码登录"))
-		return
-	}
-	result := jsoncompat.NewObject()
-	result.Set("csrf", session.MustGet("csrf"))
-	h.output(http.StatusOK, result, contentTypeJSON, h.cookieValue(sessionToken))
 }
 
 func (h *handler) handleAuth() {

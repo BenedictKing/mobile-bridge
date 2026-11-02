@@ -1,12 +1,4 @@
 'use strict';
-// Capture once and remove the bearer fragment before any API request or chat routing.
-function takePairingToken(){
-  if(!location.hash.startsWith('#pair='))return null;
-  const token=location.hash.slice(6);
-  history.replaceState(null,'',location.pathname+location.search);
-  return token;
-}
-let initialPairingToken=takePairingToken();
 const $ = id => document.getElementById(id),t=BridgeI18n.t;
 let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
 let currentHost='local', listRows=[], projectDirectory=[], listGeneration=0, listLoading=false, listHasMore=false;
@@ -136,16 +128,8 @@ function renderLoginStatus(status=loginStatus){
   $('login-button').disabled=loginStatus.blocked;
 }
 function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
-async function start(pairingToken=null){
+async function start(){
   const auth=await api('/api/auth');BridgeConnection.configure(auth);
-  if(pairingToken!==null){
-    try{const result=await api('/api/pair',{token:pairingToken});csrf=result.csrf;BridgeConnection.authenticated(csrf);await enter();return;}
-    catch(error){
-      if(auth.authenticated){csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();toast(error.message);}
-      else{showLogin(auth.passwordless,auth.loginStatus);$('login-error').textContent=loginErrorText(error);}
-      return;
-    }finally{pairingToken=null;}
-  }
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();
 }
 async function enter(){
@@ -1374,9 +1358,9 @@ $('skill-search').oninput=()=>{clearTimeout(skillSearchTimer);skillSearchTimer=s
 $('message').onclick=updateSkillSuggestions;
 document.addEventListener('pointerdown',event=>{if(!event.target.closest('.composer-input'))closeSkillSuggestions();});
 window.addEventListener('pagehide',saveDraft);
-function startFromLink(token){return start(token).catch(error=>{showLogin();$('login-error').textContent=loginErrorText(error);});}
-startFromLink(initialPairingToken);initialPairingToken=null;
-/* 深链分发顺序（阶段四）：#pair=（上方已处理）→ #run= → #team= → #id~host 默认。
+function startFromLink(){return start().catch(error=>{showLogin();$('login-error').textContent=loginErrorText(error);});}
+startFromLink();
+/* 深链分发顺序（阶段四）：#run= → #team= → #id~host 默认。
    同一套分发同时服务两个事件：hashchange（转发/通知 click 落 URL，页面可能早已
    打开）和 popstate（安卓返回手势、浏览器后退）。hash 变空即表示退回列表；
    popstate 之后浏览器还会补发一次 hashchange，靠各分支的可见性判断保持幂等。 */
@@ -1411,8 +1395,6 @@ function routeFromLocation(){
 }
 window.addEventListener('popstate',()=>{detailPushed=false;routeFromLocation();});
 window.addEventListener('hashchange',()=>{
-  const token=takePairingToken();
-  if(token!==null){startFromLink(token);return;}
   routeFromLocation();
 });
 function setLanguageBusy(){$('phone-language').disabled=!!(approvalBusy||creatingChat);$('appearance-language').disabled=$('phone-language').disabled;}
@@ -1553,8 +1535,8 @@ function syncTeamComposer(){
 $('team-settings-button').onclick=()=>teamChat?.openSettings();
 const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();}});
 const teamRunScreen=typeof TeamRunScreen==='undefined'?null:new TeamRunScreen({root:$('team-run'),request:teamRequest,openChat:sessionId=>openChat(sessionId,'local'),onUnauthorized:()=>showLogin(),onNavigateAway:closeTeamRunView});
-/* #run=teamId/runId 深链（阶段四通知 click 载荷契约）：与 #pair=、#id~host 三
-   前缀互斥，enter()/hashchange 统一按 pair→run→聊天 的顺序分发；id 段与聊天
+/* #run=teamId/runId 深链（阶段四通知 click 载荷契约）：与 #team=、#id~host 等
+   前缀互斥，enter()/hashchange 统一按 run→聊天 的顺序分发；id 段与聊天
    深链同口径 [\w.-]{1,128}（team/run 均为 UUID）。 */
 let openRunRoute=''; // 已打开的 #run= 路由：openTeamRun 用 replaceState 写 hash，此值防 hashchange 回声重开
 function parseTeamHash(){

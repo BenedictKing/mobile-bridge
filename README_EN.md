@@ -44,7 +44,7 @@ Download the desktop App for everyday use. **No deployment Agent, Python, Node.j
 
 1. Open the original **Codex App** on the computer, then open **Mobile Bridge**.
 2. Keep LAN access enabled under **Network and login**, save, and click **Start gateway**. Preserve the existing port if you already have a configuration.
-3. Connect the phone to the same LAN. Expand **Scan to sign in** below its address in the App and scan with the phone camera to sign in without typing a password. Alternatively, open the address manually and use the login credentials provided by the App.
+3. Connect the phone to the same LAN, open the address shown in the App, and sign in with the login credentials provided by the App.
 4. Select an existing chat or create a new one in the phone browser. Keep the computer awake with Codex App and the gateway running.
 
 For access outside your LAN, add temporary HTTPS, an own-server connection or a NAS connection in the App. Desktop builds bundle `cloudflared`. Server profiles connect over SSH after you manually prepare the server; a fixed Cloudflare tunnel also supports private domains without a server. See [Parallel connections](#parallel-connections). For source deployment, custom networking or help from an Agent, see the optional [Deployment Agent instructions](#deployment-agent-instructions). The gateway keeps probing Cloudflare tunnel health and rebuilds a connector left half-dead by sleep/wake or a network change; a rebuilt Quick Tunnel gets a new URL and sends an entry-change notification.
@@ -122,7 +122,7 @@ On Windows, closing the window hides it to the tray; launching again restores it
 
 The App provides:
 
-- **Overview:** start/stop the gateway, copy/open phone URLs, expand QR sign-in, and locate initial login credentials.
+- **Overview:** start/stop the gateway, copy/open phone URLs, and locate initial login credentials.
 - **Network and login:** the LAN port, independently enabled connection profiles, extra HTTPS addresses, username/password or explicit passwordless access.
 - **Runtime settings:** automatic gateway startup, gateway data directory and Cloudflare component status. Custom paths, IPC overrides and repair installation are collapsed under advanced settings.
 - **Phone notifications:** independent Bark and ntfy settings, test buttons and delivery status, with a shared click URL and title privacy option.
@@ -136,15 +136,6 @@ Unsaved changes appear as red dots in the affected sidebar section and save bar.
 Desktop builds bundle a pinned cloudflared binary for the target OS and architecture. No first-run download is needed. Runtime settings keep custom executables and source-run installation under **Advanced: custom program and repair**.
 
 The desktop sidebar links to this project's GitHub home, issues, and pull requests for source code, feedback, and contributions.
-
-### QR sign-in
-
-1. Start the gateway and find a reachable phone address on the overview page.
-2. Expand **Scan to sign in** below that address. Each LAN, ready temporary HTTPS or configured fixed HTTPS entry has its own collapsible area; multiple areas can be expanded together. Loopback addresses such as `127.0.0.1` have no phone QR code.
-3. Scan with the phone camera and open the link in a browser to sign in without typing a password. The App checks that the entry points to this running gateway before generating a code.
-4. Each QR code expires after **5 minutes** and works **once**. Collapsing or refreshing revokes it; restarting the gateway invalidates all codes. Browser logins use the configured validity (12 hours by default; 0 disables automatic expiry), independently of QR expiry, and survive gateway restarts.
-
-Treat the QR code as a short-lived login credential and keep screenshots private. It does not contain your username/password, disable password protection or create a network tunnel. Images are generated locally. Opening the ordinary URL still uses the configured login method. LAN reachability or a working public HTTPS entry is required; verify camera scanning and connectivity on your own phone.
 
 ### Parallel connections
 

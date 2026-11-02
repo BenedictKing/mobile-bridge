@@ -191,7 +191,7 @@ func (a *Auth) NewSession(address, userAgent string, remember any) (string, *jso
 }
 
 // NewSessionWithClient is NewSession carrying the resolved client record into
-// the session, as the pairing path does.
+// the session.
 func (a *Auth) NewSessionWithClient(client *jsoncompat.Object, userAgent string, remember any) (string, *jsoncompat.Object, error) {
 	address := ""
 	if client != nil {
@@ -241,8 +241,8 @@ func (a *Auth) newSessionLocked(address, userAgent string, remember any, client 
 	}
 	a.sessions[a.sessionKey(token)] = session
 	a.persistLocked()
-	// The session lives in the shared map; the caller (login/pairing) reads
-	// it unlocked, so hand back a detached copy like GetForClient does.
+	// The session lives in the shared map; the caller (login/direct exchange)
+	// reads it unlocked, so hand back a detached copy like GetForClient does.
 	snapshot, _ := jsoncompat.Clone(session).(*jsoncompat.Object)
 	return token, snapshot, nil
 }
