@@ -3647,7 +3647,9 @@ func TestTeamsStage4EventStreamSSE(t *testing.T) {
 		ID: "ev-sse4", RunID: runID, Type: team.EventRunStalled, Source: "runner",
 		Payload: map[string]any{"sinceMs": jsoncompat.Num(1200000), "lastTaskId": "lead"},
 	})
-	deadline := time.After(8 * time.Second)
+	// Notify 信号可能被当作残留消耗（feed 游标在循环顶兜底重查），此时帧最晚
+	// 随 12s 心跳发出；负载/race 下再留余量，故时限须大于心跳周期。
+	deadline := time.After(20 * time.Second)
 	for {
 		select {
 		case frame := <-frames:

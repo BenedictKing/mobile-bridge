@@ -102,10 +102,21 @@ for line in sys.stdin:
 	}
 	manager.Close()
 
-	recorded := LoadUsage(ledgerPath).Get("fake", "sess-existing")
-	if recorded == nil || recorded.MustGet("used").(json.Number).String() != "13000" ||
-		recorded.MustGet("size").(json.Number).String() != "960000" {
-		t.Fatalf("usage was not persisted: %v", recorded)
+	// The view updates under the session lock, but the ledger write happens
+	// right after the unlock (recordUsage must not stall the update stream),
+	// so poll for the record instead of reading the file exactly once.
+	var recorded *jsoncompat.Object
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		recorded = LoadUsage(ledgerPath).Get("fake", "sess-existing")
+		if recorded != nil && recorded.MustGet("used").(json.Number).String() == "13000" &&
+			recorded.MustGet("size").(json.Number).String() == "960000" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("usage was not persisted: %v", recorded)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	// Restart: a fresh manager, an agent that does not replay usage, and the
