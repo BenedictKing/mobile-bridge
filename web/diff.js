@@ -171,6 +171,9 @@ window.BridgeDiff = (() => {
     body.className = 'picker-body diff-review-body';
     dialog.append(head, body);
     document.body.append(dialog);
+    // 点框外关闭：backdrop 上的点击落在 dialog 元素自身（与图片 lightbox 同一手法），
+    // 弹窗无待保存状态，误触无损失；Esc 原生已支持。
+    dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
     return dialog;
   }
 

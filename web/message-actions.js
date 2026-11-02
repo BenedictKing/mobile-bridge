@@ -18,6 +18,8 @@ window.BridgeClipboard={
         const input=document.createElement('textarea');input.readOnly=true;input.value=text;input.setAttribute('aria-label',actionText('复制内容'));
         const close=document.createElement('button');close.className='primary';close.textContent=actionText('完成');close.onclick=()=>dialog.close();
         const body=document.createElement('div');body.className='picker-body';body.append(help,input,close);dialog.append(heading,body);document.body.append(dialog);
+        // 点框外关闭（backdrop 点击落在 dialog 自身，同 diff/图片弹窗）；只读内容，误触无损失。
+        dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();});
         dialog.onclose=()=>{dialog.remove();button.focus();};dialog.showModal();input.focus();input.select();input.setSelectionRange(0,text.length);
         button.textContent=label;
       }
