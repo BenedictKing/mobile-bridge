@@ -27,7 +27,7 @@ The phone and desktop use the same chat. Read replies, send messages, choose mod
 
 ## Quick start
 
-The gateway is a single Go binary: start it on the computer that runs the Codex App, then open the address in the phone browser. No Python or Node.js is required to run it. Build from source (requires Go); starting with the next release, five-platform gateway binaries (`gateway-<os>-<arch>`) are published with each release.
+The gateway is a single Go binary: start it on the computer that runs the Codex App, then open the address in the phone browser. No Python or Node.js is required to run it. Build from source (requires Go), or download the five-platform gateway binaries (`gateway-<os>-<arch>`) from Releases.
 
 ```bash
 git clone https://github.com/BenedictKing/mobile-bridge.git

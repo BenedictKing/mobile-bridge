@@ -28,7 +28,7 @@
 
 ## 快速开始
 
-网关是单一 Go 二进制：在运行 Codex App 的电脑上启动，手机浏览器打开地址即可使用，无需 Python 或 Node.js。从源码构建运行（需要 Go）；Release 自下一版本起随发布提供五平台网关二进制（`gateway-<系统>-<架构>`），可直接下载运行。
+网关是单一 Go 二进制：在运行 Codex App 的电脑上启动，手机浏览器打开地址即可使用，无需 Python 或 Node.js。从源码构建运行（需要 Go），或从 Release 直接下载五平台网关二进制（`gateway-<系统>-<架构>`）运行。
 
 ```bash
 git clone https://github.com/BenedictKing/mobile-bridge.git
