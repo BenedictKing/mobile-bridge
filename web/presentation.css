@@ -159,7 +159,10 @@ main{background:var(--page);overflow:hidden}
    content-visibility:hidden 隐藏：只覆写子元素的 display 已经不起作用，
    三行预览会整块看不见、还留下同样高的空白。这里把该伪元素显式放开。 */
 .activity::details-content{content-visibility:visible}
-.activity:not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
+/* 工具调用折叠态只显示标题，展开后才显示具体内容。工具调用外的 activity
+   （思考摘要、计划）保留三行预览。 */
+.activity[data-kind="toolCall"]:not([open]) .activity-body{display:none}
+.activity:not([data-kind="toolCall"]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
 .activity-body{max-height:60vh;overflow:auto}
 .activity-body:empty{display:none}
 .activity:not([open]) .detail-more{display:none}

@@ -5,6 +5,12 @@ const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(s
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   let label=row.title||row.kind;
+  // 剥离工具调用标题中的命令前缀与状态后缀：某些 Agent 把完整命令写进 title，
+  // 形如 "Bash: cd /path · completed"，折叠时只需工具名。
+  if(row.kind==='toolCall'){
+    label=label.replace(/^(.*?):\s.*$/,'$1').replace(/\s*·\s*(completed|failed|进行中|inProgress)$/,'').trim();
+    if(!label)label='工具调用';
+  }
   if(row.kind==='plan'&&row.entries?.length){
     const done=row.entries.filter(entry=>entry.status==='completed').length;
     label+=' · '+done+'/'+row.entries.length+(done===row.entries.length?' ✓':'');
@@ -192,6 +198,7 @@ class ChatTimeline {
           planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
           node=document.createElement(activity?'details':'div');
     node.className=activity?'activity timeline-row':'message timeline-row '+row.role;
+    if(activity&&row.kind)node.dataset.kind=row.kind;
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
