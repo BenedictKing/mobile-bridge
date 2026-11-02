@@ -30,12 +30,14 @@ test('cards Jev never assessed keep the local label only',()=>{
 });
 
 test('an assessed card shows the Jev verdict and why it was held',()=>{
-  const badge=loadBadge()({id:'r',assessment:{source:'jev',riskLabel:'routine',confidence:0.59,reversible:0.96,reason:'low_confidence'}},params);
+  // reason 必须是审批决策流（internal/jev/approval.go）真实会发的值；
+  // low_confidence 属于自动续跑门槛（internal/jev/continue.go），到不了审批卡。
+  const badge=loadBadge()({id:'r',assessment:{source:'jev',riskLabel:'routine',confidence:0.59,reversible:0.4,reason:'not_reversible_enough'}},params);
   assert.equal(badge.tag,'#fragment');
   const [risk,reason]=badge.children;
   assert.equal(risk.className,'approval-risk risk-routine');
-  assert.equal(risk.textContent,'常规操作 · Jev 59% · 可撤销');
-  assert.equal(reason.textContent,'未自动审核：置信度 59% < 80%');
+  assert.equal(risk.textContent,'常规操作 · Jev 59% · 难以撤销');
+  assert.equal(reason.textContent,'未自动审核：可撤销性 40% < 80%');
 });
 
 test('threshold holds show both numbers',()=>{
