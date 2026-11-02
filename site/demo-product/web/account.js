@@ -53,6 +53,14 @@ class AccountPanel {
     const t=BridgeI18n.t,days=Math.floor(minutes/1440),hours=Math.floor(minutes%1440/60),rest=minutes%60;
     return [days?days+t(' 天'):'',hours?hours+t(' 小时'):'',rest?rest+t(' 分钟'):''].filter(Boolean).join(' ');
   }
+  // 「X 分钟前」；不足一分钟视为刚刚（悬浮保留绝对时间）。updatedAt 为秒级时间戳。
+  agoText(seconds){
+    const t=BridgeI18n.t;
+    if(typeof seconds!=='number'||!(seconds>0))return '';
+    const minutes=Math.floor((Date.now()-seconds*1000)/60000);
+    if(minutes<1)return t('刚刚');
+    return this.countdown(minutes)+t('前');
+  }
   render(){
     const value=this.value;
     if(this.status){
@@ -74,13 +82,14 @@ class AccountPanel {
       if(!bucket.windows.length)card.append(this.node('p',t('暂未提供额度信息'),'account-muted'));
       for(const window of bucket.windows){
         const row=this.node('div',undefined,'account-window');
-        row.append(this.node('span',this.duration(window.windowDurationMins)),this.node('strong',window.remainingPercent==null?t('暂未提供'):t('剩余 ')+Math.round(window.remainingPercent*10)/10+'%'));
+        const used=window.remainingPercent==null?null:Math.min(100,Math.max(0,Math.round((100-window.remainingPercent)*10)/10));
+        row.append(this.node('span',this.duration(window.windowDurationMins)),this.node('strong',used==null?t('暂未提供'):t('已用 ')+used+'%'));
         card.append(row);
-        if(window.remainingPercent!=null){const progress=this.node('progress');progress.max=100;progress.value=window.remainingPercent;progress.setAttribute('aria-label',t('剩余额度'));card.append(progress);}
+        if(used!=null){const progress=this.node('progress');progress.max=100;progress.value=used;progress.setAttribute('aria-label',t('已用额度'));card.append(progress);}
         let reset=t('恢复时间：')+this.time(window.resetsAt);
         if(typeof window.resetsAt==='number'){
-          const minutes=Math.ceil((window.resetsAt*1000-Date.now())/60000);
-          reset+=' · '+(minutes>0?t('约 ')+this.countdown(minutes)+t('后恢复'):t('等待刷新'));
+          const minutes=Math.floor((window.resetsAt*1000-Date.now())/60000);
+          reset=(minutes>0?this.countdown(minutes)+t('后重置'):t('等待刷新'))+' · '+reset;
         }
         card.append(this.node('p',reset,'account-muted'));
       }
@@ -114,7 +123,9 @@ class AccountPanel {
     root.append(section);
     if(this.message){const message=this.node('p',t(this.message));message.setAttribute('role','status');root.append(message);}
     if(this.error){const error=this.node('p',t(this.error),'error');error.setAttribute('role','alert');root.append(error);}
-    root.append(this.node('p',t('更新于：')+this.time(value.updatedAt),'account-muted'));
+    const updated=this.node('p',t('更新于：')+(this.agoText(value.updatedAt)||this.time(value.updatedAt)),'account-muted');
+    if(typeof value.updatedAt==='number')updated.title=this.time(value.updatedAt);
+    root.append(updated);
   }
   async redeem(creditId,retry=false){
     const value=this.value;if(this.busy||!value?.visible||!value.canReset)return;

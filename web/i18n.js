@@ -190,6 +190,7 @@ const en={
 "未找到当前 API 地址，请检查接入配置":"The current API address is missing. Check the connection settings.",
 "未找到当前 API Key，请检查接入配置":"The current API key is unavailable. Check the connection settings.",
 "账号与额度":"Account and quota",
+"返回电脑列表":"Back to computers",
 "允许使用电脑应用？":"Allow computer app access?",
 "始终允许":"Always allow",
 "允许此对话":"Allow for this conversation",

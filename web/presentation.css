@@ -607,3 +607,20 @@ body:not(:has(#app:not([hidden]))) .gateway-entry{display:none}
   .login-product small{max-width:30ch}
   .welcome-content{display:flex;flex-direction:column;align-items:center}
 }
+
+/* 侧边栏在英文长文案下保持可读：过滤行可收缩并省略，底栏宁可换行也不被裁掉。 */
+.list-filters{gap:8px}
+.list-mode{gap:6px}
+.list-mode-button{overflow:hidden}
+.list-mode-button>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-foot{flex-wrap:wrap;column-gap:4px;row-gap:0}
+.sidebar-foot>.plain{min-width:0;white-space:nowrap}
+html[lang=en] .sidebar-foot>.plain{padding:8px 3px;font-size:11px}
+html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
+/* 窄侧边栏放不下四个链接时改为两行两列，而不是折成三加一。 */
+@media(max-width:900px) and (min-width:721px){
+  .sidebar-foot{display:grid;grid-template-columns:auto auto;justify-content:space-between;column-gap:8px}
+  .sidebar-foot>.plain{min-height:36px;padding:8px 4px}
+  /* 窄侧边栏里“显示方式”只是这行的标题，省掉它才放得下模式按钮与归档勾选。 */
+  .list-mode>span{display:none}
+}

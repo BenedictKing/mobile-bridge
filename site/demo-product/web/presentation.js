@@ -1,7 +1,7 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#4664ed',fontSize:16,codeSize:13,density:'standard',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
+  const defaults={theme:'system',accent:'#38450f',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
     return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
@@ -9,6 +9,7 @@ const ChatAppearance=(()=>{
       fontSize:Number.isInteger(value.fontSize)&&value.fontSize>=14&&value.fontSize<=20?value.fontSize:defaults.fontSize,
       codeSize:Number.isInteger(value.codeSize)&&value.codeSize>=11&&value.codeSize<=17?value.codeSize:defaults.codeSize,
       density:['compact','standard','relaxed'].includes(value.density)?value.density:defaults.density,
+      enterMode:['newline','send'].includes(value.enterMode)?value.enterMode:defaults.enterMode,
       showReasoning:typeof value.showReasoning==='boolean'?value.showReasoning:defaults.showReasoning,
       showProcess:typeof value.showProcess==='boolean'?value.showProcess:defaults.showProcess,
       showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts,
@@ -20,7 +21,7 @@ const ChatAppearance=(()=>{
   }
   function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
   function colors(accent,dark){
-    const background=dark?'#17181c':'#ffffff';
+    const background=dark?'#191a1f':'#ffffff';
     let text=accent;
     const rgb=accent.match(/[0-9a-f]{2}/gi).map(v=>parseInt(v,16));
     for(let step=1;contrast(text,background)<4.5&&step<=20;step++){
@@ -51,6 +52,7 @@ if(typeof document!=='undefined')(()=>{
     root.dataset.theme=dark?'dark':'light';root.dataset.density=settings.density;
     root.dataset.showActivity=String(settings.showActivity);
     root.dataset.showAccounts=String(settings.showAccounts);
+    root.dataset.enterMode=settings.enterMode;
     get('appearance-accounts').checked=settings.showAccounts;
     root.dataset.showReasoning=String(settings.showReasoning);root.dataset.showProcess=String(settings.showProcess);
     if(typeof chatTimeline!=='undefined')chatTimeline?.setVisibility(settings);
@@ -60,10 +62,12 @@ if(typeof document!=='undefined')(()=>{
     root.style.setProperty('--soft',settings.accent+(dark?'29':'12'));
     root.style.setProperty('--message-size',settings.fontSize+'px');
     root.style.setProperty('--code-size',settings.codeSize+'px');
-    document.querySelector('meta[name="theme-color"]').content=dark?'#17181c':'#ffffff';
+    document.querySelector('meta[name="theme-color"]').content=dark?'#121310':'#ecebe7';
+    try{window.MobileBridgeNative?.setTheme(dark);}catch{}
     for(const [id,value] of Object.entries({theme:settings.theme,accent:settings.accent,font:settings.fontSize,code:settings.codeSize,density:settings.density}))get('appearance-'+id).value=value;
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';
     get('appearance-activity').checked=settings.showActivity;get('appearance-reasoning').checked=settings.showReasoning;get('appearance-process').checked=settings.showProcess;
+    get('appearance-enter-mode').value=settings.enterMode;updateSendHint();
     document.querySelectorAll('[data-accent]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.accent===settings.accent.toLowerCase())));
   }
   function change(values){preserveReading(()=>{settings=ChatAppearance.normalize({...settings,...values});apply();save();});}
@@ -71,6 +75,12 @@ if(typeof document!=='undefined')(()=>{
     const text=BridgeI18n.t(collapsed?'展开输入区':'收起输入区');
     toggle.setAttribute('aria-label',text);toggle.title=text;
     toggle.setAttribute('aria-expanded',String(!collapsed));
+  }
+  function updateSendHint(){
+    const hint=get('send-shortcut');if(!hint)return;
+    hint.textContent=settings.enterMode==='send'?'↵':'⇧↵';
+    const label=settings.enterMode==='send'?'Enter 发送':'Shift+Enter 发送';
+    hint.setAttribute('data-i18n-title',label);hint.title=BridgeI18n.t(label);
   }
   function resizeMessage(){
     if(body.hidden)return;
@@ -85,11 +95,18 @@ if(typeof document!=='undefined')(()=>{
   }
   toggle.onclick=()=>setCollapsed(!collapsed);
   message.addEventListener('input',resizeMessage);
-  const composerSize=new ResizeObserver(()=>get('chat').style.setProperty('--composer-height',Math.ceil(composer.getBoundingClientRect().height)+'px'));
-  composerSize.observe(composer);
+  const viewport=window.visualViewport;
+  function syncViewport(){
+    if(!viewport)return;
+    root.style.setProperty('--visual-viewport-height',viewport.height+'px');
+    root.style.setProperty('--visual-viewport-offset',viewport.offsetTop+'px');
+  }
+  viewport?.addEventListener('resize',syncViewport);
+  viewport?.addEventListener('scroll',syncViewport);
+  syncViewport();
   const pageState=new MutationObserver(()=>document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open')));
   pageState.observe(get('app'),{attributes:true,attributeFilter:['hidden','class']});
-  document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();window.loadJevSettings?.();});
+  document.querySelectorAll('[data-open-appearance]').forEach(button=>button.onclick=()=>{get('appearance-dialog').showModal();window.loadNotificationDefaults?.();window.loadJevSettings?.();window.loadConventions?.();});
   get('chat-details-button').onclick=()=>{get('details-title').textContent=get('chat-title').textContent;get('chat-details-dialog').showModal();};
   // This script is loaded after app.js, which binds the existing close controls.
   get('appearance-language').onchange=()=>{get('phone-language').value=get('appearance-language').value;get('phone-language').onchange();get('appearance-language').value=BridgeI18n.language();};
@@ -98,12 +115,39 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-font').oninput=()=>change({fontSize:Number(get('appearance-font').value)});
   get('appearance-code').oninput=()=>change({codeSize:Number(get('appearance-code').value)});
   get('appearance-density').onchange=()=>change({density:get('appearance-density').value});
+  get('appearance-enter-mode').onchange=()=>change({enterMode:get('appearance-enter-mode').value});
   get('appearance-reasoning').onchange=()=>change({showReasoning:get('appearance-reasoning').checked});
   get('appearance-activity').onchange=()=>change({showActivity:get('appearance-activity').checked});
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});
-  get('settings-accounts').onclick=()=>{get('appearance-dialog').close();get('accounts-button').click();};
+  // Android App 注入 MobileBridgeNative；网关入口因此出现在标题栏，浏览器里没有这一组。
+  const nativeBridge=window.MobileBridgeNative,gatewayDialog=get('gateway-dialog');
+  // 页面始终从公网地址加载，局域网直连发生在 App 的请求拦截层，只能由 App 告知当前线路；旧版 App 没有该接口时不显示这一行。
+  const showRoute=route=>{
+    if(!route||typeof route.mode!=='string')return;
+    const label=route.mode==='lan'?BridgeI18n.t('局域网直连')+(route.host?' · '+route.host:'')
+      :route.mode==='probing'?BridgeI18n.t('正在探测局域网…'):BridgeI18n.t('公网连接');
+    get('gateway-route').textContent=label;get('gateway-route-row').hidden=false;
+  };
+  const readRoute=()=>{try{showRoute(JSON.parse(nativeBridge.connection()));}catch{}};
+  for(const button of document.querySelectorAll('[data-open-gateway]'))button.onclick=()=>{
+    get('gateway-note').textContent='';get('gateway-origin').textContent=location.origin;
+    if(nativeBridge?.connection)readRoute();
+    gatewayDialog.showModal();
+  };
+  window.addEventListener('mobilebridge-route',event=>showRoute(event.detail));
+  if(nativeBridge){
+    root.dataset.native='android';
+    for(const button of document.querySelectorAll('.gateway-entry'))button.hidden=false;
+    get('gateway-change').onclick=()=>{gatewayDialog.close();nativeBridge.openSettings();};
+    get('gateway-reconnect').onclick=()=>{gatewayDialog.close();location.reload();};
+    get('gateway-copy').onclick=async()=>{
+      const note=get('gateway-note');
+      try{await navigator.clipboard.writeText(location.origin);note.textContent=BridgeI18n.t('已复制网关地址');}
+      catch{note.textContent=location.origin;}
+    };
+  }else get('gateway-change').hidden=true;
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);
   system.addEventListener('change',()=>{if(settings.theme==='system')preserveReading(apply);});
   window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false)};

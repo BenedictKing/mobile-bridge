@@ -4,12 +4,24 @@
   // Math delimiters must be consumed before Markdown removes backslash escapes.
   markdown.use(texmath, {engine:window.katex, delimiters:['brackets','dollars']});
   const tags = new Set(['p','h1','h2','h3','h4','h5','h6','ul','ol','li','strong','em','s','blockquote','hr','br','table','thead','tbody','tr','th','td']);
+  // 代码块（围栏/缩进，含引用与列表内）所占的 0 基行号：动作信封落在其中视为协议示例。
+  const codeLines = source => {
+    const lines = new Set();
+    for (const token of markdown.parse(source, {})) {
+      if ((token.type === 'fence' || token.type === 'code_block') && token.map) for (let line = token.map[0]; line < token.map[1]; line++) lines.add(line);
+    }
+    return lines;
+  };
+  // 渲染与复制共用的切片：Lead 动作信封单独成卡片，其余正文走 Markdown。
+  const segments = text => typeof splitTeamActions === 'function' ? splitTeamActions(text, codeLines) : [{type:'text', text:String(text || '')}];
 
   // Build nodes from parsed tokens; model output never becomes executable HTML.
   window.renderMarkdown = function(node, text, files = [], fileUrl = () => '', options = {}) {
+    const t = x => typeof BridgeI18n === 'undefined' ? x : BridgeI18n.t(x);
     const body = document.createElement('div');
     body.className = 'markdown-body';
     const artifacts = new Map(files.map(file => [markdown.normalizeLink(file.reference), file]));
+    const htmlArtifact = file => /\.html?$/i.test(String(file?.reference || ''));
     function target(reference) {
       const file = artifacts.get(reference);
       if (file) return {url:fileUrl(file), file};
@@ -23,6 +35,27 @@
       anchor.rel = 'noopener noreferrer';
       if (title) anchor.title = title;
       return anchor;
+    }
+    // Collapsed in-chat preview for .html/.htm artifacts: a sandboxed iframe
+    // that only fetches its src when expanded, plus a keep-new-tab link.
+    function htmlPreview(file, url) {
+      const name = file.name || file.reference;
+      const details = document.createElement('details');
+      details.className = 'artifact-preview';
+      const summary = document.createElement('summary');
+      summary.append(t('预览') + ' ' + name + ' · ');
+      const opener = link(url, null);
+      opener.textContent = t('在新标签打开');
+      summary.append(opener);
+      const frame = document.createElement('iframe');
+      frame.className = 'artifact-frame';
+      frame.title = name;
+      frame.setAttribute('sandbox', 'allow-scripts');
+      frame.setAttribute('loading', 'lazy');
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      details.ontoggle = () => { if (details.open && !frame.src) frame.src = url; };
+      details.append(summary, frame);
+      return details;
     }
     let codeIndex=0;
     function appendTokens(tokens, root) {
@@ -71,7 +104,8 @@
             button.onclick=()=>window.BridgeClipboard?.copy(async()=>{
               if(!options.fullText)return token.content;
               const complete=await options.fullText();
-              const blocks=markdown.parse(complete,{}).filter(t=>t.type==='fence'||t.type==='code_block');
+              // 与渲染同一切片计数：信封卡片不占代码块序号。
+              const blocks=segments(complete).filter(part=>part.type==='text').flatMap(part=>markdown.parse(part.text,{})).filter(t=>t.type==='fence'||t.type==='code_block');
               if(!blocks[index])throw Error('读取完整正文失败，请重试');
               return blocks[index].content;
             },button);
@@ -80,13 +114,22 @@
         } else if (token.type === 'image') {
           const destination = target(token.attrGet('src') || '');
           const label = token.content || destination?.file?.name || '图片';
-          if (destination?.file?.image) {
+          if (destination?.file && htmlArtifact(destination.file)) {
+            parent.append(htmlPreview(destination.file, destination.url));
+          } else if (destination?.file?.image) {
+            // The lightbox opens the image in place; the anchor keeps the
+            // full-size new-tab entry for long-press / modifier clicks.
+            const imageUrl = BridgeConnection.url(destination.url);
+            const anchor = link(imageUrl, token.attrGet('title'));
+            anchor.dataset.imagePreview = imageUrl;
+            anchor.dataset.imageName = label;
             const image = document.createElement('img');
             image.className = 'artifact-image';
-            image.src = destination.url;
+            image.src = imageUrl;
             image.alt = label;
             image.loading = 'lazy';
-            parent.append(image);
+            anchor.append(image);
+            parent.append(anchor);
           } else if (destination) {
             // Remote images remain links instead of making background requests.
             const anchor = link(destination.url, token.attrGet('title'));
@@ -94,12 +137,25 @@
             parent.append(anchor);
           } else parent.append(document.createTextNode(label));
         } else if (token.nesting === -1) {
-          parents.pop();
+          const closed = parents.pop();
+          // An inline link to an HTML artifact gains its preview right after
+          // the anchor (the anchor is the parent's last child here).
+          if (closed?.dataset?.artifactPreview && closed.parentNode) {
+            closed.parentNode.append(htmlPreview(closed.previewFile, closed.previewUrl));
+          }
         } else {
           let element;
           if (token.type === 'link_open') {
             const destination = target(token.attrGet('href') || '');
-            element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
+            if (destination?.file && htmlArtifact(destination.file)) {
+              element = link(destination.url, token.attrGet('title'));
+              element.dataset.artifactPreview = '1';
+              element.previewFile = destination.file;
+              element.previewUrl = destination.url;
+            } else {
+              element = destination ? link(destination.url, token.attrGet('title')) : document.createElement('span');
+              if (destination?.file) element.download = destination.file.name || '';
+            }
           } else if (tags.has(token.tag)) {
             element = document.createElement(token.tag);
             if (token.tag === 'ol' && token.attrGet('start')) element.start = Number(token.attrGet('start'));
@@ -119,7 +175,12 @@
         }
       }
     }
-    appendTokens(markdown.parse(String(text || ''), {}), body);
+    // Lead 动作信封渲染成折叠卡片（team-chat.js splitTeamActions，与网关同一规则）；
+    // 其余正文照常走 Markdown。代码块序号跨片段连续，复制按钮按同一切片取全文代码块。
+    for (const part of segments(text)) {
+      if (part.type === 'actions') body.append(renderTeamActionsCard(part, t));
+      else appendTokens(markdown.parse(part.text, {}), body);
+    }
     node.append(body);
   };
 })();

@@ -98,7 +98,7 @@ class ChatAttachments {
       if(row.image){
         const image=node('img',null,'attachment-thumb');image.alt='';image.decoding='async';
         image.src=(row.status==='ready'&&row.thumb&&this.preview&&this.key)?this.preview(this.key,row.id):(row.objectUrl||'');
-        image.onerror=()=>image.remove();card.append(image);
+        image.onerror=()=>{if(!image.dataset.publicFallback)image.remove();};card.append(image);
       }
       info.append(node('strong',row.name));
       const status=row.status==='ready'?t('已上传'):row.status==='failed'?t(row.error):t('正在上传…');

@@ -1,10 +1,30 @@
 'use strict';
 const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
 
+// 工具调用行不止一种 kind：ACP 管线的 toolCall、桌面回放的 storedToolEvent、
+// MCP 的 mcpToolCall/dynamicToolCall。折叠行为按「是否工具行」统一判定。
+const TOOL_ROW_KINDS=/^(toolCall|tool_call|storedToolEvent|mcpToolCall|dynamicToolCall)$/;
+const toolRow=row=>row.role==='activity'&&TOOL_ROW_KINDS.test(row.kind);
+
+// Agent 送来的工具标题形态各异：纯工具名（"Bash"）、「工具名: 命令」、
+// 「工具名(命令)」，甚至整条命令自带状态后缀（CodeBuddy 的 "git add … · completed"）。
+// 折叠态只要一个简短可辨的标签：有干净的工具名前缀就取前缀，否则截取命令首行。
+const toolLabel=title=>{
+  let label=String(title||'').replace(/\s*[·•‧・]\s*(completed|failed|error|inProgress|running|pending|进行中|已完成|失败)\s*$/i,'').trim();
+  // 前缀须像工具名（无空格引号括号）才剥离；否则 ":" 多半在命令内部，
+  // 例如 git commit -m "fix(list): xxx"，剥了会把命令截成碎片。
+  const prefix=label.match(/^([^\s"'`（(]{1,24})\s*[:：]\s/)||label.match(/^([A-Za-z][\w.-]{0,23})\s*[（(]/);
+  if(prefix)return prefix[1];
+  const chars=[...label.split('\n')[0].trim()];
+  if(chars.length>60)return chars.slice(0,60).join('')+'…';
+  return chars.join('')||timelineText('工具调用');
+};
+
 // Heading label for one row; plan rows surface live completion counts.
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   let label=row.title||row.kind;
+  if(toolRow(row))label=toolLabel(row.title);
   if(row.kind==='plan'&&row.entries?.length){
     const done=row.entries.filter(entry=>entry.status==='completed').length;
     label+=' · '+done+'/'+row.entries.length+(done===row.entries.length?' ✓':'');
@@ -42,10 +62,10 @@ class ChatTimeline {
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
     this.resize.observe(this.container);
   }
-  dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
+  dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.loadErrorEl?.remove();this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
-  capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
+  capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&!n.dataset.summary&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
   rowVisible(row){
     if(row.role==='user'||row.role==='error')return true;
     if(row.kind==='reasoning')return this.showReasoning;
@@ -71,9 +91,18 @@ class ChatTimeline {
     requestAnimationFrame(()=>this.suppress=false);
   }
   read(action,params={}){return this.request(this.url(action)+'&'+new URLSearchParams(params),undefined,this.abort.signal);}
+  // 重试按钮下的服务端错误详情；空文本时靠 .error:empty 自动隐藏。
+  loadError(message){
+    if(!this.loadErrorEl){
+      this.loadErrorEl=document.createElement('p');
+      this.loadErrorEl.className='error load-error';
+      this.older.insertAdjacentElement('afterend',this.loadErrorEl);
+    }
+    this.loadErrorEl.textContent=message||'';
+  }
   async start(){
     if(this.starting||this.abort.signal.aborted)return;
-    clearTimeout(this.startRetry);this.starting=true;
+    clearTimeout(this.startRetry);this.starting=true;this.loadError('');
     this.older.hidden=false;this.older.disabled=true;this.older.textContent=timelineText('正在读取最近内容…');
     try{
       const page=await this.read('timeline',{limit:20});
@@ -81,7 +110,7 @@ class ChatTimeline {
       this.apply(page,true);this.updates();
       // Give the first 20 records a paint before quietly filling the 100-row window.
       requestAnimationFrame(()=>requestAnimationFrame(()=>this.fillRecent()));
-    }catch(e){if(this.abort.signal.aborted)return;this.older.disabled=false;this.older.textContent=timelineText('读取失败，点击重试');this.status(e.message);this.startRetry=setTimeout(()=>this.start(),3000);}
+    }catch(e){if(this.abort.signal.aborted)return;this.older.disabled=false;this.older.textContent=timelineText('读取失败，点击重试');this.status(e.message);this.loadError(e.message);this.startRetry=setTimeout(()=>this.start(),3000);}
     finally{this.starting=false;}
   }
   fillRecent(){
@@ -89,6 +118,10 @@ class ChatTimeline {
     const count=filtered?[...this.nodes.values()].filter(({node})=>!node.hidden).length:this.rows.size;
     if(!this.abort.signal.aborted&&this.rows.size>0&&count<target&&!this.retryCount)this.loadOlder(filtered?100:target-count);
   }
+  // A network restore or foreground return retries a failed recent-window
+  // fill; the retry counter otherwise stays armed until the user taps
+  // "load older", which is invisible on a phone after a socket blip.
+  refill(){this.retryCount=0;this.historyStatus();this.fillRecent();}
   historyStatus(){this.older.hidden=!this.hasMore;this.older.disabled=this.busy;this.older.textContent=this.busy?timelineText('正在读取更早内容…'):this.retryCount?timelineText('历史加载失败，点击重试'):timelineText('查看更早内容');}
   async loadOlder(count){
     if(this.busy||!this.hasMore||this.abort.signal.aborted)return;
@@ -125,19 +158,75 @@ class ChatTimeline {
     let position=this.container.firstChild;
     for(const row of ordered){const node=this.nodes.get(row.key).node;if(node===position)position=position.nextSibling;else this.container.insertBefore(node,position);}
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
+    this.renderTurnSummaries(ordered);
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
     if(reset)requestAnimationFrame(()=>this.fillRecent());
+  }
+  // Pure-append delta frames: patch the streamed rows' text in place instead
+  // of re-reading whole rows. The server only sends a delta when every changed
+  // row appends onto the exact version the phone holds; any other shape (and
+  // any row the phone does not hold at prevVersion) falls back to one changes
+  // re-read, so the merge stays keyed+version safe.
+  applyDelta(frame){
+    const anchor=this.capture(),bottom=this.following;
+    const cursor={after:this.sequence,epoch:this.epoch,start:this.before||''};
+    this.sequence=frame.sequence;
+    for(const file of frame.files||[])this.files.set(file.id,file);
+    if(frame.meta){this.meta=frame.meta;this.renderMeta({...frame.meta,files:[...this.files.values()]});}
+    let changed=false,mismatch=false;
+    for(const delta of frame.rows||[]){
+      const entry=this.rows.get(delta.key);
+      if(!entry||entry.row.version!==delta.prevVersion){mismatch=true;continue;}
+      entry.row.text+=delta.append;entry.row.version=delta.version;
+      if(entry.sequence<frame.sequence)entry.sequence=frame.sequence;
+      const cached=this.details.get(delta.key);
+      if(cached){
+        if(cached.version===delta.prevVersion){
+          cached.version=delta.version;
+          if(cached.next===null)cached.text+=delta.append;
+        }else this.details.delete(delta.key);
+      }
+      const stamp=JSON.stringify(entry.row),old=this.nodes.get(delta.key);
+      if(old?.stamp===stamp)continue;
+      const open=old?.node.tagName==='DETAILS'&&old.node.open;
+      const node=this.renderRow(entry.row,open);node.dataset.key=delta.key;
+      node.hidden=!this.rowVisible(entry.row);changed=changed||!node.hidden;
+      if(old)old.node.replaceWith(node);
+      this.nodes.set(delta.key,{node,stamp});
+    }
+    if(mismatch){
+      // The frame is atomic, so the pre-frame cursor re-reads exactly the
+      // rows this delta could not apply; apply merges by key+version.
+      this.read('changes',cursor).then(page=>{
+        if(this.abort.signal.aborted)return;
+        if(page.reset||page.epoch!==this.epoch)this.apply(page,true);
+        else this.apply(page,false);
+      }).catch(()=>{});
+    }
+    this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
+    if(!bottom&&changed){this.newer.textContent=this.pendingRequests?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
   }
   renderRow(row,open){
     const activity=row.role==='activity',
           planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
           node=document.createElement(activity?'details':'div');
     node.className=activity?'activity timeline-row':'message timeline-row '+row.role;
+    if(activity&&row.kind)node.dataset.kind=row.kind;
+    // CSS 以 data-tool（而非具体 kind）区分工具行：所有管线的工具调用折叠态一致。
+    if(toolRow(row))node.dataset.tool='';
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
-      heading.textContent=rowLabel(row);node.append(heading);
+      heading.textContent=rowLabel(row);
+      // 命令执行结果徽标:0 成功、非 0 失败,未知(无 exitCode)不标注。
+      if(activity&&typeof row.exitCode==='number'){
+        const exit=document.createElement('span');
+        exit.className='diff-exit '+(row.exitCode===0?'ok':'fail');
+        exit.textContent=row.exitCode===0?'✓':'✗';
+        heading.append(' ',exit);
+      }
+      node.append(heading);
     }
     const body=document.createElement(activity&&!planEntries?'pre':'div');
     body.className=activity?(planEntries?'activity-body plan-body':'activity-body'):'message-body';
@@ -192,24 +281,53 @@ class ChatTimeline {
       const attachments=document.createElement('div');attachments.className='timeline-attachments';
       for(const item of row.attachments){
         if((item.type==='localImage'||item.type==='image')&&(item.uploadId||item.desktopId)){
-          const source=item.uploadId
+          const source=BridgeConnection.url(item.uploadId
             ?this.url('uploads/'+encodeURIComponent(item.uploadId)+'/preview')
-            :this.url('desktop-images/'+encodeURIComponent(item.desktopId));
+            :this.url('desktop-images/'+encodeURIComponent(item.desktopId)));
           const original=item.uploadId
             ?source+'&variant=original'
             :source;
+          // The anchor keeps target=_blank for long-press/new-tab; a plain
+          // tap is intercepted by the image lightbox via data-image-preview.
           const link=document.createElement('a');link.href=original;link.target='_blank';link.rel='noopener';
+          link.dataset.imagePreview=original;link.dataset.imageName=item.name||timelineText('图片附件');
           const image=document.createElement('img');image.className='attachment-image';image.alt=item.name||timelineText('图片附件');
           image.loading='lazy';image.decoding='async';image.src=source;
-          image.onerror=()=>link.remove();link.append(image);attachments.append(link);
+          image.onerror=()=>{if(!image.dataset.publicFallback)link.remove();};link.append(image);attachments.append(link);
         }
       }
       const attachment=document.createElement('small');attachment.className='muted';
       attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
       attachments.append(attachment);node.append(attachments);
     }
+    // 本条改动涉及的文件卡片:点开差异审阅面板。
+    if(activity&&row.changes?.length){
+      const cwd=this.meta?.cwd||'';
+      node.append(window.BridgeDiff.fileCards(row.changes,cwd,change=>window.BridgeDiff.open(change,cwd)));
+    }
     if(activity){node.open=!!open;node.ontoggle=()=>{if(node.open&&!this.details.has(row.key)&&!planEntries)load();};}
     return node;
+  }
+  // 每轮「变更文件」汇总卡:按 turnId 聚合各行的 changes(同路径去重、
+  // 取最新),放在该轮最后一行之后。节点不在 this.nodes 里,仅由本方法
+  // 重建;capture() 会跳过它们以保持滚动锚定在真实行上。
+  renderTurnSummaries(ordered){
+    for(const node of this.container.querySelectorAll('[data-summary]'))node.remove();
+    const cwd=this.meta?.cwd||'',byTurn=new Map();
+    for(const row of ordered){
+      if(!row.changes?.length)continue;
+      let map=byTurn.get(row.turnId);
+      if(!map)byTurn.set(row.turnId,map=new Map());
+      for(const change of row.changes)map.set(change.path,change);
+    }
+    for(const [turnId,map] of byTurn){
+      const last=ordered.filter(row=>row.turnId===turnId).pop();
+      const anchor=last&&this.nodes.get(last.key)?.node;
+      if(!anchor)continue;
+      const card=window.BridgeDiff.summaryCard([...map.values()],cwd,change=>window.BridgeDiff.open(change,cwd));
+      card.dataset.summary='1';
+      anchor.after(card);
+    }
   }
   async fullText(row){
     const valid=()=>!this.abort.signal.aborted&&this.rows.get(row.key)?.row.version===row.version;
@@ -248,6 +366,7 @@ class ChatTimeline {
       const attachment=node.querySelector('.timeline-attachments small.muted');
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
+    this.renderTurnSummaries([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order));
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }
   updates(){
@@ -255,8 +374,11 @@ class ChatTimeline {
     // advertises it, changes long-poll on tunnels). The cursor is re-read
     // per request so history expansion never strands a delta, and rows
     // merge by key+version, so no in-flight generation guard is needed.
+    // Delta frames only ever carry appends onto versions this client holds;
+    // applyDelta re-reads changes itself when one does not line up.
     this.subscription=BridgeTransport.subscribe(this.url,{
       onChanges:page=>{if(this.abort.signal.aborted)return;this.apply(page,false);this.fillRecent();},
+      onDelta:frame=>{if(this.abort.signal.aborted)return;this.applyDelta(frame);},
       onReset:page=>{if(this.abort.signal.aborted)return;this.apply(page,true);this.fillRecent();},
       onStatus:text=>{if(!this.abort.signal.aborted)this.status(text==='reconnecting'?timelineText('重新连接中'):text);},
       cursor:()=>({after:this.sequence,epoch:this.epoch,start:this.before||''})

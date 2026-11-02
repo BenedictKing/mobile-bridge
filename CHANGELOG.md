@@ -6,6 +6,12 @@
 
 ### Changed / Fixed
 
+- **site**：官网与交互演示整体对齐当前网关 UI。`scripts/build-site-demo.py` 改为整目录镜像 `web/`（原先只叠加文件，退役面板与旧 vendor 会残留），重写 `site/demo-data/{web,scenes}.js` 夹具与场景路由：聊天、团队、审批、账号与接入、设置、迁移六个场景走现行 `openChat`/`openTeamChat`/对话详情，补 `/api/teams`、`/api/pool/*`、`/api/jev`、`/api/conventions`、`/api/changes` 等接口与团队 Run 投影；场景在应用完成首次路由后再执行，避免迟到的 `openChat` 关掉刚打开的对话框。首页移除 v1.3.0 演示视频、桌面 App 截图与文件/终端/Git/侧边聊天/分屏的旧文案，能力区改写为团队编排、多 Agent 会话、审批与 Jev、账号与账号池、迁移与压缩、引用与用量六项，首屏与账号、手机图库换成本次从真实界面（示例数据）重拍的截图，并清理 19 个失效素材。
+
+- **site**：截图随语言切换。`index.html` 的 8 个截图位加 `data-en-src`，`site.js` 在 `setLanguage` 时同步替换 `src`，`assets` 新增 8 张 `-en` 截图（首屏、团队、账号、账号池、手机列表/审批/团队/设置），全部按 `lang=en` 从同一套示例数据重拍；`site/demo-data/accounts.js`、`web.js` 的示例账号名与账号池标签也跟随语言（`localStorage.bridge-language`），手机列表场景修正为显式传 `scene=list`（此前会退回连接首页）。
+
+- **web**：英文长文案下侧边栏被裁（`web/presentation.css`、`web/i18n.js`）。列表过滤行允许收缩并省略、底栏在英文下收紧字号与内距、721–900px 窄侧边栏改为两行两列（中文仍单行），补「返回电脑列表」英文词条 `Back to computers`。
+
 ## [v0.2.0] - 2026-11-02
 
 ### Fixed

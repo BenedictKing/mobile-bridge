@@ -10,7 +10,7 @@ var BridgeTransport={
   // instead of waiting out a backoff ladder or a silently stalled socket.
   channels:new Set(),
   wake(){for(const wake of [...BridgeTransport.channels])wake();},
-  subscribe(url,{onChanges,onReset,onStatus,cursor}){
+  subscribe(url,{onChanges,onReset,onDelta,onStatus,cursor}){
     let closed=false,failures=0,source=null,timer=null,polling=null,resume=null,lastId='',connecting=false,pacing=false,pollSession=0;
     function stop(){
       closed=true;BridgeTransport.channels.delete(wake);
@@ -20,7 +20,7 @@ var BridgeTransport={
       if(timer!==null)clearTimeout(timer);
       timer=null;
     }
-    function unauthorized(){stop();onStatus?.('unauthorized');}
+    function unauthorized(){if(BridgeConnection.active){BridgeConnection.disconnected();retry();return;}stop();onStatus?.('unauthorized');}
     function retry(){
       if(closed)return;
       onStatus?.('reconnecting');
@@ -39,7 +39,7 @@ var BridgeTransport={
     // Only a definite auth loss logs out; network errors always reconnect.
     async function probe(){
       try{
-        const response=await fetch('/api/auth',{credentials:'same-origin',cache:'no-store'});
+        const response=await BridgeConnection.request('/api/auth',{credentials:'same-origin',cache:'no-store'});
         const info=response.ok?await response.json():null;
         if(closed)return;
         if(!info||info.authenticated===false)unauthorized();else retry();
@@ -49,7 +49,7 @@ var BridgeTransport={
       if(closed||connecting)return;
       connecting=true;
       try{
-        const response=await fetch('/api/auth',{credentials:'same-origin',cache:'no-store'});
+        const response=await BridgeConnection.request('/api/auth',{credentials:'same-origin',cache:'no-store'});
         const info=response.ok?await response.json():null;
         if(closed)return;
         if(!info||info.authenticated===false)return unauthorized();
@@ -61,7 +61,13 @@ var BridgeTransport={
     function sseHandler(kind){
       return message=>{
         lastId=message.lastEventId||lastId;
-        try{const page=JSON.parse(message.data);(kind==='reset'?onReset:onChanges)?.(page);}
+        try{
+          const page=JSON.parse(message.data);
+          // delta frames patch rows in place (timeline.applyDelta); a frame
+          // the timeline cannot apply falls back to a changes re-read there.
+          if(kind==='delta')onDelta?.(page);
+          else (kind==='reset'?onReset:onChanges)?.(page);
+        }
         catch{/* A malformed frame never reaches apply; the next frame re-syncs. */}
       };
     }
@@ -76,9 +82,10 @@ var BridgeTransport={
       const since=lastId||(current.epoch&&current.after>=0?current.epoch+'.'+current.after:'');
       const target=url('events')+(url('events').includes('?')?'&':'?')+'incremental=1'
         +(since?'&since='+encodeURIComponent(since):'');
-      source=new EventSource(target);
+      source=BridgeConnection.eventSource(target);
       source.addEventListener('ready',()=>{failures=0;});
       source.addEventListener('changes',sseHandler('changes'));
+      source.addEventListener('delta',sseHandler('delta'));
       source.addEventListener('reset',sseHandler('reset'));
       source.addEventListener('logout',unauthorized);
       source.onerror=()=>{if(closed||!source)return;source.close();source=null;probe();};
@@ -96,7 +103,7 @@ var BridgeTransport={
           const target=url('changes')+(url('changes').includes('?')?'&':'?')
             +new URLSearchParams({after:state.after??-1,epoch:state.epoch||'',start:state.start||''});
           polling=new AbortController();
-          const response=await fetch(target,{credentials:'same-origin',cache:'no-store',signal:polling.signal});
+          const response=await BridgeConnection.request(target,{credentials:'same-origin',cache:'no-store',signal:polling.signal});
           if(closed)return;
           if(response.status===401)return unauthorized();
           if(!response.ok)throw Error('HTTP '+response.status);
