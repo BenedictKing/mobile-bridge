@@ -151,31 +151,35 @@ const transcriptIndexTTL = 30 * time.Second
 // MetaReader returns a resolver for (title, last interaction in ms) keyed by
 // session id. CodeBuddy CLI writes session-meta on every session/load — the
 // gateway's startup preload issues one per recent chat — so rows built from
-// the file mtime floated to the top of the list after each restart. The
-// transcript's last timestamped event is the real last interaction. Titles
-// stay empty: ListSessions already carries them.
+// the file mtime floated to the top of the list after each restart. The real
+// last interaction is the newest honest event (message/tool) across every
+// transcript copy; session/meta timestamps never count, and neither do the
+// parasitic meta-only copies a load answered under a foreign cwd leaves in
+// that project's slug. Titles stay empty: ListSessions already carries them.
 func MetaReader(home string) func(sessionID string) (string, int64) {
 	index := &transcriptIndex{root: ProjectsDir(home)}
 	return func(sessionID string) (string, int64) {
 		if sessionID == "" || strings.ContainsAny(sessionID, `/\`) {
 			return "", 0
 		}
-		return "", lastTranscriptTimeMs(index.resolve(sessionID))
+		return "", lastInteractionMs(index.resolve(sessionID))
 	}
 }
 
-// transcriptIndex maps session ids to their .jsonl transcript paths.
-// Project directories group sessions by cwd slug; a session belongs to one
-// project, but a relocated project can leave copies behind — newest mtime
-// wins, mirroring the kimi/claude transcript index.
+// transcriptIndex maps session ids to every .jsonl transcript copy found.
+// Project directories group sessions by cwd slug; besides relocated projects,
+// a session/load answered under another cwd appends session-meta records into
+// that project's slug, so one session can own several files — the honest time
+// is the max across them all, not the newest-mtime one (the parasitic copy is
+// exactly the one the preload keeps touching).
 type transcriptIndex struct {
 	root  string
 	mu    sync.Mutex
 	at    time.Time
-	files map[string]string
+	files map[string][]string
 }
 
-func (i *transcriptIndex) resolve(sessionID string) string {
+func (i *transcriptIndex) resolve(sessionID string) []string {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.files == nil || time.Since(i.at) > transcriptIndexTTL {
@@ -185,9 +189,8 @@ func (i *transcriptIndex) resolve(sessionID string) string {
 }
 
 func (i *transcriptIndex) rebuild() {
-	i.files = map[string]string{}
+	i.files = map[string][]string{}
 	i.at = time.Now()
-	newest := map[string]time.Time{}
 	projects, err := os.ReadDir(i.root)
 	if err != nil {
 		return
@@ -211,11 +214,7 @@ func (i *transcriptIndex) rebuild() {
 			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
-			if known, ok := newest[sessionID]; ok && !info.ModTime().After(known) {
-				continue
-			}
-			newest[sessionID] = info.ModTime()
-			i.files[sessionID] = transcriptPath
+			i.files[sessionID] = append(i.files[sessionID], transcriptPath)
 		}
 	}
 }
@@ -224,6 +223,20 @@ const (
 	transcriptTailFirstScan = 64 << 10
 	transcriptTailMaxScan   = 4 << 20
 )
+
+// lastInteractionMs folds every transcript copy of one session into the
+// newest honest event time. 0 when no copy holds one (a fresh never-prompted
+// session, or only parasitic meta-only copies), leaving the row's own fields
+// in place.
+func lastInteractionMs(paths []string) int64 {
+	var latest int64
+	for _, path := range paths {
+		if ms := lastTranscriptTimeMs(path); ms > latest {
+			latest = ms
+		}
+	}
+	return latest
+}
 
 // lastTranscriptTimeMs walks a transcript's tail backwards for the newest
 // event carrying a timestamp. session/load appends session-meta records but
@@ -295,16 +308,23 @@ func scanLastTranscriptTime(buffer []byte, partialFirst bool) int64 {
 			}
 		}
 	}
-	// Second pass: if no message events found, fall back to any timestamped event
+	// Second pass: older transcripts may leave message rows untimestamped;
+	// fall back to the newest timestamped non-meta event (reasoning/summary/
+	// turn-metrics). session-meta never qualifies: the CLI appends those on
+	// every session/load, so their timestamps are load time, not interaction.
 	for index := end - 1; index >= start; index-- {
 		line := lines[index]
 		if len(line) == 0 || line[0] != '{' {
 			continue
 		}
 		var record struct {
-			Timestamp any `json:"timestamp"`
+			Type      string `json:"type"`
+			Timestamp any    `json:"timestamp"`
 		}
 		if json.Unmarshal(line, &record) != nil {
+			continue
+		}
+		if record.Type == "session-meta" {
 			continue
 		}
 		if ms := parseTranscriptTime(record.Timestamp); ms > 0 {

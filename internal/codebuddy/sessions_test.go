@@ -140,10 +140,12 @@ func TestMetaReaderUsesLastMessageTime(t *testing.T) {
 		t.Errorf("sess-1 time = %d, want 1792378461000 (last message, not session-meta)", ms1)
 	}
 
-	// sess-2: only session-meta, should use last timestamp as fallback
+	// sess-2: only session-meta (load events, no real interaction) — their
+	// timestamps are load time, so the resolver yields nothing and the row
+	// keeps its own fields instead of floating to the preload time.
 	_, ms2 := resolve("sess-2")
-	if ms2 != 1792378650000 {
-		t.Errorf("sess-2 time = %d, want 1792378650000 (fallback to session-meta)", ms2)
+	if ms2 != 0 {
+		t.Errorf("sess-2 time = %d, want 0 (session-meta is not interaction)", ms2)
 	}
 
 	// sess-3: should use last tool-result time
@@ -234,5 +236,31 @@ func TestMetaReaderHandlesDuplicateSessions(t *testing.T) {
 	_, ms := resolve("sess-dup")
 	if ms != 1792378500000 {
 		t.Errorf("duplicate session time = %d, want 1792378500000 (newer file)", ms)
+	}
+}
+
+func TestMetaReaderIgnoresParasiticMetaOnlyCopy(t *testing.T) {
+	home := t.TempDir()
+	// A real conversation lives in its own project slug...
+	writeTranscript(t, filepath.Join(ProjectsDir(home), "Users-test-work-codehub", "sess-live.jsonl"),
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"跑一下 ga fetch"}],"cwd":"/work/codehub","timestamp":1793340000000}
+{"type":"message","role":"assistant","content":[{"type":"text","text":"done"}],"timestamp":1793340600000}
+`)
+	// ...while every gateway restart's preload (session/load answered under a
+	// foreign cwd) appends meta-only records to a parasitic copy in that other
+	// project's slug. Its mtime is the newest of the two.
+	parasitePath := filepath.Join(ProjectsDir(home), "Users-test-work-bridge", "sess-live.jsonl")
+	writeTranscript(t, parasitePath,
+		`{"type":"session-meta","sessionId":"sess-live","timestamp":1793599741032}
+{"type":"session-meta","sessionId":"sess-live","timestamp":1793599741032}
+`)
+	time.Sleep(2 * time.Millisecond) // Ensure the parasite's mtime is strictly newer
+	if err := os.Chtimes(parasitePath, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ms := MetaReader(home)("sess-live")
+	if ms != 1793340600000 {
+		t.Fatalf("time = %d, want 1793340600000 (real copy's last message, not the parasite's load stamps)", ms)
 	}
 }

@@ -150,6 +150,52 @@ func TestSyncNativeClosedSessionIsSilent(t *testing.T) {
 	session.syncNative()
 }
 
+func TestManagerFillsNativeMetaIntoNativeListOnlyAgent(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	// codebuddy --acp implements session/load but answers -32601 to
+	// session/list: the whole list comes from NativeList, whose rows carry the
+	// transcript mtime — refreshed by the startup preload. The NativeMeta fold
+	// must still run on that shortcut path or every restart floats recent
+	// chats to the top of the phone list (生产回归：重启后时间全变成部署时刻).
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/list": print(json.dumps({"jsonrpc":"2.0","id":ident,"error":{"code":-32601,"message":"not implemented"}}),flush=True); continue
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.NativeList = func() []*jsoncompat.Object {
+		row := jsoncompat.NewObject()
+		row.Set("sessionId", "sess-native")
+		row.Set("cwd", "/work")
+		row.Set("updatedAt", jsoncompat.Num(1793599741032)) // preload-bumped mtime
+		return []*jsoncompat.Object{row}
+	}
+	manager.NativeMeta = func(id string) (string, int64) {
+		if id == "sess-native" {
+			return "", 1793340600000 // last real message, days older
+		}
+		return "", 0
+	}
+	rows, err := manager.List(3 * time.Second)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list rows=%v err=%v", rows, err)
+	}
+	if updated, _ := rows[0].MustGet("updatedAt").(json.Number).Int64(); updated != 1793340600000 {
+		t.Fatalf("updatedAt = %d, want the NativeMeta time 1793340600000, not the mtime", updated)
+	}
+	manager.Close()
+}
+
 func TestManagerFillsNativeMetaIntoListAndOpen(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

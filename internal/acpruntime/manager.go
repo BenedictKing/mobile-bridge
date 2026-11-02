@@ -381,9 +381,14 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 				// claude-agent-acp, workbuddy's codebuddy --acp) answer -32601.
 				// A wired native store fills the gap; otherwise cache an empty
 				// list instead of failing so the phone list does not nag on
-				// every refresh.
+				// every refresh. Native rows carry the transcript mtime as
+				// updatedAt — the startup preload refreshes exactly that — so
+				// they must pass through the same NativeMeta fold as merged
+				// rows, or every restart floats recent chats to list top.
 				if m.NativeList != nil {
-					return cacheRows(m.NativeList()), nil
+					rows := m.NativeList()
+					m.fillNativeMeta(rows)
+					return cacheRows(rows), nil
 				}
 				return cacheRows(nil), nil
 			}
@@ -446,24 +451,33 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 			output = append(output, row)
 		}
 	}
-	if m.NativeMeta != nil {
-		for _, row := range output {
-			id, _ := row.MustGet("sessionId").(string)
-			if id == "" {
-				continue
-			}
-			title, updated := m.NativeMeta(id)
-			if title != "" {
-				if current, _ := row.MustGet("title").(string); strings.TrimSpace(textutil.CleanTitle(current)) == "" {
-					row.Set("title", title)
-				}
-			}
-			if updated > 0 {
-				row.Set("updatedAt", jsoncompat.Num(int(updated)))
+	m.fillNativeMeta(output)
+	return cacheRows(output), nil
+}
+
+// fillNativeMeta folds the native store's honest title and last-interaction
+// time into list rows, whatever source produced them (agent session/list,
+// NativeList, or the -32601 native-only shortcut). Rows keep their own fields
+// when the native store has nothing better (empty title, updated <= 0).
+func (m *Manager) fillNativeMeta(rows []*jsoncompat.Object) {
+	if m.NativeMeta == nil {
+		return
+	}
+	for _, row := range rows {
+		id, _ := row.MustGet("sessionId").(string)
+		if id == "" {
+			continue
+		}
+		title, updated := m.NativeMeta(id)
+		if title != "" {
+			if current, _ := row.MustGet("title").(string); strings.TrimSpace(textutil.CleanTitle(current)) == "" {
+				row.Set("title", title)
 			}
 		}
+		if updated > 0 {
+			row.Set("updatedAt", jsoncompat.Num(int(updated)))
+		}
 	}
-	return cacheRows(output), nil
 }
 
 // methodNotFound reports whether the agent answered a request with the
