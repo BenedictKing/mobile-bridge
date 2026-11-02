@@ -9,11 +9,14 @@ package codebuddy
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/textutil"
@@ -138,4 +141,191 @@ func readSessionRow(path, fallbackID string) *jsoncompat.Object {
 	row.Set("cwd", cwd)
 	row.Set("updatedAt", jsoncompat.Num(int(info.ModTime().UnixMilli())))
 	return row
+}
+
+// transcriptIndexTTL bounds how long one session-id → transcript path map
+// serves lookups before the projects tree is re-enumerated. A list refresh
+// asks for every row in one burst; the TTL keeps that at a single readdir pass.
+const transcriptIndexTTL = 30 * time.Second
+
+// MetaReader returns a resolver for (title, last interaction in ms) keyed by
+// session id. CodeBuddy CLI writes session-meta on every session/load — the
+// gateway's startup preload issues one per recent chat — so rows built from
+// the file mtime floated to the top of the list after each restart. The
+// transcript's last timestamped event is the real last interaction. Titles
+// stay empty: ListSessions already carries them.
+func MetaReader(home string) func(sessionID string) (string, int64) {
+	index := &transcriptIndex{root: ProjectsDir(home)}
+	return func(sessionID string) (string, int64) {
+		if sessionID == "" || strings.ContainsAny(sessionID, `/\`) {
+			return "", 0
+		}
+		return "", lastTranscriptTimeMs(index.resolve(sessionID))
+	}
+}
+
+// transcriptIndex maps session ids to their .jsonl transcript paths.
+// Project directories group sessions by cwd slug; a session belongs to one
+// project, but a relocated project can leave copies behind — newest mtime
+// wins, mirroring the kimi/claude transcript index.
+type transcriptIndex struct {
+	root  string
+	mu    sync.Mutex
+	at    time.Time
+	files map[string]string
+}
+
+func (i *transcriptIndex) resolve(sessionID string) string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.files == nil || time.Since(i.at) > transcriptIndexTTL {
+		i.rebuild()
+	}
+	return i.files[sessionID]
+}
+
+func (i *transcriptIndex) rebuild() {
+	i.files = map[string]string{}
+	i.at = time.Now()
+	newest := map[string]time.Time{}
+	projects, err := os.ReadDir(i.root)
+	if err != nil {
+		return
+	}
+	for _, project := range projects {
+		if !project.IsDir() {
+			continue
+		}
+		dir := filepath.Join(i.root, project.Name())
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+				continue
+			}
+			sessionID := strings.TrimSuffix(entry.Name(), ".jsonl")
+			transcriptPath := filepath.Join(dir, entry.Name())
+			info, err := os.Lstat(transcriptPath)
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			if known, ok := newest[sessionID]; ok && !info.ModTime().After(known) {
+				continue
+			}
+			newest[sessionID] = info.ModTime()
+			i.files[sessionID] = transcriptPath
+		}
+	}
+}
+
+const (
+	transcriptTailFirstScan = 64 << 10
+	transcriptTailMaxScan   = 4 << 20
+)
+
+// lastTranscriptTimeMs walks a transcript's tail backwards for the newest
+// event carrying a timestamp. session/load appends session-meta records but
+// they don't represent actual user interaction, so we scan for the last
+// message or other timestamped event. Returns 0 when the transcript is
+// missing or holds no timestamp at all, leaving the row's own fields in place.
+func lastTranscriptTimeMs(path string) int64 {
+	if path == "" {
+		return 0
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return 0
+	}
+	size := info.Size()
+	for window := int64(transcriptTailFirstScan); ; window *= 4 {
+		if window > size {
+			window = size
+		}
+		buffer := make([]byte, window)
+		if _, err := file.ReadAt(buffer, size-window); err != nil && err != io.EOF {
+			return 0
+		}
+		if ms := scanLastTranscriptTime(buffer, window < size); ms > 0 {
+			return ms
+		}
+		if window >= size || window >= transcriptTailMaxScan {
+			return 0
+		}
+	}
+}
+
+// scanLastTranscriptTime parses complete lines of a tail buffer from the end.
+// The leading element may be an event cut at the window edge; skip it unless
+// the buffer starts the file. We prioritize message events over session-meta
+// to avoid using load-induced timestamps.
+func scanLastTranscriptTime(buffer []byte, partialFirst bool) int64 {
+	lines := bytes.Split(buffer, []byte{'\n'})
+	start := 0
+	if partialFirst {
+		start = 1
+	}
+	end := len(lines)
+	if end > start && len(lines[end-1]) == 0 {
+		end--
+	}
+	// First pass: look for message events (real user interaction)
+	for index := end - 1; index >= start; index-- {
+		line := lines[index]
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var record struct {
+			Type      string `json:"type"`
+			Timestamp any    `json:"timestamp"`
+		}
+		if json.Unmarshal(line, &record) != nil {
+			continue
+		}
+		// Prefer message events (user interaction) over session-meta (loads)
+		if record.Type == "message" || record.Type == "tool-result" || record.Type == "tool-use" {
+			if ms := parseTranscriptTime(record.Timestamp); ms > 0 {
+				return ms
+			}
+		}
+	}
+	// Second pass: if no message events found, fall back to any timestamped event
+	for index := end - 1; index >= start; index-- {
+		line := lines[index]
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var record struct {
+			Timestamp any `json:"timestamp"`
+		}
+		if json.Unmarshal(line, &record) != nil {
+			continue
+		}
+		if ms := parseTranscriptTime(record.Timestamp); ms > 0 {
+			return ms
+		}
+	}
+	return 0
+}
+
+func parseTranscriptTime(value any) int64 {
+	switch typed := value.(type) {
+	case json.Number:
+		if ms, err := typed.Int64(); err == nil {
+			return ms
+		}
+	case float64:
+		return int64(typed)
+	case int64:
+		return typed
+	case int:
+		return int64(typed)
+	}
+	return 0
 }

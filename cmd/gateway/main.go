@@ -999,6 +999,11 @@ func runGateway(args []string) {
 		manager.NativeList = func() []*jsoncompat.Object {
 			return codebuddy.ListSessions(home)
 		}
+		// CodeBuddy CLI writes session-meta on every session/load, so the
+		// startup preload restamped the recent chats as just-used after each
+		// restart. The transcript's last message/tool event time is the real
+		// last interaction; read-only, never touches the CLI.
+		manager.NativeMeta = codebuddy.MetaReader(home)
 	}
 	if manager := server.ACPAgents["claude"]; manager != nil && !scriptedMode {
 		// claude-agent-acp's session/list reports each transcript's mtime as

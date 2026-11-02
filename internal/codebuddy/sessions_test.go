@@ -107,3 +107,132 @@ func TestListSessionsSkipsProtocolTitles(t *testing.T) {
 		t.Fatalf("team envelope title must be the assigned task: %v", titles["sess-team"])
 	}
 }
+
+func TestMetaReaderUsesLastMessageTime(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(ProjectsDir(home), "Users-test-work-demo")
+	// Session with multiple events: session-meta from loads, then real messages
+	mtime := writeTranscript(t, filepath.Join(dir, "sess-1.jsonl"),
+		`{"type":"session-meta","sessionId":"sess-1","timestamp":1792378459466}
+{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}],"cwd":"/work/demo","timestamp":1792378460000}
+{"type":"message","role":"assistant","content":[{"type":"text","text":"reply"}],"timestamp":1792378461000}
+{"type":"session-meta","sessionId":"sess-1","timestamp":1792378500000}
+{"type":"session-meta","sessionId":"sess-1","timestamp":1792378550000}
+`)
+	// Session with only session-meta (load events, no real interaction)
+	writeTranscript(t, filepath.Join(dir, "sess-2.jsonl"),
+		`{"type":"session-meta","sessionId":"sess-2","timestamp":1792378600000}
+{"type":"session-meta","sessionId":"sess-2","timestamp":1792378650000}
+`)
+	// Session with tool events
+	writeTranscript(t, filepath.Join(dir, "sess-3.jsonl"),
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"run test"}],"timestamp":1792378700000}
+{"type":"tool-use","timestamp":1792378710000}
+{"type":"tool-result","timestamp":1792378720000}
+{"type":"session-meta","sessionId":"sess-3","timestamp":1792378800000}
+`)
+
+	resolve := MetaReader(home)
+
+	// sess-1: should use last message time, not session-meta
+	_, ms1 := resolve("sess-1")
+	if ms1 != 1792378461000 {
+		t.Errorf("sess-1 time = %d, want 1792378461000 (last message, not session-meta)", ms1)
+	}
+
+	// sess-2: only session-meta, should use last timestamp as fallback
+	_, ms2 := resolve("sess-2")
+	if ms2 != 1792378650000 {
+		t.Errorf("sess-2 time = %d, want 1792378650000 (fallback to session-meta)", ms2)
+	}
+
+	// sess-3: should use last tool-result time
+	_, ms3 := resolve("sess-3")
+	if ms3 != 1792378720000 {
+		t.Errorf("sess-3 time = %d, want 1792378720000 (last tool event)", ms3)
+	}
+
+	// Missing session
+	_, ms4 := resolve("missing")
+	if ms4 != 0 {
+		t.Errorf("missing session time = %d, want 0", ms4)
+	}
+
+	// Verify mtime is NOT used (mtime is much earlier than any timestamp)
+	if ms1 == mtime.UnixMilli() {
+		t.Errorf("MetaReader incorrectly used mtime instead of transcript timestamp")
+	}
+}
+
+func TestMetaReaderHandlesEmptyAndInvalidTranscripts(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(ProjectsDir(home), "Users-test-work-demo")
+
+	// Empty transcript
+	writeTranscript(t, filepath.Join(dir, "sess-empty.jsonl"), "")
+	// Invalid JSON
+	writeTranscript(t, filepath.Join(dir, "sess-bad.jsonl"), "{not json\n")
+	// No timestamp fields
+	writeTranscript(t, filepath.Join(dir, "sess-no-ts.jsonl"),
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"no timestamp"}]}
+`)
+
+	resolve := MetaReader(home)
+
+	_, ms1 := resolve("sess-empty")
+	if ms1 != 0 {
+		t.Errorf("empty transcript time = %d, want 0", ms1)
+	}
+
+	_, ms2 := resolve("sess-bad")
+	if ms2 != 0 {
+		t.Errorf("invalid transcript time = %d, want 0", ms2)
+	}
+
+	_, ms3 := resolve("sess-no-ts")
+	if ms3 != 0 {
+		t.Errorf("no-timestamp transcript time = %d, want 0", ms3)
+	}
+}
+
+func TestMetaReaderHandlesDuplicateSessions(t *testing.T) {
+	home := t.TempDir()
+	// Same session ID in different projects (relocated project scenario)
+	dir1 := filepath.Join(ProjectsDir(home), "Users-test-work-old")
+	dir2 := filepath.Join(ProjectsDir(home), "Users-test-work-new")
+
+	// Older file with older mtime
+	oldMtime := time.Unix(1792283000, 0)
+	oldPath := filepath.Join(dir1, "sess-dup.jsonl")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte(`{"type":"message","timestamp":1792378400000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(oldPath, oldMtime, oldMtime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Newer file with newer mtime
+	time.Sleep(2 * time.Millisecond) // Ensure different mtime
+	newMtime := time.Unix(1792283100, 0)
+	newPath := filepath.Join(dir2, "sess-dup.jsonl")
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte(`{"type":"message","timestamp":1792378500000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newPath, newMtime, newMtime); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := MetaReader(home)
+
+	// Should use the newer file's timestamp
+	_, ms := resolve("sess-dup")
+	if ms != 1792378500000 {
+		t.Errorf("duplicate session time = %d, want 1792378500000 (newer file)", ms)
+	}
+}
