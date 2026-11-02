@@ -27,7 +27,6 @@ function loadControl(overrides={}){
   const control=new context.MigrateControl({
     root,
     request:async body=>{requests.push(body);return {sent:true};},
-    confirm:()=>true,
     onMigrated:(...args)=>completed.push(args),
     onBusy:value=>busy.push(value),
     ...overrides

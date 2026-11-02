@@ -52,7 +52,6 @@ const accountPanel=new AccountPanel({root:$('account-content'),button:$('account
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
 const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),enabled:()=>compactAvailable()&&!compactChat.busy,
   request:body=>api(sessionUrl(currentId,'migrate',currentHost),body),
-  confirm:message=>window.confirm(message),
   onBusy:()=>renderCompactState(),
   onMigrated:async(result,label,body,operation)=>{$('chat-details-dialog').close();
     if(!result.sent){

@@ -3,13 +3,9 @@ const MIGRATE_SCOPES=[
   {key:'full',label:'完全复制历史'},
   {key:'main',label:'只复制主要历史'},
   {key:'latest',label:'只复制最新提问和结果'}];
-const MIGRATE_SCOPE_COPY={
-  full:' 新会话，并把完整历史转录作为首条消息注入；源会话保持不变。',
-  main:' 新会话，并把标题与最近消息转录作为首条消息注入；源会话保持不变。',
-  latest:' 新会话，并把最新提问与回答作为首条消息注入；源会话保持不变。'};
 class MigrateControl {
-  constructor({root,request,confirm=()=>true,onMigrated=()=>{},onError=()=>{},onBusy=()=>{},enabled=()=>true}){
-    Object.assign(this,{root,request,confirm,onMigrated,onError,onBusy,enabled});
+  constructor({root,request,onMigrated=()=>{},onError=()=>{},onBusy=()=>{},enabled=()=>true}){
+    Object.assign(this,{root,request,onMigrated,onError,onBusy,enabled});
     this.view=null;this.busy=false;this.picked=null;
     this.prepared=null;this.choice={model:'',effort:''};  // Settings step: {id,kind,scope,catalog}.
     this.epoch=0;this.confirming=false;
@@ -159,9 +155,9 @@ class MigrateControl {
     this.root.append(row);
   }
   async migrate(kind,scope='main',operation='migrate',options={}){
+    // 不再弹确认：迁移不动源会话，且设置页/入口已写明将创建新会话的说明。
     if(this.busy||!this.view||!this.enabled())return;
     const label=this.label(kind);
-    if(!this.confirm(this.text('将创建指向同一目录的 ')+label+this.text(MIGRATE_SCOPE_COPY[scope]||MIGRATE_SCOPE_COPY.main)))return;
     this.busy=true;this.confirming=!!options.id;
     const buttons=[...this.root.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
     this.onBusy(true);
