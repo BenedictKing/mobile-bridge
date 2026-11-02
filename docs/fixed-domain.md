@@ -4,7 +4,7 @@
 
 访问链路：**手机 → 自己的域名 → Cloudflare → 电脑上的隧道 → 本地网关 → Codex App**。
 
-本文中的用户名 `try2love`、域名 `try2love.com` 和地址 `https://codex.try2love.com` 仅用于配置演示，不代表可访问的演示站点。请替换为自己的用户名和域名。桌面 App 已内置 cloudflared，无需安装 Python、Node.js 或另一个 Cloudflare 客户端，也不需要服务器 SSH 账号。
+本文中的用户名 `try2love`、域名 `try2love.com` 和地址 `https://codex.try2love.com` 仅用于配置演示，不代表可访问的演示站点。请替换为自己的用户名和域名。网关以 Tunnel Token 方式驱动已安装的 `cloudflared`（安装方法见 README），无需 Python、Node.js 或另一个 Cloudflare 客户端，也不需要服务器 SSH 账号。
 
 ## 1. 把域名添加到 Cloudflare
 
@@ -24,11 +24,11 @@ Cloudflare 会分配两条名称服务器（Nameservers / NS）地址。复制�
 
 在 Cloudflare 控制台进入 **Networking → Tunnels**；部分界面显示为 **Zero Trust → Networks → Connectors / Tunnels**。创建 **Cloudflared** 类型的隧道，取一个便于识别的名字，例如 `my-codex`。
 
-在连接器安装页面找到运行命令中的 **Tunnel Token**。它通常是命令最后的一长串字符：App 只需要这段 Token，不需要整条命令，不需要 Cloudflare 全局 API Key，也不需要在终端重复安装服务。
+在连接器安装页面找到运行命令中的 **Tunnel Token**。它通常是命令最后的一长串字符：网关只需要这段 Token，不需要整条命令，不需要 Cloudflare 全局 API Key，也不需要在终端重复安装服务。
 
-Token 相当于这条隧道的连接凭据，只在自己的 App 中填写；不要放入公开截图、教程或仓库。
+Token 相当于这条隧道的连接凭据，只填在自己的网关配置中；不要放入公开截图、教程或仓库。
 
-## 4. 在 App 填写并启动
+## 4. 在网关配置中填写并启动
 
 1. 打开“网络与登录”，添加 **固定域名 · Cloudflare Tunnel**。
 2. 手机访问地址填写 `https://codex.try2love.com`，不带额外路径。
@@ -49,13 +49,13 @@ Token 相当于这条隧道的连接凭据，只在自己的 App 中填写；不
 | Service Type / 服务类型 | `HTTP` |
 | Service URL / 服务地址 | `localhost:8787` |
 
-若界面只有一个完整服务地址输入框，填写 `http://localhost:8787`。这里是**同一台电脑上的网关地址**；默认端口为 8787，修改过网关端口时请使用 App 显示的实际值。不要把手机访问的 HTTPS 域名填到服务地址中。
+若界面只有一个完整服务地址输入框，填写 `http://localhost:8787`。这里是**同一台电脑上的网关地址**；默认端口为 8787，修改过网关端口时请使用实际端口。不要把手机访问的 HTTPS 域名填到服务地址中。
 
 手机的请求会经过“固定域名 → Cloudflare → 电脑主动建立的隧道 → 本机网关”。因此服务地址填写 `localhost` 也可以供外网访问，不要求手机和电脑处于同一局域网，也不需要重定向到临时 Cloudflare 地址。
 
 保存路由后，Cloudflare 会创建指向 `<隧道 ID>.cfargotunnel.com` 的 DNS 记录。若提示同名记录已存在，先核对用途，再处理冲突，避免覆盖原有网站。此方案不需要把子域名的 A 记录指向电脑 IP 或另购服务器。
 
-注意：App 以 Token 方式运行连接器（远程管理模式），**本地 `config.yml` 的 ingress 规则不会生效**，公开主机名必须在控制台配置；`cloudflared tunnel route dns` 只创建 DNS 记录，不会添加路由。用 `cloudflared tunnel create` 等 CLI 命令创建的隧道在控制台标记为本地配置（*Locally managed*）时，打开该隧道详情点击 **Start migration / 开始迁移**，原地转为控制台管理——不停机、不换隧道，Token 与 DNS 记录保持不变。迁移搬的是连接器上报的规则，Token 模式下通常为空，迁移后仍需按本节手动添加公开主机名，无需新建隧道。
+注意：网关以 Token 方式运行连接器（远程管理模式），**本地 `config.yml` 的 ingress 规则不会生效**，公开主机名必须在控制台配置；`cloudflared tunnel route dns` 只创建 DNS 记录，不会添加路由。用 `cloudflared tunnel create` 等 CLI 命令创建的隧道在控制台标记为本地配置（*Locally managed*）时，打开该隧道详情点击 **Start migration / 开始迁移**，原地转为控制台管理——不停机、不换隧道，Token 与 DNS 记录保持不变。迁移搬的是连接器上报的规则，Token 模式下通常为空，迁移后仍需按本节手动添加公开主机名，无需新建隧道。
 
 ### 让 HTTP 自动跳转到 HTTPS
 
@@ -71,7 +71,7 @@ Token 相当于这条隧道的连接凭据，只在自己的 App 中填写；不
 
 ## 6. 分别验证电脑和手机
 
-1. 在 App 点击“检测固定入口”，确认域名连接到当前网关。
+1. 用手机蜂窝网络打开域名，确认连接到当前网关。
 2. 在电脑浏览器打开 `https://codex.try2love.com`，确认可以看到登录页并登录。
 3. 手机关闭 Wi-Fi，使用蜂窝网络访问同一地址，验证登录、读取聊天、发送消息和回复同步。
 4. 可在“手机通知”中配置并测试入口通知，方便再次找到地址。
@@ -118,13 +118,13 @@ Cloudflare Tunnel Token 不能充当 TLS 私钥；Cloudflare Origin CA 证书用
 | 现象 | 优先检查 |
 | --- | --- |
 | 浏览器提示找不到域名、DNS 错误 | Cloudflare 域名是否 Active；注册商的 NS 是否正确；公开路由和 DNS 记录是否存在；换手机蜂窝网络对比，排查旧 DNS 缓存 |
-| Cloudflare 显示 1033 / 隧道未连接 | App 网关是否运行、Token 是否属于这条隧道、电脑网络是否能连接 Cloudflare；查看 App 运行日志 |
+| Cloudflare 显示 1033 / 隧道未连接 | 网关是否运行、Token 是否属于这条隧道、电脑网络是否能连接 Cloudflare；查看网关日志 |
 | 显示 503、无错误页面 | 连接器已连接，但隧道没有配置公开主机名路由；在控制台 Routes / Public Hostname 添加后几秒内自动生效，无需重启网关 |
-| 显示 502 | 本机网关是否启动；服务类型是否 HTTP；服务地址和端口是否与 App 一致 |
+| 显示 502 | 本机网关是否启动；服务类型是否 HTTP；服务地址和端口是否与网关一致 |
 | 显示 404 或其他网站 | 公开主机名、路由和域名是否一致，是否存在冲突记录 |
 | 首页能显示，点击“连接电脑”提示“不允许跨站请求” | 检查地址是否以 `https://` 开头；配置上面的 HTTP → HTTPS 跳转，重新打开登录页后再输入密码 |
 | 从其他页面点击链接进入首页时显示“不允许跨站请求” | 请求已到达网关。使用修复了首页导航校验的网关版本后重启网关；可先在浏览器地址栏直接输入完整 HTTPS 地址，不要关闭跨站保护 |
-| 能打开登录页，但无法登录 | 使用网关账号密码或 App 的扫码登录；不是 Cloudflare 密码或 SSH 密码 |
+| 能打开登录页，但无法登录 | 使用网关账号密码；不是 Cloudflare 密码或 SSH 密码 |
 
 不要仅凭“记录已保存”或“SSH 检查通过”判断手机入口可用；以真实浏览器和手机蜂窝网络的结果为准。
 
@@ -138,7 +138,7 @@ Cloudflare Tunnel Token 不能充当 TLS 私钥；Cloudflare Origin CA 证书用
 | 首次安装 Caddy、写入系统站点配置、管理系统服务 | root 或具备相应 sudo 权限的用户 |
 | 已有 HTTPS 站点后的日常连接 | 普通 SSH 用户，保存配置后启动网关即可 |
 
-在 App 中将“SSH 用户名”填为自己的普通用户名，选择该用户的密码、私钥或 Agent。服务器安装、防火墙和 SSH 权限由用户或管理员手动完成，App 不接收 sudo 密码、不执行远端安装命令。按[服务器 SSH 分步教程](server-ssh.md)准备 HTTPS 站点后，在 App 检查 SSH 登录、启动连接并检测固定入口。
+在网关配置中将“SSH 用户名”填为自己的普通用户名，选择该用户的密码、私钥或 Agent。服务器安装、防火墙和 SSH 权限由用户或管理员手动完成，网关不接收 sudo 密码、不执行远端安装命令。按[服务器 SSH 分步教程](server-ssh.md)准备 HTTPS 站点后，在网关配置中保存连接、启动网关并验证固定入口。
 
 服务器还必须有手机可以到达的 HTTPS 入口。能通过校园网、VPN 或跳板登录 SSH，不代表手机在公网能访问该服务器；需要单独核对。若服务器已有网站，请接入现有反向代理，保留已有服务。
 

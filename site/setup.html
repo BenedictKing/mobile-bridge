@@ -31,7 +31,7 @@
 <p data-en="SETUP / CONNECTIONS" class="eyebrow">SETUP / 连接配置</p>
 <h1 data-en="Connect every step." >把每一步，连起来。</h1>
 <p data-en="Choose how to connect, then follow the diagrams and steps. Each step explains where to work, the permissions needed and how to check success." class="lead">选好访问方式，照着图示和步骤配置。每一步都说明在哪操作、需要什么权限，以及看到什么才算成功。</p>
-<p data-en="Before starting: open Codex App and the gateway on your work computer and confirm local sign-in works. Named-tunnel controls, bundled cloudflared and staged SSH setup described here are in the local preview and are not yet released. Check which controls your installed version provides; the public download has not changed." class="example-note">准备开始：先在工作电脑打开 Codex App 和网关，确认本机或局域网可以登录。文中的固定隧道入口、内置 cloudflared 与分步 SSH 设置属于尚未发布的本地预览版；请先确认已安装版本具备对应选项。目前公开下载的版本未更新。</p>
+<p data-en="Before starting: open Codex App and the gateway on your work computer and confirm local sign-in works. Gateway connections are configured in the connections array of .local/config.json; see the README for each connection type." class="example-note">准备开始：先在工作电脑打开 Codex App 和网关，确认本机或局域网可以登录。网关连接在 `.local/config.json` 的 `connections` 中配置，各连接类型的字段见项目 README。</p>
 </div>
 <nav class="method-picker" aria-label="连接方式 / Connection methods">
 <a href="#lan" data-method="lan">
@@ -55,7 +55,7 @@
 <span data-en="Existing NAS / HTTPS proxy" >已有 NAS / HTTPS 反代</span>
 </a>
 </nav>
-<p data-en="You or your administrator manually install server software and configure SSH and firewalls. The app does not accept sudo passwords. Copy buttons only copy text; they never execute commands." class="boundary-note">安装软件、调整 SSH 和防火墙等管理员操作由你或管理员在服务器手动执行。App 不接收 sudo 密码；网页上的“复制”只复制文本，不会执行命令。</p>
+<p data-en="You or your administrator manually install server software and configure SSH and firewalls. The gateway does not accept sudo passwords. Copy buttons only copy text; they never execute commands." class="boundary-note">安装软件、调整 SSH 和防火墙等管理员操作由你或管理员在服务器手动执行。网关不接收 sudo 密码；网页上的“复制”只复制文本，不会执行命令。</p>
 <section class="setup-panel" id="lan" data-setup-panel="lan" aria-labelledby="lan-title">
 <h2 data-en="LAN: start with the shortest path" id="lan-title">局域网：先跑通最短的一条链路</h2>
 <p data-en="For a phone and work computer on the same reachable network." class="panel-intro">适合手机和工作电脑处于同一可互访网络。</p>
@@ -85,13 +85,13 @@
 <div class="step-head">
 <span class="step-number">01</span>
 <div>
-<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
+<span data-en="Work computer · Gateway" class="actor">工作电脑 · 网关</span>
 <h3 data-en="Start on your work computer" >在工作电脑启动网关</h3>
 </div>
 </div>
 <div class="step-body">
-<p data-en="Open Codex App. Enable LAN access in Network &amp; sign-in, select the network interface you use, save and start the gateway." >先打开 Codex App。在网关的“网络与登录”启用局域网访问，选择实际使用的网卡，保存并启动网关。</p>
-<p data-en="Check: The app shows a LAN address such as http://192.168.1.10:8787." class="checkpoint">确认结果：App 显示类似 http://192.168.1.10:8787 的局域网地址。</p>
+<p data-en="Open Codex App, then start the gateway. It listens on LAN addresses by default; restrict adapters via lanAddresses in desktop.json if needed." >先打开 Codex App，再启动网关。网关默认监听局域网地址；需要限定网卡时，在数据目录 desktop.json 的 lanAddresses 中指定。</p>
+<p data-en="Check: the phone can open the computer's LAN address such as http://192.168.1.10:8787 (default port 8787)." class="checkpoint">确认结果：手机可打开电脑的局域网地址，如 http://192.168.1.10:8787（默认端口 8787）。</p>
 </div>
 </article>
 <article class="guide-step" id="lan-phone">
@@ -103,7 +103,7 @@
 </div>
 </div>
 <div class="step-body">
-<p data-en="Open the address shown by the app or scan its sign-in QR code. Do not use localhost or 127.0.0.1 on your phone: those refer to the phone. Guest Wi-Fi, AP isolation and workplace network policies may block device-to-device access." >用手机打开 App 显示的地址或扫码登录。不要在手机输入 localhost 或 127.0.0.1，那表示手机自己。访客 Wi-Fi、AP 隔离和单位网络策略可能阻止设备互访。</p>
+<p data-en="Open the gateway address on the phone and sign in with the first-run credentials. Do not use localhost or 127.0.0.1 on your phone: those refer to the phone. Guest Wi-Fi, AP isolation and workplace network policies may block device-to-device access." >用手机打开网关地址，用「首次登录.txt」中的凭据登录。不要在手机输入 localhost 或 127.0.0.1，那表示手机自己。访客 Wi-Fi、AP 隔离和单位网络策略可能阻止设备互访。</p>
 <p data-en="Check: Sign in, load chats, and send a message in your own test chat to verify replies." class="checkpoint">确认结果：能登录、读取聊天；在自己的测试聊天中发送一条消息并收到回复。</p>
 </div>
 </article>
@@ -138,13 +138,13 @@
 <div class="step-head">
 <span class="step-number">01</span>
 <div>
-<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
+<span data-en="Work computer · Gateway" class="actor">工作电脑 · 网关</span>
 <h3 data-en="Add a temporary connection" >添加临时连接</h3>
 </div>
 </div>
 <div class="step-body">
-<p data-en="Open Codex App, add Temporary HTTPS · Cloudflare, enable it, save and start the gateway. Packages with bundled cloudflared need no extra connector installation. If an older package reports it missing, install it from Runtime settings first." >打开 Codex App，在网关添加“临时 HTTPS · Cloudflare”，勾选启用，保存后启动网关。带内置 cloudflared 的安装包无需另装连接器；较早的安装包若提示缺少组件，先在“运行配置”完成安装。</p>
-<p data-en="Check: The app shows an HTTPS address under .trycloudflare.com." class="checkpoint">确认结果：App 显示以 https:// 开头、以 .trycloudflare.com 为域名后缀的地址。</p>
+<p data-en="Enable Temporary HTTPS · Cloudflare in the connections array of .local/config.json and start the gateway. cloudflared must be installed separately; see the README for installation." >在 `.local/config.json` 的 `connections` 中启用“临时 HTTPS · Cloudflare”，再启动网关。`cloudflared` 需自行安装，方法见项目 README。</p>
+<p data-en="Check: the gateway logs print an HTTPS address under .trycloudflare.com (also written to .local/外网地址.txt)." class="checkpoint">确认结果：网关日志打印以 https:// 开头、以 .trycloudflare.com 为域名后缀的地址（同时写入 `.local/外网地址.txt`）。</p>
 </div>
 </article>
 <article class="guide-step" id="quick-check">
@@ -156,7 +156,7 @@
 </div>
 </div>
 <div class="step-body">
-<p data-en="Turn off Wi-Fi and open the current URL from the app. Use gateway credentials or a valid sign-in QR code. Address notifications help you find the new URL after it changes." >关闭 Wi-Fi，打开 App 刚显示的地址，使用网关账号密码或有效的登录二维码。地址通知可帮助你在地址变化后找回新入口。</p>
+<p data-en="Turn off Wi-Fi and open the current URL from the app. Sign in with the gateway credentials. Address notifications help you find the new URL after it changes." >关闭 Wi-Fi，打开网关刚显示的地址，使用网关账号密码登录。地址通知可帮助你在地址变化后找回新入口。</p>
 <p data-en="Check: Sign-in, reading and sending all work. The entry is unavailable when the gateway stops or the computer sleeps." class="checkpoint">确认结果：登录、读取和发送均成功。停止网关或电脑休眠后，入口不可用。</p>
 </div>
 </article>
@@ -165,7 +165,7 @@
 <section class="setup-panel" id="cloudflare" data-setup-panel="cloudflare" aria-labelledby="cloudflare-title">
 <h2 data-en="Named Cloudflare Tunnel: a domain is enough" id="cloudflare-title">Cloudflare 固定域名：只有域名也能配置</h2>
 <p class="callout" data-en="Advanced setups require relevant knowledge of DNS, HTTPS, SSH, server or NAS administration. Commands and configurations are references only and may not suit your environment. Review them, back up your data and obtain the necessary authorization before use. You assume the risks of using, modifying or executing these examples. To the maximum extent permitted by applicable law, the authors and contributors are not liable for resulting data loss, service interruption, security incidents, costs or other loss, except liability that cannot lawfully be excluded or limited.">进阶方案需要具备 DNS、HTTPS、SSH、服务器或 NAS 管理等相关知识。本文命令与配置仅供参考，不保证适合你的环境；执行前请自行核对、备份并取得必要授权。使用、修改或执行这些示例的风险由使用者自行承担。在适用法律允许的最大范围内，项目作者与贡献者不对由此造成的数据丢失、服务中断、安全事件、费用或其他损失承担责任；依法不得排除或限制的责任除外。</p>
-<p class="example-note" data-en="App controls below refer to the unreleased local preview. Server and DNS preparation also apply independently of the app version.">以下 App 操作对应尚未发布的本地预览版；服务器与 DNS 的准备方法不依赖这些新按钮。</p>
+<p class="example-note" data-en="The steps below edit gateway configuration directly. Server and DNS preparation applies regardless of the gateway version.">以下步骤直接修改网关配置；服务器与 DNS 的准备方法与网关版本无关。</p>
 <p data-en="Requires your own domain, a Cloudflare account and an online work computer." class="panel-intro">需要自己的域名、Cloudflare 账号，以及保持在线的工作电脑。</p>
 <figure class="network-map">
 <div class="map-flow">
@@ -215,16 +215,16 @@
 </div>
 <div class="step-body">
 <p data-en="Open Tunnels, create a Cloudflared tunnel, name it and inspect the connector installation command. Copy only the Tunnel Token, usually the long value after --token. It is not an API key or the whole command. Do not include it in public pages or screenshots." >进入 Tunnels，创建 Cloudflared 类型的隧道，命名后查看连接器安装命令。只复制其中的 Tunnel Token，通常是 --token 后的一长串内容；不是 API Key，也不是整条命令。不要将 Token 发到公开页面或截图中。</p>
-<p data-en="The app with its bundled connector runs the tunnel; you do not need to execute that installation command." >带内置连接器的 App 会负责运行隧道，无需再手动执行安装命令。</p>
-<p data-en="Check: You have the token for this tunnel, ready to save in the app." class="checkpoint">确认结果：已取得这条隧道的 Token；接下来在 App 保存。</p>
+<p data-en="The gateway runs the installed cloudflared connector for the tunnel; complete the installation first." >网关会运行已安装的 cloudflared 连接器来建立隧道；请先完成安装。</p>
+<p data-en="Check: You have the token for this tunnel, ready to save in the gateway configuration." class="checkpoint">确认结果：已取得这条隧道的 Token；接下来填入网关配置。</p>
 </div>
 </article>
 <article class="guide-step" id="cloudflare-app">
 <div class="step-head">
 <span class="step-number">03</span>
 <div>
-<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
-<h3 data-en="Save the address and token in the app" >把固定地址和 Token 填进 App</h3>
+<span data-en="Work computer · Gateway" class="actor">工作电脑 · 网关</span>
+<h3 data-en="Save the address and token in the gateway configuration" >把固定地址和 Token 填进网关配置</h3>
 </div>
 </div>
 <div class="step-body">
@@ -232,7 +232,7 @@
 <table>
 <thead>
 <tr>
-<th data-en="App field" scope="col">App 字段</th>
+<th data-en="Config field" scope="col">配置字段</th>
 <th data-en="Value" scope="col">填写内容</th>
 </tr>
 </thead>
@@ -298,7 +298,7 @@
 </tbody>
 </table>
 </div>
-<p data-en="If there is one service URL box, enter http://localhost:8787. Match the gateway’s listening port. Do not enter the phone’s HTTPS URL or point an A record to the computer’s LAN IP." >若只有一个服务地址输入框，填 http://localhost:8787。端口须与 App 的监听端口一致。不要填手机的 HTTPS 地址，也不要把 A 记录指向电脑局域网 IP。</p>
+<p data-en="If there is one service URL box, enter http://localhost:8787. Match the gateway’s listening port. Do not enter the phone’s HTTPS URL or point an A record to the computer’s LAN IP." >若只有一个服务地址输入框，填 http://localhost:8787。端口须与网关的监听端口一致。不要填手机的 HTTPS 地址，也不要把 A 记录指向电脑局域网 IP。</p>
 <p data-en="Check: Saving creates a DNS record for the tunnel. Inspect conflicting records before changing them; do not overwrite another site." class="checkpoint">确认结果：保存后产生指向该隧道的 DNS 记录；同名记录冲突时先核对用途，不覆盖其他网站。</p>
 </div>
 </article>
@@ -337,7 +337,7 @@
 </div>
 </div>
 <div class="step-body">
-<p data-en="Select Check fixed entry in the app. Turn off phone Wi-Fi and open the domain over mobile data. Sign in with gateway credentials, not your Cloudflare or SSH password." >App 点击“检测固定入口”，然后手机关闭 Wi-Fi，用蜂窝网络打开域名。使用网关账号密码登录，不是 Cloudflare 密码或服务器 SSH 密码。</p>
+<p data-en="Turn off phone Wi-Fi and open the domain over mobile data. Sign in with gateway credentials, not your Cloudflare or SSH password." >手机关闭 Wi-Fi，用蜂窝网络打开域名，使用网关账号密码登录——不是 Cloudflare 密码或服务器 SSH 密码。</p>
 <p data-en="Check: The entry check passes and the phone can sign in, read chats, send and receive replies." class="checkpoint">确认结果：入口检测通过，手机可登录、读取聊天、发送并收到回复。</p>
 </div>
 </article>
@@ -346,7 +346,7 @@
 <section class="setup-panel" id="server" data-setup-panel="server" aria-labelledby="server-title">
 <h2 data-en="Own server + SSH: prepare the server step by step" id="server-title">自有服务器 + SSH：把服务器准备清楚</h2>
 <p class="callout" data-en="Advanced setups require relevant knowledge of DNS, HTTPS, SSH, server or NAS administration. Commands and configurations are references only and may not suit your environment. Review them, back up your data and obtain the necessary authorization before use. You assume the risks of using, modifying or executing these examples. To the maximum extent permitted by applicable law, the authors and contributors are not liable for resulting data loss, service interruption, security incidents, costs or other loss, except liability that cannot lawfully be excluded or limited.">进阶方案需要具备 DNS、HTTPS、SSH、服务器或 NAS 管理等相关知识。本文命令与配置仅供参考，不保证适合你的环境；执行前请自行核对、备份并取得必要授权。使用、修改或执行这些示例的风险由使用者自行承担。在适用法律允许的最大范围内，项目作者与贡献者不对由此造成的数据丢失、服务中断、安全事件、费用或其他损失承担责任；依法不得排除或限制的责任除外。</p>
-<p class="example-note" data-en="App controls below refer to the unreleased local preview. Server and DNS preparation also apply independently of the app version.">以下 App 操作对应尚未发布的本地预览版；服务器与 DNS 的准备方法不依赖这些新按钮。</p>
+<p class="example-note" data-en="The steps below edit gateway configuration directly. Server and DNS preparation applies regardless of the gateway version.">以下步骤直接修改网关配置；服务器与 DNS 的准备方法与网关版本无关。</p>
 <p data-en="The public server provides HTTPS; your work computer initiates the return tunnel." class="panel-intro">公网服务器提供固定 HTTPS 入口，工作电脑主动建立回程隧道。</p>
 <figure class="network-map">
 <div class="map-flow">
@@ -390,7 +390,7 @@
 <tr>
 <td data-en="Fixed URL" >固定访问地址</td>
 <td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
-<td data-en="Phone browser and app" >手机浏览器与 App</td>
+<td data-en="Phone browser" >手机浏览器</td>
 </tr>
 <tr>
 <td data-en="Regular SSH user" >普通 SSH 用户</td>
@@ -410,7 +410,7 @@
 <tr>
 <td data-en="Computer gateway port" >电脑网关端口</td>
 <td data-en="8787" >8787</td>
-<td data-en="App listening port" >App 监听端口</td>
+<td data-en="Gateway listening port" >网关监听端口</td>
 </tr>
 </tbody>
 </table>
@@ -568,7 +568,7 @@ sudo ufw allow 443/tcp</code>
 </div>
 </div>
 <div class="step-body">
-<p data-en="Reuse an existing regular account that can sign in. A dedicated account or sudo access is not required. Verify sign-in from the work computer terminal, then exit and configure the app. Check the first host fingerprint against the server console or administrator’s value." >已有可登录的普通用户就直接使用，不必创建专用账号，也不必授予 sudo。先在工作电脑终端验证登录，退出后再填 App。首次连接的主机指纹应与服务器控制台或管理员提供的结果核对。</p>
+<p data-en="Reuse an existing regular account that can sign in. A dedicated account or sudo access is not required. Verify sign-in from the work computer terminal, then exit and fill in the gateway configuration. Check the first host fingerprint against the server console or administrator’s value." >已有可登录的普通用户就直接使用，不必创建专用账号，也不必授予 sudo。先在工作电脑终端验证登录，退出后再填网关配置。首次连接的主机指纹应与服务器控制台或管理员提供的结果核对。</p>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
@@ -605,7 +605,7 @@ sudo chown try2love:try2love /home/try2love/.ssh/authorized_keys
 sudo chmod 600 /home/try2love/.ssh/authorized_keys</code>
 </pre>
 </div>
-<p data-en="In the app, choose Local private key and select the file without the .pub suffix. Enter its passphrase if set. Keep private keys and passwords out of public configuration and screenshots." >在 App 选择“本地私钥”，选没有 .pub 后缀的私钥文件；设置过口令时同时填写口令。不要把私钥或密码放到公开配置和截图中。</p>
+<p data-en="In the configuration, choose a local private key: the file without the .pub suffix. Enter its passphrase if set. Keep private keys and passwords out of public configuration and screenshots." >在配置中选择“本地私钥”，指定没有 .pub 后缀的私钥文件；设置过口令时同时填写口令。不要把私钥或密码放到公开配置和截图中。</p>
 </details>
 <p data-en="Check: The work computer can sign in as the regular user. The server SSH password and phone gateway password are separate credentials." class="checkpoint">确认结果：工作电脑能以普通用户登录服务器。服务器 SSH 密码与手机网关登录密码是两套凭据。</p>
 </div>
@@ -644,7 +644,7 @@ Match all</code>
 <code data-code-kind="sh">sudo systemctl reload ssh</code>
 </pre>
 </div>
-<p data-en="Check: A new terminal can sign in. Actual forwarding is checked after starting the app tunnel in step 7." class="checkpoint">确认结果：新终端登录正常。真正的转发权限还需在第 7 步启动 App 隧道后验证。</p>
+<p data-en="Check: A new terminal can sign in. Actual forwarding is checked after starting the gateway tunnel in step 7." class="checkpoint">确认结果：新终端登录正常。真正的转发权限还需在第 7 步启动网关隧道后验证。</p>
 <a data-en="Official: OpenSSH forwarding permissions ↗" href="https://man.openbsd.org/sshd_config#AllowTcpForwarding">官方：OpenSSH 转发权限 ↗</a>
 </div>
 </article>
@@ -793,8 +793,8 @@ sudo systemctl reload nginx</code>
 <details class="scenario">
 <summary data-en="D · Other OS, Docker, or no administrator access" >D · 其他系统、Docker，或没有管理员权限</summary>
 <p data-en="For other Linux systems, choose the matching package manager in the official Caddy guide; hostname, upstream and verification remain the same. Do not copy apt commands onto Rocky / AlmaLinux. Windows servers require administrator-provided equivalent SSH and HTTPS services; these Linux commands do not apply." >其他 Linux 系统按 Caddy 官方安装页选择对应包管理器，后续域名、上游和验收步骤相同。不要在 Rocky / AlmaLinux 等系统照抄 apt 命令。Windows 服务器不在这份 Linux 命令教程范围内，请由管理员提供等效的 SSH 与 HTTPS 服务。</p>
-<p data-en="With existing Linux Docker Engine, the app’s exported manual reference includes an optional Caddy Compose setup. Start it only when 80/443 are free, and retain certificate volumes. It uses host networking on the same Linux host as SSH. Docker does not bypass administrator permissions." >已有 Linux Docker Engine 时，可使用 App“导出手动配置参考”中的 Caddy Compose 方案。仅在 80/443 空闲时启动，保留证书卷；该方案使用 host 网络，必须与 SSH 服务在同一 Linux 主机。Docker 不是绕过管理员权限的方法。</p>
-<p data-en="Without administrator access, give steps 2–6 to the administrator. You only need a regular SSH account and permitted forwarding port, not sudo. The app’s Copy server inspection prompt lets a server-side agent inspect read-only; it does not grant administrative permission." >没有管理员权限时，将第 2—6 步交给管理员完成。你只需普通 SSH 用户和允许的转发端口，不需要申请 sudo 权限。App 的“复制服务器检查 Prompt”可先让服务器内的 Agent 只读检查，不能代替管理员授权。</p>
+<p data-en="With existing Linux Docker Engine, the repository guide includes an optional Caddy Compose setup. Start it only when 80/443 are free, and retain certificate volumes. It uses host networking on the same Linux host as SSH. Docker does not bypass administrator permissions." >已有 Linux Docker Engine 时，可参考仓库教程与 deploy/nas 中的 Caddy Compose 方案。仅在 80/443 空闲时启动，保留证书卷；该方案使用 host 网络，必须与 SSH 服务在同一 Linux 主机。Docker 不是绕过管理员权限的方法。</p>
+<p data-en="Without administrator access, give steps 2–6 to the administrator. You only need a regular SSH account and permitted forwarding port, not sudo. A server-side agent can inspect read-only; it does not grant administrative permission." >没有管理员权限时，将第 2—6 步交给管理员完成。你只需普通 SSH 用户和允许的转发端口，不需要申请 sudo 权限。可先让服务器内的 Agent 只读检查，不能代替管理员授权。</p>
 <a data-en="Choose Caddy installation instructions for your OS ↗" href="https://caddyserver.com/docs/install">按系统选择 Caddy 安装方法 ↗</a>
 </details>
 <p data-en="Check: The HTTPS certificate is valid and HTTP redirects to HTTPS. A 502 may be expected before the tunnel starts; fix certificate errors or an unrelated site before proceeding." class="checkpoint">确认结果：HTTPS 证书正常、HTTP 会跳到 HTTPS。隧道尚未启动时显示 502 可能是预期状态；看到默认证书错误或其他网站则先修正此步。</p>
@@ -804,7 +804,7 @@ sudo systemctl reload nginx</code>
 <div class="step-head">
 <span class="step-number">07</span>
 <div>
-<span data-en="Work computer · App" class="actor">工作电脑 · App</span>
+<span data-en="Work computer · Gateway" class="actor">工作电脑 · 网关</span>
 <h3 data-en="Configure and start SSH on the work computer" >回到工作电脑，填写并启动 SSH 连接</h3>
 </div>
 </div>
@@ -813,7 +813,7 @@ sudo systemctl reload nginx</code>
 <table>
 <thead>
 <tr>
-<th data-en="App field" scope="col">App 字段</th>
+<th data-en="Config field" scope="col">配置字段</th>
 <th data-en="Example" scope="col">示例</th>
 </tr>
 </thead>
@@ -850,7 +850,7 @@ sudo systemctl reload nginx</code>
 </table>
 </div>
 <p data-en="Save settings, verify the first host fingerprint, and select Check SSH sign-in. Then enable and save the connection and select Start SSH connection. A disabled profile can be checked but will not start forwarding." >保存配置，核对首次主机指纹，再点击“检查 SSH 登录”。登录通过后启用该连接并保存，点击“启动 SSH 连接”。若服务器配置被禁用，检查可以执行，但不会建立转发。</p>
-<p data-en="Check SSH sign-in only proves authentication. It does not prove certificates, forwarding permissions or phone access. The app does not run sudo or install server software." >“检查 SSH 登录”只证明认证成功。不要把它当作证书、转发权限或手机公网访问已经通过。App 不会执行 sudo，也不会自动安装服务器软件。</p>
+<p data-en="Check SSH sign-in only proves authentication. It does not prove certificates, forwarding permissions or phone access. The gateway does not run sudo or install server software." >“检查 SSH 登录”只证明认证成功。不要把它当作证书、转发权限或手机公网访问已经通过。网关不会执行 sudo，也不会自动安装服务器软件。</p>
 <p data-en="Check: SSH status shows forwarding established. On the server, ss -ltn shows 127.0.0.1:18787, not 0.0.0.0:18787." class="checkpoint">确认结果：SSH 状态显示转发已建立。服务器上 ss -ltn 可以看到 127.0.0.1:18787；不应是 0.0.0.0:18787。</p>
 </div>
 </article>
@@ -863,14 +863,14 @@ sudo systemctl reload nginx</code>
 </div>
 </div>
 <div class="step-body">
-<p data-en="First verify that the server’s reverse tunnel reaches the computer gateway. Use the public hostname saved in the app as Host. This request contains no password." >先在服务器确认反向隧道能到达电脑网关。Host 必须使用已经在 App 保存的访问域名。此请求不包含密码。</p>
+<p data-en="First verify that the server’s reverse tunnel reaches the computer gateway. Use the public hostname saved in the gateway configuration as Host. This request contains no password." >先在服务器确认反向隧道能到达电脑网关。Host 必须使用已经在网关配置中保存的访问域名。此请求不包含密码。</p>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
 <code data-code-kind="sh">curl --max-time 10 -H &#x27;Host: codex.try2love.com&#x27; http://127.0.0.1:18787/api/auth</code>
 </pre>
 </div>
-<p data-en="Expect JSON containing authenticated and other fields. Then select Check fixed entry in the app to compare the public HTTPS instance with the local gateway. Finally verify sign-in, chat loading and sending over phone mobile data." >应返回包含 authenticated 等字段的 JSON。然后在 App 点击“检测固定入口”，比较固定 HTTPS 地址与本机网关实例。最后用手机蜂窝网络验证登录、聊天读取和发送。</p>
+<p data-en="Expect JSON containing authenticated and other fields. Then compare the public HTTPS instance with the local gateway. Finally verify sign-in, chat loading and sending over phone mobile data." >应返回包含 authenticated 等字段的 JSON。然后比较固定 HTTPS 地址与本机网关实例。最后用手机蜂窝网络验证登录、聊天读取和发送。</p>
 <p data-en="Check: All three layers pass. Daily operation needs no sudo. Keep the computer awake and online; the gateway maintains and retries the SSH connection." class="checkpoint">确认结果：三层都通过。之后无需日常 sudo 操作，电脑保持开机、联网且不休眠，网关会维持并重试 SSH 连接。</p>
 </div>
 </article>
@@ -911,7 +911,7 @@ sudo systemctl reload nginx</code>
 </div>
 </div>
 <div class="step-body">
-<p data-en="Enable LAN access and start the gateway. From the NAS terminal or an existing diagnostic tool, access the computer’s LAN address. A DHCP reservation helps keep the upstream stable." >在电脑 App 启用局域网访问，启动网关。从 NAS 的终端或已有诊断工具访问电脑的局域网地址。建议为电脑保留固定 DHCP 地址，避免上游变化。</p>
+<p data-en="Start the gateway; it listens on LAN addresses by default. From the NAS terminal or an existing diagnostic tool, access the computer’s LAN address. A DHCP reservation helps keep the upstream stable." >启动网关（默认监听局域网地址）。从 NAS 的终端或已有诊断工具访问电脑的局域网地址。建议为电脑保留固定 DHCP 地址，避免上游变化。</p>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
@@ -939,8 +939,8 @@ sudo systemctl reload nginx</code>
 <div class="step-head">
 <span class="step-number">03</span>
 <div>
-<span data-en="NAS dashboard + computer app" class="actor">NAS 管理页面 + 工作电脑 App</span>
-<h3 data-en="Configure the proxy and app" >填写反向代理和 App</h3>
+<span data-en="NAS dashboard + work computer" class="actor">NAS 管理页面 + 工作电脑网关</span>
+<h3 data-en="Configure the proxy and gateway" >填写反向代理和网关</h3>
 </div>
 </div>
 <div class="step-body">
@@ -970,17 +970,17 @@ sudo systemctl reload nginx</code>
 <td data-en="Preserve public Host; disable cache and buffering" >保留公网 Host，关闭缓存和响应缓冲</td>
 </tr>
 <tr>
-<td data-en="Computer app" >电脑 App</td>
+<td data-en="Work computer" >电脑</td>
 <td data-en="Connection" >连接方式</td>
 <td data-en="Fixed domain · NAS / existing proxy / Docker" >固定域名 · NAS / 已有反代 / Docker</td>
 </tr>
 <tr>
-<td data-en="Computer app" >电脑 App</td>
+<td data-en="Work computer" >电脑</td>
 <td data-en="Phone URL" >手机访问地址</td>
 <td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
 </tr>
 <tr>
-<td data-en="Computer app" >电脑 App</td>
+<td data-en="Work computer" >电脑</td>
 <td data-en="Computer URL reachable from NAS" >NAS 可访问的电脑地址</td>
 <td data-en="http://192.168.1.10:8787" >http://192.168.1.10:8787</td>
 </tr>
@@ -988,12 +988,12 @@ sudo systemctl reload nginx</code>
 </table>
 </div>
 <p data-en="Save and enable the connection, restart the gateway and check the fixed entry. Use the hostname root, not a subpath such as /codex/." >保存并启用连接，重新启动网关，再检测固定入口。使用域名根路径，不要配置为 /codex/ 等子路径。</p>
-<p data-en="Check: The app check passes and the phone can sign in and exchange messages over mobile data." class="checkpoint">确认结果：App 检测通过，手机蜂窝网络可以登录并收发消息。</p>
+<p data-en="Check: the phone can sign in and exchange messages over mobile data." class="checkpoint">确认结果：手机蜂窝网络可以登录并收发消息。</p>
 </div>
 </article>
 <details class="scenario">
 <summary data-en="When is a Docker relay needed?" >什么时候需要 Docker 中转？</summary>
-<p data-en="If the NAS can proxy directly to the computer, no Docker relay is needed. Use the exported NAS bundle only when an intermediate HTTP relay is actually required." >NAS 已能直接反代到电脑时，不需要再加 Docker。只有确实需要中间 HTTP 转发时，才使用 App 导出的 NAS 部署包。</p>
+<p data-en="If the NAS can proxy directly to the computer, no Docker relay is needed. Deploy a Docker relay only when an intermediate HTTP relay is actually required." >NAS 已能直接反代到电脑时，不需要再加 Docker。只有确实需要中间 HTTP 转发时，才部署 Docker 转发入口。</p>
 <p data-en="The container is an HTTP relay; it does not replace NAS certificates or public HTTPS. A host-level proxy can use http://127.0.0.1:18787. If the outer proxy is containerized, 127.0.0.1 refers to that container; configure a reachable NAS address with restricted access as described in the bundle." >该包的容器提供 HTTP 中转，不能独立代替 NAS 的证书和公网 HTTPS。若外层反代运行在宿主机，上游可用 http://127.0.0.1:18787；若它也在容器中，127.0.0.1 指向该容器自己，需按部署包说明设置可达的 NAS 地址并限制访问。</p>
 <p data-en="An authorized user performs Docker operations. Read the exported instructions and verify ports and networking before checking the Compose configuration. Do not modify unrelated containers or expose internal ports for this guide." >Docker 操作由有权限的用户自行完成。先查看导出包中的部署说明，核对端口和网络，再运行配置检查；不要为了本教程修改其他容器或公开内部端口。</p>
 </details>
