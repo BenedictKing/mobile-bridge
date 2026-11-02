@@ -16,18 +16,23 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
-func TestFreshWorkerSnapshotSeedsConfigWithoutReturningPasswordHash(t *testing.T) {
+func TestApplyDesktopDefaultsSeedsFirstRunConfig(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "gateway")
-	snapshot := workerSnapshot(dataDir)
-	authValue, ok := snapshot.MustGet("auth").(*jsoncompat.Object)
+	applyDesktopDefaults(dataDir)
+	raw, err := os.ReadFile(filepath.Join(dataDir, "config.json"))
+	if err != nil {
+		t.Fatalf("config.json missing: %v", err)
+	}
+	value, err := jsoncompat.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("config.json invalid: %v", err)
+	}
+	authValue, ok := value.(*jsoncompat.Object).MustGet("auth").(*jsoncompat.Object)
 	if !ok || authValue.MustGet("username") != "admin" || authValue.MustGet("mode") != "password" {
-		t.Fatalf("missing public auth snapshot: %s", jsoncompat.EncodePythonDefault(snapshot))
+		t.Fatalf("missing first-run auth record: %s", raw)
 	}
-	if _, exists := authValue.Get("hash"); exists {
-		t.Fatal("password hash leaked in desktop snapshot")
-	}
-	if _, exists := authValue.Get("salt"); exists {
-		t.Fatal("password salt leaked in desktop snapshot")
+	if _, exists := authValue.Get("hash"); !exists {
+		t.Fatal("first-run auth record has no password hash")
 	}
 	if _, err := os.Stat(filepath.Join(dataDir, "首次登录.txt")); err != nil {
 		t.Fatalf("first-run credential file missing: %v", err)

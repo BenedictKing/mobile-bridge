@@ -12,7 +12,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -27,7 +26,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -73,16 +71,25 @@ func main() {
 		writeUsage(os.Stderr)
 		os.Exit(2)
 	}
-	if action != "" {
-		desktopAction(action, rest)
-		return
-	}
+	_ = action // classifyArgs 只放行 serve；子命令与裸调用统一走网关
 	runGateway(rest)
 }
 
 // classifyArgs turns the command line into a dispatch decision. Help requests
 // print usage and exit 0; an unrecognized leading word or flag is an error —
 // unknown arguments must never fall through into silently serving.
+func desktopDataDir(args []string) string {
+	for i, value := range args {
+		if value == "--data-dir" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	if value := os.Getenv("GATEWAY_DATA_DIR"); value != "" {
+		return value
+	}
+	return ".local"
+}
+
 func classifyArgs(args []string) (help bool, action string, rest []string, err error) {
 	for _, value := range args {
 		if value == "--help" || value == "-h" || value == "help" {
@@ -92,7 +99,7 @@ func classifyArgs(args []string) (help bool, action string, rest []string, err e
 	if len(args) == 0 {
 		return false, "", nil, nil
 	}
-	if !isDesktopAction(args[0]) {
+	if args[0] != "serve" {
 		return false, "", nil, fmt.Errorf("未知子命令或参数：%s（运行网关请用 serve，--help 查看用法）", args[0])
 	}
 	return false, args[0], args[1:], nil
@@ -103,11 +110,6 @@ func writeUsage(w io.Writer) {
 
 子命令：
   serve            运行网关（默认数据目录 .local，默认端口 8787）
-  start            后台启动网关进程
-  stop             通过控制文件请求网关停止
-  snapshot         输出桌面状态快照 JSON
-  snapshot-stream  按 stdin 指令持续输出快照
-  save             从 stdin 读取并保存桌面配置
   help             显示本帮助（同 --help / -h）
 
 serve 参数：
@@ -123,197 +125,6 @@ ACP Host 可选环境变量：
 `)
 }
 
-func isDesktopAction(action string) bool {
-	switch action {
-	case "snapshot", "snapshot-stream", "start", "stop", "save", "serve":
-		return true
-	}
-	return false
-}
-
-func desktopDataDir(args []string) string {
-	for i, value := range args {
-		if value == "--data-dir" && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	if value := os.Getenv("GATEWAY_DATA_DIR"); value != "" {
-		return value
-	}
-	return ".local"
-}
-
-func desktopAction(action string, args []string) {
-	dataDir := desktopDataDir(args)
-	switch action {
-	case "serve":
-		runGateway(args)
-	case "snapshot":
-		emitWorker(workerSnapshot(dataDir))
-	case "save":
-		data, err := io.ReadAll(io.LimitReader(os.Stdin, 1_000_000))
-		if err != nil {
-			emitError(err)
-			return
-		}
-		value, err := jsoncompat.Unmarshal(data)
-		if err != nil {
-			emitError(err)
-			return
-		}
-		if err := os.MkdirAll(dataDir, 0o700); err != nil {
-			emitError(err)
-			return
-		}
-		if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), append(jsoncompat.EncodePythonIndent2(value), '\n'), 0o600); err != nil {
-			emitError(err)
-			return
-		}
-		if body, ok := value.(*jsoncompat.Object); ok {
-			config := jsoncompat.NewObject()
-			if authValue, exists := body.Get("auth"); exists {
-				config.Set("auth", authValue)
-			}
-			if origins, exists := body.Get("origins"); exists {
-				config.Set("origins", origins)
-			}
-			_ = os.WriteFile(filepath.Join(dataDir, "config.json"), append(jsoncompat.EncodePythonIndent2(config), '\n'), 0o600)
-		}
-		emitWorker(jsoncompat.NewObject())
-	case "snapshot-stream":
-		for scanner := bufio.NewScanner(os.Stdin); scanner.Scan(); {
-			if strings.TrimSpace(scanner.Text()) == "{\"action\":\"snapshot\"}" {
-				emitWorker(workerSnapshot(dataDir))
-			}
-		}
-	case "start":
-		executable, _ := os.Executable()
-		command := exec.Command(executable, "serve", "--data-dir", dataDir)
-		command.Env = append(os.Environ(), "GATEWAY_DATA_DIR="+dataDir)
-		if err := command.Start(); err != nil {
-			emitError(err)
-			return
-		}
-		result := jsoncompat.NewObject()
-		result.Set("started", true)
-		result.Set("pid", jsoncompat.Num(command.Process.Pid))
-		result.Set("message", "正在启动网关")
-		emitWorker(result)
-	case "stop":
-		controller := readControl(dataDir)
-		if controller == nil {
-			emitError(errors.New("No gateway control record; use Ctrl+C in its terminal if it is running."))
-			return
-		}
-		_ = os.WriteFile(filepath.Join(dataDir, "gateway.stop"), lifecycle.DumpASCII(controller), 0o600)
-		result := jsoncompat.NewObject()
-		result.Set("message", "网关已停止")
-		emitWorker(result)
-	}
-}
-
-func emitWorker(result *jsoncompat.Object) {
-	data := jsoncompat.NewObject()
-	data.Set("ok", true)
-	data.Set("result", result)
-	_, _ = os.Stdout.Write(append(jsoncompat.EncodePythonDefault(data), '\n'))
-}
-func emitError(err error) {
-	data := jsoncompat.NewObject()
-	data.Set("ok", false)
-	data.Set("error", err.Error())
-	_, _ = os.Stdout.Write(append(jsoncompat.EncodePythonDefault(data), '\n'))
-}
-func gatewayRuntime(dataDir string) *jsoncompat.Object {
-	result := jsoncompat.NewObject()
-	record := readControl(dataDir)
-	if record != nil {
-		result.Set("running", true)
-		result.Set("pid", record.MustGet("pid"))
-		result.Set("instanceId", record.MustGet("instanceId"))
-	} else {
-		result.Set("running", false)
-		result.Set("pid", nil)
-		result.Set("instanceId", nil)
-	}
-	result.Set("portOccupied", false)
-	result.Set("supportsNotifications", true)
-	return result
-}
-
-func workerSnapshot(dataDir string) *jsoncompat.Object {
-	ensureDesktopConfig(dataDir)
-	result := jsoncompat.NewObject()
-	preferences := desktopPreferences(dataDir)
-	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
-		if value, err := jsoncompat.Unmarshal(raw); err == nil {
-			if root, ok := value.(*jsoncompat.Object); ok {
-				if value, ok := root.Get("preferences"); ok {
-					preferences, _ = value.(*jsoncompat.Object)
-				}
-			}
-		}
-	}
-	authValue := jsoncompat.NewObject()
-	if raw, err := os.ReadFile(filepath.Join(dataDir, "config.json")); err == nil {
-		if value, err := jsoncompat.Unmarshal(raw); err == nil {
-			if root, ok := value.(*jsoncompat.Object); ok {
-				if value, ok := root.Get("auth"); ok {
-					if saved, ok := value.(*jsoncompat.Object); ok {
-						for _, key := range []string{"username", "mode", "sessionHours"} {
-							if item, exists := saved.Get(key); exists {
-								authValue.Set(key, item)
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-	result.Set("preferences", preferences)
-	result.Set("auth", authValue)
-	result.Set("notifications", notifications.ReadSettings(dataDir))
-	result.Set("runtime", gatewayRuntime(dataDir))
-	urls := &jsoncompat.Array{}
-	port := 8787
-	if value, ok := preferences.MustGet("port").(json.Number); ok {
-		if parsed, parseErr := strconv.Atoi(value.String()); parseErr == nil {
-			port = parsed
-		}
-	}
-	for _, address := range gatewayListenAddresses(dataDir) {
-		if preferences.MustGet("localAccess") == false && (address == "127.0.0.1" || address == "::1") {
-			continue
-		}
-		urls.Items = append(urls.Items, "http://"+net.JoinHostPort(address, strconv.Itoa(port))+"/")
-	}
-	result.Set("urls", urls)
-	result.Set("externalStatus", jsoncompat.NewObject())
-	result.Set("cloudflared", jsoncompat.NewObject())
-	quickTunnel := jsoncompat.NewObject()
-	if raw, err := os.ReadFile(filepath.Join(dataDir, "cloudflare-status.json")); err == nil {
-		if value, decodeErr := jsoncompat.Unmarshal(raw); decodeErr == nil {
-			if status, ok := value.(*jsoncompat.Object); ok {
-				quickTunnel = status
-			}
-		}
-	}
-	if quickTunnel.MustGet("state") == "ready" {
-		if raw, err := os.ReadFile(filepath.Join(dataDir, "外网地址.txt")); err == nil {
-			if line := strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0]); strings.HasPrefix(line, "https://") {
-				urls.Items = append([]any{line + "/"}, urls.Items...)
-			}
-		}
-	}
-	result.Set("quickTunnel", quickTunnel)
-	result.Set("watches", &jsoncompat.Array{})
-	return result
-}
-
-// trustedOrigins mirrors run.py's origin assembly for server deployments:
-// the stored config.json origins plus the publicUrl of every enabled
-// server/nas/cloudflare connection. config.json carries server-deployment
-// connections (run.py --lan); desktop.json carries desktop-managed ones.
 // subagentStoreFor wires the on-disk child-agent readers (Python's
 // native_subagents) for the agents that archive spawned children as their
 // own sessions. dsh stays undiscoverable (zstd event logs).
@@ -472,14 +283,6 @@ func desktopPreferences(dataDir string) *jsoncompat.Object {
 	}
 	return preferences
 }
-func readControl(dataDir string) *jsoncompat.Object {
-	raw, err := os.ReadFile(filepath.Join(dataDir, "gateway-control.json"))
-	if err != nil {
-		return nil
-	}
-	return lifecycle.ParseRecord(string(raw)).(*jsoncompat.Object)
-}
-
 func applyDesktopDefaults(dataDir string) {
 	ensureDesktopConfig(dataDir)
 	if os.Getenv("GATEWAY_PORT") == "" {
