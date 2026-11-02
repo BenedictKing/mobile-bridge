@@ -2,6 +2,15 @@
 
 ### Fixed
 
+### Added
+
+### Changed / Fixed
+
+## [v0.2.0] - 2026-11-02
+
+### Fixed
+
+- 迁移到其他 Agent 不再弹原生确认框（`web/migrate.js`）：迁移本就不改动源会话，入口与详情页已写明「将创建新会话」的说明，confirm 纯属重复打扰，现在直接执行并移除三条范围说明文案。
 - **list**: WorkBuddy (CodeBuddy) 会话时间不再因重启后的 preload 被错误更新——现在从 transcript 的最后一条真实交互事件读取时间，而非使用 mtime
 
 ### Added
@@ -96,6 +105,10 @@
 - Team 编排阶段四复核两处中优修复（独立复核确认）：① 定时触发的 PendingTriggerID 无限重试楔死——CreateRun 确定性失败（如配置后成员被移除，触发时 ParsePlan 权威校验每次报「任务引用的成员不存在」）后标记永不清除：每 tick 全量重放 journal（journal 只增）并重试，schedule 从此不再触发且无失败预算/停用路径（PUT /schedule 原样保留 pendingTriggerId，只有修复底层校验错误才解卡）。TeamSchedule 新增持久化簿记 `triggerFailures`（与标记同账本，knownFields/jsonObject/PUT 读改写保留三处同步，GET 投影经 MarshalJSON 自动带出）：fireTrigger 创建失败 +1；放弃裁决置于 reconcilePendingTrigger 的 journal 事实之后——回扫确认无该触发的 scheduledBy 事件（CreateRun 报错但 journal 已落的半写窗口按「已生效」收尾，绝不误放弃）且连续失败达预算（`scheduleTriggerFailureBudget`=3）才清标记归零计数放弃该触发点，NextDue 保持步骤①已推进值、回到正常到期路径，配置修复后的下一到期点自愈；新触发点落标记/创建成功/回扫确认均重置计数。判别测试：楔死场景达预算后停止重试且修复后新到期点恢复触发（新 triggerID）；预算耗尽当次恰半写的触发按 journal 已生效收尾不误放弃。② 阶段图节点徽标的「本地 detail 实时覆盖」对 autoPlan 派生链/修复链聚合节点错误生效——派生链节点 id=根任务 ID，findTask 命中的是根任务本人的陈旧终态，盖掉服务端按「链上最新执行」归并出的 node.status：循环阶段进行中（根任务已 completed、派生任务 running）稳定节点显示「已完成 ×N」而非「进行中」（对照 graph_test.go 的链聚合用例，服务端状态=running、runCount=4）。web/team.js renderGraphNode 现按注释本意把覆盖限定于单任务节点（非聚合且 runCount===1 才查 detail）：单任务/单成员组退化节点仍实时覆盖，聚合链节点以服务端归并状态为准；team.js 缓存版本号递增 t3。
 
 - Kimi chats open with their actual conversation again. Kimi is the only agent reached through the ACP Agent Host, and the browser fires concurrent opens for one chat (the view fetch and the timeline fetch each resolve the session on their own). Every concurrent `Manager.Open` used to run its own `openFresh` — a new host connection re-registering the same sessionId — and the host routes session updates to the last registrant, so the surviving session's replay went to a connection whose handle was discarded and the chat stayed permanently empty (header and composer fine, zero messages). `Manager.Open` is now single-flight per session id: concurrent callers wait for the in-flight open and share its handle instead of racing their own. Verified against the real Agent Host: four concurrent opens that each loaded the session and saw 0 turns now share one load and all see the full replay.
+
+- **桌面 App 产品线整体退役，仓库收敛为「网关 + 手机 Web」单线**（`wails/`、`.github/workflows/desktop.yml`、`docs/desktop-updates.md`、`docs/linux.md`、`internal/pairing`、`cmd/gateway` worker 协议与全量产品文案，2e7b59e/afe97cf/bb434fa/f2d6d7f/25774c4）：生产模式自 Go 迁移收官起就是 launchd 直跑网关 + 浏览器经固定域名访问，桌面壳与网关代码、CI 均无依赖，release 流水线也从不构建它。本轮删除 Wails 桌面壳源码与 `make build-wails`、Electron 时代的坏死 `desktop.yml`（其引用的 `desktop/`、`bridge/`、`scripts/build-desktop.py` 早已不存在）、整条桌面打包线文档（`desktop-updates.md`、`docs/linux.md`）与 version-bump 技能的 `wails/wails.json` 同步步骤；一次性扫码配对登录随之整链移除（`internal/pairing`、`/api/pair` 兑换路由、web `#pair=` 片段捕获、`conformance/pairing` golden、i18n 孤儿文案、README/ARCHITECTURE 章节）——签发从来只走桌面控制通道（HTTP 无签发接口），桌面退役后端到端失效，登录收敛为账号密码 + 显式免密，直连 grant/exchange 不受影响；`cmd/gateway` 的 worker 控制协议（start/stop/snapshot/snapshot-stream/save 子命令与 emitWorker/workerSnapshot/readControl）删除 220 行，serve 路径与首启种子（`config.json` + `首次登录.txt`）、lifecycle 控制记录、`gateway.stop` 优雅停止监听全部保留。产品文档整体转向网关优先：README×2 快速开始改为源码构建 / Release 网关二进制 + `首次登录.txt` 凭据流程，连接、网卡、通知、登录有效期等管理面统一改写为 `config.json`、`desktop.json`、`notifications.json`、`auth-sessions.json` 配置口径；site 官网四步引导、下载区（摘除指向旧仓库的桌面安装包链接）、FAQ、Cloudflare 图解与 fixed-domain / server-ssh 教程同步去桌面 App 化，交互演示移除「电脑网关 App」场景（设备 tab 余四个）。已发布的 v0.1.x 桌面安装包不受影响（自带旧网关运行）；自本版本起 Release 产物为五平台网关二进制 `gateway-<os>-<arch>` 与校验文件。
+
+- 修复两处负载下的测试时序 flake（`internal/acpruntime/usage_test.go` + `internal/httpd/teams_test.go`）：usage 账本在会话锁外异步写是「账本写不阻塞更新流」的设计，测试改为带时限轮询账本落盘；teams SSE 的 Notify 信号可能被当作残留消耗、帧最晚随 12s 心跳兜底发出，原 8s 断言时限结构性偏小，提到 20s。
 
 ## [v0.1.1] - 2026-10-22
 
