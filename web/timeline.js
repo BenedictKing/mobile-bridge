@@ -1,16 +1,30 @@
 'use strict';
 const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
 
+// 工具调用行不止一种 kind：ACP 管线的 toolCall、桌面回放的 storedToolEvent、
+// MCP 的 mcpToolCall/dynamicToolCall。折叠行为按「是否工具行」统一判定。
+const TOOL_ROW_KINDS=/^(toolCall|tool_call|storedToolEvent|mcpToolCall|dynamicToolCall)$/;
+const toolRow=row=>row.role==='activity'&&TOOL_ROW_KINDS.test(row.kind);
+
+// Agent 送来的工具标题形态各异：纯工具名（"Bash"）、「工具名: 命令」、
+// 「工具名(命令)」，甚至整条命令自带状态后缀（CodeBuddy 的 "git add … · completed"）。
+// 折叠态只要一个简短可辨的标签：有干净的工具名前缀就取前缀，否则截取命令首行。
+const toolLabel=title=>{
+  let label=String(title||'').replace(/\s*[·•‧・]\s*(completed|failed|error|inProgress|running|pending|进行中|已完成|失败)\s*$/i,'').trim();
+  // 前缀须像工具名（无空格引号括号）才剥离；否则 ":" 多半在命令内部，
+  // 例如 git commit -m "fix(list): xxx"，剥了会把命令截成碎片。
+  const prefix=label.match(/^([^\s"'`（(]{1,24})\s*[:：]\s/)||label.match(/^([A-Za-z][\w.-]{0,23})\s*[（(]/);
+  if(prefix)return prefix[1];
+  const chars=[...label.split('\n')[0].trim()];
+  if(chars.length>60)return chars.slice(0,60).join('')+'…';
+  return chars.join('')||timelineText('工具调用');
+};
+
 // Heading label for one row; plan rows surface live completion counts.
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   let label=row.title||row.kind;
-  // 剥离工具调用标题中的命令前缀与状态后缀：某些 Agent 把完整命令写进 title，
-  // 形如 "Bash: cd /path · completed"，折叠时只需工具名。
-  if(row.kind==='toolCall'){
-    label=label.replace(/^(.*?):\s.*$/,'$1').replace(/\s*·\s*(completed|failed|进行中|inProgress)$/,'').trim();
-    if(!label)label='工具调用';
-  }
+  if(toolRow(row))label=toolLabel(row.title);
   if(row.kind==='plan'&&row.entries?.length){
     const done=row.entries.filter(entry=>entry.status==='completed').length;
     label+=' · '+done+'/'+row.entries.length+(done===row.entries.length?' ✓':'');
@@ -199,6 +213,8 @@ class ChatTimeline {
           node=document.createElement(activity?'details':'div');
     node.className=activity?'activity timeline-row':'message timeline-row '+row.role;
     if(activity&&row.kind)node.dataset.kind=row.kind;
+    // CSS 以 data-tool（而非具体 kind）区分工具行：所有管线的工具调用折叠态一致。
+    if(toolRow(row))node.dataset.tool='';
     const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
