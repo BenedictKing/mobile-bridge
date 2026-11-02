@@ -18,8 +18,6 @@
 
 > 社区项目，与 OpenAI 无隶属关系。支持 macOS 和 Windows，依赖 Codex App 的内部 IPC；各平台的实测范围见 [验证记录](VERIFICATION.md)。App 更新后可能需要适配。
 
-Linux x64 / ARM64 实验性适配、Ubuntu 22.04 构建与 VMware 网络说明见 [Linux 文档](docs/linux.md)。提供 `.deb` 和 AppImage；原生 CI 验证安装、启动与网关功能，具体 Codex 桌面版本的 IPC 兼容性仍以实机测试为准。
-
 ## 消息编辑、分支与复制
 
 - 用户消息下方可复制内容。最近一条选择「编辑并重新发送」；更早的消息选择「编辑并新建分支」，原会话保留。
@@ -55,14 +53,6 @@ Android 原生容器支持热点网络下自动发现局域网网关并加速读
 需要外网访问时，可在 App 添加临时 HTTPS、自有服务器或 NAS 连接。桌面构建已内置 `cloudflared`；自有服务器支持手动准备服务器后通过普通用户 SSH 连接，也可使用 Cloudflare 固定隧道或已有 NAS 反代，详见[连接方式说明](#connections)。源码运行、自定义部署或需要 Agent 协助时，使用后面的[部署 Agent 执行说明](#agent-deployment)。
 
 <a id="macos-first-launch"></a>
-
-### App 内更新
-
-**旧版本线（原 Codex Mobile Bridge 仓库的 1.x / beta）无法应用内更新到本仓库版本**（发布仓库与签名密钥均已更换）。先停止网关、退出 App，再下载本页安装包手动安装到原位置，保留原数据目录；安装本版后即可继续使用应用内更新。
-
-自 `v0.1.0` 起，可在桌面 App 的「应用更新」中检查新版、查看说明并点击「更新并重启」。下载与校验完成后短暂重启网关，保留登录、网络、通知和关注聊天配置；失败时尝试恢复原版本。使用临时 HTTPS 时，重启后请打开最新地址。发布与恢复说明见 [桌面更新文档](docs/desktop-updates.md)。
-
-**Windows 旧版用户：**旧更新器可能因目录占用报 `WinError 32` 并回退。请先在托盘选择“停止网关并退出”，再用本页 Setup.exe 安装到原位置；无需卸载或删除数据。当前版本的更新器已修复该目录占用问题。
 
 ### 手机阅读与显示设置
 
@@ -228,15 +218,14 @@ NAS 方案：Docker 只部署 HTTP 入口，原电脑仍需保持唤醒并运行
 
 ### 从源码运行与打包
 
-Go 平台桌面壳使用 Wails v3，网关和控制器均为 Go 二进制。目标系统需要 Go、Wails 所需的 WebView/GTK 或 WebKit 依赖；发布用户不需要 Python 或 Node.js。
+网关为单一 Go 二进制，目标系统需要 Go；ACP 多 Agent 的 npx 回退需要 Node.js 22+。
 
 ```bash
 git switch main
 make build-gateway-package
-make build-wails
 ```
 
-运行 `go test ./...`、`go test -race ./internal/...` 和 `make conformance` 验证网关。Wails 桌面产物位于 `dist/desktop/mobile-bridge-wails`，Go 网关产物位于 `dist/gateway/codex-mobile-gateway`。
+运行 `go test ./...`、`go test -race ./internal/...` 和 `make conformance` 验证网关。Go 网关产物位于 `dist/gateway/codex-mobile-gateway`。
 
 App 设置界面通过本机进程通信管理网关；网关启停、更新及网络配置管理不对局域网或隧道开放。通知配置只在电脑端修改，沿用 Host、Origin、登录与 CSRF 校验。配置、通知密钥、凭据和投递记录位于网关数据目录，三个推送通道默认关闭；打包与提交不包含 `.local`、`.tmp` 或个人配置。
 
@@ -275,11 +264,11 @@ App 设置界面通过本机进程通信管理网关；网关启停、更新及�
 
 ## 运行要求
 
-- macOS 或 Windows 10/11（Linux x64 / ARM64 为实验性，见 [Linux 文档](docs/linux.md)），已安装并运行 Codex App。
+- macOS 或 Windows 10/11，已安装并运行 Codex App。
 - 使用发布的桌面 App 时无需安装 Python 或 Node.js，网关运行时已内置。
-- 从源码运行需要 Go（网关为单一 Go 二进制，`make build-gateway-package` 构建）；ACP 多 Agent 的 npx 回退需要 Node.js 22+。桌面 App 的开发与打包另需 Wails 所需的 WebView/GTK 或 WebKit 依赖。
+- 从源码运行需要 Go（网关为单一 Go 二进制，`make build-gateway-package` 构建）；ACP 多 Agent 的 npx 回退需要 Node.js 22+。
 - 电脑保持唤醒、联网，网关进程保持运行。
-- 外网隧道：桌面构建内置 `cloudflared`，源码运行可自行安装；二进制在构建时按锁定版本和 SHA-256 获取，不提交到仓库。
+- 外网隧道：`cloudflared` 需自行安装（`scripts/bundle-cloudflared.py` 按锁定版本与 SHA-256 获取）；不提交到仓库。
 
 ## 命令行启动：局域网（进阶）
 

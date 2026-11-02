@@ -509,8 +509,8 @@ func applyDesktopDefaults(dataDir string) {
 }
 
 // ensureDesktopConfig creates the first-run password record used by the Go
-// gateway. A fresh Wails installation must be usable without a Python helper
-// or an Electron worker having to seed the data directory first.
+// gateway. A fresh installation must be usable without any helper process
+// having to seed the data directory first.
 func ensureDesktopConfig(dataDir string) {
 	path := filepath.Join(dataDir, "config.json")
 	if _, err := os.Stat(path); err == nil {

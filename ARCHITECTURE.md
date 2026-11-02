@@ -125,9 +125,9 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 
 ## 模块
 
-Wails 桌面控制器通过绑定方法调用 Go 网关的独立 action 进程；网关启停和网络配置管理不监听网络。通知配置只在电脑端修改，沿用 Host、Origin、登录及写入 CSRF 校验，不返回 Token。网关以独立后台进程运行，退出控制器不会停止网关。
+桌面控制器通过绑定方法调用 Go 网关的独立 action 进程；网关启停和网络配置管理不监听网络。通知配置只在电脑端修改，沿用 Host、Origin、登录及写入 CSRF 校验，不返回 Token。网关以独立后台进程运行，退出控制器不会停止网关。
 
-Wails 桌面服务管理托盘状态、手机地址和退出动作；仅显式停止才调用网关的协作停止协议。状态请求合并，停止失败保留控制器并显示错误。
+桌面服务管理托盘状态、手机地址和退出动作；仅显式停止才调用网关的协作停止协议。状态请求合并，停止失败保留控制器并显示错误。
 
 网关停止使用带随机实例令牌的本地控制文件，由服务主动调用 `shutdown`，再关闭隧道、IPC 和 HTTP。`stop.py --config` 与启动配置对应，不依赖 Unix 信号或 Windows PID 强制终止。文件统一使用 UTF-8；Windows 权限继承目录 ACL。
 
@@ -188,7 +188,7 @@ view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门�
 
 ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）；经 Agent Host socket 接入的 ACP Agent（见下节）也不受此限——其子进程由 launchd 托管的 Host 持有，网关重启只断开 socket 连接，进行中的 turn 在 Host 侧继续跑，重连后经 `session/load` 恢复视图。
 
-多 Agent 启用（Go 网关，`cmd/gateway/main.go` + `internal/acpagents`）：默认像 Python 网关的 `--agents auto` 一样自动探测本机已安装的 agent（kimi/mcode/opencode/workbuddy 走 env 覆盖→`~/.<dir>/bin/<name>`→PATH，CLI 自带 `acp` 子命令，workbuddy 的 `CODEBUDDY_BIN` 覆盖与 OpenCode 的 `OPENCODE_BIN` 一样不以数据目录为已安装凭据；zcode/claude/dsh 走 env 覆盖→PATH 二进制→`npx -y` 回退，`~/.zcode`、`~/.dsh` 目录或对应 CLI 在 PATH 也算已安装）。`GATEWAY_AGENTS`（或沿用 `MOBILE_BRIDGE_AGENTS`）可显式指定逗号列表或 `auto`；`GATEWAY_ACP_BIN`/`GATEWAY_ACP_BINS` JSON 映射仍然优先（多词值按完整 argv 启动，单词值保留旧 `acp` 子命令语义）。会话路由按「归属」而非 id 前缀：活跃子进程、缓存的 `session/list` 行（30 秒 TTL）与 zcode 惰性占位（经 `~/.zcode/v2/acp-lazy-sessions.json` 解析到后端 `sess_*`）都能命中 ACP 分支，与 codex 共用同一套持久时间线投影（视图/时间线/变更/轮询/SSE）。新建会话在首条消息物化后端会话前由网关的 pending 集合兜底显示。workbuddy 的 `codebuddy --acp` 只实现 `session/load`、不实现 `session/list`（-32601），其会话清单改由 `internal/codebuddy` 直读 CLI 的原生记录目录（`~/.codebuddy/projects/<cwd slug>/<sessionId>.jsonl`，与 Claude Code 同布局）经 `Manager.NativeList` 回退产出：标题取 CLI 自产的 `ai-title`（缺省回退首条用户消息），cwd 取消息行（无 cwd 的记录不可 `session/load`，不入列），recency 取记录文件 mtime。WorkBuddy 的 `stopReason:"refusal"` 若携带 `_meta["codebuddy.ai/errorMessage"]`，网关解析嵌套错误并生成可见失败行；401/auth 显示 CLI `/login` 指引，不再静默结束为空白回合。opencode 不发 legacy `modes` 字段而以 `mode` 配置项（build/plan/自定义 agent）广播，`Session.SetMode` 对无 modes 对象的 agent 回退走 `session/set_config_option`，桥接层 default/plan 映射为 build/plan。zcode 自动启用时同步拉起 coding-plan 凭据自愈（`internal/acpagents/zcodecreds.go`，原生 AES-256-GCM 解密 `enc:v1:`，含模型阵容同步与幽灵套餐禁用，2 秒轮询重愈）。Wails 桌面服务继承网关进程的 Agent 配置；脚本化对拍模式（`GATEWAY_DISABLE_STORE=1` 且 `GATEWAY_DISABLE_IPC=1`）不探测本机，保持 golden 确定。
+多 Agent 启用（Go 网关，`cmd/gateway/main.go` + `internal/acpagents`）：默认像 Python 网关的 `--agents auto` 一样自动探测本机已安装的 agent（kimi/mcode/opencode/workbuddy 走 env 覆盖→`~/.<dir>/bin/<name>`→PATH，CLI 自带 `acp` 子命令，workbuddy 的 `CODEBUDDY_BIN` 覆盖与 OpenCode 的 `OPENCODE_BIN` 一样不以数据目录为已安装凭据；zcode/claude/dsh 走 env 覆盖→PATH 二进制→`npx -y` 回退，`~/.zcode`、`~/.dsh` 目录或对应 CLI 在 PATH 也算已安装）。`GATEWAY_AGENTS`（或沿用 `MOBILE_BRIDGE_AGENTS`）可显式指定逗号列表或 `auto`；`GATEWAY_ACP_BIN`/`GATEWAY_ACP_BINS` JSON 映射仍然优先（多词值按完整 argv 启动，单词值保留旧 `acp` 子命令语义）。会话路由按「归属」而非 id 前缀：活跃子进程、缓存的 `session/list` 行（30 秒 TTL）与 zcode 惰性占位（经 `~/.zcode/v2/acp-lazy-sessions.json` 解析到后端 `sess_*`）都能命中 ACP 分支，与 codex 共用同一套持久时间线投影（视图/时间线/变更/轮询/SSE）。新建会话在首条消息物化后端会话前由网关的 pending 集合兜底显示。workbuddy 的 `codebuddy --acp` 只实现 `session/load`、不实现 `session/list`（-32601），其会话清单改由 `internal/codebuddy` 直读 CLI 的原生记录目录（`~/.codebuddy/projects/<cwd slug>/<sessionId>.jsonl`，与 Claude Code 同布局）经 `Manager.NativeList` 回退产出：标题取 CLI 自产的 `ai-title`（缺省回退首条用户消息），cwd 取消息行（无 cwd 的记录不可 `session/load`，不入列），recency 取记录文件 mtime。WorkBuddy 的 `stopReason:"refusal"` 若携带 `_meta["codebuddy.ai/errorMessage"]`，网关解析嵌套错误并生成可见失败行；401/auth 显示 CLI `/login` 指引，不再静默结束为空白回合。opencode 不发 legacy `modes` 字段而以 `mode` 配置项（build/plan/自定义 agent）广播，`Session.SetMode` 对无 modes 对象的 agent 回退走 `session/set_config_option`，桥接层 default/plan 映射为 build/plan。zcode 自动启用时同步拉起 coding-plan 凭据自愈（`internal/acpagents/zcodecreds.go`，原生 AES-256-GCM 解密 `enc:v1:`，含模型阵容同步与幽灵套餐禁用，2 秒轮询重愈）。桌面服务继承网关进程的 Agent 配置；脚本化对拍模式（`GATEWAY_DISABLE_STORE=1` 且 `GATEWAY_DISABLE_IPC=1`）不探测本机，保持 golden 确定。
 
 Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的子进程从网关进程剥离到独立的常驻 Host 进程，网关经 Unix socket 接入（`acpruntime.Manager.HostSocket` 非空时走 `acp.StartSocket`，否则照旧直接 spawn）。Host 持有 Agent 子进程并复用多条网关连接：页面打开一个会话时网关会并发发起 `initialize`/`session/load`/`session/list` 等多条 ACP 连接，Host 为每条连接维护独立的请求 id 转发映射，响应按来源连接送回原处；Agent 反向请求（如 `session/request_permission`）按会话 id 绑定到发起该会话的网关连接，避免应答串线。配置侧 `GATEWAY_ACP_HOST_SOCKETS` 是 kind→socket 的 JSON 映射（`GATEWAY_ACP_HOST_SOCKET` 是仅 `acp` 一种的简写），每种 Agent 一份 launchd 服务；Makefile 以 `ACP_HOST_KIND`（默认 `kimi`）参数化生成 `make start-agent-host` 的 plist 与 socket 路径。采用 Host 模式的理由是三类：Host 二进制签名身份稳定，macOS TCC 目录授权跨网关重编译不失效；Agent 子进程由 Host 持有，网关重启/崩溃不杀会话；常驻子进程省掉每次 spawn 的冷启动（Kimi 的主要动机）。不满足这些诉求的 Agent 维持网关内直连 spawn，两种路径可混用。
 
@@ -233,7 +233,7 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 `bridge/ssh_tunnel.py` 管理独立 OpenSSH 子进程，复用已有 SSH 目标和身份，以 `-R 127.0.0.1:服务器端口:127.0.0.1:电脑端口` 回程。启用 BatchMode、StrictHostKeyChecking、ExitOnForwardFailure 与保活，不复用 ControlMaster。失败后台退避重连，不阻塞 LAN 服务。各 SSH 配置独立保存状态与日志，状态关联当前网关 PID；服务器 GatewayPorts 应使用 no/clientspecified，不能强制公网绑定。
 
-`/api/auth` 返回非秘密的本次运行 instanceId。固定入口检测仅从本机管理进程请求本机与已保存 HTTPS 地址，核对实例一致，不携带登录凭据，不跟随重定向。配置包导出、剪贴板和入口检测仅经受保护的本机 Wails service 提供，手机 HTTP 不提供这些操作。
+`/api/auth` 返回非秘密的本次运行 instanceId。固定入口检测仅从本机管理进程请求本机与已保存 HTTPS 地址，核对实例一致，不携带登录凭据，不跟随重定向。配置包导出、剪贴板和入口检测仅经受保护的本机控制面板提供，手机 HTTP 不提供这些操作。
 
 临时 Cloudflare 握手在后台进行，避免等待外网隧道拖延 LAN 和其他入口的服务。关闭网关时停止各隧道。
 
@@ -244,17 +244,11 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 `bridge/pairing.py` 为每个允许源保存一个有效的内存授权：32 字节随机值的 SHA-256 摘要、随机 ID、5 分钟过期时间与消费状态。刷新替换同源旧授权，消费在锁内完成，正确源且未过期的授权只生成一个标准登录会话（有效期按 `sessionHours` 配置，默认 12 小时）。网关重启不恢复授权；已签发的登录会话随 `auth-sessions.json` 持久化并恢复。失败兑换限速独立于密码登录。
 
-签发只走本机 Wails service 与 `GatewayControl` 的私有文件通道：每实例使用独立控制令牌，响应读取后删除、服务正常退出时清理目录。数据目录不能放在共享公共目录。HTTP 没有签发接口。
+签发只走本机控制面板与 `GatewayControl` 的私有文件通道：每实例使用独立控制令牌，响应读取后删除、服务正常退出时清理目录。数据目录不能放在共享公共目录。HTTP 没有签发接口。
 
-Wails service 使用本地二维码生成 PNG，界面接收图片、授权 ID 与有效期。每张地址卡片独立保留状态，收起撤销、刷新替换、轮询显示已使用/已过期。
+控制面板使用本地二维码生成 PNG，界面接收图片、授权 ID 与有效期。每张地址卡片独立保留状态，收起撤销、刷新替换、轮询显示已使用/已过期。
 
 手机首次加载时捕获 `#pair=` 片段并立即通过 `history.replaceState` 清除，随后 `POST /api/pair` 换取 HttpOnly/SameSite Cookie 和 CSRF。兑换要求 HTTP Host 对应的完整 Origin 与授权源一致；HTTPS Cookie 使用 Secure。片段不会作为 HTTP 请求路径或查询串发送，接口也不记录请求体。手机失败时提供原有密码登录入口。二维码仅授予与普通登录相同的访问权限，不绕过 Codex 原生人工确认。
-
-## 桌面应用更新
-
-Wails 更新 service 从固定 GitHub Release 源获取签名清单，使用内置 Ed25519 公钥验证原始载荷，再核对长度与 SHA-256。HTTP 网关无更新管理接口。
-
-`bridge/updater.py` 负责原安装目录旁的准备、替换与恢复。准备阶段拒绝路径穿越和危险链接，核对包版本、平台、macOS 签名和内置运行时。独立复制的旧运行时等控制面板退出、协作停止原网关后替换目录，再等待新面板确认加载并恢复此前运行的网关。失败时尝试回滚；配置目录保持独立。发布签名身份和事务恢复操作见 [桌面更新文档](docs/desktop-updates.md)。
 
 
 ## PR8 验收反馈调整

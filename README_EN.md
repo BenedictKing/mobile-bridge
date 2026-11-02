@@ -18,8 +18,6 @@ The phone and desktop use the same chat. Read replies, send messages, choose mod
 
 > Community project, not affiliated with OpenAI. Supports macOS and Windows and depends on internal Codex App IPC. See [verification records](VERIFICATION.md) for what was actually tested. App updates may require compatibility changes.
 
-Experimental Linux x64 / ARM64 integration, Ubuntu 22.04 builds, and VMware networking are covered in the [Linux guide](docs/linux.md). Both .deb and AppImage packages are available. Native CI checks installation, startup and gateway behavior; IPC compatibility with a particular Codex desktop version still requires real-device testing.
-
 ## Edit, branch and copy messages
 
 - Copy user messages from their action row. Choose **Edit and resend** on the latest user message, or **Edit in new branch** on an older message to keep the original conversation.
@@ -263,13 +261,12 @@ Large history pages also have a byte budget, so a large reply may require multip
 
 ## Requirements
 
-- macOS or Windows 10/11 (Linux x64 / ARM64 is experimental, see [docs/linux.md](docs/linux.md)) with the original Codex App running.
+- macOS or Windows 10/11 with the original Codex App running.
 - Release packages include the gateway runtime; no Python or Node.js installation is needed.
 - For command-line deployment: Go (single Go binary built by `make build-gateway-package`); the ACP multi-agent npx fallback needs Node.js 22+.
-- Desktop App development and packaging additionally require Node.js and the build dependencies below.
 - Keep the computer awake, network reachable and gateway running.
 - For SSH chats: the host is configured and connected in the desktop App; the gateway reaches remote chats through the App's own connection and does not run scripts on the server. Model/Skill discovery also needs the remote Codex runtime. SSH entry profiles (own-server forwarding) need OpenSSH `ssh` on PATH (`ssh.exe` on Windows).
-- Desktop builds include cloudflared; source runs install it separately.
+- Source runs install cloudflared separately.
 
 ## Command-line LAN setup (advanced)
 
@@ -408,7 +405,7 @@ Gateway data stays in its configured directory, normally `.local`. It includes l
 
 Uploaded files are retained in `uploads/` or `hosts/<host hash>/uploads/` inside gateway data, separated by chat. Remote copies are stored under that host's `$CODEX_HOME/mobile-bridge/uploads/` (default `~/.codex/mobile-bridge/uploads/`). Removing a draft attachment does not delete uploaded files. Local uploads older than seven days that are no longer referenced by any send record are cleaned up automatically; remote copies are not cleaned up. Manually deleting a file can break historical or queued references to it.
 
-The Go desktop management interface uses Wails v3 bindings and the private gateway action protocol. Gateway start/stop and network configuration are not exposed through the phone HTTP API. Notification settings are managed in the Wails app. Public HTTP access remains constrained by authentication, allowed Host/Origin checks and CSRF validation.
+Gateway start/stop and network configuration are managed on the computer through the private gateway action protocol and are not exposed through the phone HTTP API. Public HTTP access remains constrained by authentication, allowed Host/Origin checks and CSRF validation.
 
 ## Known limits
 
@@ -425,18 +422,17 @@ An Agent is optional for everyday App use. For source deployment, custom network
 
 ## Development and packaging
 
-The product icon source is `assets/icon.png`. The Go/Wails desktop build uses the icon assets directly.
+The product icon source is `assets/icon.png`.
 
 The product website lives in `site/` and is hosted on GitHub Pages. Pushing changes under `site/` to `main` automatically publishes them through the **Product website** workflow; no separate build step is required.
 
-This section requires Go and the native WebView dependencies used by Wails on the target OS. Release users do not need Python or Node.js.
+Building from source requires Go; the ACP multi-agent npx fallback needs Node.js 22+.
 
-On macOS, build the Go gateway and Wails shell with `make build-gateway-package` and `make build-wails` for the current architecture. Cross-compile gateway binaries with `make build-matrix`; Wails packaging must run on the target OS because it links to the native WebView.
+On macOS, build the Go gateway with `make build-gateway-package` for the current architecture. Cross-compile gateway binaries with `make build-matrix`.
 
 ```sh
 git switch main
 make build-gateway-package
-make build-wails
 ```
 
 ```sh

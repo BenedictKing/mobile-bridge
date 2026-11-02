@@ -9,8 +9,7 @@ allowed-tools: Bash, Read, Write, Edit
 ## 版本来源
 
 - **唯一权威来源**：根目录 `VERSION`，单行，格式 `v{major}.{minor}.{patch}`（可含预发布后缀，如 `v2.0.0-preview.4`）。
-- **派生同步项**：`wails/wails.json` 的 `info.productVersion`（同版本号，**无 `v` 前缀**）。
-- 不修改 `go.mod` / `wails/go.mod`（其中是依赖版本，与应用版本无关）。
+- 不修改 `go.mod`（其中是依赖版本，与应用版本无关）。
 - `VERSION` 缺失时中止并提示用户（不自动重建，避免掩盖意外删除）。
 
 ## 触发条件与参数
@@ -53,7 +52,7 @@ git rev-parse -q --verify "refs/tags/v{新版本号}"
 
 - 根据参数计算新版本（semver 合法，且必须大于当前版本，含预发布语义比较）。
 - 目标 tag 已存在 → 中止。
-- 工作区有本流程文件（VERSION、CHANGELOG.md、RELEASE_NOTES.md、wails/wails.json）之外的未提交改动 → 询问用户是否一并提交；拒绝则中止。
+- 工作区有本流程文件（VERSION、CHANGELOG.md、RELEASE_NOTES.md）之外的未提交改动 → 询问用户是否一并提交；拒绝则中止。
 
 ### 2. CHANGELOG 校验与补全
 
@@ -72,7 +71,6 @@ git log {base}..HEAD --pretty=%s | grep -cvE "^(Merge |chore\(release\))"
 ### 3. 版本落盘
 
 - `echo "v{新版本号}" > VERSION`
-- `wails/wails.json`：`info.productVersion` 精确替换为 `{新版本号去 v}`，保持 JSON 合法。
 - `CHANGELOG.md`：`## [Unreleased]` 归档为 `## [v{新版本号}] - YYYY-MM-DD`，并在其上新建空骨架（沿用现有分组标题）：
 
   ```markdown
@@ -118,7 +116,7 @@ make check
 验证通过后自动本地提交（遵循全局规则，无需询问）：
 
 ```bash
-git add VERSION CHANGELOG.md RELEASE_NOTES.md wails/wails.json
+git add VERSION CHANGELOG.md RELEASE_NOTES.md
 git commit -m "chore(release): v{新版本号}" -m "{可选补充行}"
 ```
 
@@ -183,6 +181,5 @@ gh run watch
 ## 注意事项
 
 - 提交信息用 `git commit -m` 多参拼接，不写 `.git/COMMIT_EDITMSG`。
-- `wails/wails.json` 必须保持合法 JSON。
 - 预发布版本（含连字符）在 release workflow 中自动 `--prerelease`，发布为 draft，需在 GitHub Releases 页手动确认。
 - 本 skill 只在用户显式确认后 push；绝不 force push、不改写历史。

@@ -22,7 +22,7 @@ ACP_HOST_SOCKETS_JSON := {"$(ACP_HOST_KIND)":"$(ACP_HOST_SOCKET)"}
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build-matrix build-gateway build-gateway-package build-agent-host build-wails build-android serve \
+.PHONY: help build-matrix build-gateway build-gateway-package build-agent-host build-android serve \
 	install dev-cert start start-agent-host stop stop-agent-host restart status logs uninstall conformance \
 	test test-race check
 
@@ -49,9 +49,8 @@ build-android: ## 运行 Android JVM 测试并生成 debug APK
 	@cp android/app/build/outputs/apk/debug/app-debug.apk dist/mobile-bridge-android-debug.apk
 	@ls -lh dist/mobile-bridge-android-debug.apk
 
-# The Wails desktop shell expects this stable runtime directory/name. The Go
-# binary serves the gateway and exposes the private desktop action protocol.
-build-gateway-package: ## 编译 serve/start 所用网关包（Wails 运行时固定目录名）
+# serve/start 固定从此目录取网关二进制并安装到固定路径（见 install 目标注释）。
+build-gateway-package: ## 编译 serve/start 所用网关包（固定目录名）
 	@mkdir -p dist/gateway
 	@go build -trimpath -ldflags='-s -w' -o dist/gateway/codex-mobile-gateway ./cmd/gateway
 	@chmod 755 dist/gateway/codex-mobile-gateway
@@ -81,13 +80,6 @@ start-agent-host: build-agent-host ## 启动并托管 ACP Agent Host（默认 Ki
 	@launchctl kickstart gui/$$(id -u)/$(ACP_HOST_LABEL)
 	@sleep 1
 	@echo "$(ACP_HOST_LABEL) 已启动（socket $(ACP_HOST_SOCKET)）"
-
-# Wails is the Go desktop shell. It embeds wails/frontend and calls the Go
-# gateway action protocol directly.
-build-wails: ## 编译 Wails 桌面外壳
-	@mkdir -p dist/desktop
-	@cd wails && go build -trimpath -ldflags='-s -w' -o ../dist/desktop/mobile-bridge-wails .
-	@ls -lh dist/desktop/mobile-bridge-wails
 
 # 固定路径 + 稳定签名身份。macOS TCC 按签名身份授予文稿/文件目录访问：重编译会
 # 改变 ad-hoc cdhash，导致每次重启后重新弹"允许访问文稿文件夹"（Gateway 与
