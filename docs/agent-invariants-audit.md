@@ -22,6 +22,8 @@
 
 现有 `TestOpenFallsBackToReadOnlyTranscript` 证明拒绝后的只读降级和 Prompt/SetMode/Cancel 拦截有效，却没有证明 load 之前发生过 owner 预检（`internal/acpruntime/native_test.go:239-286`）。
 
+> **DSH POSIX 第一阶段（1553a48）**：当前上游已在 `session.lock` 上持有跨进程 `flock`（早期“lease 尚未实现”的笔记已过时）。`OwnerProbe` 在 `openFresh` / `Reconcile` 前以非阻塞加锁、inode 校验、立即释放识别写者，命中后直接 `openNativeHistory`，不再启动后等待拒绝；锁空闲时 load 仍是最终互斥权威。锁持有/释放与 Open/Reconcile 不启动回归已覆盖。Windows 使用上游命名信号量，主仓暂未实现同等探针，保留旧降级，不能计为达标；其他 Agent 也仍按原路径。
+
 ## 3. 能力必须按当前会话和运行时判断
 
 已有四类动态判断是有效的：
@@ -93,6 +95,8 @@ prompt_error=<nil> session_status=idle turn_status=failed
 `Manager.Open` 同样先 `m.start()` 并调用 `session/load`；HTTP 的会话解析和详情读取会经 `resolveACP → openACP → manager.Open` 进入该路径（`internal/acpruntime/manager.go:664-746`、`internal/httpd/server_bridge.go:81-137`）。桌面已占用时的 transcript 只读视图不是一条独立的纯历史入口，而是启动并尝试 load 后的降级。
 
 这属于当前 ACP 架构选择：打开会话就意味着建立控制通道。若要采用上游纪律，需要把“读取原生保存历史”和“显式连接/恢复控制”拆成两个 API；仅修改错误文案不会消除进程启动副作用。
+
+> **DSH 第一阶段（1553a48）**：`NativeListExclusive` 直接读取 transcript header 的 id/cwd 与 projection 标题，列表不再启动；`OpenHistory` 复用原生只读 Session/poller，自动归属、显式 Agent 参数、View、Timeline、SSE 与启动预加载都走纯历史，显式 `reconnect upgrade=1` 才进入控制路径。缓存未变的冷重开会先 `NativeReset`，不会误判无历史。marker 假 Agent 证明 List/Open/Reconcile/HTTP/预加载均未启动。**其他 Agent 尚无统一 NativeHistory，仍不符合本节严格规则；本项仅完成 DSH，不代表全 ACP 达标。**
 
 ## 7. 实际执行的验证
 
