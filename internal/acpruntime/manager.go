@@ -997,7 +997,10 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.signalLocked()
 		s.mu.Unlock()
 		close(promptDone)
-		return nil
+		// The view already shows the failed turn, but the caller must not
+		// record a phantom acceptance: the queue and HTTP layers classify by
+		// this error (unavailable → outcome unknown, never auto-retried).
+		return submitErr
 	}
 	go s.awaitPrompt(ident, channel, idleTimeout, slice, promptDone, warmup)
 	return nil
