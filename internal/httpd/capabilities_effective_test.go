@@ -50,23 +50,32 @@ for line in sys.stdin:
 	return []string{python, "-u", path}
 }
 
-func effectiveCapabilities(t *testing.T, server *Server, manager *acpruntime.Manager) []string {
+func effectiveCapabilities(t *testing.T, server *Server, manager *acpruntime.Manager, want []string) []string {
 	t.Helper()
 	session, err := manager.Open("sess-cap", "/work", 3*time.Second)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	view := server.acpViewState("kimi", manager, session)
-	list, _ := view.MustGet("capabilities").(*jsoncompat.Array)
-	if list == nil {
-		t.Fatal("视图缺少 capabilities")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		view := server.acpViewState("kimi", manager, session)
+		list, _ := view.MustGet("capabilities").(*jsoncompat.Array)
+		if list == nil {
+			t.Fatal("视图缺少 capabilities")
+		}
+		names := []string{}
+		for _, item := range list.Items {
+			text, _ := item.(string)
+			names = append(names, text)
+		}
+		if equalStrings(names, want) {
+			return names
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("capabilities=%v, want=%v", names, want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	names := []string{}
-	for _, item := range list.Items {
-		text, _ := item.(string)
-		names = append(names, text)
-	}
-	return names
 }
 
 func equalStrings(got, want []string) bool {
@@ -91,7 +100,7 @@ func TestACPViewCapabilitiesConvergeOnRuntimeEvidence(t *testing.T) {
 	bare := acpruntime.NewCommand(capabilitiesAgent(t, false, false))
 	bare.Capabilities = []string{"steer", "skills", "fork"}
 	t.Cleanup(func() { bare.Close() })
-	if got := effectiveCapabilities(t, server, bare); !equalStrings(got, []string{"fork"}) {
+	if got := effectiveCapabilities(t, server, bare, []string{"fork"}); !equalStrings(got, []string{"fork"}) {
 		t.Fatalf("无运行时证据应为 [fork]，got=%v", got)
 	}
 
@@ -100,7 +109,7 @@ func TestACPViewCapabilitiesConvergeOnRuntimeEvidence(t *testing.T) {
 	equipped.Capabilities = []string{"steer", "skills", "fork"}
 	equipped.SteerMethod = "_session/steering"
 	t.Cleanup(func() { equipped.Close() })
-	if got := effectiveCapabilities(t, server, equipped); !equalStrings(got, []string{"steer", "skills", "fork"}) {
+	if got := effectiveCapabilities(t, server, equipped, []string{"steer", "skills", "fork"}); !equalStrings(got, []string{"steer", "skills", "fork"}) {
 		t.Fatalf("证据齐备应为全量，got=%v", got)
 	}
 
@@ -110,7 +119,7 @@ func TestACPViewCapabilitiesConvergeOnRuntimeEvidence(t *testing.T) {
 	builtinOnly.Capabilities = []string{"steer", "skills", "fork"}
 	builtinOnly.SteerMethod = "_session/steering"
 	t.Cleanup(func() { builtinOnly.Close() })
-	if got := effectiveCapabilities(t, server, builtinOnly); !equalStrings(got, []string{"steer", "fork"}) {
+	if got := effectiveCapabilities(t, server, builtinOnly, []string{"steer", "fork"}); !equalStrings(got, []string{"steer", "fork"}) {
 		t.Fatalf("仅内置命令应为 [steer fork]，got=%v", got)
 	}
 }
@@ -122,7 +131,7 @@ func TestACPViewCapabilitiesGoalsStillGateOnTransport(t *testing.T) {
 	manager := acpruntime.NewCommand(capabilitiesAgent(t, true, false))
 	manager.Capabilities = []string{"skills", "fork"}
 	t.Cleanup(func() { manager.Close() })
-	if got := effectiveCapabilities(t, server, manager); !equalStrings(got, []string{"skills", "fork"}) {
+	if got := effectiveCapabilities(t, server, manager, []string{"skills", "fork"}); !equalStrings(got, []string{"skills", "fork"}) {
 		t.Fatalf("goals 未声明不得出现，got=%v", got)
 	}
 }
