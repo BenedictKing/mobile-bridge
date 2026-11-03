@@ -229,9 +229,11 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 		// gateway, so it needs no native evidence.
 		capabilities.Items = append(capabilities.Items, capability)
 	}
-	if session.ReadOnly() {
+	if session.DesktopOwned() {
 		// A transcript-backed view of a desktop-owned session is readable
-		// but cannot steer or answer; branching stays available.
+		// but cannot steer or answer; branching stays available. A plain
+		// history view is NOT flagged: the composer stays live and the first
+		// mutation attaches in place, so every listed chat can be joined.
 		filtered := &jsoncompat.Array{}
 		for _, capability := range capabilities.Items {
 			if capability == "fork" {

@@ -96,6 +96,11 @@ type Session struct {
 	// readOnly marks a native-transcript view without a control handle. It may
 	// be desktop-owned or simply not attached yet; mutations require an attach.
 	readOnly bool
+	// desktopOwned marks a read-only view the desktop app actively holds (the
+	// wrapper refused session/load with "already owned", or the owner probe
+	// saw its write lock). Attach leaves these alone — an upgrade would be
+	// refused — while a plain history view upgrades on the first mutation.
+	desktopOwned bool
 	// nativeBootstrapped marks the first native fold of a handle. That fold
 	// always applies so the native store (with its attachments and stable
 	// ids) becomes the view; later folds keep the settled-tip dedupe so
@@ -270,6 +275,9 @@ type Manager struct {
 	// surviving session (the host routes by sessionId to the last
 	// registrant), leaving the opened chat permanently empty.
 	opening map[string]chan struct{}
+	// attaching single-flights the read-only→live upgrade per session id so
+	// a burst of mutations cannot spawn parallel wrappers.
+	attaching map[string]chan struct{}
 
 	listMu   sync.Mutex
 	listRows []*jsoncompat.Object
@@ -278,12 +286,12 @@ type Manager struct {
 }
 
 func New(executable string) *Manager {
-	return &Manager{Executable: executable, sessions: map[string]*Session{}, opening: map[string]chan struct{}{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
+	return &Manager{Executable: executable, sessions: map[string]*Session{}, opening: map[string]chan struct{}{}, attaching: map[string]chan struct{}{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
 		InitializeTimeout: 10 * time.Second, ListTTL: 30 * time.Second}
 }
 
 func NewCommand(command []string) *Manager {
-	return &Manager{Command: append([]string{}, command...), sessions: map[string]*Session{}, opening: map[string]chan struct{}{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
+	return &Manager{Command: append([]string{}, command...), sessions: map[string]*Session{}, opening: map[string]chan struct{}{}, attaching: map[string]chan struct{}{}, now: func() float64 { return float64(time.Now().UnixMilli()) / 1000 },
 		InitializeTimeout: 10 * time.Second, ListTTL: 30 * time.Second}
 }
 
@@ -768,7 +776,11 @@ func (m *Manager) open(id, cwd string, timeout time.Duration, history bool) (*Se
 func (m *Manager) openControlled(id, cwd string, timeout time.Duration) (*Session, error) {
 	if m.OwnerProbe != nil {
 		if owned, known := m.OwnerProbe(id); known && owned {
-			return m.openNativeHistory(id, cwd)
+			session, err := m.openNativeHistory(id, cwd)
+			if session != nil {
+				session.desktopOwned = true
+			}
+			return session, err
 		}
 	}
 	fresh, err := m.openFresh(id, cwd, timeout)
@@ -777,6 +789,38 @@ func (m *Manager) openControlled(id, cwd string, timeout time.Duration) (*Sessio
 			return native, nil
 		}
 	}
+	return fresh, err
+}
+
+// Attach returns a controllable session for a mutation. A read opens as pure
+// history (no agent process), so the first send/respond/settings on such a
+// view upgrades it in place: the wrapper starts, session/load runs, and the
+// live handle replaces the read-only one. A desktop-owned view is left
+// untouched — the caller refuses the mutation. Concurrent attaches
+// single-flight per id so a burst of writes spawns one wrapper.
+func (m *Manager) Attach(id, cwd string, timeout time.Duration) (*Session, error) {
+	m.mu.Lock()
+	if done := m.attaching[id]; done != nil {
+		m.mu.Unlock()
+		<-done
+		return m.Open(id, cwd, timeout)
+	}
+	current := m.sessions[id]
+	if current == nil || current.IsClosed() || !current.ReadOnly() || current.DesktopOwned() {
+		m.mu.Unlock()
+		return m.Open(id, cwd, timeout)
+	}
+	done := make(chan struct{})
+	if m.attaching == nil {
+		m.attaching = map[string]chan struct{}{}
+	}
+	m.attaching[id] = done
+	m.mu.Unlock()
+	fresh, err := m.Reconcile(id, cwd, timeout)
+	m.mu.Lock()
+	delete(m.attaching, id)
+	m.mu.Unlock()
+	close(done)
 	return fresh, err
 }
 
@@ -1958,6 +2002,16 @@ func (s *Session) ReadOnly() bool {
 	return s.readOnly
 }
 
+// DesktopOwned reports whether the desktop app holds this session's write
+// side: an attach would be refused, so mutations stay unavailable until the
+// desktop side releases the session. A read-only view that is not
+// desktop-owned is just an unattached history and can upgrade on demand.
+func (s *Session) DesktopOwned() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.desktopOwned
+}
+
 // Sequence returns the change counter used as the projection sequence: every
 // view mutation (prompt, notification, request, config change) bumps it.
 func (s *Session) Sequence() int {
@@ -2051,6 +2105,7 @@ func (m *Manager) openNative(id, cwd string, cause error) *Session {
 	if err != nil {
 		return nil
 	}
+	session.desktopOwned = true
 	return session
 }
 

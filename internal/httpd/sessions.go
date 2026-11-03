@@ -674,7 +674,10 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	if !write && manager.NativeTranscript != nil {
 		session, err = manager.OpenHistory(threadID, cwd)
 	} else {
-		session, err = manager.Open(threadID, cwd, manager.InitializeTimeout)
+		// Mutations attach in place: a pure-history view upgrades to a live
+		// handle on the first send/respond/settings, so the phone can
+		// intervene in any listed chat without a manual upgrade step.
+		session, err = manager.Attach(threadID, cwd, manager.InitializeTimeout)
 	}
 	if err != nil {
 		log.Printf("会话打开失败: agent=%s thread=%s: %v", kind, threadID, err)
