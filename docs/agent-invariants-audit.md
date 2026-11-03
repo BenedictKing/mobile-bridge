@@ -72,7 +72,9 @@ prompt_error=<nil> session_status=idle turn_status=failed
 
 本次运行的 ACP 核心与 HTTP 全量测试都通过，说明现有测试没有覆盖 Submit 写入失败的错误传播。
 
-> **已修复（cb0e759）**：`prompt()` 改为返回 `submitErr`；直接发送落 409 并回队，队列派发按 unavailable 归 outcomeUnknown（不自动重试）。三层回归见 `internal/acpruntime/submit_error_test.go` 与 `internal/httpd/submit_error_http_test.go`。写入前已关闭与写入中断的细分仍未做：两者目前同为一个 unavailable 错误，靠“unknown 不自动重试”保护。
+> **已修复（cb0e759）**：`prompt()` 改为返回 `submitErr`；直接发送落 409 并回队，队列派发按 unavailable 归 outcomeUnknown（不自动重试）。三层回归见 `internal/acpruntime/submit_error_test.go` 与 `internal/httpd/submit_error_http_test.go`。
+>
+> **写入边界续修（9070cca）**：Submit 同步错误细分为写入前已关闭（`AcpUnavailable`，请求确定未发送，可回队）与写入中断（`AcpWriteUnknown`，结果不确定，禁止自动重试）；直接发送也不再对任何 Prompt 错误一律回队。传输、HTTP/队列分类回归分别见 `internal/acp/submit_test.go`、`internal/httpd/submit_error_http_test.go`。
 
 ### 5.2 stopReason 的完成映射偏宽
 
@@ -81,6 +83,8 @@ prompt_error=<nil> session_status=idle turn_status=failed
 这不是 idle 直接当成功，但仍是**终态与成功语义混用**。建议单独评估 max_tokens/max_turns 等异常终止是否应映射为 interrupted/failed，并保留 stopReason 供通知和自动继续区分。
 
 > **已修复（8c56083）**：`EndTurn` 把 cancelled/max_tokens/max_turns/max_turn_requests 统一映射为 interrupted（Python 原版同缺陷，此处有意加宽偏离，conformance 金样不含预算停靠用例、不受影响）；Jev `DecideContinue` 同步区分“预算停靠的 interrupted”与“用户取消的 interrupted”，前者仍允许自动继续，并补齐 ACP 规范拼写 max_turn_requests。team 侧 `cancelledTurn` 对预算截断的成员任务按 stopped 收场，不再带截断结果落 completed。
+>
+> **refusal 续修（9070cca）**：普通 refusal 落 interrupted，列表显示“已停止，未查看”，Jev 以 `refusal` 原因禁止自动继续；带 CodeBuddy 错误元数据的 refusal 仍按 failed 处理。同步修复 `_meta` 或 `data` 缺失时 refusal 分类的 nil 解引用，并补运行时、Jev 与在线/离线列表徽标断言。
 
 ## 6. 只读打开不得启动或恢复 Agent
 
