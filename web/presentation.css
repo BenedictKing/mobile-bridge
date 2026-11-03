@@ -165,6 +165,8 @@ main{background:var(--page);overflow:hidden}
 .activity[data-tool]:not([open]) .activity-body,.activity[data-kind=subagent]:not([open]) .activity-body{display:none}
 .activity:not([data-tool]):not([data-kind=subagent]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
 .activity-body{max-height:60vh;overflow:auto}
+/* 长命令、长 URL 整段无空格也换行展示，不再右缘硬切或出现横向滚动。 */
+.activity-body:not(.plan-body){white-space:pre-wrap;overflow-wrap:anywhere}
 .activity-body:empty{display:none}
 .activity:not([open]) .detail-more{display:none}
 .message-actions{gap:4px;margin-top:8px}
