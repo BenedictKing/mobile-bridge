@@ -43,6 +43,33 @@ func TestPermissionCardExtractsSubject(t *testing.T) {
 	}
 }
 
+// 预算停靠（max_tokens / max_turns / max_turn_requests）的回答是截断的：
+// 徽标必须落 interrupted，绝不能显示为已完成（audit：stopReason 映射偏宽）。
+func TestEndTurnClassifiesBudgetStopsAsInterrupted(t *testing.T) {
+	for _, reason := range []string{"max_tokens", "max_turns", "max_turn_requests"} {
+		view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+		view.BeginTurn("跑完测试")
+		view.EndTurn(reason)
+		turn, _ := view.Snapshot().MustGet("turns").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+		if status, _ := turn.MustGet("status").(string); status != "interrupted" {
+			t.Fatalf("stopReason=%s status=%q，应为 interrupted", reason, status)
+		}
+		if recorded, _ := turn.MustGet("stopReason").(string); recorded != reason {
+			t.Fatalf("stopReason 应原样保留，got=%q", recorded)
+		}
+	}
+	// 正常收尾与取消保持原口径。
+	for reason, want := range map[string]string{"end_turn": "completed", "cancelled": "interrupted"} {
+		view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+		view.BeginTurn("跑完测试")
+		view.EndTurn(reason)
+		turn, _ := view.Snapshot().MustGet("turns").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+		if status, _ := turn.MustGet("status").(string); status != want {
+			t.Fatalf("stopReason=%s status=%q，应为 %s", reason, status, want)
+		}
+	}
+}
+
 // kimi injects <system-reminder> prompts and replays them as
 // user_message_chunk; stripped to empty they must not leave blank user
 // bubbles, but they still close a trailing agent turn.

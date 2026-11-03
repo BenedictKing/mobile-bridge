@@ -125,11 +125,15 @@ func DecideContinue(context *jsoncompat.Object, assessment *ContinueAssessment) 
 		return false, "quota"
 	}
 	status := jsoncompat.PyStr(context.MustGet("turnStatus"))
-	if status == "interrupted" || stopReason == "cancelled" {
+	// Budget stops land as interrupted turns too (view EndTurn classifies
+	// max_tokens/max_turns/max_turn_requests that way): they are exhaustion
+	// worth resuming, not the user's stop.
+	budgetStop := stopReason == "max_tokens" || stopReason == "max_turns" || stopReason == "max_turn_requests"
+	if stopReason == "cancelled" || (status == "interrupted" && !budgetStop) {
 		// The user stopped the turn; resuming would undo their decision.
 		return false, "cancelled"
 	}
-	interrupted := status == "failed" || stopReason == "max_tokens" || stopReason == "max_turns"
+	interrupted := status == "failed" || budgetStop
 	if assessment == nil {
 		if interrupted {
 			return true, "interrupted"

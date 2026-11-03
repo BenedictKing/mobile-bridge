@@ -206,13 +206,17 @@ func (v *View) OnUpdate(update *jsoncompat.Object) {
 	v.apply(kind, update)
 }
 
-// EndTurn mirrors end_turn.
+// EndTurn mirrors end_turn, with one deliberate widening over the Python
+// original: budget stops (max_tokens / max_turns / max_turn_requests) mark the
+// turn interrupted, not completed — the answer is provably truncated, and the
+// phone badge plus the team/Jev classifiers key off turn.status.
 func (v *View) EndTurn(stopReason string) {
 	if turn := v.currentTurn(); turn != nil {
 		if status, _ := turn.MustGet("status").(string); status == "inProgress" {
-			if stopReason == "cancelled" {
+			switch stopReason {
+			case "cancelled", "max_tokens", "max_turns", "max_turn_requests":
 				turn.Set("status", "interrupted")
-			} else {
+			default:
 				turn.Set("status", "completed")
 			}
 			turn.Set("stopReason", stopReason)

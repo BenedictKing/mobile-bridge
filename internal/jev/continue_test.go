@@ -51,6 +51,8 @@ func TestDecideContinueAppliesDeterministicPolicy(t *testing.T) {
 		{"user cancelled", continueContext("interrupted", "cancelled", "", ""), nil, false, "cancelled"},
 		{"interrupted without key", continueContext("failed", "", "Agent 响应超时", ""), nil, true, "interrupted"},
 		{"max_tokens without key", continueContext("completed", "max_tokens", "", ""), nil, true, "interrupted"},
+		{"max_tokens interrupted view", continueContext("interrupted", "max_tokens", "", ""), nil, true, "interrupted"},
+		{"max_turn_requests without key", continueContext("completed", "max_turn_requests", "", ""), nil, true, "interrupted"},
 		{"completed without key", continueContext("completed", "end_turn", "", ""), nil, false, "undecided"},
 		{"jev says quota", continueContext("completed", "end_turn", "", ""), &ContinueAssessment{StopKind: "quota"}, false, "quota"},
 		{"jev says awaiting user", continueContext("completed", "end_turn", "", ""), &ContinueAssessment{StopKind: "awaiting_user"}, false, "awaiting_user"},
