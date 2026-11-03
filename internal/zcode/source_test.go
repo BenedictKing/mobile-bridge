@@ -28,7 +28,7 @@ func openFixture(t *testing.T) (*sql.DB, string) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	for _, statement := range []string{
-		`CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_created INTEGER, time_updated INTEGER)`,
+		`CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)`,
 		`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT, sequence INTEGER)`,
 		`CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT, sequence INTEGER)`,
 		`CREATE TABLE turn_usage (session_id TEXT, turn_id TEXT, status TEXT, cancelled_by_user INTEGER, completed_at INTEGER, error_type TEXT)`,
@@ -53,7 +53,7 @@ func insertRow(t *testing.T, db *sql.DB, query string, args ...any) {
 func seed(t *testing.T, db *sql.DB) int64 {
 	t.Helper()
 	now := time.Now().UnixMilli()
-	insertRow(t, db, `INSERT INTO session VALUES (?, ?, ?, ?)`, testSession, "真实标题", now-120000, now-1000)
+	insertRow(t, db, `INSERT INTO session VALUES (?, ?, ?, ?, ?)`, testSession, "真实标题", "/work", now-120000, now-1000)
 	insertRow(t, db, `INSERT INTO message VALUES (?, ?, ?, ?, ?, ?)`,
 		"m1", testSession, now-1000, now-1000, `{"role":"user","time":{"created":`+jsonText(now-1000)+`},"anchor":{"turnId":"t1"}}`, 1)
 	insertRow(t, db, `INSERT INTO part VALUES (?, ?, ?, ?, ?, ?, ?)`,

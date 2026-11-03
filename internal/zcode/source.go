@@ -108,6 +108,40 @@ func (s *Source) Meta(sessionID string) (string, int64) {
 	return strings.TrimSpace(title), updated
 }
 
+// List enumerates persisted sessions without starting zcode-acp. Directory is
+// the execution root recorded by ZCode, not a value inferred from a project id.
+func (s *Source) List() []*jsoncompat.Object {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	rows, err := s.db.Query(`SELECT id, title, directory, time_updated FROM session
+		ORDER BY time_updated DESC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	result := []*jsoncompat.Object{}
+	for rows.Next() {
+		var id, title, cwd string
+		var updated int64
+		if err := rows.Scan(&id, &title, &cwd, &updated); err != nil {
+			return nil
+		}
+		if id == "" || cwd == "" {
+			continue
+		}
+		row := jsoncompat.NewObject()
+		row.Set("sessionId", id)
+		if title = strings.TrimSpace(title); title != "" {
+			row.Set("title", title)
+		}
+		row.Set("cwd", cwd)
+		row.Set("updatedAt", jsoncompat.Num(int(updated)))
+		result = append(result, row)
+	}
+	return result
+}
+
 // Close releases the read-only connection.
 func (s *Source) Close() error {
 	if s == nil || s.db == nil {

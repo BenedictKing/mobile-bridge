@@ -66,3 +66,50 @@ func TestDSHReadRoutesUseNativeHistoryWithoutStartingAgent(t *testing.T) {
 		t.Fatalf("read routes started the agent: %v", err)
 	}
 }
+
+func TestNativeAgentsReadRoutesNeverStartProcess(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, kind := range []string{"zcode", "claude", "workbuddy", "kimi", "mcode", "opencode"} {
+		t.Run(kind, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "agent-started")
+			t.Setenv("ACP_HTTP_START_MARKER", marker)
+			manager := acpruntime.NewCommand([]string{python, "-u", "-c",
+				`import os; open(os.environ["ACP_HTTP_START_MARKER"], "w").write("started")`})
+			manager.NativeListExclusive = true
+			manager.NativeList = func() []*jsoncompat.Object {
+				row := jsoncompat.NewObject()
+				row.Set("sessionId", "session-history")
+				row.Set("cwd", "/work")
+				return []*jsoncompat.Object{row}
+			}
+			manager.NativeTranscript = func(string) (*acpview.NativeSnapshot, error) {
+				turn := jsoncompat.NewObject()
+				turn.Set("id", "turn-history")
+				turn.Set("status", "completed")
+				message := jsoncompat.NewObject()
+				message.Set("id", "user-history")
+				message.Set("kind", "userMessage")
+				message.Set("role", "user")
+				message.Set("text", "只读历史问题")
+				turn.Set("messages", &jsoncompat.Array{Items: []any{message}})
+				return &acpview.NativeSnapshot{Title: kind + " 原生历史", Turns: []*jsoncompat.Object{turn}}, nil
+			}
+			server, token, csrf := newFeatureServer(t, t.TempDir())
+			server.ACPAgents = map[string]*acpruntime.Manager{kind: manager}
+			t.Cleanup(manager.Close)
+			server.PreloadRecentSessions()
+
+			view := featureRequest(server, token, csrf, http.MethodGet,
+				"/api/sessions/session-history?agent="+kind+"&cwd=/work", "")
+			if view.Code != http.StatusOK || !strings.Contains(view.Body.String(), kind+" 原生历史") {
+				t.Fatalf("view status=%d body=%s", view.Code, view.Body.String())
+			}
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("read route started %s: %v", kind, err)
+			}
+		})
+	}
+}

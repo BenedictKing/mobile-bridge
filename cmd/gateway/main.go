@@ -51,7 +51,9 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/kimi"
 	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
+	"github.com/BenedictKing/mobile-bridge/internal/mcode"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
+	"github.com/BenedictKing/mobile-bridge/internal/opencode"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
@@ -770,11 +772,25 @@ func runGateway(args []string) {
 			server.QueueSettleACP("dsh", session)
 		}
 	}
+	if manager := server.ACPAgents["mcode"]; manager != nil && !scriptedMode {
+		if source, err := mcode.OpenSource(mcode.DBPath(os.Getenv, home)); err == nil {
+			manager.NativeTranscript = source.Load
+			manager.NativeReset = source.Reset
+			manager.NativeList = source.List
+			manager.NativeListExclusive = true
+			manager.NativeClose = source.Close
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("mcode native store: %v", err)
+		}
+	}
 	if manager := server.ACPAgents["zcode"]; manager != nil && !scriptedMode {
 		if source, err := zcode.OpenSource(acpagents.ZcodeDBPath(os.Getenv, home)); err == nil {
 			source.SetMediaDir(filepath.Join(dataDir, "agent-media"))
 			manager.Native = source.Load
 			manager.NativeReset = source.Reset
+			manager.NativeTranscript = source.Load
+			manager.NativeList = source.List
+			manager.NativeListExclusive = true
 			manager.NativeClose = source.Close
 			manager.NativeMeta = source.Meta
 			manager.NativeSettle = func(session *acpruntime.Session) {
@@ -792,6 +808,8 @@ func runGateway(args []string) {
 		manager.NativeList = func() []*jsoncompat.Object {
 			return kimi.ListSessions(kimiHome)
 		}
+		manager.NativeListExclusive = true
+		manager.NativeTranscript = kimi.TranscriptReader(kimiHome)
 		// Kimi Code rewrites state.json's updatedAt on every session/load, so
 		// the startup preload restamped the recent chats as just-used after
 		// each restart. The wire transcript's last event time is the real
@@ -806,6 +824,8 @@ func runGateway(args []string) {
 		manager.NativeList = func() []*jsoncompat.Object {
 			return codebuddy.ListSessions(home)
 		}
+		manager.NativeListExclusive = true
+		manager.NativeTranscript = codebuddy.TranscriptReader(home)
 		// CodeBuddy CLI writes session-meta on every session/load, so the
 		// startup preload restamped the recent chats as just-used after each
 		// restart. The transcript's last message/tool event time is the real
@@ -819,7 +839,22 @@ func runGateway(args []string) {
 		// restart restamped the preloaded chats as just-used. The transcript's
 		// last timestamped record is the real last interaction. Read-only,
 		// never touches the CLI.
-		manager.NativeMeta = claude.MetaReader(claude.ProjectsRoot(os.Getenv, home))
+		claudeRoot := claude.ProjectsRoot(os.Getenv, home)
+		manager.NativeMeta = claude.MetaReader(claudeRoot)
+		manager.NativeList = func() []*jsoncompat.Object { return claude.ListSessions(claudeRoot) }
+		manager.NativeListExclusive = true
+		manager.NativeTranscript = claude.TranscriptReader(claudeRoot)
+	}
+	if manager := server.ACPAgents["opencode"]; manager != nil && !scriptedMode {
+		if source, err := opencode.OpenSource(opencode.DBPath(os.Getenv, home)); err == nil {
+			manager.NativeTranscript = source.Load
+			manager.NativeReset = source.Reset
+			manager.NativeList = source.List
+			manager.NativeListExclusive = true
+			manager.NativeClose = source.Close
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Printf("opencode native store: %v", err)
+		}
 	}
 	if len(server.ACPAgents) > 0 {
 		// Per-agent ledgers shared by every manager of the same kind. Agents
