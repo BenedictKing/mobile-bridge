@@ -77,7 +77,7 @@ func TestChildThreadsAndSubagentHistory(t *testing.T) {
 	}
 }
 
-func TestSubagentStoreFlattensIntoActivity(t *testing.T) {
+func TestCompletedSubagentDoesNotFlattenIntoActivity(t *testing.T) {
 	store := codexSubagentFixture(t)
 	adapter := store.Subagents()
 	children := adapter.Children("parent-1")
@@ -85,12 +85,8 @@ func TestSubagentStoreFlattensIntoActivity(t *testing.T) {
 		t.Fatalf("children=%+v", children)
 	}
 	activity := subagents.Flatten(adapter, "parent-1")
-	if activity.Revision != 8000 || len(activity.Rows) != 1 {
+	if activity.Revision != 8000 || len(activity.Rows) != 0 {
 		t.Fatalf("activity=%+v", activity)
-	}
-	row := activity.Rows[0]
-	if row.SubagentID != "child-1" || row.Status != "completed" {
-		t.Fatalf("row=%+v", row)
 	}
 	// The cached roster serves the second read without a new query hit
 	// being observable; the important part is stability.

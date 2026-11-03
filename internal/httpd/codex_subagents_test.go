@@ -46,7 +46,7 @@ func TestHistoricalTimelineIncludesCodexSubagents(t *testing.T) {
 		`CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT)`,
 		`INSERT INTO threads VALUES ('parent-h','历史会话','历史会话','/work',1,1000,9,9000,0,'Codex Desktop','desktop','` + parentRollout + `')`,
 		`INSERT INTO threads VALUES ('child-h','检索','检索','/work',2,2000,8,8000,0,'codex_cli_rs','{}','` + childRollout + `')`,
-		`INSERT INTO thread_spawn_edges VALUES ('parent-h','child-h','completed')`,
+		`INSERT INTO thread_spawn_edges VALUES ('parent-h','child-h','running')`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)

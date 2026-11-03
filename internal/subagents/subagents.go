@@ -270,9 +270,9 @@ func toAny(items []*jsoncompat.Object) []any {
 
 // baseStore mirrors _BaseStore: signature caches for roster and history.
 type baseStore struct {
-	root string
-	mu   sync.Mutex
-	rosterCache map[string]cacheEntry
+	root         string
+	mu           sync.Mutex
+	rosterCache  map[string]cacheEntry
 	historyCache map[string]cacheEntry
 }
 
@@ -509,9 +509,9 @@ func (s *KimiStore) Children(parentID string) []Child {
 			lastPrompt, _ := state.MustGet("lastPrompt").(string)
 			rows = append(rows, Child{ID: parentID + "/" + agentID, Name: agentID,
 				AgentRole: spawnTypes[agentID], SpawnStatus: status,
-				UpdatedAtMs: isoMs(state.MustGet("updatedAt")),
+				UpdatedAtMs:      isoMs(state.MustGet("updatedAt")),
 				FirstUserMessage: truncate(lastPrompt, 4000),
-				Transcript:      filepath.Join(sessionDir, "agents", agentID, "wire.jsonl")})
+				Transcript:       filepath.Join(sessionDir, "agents", agentID, "wire.jsonl")})
 			if len(rows) >= maxChildren {
 				break
 			}
@@ -767,14 +767,15 @@ func (s *ClaudeStore) History(childID string) *jsoncompat.Object {
 	return history
 }
 
-// Flatten ports _subagent_activity: fold child-agent rollouts into
-// expandable parent activity rows plus the roster revision.
+// Flatten ports _subagent_activity: fold active child-agent rollouts into
+// expandable parent activity rows plus the roster revision. Completed children
+// still advance the revision so clients drop their rows immediately.
 func Flatten(store Store, parentID string) Activity {
 	children := store.Children(parentID)
 	activity := Activity{Rows: []Row{}}
 	for _, child := range children {
 		activity.Revision = max64(activity.Revision, child.UpdatedAtMs)
-		if child.ID == "" {
+		if child.ID == "" || child.SpawnStatus == "" || child.SpawnStatus == "completed" {
 			continue
 		}
 		history := store.History(child.ID)
@@ -840,9 +841,6 @@ func Flatten(store Store, parentID string) Activity {
 		}
 		title += " · " + description
 		status := child.SpawnStatus
-		if status == "" {
-			status = "completed"
-		}
 		rowText := strings.Join(lines, "\n\n")
 		if rowText == "" {
 			rowText = "子 Agent 暂无可显示的执行记录"
@@ -924,7 +922,6 @@ func Inject(view *jsoncompat.Object, activity Activity) *jsoncompat.Object {
 	}
 	return view
 }
-
 
 // Flattener caches the flatten output per parent keyed by the roster
 // revision, so per-view decoration (SSE polls read the view repeatedly)

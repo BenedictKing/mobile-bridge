@@ -55,17 +55,10 @@ func TestZcodeStoreRosterAndHistory(t *testing.T) {
 	if kind := messages.Items[1].(*jsoncompat.Object).MustGet("kind"); kind != "toolCall" {
 		t.Fatalf("second message kind=%v", kind)
 	}
-	// Flatten + Inject round out the pipeline.
+	// Completed children advance the revision but leave no timeline row.
 	activity := Flatten(store, "ph-1")
-	if activity.Revision != 1791900000000 || len(activity.Rows) != 1 {
+	if activity.Revision != 1791900000000 || len(activity.Rows) != 0 {
 		t.Fatalf("activity=%+v", activity)
-	}
-	row := activity.Rows[0]
-	if row.SubagentID != "child-1" || row.SubagentType != "Explore" || row.Status != "completed" {
-		t.Fatalf("row=%+v", row)
-	}
-	if row.Text == "" || !contains(row.Text, "[Agent]") || !contains(row.Text, "共 3 处引用") {
-		t.Fatalf("row text=%q", row.Text)
 	}
 	view := jsoncompat.NewObject()
 	view.Set("turns", &jsoncompat.Array{})
@@ -73,14 +66,8 @@ func TestZcodeStoreRosterAndHistory(t *testing.T) {
 	if view.MustGet("subagentRevision") != jsoncompat.Num(1791900000000) {
 		t.Fatalf("revision=%v", view.MustGet("subagentRevision"))
 	}
-	first := view.MustGet("turns").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
-	if len(first.MustGet("messages").(*jsoncompat.Array).Items) != 1 {
-		t.Fatal("subagent row not injected")
-	}
-	// A second inject with the same activity does not duplicate the row.
-	Inject(view, activity)
-	if len(first.MustGet("messages").(*jsoncompat.Array).Items) != 1 {
-		t.Fatal("subagent row duplicated")
+	if turns := view.MustGet("turns").(*jsoncompat.Array); len(turns.Items) != 0 {
+		t.Fatal("completed subagent row injected")
 	}
 }
 
@@ -149,6 +136,10 @@ func TestKimiStoreRosterAndHistory(t *testing.T) {
 	if !contains(compact, "整理结果") || !contains(compact, "内容 A") {
 		t.Fatalf("history=%s", compact)
 	}
+	activity := Flatten(store, "k-parent")
+	if activity.Revision != 1791900000000 || len(activity.Rows) != 0 {
+		t.Fatalf("completed Kimi subagent remains visible: %+v", activity)
+	}
 }
 
 func TestFlattenerCachesByRevision(t *testing.T) {
@@ -156,7 +147,7 @@ func TestFlattenerCachesByRevision(t *testing.T) {
 	write(t, filepath.Join(root, "v2", "acp-lazy-sessions.json"),
 		`{"p": {"zcodeSid": "sess-x"}}`)
 	write(t, filepath.Join(root, "cli", "agents", "sess-x", "agent_a", "metadata.json"),
-		`{"childSessionId":"c1","description":"d","updatedAt":5,"prompt":"q"}`)
+		`{"childSessionId":"c1","description":"d","status":"running","updatedAt":5,"prompt":"q"}`)
 	write(t, filepath.Join(root, "cli", "agents", "sess-x", "agent_a", "transcript.jsonl"),
 		`{"type":"turn_complete","payload":{"resultType":"success","response":"done"}}`)
 	flattener := NewFlattener(NewZcodeStore(root))
