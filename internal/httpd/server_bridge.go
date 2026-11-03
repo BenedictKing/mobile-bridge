@@ -174,16 +174,37 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", kind)
 	transport := s.acpGoalTransport(kind, manager)
+	// Effective capabilities: the profile is only the adapter prior — each
+	// entry must also carry runtime evidence for THIS session before the
+	// phone offers the control (审计 §3：不能把 profile 静态声明当运行时证明).
+	commandSkills := manager.CommandSkills(session)
 	capabilities := &jsoncompat.Array{}
 	for _, capability := range manager.Capabilities {
-		// The goals capability is only advertised when this gateway actually
-		// serves the agent's goal transport (mcode); otherwise hide the
-		// control rather than offer a goal mode that silently degrades to a
-		// plain prompt. Branching IS offered: acp_fork.go synthesizes it on
-		// the gateway.
-		if capability == "goals" && transport == nil {
-			continue
+		switch capability {
+		case "goals":
+			// Only advertised when this gateway actually serves the agent's
+			// goal transport (mcode); otherwise hide the control rather than
+			// offer a goal mode that silently degrades to a plain prompt.
+			if transport == nil {
+				continue
+			}
+		case "steer":
+			// The send path refuses steer without a steering RPC
+			// (sessions.go 的 SteerMethod 门控)；UI 不得提供运行时会拒绝
+			// 的入口——profile 声明本身不是运行时证据。
+			if manager.SteerMethod == "" {
+				continue
+			}
+		case "skills":
+			// The picker reads the session's advertised slash commands; a
+			// session that never lists any (旧会话不广播命令) hides the
+			// entry until the agent sends available_commands_update.
+			if len(commandSkills) == 0 {
+				continue
+			}
 		}
+		// Branching passes through: acp_fork.go synthesizes it on the
+		// gateway, so it needs no native evidence.
 		capabilities.Items = append(capabilities.Items, capability)
 	}
 	if session.ReadOnly() {
