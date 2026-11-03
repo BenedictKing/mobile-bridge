@@ -157,8 +157,7 @@ func nativeHistoryActive(snapshot *acpview.NativeSnapshot) bool {
 
 func applyClaudeUser(builder *acpview.NativeBuilder, content any) string {
 	if text, ok := content.(string); ok {
-		builder.User(text)
-		return text
+		return foldUserText(builder, text)
 	}
 	blocks, _ := content.(*jsoncompat.Array)
 	if blocks == nil {
@@ -178,7 +177,22 @@ func applyClaudeUser(builder *acpview.NativeBuilder, content any) string {
 	if hasToolResult {
 		return ""
 	}
-	text := acpview.Text(blocks)
+	return foldUserText(builder, acpview.Text(blocks))
+}
+
+// foldUserText handles one user-side text. Claude Code echoes a user
+// interrupt as a literal user record ("[Request interrupted by user]" or its
+// tool-use variant) with no turn-end after it; folding it as a normal prompt
+// leaves a forever-inProgress turn that keeps the phone read-only. The
+// interrupted turn settles as interrupted and the marker itself renders as a
+// closed turn instead.
+func foldUserText(builder *acpview.NativeBuilder, text string) string {
+	if strings.HasPrefix(text, "[Request interrupted by user") {
+		builder.End("cancelled")
+		builder.User(text)
+		builder.End("cancelled")
+		return ""
+	}
 	builder.User(text)
 	return text
 }
