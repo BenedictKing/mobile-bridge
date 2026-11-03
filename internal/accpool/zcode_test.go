@@ -593,7 +593,7 @@ func TestZcodeQuotaBillingNormalize(t *testing.T) {
 		t.Fatalf("first window: %+v", first)
 	}
 	// The 95% window reads exhausted, the fresh one does not.
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0].Name != "GLM-4.6" {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 1 || got[0].Name != "GLM-4.6" {
 		t.Fatalf("exhausted: %+v", got)
 	}
 }
@@ -633,17 +633,17 @@ func TestZcodeMonitorNormalize(t *testing.T) {
 	if quota.Limits[1].ResetAt != "2027-01-01T00:00:00Z" {
 		t.Fatalf("epoch reset time: %q", quota.Limits[1].ResetAt)
 	}
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0].Name != "Token 用量" {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 1 || got[0].Name != "Token 用量" {
 		t.Fatalf("exhausted: %+v", got)
 	}
 	// Even with MCP 用量 over 100%, the account stays available: only the AI
 	// token window gates exhaustion.
 	quota.Limits[1].Used = 1010
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0].Name != "Token 用量" {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 1 || got[0].Name != "Token 用量" {
 		t.Fatalf("exhausted with MCP over 100%%: %+v", got)
 	}
 	quota.Limits[0].Used = 0
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 0 {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 0 {
 		t.Fatalf("auxiliary-only exhaustion must not trigger: %+v", got)
 	}
 }
@@ -685,11 +685,11 @@ func TestZcodeMonitorNormalizePercentageOnly(t *testing.T) {
 	}
 	// The synthesized window must gate exhaustion like a real one: 79% is
 	// below the threshold, 99% trips it.
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 0 {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 0 {
 		t.Fatalf("79%% must not be exhausted: %+v", got)
 	}
 	quota.Limits[0].Used = 990
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0].Name != "Token 用量" {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 1 || got[0].Name != "Token 用量" {
 		t.Fatalf("exhausted at 99%%: %+v", got)
 	}
 }
@@ -801,7 +801,7 @@ func TestZcodeRefreshQuotaMarksReauth(t *testing.T) {
 		t.Fatalf("status: %+v", acc)
 	}
 	// The dead account is no longer a switch candidate.
-	if availableForSwitch("zcode", acc, 0.95) {
+	if availableForSwitch("zcode", acc, 0.95, defaultLongTermThreshold) {
 		t.Fatal("reauth account must not be switchable")
 	}
 }
@@ -1035,6 +1035,32 @@ func TestAutoSwitchUsesZcodeResetCard(t *testing.T) {
 	}
 }
 
+func TestAutoSwitchUsesConfiguredZcodeResetCardThreshold(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	thresholds := DefaultThresholdSettings()
+	thresholds.ResetCard = 0.97
+	if err := m.SetThresholds("zcode", thresholds); err != nil {
+		t.Fatal(err)
+	}
+	useHits := stubZcodeResetAPIAt(t, 1, 97)
+	auto := NewAutoSwitcher(m)
+	auto.now = m.now
+
+	poller := NewPoller(m)
+	var switched bool
+	var err error
+	poller.OnExhausted = func(kind string) {
+		switched, err = auto.HandleQuotaExhaustion(context.Background(), kind, "")
+	}
+	poller.tick(context.Background())
+	if err != nil || switched {
+		t.Fatalf("configured card threshold must keep the account: switched=%v err=%v", switched, err)
+	}
+	if useHits.Load() != 1 {
+		t.Fatalf("one card must be spent below the switch threshold, hits=%d", useHits.Load())
+	}
+}
+
 func TestAutoSwitchZcodeFallsThroughWithoutCard(t *testing.T) {
 	m, _ := zcodeResetFixture(t)
 	useHits := stubZcodeResetAPI(t, 0)
@@ -1064,7 +1090,11 @@ func TestAutoSwitchZcodeResetCardHoldsBeforeProactiveLine(t *testing.T) {
 	useHits := stubZcodeResetAPIAt(t, 1, 96)
 	auto := NewAutoSwitcher(m)
 	// Exercise the gap with a custom threshold below the proactive line.
-	auto.Threshold = 0.95
+	thresholds := DefaultThresholdSettings()
+	thresholds.Switch = 0.95
+	if err := m.SetThresholds("zcode", thresholds); err != nil {
+		t.Fatal(err)
+	}
 	auto.now = m.now
 	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
 
@@ -1090,7 +1120,11 @@ func TestAutoSwitchZcodeResetCardReactiveBelowProactiveLine(t *testing.T) {
 	useHits := stubZcodeResetAPIAt(t, 1, 96)
 	auto := NewAutoSwitcher(m)
 	// Exercise the gap with a custom threshold below the proactive line.
-	auto.Threshold = 0.95
+	thresholds := DefaultThresholdSettings()
+	thresholds.Switch = 0.95
+	if err := m.SetThresholds("zcode", thresholds); err != nil {
+		t.Fatal(err)
+	}
 	auto.now = m.now
 	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
 

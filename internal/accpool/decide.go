@@ -38,13 +38,9 @@ func WorstRemaining(quota *Quota) float64 {
 	return remaining
 }
 
-const longTermExhaustionThreshold = 0.99
-
-// ExhaustedWindows returns the quota windows at or over their exhaustion
-// threshold. Ordinary windows use threshold; weekly and monthly windows use
-// at least 99% so they do not trigger an early account switch. Windows without
-// a usable limit carry no signal.
-func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
+// ExhaustedWindows returns the quota windows at or over their configured
+// exhaustion threshold. Windows without a usable limit carry no signal.
+func ExhaustedWindows(quota *Quota, threshold, longTermThreshold float64) []*WindowQuota {
 	var out []*WindowQuota
 	for _, window := range primaryWindows(quota) {
 		if window.Limit <= 0 {
@@ -52,7 +48,7 @@ func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
 		}
 		windowThreshold := threshold
 		if window == quota.Weekly || window.WindowUnit == "week" || window.WindowUnit == "month" {
-			windowThreshold = max(windowThreshold, longTermExhaustionThreshold)
+			windowThreshold = longTermThreshold
 		}
 		if float64(window.Used)/float64(window.Limit) >= windowThreshold {
 			out = append(out, window)
@@ -65,7 +61,7 @@ func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
 // no window at or over the switch threshold and the quota snapshot fresh
 // enough to trust. kimi accounts need a refresh token to be renewable; zcode
 // accounts need their snapshot pair.
-func availableForSwitch(kind string, acc *Account, threshold float64) bool {
+func availableForSwitch(kind string, acc *Account, threshold, longTermThreshold float64) bool {
 	if acc.Status != StatusActive {
 		return false
 	}
@@ -86,14 +82,14 @@ func availableForSwitch(kind string, acc *Account, threshold float64) bool {
 		// polled stays eligible, the switch probe is the real check.
 		return true
 	}
-	return len(ExhaustedWindows(acc.Quota, threshold)) == 0
+	return len(ExhaustedWindows(acc.Quota, threshold, longTermThreshold)) == 0
 }
 
 // ChooseTarget picks the switch target: every candidate is re-polled (backup
 // accounts are otherwise never refreshed), then the winner is the account
 // whose tightest window has the most remaining headroom; ties go to the
 // account unused for the longest time.
-func (m *Manager) ChooseTarget(ctx context.Context, kind, currentID string, threshold float64) *Account {
+func (m *Manager) ChooseTarget(ctx context.Context, kind, currentID string, threshold, longTermThreshold float64) *Account {
 	var best *Account
 	bestHeadroom := -1.0
 	for _, candidate := range m.list(kind) {
@@ -109,7 +105,7 @@ func (m *Manager) ChooseTarget(ctx context.Context, kind, currentID string, thre
 		if err != nil && fresh.Quota == nil {
 			continue
 		}
-		if !availableForSwitch(kind, fresh, threshold) {
+		if !availableForSwitch(kind, fresh, threshold, longTermThreshold) {
 			continue
 		}
 		headroom := 1.0

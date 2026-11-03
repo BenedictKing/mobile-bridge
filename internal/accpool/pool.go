@@ -71,16 +71,16 @@ type Account struct {
 	// daily check-in (CN only; grants credits); AiProvision tracks the
 	// international region-registration + one-time trial ("" unknown,
 	// "pending" unregistered, "done" usable).
-	CheckinAt   int64  `json:"checkinAt,omitempty"`
-	CheckinNote string `json:"checkinNote,omitempty"`
-	AiProvision string `json:"aiProvision,omitempty"`
-	Status           string `json:"status,omitempty"`
-	StatusReason     string `json:"statusReason,omitempty"`
-	Quota            *Quota `json:"quota,omitempty"`
-	QuotaUpdatedAt   int64  `json:"quotaUpdatedAt,omitempty"`
-	QuotaError       string `json:"quotaError,omitempty"`
-	CreatedAt        int64  `json:"createdAt,omitempty"`
-	LastUsedAt       int64  `json:"lastUsedAt,omitempty"`
+	CheckinAt      int64  `json:"checkinAt,omitempty"`
+	CheckinNote    string `json:"checkinNote,omitempty"`
+	AiProvision    string `json:"aiProvision,omitempty"`
+	Status         string `json:"status,omitempty"`
+	StatusReason   string `json:"statusReason,omitempty"`
+	Quota          *Quota `json:"quota,omitempty"`
+	QuotaUpdatedAt int64  `json:"quotaUpdatedAt,omitempty"`
+	QuotaError     string `json:"quotaError,omitempty"`
+	CreatedAt      int64  `json:"createdAt,omitempty"`
+	LastUsedAt     int64  `json:"lastUsedAt,omitempty"`
 }
 
 // Manager owns the per-agent account pools under <dataDir>/pool/<kind>/.
@@ -950,6 +950,12 @@ func (m *Manager) Detail(kind string) (*jsoncompat.Object, error) {
 	detail.Set("kind", kind)
 	detail.Set("activeId", active)
 	detail.Set("autoSwitch", m.AutoSwitchEnabled(kind))
+	thresholds := m.Thresholds(kind)
+	thresholdView := jsoncompat.NewObject()
+	thresholdView.Set("switch", json.Number(fmt.Sprintf("%g", thresholds.Switch*100)))
+	thresholdView.Set("longTerm", json.Number(fmt.Sprintf("%g", thresholds.LongTerm*100)))
+	thresholdView.Set("resetCard", json.Number(fmt.Sprintf("%g", thresholds.ResetCard*100)))
+	detail.Set("thresholds", thresholdView)
 	detail.Set("accounts", accounts)
 	detail.Set("history", historyView(m.History(kind, 50)))
 	return detail, nil

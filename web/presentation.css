@@ -516,6 +516,12 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 .accounts-panel .pool-controls .notification-option{display:flex;align-items:center;gap:10px;flex-basis:100%;margin:6px 0 0;min-height:40px;font-size:14px;cursor:pointer}
 .accounts-panel .pool-controls .notification-option input{width:20px;height:20px;min-height:0;margin:0;flex:none}
 .pool-controls .notification-option strong{font-weight:500}
+.pool-thresholds{margin:0 0 12px;border:1px solid var(--line);border-radius:8px;padding:0 12px 12px}
+.pool-thresholds summary{padding:12px 0;cursor:pointer;font-size:14px;font-weight:500}
+.pool-thresholds>p{margin:0 0 12px;font-size:12px}
+.pool-threshold-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:12px}
+.pool-threshold-field{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted)}
+.pool-threshold-field input{box-sizing:border-box;width:100%;min-height:40px;padding:8px 10px;font-variant-numeric:tabular-nums}
 .accounts-panel .account-bucket{margin-bottom:0}
 .accounts-panel .account-bucket:last-child{border-bottom:0}
 .account-bucket>button{margin:8px 8px 0 0}

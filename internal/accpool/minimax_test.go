@@ -189,7 +189,7 @@ func TestMinimaxRemainsPercentToWindows(t *testing.T) {
 		t.Fatalf("membership/tier: %+v", quota)
 	}
 	// An over-95% window reads exhausted for the auto-switch gate.
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 || got[0] != window {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 1 || got[0] != window {
 		t.Fatalf("exhausted: %+v", got)
 	}
 }
@@ -398,7 +398,7 @@ func TestMinimaxRefreshQuotaReauthOnInvalidGrant(t *testing.T) {
 	if acc.Status != StatusReauthRequired {
 		t.Fatalf("status: %q", acc.Status)
 	}
-	if availableForSwitch("minimax", acc, 0.95) {
+	if availableForSwitch("minimax", acc, 0.95, defaultLongTermThreshold) {
 		t.Fatal("reauth account must not be switchable")
 	}
 }

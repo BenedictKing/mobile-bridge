@@ -24,6 +24,30 @@ func poolJSONValue(value any) any {
 	return parsed
 }
 
+func poolThresholdRatio(obj *jsoncompat.Object, key string, current float64) (float64, error) {
+	raw, exists := obj.Get(key)
+	if !exists {
+		return current, nil
+	}
+	var percent float64
+	switch value := raw.(type) {
+	case json.Number:
+		parsed, err := value.Float64()
+		if err != nil {
+			return 0, errors.New("阈值必须是数字")
+		}
+		percent = parsed
+	case float64:
+		percent = value
+	default:
+		return 0, errors.New("阈值必须是数字")
+	}
+	if percent <= 0 || percent > 100 {
+		return 0, errors.New("阈值必须大于 0% 且不超过 100%")
+	}
+	return percent / 100, nil
+}
+
 // handlePool serves the ACP account-pool routes:
 //
 //	GET  /api/pool                 overview of every supported agent (+ a
@@ -169,14 +193,39 @@ func (h *handler) handlePool(write bool) {
 		}
 		h.output(http.StatusOK, detail, contentTypeJSON, "")
 	case "settings":
-		enabled, ok := body.MustGet("autoSwitch").(bool)
-		if !ok {
-			h.fail(http.StatusBadRequest, errorBody("缺少 autoSwitch 开关值"))
+		enabled, hasAutoSwitch := body.MustGet("autoSwitch").(bool)
+		rawThresholds := body.MustGet("thresholds")
+		if !hasAutoSwitch && rawThresholds == nil {
+			h.fail(http.StatusBadRequest, errorBody("缺少 autoSwitch 或 thresholds 设置值"))
 			return
 		}
-		if err := pool.SetAutoSwitch(kind, enabled); err != nil {
-			h.fail(http.StatusBadRequest, errorBody(err.Error()))
-			return
+		if rawThresholds != nil {
+			obj, ok := rawThresholds.(*jsoncompat.Object)
+			if !ok {
+				h.fail(http.StatusBadRequest, errorBody("thresholds 必须是对象"))
+				return
+			}
+			thresholds := pool.Thresholds(kind)
+			var err error
+			if thresholds.Switch, err = poolThresholdRatio(obj, "switch", thresholds.Switch); err == nil {
+				thresholds.LongTerm, err = poolThresholdRatio(obj, "longTerm", thresholds.LongTerm)
+			}
+			if err == nil {
+				thresholds.ResetCard, err = poolThresholdRatio(obj, "resetCard", thresholds.ResetCard)
+			}
+			if err == nil {
+				err = pool.SetThresholds(kind, thresholds)
+			}
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return
+			}
+		}
+		if hasAutoSwitch {
+			if err := pool.SetAutoSwitch(kind, enabled); err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return
+			}
 		}
 		detail, err := pool.Detail(kind)
 		if err != nil {

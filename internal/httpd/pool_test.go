@@ -185,6 +185,48 @@ func TestPoolRemoveRoute(t *testing.T) {
 	}
 }
 
+func TestPoolThresholdSettingsRoute(t *testing.T) {
+	server := newPoolRouteServer(t)
+	response := poolRoute(t, server, http.MethodGet, "/api/pool/zcode", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	detail := jsonObject(t, response.Body.String())
+	thresholds, _ := detail.MustGet("thresholds").(*jsoncompat.Object)
+	if thresholds == nil || string(jsoncompat.EncodeCompact(thresholds.MustGet("switch"))) != "99" ||
+		string(jsoncompat.EncodeCompact(thresholds.MustGet("resetCard"))) != "98" {
+		t.Fatalf("default thresholds: %s", response.Body.String())
+	}
+
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/zcode/settings",
+		`{"thresholds":{"switch":97.5,"longTerm":99.5,"resetCard":96}}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("save: status=%d body=%s", response.Code, response.Body.String())
+	}
+	detail = jsonObject(t, response.Body.String())
+	thresholds, _ = detail.MustGet("thresholds").(*jsoncompat.Object)
+	if got := string(jsoncompat.EncodeCompact(thresholds.MustGet("switch"))); got != "97.5" {
+		t.Fatalf("switch threshold: %s", got)
+	}
+	want := accpool.ThresholdSettings{Switch: 0.975, LongTerm: 0.995, ResetCard: 0.96}
+	if got := server.Pool.Thresholds("zcode"); got != want {
+		t.Fatalf("persisted thresholds: %+v", got)
+	}
+
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/zcode/settings",
+		`{"thresholds":{"switch":101}}`)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid threshold: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := server.Pool.Thresholds("zcode"); got != want {
+		t.Fatalf("invalid update changed thresholds: %+v", got)
+	}
+	response = poolRoute(t, server, http.MethodPost, "/api/pool/zcode/settings", `{"autoSwitch":false}`)
+	if response.Code != http.StatusOK || server.Pool.AutoSwitchEnabled("zcode") {
+		t.Fatalf("legacy autoSwitch request: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 // WorkBuddy 快照里的积分汇总是 float64，而 jsoncompat 只编码整数：视图层没
 // 取整时 encode 会 panic，连接被直接掐断，网页只能看到「Failed to fetch」。
 func TestPoolWorkbuddyDetailRendersCredits(t *testing.T) {

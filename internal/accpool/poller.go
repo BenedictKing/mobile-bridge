@@ -23,10 +23,6 @@ type Poller struct {
 	// younger than AllInterval are skipped, so restarts don't re-hit fresh
 	// accounts.
 	AllInterval time.Duration
-	// Threshold is the ordinary-window used/limit ratio that counts as
-	// exhausted for the preventive-switch check (0.99 by default; 0 disables
-	// the check); weekly and monthly windows use at least 0.99.
-	Threshold float64
 	// OnExhausted fires (on the poll goroutine) when the active account
 	// crosses its exhaustion threshold; the auto-switcher owns the reaction.
 	OnExhausted func(kind string)
@@ -171,8 +167,13 @@ func (p *Poller) tick(ctx context.Context) float64 {
 		if fraction := WorstRemaining(account.Quota); fraction < remaining {
 			remaining = fraction
 		}
-		if p.OnExhausted != nil && p.Threshold > 0 &&
-			len(ExhaustedWindows(account.Quota, p.Threshold)) > 0 {
+		thresholds := p.Manager.Thresholds(kind)
+		triggerThreshold := thresholds.Switch
+		if kind == "zcode" {
+			triggerThreshold = min(triggerThreshold, thresholds.ResetCard)
+		}
+		if p.OnExhausted != nil &&
+			len(ExhaustedWindows(account.Quota, triggerThreshold, thresholds.LongTerm)) > 0 {
 			p.OnExhausted(kind)
 		}
 	}

@@ -1,7 +1,7 @@
 'use strict';
 /* ACP 账号池面板：展示池内账号与窗口额度，支持捕获本机当前登录态
    （新账号导入 / 已有账号更新凭证）、删除快照、网关内登录
-   （device flow / 扫码 / OAuth 轮询）、手动刷新额度、切换账号与自动切换开关。
+   （device flow / 扫码 / OAuth 轮询）、手动刷新额度、切换账号、自动切换开关与分窗口阈值。
    kimi/zcode/minimax/workbuddy 各实例化一个。 */
 
 /* 各 kind 的登录配置：providers 非空时登录前先选择（minimax/workbuddy 的
@@ -289,6 +289,34 @@ class PoolPanel {
     }
     card.append(box);
   }
+  thresholdBox(values){
+    const t=BridgeI18n.t,box=this.node('details',undefined,'pool-thresholds');
+    box.append(this.node('summary',t('切换阈值设置')));
+    box.append(this.node('p',t('已用额度达到阈值即执行；100% 表示用尽后执行。'),'account-muted'));
+    const fields=this.node('div',undefined,'pool-threshold-fields');
+    const add=(key,label,fallback)=>{
+      const field=this.node('label',undefined,'pool-threshold-field');
+      const input=this.node('input');input.type='number';input.min='1';input.max='100';input.step='0.1';input.inputMode='decimal';
+      input.className='pool-threshold-input';input.dataset.key=key;input.value=values[key]??fallback;
+      field.append(this.node('span',t(label)),input);fields.append(field);
+    };
+    add('switch','普通窗口（5 小时 / 天）',99);
+    add('longTerm','周 / 月窗口',99);
+    if(this.kind==='zcode')add('resetCard','5 小时重置卡主动核销',98);
+    box.append(fields);
+    const save=this.button(t('保存阈值'),async()=>{
+      const thresholds={};
+      for(const input of fields.children){
+        const control=input.children[1],value=Number(control.value);
+        if(!Number.isFinite(value)||value<=0||value>100){this.error=t('阈值必须大于 0 且不超过 100');this.render();return;}
+        thresholds[control.dataset.key]=value;
+      }
+      await this.perform('settings',{thresholds});
+      if(!this.error){this.notice=t('阈值已保存');this.render();}
+    });
+    save.disabled=this.busy||this.loading;box.append(save);
+    return box;
+  }
   render(){
     const t=BridgeI18n.t,root=this.root;root.replaceChildren();
     // 标签已写明是哪个池，这里不再重复“ACP 账号池（xx）”标题。
@@ -331,6 +359,7 @@ class PoolPanel {
     controls.append(autoLabel);root.append(controls);
     this.autoSwitch.checked=value.autoSwitch!==false;
     this.autoSwitch.disabled=this.busy||this.loading;
+    root.append(this.thresholdBox(value.thresholds||{}));
     if(this.notice){root.append(this.node('p',this.notice,this.noticeError?'error':'accounts-credit'));this.notice='';this.noticeError=false;}
     if(this.login)root.append(this.loginBox());
     if(value.captureError)root.append(this.node('p',t('当前登录态捕获失败：')+value.captureError,'account-muted'));

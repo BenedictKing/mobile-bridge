@@ -586,7 +586,6 @@ func runGateway(args []string) {
 		return nil
 	}
 	poolPoller := accpool.NewPoller(server.Pool)
-	poolPoller.Threshold = poolAuto.Threshold
 	poolPoller.OnExhausted = func(kind string) {
 		if _, err := poolAuto.HandleQuotaExhaustion(context.Background(), kind, ""); err != nil {
 			log.Printf("账号池: %s 预防性切换失败: %v", kind, err)

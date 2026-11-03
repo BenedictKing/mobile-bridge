@@ -538,7 +538,7 @@ func TestWorkbuddyEnvelopeQuotaShortCircuits(t *testing.T) {
 	if updated.QuotaError == "" {
 		t.Fatalf("quotaError not recorded: %+v", updated)
 	}
-	if availableForSwitch("workbuddy", updated, 0.95) {
+	if availableForSwitch("workbuddy", updated, 0.95, defaultLongTermThreshold) {
 		t.Fatal("envelope account must not be a switch candidate after the failed refresh")
 	}
 }

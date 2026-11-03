@@ -58,13 +58,13 @@ func TestExhaustedWindows(t *testing.T) {
 				"detail": map[string]any{"used": 10.0, "limit": 100.0}},
 		},
 	})
-	if got := ExhaustedWindows(quota, 0.95); len(got) != 1 {
+	if got := ExhaustedWindows(quota, 0.95, defaultLongTermThreshold); len(got) != 1 {
 		t.Fatalf("threshold 0.95: %d windows", len(got))
 	}
-	if got := ExhaustedWindows(quota, 1.0); len(got) != 0 {
+	if got := ExhaustedWindows(quota, 1.0, 1.0); len(got) != 0 {
 		t.Fatalf("threshold 1.0: %d windows", len(got))
 	}
-	if got := ExhaustedWindows(nil, 0.95); got != nil {
+	if got := ExhaustedWindows(nil, 0.95, defaultLongTermThreshold); got != nil {
 		t.Fatalf("nil quota: %v", got)
 	}
 	// Auxiliary side quotas (zcode MCP 用量) never count as exhausted, even
@@ -73,17 +73,18 @@ func TestExhaustedWindows(t *testing.T) {
 		"usage": map[string]any{"used": 10.0, "limit": 100.0},
 	})
 	aux.Limits = []*WindowQuota{{Name: "MCP 用量", Used: 101, Limit: 100, Auxiliary: true}}
-	if got := ExhaustedWindows(aux, 0.95); len(got) != 0 {
+	if got := ExhaustedWindows(aux, 0.95, defaultLongTermThreshold); len(got) != 0 {
 		t.Fatalf("auxiliary window must not exhaust: %v", got)
 	}
 }
 
 func TestExhaustedWindowsLongTermThreshold(t *testing.T) {
 	tests := []struct {
-		name      string
-		quota     *Quota
-		threshold float64
-		want      string
+		name              string
+		quota             *Quota
+		threshold         float64
+		longTermThreshold float64
+		want              string
 	}{
 		{
 			name: "ordinary window keeps base threshold",
@@ -101,9 +102,10 @@ func TestExhaustedWindowsLongTermThreshold(t *testing.T) {
 			want:      "周额度",
 		},
 		{
-			name:      "higher explicit threshold wins",
-			quota:     &Quota{Weekly: &WindowQuota{Name: "周额度", Used: 99, Limit: 100}},
-			threshold: 1.0,
+			name:              "higher explicit threshold wins",
+			quota:             &Quota{Weekly: &WindowQuota{Name: "周额度", Used: 99, Limit: 100}},
+			threshold:         1.0,
+			longTermThreshold: 1.0,
 		},
 		{
 			name: "monthly switches at 99 percent",
@@ -113,10 +115,21 @@ func TestExhaustedWindowsLongTermThreshold(t *testing.T) {
 			threshold: 0.95,
 			want:      "月额度",
 		},
+		{
+			name:              "custom long-term threshold is independent",
+			quota:             &Quota{Weekly: &WindowQuota{Name: "周额度", Used: 96, Limit: 100}},
+			threshold:         0.99,
+			longTermThreshold: 0.95,
+			want:              "周额度",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := ExhaustedWindows(test.quota, test.threshold)
+			longTermThreshold := test.longTermThreshold
+			if longTermThreshold == 0 {
+				longTermThreshold = defaultLongTermThreshold
+			}
+			got := ExhaustedWindows(test.quota, test.threshold, longTermThreshold)
 			if test.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("expected no exhausted windows, got %+v", got)
@@ -175,20 +188,34 @@ func TestAutoSwitchOnExhaustion(t *testing.T) {
 
 func TestAutoSwitchThresholdByWindow(t *testing.T) {
 	tests := []struct {
-		name       string
-		windowUsed int64
-		weeklyUsed int64
-		wantSwitch bool
-		wantActive string
+		name              string
+		windowUsed        int64
+		weeklyUsed        int64
+		switchThreshold   float64
+		longTermThreshold float64
+		wantSwitch        bool
+		wantActive        string
 	}{
 		{name: "five-hour 96", windowUsed: 96, weeklyUsed: 1, wantActive: "u_a"},
 		{name: "five-hour 99", windowUsed: 99, weeklyUsed: 1, wantSwitch: true, wantActive: "u_b"},
 		{name: "weekly 96", windowUsed: 10, weeklyUsed: 96, wantActive: "u_a"},
 		{name: "weekly 99", windowUsed: 10, weeklyUsed: 99, wantSwitch: true, wantActive: "u_b"},
+		{name: "custom five-hour 97", windowUsed: 97, weeklyUsed: 1, switchThreshold: 0.97, wantSwitch: true, wantActive: "u_b"},
+		{name: "custom weekly 95", windowUsed: 10, weeklyUsed: 96, longTermThreshold: 0.95, wantSwitch: true, wantActive: "u_b"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			m, auto, _ := setupAutoFixture(t, "")
+			thresholds := DefaultThresholdSettings()
+			if test.switchThreshold > 0 {
+				thresholds.Switch = test.switchThreshold
+			}
+			if test.longTermThreshold > 0 {
+				thresholds.LongTerm = test.longTermThreshold
+			}
+			if err := m.SetThresholds("kimi", thresholds); err != nil {
+				t.Fatal(err)
+			}
 			activeUsage := `{"usage":{"used":` + strconv.FormatInt(test.weeklyUsed, 10) +
 				`,"limit":100,"resetTime":"2099-01-01T00:00:00Z"},` +
 				`"limits":[{"window":{"timeUnit":"TIME_UNIT_MINUTE","duration":300},` +
@@ -295,7 +322,7 @@ func TestAutoSwitchDisabled(t *testing.T) {
 
 func TestChooseTargetPrefersHeadroom(t *testing.T) {
 	m, _, _ := setupAutoFixture(t, "")
-	target := m.ChooseTarget(context.Background(), "kimi", "u_a", 0.95)
+	target := m.ChooseTarget(context.Background(), "kimi", "u_a", 0.95, defaultLongTermThreshold)
 	if target == nil || target.ID != "u_b" {
 		t.Fatalf("target: %+v", target)
 	}

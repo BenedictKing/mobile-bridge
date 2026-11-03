@@ -155,7 +155,7 @@ type QuotaSnapshot struct {
 账号可被选为目标需同时满足：
 
 1. `status == ok`（非 `reauth_required` / `disabled` / `cooling_down`）；
-2. 所有窗口限额均未达到各自切换阈值：5 小时等普通窗口默认 99%，周/月窗口至少 99%（普通窗口阈值可配），或额度快照过期 ≤ 10 分钟时以最近一次被动事件修正；
+2. 所有窗口限额均未达到各自切换阈值：5 小时等普通窗口与周/月窗口默认均为 99%，可按 agent 独立配置，或额度快照过期 ≤ 10 分钟时以最近一次被动事件修正；
 3. 不在冷却期（见 §6.3）；
 4. token 未过期或可刷新。
 
@@ -225,10 +225,10 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
 | GET | `/api/pool` | 所有 agent 的池概览：账号列表（脱敏）、各自额度、activeId、开关状态 |
 | GET | `/api/pool/{agent}` | 单 agent 详情 + 切换历史（近 50 条） |
 | POST | `/api/pool/{agent}/switch` | 手动切换到指定账号（走同一 Switcher，带 requestId 幂等） |
-| POST | `/api/pool/{agent}/settings` | 开关：autoSwitchEnabled、pollInterval、阈值、目标策略（仅桌面端来源可写，同账号管理约定） |
+| POST | `/api/pool/{agent}/settings` | 设置 `autoSwitch` 开关与 `thresholds` 百分比：普通窗口 `switch`、周/月窗口 `longTerm`、ZCode 重置卡主动核销 `resetCard` |
 | POST | `/api/pool/{agent}/import` | 从 zcode-switcher 存储/当前登录态导入（仅桌面端） |
 
-前端：`web/accounts.js` 增加"账号池"区块——每 agent 一张卡片列表，显示窗口限额进度条（复用现有额度 UI 组件）、状态徽标（当前/冷却/需重登）、"设为当前"按钮、自动切换开关。切换事件复用 `internal/notifications` 推送到手机端。
+前端：`web/pool.js` 的账号池面板显示窗口限额进度条、状态徽标（当前/冷却/需重登）、切换按钮、自动切换开关与分窗口阈值设置。切换事件复用 `internal/notifications` 推送到手机端。
 
 ## 9. 安全与边界
 
@@ -263,12 +263,12 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
 - Decider、被动事件分类器、会话恢复检测、`switchResumeRuns` 预算、通知接入。
 - 验收：模拟限额耗尽（注入 `quota_exhausted` 事件）→ 自动切换 → 被打断会话收到"继续"并续跑。
 - 落地说明：
-  - 编排器为 `internal/accpool/auto.go` 的 `AutoSwitcher`；入口有两条：**被动钩子**（`cmd/gateway/poolhooks.go` 的 `poolQuotaHook`，挂在 AutoContinue 链首位，用 `jev.ContinueContext`+`jev.QuotaStop` 初筛疑似额度故障）与**轮询预警**（`poller.go` 刷新当前账号后越过窗口阈值即回调 `OnExhausted`；5 小时等普通窗口默认 99%，周/月窗口至少 99%）；
+  - 编排器为 `internal/accpool/auto.go` 的 `AutoSwitcher`；入口有两条：**被动钩子**（`cmd/gateway/poolhooks.go` 的 `poolQuotaHook`，挂在 AutoContinue 链首位，用 `jev.ContinueContext`+`jev.QuotaStop` 初筛疑似额度故障）与**轮询预警**（`poller.go` 刷新当前账号后越过窗口阈值即回调 `OnExhausted`；普通窗口与周/月窗口默认均为 99%，按 agent 独立配置）；
   - 误报防护（开放问题 3 的当前方案）：被动事件先用 jev 规则初筛，再 `RefreshQuota` 复确认——只有额度数据确实越过阈值才真正切换，瞬时 429 不误切；真实语料校准仍待收集；
   - 门控全部基于 `history.jsonl`（重启不丢）：切换冷却 10 分钟、每小时最多 6 次、24h 内切走 3 次即放弃该账号、最紧窗口距重置不足 5 分钟时宁可等待；无可用账号时发通知而不动作；
   - 目标选择（`decide.go` 的 `ChooseTarget`）：逐候选刷新额度，选最紧窗口余量最大者，并列取最久未用；
   - 切换续跑走 `ResumeAfterSwitchPrompt` 独立预算 `MaxSwitchResume = 3`（不占用 `MaxAutoContinue`），人为操作同时重置两个计数；切换时 `ignoreBusy` 放行被打断的失败会话本身；
-  - 开关持久化在 `<dataDir>/pool/settings.json`（默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），`POST /api/pool/{kind}/settings` + 前端 checkbox；
+  - 开关与三项阈值持久化在 `<dataDir>/pool/settings.json`（自动切换默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），`POST /api/pool/{kind}/settings` 保存后立即生效；ZCode 轮询按普通切换阈值与重置卡核销阈值中的较低者先触发，核销阈值默认 98%；
   - 通知复用 `internal/notifications` 的渠道配置。
 
 **阶段 4：zcode 接入** ✅ 已实现（2026-10-18）
