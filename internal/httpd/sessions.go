@@ -909,10 +909,15 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			}
 			fastMode = &flag
 		}
-		if callErr := manager.UpdateSettings(session, modelName, effort, fastMode); callErr != nil {
+		// confirmed 带回 agent 证据（权威 configOptions 响应）：无证据的
+		// 乐观落账让手机显示「已接受，等待同步」而非「已同步」。
+		confirmed, callErr := manager.UpdateSettings(session, modelName, effort, fastMode)
+		if callErr != nil {
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		} else {
-			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+			result := jsoncompat.NewObject()
+			result.Set("confirmed", confirmed)
+			h.output(http.StatusOK, result, contentTypeJSON, "")
 		}
 	default:
 		return false

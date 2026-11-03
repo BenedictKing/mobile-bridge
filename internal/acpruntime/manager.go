@@ -1324,7 +1324,8 @@ func (s *Session) setModeOption(option *jsoncompat.Object, modeID string) error 
 	if current, _ := option.MustGet("currentValue").(string); current == modeID {
 		return nil
 	}
-	return s.setConfigOption(option, modeID)
+	_, err := s.setConfigOption(option, modeID)
+	return err
 }
 
 func (s *Session) Cancel() error {
@@ -1471,70 +1472,127 @@ func validOptionID(params *jsoncompat.Object, optionID string) bool {
 	return false
 }
 
+// SettingsPartialError 报告组合设置的部分成功：Applied 列出本次已生效的项
+// （如 "模型"），Err 是后续项的失败原因。HTTP 以 409 透出整段消息——手机端
+// 由此知道模型已切换、思考强度未生效，而不是一个笼统的失败。
+type SettingsPartialError struct {
+	Applied []string
+	Err     error
+}
+
+func (e *SettingsPartialError) Error() string {
+	return "已生效：" + strings.Join(e.Applied, "、") + "；" + e.Err.Error()
+}
+
+func (e *SettingsPartialError) Unwrap() error { return e.Err }
+
 // UpdateSettings mirrors AcpAdapter.update_settings: validate model and
-// effort against the advertised config options, then apply each change with
-// session/set_config_option. fastMode is rejected like Python.
-func (m *Manager) UpdateSettings(session *Session, model, effort string, fastMode *bool) error {
+// effort against the advertised config options up front (a rejected value
+// must not leave half the request applied), then apply each change with
+// session/set_config_option. The model response is authoritative and may
+// reshape the remaining options (mcode drops thought_level for models
+// without reasoning), so the effort step re-reads the advertised options
+// instead of the entry snapshot. confirmed reports whether every applied
+// change carries agent evidence (an authoritative configOptions response);
+// an optimistic local patch leaves it false and the phone shows 已接受，
+// 等待同步 instead of 已生效.
+func (m *Manager) UpdateSettings(session *Session, model, effort string, fastMode *bool) (confirmed bool, err error) {
 	if session.ReadOnly() {
-		return errors.New(ReadOnlySessionMessage)
+		return false, errors.New(ReadOnlySessionMessage)
 	}
 	if fastMode != nil {
-		return errors.New("当前 Agent 不支持 Fast 模式")
+		return false, errors.New("当前 Agent 不支持 Fast 模式")
 	}
 	options := session.ConfigOptions()
 	modelOption := findCategory(options, "model")
 	if modelOption == nil {
-		return errors.New("当前 Agent 不支持切换模型")
+		return false, errors.New("当前 Agent 不支持切换模型")
 	}
+	thinking := findCategory(options, "thought_level")
+	if thinking == nil {
+		thinking = findCategory(options, "thinking")
+	}
+	hadThinking := thinking != nil
+	// 前置校验：任何一项被拒都不发出 RPC（原先 effort 校验发生在 model
+	// 已生效之后，形成未申报的部分成功）。
 	if model != "" {
-		values := optionValues(modelOption)
-		if len(values) > 0 {
+		if values := optionValues(modelOption); len(values) > 0 {
 			if _, ok := values[model]; !ok {
-				return errors.New("此 Agent 不支持所选模型")
-			}
-		}
-		if current, _ := modelOption.MustGet("currentValue").(string); current != model {
-			if err := m.setConfig(session, modelOption, model); err != nil {
-				return err
+				return false, errors.New("此 Agent 不支持所选模型")
 			}
 		}
 	}
+	mapped := ""
 	if effort != "" {
-		thinking := findCategory(options, "thought_level")
-		if thinking == nil {
-			thinking = findCategory(options, "thinking")
+		mapped = m.EffortMap[effort]
+		if mapped == "" {
+			return false, errors.New("此 Agent 不支持所选思考强度")
 		}
 		if thinking != nil {
-			mapped := m.EffortMap[effort]
-			if mapped == "" {
-				return errors.New("此 Agent 不支持所选思考强度")
-			}
-			values := optionValues(thinking)
-			if len(values) > 0 {
+			if values := optionValues(thinking); len(values) > 0 {
 				if _, ok := values[mapped]; !ok {
-					return errors.New("此 Agent 不支持所选思考强度")
-				}
-			}
-			if current, _ := thinking.MustGet("currentValue").(string); current != mapped {
-				if err := m.setConfig(session, thinking, mapped); err != nil {
-					return err
+					return false, errors.New("此 Agent 不支持所选思考强度")
 				}
 			}
 		}
 	}
-	return nil
-}
-
-func (m *Manager) setConfig(session *Session, option *jsoncompat.Object, value string) error {
-	return session.setConfigOption(option, value)
+	applied := []string{}
+	partial := func(err error) error {
+		if len(applied) == 0 {
+			return err
+		}
+		return &SettingsPartialError{Applied: applied, Err: err}
+	}
+	confirmed = true
+	if model != "" {
+		if current, _ := modelOption.MustGet("currentValue").(string); current != model {
+			replaced, applyErr := session.setConfigOption(modelOption, model)
+			if applyErr != nil {
+				return false, applyErr
+			}
+			confirmed = replaced
+			applied = append(applied, "模型")
+			// 模型响应是权威的，可能重塑其余选项：思考强度按切换后的
+			// 新目录判断，不能沿用入口快照。
+			options = session.ConfigOptions()
+			thinking = findCategory(options, "thought_level")
+			if thinking == nil {
+				thinking = findCategory(options, "thinking")
+			}
+		}
+	}
+	if effort != "" && hadThinking {
+		if thinking == nil {
+			// 入口存在思考选项、模型切换后消失：明确申报部分成功，绝不
+			// 静默吞掉用户显式选择的项。
+			return false, partial(errors.New("切换后的模型不提供思考强度选项，已保持原值"))
+		}
+		if values := optionValues(thinking); len(values) > 0 {
+			if _, ok := values[mapped]; !ok {
+				return false, partial(errors.New("切换后的模型不支持所选思考强度"))
+			}
+		}
+		if current, _ := thinking.MustGet("currentValue").(string); current != mapped {
+			replaced, applyErr := session.setConfigOption(thinking, mapped)
+			if applyErr != nil {
+				return false, partial(applyErr)
+			}
+			if !replaced {
+				confirmed = false
+			}
+		}
+	}
+	return confirmed, nil
 }
 
 // setConfigOption applies one advertised config option change through
 // session/set_config_option; UpdateSettings and the mode fallback share it.
-func (s *Session) setConfigOption(option *jsoncompat.Object, value string) error {
+// The returned flag reports agent evidence: true only when the response
+// carried a usable configOptions array, i.e. the new state is authoritative.
+func (s *Session) setConfigOption(option *jsoncompat.Object, value string) (bool, error) {
 	configID, _ := option.MustGet("id").(string)
 	if configID == "" {
-		return errors.New("当前 Agent 不支持切换模型")
+		return false, errors.New("当前 Agent 不支持切换模型")
 	}
 	params := jsoncompat.NewObject()
 	params.Set("sessionId", s.ID)
@@ -1542,7 +1600,7 @@ func (s *Session) setConfigOption(option *jsoncompat.Object, value string) error
 	params.Set("value", value)
 	result, err := s.Process.Request("session/set_config_option", params, 30*time.Second)
 	if err != nil {
-		return err
+		return false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1567,7 +1625,7 @@ func (s *Session) setConfigOption(option *jsoncompat.Object, value string) error
 	}
 	s.View.ApplyConfig(s.configOptions, s.modes)
 	s.signalLocked()
-	return nil
+	return replaced, nil
 }
 
 // Catalog maps the session's advertised config options onto the phone's

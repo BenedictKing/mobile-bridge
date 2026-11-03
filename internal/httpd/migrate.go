@@ -600,7 +600,7 @@ func (h *handler) handleMigrate(threadID string) {
 			// silently ignore the user's choice. The entry stays unsent, so
 			// the phone can retry with other settings.
 			if modelName != "" {
-				if settingsErr := target.UpdateSettings(session, modelName, effort, nil); settingsErr != nil {
+				if _, settingsErr := target.UpdateSettings(session, modelName, effort, nil); settingsErr != nil {
 					h.fail(http.StatusConflict, errorBody(settingsErr.Error()))
 					return
 				}
