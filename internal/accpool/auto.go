@@ -18,7 +18,8 @@ type AutoSwitcher struct {
 	// Notify publishes a user-facing notification (title, body); nil disables.
 	Notify func(title, body string)
 
-	// Threshold is the used/limit ratio that counts as exhausted (0.95).
+	// Threshold is the ordinary-window used/limit ratio that counts as
+	// exhausted (0.95); weekly and monthly windows use at least 0.99.
 	Threshold float64
 	// Cooldown bounds consecutive switches of one agent (10 minutes).
 	Cooldown time.Duration

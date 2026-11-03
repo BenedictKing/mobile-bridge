@@ -38,15 +38,23 @@ func WorstRemaining(quota *Quota) float64 {
 	return remaining
 }
 
-// ExhaustedWindows returns the quota windows at or over the threshold
-// (used/limit >= threshold). Windows without a usable limit carry no signal.
+const longTermExhaustionThreshold = 0.99
+
+// ExhaustedWindows returns the quota windows at or over their exhaustion
+// threshold. Ordinary windows use threshold; weekly and monthly windows use
+// at least 99% so they do not trigger an early account switch. Windows without
+// a usable limit carry no signal.
 func ExhaustedWindows(quota *Quota, threshold float64) []*WindowQuota {
 	var out []*WindowQuota
 	for _, window := range primaryWindows(quota) {
 		if window.Limit <= 0 {
 			continue
 		}
-		if float64(window.Used)/float64(window.Limit) >= threshold {
+		windowThreshold := threshold
+		if window == quota.Weekly || window.WindowUnit == "week" || window.WindowUnit == "month" {
+			windowThreshold = max(windowThreshold, longTermExhaustionThreshold)
+		}
+		if float64(window.Used)/float64(window.Limit) >= windowThreshold {
 			out = append(out, window)
 		}
 	}

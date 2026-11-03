@@ -78,6 +78,58 @@ func TestExhaustedWindows(t *testing.T) {
 	}
 }
 
+func TestExhaustedWindowsLongTermThreshold(t *testing.T) {
+	tests := []struct {
+		name      string
+		quota     *Quota
+		threshold float64
+		want      string
+	}{
+		{
+			name: "ordinary window keeps base threshold",
+			quota: &Quota{
+				Weekly: &WindowQuota{Name: "周额度", Used: 96, Limit: 100},
+				Limits: []*WindowQuota{{Name: "5小时", Used: 96, Limit: 100}},
+			},
+			threshold: 0.95,
+			want:      "5小时",
+		},
+		{
+			name:      "weekly switches at 99 percent",
+			quota:     &Quota{Weekly: &WindowQuota{Name: "周额度", Used: 99, Limit: 100}},
+			threshold: 0.95,
+			want:      "周额度",
+		},
+		{
+			name:      "higher explicit threshold wins",
+			quota:     &Quota{Weekly: &WindowQuota{Name: "周额度", Used: 99, Limit: 100}},
+			threshold: 1.0,
+		},
+		{
+			name: "monthly switches at 99 percent",
+			quota: &Quota{Limits: []*WindowQuota{
+				{Name: "月额度", WindowUnit: "month", Used: 99, Limit: 100},
+			}},
+			threshold: 0.95,
+			want:      "月额度",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := ExhaustedWindows(test.quota, test.threshold)
+			if test.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected no exhausted windows, got %+v", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Name != test.want {
+				t.Fatalf("expected only %s, got %+v", test.want, got)
+			}
+		})
+	}
+}
+
 // setupAutoFixture: slot holds u_a (exhausted 5h window), u_b healthy, u_c
 // also exhausted. Returns the manager, the auto switcher and sent
 // notifications.
@@ -118,6 +170,38 @@ func TestAutoSwitchOnExhaustion(t *testing.T) {
 	history := m.History("kimi", 10)
 	if len(history) != 1 || history[0].Trigger != "auto-quota" || !history[0].OK {
 		t.Fatalf("history: %+v", history)
+	}
+}
+
+func TestAutoSwitchLongTermThreshold(t *testing.T) {
+	tests := []struct {
+		weeklyUsed int64
+		wantSwitch bool
+		wantActive string
+	}{
+		{weeklyUsed: 96, wantActive: "u_a"},
+		{weeklyUsed: 99, wantSwitch: true, wantActive: "u_b"},
+	}
+	for _, test := range tests {
+		t.Run(strconv.FormatInt(test.weeklyUsed, 10), func(t *testing.T) {
+			m, auto, _ := setupAutoFixture(t, "")
+			activeUsage := `{"usage":{"used":` + strconv.FormatInt(test.weeklyUsed, 10) +
+				`,"limit":100,"resetTime":"2099-01-01T00:00:00Z"},` +
+				`"limits":[{"window":{"timeUnit":"TIME_UNIT_MINUTE","duration":300},` +
+				`"detail":{"used":10,"limit":100}}]}`
+			stubKimiAPI(t, map[string]string{
+				"at-a": activeUsage,
+				"at-b": usagesJSON(10, 100, ""),
+				"at-c": usagesJSON(99, 100, ""),
+			})
+			switched, err := auto.HandleQuotaExhaustion(context.Background(), "kimi", "")
+			if err != nil || switched != test.wantSwitch {
+				t.Fatalf("switched=%v, want %v; err=%v", switched, test.wantSwitch, err)
+			}
+			if got := m.activeID("kimi"); got != test.wantActive {
+				t.Fatalf("active id=%q, want %q", got, test.wantActive)
+			}
+		})
 	}
 }
 

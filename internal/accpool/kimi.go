@@ -320,6 +320,7 @@ var windowUnitMap = map[string]string{
 	"TIME_UNIT_HOUR": "hour", "hour": "hour",
 	"TIME_UNIT_DAY": "day", "day": "day",
 	"TIME_UNIT_WEEK": "week", "week": "week",
+	"TIME_UNIT_MONTH": "month", "month": "month",
 }
 
 func toInt64(value any) *int64 {
