@@ -99,7 +99,13 @@ func (s *Server) PreloadRecentSessions() {
 		if manager == nil {
 			continue
 		}
-		if _, err := manager.Open(target.id, target.cwd, manager.InitializeTimeout); err != nil {
+		var err error
+		if manager.NativeTranscript != nil {
+			_, err = manager.OpenHistory(target.id, target.cwd)
+		} else {
+			_, err = manager.Open(target.id, target.cwd, manager.InitializeTimeout)
+		}
+		if err != nil {
 			log.Printf("会话预热: %s/%s 加载失败: %v", target.kind, target.id, err)
 			continue
 		}

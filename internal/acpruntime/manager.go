@@ -93,8 +93,8 @@ type Session struct {
 	// response, but a turn that really keeps running reclaims the view after
 	// nativeStoreLagGrace.
 	nativeLagSince time.Time
-	// readOnly marks a view built from the agent's own transcript because the
-	// desktop app owns the write handle. Reads work; mutations are refused.
+	// readOnly marks a native-transcript view without a control handle. It may
+	// be desktop-owned or simply not attached yet; mutations require an attach.
 	readOnly bool
 	// nativeBootstrapped marks the first native fold of a handle. That fold
 	// always applies so the native store (with its attachments and stable
@@ -116,10 +116,9 @@ const MaxSwitchResume = 3
 // copy that still reports the same prompt running before the store wins.
 const nativeStoreLagGrace = 5 * time.Second
 
-// ReadOnlySessionMessage refuses mutations on a session the desktop app owns:
-// the phone can read the native transcript but cannot prompt, steer, answer
-// approvals or change settings while the app holds the write handle.
-const ReadOnlySessionMessage = "此会话正在桌面 App 中运行，手机端只读；可先对消息「从这里分支」再在手机继续"
+// ReadOnlySessionMessage refuses mutations before a native-transcript view has
+// an attached control handle.
+const ReadOnlySessionMessage = "当前为只读历史；请先重新连接会话，再发送、回应或修改设置"
 
 // ErrRequestExpired is the sentinel behind Respond's "请求已过期，请刷新聊天"
 // (the pending request is gone: answered elsewhere, flushed by the idle sweeper
@@ -208,15 +207,20 @@ type Manager struct {
 	// creation-time updatedAt. It returns (title, last activity ms).
 	NativeMeta func(sessionID string) (string, int64)
 	// NativeTranscript loads a session's read-only conversation from the
-	// agent's own store. When the desktop app owns the live write handle and
-	// session/load is refused, the gateway falls back to this view instead of
-	// failing the open (DSH: the zstd transcript).
+	// agent's own store (DSH: the zstd transcript). OpenHistory uses it without
+	// starting an agent; Open also falls back to it when load proves desktop ownership.
 	NativeTranscript func(sessionID string) (*acpview.NativeSnapshot, error)
 	// NativeList, when set, enumerates sessions from the agent's own on-disk
 	// store as session/list-shaped rows. It supplements incomplete ACP pages
 	// (kimi) and is the fallback for agents without session/list (workbuddy).
 	// ACP rows win when the same sessionId appears in both sources.
 	NativeList func() []*jsoncompat.Object
+	// NativeListExclusive makes NativeList the complete list source, avoiding
+	// process startup for agents whose native store covers every session.
+	NativeListExclusive bool
+	// OwnerProbe reports the current writer without starting an agent. known=false
+	// is unsupported or inconclusive, so Open retains the load-based fallback.
+	OwnerProbe func(sessionID string) (owned, known bool)
 	// RetryStatus supplements agents whose ACP stream omits provider retries.
 	RetryStatus func(sessionID string) (*jsoncompat.Object, error)
 
@@ -331,9 +335,8 @@ func (m *Manager) List(timeout time.Duration) ([]*jsoncompat.Object, error) {
 	return rows, nil
 }
 
-// RefreshList expires the cached session/list read so the next List goes to
-// a freshly spawned agent process (mirrors AcpAdapter.refresh_list for the
-// periodic discovery cycle).
+// RefreshList expires the cached session/list read so the next List refreshes
+// its configured native or ACP source (mirrors AcpAdapter.refresh_list).
 func (m *Manager) RefreshList() {
 	m.listMu.Lock()
 	m.listAt = time.Time{}
@@ -341,14 +344,6 @@ func (m *Manager) RefreshList() {
 }
 
 func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, error) {
-	process, err := m.start()
-	if err != nil {
-		return nil, err
-	}
-	defer process.Close()
-	if _, err = process.Initialize(m.initializeTimeout()); err != nil {
-		return nil, err
-	}
 	// cacheRows stamps the list cache and builds the id→cwd index every list
 	// source (ACP or native) shares.
 	cacheRows := func(rows []*jsoncompat.Object) []*jsoncompat.Object {
@@ -364,6 +359,19 @@ func (m *Manager) fetchListLocked(timeout time.Duration) ([]*jsoncompat.Object, 
 		}
 		m.listRows, m.listIDs, m.listAt = rows, ids, time.Now()
 		return rows
+	}
+	if m.NativeListExclusive && m.NativeList != nil {
+		rows := m.NativeList()
+		m.fillNativeMeta(rows)
+		return cacheRows(rows), nil
+	}
+	process, err := m.start()
+	if err != nil {
+		return nil, err
+	}
+	defer process.Close()
+	if _, err = process.Initialize(m.initializeTimeout()); err != nil {
+		return nil, err
 	}
 	output := []*jsoncompat.Object{}
 	seenSessions := map[string]bool{}
@@ -706,6 +714,16 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 }
 
 func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) {
+	return m.open(id, cwd, timeout, false)
+}
+
+// OpenHistory opens only the persisted transcript. It never starts an agent
+// or attempts session/load, even when no native snapshot exists.
+func (m *Manager) OpenHistory(id, cwd string) (*Session, error) {
+	return m.open(id, cwd, 0, true)
+}
+
+func (m *Manager) open(id, cwd string, timeout time.Duration, history bool) (*Session, error) {
 	for {
 		m.mu.Lock()
 		if session := m.sessions[id]; session != nil && !session.IsClosed() {
@@ -725,12 +743,12 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 		m.opening[id] = done
 		m.mu.Unlock()
 
-		fresh, err := m.openFresh(id, cwd, timeout)
-		if err != nil {
-			if native := m.openNative(id, cwd, err); native != nil {
-				fresh = native
-				err = nil
-			}
+		var fresh *Session
+		var err error
+		if history {
+			fresh, err = m.openNativeHistory(id, cwd)
+		} else {
+			fresh, err = m.openControlled(id, cwd, timeout)
 		}
 		m.mu.Lock()
 		delete(m.opening, id)
@@ -747,16 +765,27 @@ func (m *Manager) Open(id, cwd string, timeout time.Duration) (*Session, error) 
 	}
 }
 
-// Reconcile creates and fully loads a new ACP handle before replacing the
-// current one. Readers never observe a half-loaded session.
-func (m *Manager) Reconcile(id, cwd string, timeout time.Duration) (*Session, error) {
+func (m *Manager) openControlled(id, cwd string, timeout time.Duration) (*Session, error) {
+	if m.OwnerProbe != nil {
+		if owned, known := m.OwnerProbe(id); known && owned {
+			return m.openNativeHistory(id, cwd)
+		}
+	}
 	fresh, err := m.openFresh(id, cwd, timeout)
 	if err != nil {
 		if native := m.openNative(id, cwd, err); native != nil {
-			fresh = native
-		} else {
-			return nil, err
+			return native, nil
 		}
+	}
+	return fresh, err
+}
+
+// Reconcile creates and fully loads a new ACP handle before replacing the
+// current one. Readers never observe a half-loaded session.
+func (m *Manager) Reconcile(id, cwd string, timeout time.Duration) (*Session, error) {
+	fresh, err := m.openControlled(id, cwd, timeout)
+	if err != nil {
+		return nil, err
 	}
 	m.mu.Lock()
 	old := m.sessions[id]
@@ -1921,8 +1950,8 @@ func (s *Session) Snapshot() *jsoncompat.Object {
 	return snapshot
 }
 
-// ReadOnly reports whether this view is a native transcript of a session the
-// desktop app owns, so prompts and settings must be refused.
+// ReadOnly reports whether this view is a native transcript without a control
+// handle, so prompts and settings require an explicit attach first.
 func (s *Session) ReadOnly() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -2015,13 +2044,34 @@ func (m *Manager) startNative(session *Session) {
 // the live handle is refused because the desktop app owns the session. The
 // view keeps following the transcript, so the phone sees the app's work.
 func (m *Manager) openNative(id, cwd string, cause error) *Session {
-	if m.NativeTranscript == nil || !desktopOwned(cause) {
+	if !desktopOwned(cause) {
 		return nil
+	}
+	session, err := m.openNativeHistory(id, cwd)
+	if err != nil {
+		return nil
+	}
+	return session
+}
+
+func (m *Manager) openNativeHistory(id, cwd string) (*Session, error) {
+	if m.NativeTranscript == nil {
+		return nil, errors.New("当前 Agent 不支持纯历史读取")
+	}
+	if m.NativeReset != nil {
+		m.NativeReset(id)
 	}
 	snapshot, err := m.NativeTranscript(id)
-	if err != nil || snapshot == nil {
-		return nil
+	if err != nil {
+		return nil, err
 	}
+	if snapshot == nil {
+		return nil, errors.New("未找到可读取的原生会话历史")
+	}
+	return m.newNativeSession(id, cwd, snapshot), nil
+}
+
+func (m *Manager) newNativeSession(id, cwd string, snapshot *acpview.NativeSnapshot) *Session {
 	session := &Session{
 		ID: id, Cwd: cwd, active: true, readOnly: true,
 		View:    acpview.NewView(id, nil, cwd, m.now),

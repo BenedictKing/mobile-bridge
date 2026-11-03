@@ -74,11 +74,17 @@ type acpResolution struct {
 	err     error
 }
 
-// resolveACP mirrors Python's Registry.bridge_for: a live session wins, then
-// the cached session/list rows (including lazy-placeholder canonical ids),
-// then one cold list probe for managers that have never been listed. It never
-// spawns for codex ids beyond that single probe per manager.
+// resolveACP resolves a control handle. Read-only callers use
+// resolveACPHistory instead, so native transcript support never starts an agent.
 func (s *Server) resolveACP(threadID string) acpResolution {
+	return s.resolveACPMode(threadID, false)
+}
+
+func (s *Server) resolveACPHistory(threadID string) acpResolution {
+	return s.resolveACPMode(threadID, true)
+}
+
+func (s *Server) resolveACPMode(threadID string, history bool) acpResolution {
 	agents := s.acpAgentSet()
 	if len(agents) == 0 || threadID == "" {
 		return acpResolution{}
@@ -107,7 +113,7 @@ func (s *Server) resolveACP(threadID string) acpResolution {
 		if manager == nil || !manager.Knows(threadID) {
 			continue
 		}
-		return s.openACP(kind, manager, threadID)
+		return s.openACPMode(kind, manager, threadID, history)
 	}
 	for _, kind := range kinds {
 		manager := agents[kind]
@@ -118,10 +124,26 @@ func (s *Server) resolveACP(threadID string) acpResolution {
 			continue
 		}
 		if manager.Knows(threadID) {
-			return s.openACP(kind, manager, threadID)
+			return s.openACPMode(kind, manager, threadID, history)
 		}
 	}
 	return acpResolution{}
+}
+
+func (s *Server) openACPMode(kind string, manager *acpruntime.Manager, threadID string, history bool) acpResolution {
+	if !history || manager.NativeTranscript == nil {
+		return s.openACP(kind, manager, threadID)
+	}
+	cwd := manager.CwdFor(threadID)
+	if cwd == "" {
+		return acpResolution{kind: kind, manager: manager,
+			err: errors.New("找不到这个会话的工作目录，请稍后刷新列表")}
+	}
+	session, err := manager.OpenHistory(threadID, cwd)
+	if err != nil {
+		return acpResolution{kind: kind, manager: manager, err: err}
+	}
+	return acpResolution{kind: kind, manager: manager, session: session}
 }
 
 func (s *Server) openACP(kind string, manager *acpruntime.Manager, threadID string) acpResolution {
@@ -277,11 +299,10 @@ func (s *Server) agentRoster() *jsoncompat.Array {
 }
 
 // refreshLiveProjection mirrors liveTimeline's read path for the SSE loop:
-// attach the follower, fold the latest snapshot into the shared per-thread
-// projection, and report the projection's epoch/sequence. ACP threads fold
-// their acpview snapshot through the same shared projection.
+// read the current native or attached view, fold it into the shared per-thread
+// projection, and report the projection's epoch/sequence.
 func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
-	if resolution := s.resolveACP(threadID); resolution.manager != nil {
+	if resolution := s.resolveACPHistory(threadID); resolution.manager != nil {
 		if resolution.session == nil {
 			return s.projectionState(threadID)
 		}
@@ -331,7 +352,7 @@ func (s *Server) View(threadID string) any {
 	if s.Hidden.Hidden(threadID) {
 		return jsoncompat.NewObject()
 	}
-	if resolution := s.resolveACP(threadID); resolution.manager != nil && resolution.session != nil {
+	if resolution := s.resolveACPHistory(threadID); resolution.manager != nil && resolution.session != nil {
 		return s.acpViewState(resolution.kind, resolution.manager, resolution.session)
 	}
 	if s.Codex != nil {
@@ -363,7 +384,7 @@ func (s *Server) View(threadID string) any {
 }
 
 func (s *Server) TimelineRead(threadID, mode string) any {
-	if resolution := s.resolveACP(threadID); resolution.manager != nil && resolution.session != nil {
+	if resolution := s.resolveACPHistory(threadID); resolution.manager != nil && resolution.session != nil {
 		view := s.acpViewState(resolution.kind, resolution.manager, resolution.session)
 		projection := timeline.New(nil)
 		projection.Update(view)

@@ -292,7 +292,7 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			}
 			acpKind = agentParam
 		}
-	} else if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
+	} else if resolution := h.server.resolveACPMode(threadID, !write); resolution.manager != nil {
 		acpKind, acpManager = resolution.kind, resolution.manager
 		if resolution.err != nil {
 			// 手机端打开会话全靠这条链路；409 本身不可见，不落日志排障只能靠猜。
@@ -669,7 +669,13 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		h.fail(http.StatusConflict, errorBody("找不到这个会话的工作目录，请稍后刷新列表"))
 		return true
 	}
-	session, err := manager.Open(threadID, cwd, manager.InitializeTimeout)
+	var session *acpruntime.Session
+	var err error
+	if !write && manager.NativeTranscript != nil {
+		session, err = manager.OpenHistory(threadID, cwd)
+	} else {
+		session, err = manager.Open(threadID, cwd, manager.InitializeTimeout)
+	}
 	if err != nil {
 		log.Printf("会话打开失败: agent=%s thread=%s: %v", kind, threadID, err)
 		h.fail(http.StatusConflict, errorBody(acpSessionMessage(err)))

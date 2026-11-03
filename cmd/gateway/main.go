@@ -753,6 +753,11 @@ func runGateway(args []string) {
 		dshHome := acpagents.DshHome(os.Getenv, home)
 		reader := dsh.NewTranscriptReader(dshHome)
 		manager.NativeMeta = dsh.MetaReader(dshHome)
+		manager.NativeList = func() []*jsoncompat.Object { return dsh.ListSessions(dshHome) }
+		manager.NativeListExclusive = true
+		manager.OwnerProbe = func(sessionID string) (owned, known bool) {
+			return dsh.WriteOwner(dshHome, sessionID)
+		}
 		// Follow the transcript even when an ACP handle opened successfully:
 		// the desktop app can keep driving the same session outside that
 		// handle. A session the app owns outright falls back to the same
