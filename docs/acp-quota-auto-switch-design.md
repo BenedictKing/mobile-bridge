@@ -155,7 +155,7 @@ type QuotaSnapshot struct {
 账号可被选为目标需同时满足：
 
 1. `status == ok`（非 `reauth_required` / `disabled` / `cooling_down`）；
-2. 所有窗口限额均未达到各自切换阈值：5 小时等普通窗口默认 95%，周/月窗口至少 99%（普通窗口阈值可配），或额度快照过期 ≤ 10 分钟时以最近一次被动事件修正；
+2. 所有窗口限额均未达到各自切换阈值：5 小时等普通窗口默认 99%，周/月窗口至少 99%（普通窗口阈值可配），或额度快照过期 ≤ 10 分钟时以最近一次被动事件修正；
 3. 不在冷却期（见 §6.3）；
 4. token 未过期或可刷新。
 
@@ -263,7 +263,7 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
 - Decider、被动事件分类器、会话恢复检测、`switchResumeRuns` 预算、通知接入。
 - 验收：模拟限额耗尽（注入 `quota_exhausted` 事件）→ 自动切换 → 被打断会话收到"继续"并续跑。
 - 落地说明：
-  - 编排器为 `internal/accpool/auto.go` 的 `AutoSwitcher`；入口有两条：**被动钩子**（`cmd/gateway/poolhooks.go` 的 `poolQuotaHook`，挂在 AutoContinue 链首位，用 `jev.ContinueContext`+`jev.QuotaStop` 初筛疑似额度故障）与**轮询预警**（`poller.go` 刷新当前账号后越过窗口阈值即回调 `OnExhausted`；5 小时等普通窗口默认 95%，周/月窗口至少 99%）；
+  - 编排器为 `internal/accpool/auto.go` 的 `AutoSwitcher`；入口有两条：**被动钩子**（`cmd/gateway/poolhooks.go` 的 `poolQuotaHook`，挂在 AutoContinue 链首位，用 `jev.ContinueContext`+`jev.QuotaStop` 初筛疑似额度故障）与**轮询预警**（`poller.go` 刷新当前账号后越过窗口阈值即回调 `OnExhausted`；5 小时等普通窗口默认 99%，周/月窗口至少 99%）；
   - 误报防护（开放问题 3 的当前方案）：被动事件先用 jev 规则初筛，再 `RefreshQuota` 复确认——只有额度数据确实越过阈值才真正切换，瞬时 429 不误切；真实语料校准仍待收集；
   - 门控全部基于 `history.jsonl`（重启不丢）：切换冷却 10 分钟、每小时最多 6 次、24h 内切走 3 次即放弃该账号、最紧窗口距重置不足 5 分钟时宁可等待；无可用账号时发通知而不动作；
   - 目标选择（`decide.go` 的 `ChooseTarget`）：逐候选刷新额度，选最紧窗口余量最大者，并列取最久未用；

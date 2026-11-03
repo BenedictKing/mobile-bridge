@@ -900,7 +900,7 @@ func zcodeResetFixture(t *testing.T) (*Manager, string) {
 // per-account monitor keyed on the bare token, and the reset endpoints. The
 // exhausted account recovers once a card is used. Returns the /use hit count.
 func stubZcodeResetAPI(t *testing.T, cards int) *atomic.Int32 {
-	return stubZcodeResetAPIAt(t, cards, 96)
+	return stubZcodeResetAPIAt(t, cards, 99)
 }
 
 // stubZcodeResetAPIAt is stubZcodeResetAPI with the exhausted account's Token
@@ -1063,6 +1063,8 @@ func TestAutoSwitchZcodeResetCardHoldsBeforeProactiveLine(t *testing.T) {
 	// to spend it, not swap accounts under live sessions.
 	useHits := stubZcodeResetAPIAt(t, 1, 96)
 	auto := NewAutoSwitcher(m)
+	// Exercise the gap with a custom threshold below the proactive line.
+	auto.Threshold = 0.95
 	auto.now = m.now
 	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
 
@@ -1087,6 +1089,8 @@ func TestAutoSwitchZcodeResetCardReactiveBelowProactiveLine(t *testing.T) {
 	// plain exhaustion threshold instead of waiting for the proactive line.
 	useHits := stubZcodeResetAPIAt(t, 1, 96)
 	auto := NewAutoSwitcher(m)
+	// Exercise the gap with a custom threshold below the proactive line.
+	auto.Threshold = 0.95
 	auto.now = m.now
 	auto.Sessions = func(kind string) SessionManager { return &fakeSM{} }
 
@@ -1108,7 +1112,7 @@ func TestAutoSwitchZcodeResetCardSparedWhenResetImminent(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(r.URL.Path, "/monitor/") {
 			_, _ = w.Write([]byte(`{"code":200,"data":{"level":"lite","limits":[` +
-				`{"type":"TOKENS_LIMIT","percentage":96,"nextResetTime":` +
+				`{"type":"TOKENS_LIMIT","percentage":99,"nextResetTime":` +
 				strconv.FormatInt(m.now().Add(2*time.Minute).UnixMilli(), 10) + `}]}}`))
 			return
 		}

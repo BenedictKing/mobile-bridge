@@ -24,8 +24,8 @@ type Poller struct {
 	// accounts.
 	AllInterval time.Duration
 	// Threshold is the ordinary-window used/limit ratio that counts as
-	// exhausted for the preventive-switch check (0 disables the check);
-	// weekly and monthly windows use at least 0.99.
+	// exhausted for the preventive-switch check (0.99 by default; 0 disables
+	// the check); weekly and monthly windows use at least 0.99.
 	Threshold float64
 	// OnExhausted fires (on the poll goroutine) when the active account
 	// crosses its exhaustion threshold; the auto-switcher owns the reaction.

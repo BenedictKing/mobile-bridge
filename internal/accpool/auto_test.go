@@ -173,22 +173,26 @@ func TestAutoSwitchOnExhaustion(t *testing.T) {
 	}
 }
 
-func TestAutoSwitchLongTermThreshold(t *testing.T) {
+func TestAutoSwitchThresholdByWindow(t *testing.T) {
 	tests := []struct {
+		name       string
+		windowUsed int64
 		weeklyUsed int64
 		wantSwitch bool
 		wantActive string
 	}{
-		{weeklyUsed: 96, wantActive: "u_a"},
-		{weeklyUsed: 99, wantSwitch: true, wantActive: "u_b"},
+		{name: "five-hour 96", windowUsed: 96, weeklyUsed: 1, wantActive: "u_a"},
+		{name: "five-hour 99", windowUsed: 99, weeklyUsed: 1, wantSwitch: true, wantActive: "u_b"},
+		{name: "weekly 96", windowUsed: 10, weeklyUsed: 96, wantActive: "u_a"},
+		{name: "weekly 99", windowUsed: 10, weeklyUsed: 99, wantSwitch: true, wantActive: "u_b"},
 	}
 	for _, test := range tests {
-		t.Run(strconv.FormatInt(test.weeklyUsed, 10), func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			m, auto, _ := setupAutoFixture(t, "")
 			activeUsage := `{"usage":{"used":` + strconv.FormatInt(test.weeklyUsed, 10) +
 				`,"limit":100,"resetTime":"2099-01-01T00:00:00Z"},` +
 				`"limits":[{"window":{"timeUnit":"TIME_UNIT_MINUTE","duration":300},` +
-				`"detail":{"used":10,"limit":100}}]}`
+				`"detail":{"used":` + strconv.FormatInt(test.windowUsed, 10) + `,"limit":100}}]}`
 			stubKimiAPI(t, map[string]string{
 				"at-a": activeUsage,
 				"at-b": usagesJSON(10, 100, ""),

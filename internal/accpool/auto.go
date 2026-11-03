@@ -19,7 +19,7 @@ type AutoSwitcher struct {
 	Notify func(title, body string)
 
 	// Threshold is the ordinary-window used/limit ratio that counts as
-	// exhausted (0.95); weekly and monthly windows use at least 0.99.
+	// exhausted (0.99); weekly and monthly windows use at least 0.99.
 	Threshold float64
 	// Cooldown bounds consecutive switches of one agent (10 minutes).
 	Cooldown time.Duration
@@ -49,7 +49,7 @@ func NewAutoSwitcher(pool *Manager) *AutoSwitcher {
 
 func (a *AutoSwitcher) defaults() {
 	if a.Threshold <= 0 || a.Threshold > 1 {
-		a.Threshold = 0.95
+		a.Threshold = 0.99
 	}
 	if a.Cooldown <= 0 {
 		a.Cooldown = 10 * time.Minute
