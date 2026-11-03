@@ -81,6 +81,10 @@ type Timeline struct {
 	versions     map[string]map[string][32]byte
 	meta         *jsoncompat.Object
 	newEpoch     func() string
+	// userIndex caches the role=user row summaries, keyed by the sequence
+	// they were built from, so per-request meta annotation stays cheap.
+	userIndex    *jsoncompat.Array
+	userIndexSeq string
 }
 
 // New creates a Timeline. epochFn supplies uuid4-hex epochs; inject a
@@ -844,6 +848,38 @@ func (t *Timeline) MetaSnapshot() *jsoncompat.Object {
 // the value. Callers must serialize this operation with other Timeline calls.
 func (t *Timeline) SetMeta(key string, value any) {
 	t.meta.Set(key, jsoncompat.Clone(value))
+}
+
+// UserIndex lists every user-role row's key and text preview in timeline
+// order. The chat screen's jump panel needs the complete prompt list while
+// the loaded window only holds the newest rows; jumping to an unloaded key
+// pages history until the node exists.
+func (t *Timeline) UserIndex() *jsoncompat.Array {
+	if t.userIndex != nil && t.userIndexSeq == t.sequence {
+		return t.userIndex
+	}
+	index := &jsoncompat.Array{Items: []any{}}
+	for _, record := range t.rows {
+		if role, _ := record.obj.MustGet("role").(string); role != "user" {
+			continue
+		}
+		entry := jsoncompat.NewObject()
+		entry.Set("key", record.key)
+		if text, _ := record.obj.MustGet("text").(string); text != "" {
+			entry.Set("text", previewRunes(text, 200))
+		}
+		index.Items = append(index.Items, entry)
+	}
+	t.userIndex, t.userIndexSeq = index, t.sequence
+	return index
+}
+
+func previewRunes(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit])
 }
 
 func (t *Timeline) State() State {

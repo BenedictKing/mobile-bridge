@@ -152,3 +152,45 @@ func TestUpdateWithoutFieldsStaysClean(t *testing.T) {
 		}
 	}
 }
+
+// The jump panel needs every prompt; the index lists user rows across the
+// whole projection regardless of the loaded window and caches per sequence.
+func TestUserIndexListsAllUserRows(t *testing.T) {
+	tl := New(func() string { return "epoch1" })
+	updateWith(t, tl, `{
+	 "sequence": 1, "cwd": "/work",
+	 "turns": [
+	  {"id": "t1", "status": "completed", "messages": [
+	   {"id": "m1", "kind": "userMessage", "role": "user", "text": "第一问"},
+	   {"id": "m2", "kind": "agentMessage", "role": "assistant", "text": "答一"}]},
+	  {"id": "t2", "status": "completed", "messages": [
+	   {"id": "m3", "kind": "userMessage", "role": "user", "text": "第二问"},
+	   {"id": "m4", "kind": "toolCall", "role": "activity", "title": "Bash", "text": "ls"}]}
+	 ]}`)
+	index := tl.UserIndex()
+	if len(index.Items) != 2 {
+		t.Fatalf("index=%v", index)
+	}
+	first := index.Items[0].(*jsoncompat.Object)
+	second := index.Items[1].(*jsoncompat.Object)
+	if first.MustGet("key") == "" || first.MustGet("text") != "第一问" || second.MustGet("text") != "第二问" {
+		t.Fatalf("index=%v", index)
+	}
+	if again := tl.UserIndex(); again.Items[0] != index.Items[0] {
+		t.Fatal("unchanged sequence rebuilt the index")
+	}
+	updateWith(t, tl, `{
+	 "sequence": 2, "cwd": "/work",
+	 "turns": [
+	  {"id": "t1", "status": "completed", "messages": [
+	   {"id": "m1", "kind": "userMessage", "role": "user", "text": "第一问"},
+	   {"id": "m2", "kind": "agentMessage", "role": "assistant", "text": "答一"}]},
+	  {"id": "t2", "status": "completed", "messages": [
+	   {"id": "m3", "kind": "userMessage", "role": "user", "text": "第二问"}]},
+	  {"id": "t3", "status": "completed", "messages": [
+	   {"id": "m5", "kind": "userMessage", "role": "user", "text": "第三问"}]}
+	 ]}`)
+	if refreshed := tl.UserIndex(); len(refreshed.Items) != 3 || refreshed.Items[2].(*jsoncompat.Object).MustGet("text") != "第三问" {
+		t.Fatalf("refreshed=%v", refreshed)
+	}
+}

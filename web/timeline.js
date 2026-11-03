@@ -48,6 +48,7 @@ class ChatTimeline {
     this.userJumpList=document.getElementById('user-jump-list');
     this.userJumpCount=document.getElementById('user-jump-count');
     this.userJumpButtons=new Map();
+    this.userIndex=null;
     this.abort=new AbortController();this.rows=new Map();this.nodes=new Map();this.details=new Map();
     this.files=new Map();this.sequence=-1;this.epoch='';this.before=null;this.hasMore=false;
     this.busy=false;this.generation=0;this.windowRevision=0;this.following=true;this.lastTop=0;this.retryCount=0;
@@ -95,8 +96,14 @@ class ChatTimeline {
     this.anchor=this.capture();
     requestAnimationFrame(()=>this.suppress=false);
   }
+  // The panel lists every prompt, not just the loaded window: the server
+  // ships a complete userIndex in timeline meta; rows loaded afterwards
+  // (fresh prompts, newly paged history) overlay it by key.
   renderUserJump(ordered,bottom=false){
-    const rows=ordered.filter(row=>row.role==='user');
+    const merged=new Map();
+    if(this.userIndex)for(const entry of this.userIndex)merged.set(entry.key,entry);
+    for(const row of ordered)if(row.role==='user')merged.set(row.key,row);
+    const rows=[...merged.values()];
     this.userJump.hidden=!rows.length;this.userJumpCount.textContent=rows.length?String(rows.length):'';
     this.userJumpList.replaceChildren();this.userJumpButtons.clear();
     for(const [index,row] of rows.entries()){
@@ -109,7 +116,8 @@ class ChatTimeline {
     }
     this.updateUserJumpActive(bottom);
   }
-  jumpToUser(key){
+  async jumpToUser(key){
+    if(!this.nodes.get(key))await this.loadUntilKey(key);
     const target=this.nodes.get(key)?.node;if(!target)return;
     this.suppress=true;
     this.viewport.scrollTop+=target.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top-12;
@@ -117,6 +125,15 @@ class ChatTimeline {
     if(this.following)this.newer.hidden=true;
     this.updateUserJumpActive(false,key);
     requestAnimationFrame(()=>this.suppress=false);
+  }
+  // Jumping to a prompt older than the loaded window pages history up until
+  // the row exists, bounded so a huge chat cannot page forever.
+  async loadUntilKey(key){
+    for(let i=0;i<24&&this.hasMore&&!this.nodes.has(key)&&!this.abort.signal.aborted;i++){
+      while(this.busy&&!this.abort.signal.aborted)await this.pause(40);
+      if(!this.hasMore||this.nodes.has(key))break;
+      await this.loadOlder(100);
+    }
   }
   updateUserJumpActive(bottom=false,selected=''){
     const keys=[...this.userJumpButtons.keys()];if(!keys.length)return;
@@ -184,6 +201,7 @@ class ChatTimeline {
     if(reset){this.generation++;this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.epoch=page.epoch;this.retryCount=0;}
     for(const file of page.files||[])this.files.set(file.id,file);
     if((!history&&page.sequence>=this.sequence)||reset){this.sequence=page.sequence;this.meta=page.meta;this.renderMeta({...page.meta,files:[...this.files.values()]});}
+    if(page.meta?.userIndex)this.userIndex=page.meta.userIndex;
     if(!history)this.pendingRequests=!!page.meta.requests?.length;
     let changed=false;
     for(const row of page.rows){
@@ -218,7 +236,7 @@ class ChatTimeline {
     const cursor={after:this.sequence,epoch:this.epoch,start:this.before||''};
     this.sequence=frame.sequence;
     for(const file of frame.files||[])this.files.set(file.id,file);
-    if(frame.meta){this.meta=frame.meta;this.renderMeta({...frame.meta,files:[...this.files.values()]});}
+    if(frame.meta){this.meta=frame.meta;this.renderMeta({...frame.meta,files:[...this.files.values()]});if(frame.meta.userIndex)this.userIndex=frame.meta.userIndex;}
     let changed=false,mismatch=false;
     for(const delta of frame.rows||[]){
       const entry=this.rows.get(delta.key);

@@ -17,6 +17,8 @@ class FakeNode{
   }
   append(...nodes){this.children.push(...nodes);}
   replaceChildren(...nodes){this.children=nodes;}
+  querySelector(){return null;}
+  querySelectorAll(){return [];}
   addEventListener(type,handler){this.listeners.set(type,handler);}
   removeEventListener(type){this.listeners.delete(type);}
   setAttribute(name,value){this.attributes[name]=String(value);}
@@ -75,4 +77,33 @@ test('user jump is large-screen only',()=>{
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   assert.match(css,/\.user-jump\{display:none\}/);
   assert.match(css,/@media\(min-width:721px\)\{\s*\.user-jump\{display:block/);
+});
+
+test('user jump lists prompts from the meta index beyond the loaded window',()=>{
+  const{timeline,ids}=setup();
+  timeline.userIndex=[{key:'u-old',text:'很早的一条消息'},{key:'u1',text:'最新消息'}];
+  const row=addUser(timeline,ids,'u1','最新消息',120);
+  timeline.renderUserJump([row]);
+  assert.equal(ids['user-jump'].hidden,false);
+  assert.equal(ids['user-jump-count'].textContent,'2');
+  assert.equal(ids['user-jump-list'].children.length,2);
+  assert.equal(ids['user-jump-list'].children[0].children[1].textContent,'很早的一条消息');
+  timeline.dispose();
+});
+
+test('jumping to an unloaded prompt pages history until the node exists',async()=>{
+  const{timeline,ids}=setup();
+  const newest=addUser(timeline,ids,'u1','最新消息',120);
+  timeline.epoch='e1';timeline.sequence=1;timeline.hasMore=true;timeline.before=null;
+  timeline.userIndex=[{key:'u-old',text:'很早的一条消息'},newest];
+  timeline.renderUserJump([newest]);
+  timeline.read=async()=>({epoch:'e1',sequence:2,before:'b0',hasMore:false,meta:{},
+    rows:[{key:'u-old',role:'user',text:'很早的一条消息',order:0}]});
+  const originalRender=timeline.renderRow.bind(timeline);
+  timeline.renderRow=(row,open)=>{const node=originalRender(row,open);if(row.key==='u-old')node.rect={top:300,bottom:380};return node;};
+  await timeline.jumpToUser('u-old');
+  assert.ok(timeline.nodes.has('u-old'),'paged row not loaded');
+  assert.equal(ids.timeline.scrollTop,188,'viewport did not scroll to the row');
+  assert.equal(timeline.userJumpButtons.get('u-old').classList.contains('active'),true);
+  timeline.dispose();
 });

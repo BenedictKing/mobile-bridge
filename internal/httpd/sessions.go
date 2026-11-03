@@ -1195,6 +1195,11 @@ func (h *handler) liveTimeline(threadID, action string, query map[string][]strin
 	if len(h.server.acpAgentSet()) > 0 {
 		projection.SetMeta("agents", h.server.agentRoster())
 	}
+	// The user-message jump panel needs every prompt, not just the loaded
+	// window; empty sessions keep the meta untouched for parity fixtures.
+	if index := projection.UserIndex(); len(index.Items) > 0 {
+		projection.SetMeta("userIndex", index)
+	}
 	// Queue cards and the fork-source link ride in meta like Python's
 	// _submission_meta/_fork_origin annotations on every timeline read.
 	if h.server.Queue != nil {

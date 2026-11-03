@@ -173,6 +173,15 @@ for line in sys.stdin:
 	if view.Code != http.StatusOK || strings.Contains(view.Body.String(), `"readOnly": true`) {
 		t.Fatalf("view status=%d body=%s", view.Code, view.Body.String())
 	}
+	// The jump panel rides on timeline meta: every prompt is listed even
+	// though the loaded window only holds the newest rows.
+	page := featureRequest(server, token, csrf, http.MethodGet,
+		"/api/sessions/session-attachable/timeline?limit=1&agent=claude&cwd=/work", "")
+	for _, needle := range []string{`"userIndex"`, "历史里的问题"} {
+		if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), needle) {
+			t.Fatalf("timeline status=%d missing %q: %s", page.Code, needle, page.Body.String())
+		}
+	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("read route started the agent: %v", err)
 	}
