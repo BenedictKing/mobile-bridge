@@ -129,6 +129,9 @@ func DecideContinue(context *jsoncompat.Object, assessment *ContinueAssessment) 
 	// max_tokens/max_turns/max_turn_requests that way): they are exhaustion
 	// worth resuming, not the user's stop.
 	budgetStop := stopReason == "max_tokens" || stopReason == "max_turns" || stopReason == "max_turn_requests"
+	if stopReason == "refusal" {
+		return false, "refusal"
+	}
 	if stopReason == "cancelled" || (status == "interrupted" && !budgetStop) {
 		// The user stopped the turn; resuming would undo their decision.
 		return false, "cancelled"

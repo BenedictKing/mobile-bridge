@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acp"
 	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
@@ -389,6 +390,11 @@ func (s *Server) dispatchSubmission(threadID string, resolution acpResolution, e
 	return s.dispatchCodexSubmission(threadID, entry)
 }
 
+func promptNotSubmitted(err error) bool {
+	var acpErr *acp.Error
+	return errors.As(err, &acpErr) && acpErr.Kind == acp.KindUnavailable
+}
+
 func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution, entry *submissionEntry) (dispatchOutcome, string) {
 	manager, session := resolution.manager, resolution.session
 	if session == nil {
@@ -448,8 +454,9 @@ func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution
 	// convention as the direct send path.
 	extra = s.conventionExtras(extra)
 	if promptErr := session.PromptWithBlocks(text, extra, 3600*time.Second, files...); promptErr != nil {
-		if strings.Contains(promptErr.Error(), "当前已有任务正在运行") {
-			// Provably not delivered: the agent refused the prompt.
+		if promptNotSubmitted(promptErr) || strings.Contains(promptErr.Error(), "当前已有任务正在运行") {
+			// The request never reached the writer, or the agent refused it
+			// before starting a turn. Both are safe to dispatch again.
 			return outcomeRequeue, promptErr.Error()
 		}
 		return outcomeUnknown, ""

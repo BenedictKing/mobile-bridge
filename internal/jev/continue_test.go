@@ -49,6 +49,7 @@ func TestDecideContinueAppliesDeterministicPolicy(t *testing.T) {
 	}{
 		{"quota in error", continueContext("failed", "", "余额不足", ""), nil, false, "quota"},
 		{"user cancelled", continueContext("interrupted", "cancelled", "", ""), nil, false, "cancelled"},
+		{"agent refusal", continueContext("interrupted", "refusal", "", ""), nil, false, "refusal"},
 		{"interrupted without key", continueContext("failed", "", "Agent 响应超时", ""), nil, true, "interrupted"},
 		{"max_tokens without key", continueContext("completed", "max_tokens", "", ""), nil, true, "interrupted"},
 		{"max_tokens interrupted view", continueContext("interrupted", "max_tokens", "", ""), nil, true, "interrupted"},

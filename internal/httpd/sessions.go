@@ -873,6 +873,11 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				h.fail(http.StatusConflict, errorBody(callErr.Error()))
 			}
 		} else {
+			if !promptNotSubmitted(callErr) {
+				// A write may have been truncated after reaching the agent. Keep
+				// the ledger unknown instead of scheduling a duplicate prompt.
+				requeueID = ""
+			}
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		}
 	case "stop":

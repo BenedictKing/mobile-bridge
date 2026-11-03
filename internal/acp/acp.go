@@ -33,6 +33,7 @@ type ErrorKind string
 const (
 	KindError        ErrorKind = "AcpError"
 	KindUnavailable  ErrorKind = "AcpUnavailable"
+	KindWriteUnknown ErrorKind = "AcpWriteUnknown"
 	KindTimeout      ErrorKind = "AcpTimeout"
 	KindProtocol     ErrorKind = "AcpProtocol"
 	KindAuthRequired ErrorKind = "AcpAuthRequired"
@@ -50,6 +51,14 @@ func (e *Error) Error() string { return e.Message }
 
 func unavailable() *Error {
 	return &Error{Message: "Agent 进程已退出；操作结果未知", Kind: KindUnavailable}
+}
+
+func notSubmitted() *Error {
+	return &Error{Message: "Agent 进程已退出；请求尚未发送", Kind: KindUnavailable}
+}
+
+func writeUnknown() *Error {
+	return &Error{Message: "Agent 请求写入中断；操作结果未知", Kind: KindWriteUnknown}
 }
 
 // Delivery is the outcome of one submitted request: either a Value or an
@@ -126,10 +135,10 @@ func (p *Process) send(message *jsoncompat.Object) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
 	if p.closed {
-		return unavailable()
+		return notSubmitted()
 	}
 	if _, err := p.stdin.Write(data); err != nil {
-		return unavailable()
+		return writeUnknown()
 	}
 	return nil
 }
@@ -140,7 +149,7 @@ func (p *Process) Submit(method string, params *jsoncompat.Object) (string, <-ch
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return "", nil, unavailable()
+		return "", nil, notSubmitted()
 	}
 	ident := jsoncompat.Num(p.nextID)
 	p.nextID++

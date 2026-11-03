@@ -65,3 +65,25 @@ test('project team entry never inherits the open chat activity badge',()=>{
   assert.equal(team.strong.children.length,0);
   assert.equal(team.strong.textContent,'项目团队');
 });
+
+test('terminal turn badges distinguish completion, failure and refusal interruption',()=>{
+  const {SessionActivity}=require('../web/activity.js');
+  const values=new Map();
+  const storage={getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
+  const cases=[
+    ['completed','completed','已完成，未查看'],
+    ['failed','ended','运行失败，未查看'],
+    ['interrupted','ended','已停止，未查看'],
+  ];
+  for(const [turnStatus,kind,label] of cases){
+    const activity=new SessionActivity({storage});
+    const row={host:'local',id:'chat-'+turnStatus,connected:true,status:'idle',turnId:'turn-'+turnStatus,turnStatus,pendingRequests:0};
+    activity.update([row]);
+    const key=activity.id(row);
+    assert.deepEqual(activity.indicator(key),{kind,label});
+    activity.update([{...row,connected:false}]);
+    assert.deepEqual(activity.indicator(key),{kind,label},turnStatus+' offline badge');
+    activity.read(key);
+    assert.equal(activity.indicator(key),null);
+  }
+});

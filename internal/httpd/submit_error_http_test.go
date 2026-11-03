@@ -77,8 +77,8 @@ for line in sys.stdin:
 	return server, token, csrf, manager, session
 }
 
-// TestDirectSendSubmitFailureIsNotAccepted 复现审计缺陷的 HTTP 侧：Submit 失败
-// 时直接发送必须以失败回应，账本条目绝不能落 accepted。
+// TestDirectSendSubmitFailureIsNotAccepted 复现审计缺陷的 HTTP 侧：写入前
+// 已关闭时直接发送必须以失败回应，且消息可安全回队，绝不能落 accepted。
 func TestDirectSendSubmitFailureIsNotAccepted(t *testing.T) {
 	server, token, csrf, _, _ := submitFailureServer(t)
 	send := featureRequest(server, token, csrf, http.MethodPost, "/api/sessions/sess-suberr/send",
@@ -93,14 +93,14 @@ func TestDirectSendSubmitFailureIsNotAccepted(t *testing.T) {
 	if entry == nil {
 		t.Fatal("直接发送应先记录账本条目")
 	}
-	if entry.Status == SubAccepted {
-		t.Fatalf("从未发出的消息被记为 accepted：%+v", entry)
+	if entry.Status != SubQueued {
+		t.Fatalf("写入前已关闭的消息状态=%s，应为 queued：%+v", entry.Status, entry)
 	}
 }
 
-// TestQueueDispatchSubmitFailureStaysUnknown 复现审计缺陷的队列侧：Submit 失败
-// 的派发结果必须是 unknown（不自动重试、不落 accepted）。
-func TestQueueDispatchSubmitFailureStaysUnknown(t *testing.T) {
+// TestQueueDispatchClosedBeforeWriteRequeues：进程在写入前已关闭，请求确定
+// 没有送达，队列可以安全重试；这与写入中断的 unknown 有本质区别。
+func TestQueueDispatchClosedBeforeWriteRequeues(t *testing.T) {
 	server, _, _, manager, session := submitFailureServer(t)
 	if _, _, err := server.Queue.enqueue("sess-suberr", "3aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
 		"排队消息", "queue", "", nil, nil, nil); err != nil {
@@ -112,10 +112,19 @@ func TestQueueDispatchSubmitFailureStaysUnknown(t *testing.T) {
 	}
 	outcome, message := server.dispatchSubmission("sess-suberr",
 		acpResolution{kind: "kimi", manager: manager, session: session}, entry)
-	if outcome != outcomeUnknown {
-		t.Fatalf("Submit 失败的派发结果=%s（message=%q），必须为 unknown", outcome, message)
+	if outcome != outcomeRequeue {
+		t.Fatalf("写入前已关闭的派发结果=%s（message=%q），必须为 requeue", outcome, message)
 	}
 	if entry.Status == SubAccepted {
 		t.Fatalf("从未发出的消息被记为 accepted：%+v", entry)
+	}
+}
+
+func TestPromptNotSubmittedRejectsInterruptedWrite(t *testing.T) {
+	if !promptNotSubmitted(&acp.Error{Kind: acp.KindUnavailable}) {
+		t.Fatal("写入前已关闭必须允许回队")
+	}
+	if promptNotSubmitted(&acp.Error{Kind: acp.KindWriteUnknown}) {
+		t.Fatal("写入中断必须保持 unknown，禁止自动重试")
 	}
 }

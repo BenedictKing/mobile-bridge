@@ -58,8 +58,8 @@ func TestEndTurnClassifiesBudgetStopsAsInterrupted(t *testing.T) {
 			t.Fatalf("stopReason 应原样保留，got=%q", recorded)
 		}
 	}
-	// 正常收尾与取消保持原口径。
-	for reason, want := range map[string]string{"end_turn": "completed", "cancelled": "interrupted"} {
+	// 正常收尾保持原口径；拒绝与取消都不是成功完成。
+	for reason, want := range map[string]string{"end_turn": "completed", "refusal": "interrupted", "cancelled": "interrupted"} {
 		view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
 		view.BeginTurn("跑完测试")
 		view.EndTurn(reason)

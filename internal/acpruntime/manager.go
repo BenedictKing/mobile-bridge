@@ -998,8 +998,8 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.mu.Unlock()
 		close(promptDone)
 		// The view already shows the failed turn, but the caller must not
-		// record a phantom acceptance: the queue and HTTP layers classify by
-		// this error (unavailable → outcome unknown, never auto-retried).
+		// record a phantom acceptance: pre-write failures may requeue, while
+		// interrupted writes stay unknown and are never auto-retried.
 		return submitErr
 	}
 	go s.awaitPrompt(ident, channel, idleTimeout, slice, promptDone, warmup)
@@ -1084,6 +1084,9 @@ func refusalFailure(result *jsoncompat.Object) string {
 		return ""
 	}
 	meta, _ := result.MustGet("_meta").(*jsoncompat.Object)
+	if meta == nil {
+		return ""
+	}
 	raw, _ := meta.MustGet("codebuddy.ai/errorMessage").(string)
 	if raw == "" {
 		return ""
@@ -1096,10 +1099,14 @@ func refusalFailure(result *jsoncompat.Object) string {
 	if failure == nil {
 		return raw
 	}
-	data, _ := failure.MustGet("data").(*jsoncompat.Object)
-	category, _ := data.MustGet("category").(string)
-	statusCode, _ := data.MustGet("statusCode").(json.Number)
-	if category == "auth" || statusCode.String() == "401" {
+	category, statusCode := "", ""
+	if data, _ := failure.MustGet("data").(*jsoncompat.Object); data != nil {
+		category, _ = data.MustGet("category").(string)
+		if code, ok := data.MustGet("statusCode").(json.Number); ok {
+			statusCode = code.String()
+		}
+	}
+	if category == "auth" || statusCode == "401" {
 		return "CodeBuddy 登录已失效，请在 CLI 中执行 /login 后重试"
 	}
 	if message, _ := failure.MustGet("message").(string); message != "" {
