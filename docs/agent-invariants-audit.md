@@ -23,6 +23,8 @@
 现有 `TestOpenFallsBackToReadOnlyTranscript` 证明拒绝后的只读降级和 Prompt/SetMode/Cancel 拦截有效，却没有证明 load 之前发生过 owner 预检（`internal/acpruntime/native_test.go:239-286`）。
 
 > **DSH POSIX 第一阶段（1553a48）**：当前上游已在 `session.lock` 上持有跨进程 `flock`（早期“lease 尚未实现”的笔记已过时）。`OwnerProbe` 在 `openFresh` / `Reconcile` 前以非阻塞加锁、inode 校验、立即释放识别写者，命中后直接 `openNativeHistory`，不再启动后等待拒绝；锁空闲时 load 仍是最终互斥权威。锁持有/释放与 Open/Reconcile 不启动回归已覆盖。Windows 使用上游命名信号量，主仓暂未实现同等探针，保留旧降级，不能计为达标；其他 Agent 也仍按原路径。
+>
+> **Windows 第二阶段（00f15a8）**：按上游同名协议实现 `Local\dsh-session-lock-<sha256(resolve(path).toLowerCase())>` 的 CreateSemaphoreW/零超时 WaitForSingleObject 探测，成功获取后 ReleaseSemaphore + CloseHandle；锁文件是否存在不参与判断。Windows 测试已交叉编译，尚无真实 Windows 桌面占用/释放实机证据。
 
 ## 3. 能力必须按当前会话和运行时判断
 
@@ -97,6 +99,8 @@ prompt_error=<nil> session_status=idle turn_status=failed
 这属于当前 ACP 架构选择：打开会话就意味着建立控制通道。若要采用上游纪律，需要把“读取原生保存历史”和“显式连接/恢复控制”拆成两个 API；仅修改错误文案不会消除进程启动副作用。
 
 > **DSH 第一阶段（1553a48）**：`NativeListExclusive` 直接读取 transcript header 的 id/cwd 与 projection 标题，列表不再启动；`OpenHistory` 复用原生只读 Session/poller，自动归属、显式 Agent 参数、View、Timeline、SSE 与启动预加载都走纯历史，显式 `reconnect upgrade=1` 才进入控制路径。缓存未变的冷重开会先 `NativeReset`，不会误判无历史。marker 假 Agent 证明 List/Open/Reconcile/HTTP/预加载均未启动。**其他 Agent 尚无统一 NativeHistory，仍不符合本节严格规则；本项仅完成 DSH，不代表全 ACP 达标。**
+>
+> **全 Agent 第二阶段（00f15a8）**：ZCode/OpenCode/mcode 直接只读各自 SQLite，Claude/WorkBuddy/Kimi 解析原生 JSONL/wire，统一 `NativeBuilder` 生成用户、思考、回答与工具时间线；六类均配置原生列表和 `NativeTranscript`，HTTP/预加载 marker 逐类证明不启动进程。覆盖范围是当前 schema：旧版另一套存储不会通过启动 CLI 补齐，真实桌面版本兼容与实机行为仍需单独验证。
 
 ## 7. 实际执行的验证
 
