@@ -35,6 +35,8 @@
 
 结论是**动态能力基础已存在，但尚未形成统一的三层判断：协议能力、当前会话状态、网关已验证能力**。不能把 profile 静态声明当成运行时证明。
 
+> **steer/skills 起步收敛（784defa）**：`acpViewState` 的能力列表不再照搬 profile——`steer` 需 `SteerMethod != ""`（与发送路径同一判定，profile 声明 ≠ 运行时证据），`skills` 需会话真实广播过可选命令（`available_commands_update`；仅内置命令或旧会话不广播时隐藏入口，命令到达后随视图信号自动出现），`goals` 维持 transport 门控、`fork` 维持网关合成语义。降级测试覆盖「profile 声明支持但运行时拒绝」「旧会话不广告该能力」「仅内置命令」三形态。未做：统一的 effective-capabilities 框架与其余能力项（steer 运行时拒绝的记忆化降级等）。
+
 ## 4. RPC 成功不等于原生状态已生效
 
 这条在三条设置路径上都没有完全满足：
