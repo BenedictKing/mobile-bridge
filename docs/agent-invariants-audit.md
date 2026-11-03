@@ -45,6 +45,8 @@
 
 这些实现可以证明“Agent 接受了 RPC”，不能独立证明“原生设置已生效且仍是同一版本”。后续原生通知可能最终校正视图，但不能替代写入接口本身的确认边界。
 
+> **部分修复（bac8e1c）**：`UpdateSettings` 已重写——前置校验（被拒值零 RPC）、模型切换后重读权威 configOptions（修掉 mcode 丢弃 thought_level 时的过期快照缺陷）、`SettingsPartialError` 显式申报「已生效：模型」的部分成功、ACP settings 响应新增 `confirmed` 字段（仅当 agent 返回权威 configOptions 才为真，手机端已有「已同步/等待同步」两档文案）。`setConfigOption` 优化路径（响应无 configOptions 时的本地补丁）与 SetMode 的 RPC 成功即证据语义维持现状。
+
 ## 5. accepted / queued / steered / completed 必须分开
 
 正常路径的分层基本正确：
