@@ -1759,6 +1759,8 @@ const en={
   "引用选中的文字并评论": "Quote the selected text and comment",
   "选中的内容较长，只引用了前面一部分": "The selection is long; only the beginning was quoted",
   "这条聊天当前只读，不能引用评论": "This chat is read-only; quoting is unavailable",
+  "用户消息": "User messages",
+  "用户消息快速定位": "Jump to a user message",
   "个停止": "stopped"
 };
 let lang='zh';

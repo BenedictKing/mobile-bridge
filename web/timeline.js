@@ -44,6 +44,10 @@ class ChatTimeline {
     this.container=document.getElementById('messages');
     this.older=document.getElementById('older');
     this.newer=document.getElementById('newer');
+    this.userJump=document.getElementById('user-jump');
+    this.userJumpList=document.getElementById('user-jump-list');
+    this.userJumpCount=document.getElementById('user-jump-count');
+    this.userJumpButtons=new Map();
     this.abort=new AbortController();this.rows=new Map();this.nodes=new Map();this.details=new Map();
     this.files=new Map();this.sequence=-1;this.epoch='';this.before=null;this.hasMore=false;
     this.busy=false;this.generation=0;this.windowRevision=0;this.following=true;this.lastTop=0;this.retryCount=0;
@@ -54,6 +58,7 @@ class ChatTimeline {
       const upward=this.viewport.scrollTop<this.lastTop;
       this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
       if(this.following)this.newer.hidden=true;
+      this.updateUserJumpActive();
       if(upward&&this.nearTop()&&!this.retryCount)this.loadOlder(100);
     };
     this.viewport.addEventListener('scroll',this.onScroll,{passive:true});
@@ -62,7 +67,7 @@ class ChatTimeline {
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
     this.resize.observe(this.container);
   }
-  dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.loadErrorEl?.remove();this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;}
+  dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.loadErrorEl?.remove();this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;this.userJump.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
   capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&!n.dataset.summary&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
@@ -89,6 +94,45 @@ class ChatTimeline {
     this.lastTop=this.viewport.scrollTop;
     this.anchor=this.capture();
     requestAnimationFrame(()=>this.suppress=false);
+  }
+  renderUserJump(ordered,bottom=false){
+    const rows=ordered.filter(row=>row.role==='user');
+    this.userJump.hidden=!rows.length;this.userJumpCount.textContent=rows.length?String(rows.length):'';
+    this.userJumpList.replaceChildren();this.userJumpButtons.clear();
+    for(const [index,row] of rows.entries()){
+      const label=(row.text||'').trim().replace(/\s+/g,' ')||timelineText('用户消息');
+      const button=document.createElement('button');button.type='button';button.className='user-jump-item';button.dataset.key=row.key;button.title=label;
+      const number=document.createElement('span');number.className='user-jump-index';number.textContent=String(index+1);
+      const text=document.createElement('span');text.className='user-jump-text';text.textContent=label;
+      button.append(number,text);button.onclick=()=>this.jumpToUser(row.key);
+      this.userJumpButtons.set(row.key,button);this.userJumpList.append(button);
+    }
+    this.updateUserJumpActive(bottom);
+  }
+  jumpToUser(key){
+    const target=this.nodes.get(key)?.node;if(!target)return;
+    this.suppress=true;
+    this.viewport.scrollTop+=target.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top-12;
+    this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
+    if(this.following)this.newer.hidden=true;
+    this.updateUserJumpActive(false,key);
+    requestAnimationFrame(()=>this.suppress=false);
+  }
+  updateUserJumpActive(bottom=false,selected=''){
+    const keys=[...this.userJumpButtons.keys()];if(!keys.length)return;
+    let active=selected||(bottom?keys[keys.length-1]:keys[0]);
+    if(!selected&&!bottom){
+      const top=this.viewport.getBoundingClientRect().top+72;
+      for(const key of keys){
+        const node=this.nodes.get(key)?.node;
+        if(node&&node.getBoundingClientRect().top<=top)active=key;
+        else if(node)break;
+      }
+    }
+    for(const [key,button] of this.userJumpButtons){
+      button.classList.toggle('active',key===active);
+      if(key===active)button.setAttribute('aria-current','location');else button.removeAttribute('aria-current');
+    }
   }
   read(action,params={}){return this.request(this.url(action)+'&'+new URLSearchParams(params),undefined,this.abort.signal);}
   // 重试按钮下的服务端错误详情；空文本时靠 .error:empty 自动隐藏。
@@ -160,6 +204,7 @@ class ChatTimeline {
     if(reset||history){this.before=page.before;this.hasMore=page.hasMore;this.windowRevision++;}
     this.renderTurnSummaries(ordered);
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
+    this.renderUserJump([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order),bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
     if(reset)requestAnimationFrame(()=>this.fillRecent());
   }
@@ -205,6 +250,7 @@ class ChatTimeline {
       }).catch(()=>{});
     }
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
+    this.renderUserJump([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order),bottom);
     if(!bottom&&changed){this.newer.textContent=this.pendingRequests?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
   }
   renderRow(row,open){
@@ -366,7 +412,8 @@ class ChatTimeline {
       const attachment=node.querySelector('.timeline-attachments small.muted');
       if(attachment)attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
     }
-    this.renderTurnSummaries([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order));
+    const ordered=[...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order);
+    this.renderTurnSummaries(ordered);this.renderUserJump(ordered,this.following);
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }
   updates(){
@@ -386,3 +433,4 @@ class ChatTimeline {
   }
   pause(ms){return new Promise(resolve=>{const done=()=>{clearTimeout(timer);this.abort.signal.removeEventListener('abort',done);resolve();};const timer=setTimeout(done,ms);this.abort.signal.addEventListener('abort',done,{once:true});});}
 }
+if(typeof module!=='undefined')module.exports={ChatTimeline};

@@ -159,11 +159,11 @@ main{background:var(--page);overflow:hidden}
    content-visibility:hidden 隐藏：只覆写子元素的 display 已经不起作用，
    三行预览会整块看不见、还留下同样高的空白。这里把该伪元素显式放开。 */
 .activity::details-content{content-visibility:visible}
-/* 工具调用折叠态只显示标题，展开后才显示具体内容；data-tool 由 timeline.js
-   按统一规则打上，覆盖各管线的工具行 kind（toolCall/storedToolEvent/mcp…）。
-   工具调用外的 activity（思考摘要、计划）保留三行预览。 */
-.activity[data-tool]:not([open]) .activity-body{display:none}
-.activity:not([data-tool]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
+/* 工具调用和子 Agent 折叠态只显示标题，展开后才显示具体内容；data-tool 由
+   timeline.js 按统一规则打上，覆盖各管线的工具行 kind（toolCall/storedToolEvent/mcp…）。
+   其他 activity（思考摘要、计划）保留三行预览。 */
+.activity[data-tool]:not([open]) .activity-body,.activity[data-kind=subagent]:not([open]) .activity-body{display:none}
+.activity:not([data-tool]):not([data-kind=subagent]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
 .activity-body{max-height:60vh;overflow:auto}
 .activity-body:empty{display:none}
 .activity:not([open]) .detail-more{display:none}
@@ -630,3 +630,19 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
   /* 窄侧边栏里“显示方式”只是这行的标题，省掉它才放得下模式按钮与归档勾选。 */
   .list-mode>span{display:none}
 }
+
+/* 大屏用户消息定位：悬浮在会话右侧，可收起，窄屏不占用聊天空间。 */
+.user-jump{display:none}
+@media(min-width:721px){
+  .user-jump{display:block;position:absolute;z-index:4;top:76px;right:14px;width:210px;max-height:calc(100% - 250px);border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--raised) 94%,transparent);box-shadow:0 8px 28px #18291d14;color:var(--muted);font-size:12px;overflow:hidden}
+  .user-jump:not([open]){width:auto;max-height:none}
+  .user-jump>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:9px 12px;cursor:pointer;list-style-position:inside;color:var(--text);font-weight:600;white-space:nowrap}
+  .user-jump-count{margin-left:auto;color:var(--muted);font-size:11px;font-weight:400}
+  .user-jump-list{max-height:min(48vh,460px);padding:0 6px 7px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--control) transparent}
+  .user-jump-item{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:7px 8px;border:0;border-radius:7px;background:transparent;color:var(--muted);text-align:left;cursor:pointer}
+  .user-jump-item:hover{background:var(--active);color:var(--text)}
+  .user-jump-item.active{background:var(--soft);color:var(--green)}
+  .user-jump-index{flex:none;min-width:18px;color:var(--muted);font-size:10px;text-align:right}
+  .user-jump-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+}
+@media(min-width:721px) and (max-width:1050px){.user-jump{right:8px;width:176px}}
