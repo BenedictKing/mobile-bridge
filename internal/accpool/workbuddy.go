@@ -779,13 +779,13 @@ func workbuddyAuthHeaders(acc *Account, accessToken string) map[string]string {
 	variant := workbuddyVariantFromAccount(acc)
 	origin := workbuddyEndpoint(variant)
 	headers := map[string]string{
-		"Accept":                "application/json",
-		"Accept-Language":       workbuddyAcceptLanguage(variant),
-		"X-Requested-With":      "XMLHttpRequest",
-		"X-CodeBuddy-Request":   "1",
-		workbuddyUAHeader:       workbuddyLoginUA(variant),
-		"Origin":                origin,
-		"Referer":               origin + "/",
+		"Accept":              "application/json",
+		"Accept-Language":     workbuddyAcceptLanguage(variant),
+		"X-Requested-With":    "XMLHttpRequest",
+		"X-CodeBuddy-Request": "1",
+		workbuddyUAHeader:     workbuddyLoginUA(variant),
+		"Origin":              origin,
+		"Referer":             origin + "/",
 	}
 	if accessToken != "" {
 		headers["Authorization"] = "Bearer " + accessToken

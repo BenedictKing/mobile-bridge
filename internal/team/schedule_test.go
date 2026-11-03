@@ -781,7 +781,7 @@ func TestTriggerFailureBudgetAbandonsWedgedTrigger(t *testing.T) {
 	if after.PendingTriggerID != "" || after.TriggerFailures != 0 {
 		t.Fatalf("放弃触发点应清标记并归零计数: %+v", after)
 	}
-	if !after.NextDue.Equal(f.now.Add(300*time.Second)) {
+	if !after.NextDue.Equal(f.now.Add(300 * time.Second)) {
 		t.Fatalf("放弃后 NextDue 应保持已推进值，实际 %v", after.NextDue)
 	}
 	// 故障修复（CreateRun 恢复成功）+ 时钟推进到新到期点：schedule 恢复

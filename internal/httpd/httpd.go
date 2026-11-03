@@ -166,8 +166,8 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"http://localhost:" + strconv.Itoa(port): true},
 		SecureHosts:    map[string]bool{},
 		DirectByPublic: map[string]string{}, PublicByDirect: map[string]string{},
-		directGrants: newDirectGrantStore(),
-		projections:  map[string]*projectionSlot{},
+		directGrants:  newDirectGrantStore(),
+		projections:   map[string]*projectionSlot{},
 		artifactCache: map[string]*artifactMemo{}, desktopPaths: map[string]map[string]string{}}
 	server.Bridge = server
 	return server

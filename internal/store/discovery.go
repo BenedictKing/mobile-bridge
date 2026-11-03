@@ -300,8 +300,8 @@ func (s *SessionStore) ChildThreads(parentID string) ([]*jsoncompat.Object, erro
 	if !hasEdges {
 		return []*jsoncompat.Object{}, nil
 	}
-	rows, err := db.Query("SELECT c.*, e.status AS spawn_status FROM thread_spawn_edges e " +
-		"JOIN threads c ON c.id = e.child_thread_id WHERE e.parent_thread_id = ? " +
+	rows, err := db.Query("SELECT c.*, e.status AS spawn_status FROM thread_spawn_edges e "+
+		"JOIN threads c ON c.id = e.child_thread_id WHERE e.parent_thread_id = ? "+
 		"ORDER BY c.created_at_ms, c.created_at, c.id", parentID)
 	if err != nil {
 		return nil, ErrUnavailable

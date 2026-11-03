@@ -1191,9 +1191,9 @@ for line in sys.stdin:
 func TestCloseDoesNotRefreshListRecency(t *testing.T) {
 	stale := time.Now().Add(-time.Hour)
 	session := &Session{
-		ID:     "sess-closing",
-		View:   acpview.NewView("sess-closing", nil, "/work", func() float64 { return 0 }),
-		changed: make(chan struct{}),
+		ID:               "sess-closing",
+		View:             acpview.NewView("sess-closing", nil, "/work", func() float64 { return 0 }),
+		changed:          make(chan struct{}),
 		interactionReady: true,
 		lastInteraction:  stale,
 	}
