@@ -112,7 +112,7 @@ func (h *handler) handleTeamLeadContext(teamID string) {
 	// rebind（网关压缩）同样继承旧主控设置；/new 的继承在创建点完成。
 	if action == "rebind" && kind != "" {
 		if manager := h.server.acpAgentSet()[kind]; manager != nil {
-			h.inheritLeadSettings(manager, expected, manager.Get(targetID))
+			h.inheritSessionSettings(manager, expected, manager.Get(targetID))
 		}
 	}
 	for i := range fresh.Members {
@@ -226,16 +226,17 @@ func (h *handler) createLeadSession(teamRow *team.Team, expectedSessionID, reque
 		ledger.complete(requestID, session.ID)
 	}
 	warmupMemberSession(manager, session)
-	h.inheritLeadSettings(manager, expectedSessionID, session)
+	h.inheritSessionSettings(manager, expectedSessionID, session)
 	return session.ID, nil
 }
 
-// inheritLeadSettings 把旧主控会话的模型与推理强度应用到新主控会话：换绑
+// inheritSessionSettings 把源会话的模型与推理强度应用到新会话：团队主控换绑
+// 与普通会话 /new 共用；
 // 不应把用户选过的设置悄悄重置回 Agent 默认。尽力而为——旧会话不在线（拿
 // 不到当前设置）或新会话拒绝该设置时只记日志，绝不阻断换绑；settings 的
 // effort 词表是网关侧词汇（UpdateSettings 经 EffortMap 映射），View 里存的
 // 是 Agent 侧值，必须先反查。
-func (h *handler) inheritLeadSettings(manager *acpruntime.Manager, oldSessionID string, fresh *acpruntime.Session) {
+func (h *handler) inheritSessionSettings(manager *acpruntime.Manager, oldSessionID string, fresh *acpruntime.Session) {
 	old := manager.Get(oldSessionID)
 	if old == nil || fresh == nil {
 		return

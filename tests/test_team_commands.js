@@ -12,7 +12,7 @@ function extract({team=false}={}){
   const end=source.indexOf('// runNativeCompact',start);
   assert.ok(start>=0&&end>start,'composer command block not found in app.js');
   const context={t:value=>value,currentTeam:team};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;',context);
+  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;',context);
   return context;
 }
 
@@ -36,29 +36,35 @@ test('parseTeamCommand only intercepts exact command lines',()=>{
   same(parseTeamCommand('/compact gateway'),{kind:'gateway'});
 });
 
-test('compact commands parse in plain chats too, /new stays team-only',()=>{
-  const {parseCompactCommand}=extract();
+test('compact commands parse in plain chats too, /new starts a new chat',()=>{
+  const {parseCompactCommand,parsePlainCommand}=extract();
   const same=(actual,expected)=>assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected);
   same(parseCompactCommand('/compress'),{kind:'native',scope:'main'});
   same(parseCompactCommand('/compact gateway'),{kind:'gateway'});
-  // /new 不属于压缩命令：普通会话发送 /new 原文给 Agent，不做拦截。
-  assert.equal(parseCompactCommand('/new'),null);
+  // 普通会话的 /new 拦截为「按当前配置新建对话」，附加文字不截断。
+  same(parsePlainCommand('/new'),{kind:'newchat'});
+  assert.equal(parsePlainCommand('/new 顺便'),null);
+  same(parsePlainCommand('/compress'),{kind:'native',scope:'main'});
 });
 
 test('command suggestions follow the chat mode',()=>{
   const team=extract({team:true}),plain=extract({team:false});
+  // 两种模式都提供 /new，但语义与文案不同。
   assert.equal(team.composerCommandRows('').length,5);
-  assert.equal(team.composerCommandRows('')[0].token,'/new');
-  // 普通会话只列压缩命令；网关压缩描述为「并打开」而非「换绑主控」。
-  const plainRows=plain.composerCommandRows('');
-  assert.equal(plainRows.length,4);
-  assert.equal(plainRows.some(row=>row.token==='/new'),false);
-  assert.match(plainRows.find(row=>row.token==='/compress gateway').description,/并打开/);
+  const teamNew=team.composerCommandRows('')[0],plainNew=plain.composerCommandRows('')[0];
+  assert.equal(teamNew.token,'/new');
+  assert.match(teamNew.label,/更换空白主控/);
+  assert.equal(plain.composerCommandRows('').length,5);
+  assert.equal(plainNew.token,'/new');
+  assert.match(plainNew.label,/新建会话/);
+  assert.match(plainNew.description,/当前配置/);
+  // 网关压缩描述按模式区分「换绑主控/并打开」。
+  assert.match(plain.composerCommandRows('').find(row=>row.token==='/compress gateway').description,/并打开/);
   assert.match(team.composerCommandRows('').find(row=>row.token==='/compress gateway').description,/换绑主控/);
   // 前缀与别名过滤。
   assert.equal(plain.composerCommandRows('com').length,4);
   assert.equal(plain.composerCommandRows('compact').length,4);
   assert.equal(plain.composerCommandRows('gateway').length,1);
   assert.equal(plain.composerCommandRows('nothing').length,0);
-  assert.ok(plainRows.every(row=>row.label&&row.description),'rows need visible label and description');
+  assert.ok(plain.composerCommandRows('').every(row=>row.label&&row.description),'rows need visible label and description');
 });

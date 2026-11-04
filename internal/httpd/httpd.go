@@ -629,6 +629,11 @@ func (h *handler) handleMethod(write bool) {
 				return
 			}
 			created = session.ID
+			// /new（普通会话）：用当前配置再起一个对话——模型与推理强度随源
+			// 会话迁移；尽力而为，失败只记日志不阻断创建。
+			if inheritFrom, _ := body.MustGet("inheritFrom").(string); inheritFrom != "" {
+				h.inheritSessionSettings(manager, inheritFrom, session)
+			}
 		} else {
 			id, createErr := h.server.Codex.CreateConversation(cwd, title)
 			if createErr != nil {

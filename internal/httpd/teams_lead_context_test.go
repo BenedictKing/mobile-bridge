@@ -272,3 +272,41 @@ func TestLeadContextNewInheritsSettings(t *testing.T) {
 		t.Fatalf("新主控未继承设置（sets=%q）", sets)
 	}
 }
+
+// 普通会话 /new：POST /api/sessions 携带 inheritFrom，新会话继承源会话的
+// 模型与推理强度（teams_lead_context.go 的继承助手被创建端点复用）。
+func TestSessionsCreateInheritsSettings(t *testing.T) {
+	agentDir := t.TempDir()
+	manager := acpruntime.NewCommand(settingsAgent(t, agentDir))
+	manager.Label = "Settings"
+	manager.EffortMap = map[string]string{"low": "low", "high": "high"}
+	defer manager.Close()
+
+	server, token, csrf := newFeatureServer(t, t.TempDir())
+	server.ACPAgents = map[string]*acpruntime.Manager{"kimi2": manager}
+	server.Creations = LoadCreations(filepath.Join(t.TempDir(), "creations.json"))
+
+	source, err := manager.Create("req-plain-lead", t.TempDir(), "源会话", 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.UpdateSettings(source, "m-pro", "high", nil); err != nil {
+		t.Fatalf("预设源会话设置: %v", err)
+	}
+	body := `{"id":"` + uuid.NewString() + `","agent":"kimi2","cwd":"` + t.TempDir() + `","title":"/new 新会话","inheritFrom":"` + source.ID + `"}`
+	response := featureRequest(server, token, csrf, http.MethodPost, "/api/sessions", body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.ID == "" || created.ID == source.ID {
+		t.Fatalf("created=%q err=%v", created.ID, err)
+	}
+	sets := recordedFile(agentDir, "sets.txt")
+	if !strings.Contains(sets, created.ID+" model=m-pro") ||
+		!strings.Contains(sets, created.ID+" thought_level=high") {
+		t.Fatalf("/new 会话未继承设置（sets=%q）", sets)
+	}
+}
