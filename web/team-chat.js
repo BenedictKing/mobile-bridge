@@ -410,10 +410,8 @@ class TeamSettingsDialog{
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
       info.append(this.node('strong',BridgeI18n.agentLabel(member.agentKind)+' · '+(member.name&&member.name!==member.agentKind?member.name:member.agentKind)));
-      const roleLabels=[];
-      if(member.id===team.leadId)roleLabels.push(t_safe('主控'));
+      const roleLabels=[member.id===team.leadId?t_safe('主控'):t_safe('成员')];
       if(member.id===team.reviewerId||member.role==='reviewer')roleLabels.push(t_safe('评审'));
-      if(!roleLabels.length)roleLabels.push(t_safe('成员'));
       info.append(this.node('span',roleLabels.join(' · ')+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
       row.append(info);
       if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}

@@ -117,6 +117,26 @@ test('team settings allows the lead to also be the default reviewer',async()=>{
   assert.equal(find(settings.body,'team-member-role')[0].textContent,'主控 · 评审');
 });
 
+test('team settings keeps member identity when selecting the default reviewer',async()=>{
+  const team={...teams[0],project:'acp:project',version:2,reviewerId:'lead',members:teams[0].members.map(member=>({...member,role:member.id==='lead'?'lead':'member'}))};
+  let patch=null;
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/teams/team-1'&&options.method==='PATCH'){
+      patch=options.body;return{...team,reviewerId:patch.reviewerId,version:3};
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(team);
+  const reviewer=find(settings.body,'team-role-select')[1];
+  reviewer.value='dev';reviewer.onchange();await flush();
+  assert.deepEqual(patch,{reviewerId:'dev',version:2});
+  assert.equal(settings.team.members[1].role,'member');
+  assert.equal(find(settings.body,'team-member-role')[0].textContent,'主控');
+  assert.equal(find(settings.body,'team-member-role')[1].textContent,'成员 · 评审');
+});
+
 test('team without runs shows a ready empty state instead of a blank panel',async()=>{
   const root=new FakeNode('div');
   const controller=new TeamChatController({root,request:async()=>({runs:[]}),openRun(){}});
