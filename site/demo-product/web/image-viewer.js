@@ -26,9 +26,9 @@
       if (opener?.isConnected) opener.focus({preventScroll:true});
       opener = null;
     });
-    // Tapping the backdrop (the dialog element itself) closes; Esc already
-    // does via the native <dialog> behavior.
-    dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+    // The full-screen dialog covers its native backdrop, so empty space lands
+    // on the content container. Only the image and toolbar stay non-dismissive.
+    dialog.addEventListener('click', event => { if (event.target === dialog || event.target === content) dialog.close(); });
   }
   function open(target, event) {
     const url = new URL(target.dataset.imagePreview, location.href);

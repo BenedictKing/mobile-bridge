@@ -54,6 +54,7 @@ test('user jump lists only user messages and marks the latest at bottom',()=>{
   assert.equal(ids['user-jump-list'].children.length,2);
   assert.equal(ids['user-jump-list'].children[0].children[1].textContent,'第一条 需要换行的消息');
   assert.equal(ids['user-jump-list'].children[1].attributes['aria-current'],'location');
+  assert.equal(ids['user-jump-list'].scrollTop,ids['user-jump-list'].scrollHeight);
   timeline.dispose();
 });
 

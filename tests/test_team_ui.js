@@ -15,6 +15,7 @@ class FakeNode{
   replaceChildren(...nodes){this.children=[...nodes];}
   setAttribute(name,value){this.attributes[name]=value;}
   addEventListener(){}
+  querySelector(){return null;}
   get childNodes(){return this.children;}
   get classList(){const node=this;return{add(name){node.className+=(node.className?' ':'')+name;},remove(){},toggle(){},contains(name){return node.className.split(/\s+/).includes(name);}};}
 }
@@ -105,4 +106,17 @@ test('run page shows delivery evidence without accept or discard',()=>{
   assert.doesNotMatch(text(box),/Accept|Discard|review the result/);
   assert.equal(find(box,'team-delivery-actions').length,0);
   assert.equal(typeof screen.setDelivery,'undefined');
+});
+
+test('run page shows a labeled back button that leaves the run',()=>{
+  let left=false;
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({}),onNavigateAway:()=>{left=true;}});
+  screen.team=team;
+  screen.detail={id:'r1',teamId:'t1',status:'completed',tasks:[]};
+  screen.render();
+  const back=find(screen.root,'team-run-back')[0];
+  assert.equal(back.textContent,'‹ Back');
+  assert.equal(back.attributes['aria-label'],'Back');
+  back.onclick();
+  assert.equal(left,true);
 });

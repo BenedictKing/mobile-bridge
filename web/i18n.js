@@ -1151,6 +1151,7 @@ const en={
   "问题回复": "Question reply",
   "附件：": "Attachment: ",
   "图片附件": "Image attachment",
+  "预览图片": "Preview image",
   "本轮改动": "Changed",
   "个文件": "file(s):",
   "已截断": "truncated",

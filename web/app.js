@@ -1011,10 +1011,14 @@ function renderQueueAttachments(row,target,host){
   });
   return root;
 }
+function uniqueQueueRows(rows){
+  const seen=new Set();
+  return rows.filter(row=>{if(seen.has(row.id))return false;seen.add(row.id);return true;});
+}
 function renderQueue(rows){
   $('queued').replaceChildren();
   const target=currentId,host=currentHost;
-  for(const row of rows){
+  for(const row of uniqueQueueRows(rows)){
     const card=el('div','queue-card');
     if(row.status==='waiting_input'&&row.input){
       renderWaitingInput(card,row,target,host);

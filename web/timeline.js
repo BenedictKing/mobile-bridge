@@ -150,6 +150,7 @@ class ChatTimeline {
       button.classList.toggle('active',key===active);
       if(key===active)button.setAttribute('aria-current','location');else button.removeAttribute('aria-current');
     }
+    if(bottom)this.userJumpList.scrollTop=this.userJumpList.scrollHeight;
   }
   read(action,params={}){return this.request(this.url(action)+'&'+new URLSearchParams(params),undefined,this.abort.signal);}
   // 重试按钮下的服务端错误详情；空文本时靠 .error:empty 自动隐藏。

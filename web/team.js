@@ -1407,8 +1407,8 @@ class TeamRunScreen{
     const scrollTop=prevBody?prevBody.scrollTop:0;
     root.replaceChildren();
     const head=this.node('header',undefined,'team-run-head');
-    const back=this.button('‹',()=>this.leave());
-    back.className='icon-button';
+    const back=this.button('‹ '+t('返回'),()=>this.leave());
+    back.className='icon-button team-run-back';
     back.setAttribute('aria-label',t('返回'));
     back.title=t('返回');
     const info=this.node('div',undefined,'team-run-info');
