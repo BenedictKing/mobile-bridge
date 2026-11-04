@@ -137,6 +137,46 @@ test('team settings keeps member identity when selecting the default reviewer',a
   assert.equal(find(settings.body,'team-member-role')[1].textContent,'成员 · 评审');
 });
 
+test('team settings preserves member roles through repeated lead and reviewer switches',async()=>{
+  const members=[
+    {id:'lead',sessionId:'sess-lead',agentKind:'kimi',name:'kimi',role:'lead'},
+    {id:'dev',sessionId:'sess-dev',agentKind:'zcode',name:'zcode',role:'member'},
+    {id:'rev',sessionId:'sess-rev',agentKind:'mcode',name:'mcode',role:'member'},
+  ];
+  let current={id:'team-1',project:'acp:project',version:2,leadId:'lead',reviewerId:'',members};
+  const patches=[];
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return current;
+    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/teams/team-1'&&options.method==='PATCH'){
+      patches.push(options.body);current={...current,...options.body,version:current.version+1};return current;
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(current);
+  const choose=async(index,value)=>{const select=find(settings.body,'team-role-select')[index];select.value=value;select.onchange();await flush();};
+  const labels=()=>find(settings.body,'team-member-role').map(node=>node.textContent);
+  await choose(1,'dev');
+  assert.deepEqual(labels(),['主控','成员 · 评审','成员']);
+  await choose(1,'rev');
+  assert.deepEqual(labels(),['主控','成员','成员 · 评审']);
+  await choose(1,'');
+  assert.deepEqual(labels(),['主控','成员','成员']);
+  await choose(0,'dev');
+  assert.deepEqual(labels(),['成员','主控','成员']);
+  await choose(1,'lead');
+  assert.deepEqual(labels(),['成员 · 评审','主控','成员']);
+  await choose(1,'dev');
+  assert.deepEqual(labels(),['成员','主控 · 评审','成员']);
+  await choose(0,'lead');
+  assert.deepEqual(labels(),['主控','成员 · 评审','成员']);
+  assert.deepEqual(patches,[
+    {reviewerId:'dev',version:2},{reviewerId:'rev',version:3},{reviewerId:'',version:4},
+    {leadId:'dev',version:5},{reviewerId:'lead',version:6},{reviewerId:'dev',version:7},{leadId:'lead',version:8},
+  ]);
+  assert.deepEqual(current.members,members);
+});
+
 test('team without runs shows a ready empty state instead of a blank panel',async()=>{
   const root=new FakeNode('div');
   const controller=new TeamChatController({root,request:async()=>({runs:[]}),openRun(){}});
