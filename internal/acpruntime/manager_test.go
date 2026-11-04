@@ -521,6 +521,28 @@ for line in sys.stdin:
 	}
 }
 
+func TestAgentExitSettlesActiveView(t *testing.T) {
+	view := acpview.NewView("sess-exit-active", nil, "/work", func() float64 { return 0 })
+	view.BeginTurn("unfinished")
+	session := &Session{ID: "sess-exit-active", View: view, changed: make(chan struct{})}
+	session.markProcessClosed()
+	snapshot := session.Snapshot()
+	if status := snapshot.MustGet("status"); status != "idle" {
+		t.Fatalf("status = %v, want idle", status)
+	}
+	if connected := snapshot.MustGet("connected"); connected != false {
+		t.Fatalf("connected = %v, want false", connected)
+	}
+	turns, _ := snapshot.MustGet("turns").(*jsoncompat.Array)
+	if len(turns.Items) != 1 {
+		t.Fatalf("turns = %v, want one", turns)
+	}
+	turn, _ := turns.Items[0].(*jsoncompat.Object)
+	if status := turn.MustGet("status"); status != "failed" {
+		t.Fatalf("turn status = %v, want failed", status)
+	}
+}
+
 // An opencode-style agent (no legacy modes object, "mode" advertised as a
 // config option) must switch modes through session/set_config_option.
 func TestSetModeFallsBackToModeConfigOption(t *testing.T) {

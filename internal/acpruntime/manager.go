@@ -1988,6 +1988,9 @@ func (s *Session) Snapshot() *jsoncompat.Object {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := s.View.Snapshot()
+	if s.closed {
+		snapshot.Set("connected", false)
+	}
 	if s.retrying != nil {
 		snapshot.Set("retrying", jsoncompat.Clone(s.retrying))
 	}
@@ -2402,6 +2405,7 @@ func (s *Session) markProcessClosed() {
 	}
 	s.closed = true
 	s.active = false
+	s.View.FailTurn("Agent 进程已退出；操作结果未知")
 	if s.nativeStop != nil {
 		close(s.nativeStop)
 		s.nativeStop = nil
