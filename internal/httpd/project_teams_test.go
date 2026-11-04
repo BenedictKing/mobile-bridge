@@ -93,13 +93,16 @@ func TestDefaultTeamRejectsUnknownLeadAgent(t *testing.T) {
 
 func TestDefaultTeamRetriesAfterPositionalLedgerConflict(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
-	env.server.Creations = LoadCreations("")
+	env.server.Creations = mustLoadCreations(t, "")
 	project := "acp:" + hashProject(env.dataDir)
 	teamID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:default-team:"+project)).String()
 	legacyCreationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("team:"+teamID+":member:member-1")).String()
-	env.server.Creations.begin(legacyCreationID, &creationEntry{
+	_, _, err := env.server.Creations.begin(legacyCreationID, &creationEntry{
 		Agent: "zcode", Project: project, Title: "旧主控创建", ID: "sess-old",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	response := env.request(http.MethodPut, "/api/projects/"+project+"/team", `{"leadAgent":"kimi"}`)
 	if response.Code != http.StatusOK {

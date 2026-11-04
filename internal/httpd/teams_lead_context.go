@@ -214,8 +214,11 @@ func (h *handler) createLeadSession(teamRow *team.Team, expectedSessionID, reque
 		return "", &teamInputError{http.StatusConflict, "无法确定团队项目目录，请稍后重试"}
 	}
 	if ledger != nil {
-		entry, claimed := ledger.begin(requestID, &creationEntry{Agent: kind, Project: projectKey,
+		entry, claimed, claimErr := ledger.begin(requestID, &creationEntry{Agent: kind, Project: projectKey,
 			Title: title, Host: "local", At: ledger.now(), State: "creating"})
+		if claimErr != nil {
+			return "", &teamInputError{http.StatusServiceUnavailable, claimErr.Error()}
+		}
 		if !claimed {
 			if entry.Agent != kind || entry.Project != projectKey || entry.Title != title {
 				return "", &teamInputError{http.StatusBadRequest, "同一创建请求不能用于不同内容"}
@@ -232,7 +235,9 @@ func (h *handler) createLeadSession(teamRow *team.Team, expectedSessionID, reque
 		return "", &teamInputError{http.StatusConflict, createErr.Error()}
 	}
 	if ledger != nil {
-		ledger.complete(requestID, session.ID)
+		if err := ledger.complete(requestID, session.ID); err != nil {
+			return "", &teamInputError{http.StatusServiceUnavailable, err.Error()}
+		}
 	}
 	warmupMemberSession(manager, session)
 	h.inheritSessionSettings(manager, expectedSessionID, session)

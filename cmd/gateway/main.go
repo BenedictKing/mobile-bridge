@@ -912,7 +912,11 @@ func runGateway(args []string) {
 		// （§12 阶段四：Server 化补停止通道，关停序列可优雅退出。）
 		server.StartIdleSweeper()
 	}
-	server.Creations = httpd.LoadCreations(filepath.Join(dataDir, "creations.json"))
+	creations, creationsErr := httpd.LoadCreations(filepath.Join(dataDir, "creations.json"))
+	if creationsErr != nil {
+		log.Fatalf("creations ledger: %v", creationsErr)
+	}
+	server.Creations = creations
 	// Durable feature ledgers: queued sends, hidden (deleted) sessions and
 	// fork origins survive restarts like Python's submissions/actions files.
 	queue, queueErr := httpd.LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
@@ -920,7 +924,11 @@ func runGateway(args []string) {
 		log.Fatalf("submissions ledger: %v", queueErr)
 	}
 	server.Queue = queue
-	server.GoalCmds = httpd.NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
+	goalCommands, goalErr := httpd.NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
+	if goalErr != nil {
+		log.Fatalf("goal command ledger: %v", goalErr)
+	}
+	server.GoalCmds = goalCommands
 	server.Hidden = httpd.LoadHiddenSessions(filepath.Join(dataDir, "hidden-sessions.json"))
 	server.Forks = httpd.LoadForks(filepath.Join(dataDir, "forks.json"))
 	// Team 编排（docs/team-orchestration-plan.md §8.3 启动顺序）：账本与

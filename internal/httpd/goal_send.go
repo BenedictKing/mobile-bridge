@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"sort"
@@ -38,35 +39,41 @@ type goalLedger struct {
 	order []string
 }
 
-// NewGoalLedger loads (lazily) the durable goal command ledger at path.
-func NewGoalLedger(path string) *goalLedger {
-	return &goalLedger{path: path}
-}
-
-func (g *goalLedger) load() {
-	if g.data != nil {
-		return
+// NewGoalLedger refuses unreadable history so a prior write cannot disappear.
+func NewGoalLedger(path string) (*goalLedger, error) {
+	ledger := &goalLedger{path: path, data: map[string]*jsoncompat.Object{}}
+	if path == "" {
+		return ledger, nil
 	}
-	g.data = map[string]*jsoncompat.Object{}
-	if g.path == "" {
-		return
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ledger, nil
 	}
-	raw, _ := os.ReadFile(g.path)
-	value, _ := jsoncompat.Unmarshal(raw)
-	object, _ := value.(*jsoncompat.Object)
-	if object != nil {
-		for _, key := range object.Keys() {
-			if entry, ok := object.MustGet(key).(*jsoncompat.Object); ok {
-				g.data[key] = entry
-				g.order = append(g.order, key)
-			}
+	if err != nil {
+		return nil, fmt.Errorf("目标命令账本读取失败: %w", err)
+	}
+	value, err := jsoncompat.Unmarshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("目标命令账本解析失败: %w", err)
+	}
+	object, ok := value.(*jsoncompat.Object)
+	if !ok {
+		return nil, errors.New("目标命令账本顶层必须是对象")
+	}
+	for _, key := range object.Keys() {
+		entry, ok := object.MustGet(key).(*jsoncompat.Object)
+		if !ok {
+			return nil, fmt.Errorf("目标命令账本条目 %s 无效", key)
 		}
+		ledger.data[key] = entry
+		ledger.order = append(ledger.order, key)
 	}
+	return ledger, nil
 }
 
-func (g *goalLedger) saveLocked() {
+func (g *goalLedger) saveLocked() error {
 	if g.path == "" {
-		return
+		return nil
 	}
 	object := jsoncompat.NewObject()
 	for _, key := range g.order {
@@ -76,27 +83,60 @@ func (g *goalLedger) saveLocked() {
 	}
 	tmp := g.path + ".tmp"
 	if err := os.WriteFile(tmp, jsoncompat.EncodePythonIndent2(object), 0o600); err != nil {
-		return
+		return fmt.Errorf("目标命令账本写入失败: %w", err)
 	}
-	_ = os.Rename(tmp, g.path)
+	if err := os.Rename(tmp, g.path); err != nil {
+		return fmt.Errorf("目标命令账本替换失败: %w", err)
+	}
+	return nil
 }
 
-func (g *goalLedger) record(key string, entry *jsoncompat.Object) {
+func (g *goalLedger) record(key string, entry *jsoncompat.Object) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.load()
-	if _, exists := g.data[key]; !exists {
+	prior, exists := g.data[key]
+	if !exists {
 		g.order = append(g.order, key)
 	}
-	g.data[key] = entry
-	g.saveLocked()
+	g.data[key], _ = jsoncompat.Clone(entry).(*jsoncompat.Object)
+	if err := g.saveLocked(); err != nil {
+		if exists {
+			g.data[key] = prior
+		} else {
+			delete(g.data, key)
+			g.order = g.order[:len(g.order)-1]
+		}
+		return err
+	}
+	return nil
+}
+
+func (g *goalLedger) claim(key string, entry *jsoncompat.Object) (*jsoncompat.Object, bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if prior := g.data[key]; prior != nil {
+		copy, _ := jsoncompat.Clone(prior).(*jsoncompat.Object)
+		return copy, false, nil
+	}
+	g.data[key], _ = jsoncompat.Clone(entry).(*jsoncompat.Object)
+	g.order = append(g.order, key)
+	if err := g.saveLocked(); err != nil {
+		delete(g.data, key)
+		g.order = g.order[:len(g.order)-1]
+		return nil, false, err
+	}
+	return nil, true, nil
 }
 
 func (g *goalLedger) get(key string) *jsoncompat.Object {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.load()
-	return g.data[key]
+	entry := g.data[key]
+	if entry == nil {
+		return nil
+	}
+	copy, _ := jsoncompat.Clone(entry).(*jsoncompat.Object)
+	return copy
 }
 
 // forThread lists the thread's command records, newest first, each stamped
@@ -104,7 +144,6 @@ func (g *goalLedger) get(key string) *jsoncompat.Object {
 func (g *goalLedger) forThread(threadID string) []*jsoncompat.Object {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.load()
 	prefix := threadID + ":"
 	found := []*jsoncompat.Object{}
 	for i := len(g.order) - 1; i >= 0; i-- {
@@ -243,7 +282,7 @@ func (t *mcodeGoalTransport) Available() bool { return t.manager != nil }
 func goalWriteUnknown(err error) bool {
 	var acpErr *acp.Error
 	if errors.As(err, &acpErr) {
-		return acpErr.Kind == acp.KindTimeout || acpErr.Kind == acp.KindUnavailable
+		return acpErr.Kind == acp.KindTimeout || acpErr.Kind == acp.KindUnavailable || acpErr.Kind == acp.KindWriteUnknown
 	}
 	return strings.Contains(err.Error(), "超时") || strings.Contains(err.Error(), "timeout")
 }
@@ -432,6 +471,29 @@ type goalCommandOutcome struct {
 	duplicate bool
 }
 
+func replayGoalCommand(prior *jsoncompat.Object, action, objective string) (*goalCommandOutcome, error) {
+	if prior.MustGet("action") != action || prior.MustGet("objective") != strings.TrimSpace(objective) {
+		return nil, errors.New("同一目标操作标识不能用于不同内容")
+	}
+	state, _ := prior.MustGet("state").(string)
+	response, _ := prior.MustGet("response").(*jsoncompat.Object)
+	switch state {
+	case "confirmed":
+		result := cloneOrEmpty(response)
+		result.Set("duplicate", true)
+		return &goalCommandOutcome{response: result, confirmed: true, duplicate: true}, nil
+	case "failed":
+		message, _ := prior.MustGet("error").(string)
+		return nil, errors.New(firstNonEmpty(message, "目标操作失败"))
+	default:
+		result := cloneOrEmpty(response)
+		result.Set("status", "unknown")
+		result.Set("confirmed", false)
+		result.Set("duplicate", true)
+		return &goalCommandOutcome{response: result, duplicate: true}, nil
+	}
+}
+
 // runGoalCommand mirrors _goal_command: ledger replay, plan against the
 // authoritative goal state, transport write, re-read, confirm. The returned
 // response is what both the send route and /goal/* hand the phone
@@ -442,28 +504,19 @@ func (s *Server) runGoalCommand(transport goalTransport, threadID, requestID, ac
 		return nil, errors.New("目标模式暂不可用")
 	}
 	if prior := s.GoalCmds.get(key); prior != nil {
-		state, _ := prior.MustGet("state").(string)
-		response, _ := prior.MustGet("response").(*jsoncompat.Object)
-		switch state {
-		case "confirmed":
-			result := cloneOrEmpty(response)
-			result.Set("duplicate", true)
-			return &goalCommandOutcome{response: result, confirmed: true, duplicate: true}, nil
-		case "failed":
-			message, _ := prior.MustGet("error").(string)
-			return nil, errors.New(firstNonEmpty(message, "目标操作失败"))
-		}
-		result := cloneOrEmpty(response)
-		result.Set("status", "unknown")
-		result.Set("confirmed", false)
-		result.Set("duplicate", true)
-		return &goalCommandOutcome{response: result}, nil
+		return replayGoalCommand(prior, action, objective)
 	}
 
 	native := transport.Read(threadID)
 	decision, message, expectedStatus := planGoalCommand(action, objective, native)
 	if decision == goalInvalid {
-		s.GoalCmds.record(key, failedGoalCommand(action, objective, message, expectedStatus))
+		prior, claimed, err := s.GoalCmds.claim(key, failedGoalCommand(action, objective, message, expectedStatus))
+		if err != nil {
+			return nil, err
+		}
+		if !claimed {
+			return replayGoalCommand(prior, action, objective)
+		}
 		return nil, errors.New(message)
 	}
 	if decision == goalDuplicate {
@@ -485,7 +538,13 @@ func (s *Server) runGoalCommand(transport goalTransport, threadID, requestID, ac
 			response.Set("result", native)
 		}
 		command.Set("response", cloneOrEmpty(response))
-		s.GoalCmds.record(key, command)
+		prior, claimed, err := s.GoalCmds.claim(key, command)
+		if err != nil {
+			return nil, err
+		}
+		if !claimed {
+			return replayGoalCommand(prior, action, objective)
+		}
 		return &goalCommandOutcome{response: response, confirmed: true, duplicate: true}, nil
 	}
 	command := jsoncompat.NewObject()
@@ -496,7 +555,13 @@ func (s *Server) runGoalCommand(transport goalTransport, threadID, requestID, ac
 	command.Set("state", "sent")
 	command.Set("sent", true)
 	command.Set("at", json.Number(strconv.FormatFloat(float64(time.Now().UnixMilli())/1000, 'f', 3, 64)))
-	s.GoalCmds.record(key, command)
+	prior, claimed, err := s.GoalCmds.claim(key, command)
+	if err != nil {
+		return nil, err
+	}
+	if !claimed {
+		return replayGoalCommand(prior, action, objective)
+	}
 
 	// Transport write. Create/resume target active; edit keeps paused.
 	writeErr := transport.Write(threadID, action, strings.TrimSpace(objective), expectedStatus)
@@ -515,7 +580,9 @@ func (s *Server) runGoalCommand(transport goalTransport, threadID, requestID, ac
 		response.Set("confirmed", false)
 		response.Set("error", writeErr.Error())
 		command.Set("response", response)
-		s.GoalCmds.record(key, command)
+		if err := s.GoalCmds.record(key, command); err != nil {
+			return nil, err
+		}
 		return nil, writeErr
 	}
 
@@ -532,7 +599,9 @@ func (s *Server) runGoalCommand(transport goalTransport, threadID, requestID, ac
 		response.Set("status", "unknown")
 		response.Set("error", "目标操作已发送，但状态尚未确认")
 		command.Set("response", response)
-		s.GoalCmds.record(key, command)
+		if err := s.GoalCmds.record(key, command); err != nil {
+			return nil, err
+		}
 		return &goalCommandOutcome{response: response}, errors.New("目标操作已发送，但状态尚未确认")
 	}
 	if expectedStatus == "cancelled" {
@@ -547,7 +616,9 @@ func (s *Server) runGoalCommand(transport goalTransport, threadID, requestID, ac
 	}
 	response.Set("transitionId", requestID)
 	command.Set("response", cloneOrEmpty(response))
-	s.GoalCmds.record(key, command)
+	if err := s.GoalCmds.record(key, command); err != nil {
+		return nil, err
+	}
 	return &goalCommandOutcome{response: response, confirmed: true}, nil
 }
 
@@ -567,6 +638,9 @@ func failedGoalCommand(action, objective, message, expectedStatus string) *jsonc
 }
 
 func cloneOrEmpty(value *jsoncompat.Object) *jsoncompat.Object {
+	if value == nil {
+		return jsoncompat.NewObject()
+	}
 	if clone, ok := jsoncompat.Clone(value).(*jsoncompat.Object); ok && clone != nil {
 		return clone
 	}

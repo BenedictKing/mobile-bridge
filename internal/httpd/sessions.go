@@ -364,12 +364,31 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 						_, retryErr = h.server.Codex.UpdateSettings(threadID, pending.Model, pending.Effort, nil)
 					}
 					if retryErr == nil {
+						claimed, claimErr := h.server.Creations.beginDispatch(requestID)
+						if claimErr != nil {
+							h.fail(http.StatusServiceUnavailable, errorBody(claimErr.Error()))
+							return true
+						}
+						if !claimed {
+							h.fail(http.StatusConflict, errorBody("迁移发送已开始，请在目标会话核实，避免重复发送"))
+							return true
+						}
 						_, retryErr = h.server.Codex.StartTurnWithOptions(threadID, submissionID, pending.Message, "send", "", nil, nil)
+						if retryErr != nil {
+							h.fail(http.StatusConflict, errorBody("迁移发送结果尚不确定，请在目标会话核实，避免重复发送: "+retryErr.Error()))
+							return true
+						}
 					}
 					if retryErr == nil {
-						h.server.Creations.markSent(requestID)
+						if err := h.server.Creations.markSent(requestID); err != nil {
+							h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+							return true
+						}
 					} else {
-						h.server.Creations.markWaiting(requestID, retryErr.Error())
+						if err := h.server.Creations.markWaiting(requestID, retryErr.Error()); err != nil {
+							h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+							return true
+						}
 					}
 				}
 			}

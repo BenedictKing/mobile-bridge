@@ -8,9 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acp"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
@@ -63,6 +65,77 @@ type goalFixture struct {
 	commandPath string
 }
 
+func mustNewGoalLedger(t *testing.T, path string) *goalLedger {
+	t.Helper()
+	ledger, err := NewGoalLedger(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ledger
+}
+
+type blockedGoalTransport struct {
+	writes  atomic.Int32
+	started chan struct{}
+	release chan struct{}
+}
+
+func (t *blockedGoalTransport) Read(string) *jsoncompat.Object { return nil }
+func (t *blockedGoalTransport) Absent(string) bool             { return true }
+func (t *blockedGoalTransport) NeedsActivation() bool          { return false }
+func (t *blockedGoalTransport) Available() bool                { return true }
+func (t *blockedGoalTransport) Write(_, _, _, _ string) error {
+	t.writes.Add(1)
+	select {
+	case t.started <- struct{}{}:
+	default:
+	}
+	<-t.release
+	return nil
+}
+
+func TestGoalCommandClaimPrecedesConcurrentWrite(t *testing.T) {
+	server := &Server{GoalCmds: mustNewGoalLedger(t, filepath.Join(t.TempDir(), "goal-commands.json"))}
+	transport := &blockedGoalTransport{started: make(chan struct{}, 1), release: make(chan struct{})}
+	const id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	first := make(chan error, 1)
+	go func() {
+		_, err := server.runGoalCommand(transport, "thread-1", id, "create", "交付", "", "zh-CN")
+		first <- err
+	}()
+	<-transport.started
+	duplicate, err := server.runGoalCommand(transport, "thread-1", id, "create", "交付", "", "zh-CN")
+	if err != nil || duplicate == nil || !duplicate.duplicate || transport.writes.Load() != 1 {
+		t.Fatalf("concurrent duplicate reached native write: outcome=%+v err=%v writes=%d", duplicate, err, transport.writes.Load())
+	}
+	close(transport.release)
+	<-first
+}
+
+func TestGoalCommandLedgerFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "goal-commands.json")
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ledger, err := NewGoalLedger(path); err == nil || ledger != nil {
+		t.Fatalf("corrupt goal ledger must fail startup: ledger=%v err=%v", ledger, err)
+	}
+	server := &Server{GoalCmds: mustNewGoalLedger(t, filepath.Join(t.TempDir(), "missing", "goal-commands.json"))}
+	transport := &blockedGoalTransport{started: make(chan struct{}, 1), release: make(chan struct{})}
+	if _, err := server.runGoalCommand(transport, "thread-1", "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee", "create", "交付", "", "zh-CN"); err == nil {
+		t.Fatal("goal ledger write failure must stop before native write")
+	}
+	if transport.writes.Load() != 0 {
+		t.Fatal("native write ran without durable claim")
+	}
+}
+
+func TestGoalWriteUnknownClassification(t *testing.T) {
+	if !goalWriteUnknown(&acp.Error{Kind: acp.KindWriteUnknown, Message: "Agent 请求写入中断；操作结果未知"}) {
+		t.Fatal("ACP ambiguous write must remain unknown")
+	}
+}
+
 func newGoalFixture(t *testing.T) *goalFixture {
 	t.Helper()
 	python, err := exec.LookPath("python3")
@@ -89,7 +162,7 @@ func newGoalFixture(t *testing.T) *goalFixture {
 	server.Goal = goal.New(home, runtimePath)
 	_ = python // shebang makes the script directly executable
 	commandPath := filepath.Join(dataDir, "goal-commands.json")
-	server.GoalCmds = NewGoalLedger(commandPath)
+	server.GoalCmds = mustNewGoalLedger(t, commandPath)
 	server.Queue = mustLoadSubmissions(t, filepath.Join(dataDir, "submissions.json"))
 	return &goalFixture{server: server, home: home, commandPath: commandPath}
 }
@@ -113,7 +186,7 @@ func TestGoalCommandChain(t *testing.T) {
 	if created == nil || created.MustGet("status") != "active" {
 		t.Fatalf("create result wrong: %s", jsoncompat.EncodeCompact(outcome.response))
 	}
-	fixture.server.GoalCmds = NewGoalLedger(fixture.commandPath)
+	fixture.server.GoalCmds = mustNewGoalLedger(t, fixture.commandPath)
 	replayed, err := fixture.server.runGoalCommand(transport, threadID, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "create", "整理仓库", "", "zh-CN")
 	if err != nil || replayed == nil || !replayed.confirmed || !replayed.duplicate {
 		t.Fatalf("same operation after restart must replay: err=%v outcome=%+v", err, replayed)
@@ -317,7 +390,7 @@ func TestMcodeGoalChain(t *testing.T) {
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8790, "instance")
 	server.ACPAgents = map[string]*acpruntime.Manager{"mcode": manager}
-	server.GoalCmds = NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
+	server.GoalCmds = mustNewGoalLedger(t, filepath.Join(dataDir, "goal-commands.json"))
 	server.Queue = mustLoadSubmissions(t, filepath.Join(dataDir, "submissions.json"))
 	// server.Goal stays nil on purpose: the mcode transport must never need
 	// the codex sidecar.

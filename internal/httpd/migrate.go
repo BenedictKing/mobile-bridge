@@ -362,7 +362,12 @@ func (h *handler) handleMigrate(threadID string) {
 		// session that prepare created. A Codex prepare creates nothing.
 		status := "none"
 		if h.server.Creations != nil {
-			if id, ok := h.server.Creations.forgetPrepared(requestID, targetKind); ok {
+			id, ok, err := h.server.Creations.forgetPrepared(requestID, targetKind)
+			if err != nil {
+				h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+				return
+			}
+			if ok {
 				status = "abandoned"
 				if id != "" && target != nil {
 					target.Drop(id)
@@ -453,8 +458,12 @@ func (h *handler) handleMigrate(threadID string) {
 	createdID := ""
 	alreadySent := false
 	if ledger != nil {
-		entry, claimed := ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
+		entry, claimed, claimErr := ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
 			Title: title, Host: "local", At: ledger.now(), State: "creating"})
+		if claimErr != nil {
+			h.fail(http.StatusServiceUnavailable, errorBody(claimErr.Error()))
+			return
+		}
 		if !claimed {
 			if entry.Agent != targetKind || entry.Project != projectKey || entry.Title != title {
 				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
@@ -466,6 +475,10 @@ func (h *handler) handleMigrate(threadID string) {
 			}
 			createdID = entry.ID
 			alreadySent = entry.Sent
+			if entry.State == "dispatching" {
+				h.fail(http.StatusConflict, errorBody("上次迁移发送结果尚不确定，请在目标会话核实，避免重复发送"))
+				return
+			}
 		}
 	}
 	// A migrated chat keeps a link back to its source (Python's fork origin
@@ -490,7 +503,10 @@ func (h *handler) handleMigrate(threadID string) {
 			createdID = id
 		}
 		if ledger != nil {
-			ledger.complete(requestID, createdID)
+			if err := ledger.complete(requestID, createdID); err != nil {
+				h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+				return
+			}
 		}
 	}
 
@@ -504,7 +520,10 @@ func (h *handler) handleMigrate(threadID string) {
 			return
 		}
 		if ledger != nil {
-			ledger.markPrepared(requestID)
+			if err := ledger.markPrepared(requestID); err != nil {
+				h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+				return
+			}
 		}
 		result := jsoncompat.NewObject()
 		result.Set("id", createdID)
@@ -522,7 +541,10 @@ func (h *handler) handleMigrate(threadID string) {
 
 	message := migrationMessage(sourceLabel, view, uiLocale, scope)
 	if ledger != nil {
-		ledger.setMessage(requestID, message)
+		if err := ledger.setMessage(requestID, message); err != nil {
+			h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+			return
+		}
 	}
 	result := jsoncompat.NewObject()
 	result.Set("id", createdID)
@@ -541,7 +563,10 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 	if ledger != nil && modelName != "" {
-		ledger.setSettings(requestID, modelName, effort)
+		if err := ledger.setSettings(requestID, modelName, effort); err != nil {
+			h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+			return
+		}
 	}
 	// Codex creates the thread through a short-lived app-server, but the
 	// desktop App must own it before follower IPC can inject the transcript.
@@ -557,7 +582,10 @@ func (h *handler) handleMigrate(threadID string) {
 		if entryState != "opened" {
 			if err := codex.OpenInDesktop(createdID); err != nil {
 				if ledger != nil {
-					ledger.markWaiting(requestID, err.Error())
+					if saveErr := ledger.markWaiting(requestID, err.Error()); saveErr != nil {
+						h.fail(http.StatusServiceUnavailable, errorBody(saveErr.Error()))
+						return
+					}
 				}
 				result.Set("warning", err.Error())
 				result.Set("state", "waiting_for_target")
@@ -565,7 +593,10 @@ func (h *handler) handleMigrate(threadID string) {
 				return
 			}
 			if ledger != nil {
-				ledger.markOpened(requestID)
+				if err := ledger.markOpened(requestID); err != nil {
+					h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+					return
+				}
 			}
 			result.Set("state", "opening")
 			result.Set("warning", "请等待桌面 App 接管此聊天")
@@ -578,7 +609,10 @@ func (h *handler) handleMigrate(threadID string) {
 				warning = watchErr.Error()
 			}
 			if ledger != nil {
-				ledger.markWaiting(requestID, warning)
+				if err := ledger.markWaiting(requestID, warning); err != nil {
+					h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+					return
+				}
 			}
 			result.Set("warning", warning)
 			result.Set("state", "waiting_for_target")
@@ -588,6 +622,7 @@ func (h *handler) handleMigrate(threadID string) {
 	}
 	submissionID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:migrate:"+requestID)).String()
 	sendErr := error(nil)
+	dispatched := false
 	if target != nil {
 		session, openErr := target.Open(createdID, cwd, target.InitializeTimeout)
 		if openErr != nil {
@@ -603,6 +638,18 @@ func (h *handler) handleMigrate(threadID string) {
 					return
 				}
 			}
+			if ledger != nil {
+				claimed, err := ledger.beginDispatch(requestID)
+				if err != nil {
+					h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+					return
+				}
+				if !claimed {
+					h.fail(http.StatusConflict, errorBody("迁移发送已开始，请在目标会话核实，避免重复发送"))
+					return
+				}
+			}
+			dispatched = true
 			sendErr = session.Prompt(message, 3600*time.Second)
 		}
 	} else {
@@ -612,11 +659,30 @@ func (h *handler) handleMigrate(threadID string) {
 				return
 			}
 		}
+		if ledger != nil {
+			claimed, err := ledger.beginDispatch(requestID)
+			if err != nil {
+				h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+				return
+			}
+			if !claimed {
+				h.fail(http.StatusConflict, errorBody("迁移发送已开始，请在目标会话核实，避免重复发送"))
+				return
+			}
+		}
+		dispatched = true
 		_, sendErr = h.server.Codex.StartTurnWithOptions(createdID, submissionID, message, "send", "", nil, nil)
 	}
 	if sendErr != nil {
+		if dispatched {
+			h.fail(http.StatusConflict, errorBody("迁移发送结果尚不确定，请在目标会话核实，避免重复发送: "+sendErr.Error()))
+			return
+		}
 		if ledger != nil {
-			ledger.markWaiting(requestID, sendErr.Error())
+			if err := ledger.markWaiting(requestID, sendErr.Error()); err != nil {
+				h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+				return
+			}
 		}
 		result.Set("warning", sendErr.Error())
 		result.Set("state", "waiting_for_target")
@@ -624,7 +690,10 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 	if ledger != nil {
-		ledger.markSent(requestID)
+		if err := ledger.markSent(requestID); err != nil {
+			h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+			return
+		}
 	}
 	result.Set("status", "sent")
 	result.Set("sent", true)

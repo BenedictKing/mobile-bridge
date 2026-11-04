@@ -292,11 +292,11 @@ func TestConcurrentRequestIDClaimsAreAtomic(t *testing.T) {
 		}
 	})
 	t.Run("creation", func(t *testing.T) {
-		ledger := LoadCreations("")
+		ledger := mustLoadCreations(t, "")
 		results := make(chan bool, workers)
 		for i := 0; i < workers; i++ {
 			go func() {
-				_, claimed := ledger.begin("request-1", &creationEntry{Agent: "kimi", Project: "p", Title: "title"})
+				_, claimed, _ := ledger.begin("request-1", &creationEntry{Agent: "kimi", Project: "p", Title: "title"})
 				results <- claimed
 			}()
 		}
@@ -337,6 +337,35 @@ func TestSubmissionsOrderSurvivesRepeatedReloads(t *testing.T) {
 	for index, entry := range entries {
 		if entry.ID != ids[index] || entry.Text != texts[index] {
 			t.Fatalf("FIFO lost at %d: entry=%+v", index, entry)
+		}
+	}
+}
+
+func TestLoadSubmissionsRestoresLegacyMapOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "submissions.json")
+	ids := []string{
+		"ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"9aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+	}
+	legacy := map[string]*submissionEntry{}
+	for i, id := range ids {
+		legacy[submissionKey("thread-1", id)] = &submissionEntry{
+			ID: id, ThreadID: "thread-1", Text: "message", Mode: "queue",
+			Status: SubQueued, CreatedAt: float64(i + 1),
+		}
+	}
+	raw, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ledger := mustLoadSubmissions(t, path)
+	for i, entry := range ledger.threadEntries("thread-1") {
+		if entry.ID != ids[i] {
+			t.Fatalf("legacy FIFO at %d = %s, want %s", i, entry.ID, ids[i])
 		}
 	}
 }

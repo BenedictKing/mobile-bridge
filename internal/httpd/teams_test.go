@@ -545,7 +545,7 @@ func TestTeamsCreateIdempotency(t *testing.T) {
 
 func TestTeamsCreateFromProject(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
-	env.server.Creations = LoadCreations(filepath.Join(env.dataDir, "creations.json"))
+	env.server.Creations = mustLoadCreations(t, filepath.Join(env.dataDir, "creations.json"))
 	creationCount := func() int {
 		raw, err := os.ReadFile(filepath.Join(env.dataDir, "created.txt"))
 		if err != nil {

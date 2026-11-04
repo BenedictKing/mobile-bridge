@@ -27,19 +27,21 @@ type Session struct {
 	Title       string
 	CreatedAtMs int64
 
-	mu            sync.Mutex
-	promptRunning bool
-	promptDone    chan struct{}
-	pending       map[string]*jsoncompat.Object
-	pendingIDs    map[string]any
-	pendingKinds  map[string]string
-	changed       chan struct{}
-	closed        bool
-	active        bool
-	generation    uint64
-	sequence      int
-	configOptions *jsoncompat.Array
-	modes         *jsoncompat.Object
+	mu              sync.Mutex
+	promptRunning   bool
+	promptDone      chan struct{}
+	pending         map[string]*jsoncompat.Object
+	pendingIDs      map[string]any
+	pendingKinds    map[string]string
+	responseUnknown map[string]bool
+	respondToAgent  func(any, any) error
+	changed         chan struct{}
+	closed          bool
+	active          bool
+	generation      uint64
+	sequence        int
+	configOptions   *jsoncompat.Array
+	modes           *jsoncompat.Object
 	// modeOptionID mirrors Manager.ModeOptionID: non-empty routes SetMode to
 	// that config option (dsh's collaboration_mode).
 	modeOptionID string
@@ -1262,11 +1264,15 @@ func (s *Session) flushResponders() {
 	s.mu.Lock()
 	queue := []responder{}
 	for requestID, rawID := range s.pendingIDs {
+		if s.responseUnknown[requestID] {
+			continue
+		}
 		queue = append(queue, responder{rawID: rawID, kind: s.pendingKinds[requestID]})
 	}
 	s.pending = map[string]*jsoncompat.Object{}
 	s.pendingIDs = map[string]any{}
 	s.pendingKinds = map[string]string{}
+	s.responseUnknown = nil
 	s.View.Requests = nil
 	s.signalLocked()
 	s.mu.Unlock()
@@ -1524,6 +1530,10 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 		s.mu.Unlock()
 		return ErrRequestExpired
 	}
+	if s.responseUnknown[requestID] {
+		s.mu.Unlock()
+		return &acp.Error{Message: "回应结果未知，请在原 Agent 会话核实；此请求不可再次提交", Kind: acp.KindWriteUnknown}
+	}
 	wire, invalid := respondWire(s.pendingKinds[requestID], params, response)
 	if invalid != nil {
 		// The reply is malformed but the request is still live: keep the card
@@ -1531,13 +1541,27 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 		s.mu.Unlock()
 		return invalid
 	}
-	if err := s.Process.Respond(rawID, wire); err != nil {
+	respond := s.respondToAgent
+	if respond == nil {
+		respond = s.Process.Respond
+	}
+	if err := respond(rawID, wire); err != nil {
+		var acpErr *acp.Error
+		if errors.As(err, &acpErr) && acpErr.Kind == acp.KindWriteUnknown {
+			if s.responseUnknown == nil {
+				s.responseUnknown = map[string]bool{}
+			}
+			s.responseUnknown[requestID] = true
+			s.View.MarkRequestOutcomeUnknown(requestID)
+			s.signalLocked()
+		}
 		s.mu.Unlock()
 		return err
 	}
 	delete(s.pending, requestID)
 	delete(s.pendingIDs, requestID)
 	delete(s.pendingKinds, requestID)
+	delete(s.responseUnknown, requestID)
 	s.View.RemovePermission(requestID)
 	s.signalLocked()
 	s.mu.Unlock()
@@ -2596,6 +2620,7 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 	}
 	s.pending[requestID] = params
 	s.pendingIDs[requestID] = message.MustGet("id")
+	delete(s.responseUnknown, requestID)
 	switch method {
 	case "session/request_permission", "session/requestPermission":
 		s.pendingKinds[requestID] = "permission"

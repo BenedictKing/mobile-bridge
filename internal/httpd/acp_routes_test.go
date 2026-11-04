@@ -194,7 +194,7 @@ for line in sys.stdin:
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8790, "instance")
 	server.ACPAgents = map[string]*acpruntime.Manager{"zcode": manager}
-	server.Creations = LoadCreations(filepath.Join(t.TempDir(), "creations.json"))
+	server.Creations = mustLoadCreations(t, filepath.Join(t.TempDir(), "creations.json"))
 
 	create := func(body string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8790/api/sessions", strings.NewReader(body))
@@ -232,6 +232,14 @@ for line in sys.stdin:
 	bad := create(`{"agent":"zcode","cwd":` + jsonText(cwd) + `,"title":"x","id":"not-a-uuid"}`)
 	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "创建请求标识无效") {
 		t.Fatalf("bad id status=%d body=%s", bad.Code, bad.Body.String())
+	}
+	server.Creations.path = filepath.Join(t.TempDir(), "missing", "creations.json")
+	blocked := create(`{"agent":"zcode","cwd":` + jsonText(cwd) + `,"title":"持久化失败","id":"22222222-2222-4333-8444-555555555555"}`)
+	if blocked.Code != http.StatusServiceUnavailable {
+		t.Fatalf("claim failure status=%d body=%s", blocked.Code, blocked.Body.String())
+	}
+	if raw, err := os.ReadFile(counter); err != nil || strings.TrimSpace(string(raw)) != "1" {
+		t.Fatalf("failed claim reached agent: count=%q err=%v", raw, err)
 	}
 }
 

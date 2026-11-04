@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -117,6 +118,22 @@ func LoadSubmissions(path string) (*submissions, error) {
 		}
 		ledger.entries[key] = entry
 		ledger.order = append(ledger.order, key)
+	}
+	// The former map encoder sorted keys lexically. Its insertion order can
+	// only be recovered from createdAt; equal timestamps keep file order.
+	if len(ledger.order) > 1 && sort.StringsAreSorted(ledger.order) {
+		completeTimes := true
+		for _, key := range ledger.order {
+			if ledger.entries[key].CreatedAt <= 0 {
+				completeTimes = false
+				break
+			}
+		}
+		if completeTimes {
+			sort.SliceStable(ledger.order, func(i, j int) bool {
+				return ledger.entries[ledger.order[i]].CreatedAt < ledger.entries[ledger.order[j]].CreatedAt
+			})
+		}
 	}
 	return ledger, nil
 }

@@ -2823,8 +2823,11 @@ func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, r
 	}
 	ledger := h.server.Creations
 	if ledger != nil {
-		existing, claimed := ledger.begin(creationID, &creationEntry{Agent: agent, Project: project, Title: title,
+		existing, claimed, claimErr := ledger.begin(creationID, &creationEntry{Agent: agent, Project: project, Title: title,
 			Host: "local", At: ledger.now()})
+		if claimErr != nil {
+			return "", http.StatusServiceUnavailable, claimErr
+		}
 		if !claimed {
 			if existing.Agent != agent || existing.Project != project || existing.Title != title {
 				return "", http.StatusBadRequest, errors.New("同一创建请求不能用于不同内容")
@@ -2841,7 +2844,9 @@ func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, r
 		return "", http.StatusConflict, err
 	}
 	if ledger != nil {
-		ledger.complete(creationID, session.ID)
+		if err := ledger.complete(creationID, session.ID); err != nil {
+			return "", http.StatusServiceUnavailable, err
+		}
 	}
 	warmupMemberSession(manager, session)
 	return session.ID, 0, nil

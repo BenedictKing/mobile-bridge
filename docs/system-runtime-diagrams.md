@@ -132,6 +132,8 @@ stateDiagram-v2
 
 `sent` 若在进程中断后遗留，对同一请求 ID 返回“结果未知”，不会重发写入。原生 Goal 的 `complete` / `blocked` 等由 provider 报告，Go 命令机只允许代码明确列出的转换。依据：`internal/httpd/goal_send.go`、`internal/goal/goal.go`。
 
+命令账本启动时必须成功解析；首次外部写入前先持久占用请求 ID，写盘失败即拒绝操作。确认结果写盘失败会返回错误，但已持久的 `sent` 占用保留，后续按结果未知处理。
+
 ## 5. Codex 账号切换
 
 ```mermaid
@@ -228,10 +230,11 @@ flowchart TB
     Validate -->|否| Keep[拒绝，保留仍有效的卡片]
     Validate -->|是| Respond[Session.Respond 转成 ACP 线格式]
     Auto --> Respond
-    Respond --> Agent
+    Respond -->|明确送达| Agent
+    Respond -->|写入结果未知| Unknown[保留卡片并禁用再次回应]
 ```
 
-Codex 的回应走桌面 owner IPC，不经过 ACP 的 `Session.Respond`。ACP 进程关闭或回应链路失败时可能是结果未知；图中的“已提交”不应被解释为 Agent 已执行副作用。依据：`internal/httpd/sessions.go`、`internal/acpruntime/manager.go`、`internal/jev`。
+Codex 的回应走桌面 owner IPC，不经过 ACP 的 `Session.Respond`。ACP 写入结果未知时不会再提交回应或在清理阶段补发取消；卡片保留供核实，明确未发送的失败仍可重试。图中的“已提交”不应被解释为 Agent 已执行副作用。依据：`internal/httpd/sessions.go`、`internal/acpruntime/manager.go`、`internal/jev`。
 
 ## 10. 会话迁移
 
@@ -239,13 +242,16 @@ Codex 的回应走桌面 owner IPC，不经过 ACP 的 `Session.Respond`。ACP �
 flowchart TB
     Source[读取源会话规范化视图] --> Target[选择目标 Agent]
     Target --> Scope[选择 main / full / latest 范围]
-    Scope --> Create[prepare：幂等创建空目标会话]
+    Scope --> Claim[创建账本持久占用请求 ID]
+    Claim --> Create[prepare：幂等创建空目标会话]
     Create --> Settings[选择并保存目标模型 / effort]
     Create -->|返回或关闭面板| Abandon[abandon：放弃预备会话]
-    Settings --> Send[派生提交 ID，注入转录]
+    Settings --> Dispatch[持久占用 dispatching]
+    Dispatch --> Send[派生提交 ID，注入转录]
     Send --> Result{注入已确认?}
     Result -->|是| Sent[返回新会话 sent=true]
-    Result -->|否或结果未知| Created[保留已建会话与警告，不重复创建]
+    Result -->|发送前失败| Created[保留已建会话，允许重试]
+    Result -->|发送后结果未知| Unknown[保留 dispatching，禁止自动重发]
 ```
 
-源会话不变；创建成功但注入失败仍返回可用的新会话，后续重试沿用同一请求 ID 与派生提交 ID。迁移与压缩的目标选择及预备状态见 `internal/httpd/migrate.go`、`creations.go` 和 `web/migrate.js`。
+源会话不变。`creations.json` 损坏或不可读时网关拒绝启动；创建占用写盘失败时不调用目标 Agent。目标会话已创建但 ID 写盘失败时保留无 ID 占用并拒绝重建。注入前失败可沿用请求 ID 重试；注入开始后的结果未知须在目标会话核实，不能自动重发。迁移与压缩的目标选择及预备状态见 `internal/httpd/migrate.go`、`creations.go` 和 `web/migrate.js`。

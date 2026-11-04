@@ -23,7 +23,7 @@ import (
 func leadContextEnv(t *testing.T) (*teamIntegrationEnv, string, string, string) {
 	t.Helper()
 	env := newTeamIntegrationEnv(t, t.TempDir())
-	env.server.Creations = LoadCreations(filepath.Join(env.dataDir, "creations.json"))
+	env.server.Creations = mustLoadCreations(t, filepath.Join(env.dataDir, "creations.json"))
 	lead := env.createMemberSession(t, "req-lead", "主控会话")
 	member := env.createMemberSession(t, "req-member", "成员会话")
 	members := `[{"id":"lead-1","sessionId":"` + lead + `","role":"lead"},` +
@@ -284,7 +284,7 @@ func TestSessionsCreateInheritsSettings(t *testing.T) {
 
 	server, token, csrf := newFeatureServer(t, t.TempDir())
 	server.ACPAgents = map[string]*acpruntime.Manager{"kimi2": manager}
-	server.Creations = LoadCreations(filepath.Join(t.TempDir(), "creations.json"))
+	server.Creations = mustLoadCreations(t, filepath.Join(t.TempDir(), "creations.json"))
 
 	source, err := manager.Create("req-plain-lead", t.TempDir(), "源会话", 30*time.Second)
 	if err != nil {

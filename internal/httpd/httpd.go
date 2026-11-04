@@ -603,8 +603,12 @@ func (h *handler) handleMethod(write bool) {
 		// hiccup must return the same chat, never a duplicate.
 		ledger := h.server.Creations
 		if ledger != nil {
-			entry, claimed := ledger.begin(requestID, &creationEntry{Agent: agent, Project: project, Title: title,
+			entry, claimed, claimErr := ledger.begin(requestID, &creationEntry{Agent: agent, Project: project, Title: title,
 				Host: "local", At: ledger.now()})
+			if claimErr != nil {
+				h.fail(http.StatusServiceUnavailable, errorBody(claimErr.Error()))
+				return
+			}
 			if !claimed {
 				if entry.Agent != agent || entry.Project != project || entry.Title != title {
 					h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
@@ -643,7 +647,10 @@ func (h *handler) handleMethod(write bool) {
 			created = id
 		}
 		if ledger != nil {
-			ledger.complete(requestID, created)
+			if err := ledger.complete(requestID, created); err != nil {
+				h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+				return
+			}
 		}
 		h.output(http.StatusOK, h.createResponse(created, kind, title, cwd), contentTypeJSON, "")
 	case write && path == "/api/activity":

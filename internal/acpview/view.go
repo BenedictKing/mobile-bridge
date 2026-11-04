@@ -355,6 +355,22 @@ func (v *View) AnnotateRequest(requestID string, assessment *jsoncompat.Object, 
 	return false
 }
 
+// MarkRequestOutcomeUnknown keeps the card visible but prevents another
+// decision when the previous response may already have reached the agent.
+func (v *View) MarkRequestOutcomeUnknown(requestID string) {
+	for _, request := range v.Requests {
+		if id, _ := request.MustGet("id").(string); id != requestID {
+			continue
+		}
+		request.Set("supported", false)
+		params, _ := request.MustGet("params").(*jsoncompat.Object)
+		if params != nil {
+			params.Set("message", "回应结果未知，请在原 Agent 会话核实；此请求不可再次提交")
+		}
+		return
+	}
+}
+
 // RemovePermission mirrors remove_permission.
 func (v *View) RemovePermission(requestID string) {
 	kept := v.Requests[:0:0]

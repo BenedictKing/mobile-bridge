@@ -1,6 +1,7 @@
 package acpruntime
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -945,6 +946,45 @@ func TestRespondFailureKeepsRequestAnswerable(t *testing.T) {
 	if err := session.Respond("permission-1", response); err == nil || err == ErrRequestExpired {
 		t.Fatalf("request must remain answerable after a write failure: %v", err)
 	}
+}
+
+func TestRespondWriteUnknownCannotBeRetriedOrCancelled(t *testing.T) {
+	session := &Session{ID: "sess-1", active: true,
+		View:    acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }),
+		pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{},
+		pendingKinds: map[string]string{}, changed: make(chan struct{})}
+	params := jsoncompat.NewObject()
+	options := &jsoncompat.Array{}
+	option := jsoncompat.NewObject()
+	option.Set("optionId", "allow")
+	options.Items = append(options.Items, option)
+	params.Set("options", options)
+	session.pending["permission-1"] = params
+	session.pendingIDs["permission-1"] = "raw-1"
+	session.pendingKinds["permission-1"] = "permission"
+	session.View.AddPermission("permission-1", params)
+	writes := 0
+	session.respondToAgent = func(any, any) error {
+		writes++
+		return &acp.Error{Message: "Agent 请求写入中断；操作结果未知", Kind: acp.KindWriteUnknown}
+	}
+	response := jsoncompat.NewObject()
+	response.Set("optionId", "allow")
+	for i := 0; i < 2; i++ {
+		err := session.Respond("permission-1", response)
+		var acpErr *acp.Error
+		if !errors.As(err, &acpErr) || acpErr.Kind != acp.KindWriteUnknown {
+			t.Fatalf("attempt %d: want unknown response, got %v", i, err)
+		}
+	}
+	if writes != 1 {
+		t.Fatalf("uncertain response was written %d times", writes)
+	}
+	request := session.Snapshot().MustGet("requests").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+	if request.MustGet("supported") != false {
+		t.Fatalf("unknown response card must be read-only: %s", jsoncompat.EncodeCompact(request))
+	}
+	session.flushResponders() // Must not send a contradictory cancellation.
 }
 
 func TestRespondWireTranslatesPermissionReplies(t *testing.T) {

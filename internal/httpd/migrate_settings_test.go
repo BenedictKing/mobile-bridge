@@ -87,7 +87,7 @@ func TestMigrateTargetSettings(t *testing.T) {
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8790, "instance")
 	server.ACPAgents = map[string]*acpruntime.Manager{"source": source, "target": target}
-	server.Creations = LoadCreations(filepath.Join(t.TempDir(), "creations.json"))
+	server.Creations = mustLoadCreations(t, filepath.Join(t.TempDir(), "creations.json"))
 
 	request := func(target, body string) *httptest.ResponseRecorder {
 		t.Helper()

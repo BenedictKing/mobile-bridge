@@ -2,6 +2,8 @@ package httpd
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -38,19 +40,33 @@ type creations struct {
 	entries map[string]*creationEntry
 }
 
-// LoadCreations reads <dataDir>/creations.json; a missing or unreadable file
-// starts an empty ledger.
-func LoadCreations(path string) *creations {
+// LoadCreations refuses unreadable history so a prior create cannot disappear.
+func LoadCreations(path string) (*creations, error) {
 	ledger := &creations{path: path, entries: map[string]*creationEntry{}}
+	if path == "" {
+		return ledger, nil
+	}
 	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ledger, nil
+	}
 	if err != nil {
-		return ledger
+		return nil, fmt.Errorf("创建账本读取失败: %w", err)
 	}
 	var decoded map[string]*creationEntry
-	if json.Unmarshal(raw, &decoded) == nil {
-		ledger.entries = decoded
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, fmt.Errorf("创建账本解析失败: %w", err)
 	}
-	return ledger
+	if decoded == nil {
+		return nil, errors.New("创建账本顶层必须是对象")
+	}
+	for key, entry := range decoded {
+		if entry == nil {
+			return nil, fmt.Errorf("创建账本条目 %s 无效", key)
+		}
+	}
+	ledger.entries = decoded
+	return ledger, nil
 }
 
 func (c *creations) lookup(requestID string) *creationEntry {
@@ -65,111 +81,134 @@ func (c *creations) lookup(requestID string) *creationEntry {
 }
 
 // begin atomically claims a request id or returns its existing entry.
-func (c *creations) begin(requestID string, entry *creationEntry) (*creationEntry, bool) {
+func (c *creations) begin(requestID string, entry *creationEntry) (*creationEntry, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if existing := c.entries[requestID]; existing != nil {
 		copy := *existing
-		return &copy, false
+		return &copy, false, nil
 	}
-	c.entries[requestID] = entry
-	c.saveLocked()
-	return entry, true
+	copy := *entry
+	c.entries[requestID] = &copy
+	if err := c.saveLocked(); err != nil {
+		delete(c.entries, requestID)
+		return nil, false, err
+	}
+	return &copy, true, nil
 }
 
-func (c *creations) complete(requestID, id string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[requestID]; entry != nil {
-		entry.ID = id
-		c.saveLocked()
-	}
+func (c *creations) complete(requestID, id string) error {
+	return c.update(requestID, func(entry *creationEntry) { entry.ID = id })
 }
 
 // markSent records that a migration's transcript injection dispatched, so a
 // retry of the same request reports "sent" without prompting again.
-func (c *creations) markSent(requestID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[requestID]; entry != nil {
+func (c *creations) markSent(requestID string) error {
+	return c.update(requestID, func(entry *creationEntry) {
 		entry.Sent = true
 		entry.State = "sent"
 		entry.Warning = ""
-		c.saveLocked()
+	})
+}
+
+// beginDispatch durably claims the external send; a retry cannot send twice.
+func (c *creations) beginDispatch(requestID string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.entries[requestID]
+	if entry == nil || entry.Sent || entry.State == "dispatching" {
+		return false, nil
 	}
+	prior := entry.State
+	entry.State = "dispatching"
+	if err := c.saveLocked(); err != nil {
+		entry.State = prior
+		return false, err
+	}
+	return true, nil
 }
 
 // markPrepared records that the target session exists but the transcript has
 // not been sent: the phone is choosing model/effort from its real catalog.
-func (c *creations) markPrepared(requestID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[requestID]; entry != nil && !entry.Sent {
-		entry.State = "prepared"
-		c.saveLocked()
-	}
+func (c *creations) markPrepared(requestID string) error {
+	return c.update(requestID, func(entry *creationEntry) {
+		if !entry.Sent && entry.State != "dispatching" {
+			entry.State = "prepared"
+		}
+	})
 }
 
 // setSettings remembers the chosen model/effort so a deferred send (Codex
 // waiting for the desktop App) still applies them.
-func (c *creations) setSettings(requestID, model, effort string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[requestID]; entry != nil {
+func (c *creations) setSettings(requestID, model, effort string) error {
+	return c.update(requestID, func(entry *creationEntry) {
 		entry.Model, entry.Effort = model, effort
-		c.saveLocked()
-	}
+	})
 }
 
 // forgetPrepared removes a prepared, never-sent entry and reports the target
 // session id it had created. Anything else is left untouched.
-func (c *creations) forgetPrepared(requestID, agent string) (string, bool) {
+func (c *creations) forgetPrepared(requestID, agent string) (string, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry := c.entries[requestID]
 	if entry == nil || entry.Sent || entry.State != "prepared" || entry.Agent != agent {
-		return "", false
+		return "", false, nil
 	}
 	delete(c.entries, requestID)
-	c.saveLocked()
-	return entry.ID, true
+	if err := c.saveLocked(); err != nil {
+		c.entries[requestID] = entry
+		return "", false, err
+	}
+	return entry.ID, true, nil
 }
 
-func (c *creations) markWaiting(requestID, warning string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[requestID]; entry != nil {
+func (c *creations) markWaiting(requestID, warning string) error {
+	return c.update(requestID, func(entry *creationEntry) {
+		if entry.State == "dispatching" {
+			return
+		}
 		entry.State = "waiting_for_target"
 		entry.Warning = warning
 		entry.Attempts++
-		c.saveLocked()
-	}
+	})
 }
 
-func (c *creations) markOpened(requestID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry := c.entries[requestID]; entry != nil {
+func (c *creations) markOpened(requestID string) error {
+	return c.update(requestID, func(entry *creationEntry) {
+		if entry.State == "dispatching" {
+			return
+		}
 		entry.State = "opened"
 		entry.Warning = "请等待桌面 App 接管此聊天"
-		c.saveLocked()
-	}
+	})
 }
 
-func (c *creations) setMessage(requestID, message string) {
+func (c *creations) setMessage(requestID, message string) error {
+	return c.update(requestID, func(entry *creationEntry) { entry.Message = message })
+}
+
+func (c *creations) update(requestID string, change func(*creationEntry)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if entry := c.entries[requestID]; entry != nil {
-		entry.Message = message
-		c.saveLocked()
+	entry := c.entries[requestID]
+	if entry == nil {
+		return fmt.Errorf("创建账本中不存在请求 %s", requestID)
 	}
+	prior := *entry
+	change(entry)
+	if err := c.saveLocked(); err != nil {
+		*entry = prior
+		return err
+	}
+	return nil
 }
 
 func (c *creations) pendingForTarget(targetID string) (string, *creationEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for requestID, entry := range c.entries {
-		if entry.ID == targetID && !entry.Sent && entry.Message != "" {
+		if entry.ID == targetID && !entry.Sent && entry.State != "dispatching" && entry.Message != "" {
 			copy := *entry
 			return requestID, &copy
 		}
@@ -177,18 +216,22 @@ func (c *creations) pendingForTarget(targetID string) (string, *creationEntry) {
 	return "", nil
 }
 
-func (c *creations) saveLocked() {
+func (c *creations) saveLocked() error {
 	if c.path == "" {
-		return
+		return nil
 	}
 	raw, err := json.MarshalIndent(c.entries, "", "  ")
 	if err != nil {
-		return
+		return fmt.Errorf("创建账本编码失败: %w", err)
 	}
 	tmp := c.path + ".tmp"
-	if os.WriteFile(tmp, append(raw, '\n'), 0o600) == nil {
-		_ = os.Rename(tmp, c.path)
+	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+		return fmt.Errorf("创建账本写入失败: %w", err)
 	}
+	if err := os.Rename(tmp, c.path); err != nil {
+		return fmt.Errorf("创建账本替换失败: %w", err)
+	}
+	return nil
 }
 
 func (c *creations) now() float64 { return float64(time.Now().Unix()) }

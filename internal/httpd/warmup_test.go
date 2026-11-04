@@ -68,7 +68,7 @@ for line in sys.stdin:
 // projectTeamMember 经 HTTP 按项目创建一个单成员团队，返回成员的会话 id。
 func projectTeamMember(t *testing.T, env *teamTestEnv) string {
 	t.Helper()
-	env.server.Creations = LoadCreations(filepath.Join(env.dataDir, "creations.json"))
+	env.server.Creations = mustLoadCreations(t, filepath.Join(env.dataDir, "creations.json"))
 	project := "acp:" + hashProject(env.dataDir)
 	payload := fmt.Sprintf(`{"name":"预热团队","members":[{"id":"lead","project":%q,"agent":"kimi","role":"lead","name":"负责人"}],"leadId":"lead"}`, project)
 	response := env.request(http.MethodPost, "/api/teams", payload)

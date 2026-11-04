@@ -90,7 +90,7 @@ func TestMigrateAcrossAgents(t *testing.T) {
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8790, "instance")
 	server.ACPAgents = map[string]*acpruntime.Manager{"zcode": zcode, "kimi": kimi}
-	server.Creations = LoadCreations(filepath.Join(t.TempDir(), "creations.json"))
+	server.Creations = mustLoadCreations(t, filepath.Join(t.TempDir(), "creations.json"))
 
 	request := func(method, target, body string) *httptest.ResponseRecorder {
 		t.Helper()
