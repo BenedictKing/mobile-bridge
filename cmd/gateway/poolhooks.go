@@ -18,7 +18,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
-func poolQuotaHook(pool *accpool.Manager, auto *accpool.AutoSwitcher, kind string, manager *acpruntime.Manager) func(*acpruntime.Session) bool {
+func poolQuotaHook(pool *accpool.Manager, auto *accpool.AutoSwitcher, kind string, manager *acpruntime.Manager, resumeAfterSwitch func(*acpruntime.Session)) func(*acpruntime.Session) bool {
 	return func(session *acpruntime.Session) bool {
 		// kind is the ACP agent kind; the pool speaks its own kind names
 		// (minimax pool vs mcode agent).
@@ -44,10 +44,14 @@ func poolQuotaHook(pool *accpool.Manager, auto *accpool.AutoSwitcher, kind strin
 		if !switched {
 			return false
 		}
-		// Switch re-attached every live session; resume on the fresh handle.
+		// Switch re-attached every live session; judge the fresh handle once.
 		fresh := manager.Get(session.ID)
 		if fresh == nil {
 			log.Printf("账号池: %s 会话 %s 切换后无活跃句柄，跳过续跑", poolKind, session.ID)
+			return true
+		}
+		if resumeAfterSwitch != nil {
+			resumeAfterSwitch(fresh)
 			return true
 		}
 		if resumeErr := fresh.ResumeAfterSwitchPrompt("继续", time.Hour); resumeErr != nil {
@@ -56,5 +60,16 @@ func poolQuotaHook(pool *accpool.Manager, auto *accpool.AutoSwitcher, kind strin
 		}
 		log.Printf("账号池: %s 会话 %s 已在新账号上自动继续", poolKind, session.ID)
 		return true
+	}
+}
+
+func resumePoolSessionsAfterSwitch(manager *acpruntime.Manager, resumeAfterSwitch func(*acpruntime.Session)) {
+	if manager == nil || resumeAfterSwitch == nil {
+		return
+	}
+	for id := range manager.LiveSessions() {
+		if fresh := manager.Peek(id); fresh != nil {
+			resumeAfterSwitch(fresh)
+		}
 	}
 }

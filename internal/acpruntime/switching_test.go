@@ -58,6 +58,19 @@ func TestCloseSessionRemovesHandleFromLiveSet(t *testing.T) {
 	}
 }
 
+func TestPeekLeavesIdleClockUntouched(t *testing.T) {
+	m := New("")
+	session := newStubSession("s-idle", "/tmp/a")
+	session.touched = time.Now().Add(-time.Hour)
+	m.sessions[session.ID] = session
+	if got := m.Peek(session.ID); got != session {
+		t.Fatal("peek did not return the live session")
+	}
+	if idle := session.IdleFor(); idle < 30*time.Minute {
+		t.Fatalf("peek refreshed the idle clock: %v", idle)
+	}
+}
+
 func TestBusyReasonsExceptIgnoresEitherSessionAlias(t *testing.T) {
 	for _, test := range []struct {
 		name      string

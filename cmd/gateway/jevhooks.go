@@ -61,6 +61,16 @@ func jevEvaluate(settings *jev.Settings, agent, sessionID, requestID, method str
 // policy and (with a key) the Jev completeness verdict both say yes. It runs
 // on the turn-settle goroutine, so the 4s assessment budget is acceptable.
 func jevContinueHook(settings *jev.Settings, agent string) func(*acpruntime.Session) {
+	return jevContinueHookMode(settings, agent, false)
+}
+
+// jevContinueAfterSwitchHook runs one explicit assessment after quota failover.
+// The old turn's quota error is resolved context, not a reason to skip Jev.
+func jevContinueAfterSwitchHook(settings *jev.Settings, agent string) func(*acpruntime.Session) {
+	return jevContinueHookMode(settings, agent, true)
+}
+
+func jevContinueHookMode(settings *jev.Settings, agent string, afterSwitch bool) func(*acpruntime.Session) {
 	return func(session *acpruntime.Session) {
 		if settings == nil || !settings.ContinueEnabled() {
 			return
@@ -79,7 +89,9 @@ func jevContinueHook(settings *jev.Settings, agent string) func(*acpruntime.Sess
 		if !ok {
 			return
 		}
-		if jev.QuotaStop(jsoncompat.PyStr(context.MustGet("stopReason")), jsoncompat.PyStr(context.MustGet("error"))) {
+		if afterSwitch {
+			context.Set("recoveryNote", "The previous account's quota was exhausted and the account has now been switched successfully. Assess whether the original task should continue on the new account.")
+		} else if jev.QuotaStop(jsoncompat.PyStr(context.MustGet("stopReason")), jsoncompat.PyStr(context.MustGet("error"))) {
 			log.Printf("Jev 自动继续跳过（疑似额度不足）: agent=%s session=%s turn=%s",
 				agent, session.ID, jsoncompat.PyStr(context.MustGet("turnId")))
 			return
@@ -88,7 +100,11 @@ func jevContinueHook(settings *jev.Settings, agent string) func(*acpruntime.Sess
 		if settings.ContinueKeyPresent() {
 			assessment = settings.ContinueAssess(context)
 		}
-		send, reason := jev.DecideContinue(context, assessment)
+		decide := jev.DecideContinue
+		if afterSwitch {
+			decide = jev.DecideContinueAfterSwitch
+		}
+		send, reason := decide(context, assessment)
 		if !send {
 			log.Printf("Jev 自动继续未触发（%s）: agent=%s session=%s turn=%s",
 				reason, agent, session.ID, jsoncompat.PyStr(context.MustGet("turnId")))
@@ -97,7 +113,11 @@ func jevContinueHook(settings *jev.Settings, agent string) func(*acpruntime.Sess
 		if session.IdleFor() > watchedWithin {
 			return
 		}
-		if err := session.AutoContinuePrompt("继续", time.Hour); err != nil {
+		continuePrompt := session.AutoContinuePrompt
+		if afterSwitch {
+			continuePrompt = session.ResumeAfterSwitchPrompt
+		}
+		if err := continuePrompt("继续", time.Hour); err != nil {
 			log.Printf("Jev 自动继续发送失败: agent=%s session=%s turn=%s error=%s",
 				agent, session.ID, jsoncompat.PyStr(context.MustGet("turnId")), err.Error())
 			return

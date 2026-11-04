@@ -66,6 +66,23 @@ func TestDecideContinueAppliesDeterministicPolicy(t *testing.T) {
 	}
 }
 
+func TestDecideContinueAfterSwitchIgnoresResolvedQuota(t *testing.T) {
+	context := continueContext("failed", "", "余额不足", "usage limit reached")
+	assessment := &ContinueAssessment{
+		StopKind: "quota", Incomplete: boolPtr(true), ShouldContinue: boolPtr(true), Confidence: 0.9,
+	}
+	if send, reason := DecideContinue(context, assessment); send || reason != "quota" {
+		t.Fatalf("ordinary policy must still stop on quota: send=%v reason=%s", send, reason)
+	}
+	if send, reason := DecideContinueAfterSwitch(context, assessment); !send || reason != "jev_continue" {
+		t.Fatalf("resolved quota must reach the Jev verdict: send=%v reason=%s", send, reason)
+	}
+	cancelled := continueContext("interrupted", "cancelled", "", "")
+	if send, _ := DecideContinueAfterSwitch(cancelled, nil); send {
+		t.Fatal("account switching must not undo a user cancellation")
+	}
+}
+
 func boolPtr(value bool) *bool { return &value }
 
 func TestDecideContinueWeighsJeVVerdict(t *testing.T) {

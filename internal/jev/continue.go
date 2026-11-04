@@ -118,10 +118,21 @@ func (s *Settings) ContinueAssess(context *jsoncompat.Object) *ContinueAssessmen
 // scan always wins over Jev; a user stop is never undone; without an
 // assessment only an unexpectedly interrupted turn resumes.
 func DecideContinue(context *jsoncompat.Object, assessment *ContinueAssessment) (bool, string) {
+	return decideContinue(context, assessment, false)
+}
+
+// DecideContinueAfterSwitch judges the old turn after its quota failure has
+// been resolved by a successful account switch. Quota signals in that old turn
+// must not suppress the fresh assessment; every other stop rule still applies.
+func DecideContinueAfterSwitch(context *jsoncompat.Object, assessment *ContinueAssessment) (bool, string) {
+	return decideContinue(context, assessment, true)
+}
+
+func decideContinue(context *jsoncompat.Object, assessment *ContinueAssessment, quotaResolved bool) (bool, string) {
 	stopReason := jsoncompat.PyStr(context.MustGet("stopReason"))
 	message := jsoncompat.PyStr(context.MustGet("error"))
 	tail := truncateTail(jsoncompat.PyStr(context.MustGet("assistantTail")), 800)
-	if QuotaStop(stopReason, message, tail) {
+	if !quotaResolved && QuotaStop(stopReason, message, tail) {
 		return false, "quota"
 	}
 	status := jsoncompat.PyStr(context.MustGet("turnStatus"))
@@ -145,7 +156,9 @@ func DecideContinue(context *jsoncompat.Object, assessment *ContinueAssessment) 
 	}
 	switch assessment.StopKind {
 	case "quota":
-		return false, "quota"
+		if !quotaResolved {
+			return false, "quota"
+		}
 	case "awaiting_user":
 		return false, "awaiting_user"
 	}

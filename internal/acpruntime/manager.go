@@ -1973,9 +1973,10 @@ func optionValues(option *jsoncompat.Object) map[string]bool {
 	return values
 }
 
-// Get returns the live session for id (touching its idle clock), or nil.
-func (m *Manager) Get(id string) *Session {
+// Peek returns the live session for id without touching its idle clock.
+func (m *Manager) Peek(id string) *Session {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	session := m.sessions[id]
 	if session == nil {
 		// The handle may live under the canonical id (lazy placeholder alias);
@@ -1984,7 +1985,12 @@ func (m *Manager) Get(id string) *Session {
 			session = m.sessions[key]
 		}
 	}
-	m.mu.Unlock()
+	return session
+}
+
+// Get returns the live session for id (touching its idle clock), or nil.
+func (m *Manager) Get(id string) *Session {
+	session := m.Peek(id)
 	if session != nil {
 		session.Touch()
 	}

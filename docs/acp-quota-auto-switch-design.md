@@ -267,7 +267,7 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - 误报防护（开放问题 3 的当前方案）：被动事件先用 jev 规则初筛，再 `RefreshQuota` 复确认——只有额度数据确实越过阈值才真正切换，瞬时 429 不误切；真实语料校准仍待收集；
   - 门控全部基于 `history.jsonl`（重启不丢）：切换冷却 10 分钟、每小时最多 6 次、24h 内切走 3 次即放弃该账号、最紧窗口距重置不足 5 分钟时宁可等待；无可用账号时发通知而不动作；
   - 目标选择（`decide.go` 的 `ChooseTarget`）：逐候选刷新额度，刷新失败直接剔除（不得用旧额度快照参选），选最紧窗口余量最大者，并列取最久未用；
-  - 切换续跑走 `ResumeAfterSwitchPrompt` 独立预算 `MaxSwitchResume = 3`（不占用 `MaxAutoContinue`），人为操作同时重置两个计数；切换时 `ignoreBusy` 放行被打断的失败会话本身；
+  - 切换成功后每个存活会话显式调用一次 Jev（旧回合的额度错误按已恢复背景处理，不重复拦截）；需要续跑时走 `ResumeAfterSwitchPrompt` 独立预算 `MaxSwitchResume = 3`（不占用 `MaxAutoContinue`），人为操作同时重置两个计数；切换时 `ignoreBusy` 放行被打断的失败会话本身；
   - 开关与三项阈值持久化在 `<dataDir>/pool/settings.json`（自动切换默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），`POST /api/pool/{kind}/settings` 保存后立即生效；ZCode 轮询按普通切换阈值与重置卡核销阈值中的较低者先触发，核销阈值默认 98%；
   - 通知复用 `internal/notifications` 的渠道配置。
 

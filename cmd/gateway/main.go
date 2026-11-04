@@ -589,8 +589,14 @@ func runGateway(args []string) {
 	}
 	poolPoller := accpool.NewPoller(server.Pool)
 	poolPoller.OnExhausted = func(kind string) {
-		if _, err := poolAuto.HandleQuotaExhaustion(context.Background(), kind, ""); err != nil {
+		switched, err := poolAuto.HandleQuotaExhaustion(context.Background(), kind, "")
+		if err != nil {
 			log.Printf("账号池: %s 预防性切换失败: %v", kind, err)
+		}
+		if switched {
+			agentKind := accpool.AgentKind(kind)
+			manager := server.ACPAgents[agentKind]
+			resumePoolSessionsAfterSwitch(manager, jevContinueAfterSwitchHook(server.Jev, agentKind))
 		}
 	}
 	poolPoller.OnActiveChange = func(kind, fromID, toID string) {
@@ -878,7 +884,11 @@ func runGateway(args []string) {
 				// queue hook onto whatever auto-continue hook is installed.
 				prior := manager.AutoContinue
 				managedKind := kind
-				quotaHook := poolQuotaHook(server.Pool, poolAuto, managedKind, manager)
+				var resumeAfterSwitch func(*acpruntime.Session)
+				if server.Jev != nil {
+					resumeAfterSwitch = jevContinueAfterSwitchHook(server.Jev, managedKind)
+				}
+				quotaHook := poolQuotaHook(server.Pool, poolAuto, managedKind, manager, resumeAfterSwitch)
 				manager.AutoContinue = func(session *acpruntime.Session) {
 					// Quota failover owns the settle edge when it fired: the
 					// resumed turn's next settle re-enters the chain.
