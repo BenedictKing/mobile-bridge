@@ -121,6 +121,10 @@ func (h *handler) handleTeams(method string) {
 		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}
+	case len(segments) == 2 && segments[1] == "lead-context" && method == http.MethodPost:
+		// 主控上下文管理（/new 换绑与网关转录压缩后的 rebind）：只动 Lead
+		// 一人的绑定，不创建 Run、不触碰其他成员。
+		h.handleTeamLeadContext(teamID)
 	case len(segments) == 2 && segments[1] == "inputs":
 		// TeamInput 长期入口（§10 阶段二）：POST 202 {inputId, routeStatus}，
 		// 同 id 幂等重放；GET 按 inputId 回查路由结果。
