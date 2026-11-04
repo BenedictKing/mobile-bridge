@@ -44,3 +44,34 @@ func TestLiveSessionsAndBusyReasons(t *testing.T) {
 		t.Fatalf("busy reasons: %+v", reasons)
 	}
 }
+
+func TestBusyReasonsExceptIgnoresEitherSessionAlias(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		sessionID string
+		ignoreID  string
+	}{
+		{name: "placeholder blocked after canonical failure", sessionID: "lazy-1", ignoreID: "sess-real"},
+		{name: "canonical blocked after placeholder failure", sessionID: "sess-real", ignoreID: "lazy-1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := New("")
+			m.Canonical = func(id string) string {
+				if id == "lazy-1" {
+					return "sess-real"
+				}
+				return ""
+			}
+			busy := newStubSession(test.sessionID, "/tmp/a")
+			busy.promptRunning = true
+			busy.pending["req-1"] = jsoncompat.NewObject()
+			m.sessions[test.sessionID] = busy
+			if reasons := m.BusyReasonsExcept(map[string]bool{test.ignoreID: true}); len(reasons) != 0 {
+				t.Fatalf("alias was not ignored: %+v", reasons)
+			}
+			if reasons := m.BusyReasons(); len(reasons) != 2 {
+				t.Fatalf("busy state fixture is not active: %+v", reasons)
+			}
+		})
+	}
+}

@@ -40,7 +40,7 @@ func (m *Manager) BusyReasonsExcept(ignore map[string]bool) []string {
 	m.mu.Unlock()
 	var reasons []string
 	for id, session := range sessions {
-		if ignore[id] || session.IsClosed() {
+		if m.ignoredForSwitch(id, ignore) || session.IsClosed() {
 			continue
 		}
 		if session.PromptRunning() {
@@ -51,6 +51,24 @@ func (m *Manager) BusyReasonsExcept(ignore map[string]bool) []string {
 		}
 	}
 	return reasons
+}
+
+// ignoredForSwitch matches both directions of a lazy session alias: the failed
+// turn may already use the backend id while an older handle still blocks under
+// its placeholder (and vice versa).
+func (m *Manager) ignoredForSwitch(id string, ignore map[string]bool) bool {
+	if ignore[id] {
+		return true
+	}
+	if canonical := m.canonicalUnlocked(id); canonical != "" && ignore[canonical] {
+		return true
+	}
+	for candidate := range ignore {
+		if m.canonicalUnlocked(candidate) == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) hasPending() bool {
