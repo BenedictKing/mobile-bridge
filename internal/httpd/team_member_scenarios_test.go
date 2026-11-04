@@ -178,3 +178,92 @@ func TestTeamMemberOfflineAndRestore(t *testing.T) {
 		t.Fatalf("下线与恢复不得改变成员身份或团队角色: %+v", stored)
 	}
 }
+
+func TestTeamMemberOfflineDuringRunParksPendingTask(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	dev := env.createMemberSession(t, "dev-sess", "执行")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"dev","sessionId":"`+dev+`","role":"member"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"运行中下线成员","mode":"pipeline","plan":[
+		{"id":"first","memberId":"lead","prompt":"在途任务 OFFLINE-MID-RUN HOLDUNTIL:offline-mid","writeLock":"none"},
+		{"id":"pending","memberId":"dev","prompt":"下线前不得派发 OFFLINE-MID-PENDING","dependsOn":["first"],"writeLock":"none"}]}`)
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		return teamTaskOf(t, env.runDetail(t, teamID, runID), "first")["status"] == "running"
+	}) {
+		t.Fatal("首个任务未进入 running")
+	}
+
+	response := env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/dev", `{"enabled":false,"version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("运行中下线普通成员失败: %d %s", response.Code, response.Body.String())
+	}
+	releaseAgentTurn(t, dataDir, "offline-mid", lead)
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		status := env.runDetail(t, teamID, runID)["status"]
+		return status == "waiting_input" || status == "completed" || status == "failed" || status == "stopped"
+	}) {
+		t.Fatal("运行中下线后的 Run 未在时限内收敛")
+	}
+	detail := env.runDetail(t, teamID, runID)
+	pending := teamTaskOf(t, detail, "pending")
+	if detail["status"] != "waiting_input" || pending["status"] != "stopped" || pending["outcome"] != "member_disabled" {
+		t.Fatalf("下线成员的未派任务应停靠等待，而不是继续执行: run=%v", detail)
+	}
+	if records := readTeamPrompts(t, dataDir); promptIndex(records, "OFFLINE-MID-PENDING") >= 0 {
+		t.Fatalf("成员下线后不得再派发其任务: %v", records)
+	}
+
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/dev", `{"enabled":true,"version":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("重新上线成员失败: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("恢复下线停靠的 Run 失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatalf("重新上线后 Run 未完成: %v", env.runDetail(t, teamID, runID))
+	}
+	records := readTeamPrompts(t, dataDir)
+	if index := promptIndex(records, "OFFLINE-MID-PENDING"); index < 0 || records[index].session != dev {
+		t.Fatalf("恢复后应把停靠任务派给重新上线的成员: %v", records)
+	}
+}
+
+func TestTeamMemberCompositeUpdatesAreIndependent(t *testing.T) {
+	env := newTeamIntegrationEnv(t, t.TempDir())
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	original := env.createMemberSession(t, "dev-original", "原执行")
+	replacement := env.createMemberSession(t, "dev-replacement", "接替执行")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"dev","sessionId":"`+original+`","role":"member"}]`)
+	response := env.request(http.MethodPatch, "/api/teams/"+teamID, `{"reviewerId":"lead","version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("设置主控兼任评审失败: %d %s", response.Code, response.Body.String())
+	}
+
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/dev",
+		`{"name":"临时评审","role":"reviewer","sessionId":"`+replacement+`","enabled":true,"version":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("组合更新成员失败: %d %s", response.Code, response.Body.String())
+	}
+	stored := env.store.Team(teamID)
+	member := stored.Members[1]
+	if stored.LeadID != "lead" || stored.ReviewerID != "lead" || member.Name != "临时评审" ||
+		member.Role != team.RoleReviewer || member.SessionID != replacement || !member.Enabled {
+		t.Fatalf("成员资料、角色、会话和启停应可独立组合更新: %+v", stored)
+	}
+
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/dev", `{"name":"执行","role":"member","version":3}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("恢复成员资料与角色失败: %d %s", response.Code, response.Body.String())
+	}
+	stored = env.store.Team(teamID)
+	member = stored.Members[1]
+	if stored.LeadID != "lead" || stored.ReviewerID != "lead" || member.Name != "执行" ||
+		member.Role != team.RoleMember || member.SessionID != replacement || !member.Enabled {
+		t.Fatalf("部分更新不得重置未提交的成员字段或团队分工: %+v", stored)
+	}
+}

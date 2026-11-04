@@ -46,6 +46,7 @@ const (
 	OutcomeQuota           = "quota"
 	OutcomeAuth            = "auth"
 	OutcomeNotConfigured   = "not_configured"
+	OutcomeMemberDisabled  = "member_disabled"
 	OutcomeContextOverflow = "context_overflow"
 	OutcomeTransient       = "transient"
 	OutcomeUnknownText     = "unknown"
@@ -164,12 +165,12 @@ func newAIMDRegistry(now func() time.Time) *aimdRegistry {
 }
 
 // stopOutcomeFreshSubmission 报告该 Outcome 分类的停靠任务重派时是否需要
-// 派全新 submissionID（§6.3：quota/auth/not_configured 停靠→resume 重飞按
-// task.Attempt+1 递增幂等键，与停靠前的旧 attempt 各自独立可审计）。
+// 派全新 submissionID（quota/auth/not_configured/member_disabled 停靠→resume
+// 重飞按 task.Attempt+1 递增幂等键，与停靠前的旧 attempt 各自独立可审计）。
 // rate_limited/transient 的重试在结算时已递增 attempt，不需要此标记。
 func stopOutcomeFreshSubmission(outcome string) bool {
 	switch outcome {
-	case OutcomeQuota, OutcomeAuth, OutcomeNotConfigured:
+	case OutcomeQuota, OutcomeAuth, OutcomeNotConfigured, OutcomeMemberDisabled:
 		return true
 	}
 	return false

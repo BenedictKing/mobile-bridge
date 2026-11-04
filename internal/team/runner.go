@@ -1293,9 +1293,14 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	if task == nil || (task.Status != TaskPlanned && task.Status != TaskReady) {
 		return
 	}
+	team = s.store.Team(teamID)
 	member := memberOf(team, task.MemberID)
 	if member == nil {
 		s.failDispatch(state, runID, taskID, fmt.Sprintf("任务 %s 引用的成员不存在：%s", taskID, task.MemberID))
+		return
+	}
+	if !member.Enabled {
+		s.stopTaskBlocked(state, runID, taskID, OutcomeMemberDisabled, "成员已下线，请重新上线或换绑其他 Agent 后继续")
 		return
 	}
 	_, session, resolveErr := s.resolver.Resolve(member.SessionID)
@@ -2584,8 +2589,8 @@ func (s *Service) retryOrFailTask(state *runState, dispatch *taskDispatch, polic
 	}
 }
 
-// blockedStopReason 返回停靠类错误的中文原因（§6.3：任务停靠，用户处理
-// 账号/配置后 resume 重飞）。
+// blockedStopReason 返回停靠类错误的中文原因：任务停靠，用户处理账号、
+// 配置或成员启停后 resume 重飞。
 func blockedStopReason(outcome string) string {
 	switch outcome {
 	case OutcomeQuota:
@@ -2594,11 +2599,13 @@ func blockedStopReason(outcome string) string {
 		return "账号认证失败或登录过期，任务已停靠"
 	case OutcomeNotConfigured:
 		return "Agent 或账号未配置，任务已停靠"
+	case OutcomeMemberDisabled:
+		return "成员已下线，任务已停靠"
 	}
 	return "账号或配置问题，任务已停靠"
 }
 
-// stopTaskBlocked 把 quota/auth/not_configured 失败落任务停靠 + run 暂停
+// stopTaskBlocked 把 quota/auth/not_configured/member_disabled 阻塞落任务停靠 + run 暂停
 // （§6.3）：任务 stopped（非 failed——停靠可经 resume 重飞）+ Outcome 分类
 // + 中文停靠原因；run 停 waiting_input。「任务终态 + run waiting_input」在
 // 单个 commitRun 内原子落账（评审遗留④，Cancel 同款纪律）：事件序任务事实
