@@ -4,19 +4,20 @@ const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const vm=require('node:vm');
 
-// 从 app.js 抽出团队命令面板的纯函数段（与 test_queue.js 的抽取惯例一致）。
-function extract(){
+// 从 app.js 抽出命令面板的纯函数段（与 test_queue.js 的抽取惯例一致）。
+// composerCommandRows 读取全局 currentTeam：团队模式含 /new，普通会话只有压缩。
+function extract({team=false}={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
-  const start=source.indexOf('function teamCommandRows(');
+  const start=source.indexOf('function composerCommandRows(');
   const end=source.indexOf('// runNativeCompact',start);
-  assert.ok(start>=0&&end>start,'team command block not found in app.js');
-  const context={t:value=>value};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.teamCommandRows=teamCommandRows;this.parseTeamCommand=parseTeamCommand;',context);
+  assert.ok(start>=0&&end>start,'composer command block not found in app.js');
+  const context={t:value=>value,currentTeam:team};
+  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;',context);
   return context;
 }
 
 test('parseTeamCommand only intercepts exact command lines',()=>{
-  const {parseTeamCommand}=extract();
+  const {parseTeamCommand}=extract({team:true});
   // vm 内构造的对象与主 realm 原型不同，deepStrictEqual 会误报：先 JSON 规整。
   const same=(actual,expected)=>assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected);
   same(parseTeamCommand('/new'),{kind:'new'});
@@ -35,18 +36,29 @@ test('parseTeamCommand only intercepts exact command lines',()=>{
   same(parseTeamCommand('/compact gateway'),{kind:'gateway'});
 });
 
-test('team command suggestions filter by prefix and alias',()=>{
-  const {teamCommandRows}=extract();
-  const all=teamCommandRows('');
-  assert.equal(all.length,5);
-  assert.equal(all[0].token,'/new');
-  assert.ok(all[0].label&&all[0].description,'rows need visible label and description');
-  assert.equal(teamCommandRows('new').length,1);
-  assert.equal(teamCommandRows('com').length,4);
-  // 输入 /compact 前缀也要能匹配 /compress 系命令（别名检索）。
-  assert.equal(teamCommandRows('compact').length,4);
-  const gateway=teamCommandRows('gateway');
-  assert.equal(gateway.length,1);
-  assert.equal(gateway[0].token,'/compress gateway');
-  assert.equal(teamCommandRows('nothing').length,0);
+test('compact commands parse in plain chats too, /new stays team-only',()=>{
+  const {parseCompactCommand}=extract();
+  const same=(actual,expected)=>assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected);
+  same(parseCompactCommand('/compress'),{kind:'native',scope:'main'});
+  same(parseCompactCommand('/compact gateway'),{kind:'gateway'});
+  // /new 不属于压缩命令：普通会话发送 /new 原文给 Agent，不做拦截。
+  assert.equal(parseCompactCommand('/new'),null);
+});
+
+test('command suggestions follow the chat mode',()=>{
+  const team=extract({team:true}),plain=extract({team:false});
+  assert.equal(team.composerCommandRows('').length,5);
+  assert.equal(team.composerCommandRows('')[0].token,'/new');
+  // 普通会话只列压缩命令；网关压缩描述为「并打开」而非「换绑主控」。
+  const plainRows=plain.composerCommandRows('');
+  assert.equal(plainRows.length,4);
+  assert.equal(plainRows.some(row=>row.token==='/new'),false);
+  assert.match(plainRows.find(row=>row.token==='/compress gateway').description,/并打开/);
+  assert.match(team.composerCommandRows('').find(row=>row.token==='/compress gateway').description,/换绑主控/);
+  // 前缀与别名过滤。
+  assert.equal(plain.composerCommandRows('com').length,4);
+  assert.equal(plain.composerCommandRows('compact').length,4);
+  assert.equal(plain.composerCommandRows('gateway').length,1);
+  assert.equal(plain.composerCommandRows('nothing').length,0);
+  assert.ok(plainRows.every(row=>row.label&&row.description),'rows need visible label and description');
 });
