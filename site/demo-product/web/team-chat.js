@@ -363,6 +363,14 @@ class TeamLeadPicker{
   }
 }
 
+function teamSettingsMemberLabel(member){
+  return BridgeI18n.agentLabel(member.agentKind)+' · '+(member.name&&member.name!==member.agentKind?member.name:member.agentKind);
+}
+function teamReviewerMemberID(team){
+  if(!team)return '';
+  if(team.reviewerId)return team.reviewerId;
+  return (team.members||[]).find(member=>member.enabled&&member.role==='reviewer')?.id||'';
+}
 class TeamSettingsDialog{
   constructor({request,onChange}){this.request=request;this.onChange=onChange;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';}
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
@@ -388,20 +396,20 @@ class TeamSettingsDialog{
     if(!this.body)return;
     this.body.replaceChildren();
     if(!this.team){this.body.append(this.node('p',t_safe('正在读取团队…'),'muted'));return;}
-    const team=this.team,members=team.members||[];
+    const team=this.team,members=team.members||[],reviewerID=teamReviewerMemberID(team);
     const roles=this.node('section',undefined,'team-settings-section team-role-grid');
     const leadField=this.node('label',undefined,'team-role-card');
     leadField.append(this.node('span',t_safe('主控 Agent'),'team-role-label'));
     const leadSelect=document.createElement('select');leadSelect.className='team-role-select';leadSelect.disabled=this.busy;
-    for(const member of members)leadSelect.append(new Option(BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind,member.id));
+    for(const member of members)leadSelect.append(new Option(teamSettingsMemberLabel(member),member.id));
     leadSelect.value=team.leadId||'';leadSelect.onchange=()=>this.changeLead(leadSelect.value);
     leadField.append(leadSelect);
     const reviewerField=this.node('label',undefined,'team-role-card');
     reviewerField.append(this.node('span',t_safe('默认评审 Agent'),'team-role-label'));
     const reviewerSelect=document.createElement('select');reviewerSelect.className='team-role-select';reviewerSelect.disabled=this.busy;
     reviewerSelect.append(new Option(t_safe('不设置默认评审'),''));
-    for(const member of members)reviewerSelect.append(new Option(BridgeI18n.agentLabel(member.agentKind)+' · '+member.agentKind,member.id));
-    reviewerSelect.value=team.reviewerId||(members.find(member=>member.role==='reviewer')?.id)||'';
+    for(const member of members)reviewerSelect.append(new Option(teamSettingsMemberLabel(member),member.id));
+    reviewerSelect.value=reviewerID;
     reviewerSelect.onchange=()=>this.changeReviewer(reviewerSelect.value);
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
     const memberSection=this.node('section',undefined,'team-settings-section');
@@ -409,9 +417,9 @@ class TeamSettingsDialog{
     for(const member of members){
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
-      info.append(this.node('strong',BridgeI18n.agentLabel(member.agentKind)+' · '+(member.name&&member.name!==member.agentKind?member.name:member.agentKind)));
+      info.append(this.node('strong',teamSettingsMemberLabel(member)));
       const roleLabels=[member.id===team.leadId?t_safe('主控'):t_safe('成员')];
-      if(member.id===team.reviewerId||member.role==='reviewer')roleLabels.push(t_safe('评审'));
+      if(member.id===reviewerID)roleLabels.push(t_safe('评审'));
       info.append(this.node('span',roleLabels.join(' · ')+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
       row.append(info);
       if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}
@@ -434,7 +442,7 @@ class TeamSettingsDialog{
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{leadId:memberID,version:this.team.version}}));
   }
   async changeReviewer(memberID){
-    const current=this.team.reviewerId||(this.team.members||[]).find(member=>member.role==='reviewer')?.id||'';
+    const current=teamReviewerMemberID(this.team);
     if(memberID===current)return;
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{reviewerId:memberID,version:this.team.version}}));
   }

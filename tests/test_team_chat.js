@@ -177,6 +177,44 @@ test('team settings preserves member roles through repeated lead and reviewer sw
   assert.deepEqual(current.members,members);
 });
 
+test('team settings shows one effective reviewer and distinguishes same-kind members',async()=>{
+  const members=[
+    {id:'member-kimi',sessionId:'sess-lead',agentKind:'kimi',name:'kimi',role:'lead',enabled:true},
+    {id:'member-zcode',sessionId:'sess-zcode',agentKind:'zcode',name:'zcode',role:'member',enabled:true},
+    {id:'member-mcode',sessionId:'sess-mcode',agentKind:'mcode',name:'mcode',role:'reviewer',enabled:true},
+    {id:'member-kimi-2',sessionId:'sess-kimi-2',agentKind:'kimi',name:'kimi-2',role:'member',enabled:true},
+  ];
+  let current={id:'team-1',project:'acp:project',version:12,leadId:'member-kimi',reviewerId:'member-zcode',members};
+  const patches=[];
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return current;
+    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/teams/team-1'&&options.method==='PATCH'){
+      patches.push(options.body);current={...current,...options.body,version:current.version+1};return current;
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(current);
+  const expectedOptions=['kimi · kimi','zcode · zcode','mcode · mcode','kimi · kimi-2'];
+  for(const select of find(settings.body,'team-role-select'))assert.deepEqual(select.children.slice(-4).map(option=>option.textContent),expectedOptions);
+  const labels=()=>find(settings.body,'team-member-role').map(node=>node.textContent);
+  assert.deepEqual(labels(),['主控','成员 · 评审','成员','成员']);
+  const choose=async value=>{const select=find(settings.body,'team-role-select')[1];select.value=value;select.onchange();await flush();};
+  await choose('member-mcode');
+  assert.deepEqual(labels(),['主控','成员','成员 · 评审','成员']);
+  await choose('member-kimi-2');
+  assert.deepEqual(labels(),['主控','成员','成员','成员 · 评审']);
+  await choose('member-kimi');
+  assert.deepEqual(labels(),['主控 · 评审','成员','成员','成员']);
+  await choose('');
+  assert.deepEqual(labels(),['主控','成员','成员 · 评审','成员']);
+  assert.deepEqual(patches,[
+    {reviewerId:'member-mcode',version:12},{reviewerId:'member-kimi-2',version:13},
+    {reviewerId:'member-kimi',version:14},{reviewerId:'',version:15},
+  ]);
+  assert.deepEqual(current.members,members);
+});
+
 test('team without runs shows a ready empty state instead of a blank panel',async()=>{
   const root=new FakeNode('div');
   const controller=new TeamChatController({root,request:async()=>({runs:[]}),openRun(){}});
