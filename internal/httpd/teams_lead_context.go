@@ -214,8 +214,17 @@ func (h *handler) createLeadSession(teamRow *team.Team, expectedSessionID, reque
 		return "", &teamInputError{http.StatusConflict, "无法确定团队项目目录，请稍后重试"}
 	}
 	if ledger != nil {
-		ledger.begin(requestID, &creationEntry{Agent: kind, Project: projectKey,
+		entry, claimed := ledger.begin(requestID, &creationEntry{Agent: kind, Project: projectKey,
 			Title: title, Host: "local", At: ledger.now(), State: "creating"})
+		if !claimed {
+			if entry.Agent != kind || entry.Project != projectKey || entry.Title != title {
+				return "", &teamInputError{http.StatusBadRequest, "同一创建请求不能用于不同内容"}
+			}
+			if entry.ID == "" {
+				return "", &teamInputError{http.StatusConflict, "上次创建结果尚不确定，请先刷新聊天列表后重试"}
+			}
+			return entry.ID, nil
+		}
 	}
 	session, createErr := manager.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
 	if createErr != nil {

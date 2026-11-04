@@ -915,7 +915,11 @@ func runGateway(args []string) {
 	server.Creations = httpd.LoadCreations(filepath.Join(dataDir, "creations.json"))
 	// Durable feature ledgers: queued sends, hidden (deleted) sessions and
 	// fork origins survive restarts like Python's submissions/actions files.
-	server.Queue = httpd.LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
+	queue, queueErr := httpd.LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
+	if queueErr != nil {
+		log.Fatalf("submissions ledger: %v", queueErr)
+	}
+	server.Queue = queue
 	server.GoalCmds = httpd.NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
 	server.Hidden = httpd.LoadHiddenSessions(filepath.Join(dataDir, "hidden-sessions.json"))
 	server.Forks = httpd.LoadForks(filepath.Join(dataDir, "forks.json"))

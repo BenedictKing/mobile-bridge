@@ -56,14 +56,25 @@ func LoadCreations(path string) *creations {
 func (c *creations) lookup(requestID string) *creationEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.entries[requestID]
+	entry := c.entries[requestID]
+	if entry == nil {
+		return nil
+	}
+	copy := *entry
+	return &copy
 }
 
-func (c *creations) begin(requestID string, entry *creationEntry) {
+// begin atomically claims a request id or returns its existing entry.
+func (c *creations) begin(requestID string, entry *creationEntry) (*creationEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if existing := c.entries[requestID]; existing != nil {
+		copy := *existing
+		return &copy, false
+	}
 	c.entries[requestID] = entry
 	c.saveLocked()
+	return entry, true
 }
 
 func (c *creations) complete(requestID, id string) {

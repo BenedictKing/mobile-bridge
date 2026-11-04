@@ -70,25 +70,55 @@ type submissions struct {
 	entries map[string]*submissionEntry
 }
 
-// LoadSubmissions reads <dataDir>/submissions.json; a missing or unreadable
-// file starts an empty ledger (accepted/uncertain entries survive restarts).
-func LoadSubmissions(path string) *submissions {
+type queueStoreError struct {
+	op  string
+	err error
+}
+
+func (e *queueStoreError) Error() string {
+	return "提交账本" + e.op + "失败: " + e.err.Error()
+}
+
+func (e *queueStoreError) Unwrap() error { return e.err }
+
+func isQueueStoreError(err error) bool {
+	var storeErr *queueStoreError
+	return errors.As(err, &storeErr)
+}
+
+// LoadSubmissions reads <dataDir>/submissions.json. Only a missing file starts
+// an empty ledger; damaged or unreadable state must stop startup, never look
+// like proof that previously dispatched messages were absent.
+func LoadSubmissions(path string) (*submissions, error) {
 	ledger := &submissions{path: path, entries: map[string]*submissionEntry{}}
 	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ledger, nil
+	}
 	if err != nil {
-		return ledger
+		return nil, &queueStoreError{op: "读取", err: err}
+	}
+	value, err := jsoncompat.Unmarshal(raw)
+	if err != nil {
+		return nil, &queueStoreError{op: "解析", err: err}
+	}
+	ordered, ok := value.(*jsoncompat.Object)
+	if !ok {
+		return nil, &queueStoreError{op: "解析", err: errors.New("顶层必须是对象")}
 	}
 	var decoded map[string]*submissionEntry
-	if json.Unmarshal(raw, &decoded) == nil {
-		for key, entry := range decoded {
-			if entry == nil || entry.ID == "" || entry.ThreadID == "" {
-				continue
-			}
-			ledger.entries[key] = entry
-			ledger.order = append(ledger.order, key)
-		}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, &queueStoreError{op: "解析", err: err}
 	}
-	return ledger
+	for _, key := range ordered.Keys() {
+		entry := decoded[key]
+		if entry == nil || entry.ID == "" || entry.ThreadID == "" || submissionKey(entry.ThreadID, entry.ID) != key {
+			return nil, &queueStoreError{op: "解析", err: errors.New("条目 " + key + " 无效")}
+		}
+		ledger.entries[key] = entry
+		ledger.order = append(ledger.order, key)
+	}
+	return ledger, nil
 }
 
 func submissionKey(threadID, submissionID string) string {
@@ -106,58 +136,69 @@ func (q *submissions) get(threadID, submissionID string) *submissionEntry {
 	return &copy
 }
 
-// record inserts one entry, preserving ledger order.
-func (q *submissions) record(entry *submissionEntry) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	key := submissionKey(entry.ThreadID, entry.ID)
-	if _, exists := q.entries[key]; !exists {
-		q.order = append(q.order, key)
-	}
-	q.entries[key] = entry
-	q.saveLocked()
-}
-
-func (q *submissions) saveLocked() {
+func (q *submissions) saveLocked() error {
 	if q.path == "" {
-		return
+		return nil
 	}
-	dump := map[string]*submissionEntry{}
-	for _, key := range q.order {
-		if entry := q.entries[key]; entry != nil {
-			dump[key] = entry
+	raw := []byte("{}")
+	if len(q.order) > 0 {
+		raw = []byte("{\n")
+		for index, key := range q.order {
+			entry := q.entries[key]
+			if entry == nil {
+				continue
+			}
+			encodedKey, _ := json.Marshal(key)
+			encodedEntry, err := json.MarshalIndent(entry, "  ", "  ")
+			if err != nil {
+				return &queueStoreError{op: "编码", err: err}
+			}
+			if index > 0 {
+				raw = append(raw, ',', '\n')
+			}
+			raw = append(raw, "  "...)
+			raw = append(raw, encodedKey...)
+			raw = append(raw, ": "...)
+			raw = append(raw, encodedEntry...)
 		}
+		raw = append(raw, '\n', '}')
 	}
-	raw, err := json.MarshalIndent(dump, "", "  ")
-	if err != nil {
-		return
-	}
+	raw = append(raw, '\n')
 	tmp := q.path + ".tmp"
-	if os.WriteFile(tmp, append(raw, '\n'), 0o600) == nil {
-		_ = os.Rename(tmp, q.path)
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return &queueStoreError{op: "写入", err: err}
 	}
+	if err := os.Rename(tmp, q.path); err != nil {
+		return &queueStoreError{op: "替换", err: err}
+	}
+	return nil
 }
 
-func (q *submissions) mutate(threadID, submissionID string, fn func(entry *submissionEntry)) bool {
+func (q *submissions) mutate(threadID, submissionID string, fn func(entry *submissionEntry)) (bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	entry := q.entries[submissionKey(threadID, submissionID)]
 	if entry == nil {
-		return false
+		return false, nil
 	}
+	original := *entry
 	fn(entry)
-	q.saveLocked()
-	return true
+	if err := q.saveLocked(); err != nil {
+		*entry = original
+		return false, err
+	}
+	return true, nil
 }
 
-func (q *submissions) setStatus(threadID, submissionID, status string) {
-	q.mutate(threadID, submissionID, func(entry *submissionEntry) { entry.Status = status })
+func (q *submissions) setStatus(threadID, submissionID, status string) error {
+	_, err := q.mutate(threadID, submissionID, func(entry *submissionEntry) { entry.Status = status })
+	return err
 }
 
 // requeueEntry mirrors _requeue_submission: only uncertain (unknown) entries
 // climb the attempt ladder; the tenth attempt fails the entry.
-func (q *submissions) requeueEntry(threadID, submissionID, message string) {
-	q.mutate(threadID, submissionID, func(entry *submissionEntry) {
+func (q *submissions) requeueEntry(threadID, submissionID, message string) error {
+	_, err := q.mutate(threadID, submissionID, func(entry *submissionEntry) {
 		if entry.Status != SubUnknown {
 			return
 		}
@@ -169,28 +210,31 @@ func (q *submissions) requeueEntry(threadID, submissionID, message string) {
 			entry.Status = SubQueued
 		}
 	})
+	return err
 }
 
-func (q *submissions) failEntry(threadID, submissionID, message string) {
-	q.mutate(threadID, submissionID, func(entry *submissionEntry) {
+func (q *submissions) failEntry(threadID, submissionID, message string) error {
+	_, err := q.mutate(threadID, submissionID, func(entry *submissionEntry) {
 		if entry.Status != SubUnknown {
 			return
 		}
 		entry.Status = SubFailed
 		entry.Error = truncateSubText(message, 500)
 	})
+	return err
 }
 
 // meta mirrors _submission_meta: queued/unknown/failed rows in ledger order,
 // shaped for the phone's renderQueue (status/text/error/attachments/editable).
 // markCancelled retires a still-queued entry (goal activation turns whose
 // goal command was confirmed cancelled).
-func (q *submissions) markCancelled(threadID, submissionID string) {
-	q.mutate(threadID, submissionID, func(entry *submissionEntry) {
+func (q *submissions) markCancelled(threadID, submissionID string) error {
+	_, err := q.mutate(threadID, submissionID, func(entry *submissionEntry) {
 		if entry.Status == SubQueued {
 			entry.Status = SubCancelled
 		}
 	})
+	return err
 }
 
 func (q *submissions) meta(threadID string) *jsoncompat.Array {
@@ -288,13 +332,16 @@ func (q *submissions) edit(threadID, submissionID, text string) (*submissionEntr
 	if _, err := q.editableEntry(threadID, submissionID); err != nil {
 		return nil, err
 	}
-	ok := q.mutate(threadID, submissionID, func(entry *submissionEntry) {
+	ok, err := q.mutate(threadID, submissionID, func(entry *submissionEntry) {
 		entry.Text = text
 		entry.Status = SubQueued
 		entry.QueueAttempts = 0
 		entry.Error = ""
 		entry.LastQueueError = ""
 	})
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, errSubmissionGone
 	}
@@ -306,8 +353,7 @@ func (q *submissions) cancel(threadID, submissionID string) error {
 	if _, err := q.editableEntry(threadID, submissionID); err != nil {
 		return err
 	}
-	q.setStatus(threadID, submissionID, SubCancelled)
-	return nil
+	return q.setStatus(threadID, submissionID, SubCancelled)
 }
 
 // ignore mirrors ignore_submission: only uncertain outcomes can be hidden.
@@ -316,8 +362,7 @@ func (q *submissions) ignore(threadID, submissionID string) error {
 	if entry == nil || (entry.Status != SubUnknown && entry.Status != SubIgnored) {
 		return &queueMutationError{"只能忽略发送结果未确认的记录"}
 	}
-	q.setStatus(threadID, submissionID, SubIgnored)
-	return nil
+	return q.setStatus(threadID, submissionID, SubIgnored)
 }
 
 // forgetThread drops every ledger entry of one thread (session delete).
@@ -573,15 +618,24 @@ func (s *Server) dispatchQueuedThread(threadID, kind string, session *acpruntime
 	if s.threadActive(threadID, resolution) {
 		return
 	}
-	s.Queue.setStatus(threadID, first.ID, SubUnknown)
+	if err := s.Queue.setStatus(threadID, first.ID, SubUnknown); err != nil {
+		log.Printf("队列派发前落账失败（thread=%s submission=%s）: %v", threadID, first.ID, err)
+		return
+	}
 	outcome, message := s.dispatchSubmission(threadID, resolution, first)
 	switch outcome {
 	case outcomeAccepted:
-		s.Queue.setStatus(threadID, first.ID, SubAccepted)
+		if err := s.Queue.setStatus(threadID, first.ID, SubAccepted); err != nil {
+			log.Printf("队列接受状态落账失败（thread=%s submission=%s）: %v", threadID, first.ID, err)
+		}
 	case outcomeRequeue:
-		s.Queue.requeueEntry(threadID, first.ID, message)
+		if err := s.Queue.requeueEntry(threadID, first.ID, message); err != nil {
+			log.Printf("队列重排状态落账失败（thread=%s submission=%s）: %v", threadID, first.ID, err)
+		}
 	case outcomeFailed:
-		s.Queue.failEntry(threadID, first.ID, message)
+		if err := s.Queue.failEntry(threadID, first.ID, message); err != nil {
+			log.Printf("队列失败状态落账失败（thread=%s submission=%s）: %v", threadID, first.ID, err)
+		}
 	default: // uncertain: stays unknown, never automatically replayed
 	}
 }
@@ -744,14 +798,18 @@ func (q *submissions) enqueue(threadID, submissionID, text, mode, workMode strin
 	if err := validateSubmissionInput(submissionID, text, mode); err != nil {
 		return nil, false, err
 	}
-	if prior := q.get(threadID, submissionID); prior != nil {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	key := submissionKey(threadID, submissionID)
+	if prior := q.entries[key]; prior != nil {
 		same := prior.Text == text && prior.Mode == mode && prior.WorkMode == workMode &&
 			strings.Join(prior.Skills, "\x00") == strings.Join(skills, "\x00") &&
 			strings.Join(prior.Attachments, "\x00") == strings.Join(attachments, "\x00")
 		if !same {
 			return nil, false, &queueMutationError{"同一消息标识不能用于不同内容"}
 		}
-		return prior, true, nil
+		copy := *prior
+		return &copy, true, nil
 	}
 	entry := &submissionEntry{ID: submissionID, ThreadID: threadID, Host: "local",
 		Text: text, Mode: mode, Skills: skills, WorkMode: workMode,
@@ -760,8 +818,15 @@ func (q *submissions) enqueue(threadID, submissionID, text, mode, workMode strin
 	if mode != "queue" {
 		entry.Status = SubUnknown
 	}
-	q.record(entry)
-	return q.get(threadID, submissionID), false, nil
+	q.entries[key] = entry
+	q.order = append(q.order, key)
+	if err := q.saveLocked(); err != nil {
+		delete(q.entries, key)
+		q.order = q.order[:len(q.order)-1]
+		return nil, false, err
+	}
+	copy := *entry
+	return &copy, false, nil
 }
 
 // submissionPayload is the phone composer's send body subset the ledger needs.
@@ -841,7 +906,9 @@ func (h *handler) handleQueuedSend(threadID string, body *jsoncompat.Object) {
 		payload.mode, payload.workMode, payload.skills, payload.attachments, names)
 	if err != nil {
 		status := http.StatusBadRequest
-		if err == errSubmissionGone {
+		if isQueueStoreError(err) {
+			status = http.StatusInternalServerError
+		} else if err == errSubmissionGone {
 			status = http.StatusConflict
 		}
 		h.fail(status, errorBody(err.Error()))
@@ -894,7 +961,11 @@ func (h *handler) handleQueueRoute(threadID string, body *jsoncompat.Object) {
 	switch stringField(body, "action") {
 	case "delete":
 		if err := h.server.Queue.cancel(threadID, submissionID); err != nil {
-			h.fail(http.StatusConflict, errorBody(err.Error()))
+			status := http.StatusConflict
+			if isQueueStoreError(err) {
+				status = http.StatusInternalServerError
+			}
+			h.fail(status, errorBody(err.Error()))
 			return
 		}
 		result := jsoncompat.NewObject()
@@ -904,7 +975,9 @@ func (h *handler) handleQueueRoute(threadID string, body *jsoncompat.Object) {
 		entry, err := h.server.Queue.edit(threadID, submissionID, stringField(body, "text"))
 		if err != nil {
 			status := http.StatusBadRequest
-			if err == errSubmissionGone {
+			if isQueueStoreError(err) {
+				status = http.StatusInternalServerError
+			} else if err == errSubmissionGone {
 				status = http.StatusConflict
 			}
 			h.fail(status, errorBody(err.Error()))
@@ -967,16 +1040,23 @@ func (h *handler) queueSendNow(threadID, submissionID string) {
 			return
 		}
 	}
-	h.server.Queue.setStatus(threadID, submissionID, SubUnknown)
-	h.server.Queue.mutate(threadID, submissionID, func(entry *submissionEntry) {
+	_, err = h.server.Queue.mutate(threadID, submissionID, func(entry *submissionEntry) {
+		entry.Status = SubUnknown
 		entry.QueueAttempts = 0
 		entry.Error = ""
 		entry.LastQueueError = ""
 	})
+	if err != nil {
+		h.fail(http.StatusInternalServerError, errorBody(err.Error()))
+		return
+	}
 	outcome, message := h.server.dispatchSubmission(threadID, resolution, entry)
 	switch outcome {
 	case outcomeAccepted:
-		h.server.Queue.setStatus(threadID, submissionID, SubAccepted)
+		if err := h.server.Queue.setStatus(threadID, submissionID, SubAccepted); err != nil {
+			h.fail(http.StatusInternalServerError, errorBody("消息已发送，但接受状态落账失败，结果按未知处理: "+err.Error()))
+			return
+		}
 		result := jsoncompat.NewObject()
 		result.Set("status", SubAccepted)
 		result.Set("id", submissionID)
@@ -989,9 +1069,9 @@ func (h *handler) queueSendNow(threadID, submissionID string) {
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 	default:
 		if outcome == outcomeRequeue {
-			h.server.Queue.requeueEntry(threadID, submissionID, message)
+			_ = h.server.Queue.requeueEntry(threadID, submissionID, message)
 		} else {
-			h.server.Queue.failEntry(threadID, submissionID, message)
+			_ = h.server.Queue.failEntry(threadID, submissionID, message)
 		}
 		h.fail(http.StatusConflict, errorBody(message))
 	}

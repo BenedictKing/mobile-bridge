@@ -603,7 +603,9 @@ func (h *handler) handleMethod(write bool) {
 		// hiccup must return the same chat, never a duplicate.
 		ledger := h.server.Creations
 		if ledger != nil {
-			if entry := ledger.lookup(requestID); entry != nil {
+			entry, claimed := ledger.begin(requestID, &creationEntry{Agent: agent, Project: project, Title: title,
+				Host: "local", At: ledger.now()})
+			if !claimed {
 				if entry.Agent != agent || entry.Project != project || entry.Title != title {
 					h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
 					return
@@ -615,8 +617,6 @@ func (h *handler) handleMethod(write bool) {
 				h.output(http.StatusOK, h.createResponse(entry.ID, kind, title, cwd), contentTypeJSON, "")
 				return
 			}
-			ledger.begin(requestID, &creationEntry{Agent: agent, Project: project, Title: title,
-				Host: "local", At: ledger.now()})
 		}
 		created := ""
 		if manager != nil {

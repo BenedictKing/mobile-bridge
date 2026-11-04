@@ -357,7 +357,7 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	}
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8791, "instance")
-	server.Queue = LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
+	server.Queue = mustLoadSubmissions(t, filepath.Join(dataDir, "submissions.json"))
 	manager := acpruntime.NewCommand(teamAgent(t, dataDir))
 	manager.Label = "Kimi"
 	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}

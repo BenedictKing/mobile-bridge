@@ -904,6 +904,49 @@ for line in sys.stdin:
 	}
 }
 
+func TestRespondFailureKeepsRequestAnswerable(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	process, err := acp.Start([]string{python, "-u", "-c", "import time; time.sleep(30)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{ID: "sess-1", Process: process, active: true,
+		View:    acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }),
+		pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{},
+		pendingKinds: map[string]string{}, changed: make(chan struct{})}
+	params := jsoncompat.NewObject()
+	options := &jsoncompat.Array{}
+	option := jsoncompat.NewObject()
+	option.Set("optionId", "allow")
+	options.Items = append(options.Items, option)
+	params.Set("options", options)
+	session.pending["permission-1"] = params
+	session.pendingIDs["permission-1"] = "raw-1"
+	session.pendingKinds["permission-1"] = "permission"
+	session.View.AddPermission("permission-1", params)
+	process.Close()
+
+	response := jsoncompat.NewObject()
+	response.Set("optionId", "allow")
+	if err := session.Respond("permission-1", response); err == nil {
+		t.Fatal("closed transport must report the response failure")
+	}
+	if session.pending["permission-1"] == nil || session.pendingIDs["permission-1"] != "raw-1" ||
+		session.pendingKinds["permission-1"] != "permission" {
+		t.Fatalf("failed response consumed pending state: %+v", session.pending)
+	}
+	requests := session.Snapshot().MustGet("requests").(*jsoncompat.Array).Items
+	if len(requests) != 1 || requests[0].(*jsoncompat.Object).MustGet("id") != "permission-1" {
+		t.Fatalf("failed response removed the card: %s", jsoncompat.EncodeCompact(session.Snapshot()))
+	}
+	if err := session.Respond("permission-1", response); err == nil || err == ErrRequestExpired {
+		t.Fatalf("request must remain answerable after a write failure: %v", err)
+	}
+}
+
 func TestRespondWireTranslatesPermissionReplies(t *testing.T) {
 	params := jsoncompat.NewObject()
 	options := &jsoncompat.Array{}

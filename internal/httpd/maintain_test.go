@@ -63,7 +63,7 @@ func TestMaintainLoopCloseNilSafe(t *testing.T) {
 // TestServerQueueWorkerStopIsSynchronous：Start/Stop 生命周期（Stop 同步等
 // 循环退出、幂等、可重启；Queue 未装配不启动——既有 nil 防御）。
 func TestServerQueueWorkerStopIsSynchronous(t *testing.T) {
-	server := &Server{Queue: LoadSubmissions(filepath.Join(t.TempDir(), "submissions.json"))}
+	server := &Server{Queue: mustLoadSubmissions(t, filepath.Join(t.TempDir(), "submissions.json"))}
 	server.StartQueueWorker()
 	if server.queueWorker == nil {
 		t.Fatal("队列 worker 应已启动")

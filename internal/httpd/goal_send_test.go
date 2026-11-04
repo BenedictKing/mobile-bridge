@@ -58,8 +58,9 @@ for line in sys.stdin:
 `
 
 type goalFixture struct {
-	server *Server
-	home   string
+	server      *Server
+	home        string
+	commandPath string
 }
 
 func newGoalFixture(t *testing.T) *goalFixture {
@@ -87,9 +88,10 @@ func newGoalFixture(t *testing.T) *goalFixture {
 	server := New(authenticator, fsys{}, 8794, "instance")
 	server.Goal = goal.New(home, runtimePath)
 	_ = python // shebang makes the script directly executable
-	server.GoalCmds = NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
-	server.Queue = LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
-	return &goalFixture{server: server, home: home}
+	commandPath := filepath.Join(dataDir, "goal-commands.json")
+	server.GoalCmds = NewGoalLedger(commandPath)
+	server.Queue = mustLoadSubmissions(t, filepath.Join(dataDir, "submissions.json"))
+	return &goalFixture{server: server, home: home, commandPath: commandPath}
 }
 
 // Create → confirm → activation enqueued; duplicate create replays confirmed;
@@ -110,6 +112,11 @@ func TestGoalCommandChain(t *testing.T) {
 	created, _ := outcome.response.MustGet("result").(*jsoncompat.Object)
 	if created == nil || created.MustGet("status") != "active" {
 		t.Fatalf("create result wrong: %s", jsoncompat.EncodeCompact(outcome.response))
+	}
+	fixture.server.GoalCmds = NewGoalLedger(fixture.commandPath)
+	replayed, err := fixture.server.runGoalCommand(transport, threadID, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "create", "整理仓库", "", "zh-CN")
+	if err != nil || replayed == nil || !replayed.confirmed || !replayed.duplicate {
+		t.Fatalf("same operation after restart must replay: err=%v outcome=%+v", err, replayed)
 	}
 	activation := fixture.server.sendGoalActivation(threadID, outcome, "create", "zh-CN")
 	if activation == nil {
@@ -311,7 +318,7 @@ func TestMcodeGoalChain(t *testing.T) {
 	server := New(authenticator, fsys{}, 8790, "instance")
 	server.ACPAgents = map[string]*acpruntime.Manager{"mcode": manager}
 	server.GoalCmds = NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
-	server.Queue = LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
+	server.Queue = mustLoadSubmissions(t, filepath.Join(dataDir, "submissions.json"))
 	// server.Goal stays nil on purpose: the mcode transport must never need
 	// the codex sidecar.
 

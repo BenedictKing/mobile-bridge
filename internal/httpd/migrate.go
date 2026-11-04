@@ -453,7 +453,9 @@ func (h *handler) handleMigrate(threadID string) {
 	createdID := ""
 	alreadySent := false
 	if ledger != nil {
-		if entry := ledger.lookup(requestID); entry != nil {
+		entry, claimed := ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
+			Title: title, Host: "local", At: ledger.now(), State: "creating"})
+		if !claimed {
 			if entry.Agent != targetKind || entry.Project != projectKey || entry.Title != title {
 				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
 				return
@@ -472,10 +474,6 @@ func (h *handler) handleMigrate(threadID string) {
 		h.server.Forks.Record(createdID, forkOrigin{ID: threadID, Host: "local", Title: title})
 	}
 	if createdID == "" {
-		if ledger != nil {
-			ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
-				Title: title, Host: "local", At: ledger.now(), State: "creating"})
-		}
 		if target != nil {
 			session, createErr := target.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
 			if createErr != nil {

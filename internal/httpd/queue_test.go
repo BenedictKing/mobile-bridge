@@ -115,6 +115,15 @@ for line in sys.stdin:
 	return []string{python, "-u", path}
 }
 
+func mustLoadSubmissions(t *testing.T, path string) *submissions {
+	t.Helper()
+	ledger, err := LoadSubmissions(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ledger
+}
+
 func newFeatureServer(t *testing.T, dataDir string) (*Server, string, string) {
 	t.Helper()
 	authenticator := auth.NewAuth(auth.Config{Mode: "none"})
@@ -124,7 +133,7 @@ func newFeatureServer(t *testing.T, dataDir string) (*Server, string, string) {
 	}
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8791, "instance")
-	server.Queue = LoadSubmissions(filepath.Join(dataDir, "submissions.json"))
+	server.Queue = mustLoadSubmissions(t, filepath.Join(dataDir, "submissions.json"))
 	server.Hidden = LoadHiddenSessions(filepath.Join(dataDir, "hidden-sessions.json"))
 	server.Forks = LoadForks(filepath.Join(dataDir, "forks.json"))
 	return server, token, csrf
@@ -146,7 +155,7 @@ func featureRequest(server *Server, token, csrf, method, target, body string) *h
 
 func TestSubmissionsLedgerTransitions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "submissions.json")
-	ledger := LoadSubmissions(path)
+	ledger := mustLoadSubmissions(t, path)
 	entry, duplicate, err := ledger.enqueue("thread-1", "6aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
 		"你好", "queue", "", nil, nil, nil)
 	if err != nil || duplicate || entry.Status != SubQueued {
@@ -212,13 +221,123 @@ func TestSubmissionsLedgerTransitions(t *testing.T) {
 		}
 	}
 	// Persistence round-trip.
-	reloaded := LoadSubmissions(path)
+	reloaded := mustLoadSubmissions(t, path)
 	if reloaded.get("thread-1", unknownID) == nil || reloaded.get("thread-1", unknownID).Status != SubIgnored {
 		t.Fatalf("reload lost entries: %s", jsoncompat.EncodeCompact(reloaded.meta("thread-1")))
 	}
 	// The queued "带附件" entry keeps its thread dispatchable after a reload.
 	if got := reloaded.queuedThreads(); len(got) != 1 || got[0] != "thread-1" {
 		t.Fatalf("queuedThreads=%v", got)
+	}
+}
+
+func TestLoadSubmissionsRejectsDamagedLedger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "submissions.json")
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := LoadSubmissions(path)
+	if err == nil || ledger != nil || !isQueueStoreError(err) {
+		t.Fatalf("damaged ledger must fail closed: ledger=%v err=%v", ledger, err)
+	}
+}
+
+func TestEnqueuePersistenceFailureDoesNotClaimRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "submissions.json")
+	ledger := mustLoadSubmissions(t, path)
+	const id = "6aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	entry, duplicate, err := ledger.enqueue("thread-1", id, "你好", "queue", "", nil, nil, nil)
+	if err == nil || !isQueueStoreError(err) || entry != nil || duplicate {
+		t.Fatalf("failed write must stop enqueue: entry=%+v duplicate=%v err=%v", entry, duplicate, err)
+	}
+	if prior := ledger.get("thread-1", id); prior != nil || len(ledger.order) != 0 {
+		t.Fatalf("failed write left a claimed request: entry=%+v order=%v", prior, ledger.order)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, duplicate, err := ledger.enqueue("thread-1", id, "你好", "queue", "", nil, nil, nil); err != nil || duplicate {
+		t.Fatalf("same request must be usable after storage recovers: duplicate=%v err=%v", duplicate, err)
+	}
+}
+
+func TestConcurrentRequestIDClaimsAreAtomic(t *testing.T) {
+	const workers = 32
+	t.Run("submission", func(t *testing.T) {
+		ledger := mustLoadSubmissions(t, "")
+		type result struct {
+			fresh bool
+			err   error
+		}
+		results := make(chan result, workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				_, duplicate, err := ledger.enqueue("thread-1", "6aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+					"你好", "queue", "", nil, nil, nil)
+				results <- result{fresh: !duplicate && err == nil, err: err}
+			}()
+		}
+		fresh := 0
+		for i := 0; i < workers; i++ {
+			result := <-results
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			if result.fresh {
+				fresh++
+			}
+		}
+		if fresh != 1 || len(ledger.order) != 1 {
+			t.Fatalf("fresh claims=%d order=%v", fresh, ledger.order)
+		}
+	})
+	t.Run("creation", func(t *testing.T) {
+		ledger := LoadCreations("")
+		results := make(chan bool, workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				_, claimed := ledger.begin("request-1", &creationEntry{Agent: "kimi", Project: "p", Title: "title"})
+				results <- claimed
+			}()
+		}
+		claimed := 0
+		for i := 0; i < workers; i++ {
+			if <-results {
+				claimed++
+			}
+		}
+		if claimed != 1 || len(ledger.entries) != 1 {
+			t.Fatalf("creation claims=%d entries=%v", claimed, ledger.entries)
+		}
+	})
+}
+
+func TestSubmissionsOrderSurvivesRepeatedReloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "submissions.json")
+	ledger := mustLoadSubmissions(t, path)
+	ids := []string{
+		"ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"9aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+	}
+	texts := []string{"第一条", "第二条", "第三条"}
+	for index, id := range ids {
+		if _, _, err := ledger.enqueue("thread-1", id, texts[index], "queue", "", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if index < 2 {
+			ledger = mustLoadSubmissions(t, path)
+		}
+	}
+	reloaded := mustLoadSubmissions(t, path)
+	entries := reloaded.threadEntries("thread-1")
+	if len(entries) != len(texts) {
+		t.Fatalf("entries=%v", entries)
+	}
+	for index, entry := range entries {
+		if entry.ID != ids[index] || entry.Text != texts[index] {
+			t.Fatalf("FIFO lost at %d: entry=%+v", index, entry)
+		}
 	}
 }
 

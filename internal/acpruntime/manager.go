@@ -1531,13 +1531,17 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 		s.mu.Unlock()
 		return invalid
 	}
+	if err := s.Process.Respond(rawID, wire); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	delete(s.pending, requestID)
 	delete(s.pendingIDs, requestID)
 	delete(s.pendingKinds, requestID)
 	s.View.RemovePermission(requestID)
 	s.signalLocked()
 	s.mu.Unlock()
-	return s.Process.Respond(rawID, wire)
+	return nil
 }
 
 // respondWire normalizes a phone-side reply into the wire shape the reverse

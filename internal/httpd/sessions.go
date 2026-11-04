@@ -436,7 +436,11 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				}
 				duplicate, prior, recordErr := h.recordDirectSend(threadID, readSubmissionPayload(body.(*jsoncompat.Object)))
 				if recordErr != nil {
-					h.fail(http.StatusBadRequest, errorBody(recordErr.Error()))
+					status := http.StatusBadRequest
+					if isQueueStoreError(recordErr) {
+						status = http.StatusInternalServerError
+					}
+					h.fail(status, errorBody(recordErr.Error()))
 					return true
 				}
 				if duplicate {
@@ -745,7 +749,11 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			}
 			duplicate, prior, recordErr := h.recordDirectSend(threadID, readSubmissionPayload(object))
 			if recordErr != nil {
-				h.fail(http.StatusBadRequest, errorBody(recordErr.Error()))
+				status := http.StatusBadRequest
+				if isQueueStoreError(recordErr) {
+					status = http.StatusInternalServerError
+				}
+				h.fail(status, errorBody(recordErr.Error()))
 				return true
 			}
 			if duplicate {

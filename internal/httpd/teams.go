@@ -2823,7 +2823,9 @@ func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, r
 	}
 	ledger := h.server.Creations
 	if ledger != nil {
-		if existing := ledger.lookup(creationID); existing != nil {
+		existing, claimed := ledger.begin(creationID, &creationEntry{Agent: agent, Project: project, Title: title,
+			Host: "local", At: ledger.now()})
+		if !claimed {
 			if existing.Agent != agent || existing.Project != project || existing.Title != title {
 				return "", http.StatusBadRequest, errors.New("同一创建请求不能用于不同内容")
 			}
@@ -2832,8 +2834,6 @@ func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, r
 			}
 			return existing.ID, 0, nil
 		}
-		ledger.begin(creationID, &creationEntry{Agent: agent, Project: project, Title: title,
-			Host: "local", At: ledger.now()})
 	}
 	manager := h.server.acpAgentSet()[agent]
 	session, err := manager.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)

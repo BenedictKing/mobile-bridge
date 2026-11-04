@@ -40,14 +40,17 @@ type goalLedger struct {
 
 // NewGoalLedger loads (lazily) the durable goal command ledger at path.
 func NewGoalLedger(path string) *goalLedger {
-	return &goalLedger{path: path, data: map[string]*jsoncompat.Object{}}
+	return &goalLedger{path: path}
 }
 
 func (g *goalLedger) load() {
-	if g.data != nil || g.path == "" {
+	if g.data != nil {
 		return
 	}
 	g.data = map[string]*jsoncompat.Object{}
+	if g.path == "" {
+		return
+	}
 	raw, _ := os.ReadFile(g.path)
 	value, _ := jsoncompat.Unmarshal(raw)
 	object, _ := value.(*jsoncompat.Object)
