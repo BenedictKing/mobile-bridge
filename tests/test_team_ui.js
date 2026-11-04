@@ -13,14 +13,15 @@ class FakeNode{
   append(...nodes){this.children.push(...nodes);}
   prepend(...nodes){this.children.unshift(...nodes);}
   replaceChildren(...nodes){this.children=[...nodes];}
-  setAttribute(name,value){this.attributes[name]=value;}
+  setAttribute(name,value){this.attributes[name]=value;if(name==='class')this.className=value;}
   addEventListener(){}
   querySelector(){return null;}
   get childNodes(){return this.children;}
   get classList(){const node=this;return{add(name){node.className+=(node.className?' ':'')+name;},remove(){},toggle(){},contains(name){return node.className.split(/\s+/).includes(name);}};}
 }
-global.document={createElement:tag=>new FakeNode(tag),body:new FakeNode('body'),querySelectorAll:()=>[]};
-const {TeamsPanel,TeamRunScreen,teamRunStopReasonText}=require('../web/team.js');
+global.document={createElement:tag=>new FakeNode(tag),createElementNS:(namespace,tag)=>new FakeNode(tag),body:new FakeNode('body'),querySelectorAll:()=>[]};
+global.dagre=require('../web/vendor/dagre.min.js');
+const {TeamsPanel,TeamRunScreen,teamRunStopReasonText,teamGraphLayout}=require('../web/team.js');
 function find(node,cls){const rows=[];const visit=current=>{if(String(current.className).split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}
 function text(node){return node.textContent+node.children.map(text).join('');}
 
@@ -119,4 +120,51 @@ test('run page shows a labeled back button that leaves the run',()=>{
   assert.equal(back.attributes['aria-label'],'Back');
   back.onclick();
   assert.equal(left,true);
+});
+
+test('dagre lays out task chains in reading direction with real dependency edges',()=>{
+  const nodes=[
+    {id:'lead',dependsOn:[]},
+    {id:'review',dependsOn:['lead']},
+    {id:'summary',dependsOn:['review']},
+  ];
+  const horizontal=teamGraphLayout(nodes,'LR');
+  assert.ok(horizontal.nodes.lead.x<horizontal.nodes.review.x);
+  assert.ok(horizontal.nodes.review.x<horizontal.nodes.summary.x);
+  assert.equal(horizontal.nodes.lead.y,horizontal.nodes.summary.y);
+  assert.deepEqual(horizontal.edges.map(edge=>[edge.from,edge.to]),[['lead','review'],['review','summary']]);
+  assert.ok(horizontal.edges.every(edge=>edge.points.length>=2));
+  const vertical=teamGraphLayout(nodes,'TB');
+  assert.ok(vertical.nodes.lead.y<vertical.nodes.review.y);
+  assert.ok(vertical.nodes.review.y<vertical.nodes.summary.y);
+});
+
+test('graph renders positioned DOM nodes and SVG edges without duplicate dependency captions',()=>{
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
+  screen.team=team;screen.detail={id:'r1',teamId:'t1',status:'running',tasks:[]};
+  screen.graph={loading:false,data:{nodes:[
+    {id:'lead',label:'lead',status:'completed',agentKinds:['kimi'],dependsOn:[]},
+    {id:'review',label:'lead-d1-0',status:'running',agentKinds:['workbuddy'],dependsOn:['lead']},
+    {id:'summary',label:'lead-d1-1',status:'planned',agentKinds:['kimi'],dependsOn:['lead','review']},
+  ]}};
+  const box=screen.renderGraph();
+  const cards=find(box,'positioned');
+  assert.equal(cards.length,3);
+  assert.equal(find(box,'team-graph-edge').length,3);
+  assert.equal(find(box,'team-graph-deps').length,0);
+  assert.ok(cards.every(card=>card.style.left&&card.style.top&&card.style.height));
+  assert.equal(cards[1].dataset.status,'running');
+  assert.equal(find(find(box,'team-graph-stage')[0],'team-graph-edges').length,1,'SVG 与节点必须共享居中坐标容器');
+});
+
+test('vertical graph with skip dependencies fits the phone content width',()=>{
+  const nodes=[
+    {id:'lead',dependsOn:[]},
+    {id:'lead-d1-0',dependsOn:['lead']},
+    {id:'lead-d1-1',dependsOn:['lead','lead-d1-0']},
+    {id:'lead-d1-1-s1-0',dependsOn:['lead','lead-d1-0','lead-d1-1']},
+  ];
+  const layout=teamGraphLayout(nodes,'TB',node=>node.id==='lead-d1-0'||node.id==='lead-d1-1-s1-0'?118:76);
+  assert.ok(layout.width<=320,`纵向图宽度 ${layout.width} 超过手机内容区`);
+  assert.ok(Object.values(layout.nodes).every(node=>node.width===180));
 });

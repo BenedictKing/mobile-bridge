@@ -241,20 +241,32 @@
 .team-stat-bar{flex:1;height:6px;background:var(--surface);border-radius:4px;overflow:hidden}
 .team-stat-bar i{display:block;height:100%;background:var(--green);border-radius:4px}
 .team-stat-value{flex:none;min-width:56px;text-align:right;color:var(--muted)}
+.team-graph-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.team-graph-count{color:var(--muted);font-size:11px}
+.team-graph-canvas{position:relative;overflow:auto;border-radius:10px;background:var(--surface);overscroll-behavior:contain;scrollbar-width:thin}
+.team-graph-stage{position:relative;margin:0 auto}
+.team-graph-edges{position:absolute;inset:0;overflow:visible;pointer-events:none}
+.team-graph-edge{fill:none;stroke:var(--control);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.team-graph-arrowhead{fill:var(--muted)}
 .team-graph-layer{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
 .team-graph-arrow{text-align:center;color:var(--muted);font-size:12px;line-height:1.2;margin:2px 0}
-.team-graph-node{border:1px solid var(--line);border-radius:10px;background:var(--raised);padding:8px 11px;min-width:150px;max-width:240px;cursor:pointer;font-size:12px;text-align:left}
-.team-graph-node:hover{background:var(--active)}
+.team-graph-node{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-left:3px solid var(--line);border-radius:10px;background:var(--raised);padding:11px 12px;cursor:pointer;font-size:12px;text-align:left;overflow:hidden;transition:border-color .15s ease,background-color .15s ease}
+.team-graph-node:not(.positioned){min-width:150px;max-width:240px}
+.team-graph-node.positioned{position:absolute}
+.team-graph-node[data-status=completed]{border-left-color:var(--green)}
+.team-graph-node[data-status=running],.team-graph-node[data-status=dispatching]{border-left-color:var(--accent)}
+.team-graph-node[data-status=failed],.team-graph-node[data-status=outcome_unknown]{border-left-color:var(--error)}
+.team-graph-node:hover{border-color:var(--accent);background:var(--active)}
 .team-graph-node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.team-graph-node-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.team-graph-node-head strong{font-size:12px;overflow-wrap:anywhere}
-.team-graph-runs{color:var(--warning-text);background:var(--warning-bg);border-radius:10px;padding:1px 7px;font-size:10px}
-.team-graph-kinds{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
-.team-graph-kind{background:var(--soft);color:var(--green);border-radius:10px;padding:1px 7px;font-size:10px}
-.team-graph-deps{margin:4px 0 0;font-size:10px}
-.team-graph-node .task-instructions{font-size:10px;max-height:48px;overflow:hidden}
-.team-graph-members{margin-top:6px;border-top:1px dashed var(--line);padding-top:5px;display:grid;gap:3px}
-.team-graph-member{font-size:10px;color:var(--muted)}
+.team-graph-node-head{display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap}
+.team-graph-node-head strong{flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-graph-node-head .team-badge{flex:none}
+.team-graph-runs{flex:none;color:var(--warning-text);background:var(--warning-bg);border-radius:10px;padding:1px 7px;font-size:10px}
+.team-graph-kinds{display:flex;gap:5px;min-width:0;overflow:hidden}
+.team-graph-kind{flex:none;background:var(--soft);color:var(--green);border-radius:10px;padding:1px 7px;font-size:10px;white-space:nowrap}
+.team-graph-node .task-instructions{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;margin:0;color:var(--muted);font-size:11px;line-height:1.55;overflow:hidden}
+.team-graph-members{margin-top:2px;border-top:1px dashed var(--line);padding-top:6px;display:grid;gap:4px}
+.team-graph-member{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .team-schedule{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
 .team-schedule h4{margin:0 0 6px;font-size:12px}
 .team-schedule-summary{margin:0 0 6px;font-size:11px;overflow-wrap:anywhere}

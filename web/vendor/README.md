@@ -25,3 +25,13 @@
 - `texmath.js` SHA-256：`926e075a1745e1019813b8418b90183feea0c7b3782c85dceb4f246da999edc6`
 
 KaTeX 脚本、样式和字体原样保存到 `katex/`；texmath 原样保存为 `texmath.js`。所有资源由本机网关提供，运行时不访问 CDN。公式升级后运行 `tests/math.test.js`，检查代码隔离、危险 TeX、流式输入和窄屏公式滚动。
+
+## Dagre
+
+- 固定版本：`@dagrejs/dagre` 3.1.3、`@dagrejs/graphlib` 4.0.6（MIT，见 `dagre.LICENSE`）
+- 上游：https://github.com/dagrejs/dagre
+- 浏览器包：https://cdn.jsdelivr.net/npm/@dagrejs/dagre@3.1.3/+esm
+- 文件：`dagre.min.js` 由上述浏览器包封装成 UMD，保留完整实现，同时支持浏览器 `globalThis.dagre` 与 Node 测试 `require()`
+- SHA-256：`278a58b93f310c268ba67805ca421360bbdd0cdf237958992cecffaaeb4497fd`
+
+团队 Run 页只使用 Dagre 的 DAG 布局，节点和连线仍由项目自身 DOM/SVG 渲染。资源由本机网关加载，运行时不访问 CDN；升级后运行 `tests/test_team_ui.js`。

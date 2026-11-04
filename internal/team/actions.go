@@ -544,6 +544,9 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 		}
 		builder.WriteString("\n")
 	}
+	if reviewer := team.ReviewerMemberID(); reviewer != "" && reviewer != team.LeadID {
+		builder.WriteString("评审成员只承担独立审查：先由 Lead 或普通成员形成可审查的产出，再让评审核对其中的证据、指出问题并给出裁决；不要把首轮排查、主要实现或全部工作直接交给评审。\n")
+	}
 	builder.WriteString("需要编排时，")
 	builder.WriteString(actionSchemaInstruction())
 	builder.WriteString("\n")

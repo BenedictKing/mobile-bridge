@@ -1353,6 +1353,7 @@ func TestBuildLeadBriefing(t *testing.T) {
 	team := &Team{LeadID: "lead", Members: []TeamMember{
 		{ID: "lead", SessionID: "secret-lead", AgentKind: "kimi", Name: "  主控\n Agent  ", Role: RoleLead, Enabled: true},
 		{ID: "dev", SessionID: "secret-dev", AgentKind: "codex", Role: RoleMember, Enabled: true},
+		{ID: "rev", SessionID: "secret-rev", AgentKind: "zcode", Role: RoleReviewer, Enabled: true},
 		{ID: "ghost", SessionID: "secret-ghost", AgentKind: "zcode", Role: RoleMember, Enabled: false},
 	}}
 	run := &Run{AutoPlan: true}
@@ -1362,14 +1363,15 @@ func TestBuildLeadBriefing(t *testing.T) {
 	briefing := BuildLeadBriefing(team, run, task, policy)
 	for _, want := range []string{
 		"[Team delegation]", "id=lead", "name=主控 Agent", "role=lead · Lead",
-		"id=dev", "team-actions", `"sourceTaskId":"lead"`, "autoDispatch=true",
+		"id=dev", "role=reviewer", "team-actions", `"sourceTaskId":"lead"`, "autoDispatch=true",
 		"给 Lead 自己一条 delegate 作为后续任务", "不要在该批动作中直接混用 summarize",
+		"评审成员只承担独立审查", "不要把首轮排查、主要实现或全部工作直接交给评审",
 	} {
 		if !strings.Contains(briefing, want) {
 			t.Fatalf("Lead 简报缺少 %q:\n%s", want, briefing)
 		}
 	}
-	for _, unwanted := range []string{"id=ghost", "secret-lead", "secret-dev", "secret-ghost", actionsOpenTag, actionsCloseTag} {
+	for _, unwanted := range []string{"id=ghost", "secret-lead", "secret-dev", "secret-rev", "secret-ghost", actionsOpenTag, actionsCloseTag} {
 		if strings.Contains(briefing, unwanted) {
 			t.Fatalf("Lead 简报不应包含 %q:\n%s", unwanted, briefing)
 		}
@@ -1377,6 +1379,11 @@ func TestBuildLeadBriefing(t *testing.T) {
 	if again := BuildLeadBriefing(team, run, task, policy); again != briefing {
 		t.Fatal("相同持久配置必须生成确定性 Lead 简报")
 	}
+	team.ReviewerID = "lead"
+	if got := BuildLeadBriefing(team, run, task, policy); strings.Contains(got, "评审成员只承担独立审查") {
+		t.Fatal("Lead 兼任评审时不应要求另设独立评审")
+	}
+	team.ReviewerID = ""
 	policy.AutoDispatch = false
 	if got := BuildLeadBriefing(team, run, task, policy); !strings.Contains(got, "autoDispatch=false") ||
 		!strings.Contains(got, "只生成待确认预览") {

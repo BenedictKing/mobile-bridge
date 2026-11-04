@@ -108,3 +108,25 @@ test('jumping to an unloaded prompt pages history until the node exists',async()
   assert.equal(timeline.userJumpButtons.get('u-old').classList.contains('active'),true);
   timeline.dispose();
 });
+
+test('ACP latest user edits use a branch while Codex keeps in-place edits',()=>{
+  for(const testCase of [
+    {agent:'kimi',label:'编辑并新建分支',action:'edit-fork'},
+    {agent:'zcode',label:'编辑并新建分支',action:'edit-fork'},
+    {agent:'codex',label:'编辑并重新发送',action:'edit'},
+  ]){
+    const{timeline}=setup();
+    const node=new FakeNode(),bar=new FakeNode();
+    node.querySelector=selector=>selector==='.message-actions'?bar:null;
+    timeline.nodes.set('u1',{node,stamp:''});
+    timeline.rows.set('u1',{row:{key:'u1',turnId:'turn-1',editable:true,turnStatus:'completed'},sequence:1});
+    timeline.meta={agent:testCase.agent,latestUserTurnId:'turn-1',status:'idle'};
+    let action='';timeline.onAction=value=>{action=value;};
+    timeline.refreshActions();
+    assert.equal(bar.children.length,1);
+    assert.equal(bar.children[0].textContent,testCase.label);
+    bar.children[0].onclick();
+    assert.equal(action,testCase.action);
+    timeline.dispose();
+  }
+});

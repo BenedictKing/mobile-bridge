@@ -971,6 +971,32 @@ class TeamsPanel{
   }
 }
 
+const TEAM_GRAPH_NODE_WIDTH=208;
+// Dagre 只计算布局；节点仍由 TeamRunScreen 渲染成可交互 DOM，连线由 SVG 绘制。
+// 布局库未加载时返回 null，调用方回退到原有的分层列表，不阻塞 Run 详情。
+function teamGraphLayout(nodes,direction='LR',heightFor=()=>76){
+  const dagre=globalThis.dagre;
+  if(!dagre?.graphlib?.Graph||!Array.isArray(nodes)||!nodes.length)return null;
+  const vertical=direction==='TB',nodeWidth=vertical?180:TEAM_GRAPH_NODE_WIDTH;
+  const graph=new dagre.graphlib.Graph().setGraph({
+    rankdir:direction,nodesep:vertical?12:26,ranksep:vertical?36:44,
+    marginx:vertical?8:16,marginy:16,
+  }).setDefaultEdgeLabel(()=>({}));
+  const ids=new Set(nodes.map(node=>node.id));
+  for(const node of nodes)graph.setNode(node.id,{width:nodeWidth,height:Math.max(64,heightFor(node))});
+  for(const node of nodes)for(const dep of node.dependsOn||[])if(ids.has(dep))graph.setEdge(dep,node.id);
+  dagre.layout(graph);
+  const positioned={};
+  for(const node of nodes){
+    const value=graph.node(node.id);
+    positioned[node.id]={x:value.x,y:value.y,width:value.width,height:value.height};
+  }
+  return{
+    width:graph.graph().width,height:graph.graph().height,nodes:positioned,
+    edges:graph.edges().map(edge=>({from:edge.v,to:edge.w,points:graph.edge(edge).points||[]})),
+  };
+}
+
 class TeamRunScreen{
   constructor({root,request,openChat,onUnauthorized,onNavigateAway}){
     Object.assign(this,{root,request,openChat,onUnauthorized,onNavigateAway});
@@ -1295,7 +1321,51 @@ class TeamRunScreen{
     if(!nodes.length)return null;
     const t=BridgeI18n.t;
     const box=this.node('section',undefined,'team-graph');
-    box.append(this.node('h3',t('阶段图')));
+    box.setAttribute('data-ui','');
+    const head=this.node('div',undefined,'team-graph-head');
+    head.append(this.node('h3',t('阶段图')));
+    head.append(this.node('span',nodes.length+' '+t('个任务'),'team-graph-count'));
+    box.append(head);
+    // Run 正文中央列约 760px：三节点链可横向完整展示，更长链改纵向，
+    // 避免桌面端最右节点落到隐藏滚动区；手机一律纵向。
+    const compact=typeof globalThis.matchMedia==='function'&&globalThis.matchMedia('(max-width:720px)').matches;
+    const direction=compact||nodes.length>3?'TB':'LR';
+    const heightFor=node=>{
+      const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
+      return 76+(node.resultHead?42:0)+(aggregate&&this.graphOpen.has(node.id)?node.memberIds.length*22+12:0);
+    };
+    const layout=teamGraphLayout(nodes,direction,heightFor);
+    if(layout){
+      const canvas=this.node('div',undefined,'team-graph-canvas');
+      const stage=this.node('div',undefined,'team-graph-stage');
+      stage.style.width=layout.width+'px';stage.style.height=layout.height+'px';
+      const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.setAttribute('class','team-graph-edges');svg.setAttribute('width',layout.width);svg.setAttribute('height',layout.height);
+      svg.setAttribute('viewBox','0 0 '+layout.width+' '+layout.height);svg.setAttribute('aria-hidden','true');
+      const defs=document.createElementNS('http://www.w3.org/2000/svg','defs');
+      const marker=document.createElementNS('http://www.w3.org/2000/svg','marker');
+      const markerID='team-graph-arrowhead-'+this.generation;
+      for(const [name,value] of Object.entries({id:markerID,markerWidth:8,markerHeight:8,refX:7,refY:4,orient:'auto',markerUnits:'strokeWidth'}))marker.setAttribute(name,value);
+      const arrowhead=document.createElementNS('http://www.w3.org/2000/svg','path');
+      arrowhead.setAttribute('d','M0,0 L8,4 L0,8 z');arrowhead.setAttribute('class','team-graph-arrowhead');
+      marker.append(arrowhead);defs.append(marker);svg.append(defs);
+      for(const edge of layout.edges){
+        if(edge.points.length<2)continue;
+        const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('class','team-graph-edge');
+        path.setAttribute('d',edge.points.map((point,index)=>(index?'L':'M')+point.x+','+point.y).join(' '));
+        path.setAttribute('marker-end','url(#'+markerID+')');svg.append(path);
+      }
+      for(const node of nodes){
+        const position=layout.nodes[node.id],card=this.renderGraphNode(node);
+        card.className+=' positioned';
+        card.style.left=(position.x-position.width/2)+'px';card.style.top=(position.y-position.height/2)+'px';
+        card.style.width=position.width+'px';card.style.height=position.height+'px';
+        stage.append(card);
+      }
+      stage.prepend(svg);canvas.append(stage);box.append(canvas);
+      return box;
+    }
     const layers=this.graphLayers(nodes);
     for(const [index,layer] of layers.entries()){
       if(index){
@@ -1344,6 +1414,7 @@ class TeamRunScreen{
     const single=!aggregate&&!(typeof node.runCount==='number'&&node.runCount>1);
     const detailTask=single?this.findTask(node.id):null;
     const card=this.node('div',undefined,'team-graph-node'+(aggregate?' aggregate':''));
+    card.dataset.status=detailTask?detailTask.status:node.status;
     card.setAttribute('role','button');
     card.tabIndex=0;
     const activate=()=>{
@@ -1369,9 +1440,6 @@ class TeamRunScreen{
       const chips=this.node('div',undefined,'team-graph-kinds');
       for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
       card.append(chips);
-    }
-    if(Array.isArray(node.dependsOn)&&node.dependsOn.length){
-      card.append(this.node('p',t('依赖：')+node.dependsOn.join(t('、')),'muted team-graph-deps'));
     }
     if(node.resultHead){
       card.append(this.node('p',node.resultHead,'task-instructions'));
@@ -2183,4 +2251,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamRunStopReasonText};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamRunStopReasonText,teamGraphLayout};

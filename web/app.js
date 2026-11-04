@@ -1657,13 +1657,15 @@ function parseRunHash(){
   const teamId=decodeURIComponent(rest.slice(0,slash)),runId=decodeURIComponent(rest.slice(slash+1));
   return /^[\w.-]{1,128}$/.test(teamId)&&/^[\w.-]{1,128}$/.test(runId)?{teamId,runId}:null;
 }
-// Run 页的返回按钮（TeamRunScreen 的 leave→onNavigateAway）：栈里有本次压入的
-// 详情条目时交给 history.back()，由 popstate 统一收尾，否则就地关面板。
+// Run 页的返回按钮始终回到所属团队会话，包括直接打开 #run= 深链的桌面场景；
+// 仅当团队已被删除、无法还原时才退回原来的列表/历史分支。
 function closeTeamRunView(){
+  const team=teamRunScreen?.team||teamChat?.teamById(teamRunScreen?.teamId);
+  teamRunScreen?.close();openRunRoute='';
+  if(team){openTeamChat(team).catch(error=>toast(error.message));return;}
   if(detailPushed&&location.hash){history.back();return;}
   $('team-run').hidden=true;
   $('app').classList.remove('chat-open');
-  openRunRoute='';
   if(location.hash.startsWith('#run='))history.replaceState(null,'',location.pathname+location.search);
   // 没有打开中的聊天时回欢迎页；聊天仍打开的场景由 openChat 负责显隐。
   if($('chat').hidden)$('welcome').hidden=false;

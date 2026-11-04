@@ -129,3 +129,26 @@ test('an unknown hash does not close an open detail either',()=>{
   assert.equal(nav.$('app').classList.contains('chat-open'),true);
   assert.deepEqual(nav.calls,[]);
 });
+
+test('run back returns to its team on a desktop deep link',()=>{
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const start=source.indexOf('function closeTeamRunView(){');
+  const end=source.indexOf('function openTeamRun(',start);
+  assert.ok(start>0&&end>start,'team run back helper not found');
+  const opened=[],calls=[];
+  const team={id:'t1',name:'团队'};
+  const context={
+    teamRunScreen:{team,close(){calls.push(['close']);}},
+    teamChat:{teamById(){return null;}},
+    openRunRoute:'#run=t1/r1',
+    openTeamChat:async value=>{opened.push(value);},
+    toast(){},detailPushed:false,
+    location:{hash:'#run=t1/r1',pathname:'/',search:''},
+    history:{back(){calls.push(['back']);},replaceState(){calls.push(['replace']);}},
+  };
+  vm.runInNewContext(source.slice(start,end)+'\nthis.closeRun=closeTeamRunView;',context);
+  context.closeRun();
+  assert.deepEqual(opened,[team]);
+  assert.deepEqual(calls,[['close']],'must not pop history or clear back to the home page');
+  assert.equal(context.openRunRoute,'');
+});

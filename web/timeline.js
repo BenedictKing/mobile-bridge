@@ -413,7 +413,13 @@ class ChatTimeline {
       const row=this.rows.get(key)?.row,bar=node.querySelector('.message-actions');if(!bar||!row)continue;
       if(!this.onAction)continue;
       const add=(action,label,disabled)=>{const cls=action==='fork'?'message-fork':'message-edit';let b=bar.querySelector('.'+cls);if(!b){b=document.createElement('button');b.type='button';b.className='plain '+cls;bar.append(b);}b.textContent=timelineText(label);b.disabled=disabled;b.onclick=()=>this.onAction(action,row,this);};
-      if(row.editable){const latest=this.meta?.latestUserTurnId===row.turnId;add(latest?'edit':'edit-fork',latest?'编辑并重新发送':'编辑并新建分支',row.turnStatus==='inProgress'||latest&&this.meta?.status==='active');}
+      if(row.editable){
+        const latest=this.meta?.latestUserTurnId===row.turnId;
+        // ACP 的 message-action 只支持 fork/edit-fork；原地 edit 仅有 Codex 原生实现。
+        // 最新用户消息在 ACP 会话里也必须走分支，不能先显示可提交再靠后端报错。
+        const inPlace=latest&&this.meta?.agent==='codex';
+        add(inPlace?'edit':'edit-fork',inPlace?'编辑并重新发送':'编辑并新建分支',row.turnStatus==='inProgress'||latest&&this.meta?.status==='active');
+      }
       if(row.forkable)add('fork','从这里分支',false);
     }
   }
