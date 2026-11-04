@@ -112,9 +112,9 @@ main{background:var(--page);overflow:hidden}
 .archive{margin-left:auto;font-size:12px;display:flex;align-items:center;gap:5px;min-height:36px}
 .archive input{width:15px;height:15px;margin:0}
 .sessions{margin:4px -4px 0;padding:0 4px;scrollbar-width:thin;scrollbar-color:var(--control) transparent}
-.session{position:relative;padding:12px;margin-bottom:3px;border-radius:9px;line-height:1.45}
+.session{position:relative;padding:12px;margin-bottom:3px;border:1px solid transparent;border-radius:9px;line-height:1.45}
 .session:hover{background:var(--active)}
-.session.selected{background:var(--soft)}
+.session.selected{background:var(--soft);border-color:var(--accent)}
 .session.selected::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:2px;background:var(--accent)}
 .session strong{font-size:14px;line-height:20px;font-weight:600}
 .session small{font-size:12px;line-height:18px;margin-top:4px;gap:8px}
@@ -460,7 +460,7 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 #login-attempts:empty{display:none}
 #login-error{margin:12px 0 0}
 
-/* 列表：选中项只用一种信号（底色），不再叠加左侧色条；退出登录不和普通入口抢强调色。 */
+/* 列表：选中项用底色和完整边框，不再叠加左侧色条；退出登录不和普通入口抢强调色。 */
 .session.selected::before{content:none}
 .sidebar-foot{grid-template-columns:auto auto auto 1fr}
 .sidebar-foot>#logout{color:var(--muted);justify-self:end}
