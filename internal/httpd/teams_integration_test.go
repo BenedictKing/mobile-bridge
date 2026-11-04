@@ -222,7 +222,11 @@ def handle_prompt(m, ident):
  if "RATELIMIT" in text and prompt_count(sid, text) < 2:
   reply({"jsonrpc": "2.0", "id": ident, "error": {"code": -32000, "message": "429 Too Many Requests：请求过于频繁，请稍后重试（Retry-After: 2）"}})
   return
- if "QUOTAFAIL" in text and prompt_count(sid, text) < 2:
+ quota_for = re.search(r"QUOTAFAILFOR:([A-Za-z0-9_-]+)", text)
+ if quota_for and sid == quota_for.group(1) and prompt_count(sid, text) < 2:
+  reply({"jsonrpc": "2.0", "id": ident, "error": {"code": -32000, "message": "请求失败：账户余额不足，请充值后再试"}})
+  return
+ if "QUOTAFAIL" in text and "QUOTAFAILFOR" not in text and prompt_count(sid, text) < 2:
   reply({"jsonrpc": "2.0", "id": ident, "error": {"code": -32000, "message": "请求失败：账户余额不足，请充值后再试"}})
   return
  if "FAIL" in text and "QUOTAFAIL" not in text:
