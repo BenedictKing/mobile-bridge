@@ -4,6 +4,8 @@
 >
 > 目标：在 mobile-bridge 网关内提供可恢复、可审计、受限的多 Agent 自动协作能力，统一调度 Codex、Claude Code、Kimi、ZCode、DeepSeek、OpenCode 等真实会话；吸收 Dynamic Workflow 的可重放、结构化结果和自适应并发经验，但保留 mobile-bridge 的 JSON 账本、移动端确认和真实会话边界。
 
+> 已实现路径的架构和完整状态转换见 [团队编排运行图册](team-runtime-diagrams.md)；本方案中的阶段安排与预留能力不等同于当前运行时状态。
+
 ## 1. 背景与目标
 
 当前 mobile-bridge 已能管理多个 Agent 会话、展示部分原生子代理活动、发送消息、排队、迁移上下文并接收完成通知，但这些能力仍以“单会话控制”为中心。用户需要自行复制上下文，在多个聊天窗口之间切换，并手动决定下一步交给哪个 Agent。

@@ -4,6 +4,8 @@
 >
 > 参考：JetBrains ThinkRail 的 IDE 原生协作体验、OpenBot 的持久化消息与执行线程模型，以及本仓库现有的 Team Orchestrator 方案。
 
+> 本文包含尚未落地的目标设计；当前 Go 网关实际组件和状态转换请以 [运行图册](team-runtime-diagrams.md) 为准。
+
 ## 1. 设计结论
 
 团队功能应被设计成一个长期入口，而不是多个聊天窗口的聚合器。

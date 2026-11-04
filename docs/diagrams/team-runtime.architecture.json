@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "团队编排运行时结构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "web", "type": "frontend", "label": "团队聊天与 Run 页", "sublabel": "web/team-chat.js · web/team.js", "pos": [40, 310], "size": [165, 72] },
+    { "id": "api", "type": "backend", "label": "Team HTTP API", "sublabel": "internal/httpd/teams.go", "pos": [280, 310], "size": [165, 72] },
+    { "id": "service", "type": "backend", "label": "Team Service", "sublabel": "计划 · 调度 · 恢复", "pos": [525, 310], "size": [165, 72] },
+    { "id": "queue", "type": "messagebus", "label": "提交队列", "sublabel": "submissions.json", "pos": [770, 310], "size": [165, 72] },
+    { "id": "agent", "type": "external", "label": "真实 Agent 会话", "sublabel": "acpruntime.Manager", "pos": [1015, 310], "size": [165, 72] },
+    { "id": "feed", "type": "messagebus", "label": "事件投影", "sublabel": "changes / reset", "pos": [280, 510], "size": [165, 72] },
+    { "id": "journal", "type": "database", "label": "Team Journal", "sublabel": "team-journal.jsonl", "pos": [525, 510], "size": [165, 72] },
+    { "id": "workspace", "type": "backend", "label": "工作区适配器", "sublabel": "写锁 · worktree · diff", "pos": [770, 110], "size": [165, 72] }
+  ],
+  "connections": [
+    { "from": "web", "to": "api", "label": "HTTP / SSE", "variant": "emphasis" },
+    { "from": "api", "to": "service", "label": "命令与查询" },
+    { "from": "service", "to": "queue", "label": "持久提交", "labelDy": -28 },
+    { "from": "queue", "to": "agent", "label": "空闲时派发" },
+    { "from": "service", "to": "journal", "label": "先记账", "labelDy": 24 },
+    { "from": "journal", "to": "feed", "label": "事件序号" },
+    { "from": "feed", "to": "api", "label": "增量投影" },
+    { "from": "service", "to": "workspace", "label": "派发前校验", "fromSide": "top", "toSide": "left" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "执行边界", "items": ["Team Service 通过 HTTP 适配器调用持久队列和真实 Agent 会话", "Agent 不能直接修改 Team journal"] },
+    { "dot": "amber", "title": "恢复边界", "items": ["Journal 记录运行事实，Run 快照可重建", "结果未知只对账，不自动重发"] }
+  ]
+}

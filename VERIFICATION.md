@@ -1,3 +1,8 @@
+## 团队编排运行图册（2026-11-04）
+
+- [当前实现图册](docs/team-runtime-diagrams.md)覆盖组件、事实归属、派发/恢复、Run/Task/Action/Question/提交队列状态、验证与工作区、事件投影、TeamInput 和定时通知，共 13 张 Mermaid 图；全部用 Mermaid 解析器通过语法检查。
+- [交互式结构图](docs/diagrams/team-runtime.html)由 Archify 生成，showcase 验证 9/9 项通过、0 错误/警告；1440×900、1600×1000、1920×1080、2048×1320 四种桌面视口无溢出，明暗截图已目视检查。此轮仅改文档，未重启网关。
+
 ## 团队状态转换与 Run 页面竞态复核（2026-11-04）
 
 - `task_stopped` 同时承载 `cancelled` 和 `stopped`。此前重启对账及 journal 重建一律还原为 `stopped`，会改写用户取消、`first_success` 淘汰分支和队列撤销的任务终态，甚至把已确认取消的 Run 折成 `stopped`。现在新事件写入 `payload.status`，旧事件按固定取消原因兼容，前端增量投影也按同一状态展示。

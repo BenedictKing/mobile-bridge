@@ -1,5 +1,7 @@
 # 实现说明
 
+当前团队编排的组件、数据归属、执行/恢复流程和全部持久状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)；其图示以当前 Go 实现为准，区别于规划文档中的后续能力。
+
 ## 目标与执行边界
 
 手机网页控制 Codex App 聊天，并可在已保存项目中新建空聊天。网关不拥有模型执行器，不替换已有聊天。已有聊天的执行与审批操作绑定 `hostId + conversationId + ownerClientId`，由 App 中相应 owner 执行。重命名是独立的元数据操作，使用所选主机的短期官方运行时调用 `thread/name/set`，不加载执行任务、不调用 `turn/start`，也不改变 provider、认证或审批策略。
