@@ -3121,7 +3121,9 @@ func (s *Service) Pause(runID string) (*Run, error) {
 // 不得把确定性 failed 或未决 unknown 直接改成 running）。waiting_input 流程：
 // PlanResume 纯决策 → 未决 unknown 任务落 stopped（『结果未知，用户已确认
 // 不再重发』，绝不重发、不重建 submission）→ 应用其余转移 → 可继续分支重启
-// 调度循环；无可派发且全终态时 fold（存在 stopped → run stopped）。
+// 调度循环；无可派发且全终态时 fold（存在 stopped → run stopped）。若折叠
+// 为 completed 但验证未决，或 autoPlan 尚可能补动作/收尾/分诊，则返回
+// 执行态交 passFold 统一处理终局门控。
 // paused 流程（§12 阶段四工作项 4）见下方 paused 分支：不走 PlanResume——
 // 暂停期间在途任务已自然收尾、任务快照即真相，没有 waiting_input 的用户
 // 裁决迁移（unknown 转 stopped、停靠重飞）要补做。

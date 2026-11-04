@@ -69,6 +69,24 @@ func TestAutoPlanReductionSkipsLeadOnlyAndFailure(t *testing.T) {
 	}
 }
 
+func TestResumeAutoPlanStillCreatesReduction(t *testing.T) {
+	h := newActionsExecHarness(t)
+	run := reductionRunFixture()
+	run.Status = RunWaitingInput
+	h.saveExecRun(t, run)
+	t.Cleanup(func() { _, _ = h.service.Cancel(run.ID) })
+	resumed, err := h.service.Resume(run.ID)
+	if err != nil {
+		t.Fatalf("Resume 失败: %v", err)
+	}
+	if terminalRun(resumed.Status) {
+		t.Fatalf("Worker 已完成但 Lead 收尾未运行时不得终局: %s", resumed.Status)
+	}
+	waitFor(t, "Resume 后创建 Lead 收尾任务", func() bool {
+		return findTaskIn(h.store.Run(run.ID), "lead-auto-reduce") != nil
+	})
+}
+
 func TestAutoPlanReductionTaskLimitFailsDeterministically(t *testing.T) {
 	h := newActionsExecHarness(t)
 	h.team.Policy.MaxTasksPerRun = 1

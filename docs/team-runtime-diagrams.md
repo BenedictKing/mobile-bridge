@@ -136,74 +136,124 @@ flowchart TD
 stateDiagram-v2
     [*] --> created: CreateRun
     created --> dispatching: 调度循环启动
-    created --> paused: Pause
     dispatching --> reducing: 全任务成功且需要验证
     dispatching --> completed: 全任务成功且无验证闸门
-    dispatching --> failed: 失败折叠
-    dispatching --> stopped: 停止折叠
-    dispatching --> outcome_unknown: 异常恢复折叠
-    dispatching --> waiting_input: 停靠 / 结果未知 / 预算
-    dispatching --> paused: Pause
     reducing --> completed: 验证通过
     reducing --> waiting_input: 验证失败
-    reducing --> paused: Pause
-    paused --> dispatching: Resume
-    paused --> reducing: Resume 且验证结果待判
-    paused --> waiting_input: 在途任务停靠或结果未知
-    waiting_input --> dispatching: Resume 后仍可运行
-    waiting_input --> failed: Resume 后折叠
-    waiting_input --> stopped: Resume 后折叠
-    waiting_input --> cancelled: Resume 后折叠
-    created --> cancelled: Cancel
-    dispatching --> cancelled: Cancel / 取消折叠
-    reducing --> cancelled: Cancel
-    paused --> cancelled: Cancel
-    waiting_input --> cancelled: Cancel
-    completed --> [*]
-    failed --> [*]
-    stopped --> [*]
-    cancelled --> [*]
-    outcome_unknown --> [*]
 ```
 
-`paused` 和 `waiting_input` 都停止新派发，但在途 watcher 仍可结算；后者的停靠语义优先。`planning` / `collecting` 常量仍可读旧数据，当前 runner 不写入这两态。终态 Run 不可重新打开，后续工作创建新 Run / amend。依据：`internal/team/model.go`、`runner.go` 的 `passAdvance` / `passFold` / `Pause` / `Resume` / `Cancel`、`verify.go`。
+暂停与停靠恢复：
+
+```mermaid
+stateDiagram-v2
+    created --> paused: Pause
+    dispatching --> paused: Pause
+    reducing --> paused: Pause
+    dispatching --> waiting_input: 停靠 / 未决 / 预算
+    reducing --> waiting_input: 验证失败
+    paused --> waiting_input: 在途任务停靠或未决
+    paused --> dispatching: Resume
+    paused --> reducing: Resume 且 Verify 待判
+    waiting_input --> dispatching: Resume 后仍可运行
+```
+
+终局折叠与显式取消：
+
+```mermaid
+stateDiagram-v2
+    dispatching --> completed: 无待验证
+    dispatching --> failed: 失败
+    dispatching --> stopped: 停止
+    dispatching --> outcome_unknown: 异常未决
+```
+
+```mermaid
+stateDiagram-v2
+    waiting_input --> completed: 已验证
+    waiting_input --> failed: 失败
+    waiting_input --> stopped: 停止
+    waiting_input --> cancelled: 取消
+```
+
+```mermaid
+flowchart TB
+    Active[created / dispatching / reducing / paused / waiting_input] -->|Cancel| Cancelled[cancelled]
+```
+
+`paused` 和 `waiting_input` 都停止新派发，但在途 watcher 仍可结算；后者的停靠语义优先。图中的 `waiting_input` 终局折叠仅由用户 Resume 触发；全成功但验证未决时先回 `dispatching`，通过验证后才能 `completed`。`planning` / `collecting` 常量仍可读旧数据，当前 runner 不写入这两态。终态 Run 不可重新打开，后续工作创建新 Run / amend。依据：`internal/team/model.go`、`runner.go` 的 `passAdvance` / `passFold` / `Pause` / `Resume` / `Cancel`、`verify.go`。
+
+| 当前状态 | 触发 | 下一状态 |
+| --- | --- | --- |
+| `created` | 调度 / Pause / Cancel | `dispatching` / `paused` / `cancelled` |
+| `dispatching` | 任务折叠 / 验证待执行 / 停靠 / Pause / Cancel | 终态 / `reducing` / `waiting_input` / `paused` / `cancelled` |
+| `reducing` | 验证通过 / 失败 / Pause / Cancel | `completed` / `waiting_input` / `paused` / `cancelled` |
+| `paused` | Resume / 在途停靠 / Cancel | `dispatching` 或 `reducing` / `waiting_input` / `cancelled` |
+| `waiting_input` | Resume / Cancel | `dispatching` 或已满足条件的终态 / `cancelled` |
 
 ## 6. Task 状态
 
 ```mermaid
 stateDiagram-v2
     [*] --> planned: Plan / 派生 Task
-    planned --> completed: amend 缓存命中
+    planned --> ready: Resume 释放依赖
     planned --> dispatching: 依赖释放并通过派发门控
     ready --> dispatching: 新 attempt 派发
     dispatching --> running: 已确认 Agent 回合
-    dispatching --> ready: 对账证明提交未入账
     dispatching --> completed: 回合已完成
     running --> completed: 回合已完成
-    planned --> failed: 派发前确定性错误
-    planned --> stopped: 依赖永久阻断
-    planned --> cancelled: 用户取消 / 首胜淘汰
-    dispatching --> failed: 确定性失败
-    running --> failed: 确定性失败
-    failed --> ready: 限流 / 暂态受限重试或 Lead 改派
-    dispatching --> stopped: 可恢复停靠
-    running --> stopped: 可恢复停靠
-    stopped --> ready: 用户 Resume 且允许重派
-    dispatching --> outcome_unknown: 发送或结果不可确认
-    running --> outcome_unknown: 结果不可确认
-    outcome_unknown --> failed: 只读对账确认失败
-    outcome_unknown --> cancelled: 只读对账确认撤销
-    outcome_unknown --> stopped: 用户确认不再重发
-    dispatching --> cancelled: 用户取消 / 首胜淘汰
-    running --> cancelled: 用户取消 / 首胜淘汰
-    completed --> [*]
-    failed --> [*]
-    cancelled --> [*]
-    stopped --> [*]
-    outcome_unknown --> [*]
+    planned --> completed: amend 缓存命中
+```
+
+派发前终止：
+
+```mermaid
+flowchart TB
+    Candidate[planned / ready] -->|预检失败| Failed[failed]
+    Candidate -->|依赖阻断| Stopped[stopped]
+    Candidate -->|取消 / 首胜| Cancelled[cancelled]
+```
+
+派发后的失败、停靠与取消：
+
+```mermaid
+flowchart TB
+    InFlight[dispatching / running] -->|确定性失败| Failed[failed]
+    InFlight -->|可恢复停靠| Stopped[stopped]
+```
+
+```mermaid
+flowchart TB
+    InFlight[dispatching / running] -->|未决| Unknown[outcome_unknown]
+    InFlight -->|取消 / 首胜| Cancelled[cancelled]
+```
+
+重试与结果未知的裁决：
+
+```mermaid
+stateDiagram-v2
+    dispatching --> ready: 确认未入账
+    failed --> ready: 受限重试 / 改派
+    stopped --> ready: Resume 重臂
+```
+
+```mermaid
+stateDiagram-v2
+    outcome_unknown --> failed: 确认失败
+    outcome_unknown --> cancelled: 确认撤销
+    outcome_unknown --> stopped: 人工停止
 ```
 
 `ready` 主要来自恢复、受限重试或停靠重臂，正常新 Task 可从 `planned` 直接派发。`failed → ready` 与 `stopped → ready` 都必须增加 attempt 并生成新的 submission ID；`outcome_unknown` 不能自动回 `ready`。`task_stopped` 事件的 `payload.status` 区分 `cancelled` / `stopped`，旧事件按固定取消原因兼容。依据：`internal/team/scheduler.go`、`runner.go`、`reducer.go`、`recovery.go`。
+
+恢复时 journal 是权威事实，损坏或滞后的快照可从任意旧状态校正到已记录的终态；这类快照修复由第 4 图描述，不视为正常执行迁移。
+
+| 当前状态 | 触发 | 下一状态 |
+| --- | --- | --- |
+| `planned` / `ready` | 派发 / 缓存命中 / 预检失败 / 阻断 / 取消 | `dispatching` / `completed` / `failed` / `stopped` / `cancelled` |
+| `dispatching` / `running` | 回合结果 / 失败 / 停靠 / 未决 / 取消 | `completed` / `failed` / `stopped` / `outcome_unknown` / `cancelled` |
+| `failed` | 限流、暂态受限重试或 Lead 改派 | `ready`（新 attempt） |
+| `stopped` | 用户继续且停靠允许重派 | `ready`（新 attempt） |
+| `outcome_unknown` | 只读对账或用户确认不再重发 | `failed` / `cancelled` / `stopped` |
 
 ## 7. Lead Action 状态
 
@@ -245,6 +295,7 @@ stateDiagram-v2
     unknown --> failed: 确定性拒绝或重试耗尽
     unknown --> ignored: 用户忽略未决条目
     failed --> queued: 用户显式重试
+    failed --> cancelled: 用户删除失败条目
     accepted --> [*]
     cancelled --> [*]
     ignored --> [*]

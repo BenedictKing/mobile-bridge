@@ -289,6 +289,48 @@ func TestVerifyGateResumeRerunsAndPasses(t *testing.T) {
 	}
 }
 
+func TestBudgetResumeStillRunsVerifyGate(t *testing.T) {
+	h, _ := newVerifyHarness(t)
+	h.team.Policy.BudgetUnits = 1
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatalf("保存预算策略失败: %v", err)
+	}
+	t.Setenv("VERIFY_EXIT", "7")
+	run, err := h.service.CreateRun(h.team, "", "验证预算停靠后的结果", ModeSingle, "",
+		[]string{"make", "check"}, nil, false, "")
+	if err != nil {
+		t.Fatalf("创建 Run 失败: %v", err)
+	}
+	submissionID, sentText := h.waitForSubmission(t, "s-lead", "Lead 任务入队")
+	waitFor(t, "预算停靠", func() bool { return h.store.Run(run.ID).Status == RunWaitingInput })
+	h.completeSubmission("s-lead", submissionID, sentText, "实现完成。")
+	waitFor(t, "任务完成", func() bool { return h.taskOf(run.ID, "lead").Status == TaskCompleted })
+
+	resumed, err := h.service.Resume(run.ID)
+	if err != nil {
+		t.Fatalf("继续预算停靠的 Run 失败: %v", err)
+	}
+	if resumed.Status == RunCompleted {
+		t.Fatal("验证尚未运行时不得直接完成 Run")
+	}
+	waitFor(t, "验证失败后等待输入", func() bool {
+		fresh := h.store.Run(run.ID)
+		return fresh.Status == RunWaitingInput && strings.HasPrefix(fresh.StopReason, StopReasonVerifyFailed)
+	})
+	if events := verifyEventsOf(t, h.journal, run.ID); len(events) != 1 {
+		t.Fatalf("预算继续后必须执行验证闸门，得到 %d 条 run_verify", len(events))
+	}
+
+	t.Setenv("VERIFY_EXIT", "")
+	if _, err := h.service.Resume(run.ID); err != nil {
+		t.Fatalf("修复后复验失败: %v", err)
+	}
+	waitFor(t, "复验通过", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
+	if events := verifyEventsOf(t, h.journal, run.ID); len(events) != 2 {
+		t.Fatalf("两次验证应各有一条事实，得到 %d 条", len(events))
+	}
+}
+
 // TestVerifyGateTimeoutFailsClosed 命令超时（context 600s 的测试替身压到
 // 200ms）→ exit=-1 + reason=timeout，run 停靠等待修复后复验。
 func TestVerifyGateTimeoutFailsClosed(t *testing.T) {

@@ -519,6 +519,36 @@ func TestPlanResumeFoldWhenFullyBlocked(t *testing.T) {
 	}
 }
 
+func TestPlanResumeDefersAutoPlanTerminalToRunner(t *testing.T) {
+	for _, status := range []string{TaskCompleted, TaskFailed} {
+		run := waitingRun(taskWith("lead", "lead", status))
+		run.AutoPlan = true
+		transitions, ok := PlanResume(run)
+		if !ok {
+			t.Fatalf("autoPlan %s 应允许 Resume", status)
+		}
+		for _, transition := range transitions {
+			if transition.Kind == TransitionRunStatus {
+				t.Fatalf("autoPlan %s 应先交 runner 处理收尾/分诊，不能直接 fold: %v", status, transitions)
+			}
+		}
+	}
+	preview := waitingRun(taskWith("lead", "lead", TaskStopped))
+	preview.AutoPlan = true
+	preview.PendingActions = []Action{{Status: ActionStatusProposed}}
+	transitions, _ := PlanResume(preview)
+	for _, transition := range transitions {
+		if transition.Kind == TransitionRunStatus {
+			t.Fatalf("待执行动作不能被 Resume 直接终局越过: %v", transition)
+		}
+	}
+	preview.PendingActions = nil
+	transitions, _ = PlanResume(preview)
+	if fold, ok := findRunTransition(transitions); !ok || fold.Status != RunStopped {
+		t.Fatalf("无待执行动作的停止应维持同步收口: %v", transitions)
+	}
+}
+
 func TestPlanResumeCascadeStopsTransitivelyBlockedTasks(t *testing.T) {
 	run := waitingRun(
 		taskWith("a", "dev", TaskOutcomeUnknown),

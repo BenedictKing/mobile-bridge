@@ -545,7 +545,9 @@ func terminalReason(task *Task, preferred, fallback string) string {
 //     全部满足的任务，逐条给出 dispatch 指令——依赖仍在飞（非终态）的
 //     任务保持原状等待释放；
 //   - 若无可派发且全终态：给出 fold 指令（TransitionRunStatus 携带按迁移后
-//     任务列表计算的 FoldRunStatus 结果——因存在 stopped，通常归 run stopped）。
+//     任务列表计算的 FoldRunStatus 结果——因存在 stopped，通常归 run stopped）；
+//     autoPlan 的成功/失败或待执行动作，以及验证闸门未决时，交给 runner
+//     的 passFold 处理动作、Lead 收尾、失败分诊与验证；普通停止仍同步收口。
 //
 // 无可派发但仍有运行中任务时不给 fold：runner 等其落定后另行 fold。
 // 停靠重派决策可重入：崩溃于 resume 记账与重派之间时，journal 的
@@ -642,7 +644,17 @@ func PlanResume(run *Run) ([]Transition, bool) {
 					}
 				}
 			}
-			if status, stopReason := FoldRunStatus(after, run.Mode, run.CollectPolicy); status != "" {
+			status, stopReason := FoldRunStatus(after, run.Mode, run.CollectPolicy)
+			pendingLeadWork := run.AutoPlan && (status == RunCompleted || status == RunFailed)
+			if run.AutoPlan && !pendingLeadWork {
+				for _, action := range run.PendingActions {
+					if action.Status == ActionStatusProposed {
+						pendingLeadWork = true
+						break
+					}
+				}
+			}
+			if status != "" && !pendingLeadWork && (status != RunCompleted || !verifyPending(run)) {
 				transitions = append(transitions, Transition{
 					Kind:       TransitionRunStatus,
 					Status:     status,

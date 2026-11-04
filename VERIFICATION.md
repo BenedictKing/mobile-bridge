@@ -1,6 +1,17 @@
+## 预算停靠与验证闸门组合回归（2026-11-04）
+
+- 新增 `TestBudgetResumeStillRunsVerifyGate`：预算用尽停在 `waiting_input`，在途任务完成后用户 Resume；验证命令退出 7 必须留下 `run_verify` 并再次停靠，修复后 Resume 才能复验通过。修复前该用例超时（Run 直接 completed、未运行闸门），修复后通过。
+- `PlanResume` 对全成功且验证未决的 Run 不直接产出 `completed` 终局；autoPlan 的成功/失败或仍有 proposed 动作时也交给 `passFold` 处理 Lead 收尾、分诊及动作。无后续工作的普通停止仍在 Resume 响应中同步收口。新增纯决策、服务级和 HTTP 回归，确认 Resume 后仍产生 Lead 收尾或分诊任务。团队状态图同步补齐 `waiting_input → completed`、Task `planned/ready` 的合法转换和队列 `failed → cancelled`；journal 校正另列为恢复规则。
+- 验证：`go test ./...`、`go test -race ./internal/team`、`go vet ./...`、`node --test tests/*.js`（113 项）通过。全仓第一次并发运行曾出现 `internal/acpruntime` 一次 `EOF`，单独重复 3 次均通过；第二次 `internal/httpd` 暴露旧测试对 autoPlan Resume 同步终局的假设，按“有后续门控才异步折叠”收紧后，相关 HTTP 用例与最终全仓测试通过。
+
+## 项目级架构与移动端图示复核（2026-11-04）
+
+- 新增 [项目级运行图册](docs/system-runtime-diagrams.md)：Go 网关、会话路由、普通提交/SSE、原生 Goal 与命令账本、Codex 接入切换、ACP 账号池登录、Quick/SSH 连接、通知、审批与会话迁移。`ARCHITECTURE.md` 的模块表与新建聊天路径同步为当前 Go 入口，旧 Python Adapter 段落显式标为历史记录。
+- 团队图册将密集的 Run/Task 状态图拆为主执行、恢复、终局等小图，并补等价文字表；两份图册共 37 张 Mermaid 图逐图通过解析器验证。浏览器在 1440×900 和 390×844 对此前 35 张图共检查 70 次渲染：SVG 均存在、无解析错误或页面横向溢出；最后补入的审批、迁移两图已通过解析器，未再次进行浏览器截图。密集状态图在窄屏仍会缩小，文字表是窄屏阅读的权威补充。
+
 ## 团队编排运行图册（2026-11-04）
 
-- [当前实现图册](docs/team-runtime-diagrams.md)覆盖组件、事实归属、派发/恢复、Run/Task/Action/Question/提交队列状态、验证与工作区、事件投影、TeamInput 和定时通知，共 13 张 Mermaid 图；全部用 Mermaid 解析器通过语法检查。
+- [当前实现图册](docs/team-runtime-diagrams.md)覆盖组件、事实归属、派发/恢复、Run/Task/Action/Question/提交队列状态、验证与工作区、事件投影、TeamInput 和定时通知；图形按窄屏可读性拆分，全部用 Mermaid 解析器通过语法检查。
 - [交互式结构图](docs/diagrams/team-runtime.html)由 Archify 生成，showcase 验证 9/9 项通过、0 错误/警告；1440×900、1600×1000、1920×1080、2048×1320 四种桌面视口无溢出，明暗截图已目视检查。此轮仅改文档，未重启网关。
 
 ## 团队状态转换与 Run 页面竞态复核（2026-11-04）

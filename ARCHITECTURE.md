@@ -1,6 +1,6 @@
 # 实现说明
 
-当前团队编排的组件、数据归属、执行/恢复流程和全部持久状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)；其图示以当前 Go 实现为准，区别于规划文档中的后续能力。
+当前 Go 网关的总体结构及关键状态见 [项目级运行图册](docs/system-runtime-diagrams.md)；团队编排的组件、执行/恢复流程与持久状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)。两份图册均与规划文档中的后续能力分开。
 
 ## 目标与执行边界
 
@@ -38,7 +38,7 @@ SSH 参数包含非交互认证、严格主机指纹检查和禁用额外转发�
 
 登录后的 `GET /api/projects` 返回 App 已保存的本机及 SSH 项目；`POST /api/sessions` 接受项目键、名称和请求 UUID。服务端重新解析已保存项目，不接受客户端任意目录、主机、程序路径或配置覆盖。创建接口沿用 Host、Origin、登录和 CSRF 校验。
 
-`bridge/create.py` 使用所选主机的官方运行时完成 `initialize → thread/start → thread/name/set → thread/read(includeTurns=true)`，随后关闭 stdio 并等待进程退出。读取完整空历史是必需步骤：仅设置名称会留下目录元数据，却未必落盘可恢复的 rollout。整个辅助进程不调用 `turn/start`，不会发送模型任务。新线程使用该主机、工作目录的运行时默认配置；不克隆已有聊天的临时设置。
+`internal/codex/create.go` 使用所选主机的官方运行时完成 `initialize → thread/start(ephemeral=false) → thread/name/set`，随后关闭辅助 stdio 进程。此路径不调用 `turn/start`，不会发送模型任务；也不再执行旧 Python 路径的 `thread/read(includeTurns=true)`。新线程使用该主机、工作目录的运行时默认配置，不克隆已有聊天的临时设置。
 
 创建结果按 UUID 写入网关自己的 `creations.json`，重试复用同一聊天；请求可能提交但结果未知时不自动重放。辅助进程退出后，通过 `codex://threads/<id>?hostId=...` 打开原桌面 App，桌面接管后才允许发送和审批。此步骤会切换桌面当前页面；打开失败保留已创建 ID。SSH 创建借助已有非交互 SSH 通道执行相同辅助代码，不在远端安装网关。
 
@@ -131,32 +131,32 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 
 桌面服务管理托盘状态、手机地址和退出动作；仅显式停止才调用网关的协作停止协议。状态请求合并，停止失败保留控制器并显示错误。
 
-网关停止使用带随机实例令牌的本地控制文件，由服务主动调用 `shutdown`，再关闭隧道、IPC 和 HTTP。`stop.py --config` 与启动配置对应，不依赖 Unix 信号或 Windows PID 强制终止。文件统一使用 UTF-8；Windows 权限继承目录 ACL。
+网关停止使用带随机实例令牌的本地控制文件，退出时关闭隧道、IPC 和 HTTP。启动、停止入口以 `cmd/gateway` 与 `Makefile` 为准；文件统一使用 UTF-8，Windows 权限继承目录 ACL。
 
 | 模块 | 职责 |
 | --- | --- |
-| `cmd/gateway`（make start/stop，launchd 托管） | 启动参数、进程记录、停止 |
-| `bridge/ipc.py` | 原生帧传输、请求白名单和事件分发 |
-| `bridge/transport.py` | Unix socket / Windows 命名管道字节流 |
-| `bridge/lifecycle.py` | 跨平台停止请求与实例令牌校验 |
-| `bridge/service.py` | 会话同步、操作路由、去重和队列 |
-| `internal/httpd/discovery.go` | 定时会话发现与列表版本信号（`listRevision`） |
-| `internal/accpool/` | ACP agent 账号池：额度轮询、手动/自动切换、切换续跑与通知（详见「账号池与额度自动切换」节） |
-| `bridge/agents/` | Agent 适配层：base 接口与 Registry、codex 实现、ACP 传输与 kimi/mcode/claude/dsh/zcode 方言 |
-| `bridge/store.py` / `remote.py` | 只读发现、SSH、项目与主机映射 |
-| `bridge/model.py` | 历史和请求的规范化 |
-| `bridge/catalog.py` | 模型与 Skill 元数据 |
-| `bridge/create.py` | 创建并持久化空聊天，退出辅助运行时，交给桌面接管 |
+| `cmd/gateway`、`internal/lifecycle` | Go 网关启动、退出与实例控制 |
+| `internal/httpd`、`internal/auth` | HTTP 路由、登录、同源与 CSRF 校验、事件流 |
+| `internal/codex`、`internal/ipc`、`internal/store` | Codex 原生 owner 控制、IPC 与 SQLite 只读发现 |
+| `internal/acpruntime`、`internal/acp`、`internal/acpagents` | ACP 会话、线协议与 Agent 方言装配 |
+| `internal/acphost`、`cmd/agent-host` | 可选独立 Agent Host 与 socket 转发 |
+| `internal/team` | Team/Run/Task 模型、调度、journal、恢复与验证 |
+| `internal/httpd/queue.go`、`internal/httpd/creations.go` | 提交与创建的持久幂等账本 |
+| `internal/goal`、`internal/httpd/goal_send.go` | 原生 Goal RPC 与命令账本 |
+| `internal/account`、`internal/accpool` | Codex 接入切换与 ACP 账号池 |
+| `internal/notifications`、`internal/tunnel` | 通知对账、Quick Tunnel 与 SSH 转发 |
+| `internal/uploads`、`web/`、`android/` | 附件、网页与 Android WebView |
 | `deploy/nas/` | NAS HTTPS 反代教程及可选 Docker 入口 |
-| `bridge/auth.py` / `httpd.py` | 登录、同源校验、HTTP、SSE、轮询 |
-| `bridge/files.py` | 引用文件的范围校验与解析 |
-| `bridge/tunnel.py` | 临时 HTTPS 隧道生命周期与 cloudflared 共用监控基类（指标探测、休眠时钟跳变检测、terminate/kill 升级重启与封顶退避） |
-| `web/` | 手机浏览器界面 |
-| `tests/` | 合成数据与模拟 App IPC 回归 |
 
 ## 多 Agent 适配
 
+本节先说明当前 Go 控制面；随后保留的 Python Adapter 方言记录仅作迁移背景，已不是运行入口。当前代码定位以 [项目级运行图册](docs/system-runtime-diagrams.md)、`cmd/gateway/main.go`、`internal/httpd`、`internal/codex` 和 `internal/acpruntime` 为准。
+
 ### 控制模型
+
+当前 Go 网关通过 `internal/codex` 与原桌面 App 的 IPC owner 控制 Codex 会话，通过 `internal/acpruntime` / `internal/acp` 控制 ACP 会话。`internal/acpagents` 根据 Agent kind 装配命令、能力和方言；会话可由网关直接启动子进程，也可经 `internal/acphost` 的独立 Agent Host 持有。`internal/httpd` 按会话归属路由读写，规范化视图交给网页时间线。下方历史段落中的 `bridge/*.py` 路径不参与现行网关执行。
+
+### 历史 Python Adapter 记录（已退役）
 
 Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）、ZCode（`zcode`，经 `zcode-acp-server` 包装层）与 WorkBuddy（`workbuddy`，`codebuddy --acp`，握手超时 60s 以容纳技能目录冷启动）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`GATEWAY_AGENTS`（或 `MOBILE_BRIDGE_AGENTS`）环境变量决定注册哪些后端，默认 `auto` 自动探测本机已安装的 Agent。
 
@@ -180,13 +180,13 @@ dsh 会话被桌面 App 持有时（dsh-acp 报 `already owned by an active writ
 
 同一个 zcode 会话也可能被桌面 ZCode App 直接驱动：zcode-acp 只为它自己发出的 prompt 推送 `session/update`，桌面回合只落到两者共享的 `~/.zcode/cli/db/db.sqlite`（可用 `ZCODE_SESSION_DB_PATH` 或旧名 `ZCODE_SESSION_DB` 覆盖）。网关因此对该库做只读跟随（`internal/zcode`）：按变更签名轮询会话的 `message`/`part`/`turn_usage`/`todo`，把可见的用户消息、思考、正文、工具状态/输出、计划与会话标题重建成 `acpview.ApplyNative` 的轮次列表；桌面端回合在手机端一秒内显示「运行中」与步骤，回合结束把状态收回 idle 并触发排队派发（不触发自动继续）。ACP 仍是唯一控制面；原生库缺席或不可读时静默退回 ACP 回放，脚本化对拍模式不读该库。
 
-### Capability 门控
+### 当前 Go Capability 门控
 
 Codex 与 ACP 的 user/assistant 文本在展示层统一移除完整的 `<system-reminder>…</system-reminder>` 块，内部提醒不会进入手机时间线，发送给 Agent 的原文不变。view 的可选 `usage: {used, size}` 统一表示当前上下文 token 用量：ACP 来自 `usage_update`，Codex 来自 `tokenUsage.total.totalTokens` 与 `modelContextWindow`；前端在模型按钮上显示已用/总窗口，未上报时隐藏。
 
 view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门控：无 `steer` 隐藏"补充当前任务"选项；无 `goals` 隐藏目标模式；无 `skills` 隐藏 Skill 按钮；fork/edit 按钮依赖每行 `forkable`/`editable`（ACP 会话天然为假）；Fast 模式与额度档位随目录 `fastMode.allowed` 隐藏；`fullHistory` 由快照 `historyComplete` 决定。审批卡片对 `acp/requestPermission` 按 agent 返回的 `options` 动态渲染，kimi 的 AskUserQuestion 也走此通道并标记为提问卡片（问题文本 + 选项 + 跳过）；网页回应仍只回传 `optionId`（或 `cancel`），由 `Session.Respond` 统一翻译成 ACP 的 `{outcome:{outcome,optionId}}` 线格式（optionId 先对请求选项校验，非法回应保留卡片可重答）。`elicitation/create` 表单支持单选、多选及 Other 文本字段，数组按 `minItems`/`maxItems` 校验，OpenCode 的 `format`/`pattern` 字段保持可渲染，文本 pattern 由浏览器原生校验。状态文案与会话行标题按 `BridgeI18n.agentLabel(view.agent)` 显示 Agent 名称。通知路由见 `bridge/notifications.py`：watch/policy 接受非 UUID 会话标识，经 Registry 路由到对应 bridge；推送标题使用 adapter 的 `label`；`notification_candidates` 的 SQLite 全局发现仍是 codex-only，ACP 会话依赖显式关注。
 
-### 生命周期限制
+### 生命周期限制（首段为 Python 历史记录）
 
 ACP 会话的任务存续依赖网关进程：网关停止时其 spawn 的 Agent 子进程随之退出，进行中的 turn 中断且不续跑。网关重启后，`Notifications.resume_watched`（`bridge/notifications.py`）在后台对每个 watched 的 ACP 会话重新 `session(background=True)` 附接，通知监控随之恢复；单个会话失败只记日志，不影响其他会话或启动。未被关注的会话不自动重连，打开聊天时再附接。codex 会话不受此限（任务由桌面 App 持有）；经 Agent Host socket 接入的 ACP Agent（见下节）也不受此限——其子进程由 launchd 托管的 Host 持有，网关重启只断开 socket 连接，进行中的 turn 在 Host 侧继续跑，重连后经 `session/load` 恢复视图。
 

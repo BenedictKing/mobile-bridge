@@ -39,6 +39,28 @@ func TestFailureTriageCreatesLeadTaskBeforeFold(t *testing.T) {
 	}
 }
 
+func TestResumeAutoPlanStillCreatesFailureTriage(t *testing.T) {
+	h := newActionsExecHarness(t)
+	run := execRunFixture()
+	run.Status = RunWaitingInput
+	run.Tasks = append(run.Tasks, Task{
+		ID: "dev-task", MemberID: "dev", Prompt: "实现接口", Status: TaskFailed,
+		Error: "Session not found", Ordinal: 1,
+	})
+	h.saveExecRun(t, run)
+	t.Cleanup(func() { _, _ = h.service.Cancel(run.ID) })
+	resumed, err := h.service.Resume(run.ID)
+	if err != nil {
+		t.Fatalf("Resume 失败: %v", err)
+	}
+	if terminalRun(resumed.Status) {
+		t.Fatalf("尚有分诊机会时不得直接终局: %s", resumed.Status)
+	}
+	waitFor(t, "Resume 后创建 Lead 分诊任务", func() bool {
+		return findTaskIn(h.store.Run(run.ID), "lead-triage-1") != nil
+	})
+}
+
 func TestFailureTriageRespectsGuards(t *testing.T) {
 	h := newActionsExecHarness(t)
 	ensure := func(run *Run) bool {
