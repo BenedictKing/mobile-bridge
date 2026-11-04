@@ -103,3 +103,39 @@ func TestTeamRoleAssignmentsPreserveMemberRoles(t *testing.T) {
 		})
 	}
 }
+
+func TestTeamDefaultReviewerClearFallsBackToReviewerRole(t *testing.T) {
+	env := newTeamIntegrationEnv(t, t.TempDir())
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	dev := env.createMemberSession(t, "dev-sess", "执行")
+	rev := env.createMemberSession(t, "rev-sess", "评审")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"dev","sessionId":"`+dev+`","role":"member"},{"id":"rev","sessionId":"`+rev+`","role":"reviewer"}]`)
+	if got := env.store.Team(teamID).ReviewerMemberID(); got != "rev" {
+		t.Fatalf("未设置默认评审时应回退 reviewer 角色成员: %q", got)
+	}
+
+	response := env.request(http.MethodPatch, "/api/teams/"+teamID, `{"reviewerId":"dev","version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("设置显式默认评审失败: %d %s", response.Code, response.Body.String())
+	}
+	if got := env.store.Team(teamID).ReviewerMemberID(); got != "dev" {
+		t.Fatalf("显式默认评审应优先于 reviewer 角色: %q", got)
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID, `{"reviewerId":"","version":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("清空显式默认评审失败: %d %s", response.Code, response.Body.String())
+	}
+	stored := env.store.Team(teamID)
+	if stored.ReviewerID != "" || stored.ReviewerMemberID() != "rev" {
+		t.Fatalf("清空默认评审应恢复角色回退，而不是关闭评审: %+v", stored)
+	}
+
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/rev", `{"role":"member","version":3}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("移除 reviewer 角色失败: %d %s", response.Code, response.Body.String())
+	}
+	stored = env.store.Team(teamID)
+	if stored.ReviewerID != "" || stored.ReviewerMemberID() != "" || stored.Members[1].Role != "member" || stored.Members[2].Role != "member" {
+		t.Fatalf("没有显式默认评审且没有 reviewer 角色时才应关闭评审: %+v", stored)
+	}
+}

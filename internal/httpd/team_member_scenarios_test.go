@@ -267,3 +267,164 @@ func TestTeamMemberCompositeUpdatesAreIndependent(t *testing.T) {
 		t.Fatalf("部分更新不得重置未提交的成员字段或团队分工: %+v", stored)
 	}
 }
+
+func TestTeamMemberRebindDuringRunUsesLatestSessionForPendingTask(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	original := env.createMemberSession(t, "dev-original", "原执行")
+	replacement := env.createMemberSession(t, "dev-replacement", "主动接替")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"dev","sessionId":"`+original+`","role":"member"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"运行中主动换绑","mode":"pipeline","plan":[
+		{"id":"first","memberId":"lead","prompt":"在途任务 REBIND-MID-RUN HOLDUNTIL:rebind-mid","writeLock":"none"},
+		{"id":"pending","memberId":"dev","prompt":"主动换绑后执行 REBIND-MID-PENDING","dependsOn":["first"],"writeLock":"none"}]}`)
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		return teamTaskOf(t, env.runDetail(t, teamID, runID), "first")["status"] == "running"
+	}) {
+		t.Fatal("首个任务未进入 running")
+	}
+	response := env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/dev", `{"sessionId":"`+replacement+`","version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("运行中主动换绑失败: %d %s", response.Code, response.Body.String())
+	}
+	releaseAgentTurn(t, dataDir, "rebind-mid", lead)
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatalf("主动换绑后 Run 未完成: %v", env.runDetail(t, teamID, runID))
+	}
+	records := readTeamPrompts(t, dataDir)
+	index := promptIndex(records, "REBIND-MID-PENDING")
+	if len(records) != 2 || index < 0 || records[index].session != replacement {
+		t.Fatalf("未派任务应只使用最新绑定会话: %v", records)
+	}
+	detail := env.runDetail(t, teamID, runID)
+	if result := taskResultOf(t, teamTaskOf(t, detail, "pending")); result["sessionId"] != replacement {
+		t.Fatalf("任务结果应归属接替会话: %v", result)
+	}
+	stored := env.store.Team(teamID)
+	if stored.Members[1].SessionID != replacement || stored.Members[1].Role != team.RoleMember || stored.LeadID != "lead" {
+		t.Fatalf("主动换绑不得改变成员身份或团队角色: %+v", stored)
+	}
+}
+
+func TestTeamMemberRebindAndOfflineSurviveGatewayRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	original := env.createMemberSession(t, "rev-original", "原评审")
+	spare := env.createMemberSession(t, "spare-sess", "备用成员")
+	replacement := env.createMemberSession(t, "rev-replacement", "接替评审")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"rev","sessionId":"`+original+`","role":"member"},{"id":"spare","sessionId":"`+spare+`","role":"member"}]`)
+	response := env.request(http.MethodPatch, "/api/teams/"+teamID, `{"reviewerId":"rev","version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("设置默认评审失败: %d %s", response.Code, response.Body.String())
+	}
+	runID := env.createRun(t, teamID, `{"goal":"换绑后重启恢复","mode":"pipeline","plan":[
+		{"id":"review","memberId":"rev","prompt":"重启前评审 RESTART-REBIND QUOTAFAILFOR:`+original+`","writeLock":"none"}]}`)
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
+	}) {
+		t.Fatal("额度任务未进入 waiting_input")
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/rev", `{"sessionId":"`+replacement+`","version":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("重启前换绑失败: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/spare", `{"enabled":false,"version":3}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("重启前下线备用成员失败: %d %s", response.Code, response.Body.String())
+	}
+
+	env2 := reopenTeamIntegrationEnv(t, dataDir)
+	stored := env2.store.Team(teamID)
+	if stored.Members[1].SessionID != replacement || !stored.Members[1].Enabled || stored.Members[2].Enabled || stored.ReviewerID != "rev" {
+		t.Fatalf("重启后成员绑定、启停或团队角色丢失: %+v", stored)
+	}
+	if status := env2.runDetail(t, teamID, runID)["status"]; status != "waiting_input" {
+		t.Fatalf("重启后 Run 应保持 waiting_input: %s", status)
+	}
+	env2.drive(t, 400*time.Millisecond, func() bool { return false })
+	if records := readTeamPrompts(t, dataDir); len(records) != 1 {
+		t.Fatalf("重启后的等待态 Run 不得自动重发: %v", records)
+	}
+
+	response = env2.request(http.MethodPatch, "/api/teams/"+teamID+"/members/spare", `{"enabled":true,"version":4}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("重启后恢复成员上线失败: %d %s", response.Code, response.Body.String())
+	}
+	response = env2.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/resume", `{}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("重启后恢复 Run 失败: %d %s", response.Code, response.Body.String())
+	}
+	if !env2.drive(t, teamIntegrationWait, func() bool {
+		return env2.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		t.Fatalf("重启后接替任务未完成: %v", env2.runDetail(t, teamID, runID))
+	}
+	records := readTeamPrompts(t, dataDir)
+	if len(records) != 2 || records[0].session != original || records[1].session != replacement {
+		t.Fatalf("重启前后应分别使用原会话和持久化的接替会话: %v", records)
+	}
+}
+
+func TestTeamMemberConcurrentEditRequiresRefreshAndPreservesOtherChanges(t *testing.T) {
+	env := newTeamIntegrationEnv(t, t.TempDir())
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	dev := env.createMemberSession(t, "dev-sess", "执行")
+	rev := env.createMemberSession(t, "rev-sess", "评审")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"dev","sessionId":"`+dev+`","role":"member"},{"id":"rev","sessionId":"`+rev+`","role":"member"}]`)
+
+	response := env.request(http.MethodPatch, "/api/teams/"+teamID, `{"reviewerId":"rev","version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("第一个客户端设置评审失败: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/dev", `{"name":"过期名称","version":1}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("持有旧版本的并发修改应返回 409: %d %s", response.Code, response.Body.String())
+	}
+	stored := env.store.Team(teamID)
+	if stored.Version != 2 || stored.ReviewerID != "rev" || stored.Members[1].Name != "" {
+		t.Fatalf("版本冲突不得覆盖其他客户端的修改: %+v", stored)
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/dev", `{"name":"刷新后名称","version":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("刷新后重试应成功: %d %s", response.Code, response.Body.String())
+	}
+	stored = env.store.Team(teamID)
+	if stored.Version != 3 || stored.ReviewerID != "rev" || stored.Members[1].Name != "刷新后名称" {
+		t.Fatalf("刷新后重试应同时保留两个客户端的修改: %+v", stored)
+	}
+}
+
+func TestTeamMemberRebindRejectsCrossProjectAndDuplicateSession(t *testing.T) {
+	dataDir := t.TempDir()
+	env := newTeamIntegrationEnv(t, dataDir)
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	original := env.createMemberSession(t, "dev-original", "原执行")
+	other := env.createMemberSessionIn(t, "other-project", t.TempDir(), "其他项目会话")
+	project := "acp:" + hashProject(dataDir)
+	response := env.request(http.MethodPost, "/api/teams", `{"name":"项目团队","project":"`+project+`","members":[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"dev","sessionId":"`+original+`","role":"member"}]}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("创建项目团队失败: %d %s", response.Code, response.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	response = env.request(http.MethodPatch, "/api/teams/"+created.ID+"/members/dev", `{"sessionId":"`+other+`","version":1}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "项目空间不一致") {
+		t.Fatalf("跨项目换绑应被拒绝: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+created.ID+"/members/dev", `{"sessionId":"`+lead+`","version":1}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "已被成员") {
+		t.Fatalf("重复绑定其他成员会话应被拒绝: %d %s", response.Code, response.Body.String())
+	}
+	stored := env.store.Team(created.ID)
+	if stored.Version != 1 || stored.Members[1].SessionID != original || stored.Members[1].Role != team.RoleMember || stored.LeadID != "lead" {
+		t.Fatalf("非法换绑不得留下部分修改: %+v", stored)
+	}
+}
