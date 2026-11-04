@@ -1304,7 +1304,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		return
 	}
 	_, session, resolveErr := s.resolver.Resolve(member.SessionID)
-	if sessionNotFound(resolveErr) {
+	if sessionRecreationNeeded(resolveErr) {
 		if err := s.recoverMissingMemberSession(team, member, cwd); err != nil {
 			s.failDispatch(state, runID, taskID, err.Error())
 			return

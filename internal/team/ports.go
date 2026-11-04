@@ -65,7 +65,8 @@ type SessionResolver interface {
 }
 
 // SessionRecreator 是可选的会话恢复端口：仅在 session/load 明确报告会话
-// 不存在时创建同 Agent、cwd 的替代会话；调用方负责回写成员绑定。
+// 不存在或确定无法恢复（如 zcode 血缘链损坏）时创建同 Agent、cwd 的替代
+// 会话；调用方负责回写成员绑定。
 type SessionRecreator interface {
 	Recreate(agentKind, threadID, cwd string) (sessionID string, err error)
 }

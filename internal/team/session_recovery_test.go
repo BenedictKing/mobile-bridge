@@ -22,29 +22,36 @@ func (r *fakeRecreatingResolver) Recreate(agentKind, threadID, cwd string) (stri
 	return r.newID, nil
 }
 
-func TestDispatchRecreatesMissingSessionAndRebindsMember(t *testing.T) {
-	h := newActionsExecHarness(t)
-	recreator := &fakeRecreatingResolver{fakeResolver: h.resolver, newID: "s-new"}
-	h.service.resolver = recreator
-	h.resolver.setUnopenable("s-dev", errors.New("Session not found"))
-	run := &Run{ID: "run-ex", TeamID: h.team.ID, Status: RunDispatching, Tasks: []Task{{
-		ID: "task", MemberID: "dev", Prompt: "继续执行", Status: TaskPlanned, WriteLock: TaskWriteLockNone,
-	}}}
-	state := h.saveExecRun(t, run)
-	h.service.executeDispatch(state, h.team, h.team.Policy, h.team.ID, run.ID, "task", "/tmp/dev")
+func TestDispatchRecreatesUnrecoverableSessionAndRebindsMember(t *testing.T) {
+	for _, resolveErr := range []error{
+		errors.New("Session not found"),
+		errors.New("Internal error: zcode resume failed: project.session-lineage-invalid"),
+	} {
+		t.Run(resolveErr.Error(), func(t *testing.T) {
+			h := newActionsExecHarness(t)
+			recreator := &fakeRecreatingResolver{fakeResolver: h.resolver, newID: "s-new"}
+			h.service.resolver = recreator
+			h.resolver.setUnopenable("s-dev", resolveErr)
+			run := &Run{ID: "run-ex", TeamID: h.team.ID, Status: RunDispatching, Tasks: []Task{{
+				ID: "task", MemberID: "dev", Prompt: "继续执行", Status: TaskPlanned, WriteLock: TaskWriteLockNone,
+			}}}
+			state := h.saveExecRun(t, run)
+			h.service.executeDispatch(state, h.team, h.team.Policy, h.team.ID, run.ID, "task", "/tmp/dev")
 
-	if recreator.calls != 1 {
-		t.Fatalf("丢失会话应只重建一次，实际 %d", recreator.calls)
-	}
-	if member := memberOf(h.store.Team(h.team.ID), "dev"); member.SessionID != "s-new" {
-		t.Fatalf("成员绑定未回写: %+v", member)
-	}
-	entry, ok := h.queue.firstEntry("s-new")
-	if !ok || entry.text == "" {
-		t.Fatalf("原任务未派发到新会话: %+v", entry)
-	}
-	if len(h.queue.entriesFor("s-dev")) != 0 {
-		t.Fatal("恢复后不得继续向旧会话派发")
+			if recreator.calls != 1 {
+				t.Fatalf("无法恢复的会话应只重建一次，实际 %d", recreator.calls)
+			}
+			if member := memberOf(h.store.Team(h.team.ID), "dev"); member.SessionID != "s-new" {
+				t.Fatalf("成员绑定未回写: %+v", member)
+			}
+			entry, ok := h.queue.firstEntry("s-new")
+			if !ok || entry.text == "" {
+				t.Fatalf("原任务未派发到新会话: %+v", entry)
+			}
+			if len(h.queue.entriesFor("s-dev")) != 0 {
+				t.Fatal("恢复后不得继续向旧会话派发")
+			}
+		})
 	}
 }
 
@@ -71,19 +78,22 @@ func TestSessionRecoveryFailureFallsBackToLeadTriage(t *testing.T) {
 	}
 }
 
-func TestSessionNotFoundMatchIsSpecific(t *testing.T) {
-	if !sessionNotFound(errors.New("session/load: Session not found")) {
+func TestSessionRecreationMatchIsSpecific(t *testing.T) {
+	if !sessionRecreationNeeded(errors.New("session/load: Session not found")) {
 		t.Fatal("明确的会话缺失应触发恢复")
 	}
-	if sessionNotFound(errors.New("permission denied")) || sessionNotFound(nil) {
+	if sessionRecreationNeeded(errors.New("permission denied")) || sessionRecreationNeeded(nil) {
 		t.Fatal("其他打开失败不得触发会话重建")
 	}
 	// zcode 后端已清理会话（ACP SDK 包成 Internal error，details 由 acp.go 拼回）。
-	if !sessionNotFound(errors.New("Internal error: ⚠ 会话 x 已被后端清理，该线程无法恢复——请新建会话")) ||
-		!sessionNotFound(errors.New("Internal error: ⚠ session x no longer exists in the backend")) {
+	if !sessionRecreationNeeded(errors.New("Internal error: ⚠ 会话 x 已被后端清理，该线程无法恢复——请新建会话")) ||
+		!sessionRecreationNeeded(errors.New("Internal error: ⚠ session x no longer exists in the backend")) {
 		t.Fatal("后端已清理的会话属确定缺失，应触发恢复")
 	}
-	if sessionNotFound(errors.New("Internal error")) {
+	if !sessionRecreationNeeded(errors.New("Internal error: zcode resume failed: project.session-lineage-invalid")) {
+		t.Fatal("zcode 血缘链损坏属确定无法恢复，应触发团队成员会话重建")
+	}
+	if sessionRecreationNeeded(errors.New("Internal error")) {
 		t.Fatal("空泛的 Internal error 不得触发会话重建")
 	}
 }
