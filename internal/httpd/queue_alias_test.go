@@ -1,6 +1,8 @@
 package httpd
 
 import (
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,6 +180,36 @@ func TestACPQueueLineageInvalidFailsFast(t *testing.T) {
 	}
 	if loads := len(recordedFileLines(agentDir, "loads.txt")); loads > 2 {
 		t.Fatalf("session/load attempts = %d, want at most 2 (no retry ladder)", loads)
+	}
+}
+
+func TestACPReconnectReusesLiveLazyAlias(t *testing.T) {
+	agentDir := t.TempDir()
+	server, manager := newLazyQueueServer(t, agentDir, true)
+	defer manager.Close()
+	created, err := manager.Create(queuePlaceholder, agentDir, "仍在运行", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapping := `{"` + queuePlaceholder + `":{"zcodeSid":"` + queueBackend + `"}}`
+	if err := os.WriteFile(filepath.Join(agentDir, "acp-lazy-sessions.json"), []byte(mapping), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, authSession, err := server.Auth.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrf, _ := authSession.MustGet("csrf").(string)
+	response := featureRequest(server, token, csrf, http.MethodPost,
+		"/api/sessions/"+queueBackend+"/reconnect?cwd="+url.QueryEscape(agentDir), `{"activate":true}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("live alias must not be resumed again: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if loads := recordedFileLines(agentDir, "loads.txt"); len(loads) != 0 {
+		t.Fatalf("reconnect spawned another session/load: %v", loads)
+	}
+	if manager.Get(queuePlaceholder) != created || manager.Get(queueBackend) != created {
+		t.Fatal("reconnect did not preserve the original live handle")
 	}
 }
 

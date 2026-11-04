@@ -1981,13 +1981,12 @@ func optionValues(option *jsoncompat.Object) map[string]bool {
 func (m *Manager) Peek(id string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	session := m.sessions[id]
+	key := m.openKey(id)
+	session := m.sessions[key]
 	if session == nil {
-		// The handle may live under the canonical id (lazy placeholder alias);
-		// only misses pay the resolution cost.
-		if key := m.openKey(id); key != id {
-			session = m.sessions[key]
-		}
+		// A newly materialized backend id can be the reverse alias of the live
+		// placeholder handle, so reconnect must reuse it just like Open does.
+		session = m.liveAliasLocked(key)
 	}
 	return session
 }
