@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ type SessionManager interface {
 	LiveSessions() map[string]string
 	BusyReasonsExcept(ignore map[string]bool) []string
 	Reattach(id, cwd string, timeout time.Duration) error
+	CloseSession(id string)
 }
 
 // BusyError means the switch was refused because work is in flight; the HTTP
@@ -396,6 +398,11 @@ func (m *Manager) switchZcode(ctx context.Context, targetID, trigger string, ses
 		failed := []string{}
 		for id, cwd := range sessions.LiveSessions() {
 			if reattachErr := sessions.Reattach(id, cwd, reattachTimeout); reattachErr != nil {
+				if strings.Contains(reattachErr.Error(), "project.session-lineage-invalid") {
+					sessions.CloseSession(id)
+					log.Printf("账号池: zcode 会话 %s 血缘无效，关闭旧句柄并继续切换", id)
+					continue
+				}
 				failed = append(failed, id+": "+reattachErr.Error())
 			}
 		}

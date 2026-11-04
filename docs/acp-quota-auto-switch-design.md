@@ -266,7 +266,7 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - 编排器为 `internal/accpool/auto.go` 的 `AutoSwitcher`；入口有两条：**被动钩子**（`cmd/gateway/poolhooks.go` 的 `poolQuotaHook`，挂在 AutoContinue 链首位，用 `jev.ContinueContext`+`jev.QuotaStop` 初筛疑似额度故障）与**轮询预警**（`poller.go` 刷新当前账号后越过窗口阈值即回调 `OnExhausted`；普通窗口与周/月窗口默认均为 99%，按 agent 独立配置）；
   - 误报防护（开放问题 3 的当前方案）：被动事件先用 jev 规则初筛，再 `RefreshQuota` 复确认——只有额度数据确实越过阈值才真正切换，瞬时 429 不误切；真实语料校准仍待收集；
   - 门控全部基于 `history.jsonl`（重启不丢）：切换冷却 10 分钟、每小时最多 6 次、24h 内切走 3 次即放弃该账号、最紧窗口距重置不足 5 分钟时宁可等待；无可用账号时发通知而不动作；
-  - 目标选择（`decide.go` 的 `ChooseTarget`）：逐候选刷新额度，选最紧窗口余量最大者，并列取最久未用；
+  - 目标选择（`decide.go` 的 `ChooseTarget`）：逐候选刷新额度，刷新失败直接剔除（不得用旧额度快照参选），选最紧窗口余量最大者，并列取最久未用；
   - 切换续跑走 `ResumeAfterSwitchPrompt` 独立预算 `MaxSwitchResume = 3`（不占用 `MaxAutoContinue`），人为操作同时重置两个计数；切换时 `ignoreBusy` 放行被打断的失败会话本身；
   - 开关与三项阈值持久化在 `<dataDir>/pool/settings.json`（自动切换默认启用，`GATEWAY_POOL_AUTOSWITCH=0` 全局关闭），`POST /api/pool/{kind}/settings` 保存后立即生效；ZCode 轮询按普通切换阈值与重置卡核销阈值中的较低者先触发，核销阈值默认 98%；
   - 通知复用 `internal/notifications` 的渠道配置。
@@ -277,7 +277,7 @@ ACP 子进程重启后，会话能否续上取决于 agent 自身：
   - `internal/accpool/zcode.go`：enc:v1 加解密（AES-256-GCM，key=sha256(secret)，与 zcode-switcher 的 zcodeCrypto.js 交叉验证——JS 生成的密文 Go 可解）、账号指纹（config provider apiKey 的 JWT payload → userId/shortId，邮箱 → `em-<djb2>` 去重 id）、候选 token 收集（zcodejwttoken → oauth access_token → config apiKey，加密值解密失败即跳过）；
   - 额度查询（`queryZcodeQuota`）：billing/current+balance（Bearer、app_version/platform 参数、429 退避 0.5/1.5/4s、全 401 等 1.5s 重试一次），全灭后兜底 BigModel monitor（authorization 裸 token、code==200 校验）；归一化为池内 `Quota.Limits`（balance.balances 逐项成窗，无明细时聚合总数合成单窗；monitor 的 TOKENS_LIMIT/TIME_LIMIT → "Token 用量"/"MCP 用量"）；resetTime 统一归一为 RFC3339 供自动切换门控解析；
   - 池内 zcode 账号仍用单文件 `<id>.json`（Account 增加 `credentials`/`config`/`provider` 字段，与 §4.1 的 snap+meta 对设计有出入——导入时折叠，池内格式保持统一）；
-  - 切换（`switchZcode`）：镜像 zcode-switcher 的安全策略——**ZCode 桌面端运行时会回写 slot 文件，切换前先 SIGTERM 关闭（8s 超时则拒绝），切换完成后 best-effort 重启**（darwin `open`）；关闭后重读并保存旧账号最后的 slot 回写，原子写双文件、写后指纹核验、重挂失败回滚；切换前仅用自有池快照调 billing/current 校验，不读取 zcode-switcher 的运行时快照；
+  - 切换（`switchZcode`）：镜像 zcode-switcher 的安全策略——**ZCode 桌面端运行时会回写 slot 文件，切换前先 SIGTERM 关闭（8s 超时则拒绝），切换完成后 best-effort 重启**（darwin `open`）；关闭后重读并保存旧账号最后的 slot 回写，原子写双文件、写后指纹核验、普通重挂失败回滚；`project.session-lineage-invalid` 的旧会话血缘已永久损坏，关闭旧句柄后继续切换，不再回滚到耗尽账号；切换前仅用自有池快照调 billing/current 校验，不读取 zcode-switcher 的运行时快照；
   - 官方 ZCode 当前没有客户端 `zcodeJWT` 续期实现，确认过期后必须重新登录；全 401 标记 `reauth_required`。活跃账号每次额度刷新前回收同身份的官方 slot，持续更新自己的池快照，身份不符时不覆盖；
   - `Kinds()` 加入 zcode 后，轮询预警、`poolQuotaHook` 自动切换续跑、settings 开关、通知全部自动生效（阶段 3 的链路本来就是 kind 参数化的）；
   - 前端 pool.js 参数化为双面板（Kimi/ZCode），app.js/index.html 各挂一个实例；

@@ -318,6 +318,29 @@ func TestZcodeSwitchRollbackOnReattachFailure(t *testing.T) {
 	}
 }
 
+func TestZcodeSwitchClosesBrokenLineageSession(t *testing.T) {
+	m, _, targets := setupZcodeFixture(t)
+	sessions := &fakeSM{
+		live: map[string]string{"sess-broken": "/tmp"},
+		failWith: map[string]string{
+			"sess-broken": "Internal error: zcode resume failed: project.session-lineage-invalid",
+		},
+	}
+	if err := m.Switch(context.Background(), "zcode", targets[1].ID, "manual", sessions, nil); err != nil {
+		t.Fatalf("permanently broken session must not roll back the account switch: %v", err)
+	}
+	if got := m.activeID("zcode"); got != targets[1].ID {
+		t.Fatalf("active id after switch: %q", got)
+	}
+	if len(sessions.closed) != 1 || sessions.closed[0] != "sess-broken" {
+		t.Fatalf("broken session must be closed: %v", sessions.closed)
+	}
+	history := m.History("zcode", 10)
+	if len(history) != 1 || !history[0].OK {
+		t.Fatalf("history: %+v", history)
+	}
+}
+
 func TestZcodeSwitchReadsBackDriftedSlot(t *testing.T) {
 	m, home, targets := setupZcodeFixture(t)
 	// The desktop app rewrote the slot after the snapshot was taken.
@@ -849,6 +872,32 @@ func TestZcodeRefreshQuotaSuccess(t *testing.T) {
 	}
 }
 
+func TestChooseTargetZcodeRequiresFreshQuota(t *testing.T) {
+	m, _, targets := setupZcodeFixture(t)
+	candidate := targets[1]
+	candidate.Quota = &Quota{Limits: []*WindowQuota{{Name: "Token 用量", Used: 1, Limit: 100}}}
+	candidate.QuotaUpdatedAt = 1
+	if err := m.saveAccount("zcode", candidate); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
+	restoreMonitor := zcodeMonitorURLs
+	zcodeBillingCurrentURL = server.URL + "/billing/current"
+	zcodeBillingBalanceURL = server.URL + "/billing/balance"
+	zcodeMonitorURLs = []string{server.URL + "/monitor/quota"}
+	t.Cleanup(func() {
+		zcodeBillingCurrentURL, zcodeBillingBalanceURL, zcodeMonitorURLs = restoreCurrent, restoreBalance, restoreMonitor
+	})
+
+	if target := m.ChooseTarget(context.Background(), "zcode", targets[0].ID, 0.95, defaultLongTermThreshold); target != nil {
+		t.Fatalf("stale quota must not make a failed refresh eligible: %+v", target)
+	}
+}
+
 // --- coding-plan reset cards ----------------------------------------------------
 
 // zcodeResetFixture pools zra (slot, exhausted five-hour window) and zrb
@@ -1079,6 +1128,31 @@ func TestAutoSwitchZcodeFallsThroughWithoutCard(t *testing.T) {
 	}
 	if got := m.activeID("zcode"); got != "zrb" {
 		t.Fatalf("switch target: %q", got)
+	}
+}
+
+func TestAutoSwitchZcodeDoesNotRestoreExhaustedAccountForBrokenLineage(t *testing.T) {
+	m, _ := zcodeResetFixture(t)
+	stubZcodeResetAPI(t, 0)
+	sessions := &fakeSM{
+		live: map[string]string{"sess-broken": "/tmp"},
+		failWith: map[string]string{
+			"sess-broken": "Internal error: zcode resume failed: project.session-lineage-invalid",
+		},
+	}
+	auto := NewAutoSwitcher(m)
+	auto.now = m.now
+	auto.Sessions = func(kind string) SessionManager { return sessions }
+
+	switched, err := auto.HandleQuotaExhaustion(context.Background(), "zcode", "")
+	if err != nil || !switched {
+		t.Fatalf("broken lineage must not restore the exhausted account: switched=%v err=%v", switched, err)
+	}
+	if got := m.activeID("zcode"); got != "zrb" {
+		t.Fatalf("healthy target must remain active: %q", got)
+	}
+	if len(sessions.closed) != 1 || sessions.closed[0] != "sess-broken" {
+		t.Fatalf("broken session must be closed: %v", sessions.closed)
 	}
 }
 

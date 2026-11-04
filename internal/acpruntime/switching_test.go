@@ -45,6 +45,19 @@ func TestLiveSessionsAndBusyReasons(t *testing.T) {
 	}
 }
 
+func TestCloseSessionRemovesHandleFromLiveSet(t *testing.T) {
+	m := New("")
+	session := newStubSession("s-broken", "/tmp/a")
+	m.sessions[session.ID] = session
+	m.CloseSession(session.ID)
+	if !session.IsClosed() {
+		t.Fatal("session process handle must be closed")
+	}
+	if live := m.LiveSessions(); len(live) != 0 {
+		t.Fatalf("closed session must leave the live set: %+v", live)
+	}
+}
+
 func TestBusyReasonsExceptIgnoresEitherSessionAlias(t *testing.T) {
 	for _, test := range []struct {
 		name      string

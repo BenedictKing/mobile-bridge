@@ -41,18 +41,24 @@ type fakeSM struct {
 	live       map[string]string
 	busy       []string
 	failOn     map[string]bool
+	failWith   map[string]string
 	reattached []string
+	closed     []string
 }
 
 func (f *fakeSM) LiveSessions() map[string]string            { return f.live }
 func (f *fakeSM) BusyReasonsExcept(map[string]bool) []string { return f.busy }
 func (f *fakeSM) Reattach(id, cwd string, _ time.Duration) error {
+	if message := f.failWith[id]; message != "" {
+		return errors.New(message)
+	}
 	if f.failOn[id] {
 		return errors.New("session/load 被拒绝")
 	}
 	f.reattached = append(f.reattached, id)
 	return nil
 }
+func (f *fakeSM) CloseSession(id string) { f.closed = append(f.closed, id) }
 
 // setupSwitchFixture creates a pool with accounts u_a (occupying the slot)
 // and u_b, both with tokens far from expiry.

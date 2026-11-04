@@ -102,7 +102,7 @@ func (m *Manager) ChooseTarget(ctx context.Context, kind, currentID string, thre
 		// Refresh failures (dead token, network) simply drop the candidate;
 		// RefreshQuota has already marked reauth_required where applicable.
 		fresh, err := m.RefreshQuota(ctx, kind, candidate.ID)
-		if err != nil && fresh.Quota == nil {
+		if err != nil {
 			continue
 		}
 		if !availableForSwitch(kind, fresh, threshold, longTermThreshold) {

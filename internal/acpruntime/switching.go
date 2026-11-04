@@ -103,3 +103,18 @@ func (m *Manager) Reattach(id, cwd string, timeout time.Duration) error {
 	_, err := m.Reconcile(id, cwd, timeout)
 	return err
 }
+
+// CloseSession tears down a session whose old-credentials process cannot be
+// kept after an account switch. A later open creates a fresh handle.
+func (m *Manager) CloseSession(id string) {
+	key := m.openKey(id)
+	m.mu.Lock()
+	session := m.sessions[key]
+	if session == nil {
+		session = m.liveAliasLocked(key)
+	}
+	m.mu.Unlock()
+	if session != nil {
+		session.Close()
+	}
+}
