@@ -168,3 +168,62 @@ test('vertical graph with skip dependencies fits the phone content width',()=>{
   assert.ok(layout.width<=320,`纵向图宽度 ${layout.width} 超过手机内容区`);
   assert.ok(Object.values(layout.nodes).every(node=>node.width===180));
 });
+
+test('task_stopped projects cancelled without waiting for a detail refetch',()=>{
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
+  screen.detail={tasks:[{id:'a',status:'running'}]};
+  screen.applyEvent({type:'task_stopped',payload:{taskId:'a',status:'cancelled',stopReason:'用户取消运行'}});
+  assert.equal(screen.detail.tasks[0].status,'cancelled');
+  screen.applyEvent({type:'task_stopped',payload:{taskId:'a',stopReason:'依赖分支已终止，任务不再执行'}});
+  assert.equal(screen.detail.tasks[0].status,'stopped');
+  screen.applyEvent({type:'task_stopped',payload:{taskId:'a',stopReason:'superseded_by_first_success'}});
+  assert.equal(screen.detail.tasks[0].status,'cancelled');
+});
+
+test('the reducing run state names the verification gate',()=>{
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
+  assert.equal(screen.runBadge('reducing').textContent,'Verifying');
+});
+
+test('closing a run invalidates its pending initial read',async()=>{
+  let resolveDetail;
+  const detail=new Promise(resolve=>{resolveDetail=resolve;});
+  const root=new FakeNode('div');
+  const screen=new TeamRunScreen({root,request:url=>url.endsWith('/r1')?detail:Promise.resolve(team)});
+  const opening=screen.openRun('t1','r1');
+  screen.close();
+  resolveDetail({id:'r1',tasks:[]});
+  await opening;
+  assert.equal(screen.detail,null);
+  assert.equal(screen.stopFn,null);
+});
+
+test('an older detail response cannot overwrite a newer event',async()=>{
+  let resolveDetail;
+  const detail=new Promise(resolve=>{resolveDetail=resolve;});
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:()=>detail});
+  screen.teamId='t1';screen.runId='r1';
+  screen.detail={tasks:[{id:'a',status:'running'}]};
+  const reading=screen.refetch();
+  screen.lastSeq=2;
+  screen.applyEvent({type:'task_completed',payload:{taskId:'a'}});
+  resolveDetail({tasks:[{id:'a',status:'running'}]});
+  await reading;
+  clearTimeout(screen.refetchTimer);
+  assert.equal(screen.detail.tasks[0].status,'completed');
+});
+
+test('an older detail response cannot overwrite a meta-only run transition',async()=>{
+  let resolveDetail;
+  const detail=new Promise(resolve=>{resolveDetail=resolve;});
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:()=>detail});
+  screen.teamId='t1';screen.runId='r1';
+  screen.detail={status:'dispatching',tasks:[]};
+  const reading=screen.refetch();
+  screen._lastMetaJSON='{"status":"waiting_input"}';
+  screen.detail.status='waiting_input';
+  resolveDetail({status:'dispatching',tasks:[]});
+  await reading;
+  clearTimeout(screen.refetchTimer);
+  assert.equal(screen.detail.status,'waiting_input');
+});

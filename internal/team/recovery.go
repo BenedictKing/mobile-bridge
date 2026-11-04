@@ -231,7 +231,7 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 			}
 		case EventTaskStopped:
 			terminal[taskID] = &journalTerminal{
-				status:     TaskStopped,
+				status:     taskStoppedStatus(event),
 				stopReason: payloadString(event.Payload, "stopReason"),
 				outcome:    payloadString(event.Payload, "outcome"),
 				attempt:    payloadInt(event.Payload, "attempt"),
@@ -409,6 +409,18 @@ func ReconcileRun(run *Run, events []*Event, probe Probe) []Transition {
 	return transitions
 }
 
+// 旧 task_stopped 无 status；三种固定取消原因对应快照中的 cancelled。
+func taskStoppedStatus(event *Event) string {
+	if status := payloadString(event.Payload, "status"); status == TaskCancelled || status == TaskStopped {
+		return status
+	}
+	switch payloadString(event.Payload, "stopReason") {
+	case "用户取消运行", "队列消息已被取消", StopReasonSupersededByFirstSuccess:
+		return TaskCancelled
+	}
+	return TaskStopped
+}
+
 // ReconcileUnknown 是 outcome_unknown 任务的只读重探决策（§8.3 第 6 条 +
 // §12 阶段四工作项 2「运行中状态刷新」，纯函数）：仅遍历快照
 // status=outcome_unknown 且携带派发凭据（SentText/SubmissionID）的任务，按
@@ -505,6 +517,7 @@ func applyReconciledUnknown(run *Run, transitions []Transition, source string) [
 				payload["stopReason"] = transition.StopReason
 			}
 		default: // task_stopped（cancelled 迁移）
+			payload["status"] = transition.Status
 			payload["stopReason"] = transition.StopReason
 		}
 		if task.Attempt > 0 {

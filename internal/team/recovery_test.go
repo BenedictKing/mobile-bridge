@@ -280,6 +280,37 @@ func TestReconcileRunJournalWinsOverSnapshot(t *testing.T) {
 	}
 }
 
+func TestTaskStoppedCancellationSurvivesJournalReplay(t *testing.T) {
+	cases := []struct {
+		name, reason, status, want string
+	}{
+		{"explicit cancellation", "用户取消运行", TaskCancelled, TaskCancelled},
+		{"explicit stop wins over legacy reason", "用户取消运行", TaskStopped, TaskStopped},
+		{"legacy user cancellation", "用户取消运行", "", TaskCancelled},
+		{"legacy first success", StopReasonSupersededByFirstSuccess, "", TaskCancelled},
+		{"legacy queue cancellation", "队列消息已被取消", "", TaskCancelled},
+		{"ordinary stop", "依赖分支已终止，任务不再执行", "", TaskStopped},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]any{"taskId": "a", "stopReason": tc.reason}
+			if tc.status != "" {
+				payload["status"] = tc.status
+			}
+			event := journalEvent("run-1", EventTaskStopped, 1, payload)
+			run := inflightRun(Task{ID: "a", Status: TaskRunning})
+			transition, ok := findTransition(ReconcileRun(run, []*Event{event}, newFakeProbe()), TransitionTaskStatus, "a")
+			if !ok || transition.Status != tc.want {
+				t.Fatalf("reconcile status = %+v, want %s", transition, tc.want)
+			}
+			applyJournalEventToRun(run, event)
+			if run.Tasks[0].Status != tc.want {
+				t.Fatalf("rebuilt status = %s, want %s", run.Tasks[0].Status, tc.want)
+			}
+		})
+	}
+}
+
 func TestReconcileRunDefensiveBranches(t *testing.T) {
 	t.Run("终态 run 无需对账", func(t *testing.T) {
 		run := inflightRun(Task{ID: "a", MemberID: "dev", Status: TaskRunning, SubmissionID: "sub-1"})
@@ -955,9 +986,8 @@ func TestRefreshRunReconcilesUnknownWithoutResend(t *testing.T) {
 
 // TestRefreshRunCancelledUnknownAcrossRestart 账本确凿 cancelled 的纠正与
 // 跨重启归一：纠正落 TaskCancelled + task_stopped(reconciled)（阶段一事件表
-// 没有 task_cancelled，照用户取消先例）；重启对账按 journal last-wins 把快照
-// 一次性归一为 stopped（ReconcileRun 的 task_stopped 重放），waiting_input
-// 驻留与 Resume 语义不受影响。
+// 没有 task_cancelled，照用户取消先例）；重启对账按 journal last-wins
+// 保持 cancelled，Resume 后 Run 也按取消终局收口。
 func TestRefreshRunCancelledUnknownAcrossRestart(t *testing.T) {
 	h := newDispatchHarness(t)
 	sub := submissionOf(h, "run-cancel", "unk")
@@ -982,23 +1012,23 @@ func TestRefreshRunCancelledUnknownAcrossRestart(t *testing.T) {
 	if !eventOrderOK(h.service, run.ID, EventTaskOutcomeUnknown, EventTaskStopped) {
 		t.Fatal("事件序应为 task_outcome_unknown → task_stopped(reconciled)")
 	}
-	// 重启对账：journal 佐证（task_stopped）last-wins，快照归一 stopped。
+	// 重启对账：journal 佐证（task_stopped）last-wins，仍为 cancelled。
 	if err := h.service.RecoverRun(run.ID); err != nil {
 		t.Fatalf("重启对账失败: %v", err)
 	}
-	if task := h.taskOf(run.ID, "unk"); task.Status != TaskStopped {
-		t.Fatalf("重启重放应把 cancelled 归一为 stopped（journal 佐证），实际 %s", task.Status)
+	if task := h.taskOf(run.ID, "unk"); task.Status != TaskCancelled {
+		t.Fatalf("重启重放应保留 cancelled（journal 佐证），实际 %s", task.Status)
 	}
 	if fresh := h.store.Run(run.ID); fresh.Status != RunWaitingInput {
 		t.Fatalf("重启对账后 run 应仍驻留 waiting_input，实际 %s", fresh.Status)
 	}
-	// Resume 收口：无 outcome 的 stopped 不重飞，fold 落 RunStopped。
+	// Resume 收口：已确认的 cancelled 不重飞，fold 落 RunCancelled。
 	resumed, err := h.service.Resume(run.ID)
 	if err != nil {
 		t.Fatalf("Resume 应可达: %v", err)
 	}
-	if resumed.Status != RunStopped {
-		t.Fatalf("Resume 后应 fold 出 RunStopped，实际 %s", resumed.Status)
+	if resumed.Status != RunCancelled {
+		t.Fatalf("Resume 后应 fold 出 RunCancelled，实际 %s", resumed.Status)
 	}
 }
 

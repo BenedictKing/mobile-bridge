@@ -57,12 +57,11 @@ function teamUUID(){
   if(typeof crypto!=='undefined'&&typeof crypto.randomUUID==='function')return crypto.randomUUID();
   return Date.now().toString(16)+'-'+Math.random().toString(16).slice(2)+'-'+Math.random().toString(16).slice(2,10);
 }
-const TEAM_RUN_STATUS_LABELS={created:'已创建',dispatching:'派发中',collecting:'收集中',reducing:'汇总中',completed:'已完成',waiting_input:'等待确认',paused:'已暂停',failed:'已失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'结果未知'};
+const TEAM_RUN_STATUS_LABELS={created:'已创建',dispatching:'派发中',collecting:'收集中',reducing:'验证中',completed:'已完成',waiting_input:'等待确认',paused:'已暂停',failed:'已失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'结果未知'};
 const TEAM_TASK_STATUS_LABELS={planned:'已规划',ready:'就绪',dispatching:'派发中',running:'运行中',completed:'已完成',failed:'已失败',cancelled:'已取消',outcome_unknown:'结果未知',stopped:'已停止'};
 const TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
-/* 事件类型 → 任务状态（服务端事件行不携带 status 字段，状态由 type 推导；
-   task_stopped 在用户取消 Run 时也用于 cancelled 任务——cancel 后的整页
-   重读会立即校正。task_cache_hit 是 amend 缓存命中：任务直接携带父 Run 结果
+/* 事件类型 → 任务状态；task_stopped 的 payload.status 区分 cancelled/stopped，
+   旧 journal 的取消原因由下方兼容。task_cache_hit 是 amend 缓存命中：任务直接携带父 Run 结果
    完成（§6.4.1）；action、question、invalid_action_block 事件的 payload.taskId
    指向来源任务、无任务状态语义，不进此表）。 */
 const TEAM_EVENT_TASK_STATUS={task_dispatching:'dispatching',task_running:'running',task_completed:'completed',task_failed:'failed',task_stopped:'stopped',task_outcome_unknown:'outcome_unknown',task_retry_scheduled:'ready',task_cache_hit:'completed'};
@@ -1001,7 +1000,7 @@ class TeamRunScreen{
   constructor({root,request,openChat,onUnauthorized,onNavigateAway}){
     Object.assign(this,{root,request,openChat,onUnauthorized,onNavigateAway});
     this.teamId=null;this.runId=null;this.team=null;this.detail=null;this.meta=null;
-    this.epoch='';this.lastSeq=-1;this.generation=0;
+    this.epoch='';this.lastSeq=-1;this.generation=0;this.refetchRequest=0;
     this.stopFn=null;this.refetchTimer=null;this.actionError='';
     this.terminalSynced=false; // 终态后的整页补读只做一次
     this.refetchFailures=0;    // 补读失败的有限重试计数
@@ -1183,7 +1182,12 @@ class TeamRunScreen{
     const tasks=this.detail.tasks||(this.detail.tasks=[]);
     const task=tasks.find(x=>x.id===taskID);
     if(!task)return; // 计划外/未知任务：交给整页重读兜底
-    const status=TEAM_EVENT_TASK_STATUS[event.type];
+    let status=TEAM_EVENT_TASK_STATUS[event.type];
+    if(event.type==='task_stopped'){
+      const reason=payload.stopReason;
+      const legacyCancelled=reason==='用户取消运行'||reason==='队列消息已被取消'||reason==='superseded_by_first_success';
+      status=payload.status==='cancelled'||payload.status!=='stopped'&&legacyCancelled?'cancelled':'stopped';
+    }
     if(status)task.status=status;
     if(payload.submissionId)task.submissionId=payload.submissionId;
     // 阶段二 payload 增量：停靠分类（错误策略表）与 worktree 基线（diff 入口）。
@@ -1204,11 +1208,14 @@ class TeamRunScreen{
     this.refetchTimer=setTimeout(()=>this.refetch(),delay);
   }
   async refetch(){
-    const generation=this.generation;
+    const generation=this.generation,request=++this.refetchRequest;
+    const epoch=this.epoch,sequence=this.lastSeq,metaJSON=this._lastMetaJSON;
     if(!this.teamId||!this.runId)return;
     try{
       const detail=await this.request(this.runUrl(''));
       if(generation!==this.generation)return;
+      if(request!==this.refetchRequest)return;
+      if(epoch!==this.epoch||sequence!==this.lastSeq||metaJSON!==this._lastMetaJSON){this.scheduleRefetch(0);return;}
       this.detail=detail;
       this.refetchFailures=0;
       // 拿到权威快照后解除 decision 卡的 busy：已作答的问题转灰态；仍 open 的
@@ -1218,7 +1225,7 @@ class TeamRunScreen{
     }catch{
       // 连接问题交给 transport 重连；此处有限重试，避免终态帧后的唯一一次
       // 补读失败把任务卡永远留在旧状态。
-      if(generation!==this.generation||!this.stopFn)return;
+      if(generation!==this.generation||request!==this.refetchRequest||!this.stopFn)return;
       if(++this.refetchFailures<=5)this.scheduleRefetch(1000);
     }
   }
@@ -1461,6 +1468,7 @@ class TeamRunScreen{
     this.onNavigateAway&&this.onNavigateAway();
   }
   close(){
+    this.generation++;
     clearTimeout(this.refetchTimer);this.refetchTimer=null;
     if(this.stopFn){this.stopFn();this.stopFn=null;}
   }

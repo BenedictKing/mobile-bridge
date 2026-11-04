@@ -772,7 +772,10 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		markRebuildActionExecuted(run, payloadString(event.Payload, "actionKey"))
 	case EventTaskOutcomeUnknown:
 		task.Status = TaskOutcomeUnknown
-	case EventTaskStopped, EventTaskInputHashMismatch:
+	case EventTaskStopped:
+		task.Status = taskStoppedStatus(event)
+		task.Outcome = payloadString(event.Payload, "outcome")
+	case EventTaskInputHashMismatch:
 		task.Status = TaskStopped
 		task.Outcome = payloadString(event.Payload, "outcome")
 	}

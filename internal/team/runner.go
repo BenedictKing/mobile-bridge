@@ -1666,6 +1666,7 @@ func (s *Service) stopTaskWorkspaceLost(state *runState, runID, taskID, workspac
 			newEvent(runID, EventWorkspaceLost, "runner", lostPayload),
 			newEvent(runID, EventTaskStopped, "runner", map[string]any{
 				"taskId":     taskID,
+				"status":     TaskStopped,
 				"stopReason": stopReason,
 			}),
 		}
@@ -1724,6 +1725,7 @@ func (s *Service) cascadeBlockedLocked(state *runState, runID string) {
 				statuses[task.ID] = TaskStopped
 				events = append(events, newEvent(fresh.ID, EventTaskStopped, "runner", map[string]any{
 					"taskId":     task.ID,
+					"status":     TaskStopped,
 					"stopReason": task.StopReason,
 				}))
 				break
@@ -2218,6 +2220,9 @@ func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome
 			payload["stopReason"] = stopReason
 		}
 	default: // task_stopped / task_outcome_unknown
+		if eventType == EventTaskStopped {
+			payload["status"] = status
+		}
 		payload["stopReason"] = stopReason
 	}
 	return newEvent(run.ID, eventType, source, payload), true
@@ -2994,6 +2999,7 @@ func (s *Service) Cancel(runID string) (*Run, error) {
 				task.StopReason = "用户取消运行"
 				events = append(events, newEvent(fresh.ID, EventTaskStopped, "user", map[string]any{
 					"taskId":     task.ID,
+					"status":     TaskCancelled,
 					"stopReason": task.StopReason,
 				}))
 				if task.SubmissionID == "" {
@@ -3517,6 +3523,9 @@ func applyTransitions(run *Run, transitions []Transition, source string) ([]*Eve
 				}
 				if transition.EventType != "" {
 					payload := map[string]any{"taskId": task.ID}
+					if transition.EventType == EventTaskStopped {
+						payload["status"] = transition.Status
+					}
 					if transition.Outcome != "" {
 						payload["outcome"] = transition.Outcome
 					}

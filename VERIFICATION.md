@@ -1,3 +1,10 @@
+## 团队状态转换与 Run 页面竞态复核（2026-11-04）
+
+- `task_stopped` 同时承载 `cancelled` 和 `stopped`。此前重启对账及 journal 重建一律还原为 `stopped`，会改写用户取消、`first_success` 淘汰分支和队列撤销的任务终态，甚至把已确认取消的 Run 折成 `stopped`。现在新事件写入 `payload.status`，旧事件按固定取消原因兼容，前端增量投影也按同一状态展示。
+- Run 页面关闭时递增代次，晚到的初始读取不能重新渲染或订阅；详情补读若落后于事件游标、Run meta 或另一轮补读则丢弃并重取，避免把已完成任务刷回运行中、把等待确认刷回派发中。
+- 当前 `reducing` 是验证闸门阶段，Run 徽标由“汇总中”改为“验证中”；`planning`/`collecting` 目前仅保留兼容常量，不再画入主流程图。
+- 本地回归：`TestTaskStoppedCancellationSurvivesJournalReplay` 覆盖旧/新事件的对账和 journal 重建；Node Run UI 测试覆盖取消投影、验证态徽标及晚到请求。`go test ./...`、`go test -race ./internal/team`、`go vet ./...` 与 `node --test tests/*.js`（112 项）均通过。未重启现有网关，运行中的实例须由用户决定何时重启以加载改动。
+
 ## 网络恢复实测（2026-10-18）
 
 - 场景：只读会话页面在视口内，CDP `Network.emulateNetworkConditions` 断网 4–6 秒再恢复；断网期间页面停留在 100 行，在线事件触发后 `navigator.onLine=true`、页面收到 1 次 `online`。

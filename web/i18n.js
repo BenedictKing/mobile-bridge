@@ -1470,6 +1470,7 @@ const en={
   "派发中": "Dispatching",
   "收集中": "Collecting",
   "汇总中": "Reducing",
+  "验证中": "Verifying",
   "已完成": "Completed",
   "等待确认": "Waiting for you",
   "已失败": "Failed",

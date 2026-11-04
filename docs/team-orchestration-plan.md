@@ -248,20 +248,23 @@ planned → ready → dispatching → running → completed
                                   └──────→ stopped
 ```
 
-`failed` 表示计划或任务自身的确定性错误，重放仍会失败，必须修订 Plan 或创建新 Attempt；`cancelled` / `stopped` 表示用户、Agent、Provider 或网关中断，可通过对账或恢复继续；`outcome_unknown` 表示外部副作用是否发生尚未确认，禁止自动重发。
+`failed` 通常表示确定性错误，不自动重发；明确分类为限流或瞬时错误时可受限重试。`cancelled` 是取消终态，不重派；`stopped` 表示停靠或被依赖阻断，只有额度、认证或未配置等可恢复停靠才会在用户继续后重派。`outcome_unknown` 表示外部副作用是否发生尚未确认，禁止自动重发。
+
+实际执行还存在受限重试 `failed → ready` 和用户继续后的停靠重派 `stopped → ready`；两者均使用递增的 attempt 和新的 submission ID。`outcome_unknown` 只有用户确认不再重发后才转为 `stopped`。`first_success` 淘汰分支与用户取消使用 `cancelled`，不能在重启重放时降成普通 `stopped`。
 
 Run 状态：
 
 ```text
-created → planning → dispatching → collecting → reducing → completed
-                                  ├────────────→ waiting_input
-                                  ├────────────→ failed
-                                  ├────────────→ cancelled
-                                  ├────────────→ stopped
-                                  └────────────→ outcome_unknown
+created → dispatching ────────→ completed
+              │       └→ reducing（验证闸门）→ completed
+              ├→ paused ──────────────┐
+              ├→ waiting_input ───────┤→ dispatching / reducing
+              └→ failed / cancelled / stopped / outcome_unknown
 ```
 
 Run 没有用户验收状态（2026-10-31 移除 `deliveryStatus`）。成员直接写工作区，“接受”不会让改动生效，“丢弃”也不会回滚文件，这样的验收只是一个标签。完成的 Run 只展示交付证据，用户认为有问题时在团队聊天继续反馈，或通过 amend 修订。旧快照中的 `deliveryStatus` 读入即丢弃，旧 journal 中的 `run_delivery_updated` 事件在重建时忽略。
+
+上图是当前主路径示意；`planning`、`collecting` 常量保留兼容，但当前执行流不进入。`waiting_input` 也可在用户继续后直接折叠到终态。验证闸门失败停在 `waiting_input`，用户继续后重验；`paused`/`waiting_input` 期间在途任务仍会结算，但 Run 不自动折叠。
 
 ## 5. 编排协议
 
@@ -739,11 +742,12 @@ question_opened
 question_resolved
 run_waiting_input
 run_completed
-run_delivery_updated
 run_failed
 ```
 
 事件流只推送有界 payload。需要查看完整输出时，客户端跳转到成员的原始 session timeline。
+
+`task_stopped` 的 `payload.status` 明确为 `cancelled` 或 `stopped`。旧 journal 无该字段时，固定取消原因（用户取消、`superseded_by_first_success`、队列撤销）仍按 `cancelled` 重建；其他原因按 `stopped`。Run 页先按事件更新任务状态，再补读权威详情；关闭页面或游标前进后到达的旧补读不能覆盖新状态。
 
 ## 11. 前端交互
 
