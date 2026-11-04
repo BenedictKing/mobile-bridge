@@ -1,7 +1,8 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#38450f',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
+  const defaults={theme:'system',accent:'#38450f',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',defaultCompact:'main',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
+  const compactLevels=['bare','full','main','latest','gateway','gateway-full','gateway-latest'];
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
     return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
@@ -10,6 +11,7 @@ const ChatAppearance=(()=>{
       codeSize:Number.isInteger(value.codeSize)&&value.codeSize>=11&&value.codeSize<=17?value.codeSize:defaults.codeSize,
       density:['compact','standard','relaxed'].includes(value.density)?value.density:defaults.density,
       enterMode:['newline','send'].includes(value.enterMode)?value.enterMode:defaults.enterMode,
+      defaultCompact:compactLevels.includes(value.defaultCompact)?value.defaultCompact:defaults.defaultCompact,
       showReasoning:typeof value.showReasoning==='boolean'?value.showReasoning:defaults.showReasoning,
       showProcess:typeof value.showProcess==='boolean'?value.showProcess:defaults.showProcess,
       showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts,
@@ -68,6 +70,7 @@ if(typeof document!=='undefined')(()=>{
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';
     get('appearance-activity').checked=settings.showActivity;get('appearance-reasoning').checked=settings.showReasoning;get('appearance-process').checked=settings.showProcess;
     get('appearance-enter-mode').value=settings.enterMode;updateSendHint();
+    if(get('appearance-compact'))get('appearance-compact').value=settings.defaultCompact;
     document.querySelectorAll('[data-accent]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.accent===settings.accent.toLowerCase())));
   }
   function change(values){preserveReading(()=>{settings=ChatAppearance.normalize({...settings,...values});apply();save();});}
@@ -116,6 +119,7 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-code').oninput=()=>change({codeSize:Number(get('appearance-code').value)});
   get('appearance-density').onchange=()=>change({density:get('appearance-density').value});
   get('appearance-enter-mode').onchange=()=>change({enterMode:get('appearance-enter-mode').value});
+  if(get('appearance-compact'))get('appearance-compact').onchange=()=>change({defaultCompact:get('appearance-compact').value});
   get('appearance-reasoning').onchange=()=>change({showReasoning:get('appearance-reasoning').checked});
   get('appearance-activity').onchange=()=>change({showActivity:get('appearance-activity').checked});
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
@@ -150,7 +154,7 @@ if(typeof document!=='undefined')(()=>{
   }else get('gateway-change').hidden=true;
   get('appearance-reset').onclick=()=>change(ChatAppearance.defaults);
   system.addEventListener('change',()=>{if(settings.theme==='system')preserveReading(apply);});
-  window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false)};
+  window.BridgePresentation={resizeMessage,relabel,openChat:()=>{setCollapsed(false);requestAnimationFrame(resizeMessage);},showError:()=>setCollapsed(false),defaultCompact:()=>settings.defaultCompact};
   apply();relabel();resizeMessage();
   document.body.classList.toggle('chat-detail',!get('app').hidden&&get('app').classList.contains('chat-open'));
 })();
