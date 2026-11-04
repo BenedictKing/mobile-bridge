@@ -395,6 +395,21 @@ func promptNotSubmitted(err error) bool {
 	return errors.As(err, &acpErr) && acpErr.Kind == acp.KindUnavailable
 }
 
+// sessionLineageInvalid reports the wrapper's deterministic lineage refusal:
+// after a gateway restart a lazy placeholder (or a backend session whose
+// parent chain is broken) fails session/load the same way every time, so
+// retrying cannot help — the entry must fail at once and reach team triage
+// instead of climbing the ten-step requeue ladder.
+func sessionLineageInvalid(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "lineage")
+}
+
+// lineageInvalidMessage keeps the wrapper's own reason visible while telling
+// the user what actually helps: rebind or recreate the session.
+func lineageInvalidMessage(err error) string {
+	return "会话血缘校验失败，无法恢复此会话（" + err.Error() + "）；请重新绑定成员或新建会话后重试"
+}
+
 func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution, entry *submissionEntry) (dispatchOutcome, string) {
 	manager, session := resolution.manager, resolution.session
 	if session == nil {
@@ -404,6 +419,11 @@ func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution
 		}
 		opened, err := manager.Open(threadID, cwd, manager.InitializeTimeout)
 		if err != nil {
+			if sessionLineageInvalid(err) {
+				// Deterministic refusal (even after alias resolution): retrying
+				// the same id can only fail again.
+				return outcomeFailed, lineageInvalidMessage(err)
+			}
 			// The process may be gone entirely: the prompt provably never
 			// reached the agent.
 			return outcomeRequeue, err.Error()

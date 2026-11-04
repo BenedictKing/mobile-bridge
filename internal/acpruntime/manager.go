@@ -587,6 +587,11 @@ func (m *Manager) Knows(id string) bool {
 	}
 	m.mu.Lock()
 	_, live := m.sessions[id]
+	if !live {
+		if key := m.openKey(id); key != id {
+			_, live = m.sessions[key]
+		}
+	}
 	m.mu.Unlock()
 	if live {
 		return true
@@ -677,6 +682,44 @@ func (m *Manager) canonicalUnlocked(id string) string {
 	return m.Canonical(id)
 }
 
+// openKey normalizes a requested session id onto the id the agent itself must
+// be addressed by. Lazy agents (zcode) hand out a placeholder from
+// session/new and materialize the backend sess_* id on the first prompt;
+// after a gateway restart session/load with the placeholder is refused with a
+// lineage error, so the placeholder and its canonical id must resolve to one
+// handle keyed by the canonical id. Unknown or unmaterialized placeholders
+// keep the requested id (they may still load, exactly as before).
+func (m *Manager) openKey(id string) string {
+	if canonical := m.canonicalUnlocked(id); canonical != "" && canonical != id {
+		return canonical
+	}
+	return id
+}
+
+// liveAliasLocked returns a live handle registered under another id that
+// resolves to key: Create keeps the placeholder key while its own wrapper
+// still owns the session, and the lazy mapping only appears after the first
+// prompt. Reusing that handle is what keeps concurrent opens of the two ids
+// on one wrapper. Callers hold m.mu.
+func (m *Manager) liveAliasLocked(key string) *Session {
+	if m.Created == nil {
+		return nil
+	}
+	for _, row := range m.Created.Rows(m.Kind) {
+		other, _ := row.MustGet("sessionId").(string)
+		if other == "" || other == key {
+			continue
+		}
+		if m.canonicalLocked(other) != key {
+			continue
+		}
+		if session := m.sessions[other]; session != nil && !session.IsClosed() {
+			return session
+		}
+	}
+	return nil
+}
+
 func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, error) {
 	process, err := m.start()
 	if err != nil {
@@ -732,13 +775,21 @@ func (m *Manager) OpenHistory(id, cwd string) (*Session, error) {
 }
 
 func (m *Manager) open(id, cwd string, timeout time.Duration, history bool) (*Session, error) {
+	// One canonical key per underlying session: session/load, prompts and the
+	// handle registry all address the backend id, whichever alias the caller
+	// (team binding, list row, queue entry) holds.
+	key := m.openKey(id)
 	for {
 		m.mu.Lock()
-		if session := m.sessions[id]; session != nil && !session.IsClosed() {
+		if session := m.sessions[key]; session != nil && !session.IsClosed() {
 			m.mu.Unlock()
 			return session, nil
 		}
-		if done, ok := m.opening[id]; ok {
+		if session := m.liveAliasLocked(key); session != nil {
+			m.mu.Unlock()
+			return session, nil
+		}
+		if done, ok := m.opening[key]; ok {
 			// Another caller is opening this id; wait and re-check instead of
 			// opening a parallel handle. Through an Agent Host every open is a
 			// new connection that re-registers the sessionId routing, so a
@@ -748,18 +799,18 @@ func (m *Manager) open(id, cwd string, timeout time.Duration, history bool) (*Se
 			continue
 		}
 		done := make(chan struct{})
-		m.opening[id] = done
+		m.opening[key] = done
 		m.mu.Unlock()
 
 		var fresh *Session
 		var err error
 		if history {
-			fresh, err = m.openNativeHistory(id, cwd)
+			fresh, err = m.openNativeHistory(key, cwd)
 		} else {
-			fresh, err = m.openControlled(id, cwd, timeout)
+			fresh, err = m.openControlled(key, cwd, timeout)
 		}
 		m.mu.Lock()
-		delete(m.opening, id)
+		delete(m.opening, key)
 		close(done)
 		if err != nil {
 			m.mu.Unlock()
@@ -767,7 +818,7 @@ func (m *Manager) open(id, cwd string, timeout time.Duration, history bool) (*Se
 		}
 		m.generation++
 		fresh.generation = m.generation
-		m.sessions[id] = fresh
+		m.sessions[key] = fresh
 		m.mu.Unlock()
 		return fresh, nil
 	}
@@ -799,26 +850,29 @@ func (m *Manager) openControlled(id, cwd string, timeout time.Duration) (*Sessio
 // untouched — the caller refuses the mutation. Concurrent attaches
 // single-flight per id so a burst of writes spawns one wrapper.
 func (m *Manager) Attach(id, cwd string, timeout time.Duration) (*Session, error) {
+	// Upgrade decisions key on the canonical id too, or a placeholder attach
+	// would miss the read-only view stored under it and skip the upgrade.
+	key := m.openKey(id)
 	m.mu.Lock()
-	if done := m.attaching[id]; done != nil {
+	if done := m.attaching[key]; done != nil {
 		m.mu.Unlock()
 		<-done
-		return m.Open(id, cwd, timeout)
+		return m.Open(key, cwd, timeout)
 	}
-	current := m.sessions[id]
+	current := m.sessions[key]
 	if current == nil || current.IsClosed() || !current.ReadOnly() || current.DesktopOwned() {
 		m.mu.Unlock()
-		return m.Open(id, cwd, timeout)
+		return m.Open(key, cwd, timeout)
 	}
 	done := make(chan struct{})
 	if m.attaching == nil {
 		m.attaching = map[string]chan struct{}{}
 	}
-	m.attaching[id] = done
+	m.attaching[key] = done
 	m.mu.Unlock()
-	fresh, err := m.Reconcile(id, cwd, timeout)
+	fresh, err := m.Reconcile(key, cwd, timeout)
 	m.mu.Lock()
-	delete(m.attaching, id)
+	delete(m.attaching, key)
 	m.mu.Unlock()
 	close(done)
 	return fresh, err
@@ -827,12 +881,13 @@ func (m *Manager) Attach(id, cwd string, timeout time.Duration) (*Session, error
 // Reconcile creates and fully loads a new ACP handle before replacing the
 // current one. Readers never observe a half-loaded session.
 func (m *Manager) Reconcile(id, cwd string, timeout time.Duration) (*Session, error) {
-	fresh, err := m.openControlled(id, cwd, timeout)
+	key := m.openKey(id)
+	fresh, err := m.openControlled(key, cwd, timeout)
 	if err != nil {
 		return nil, err
 	}
 	m.mu.Lock()
-	old := m.sessions[id]
+	old := m.sessions[key]
 	if old != nil {
 		old.mu.Lock()
 		old.active = false
@@ -840,7 +895,7 @@ func (m *Manager) Reconcile(id, cwd string, timeout time.Duration) (*Session, er
 	}
 	m.generation++
 	fresh.generation = m.generation
-	m.sessions[id] = fresh
+	m.sessions[key] = fresh
 	m.mu.Unlock()
 	if old != nil {
 		old.Close()
@@ -1922,6 +1977,13 @@ func optionValues(option *jsoncompat.Object) map[string]bool {
 func (m *Manager) Get(id string) *Session {
 	m.mu.Lock()
 	session := m.sessions[id]
+	if session == nil {
+		// The handle may live under the canonical id (lazy placeholder alias);
+		// only misses pay the resolution cost.
+		if key := m.openKey(id); key != id {
+			session = m.sessions[key]
+		}
+	}
 	m.mu.Unlock()
 	if session != nil {
 		session.Touch()
@@ -2427,12 +2489,17 @@ func (s *Session) IsClosed() bool {
 // to every gateway connection, so each session must drop traffic addressed
 // to a sibling; zcode's first-prompt stream may already carry the
 // materialized backend id, which Canonical maps back to the placeholder.
+// The check is symmetric: a handle keyed by either id accepts updates that
+// name the other.
 func (s *Session) ownsUpdate(params *jsoncompat.Object) bool {
 	sid, _ := params.MustGet("sessionId").(string)
 	if sid == "" || sid == s.ID {
 		return true
 	}
-	return s.canonical != nil && s.canonical(s.ID) == sid
+	if s.canonical == nil {
+		return false
+	}
+	return s.canonical(s.ID) == sid || s.canonical(sid) == s.ID
 }
 
 func (s *Session) onNotification(message *jsoncompat.Object) {
@@ -2686,8 +2753,12 @@ func (m *Manager) skillCatalog(session *Session, rawQuery string, wanted []strin
 // Drop closes one live session handle and forgets it (session delete/hide);
 // the agent's own stored session is not touched. A later Open re-reads it.
 func (m *Manager) Drop(id string) {
+	key := m.openKey(id)
 	m.mu.Lock()
-	session := m.sessions[id]
+	session := m.sessions[key]
+	if session == nil {
+		session = m.liveAliasLocked(key)
+	}
 	if session != nil {
 		delete(m.sessions, session.ID)
 	}
