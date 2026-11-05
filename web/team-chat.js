@@ -291,26 +291,25 @@ class TeamChatController{
       if(stageTasks.length>1)caption.append(this.node('span',t_safe('并行')+' '+stageTasks.length,'team-workflow-stage-parallel'));
       stage.append(caption);
       const lanes=this.node('div',undefined,'team-workflow-lanes');
-      for(const [position,task] of stageTasks.entries()){
+      for(const task of stageTasks){
         const member=members.get(task.memberId)||{},status=task.status||'planned';
         const failed=status==='failed'||status==='outcome_unknown';
-        const chain=position<stageTasks.length-1?' continued':(index<rows.length-1?' chain':'');
-        const station=this.node('div',undefined,'team-workflow-station '+status+chain);
+        const station=this.node('div',undefined,'team-workflow-station');
+        station.dataset.status=status;
         station.title=String(task.instructionsHead||task.prompt||'').trim();
         station.setAttribute('aria-label',teamWorkflowTaskTitle(task)+' · '+t_safe(teamTaskStatusLabel(status)));
-        station.append(this.node('span',undefined,'team-workflow-lamp'));
-        const body=this.node('div',undefined,'team-workflow-body');
-        body.append(this.node('span',teamWorkflowTaskTitle(task),'team-workflow-step'));
+        const nodeHead=this.node('div',undefined,'team-workflow-node-head');
+        nodeHead.append(this.node('strong',teamWorkflowTaskTitle(task),'team-workflow-step'));
+        const badge=typeof teamStatusBadge==='function'?teamStatusBadge(status,TEAM_TASK_STATUS_LABELS):this.node('span',t_safe(teamTaskStatusLabel(status)),'team-badge b-'+status);
+        nodeHead.append(badge);
+        station.append(nodeHead);
         const who=this.node('span',undefined,'team-workflow-member');
-        const dot=this.node('i',undefined,'team-workflow-agent');
-        if(member.agentKind)dot.setAttribute('data-agent',member.agentKind);
-        who.append(dot,this.node('span',teamWorkflowMemberLabel(member,task),'team-workflow-member-label'));
-        body.append(who);
+        who.append(this.node('span',teamWorkflowMemberLabel(member,task),'team-workflow-member-label team-graph-kind'));
+        station.append(who);
         // 失败/停靠的站点直接说出原因（Run 详情里也是这句），省掉一次跳转；全文放 title。
         const outcome=status==='stopped'&&TEAM_WORKFLOW_OUTCOME_LABELS[task.outcome];
         const reason=failed?t_safe(String(task.error||'').trim()):outcome?t_safe(outcome):'';
-        if(reason){const line=this.node('span',reason,'team-workflow-reason');line.title=reason;body.append(line);}
-        station.append(body);
+        if(reason){const line=this.node('span',reason,'team-workflow-reason');line.title=reason;station.append(line);}
         lanes.append(station);
       }
       stage.append(lanes);

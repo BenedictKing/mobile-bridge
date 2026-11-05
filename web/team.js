@@ -1333,15 +1333,15 @@ class TeamRunScreen{
     head.append(this.node('h3',t('阶段图')));
     head.append(this.node('span',nodes.length+' '+t('个任务'),'team-graph-count'));
     box.append(head);
-    // Run 正文中央列约 760px：三节点链可横向完整展示，更长链改纵向，
-    // 避免桌面端最右节点落到隐藏滚动区；手机一律纵向。
+    // Run 正文中央列约 760px：三节点链可横向完整展示，更长链改纵向；
+    // 手机使用全宽分层卡片，避免并行分支的 DAG 画布超出内容区。
     const compact=typeof globalThis.matchMedia==='function'&&globalThis.matchMedia('(max-width:720px)').matches;
     const direction=compact||nodes.length>3?'TB':'LR';
     const heightFor=node=>{
       const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
-      return 76+(node.resultHead?42:0)+(aggregate&&this.graphOpen.has(node.id)?node.memberIds.length*22+12:0);
+      return 92+(node.resultHead?42:0)+(aggregate&&this.graphOpen.has(node.id)?node.memberIds.length*22+12:0);
     };
-    const layout=teamGraphLayout(nodes,direction,heightFor);
+    const layout=compact?null:teamGraphLayout(nodes,direction,heightFor);
     if(layout){
       const canvas=this.node('div',undefined,'team-graph-canvas');
       const stage=this.node('div',undefined,'team-graph-stage');
@@ -1438,14 +1438,23 @@ class TeamRunScreen{
       if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}
     };
     const head=this.node('div',undefined,'team-graph-node-head');
-    head.append(this.node('strong',node.label||node.id));
+    const title=detailTask&&typeof teamWorkflowTaskTitle==='function'?teamWorkflowTaskTitle(detailTask):node.label||node.id;
+    head.append(this.node('strong',title));
     if(typeof node.runCount==='number'&&node.runCount>1)head.append(this.node('span','×'+node.runCount,'team-graph-runs'));
     head.append(this.taskBadge(detailTask?detailTask.status:node.status));
     card.append(head);
-    const kinds=Array.isArray(node.agentKinds)?node.agentKinds:[];
-    if(kinds.length){
+    const kinds=Array.isArray(node.agentKinds)?node.agentKinds:[],memberIds=Array.isArray(node.memberIds)?node.memberIds:[];
+    if(memberIds.length||kinds.length){
       const chips=this.node('div',undefined,'team-graph-kinds');
-      for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
+      if(memberIds.length){
+        for(const memberId of memberIds){
+          const member=this.teamMember(memberId);
+          const label=typeof teamWorkflowMemberLabel==='function'?teamWorkflowMemberLabel(member,{memberId}):(member?(member.name||member.id):memberId);
+          chips.append(this.node('span',label,'team-graph-kind'));
+        }
+      }else{
+        for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
+      }
       card.append(chips);
     }
     if(node.resultHead){

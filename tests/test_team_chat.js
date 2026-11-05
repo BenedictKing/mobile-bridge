@@ -62,8 +62,14 @@ test('workflow renders run tasks and supports member collapse and details',async
   const{root,controller,opened}=setup(detail);
   controller.setTeams(teams);controller.open(teams[0]);await flush();
   assert.equal(root.hidden,false);
-  assert.equal(find(root,'team-workflow-station').length,2);
+  const stations=find(root,'team-workflow-station');
+  assert.equal(stations.length,2);
+  assert.equal(stations[1].dataset.status,'running');
+  assert.equal(find(root,'team-workflow-lamp').length,0);
+  assert.equal(find(root,'team-workflow-node-head').length,2);
+  assert.equal(find(root,'team-badge').some(node=>node.className.includes('b-running')),true);
   assert.match(text(find(root,'team-workflow-member')[1]),/前端 · zcode/);
+  assert.equal(find(root,'team-workflow-member-label')[1].className.includes('team-graph-kind'),true);
   const toggle=find(root,'team-workflow-head')[0].children[2];
   toggle.onclick();
   assert.equal(find(root,'team-workflow-head')[0].children[2].attributes['aria-expanded'],'false');

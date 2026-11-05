@@ -140,12 +140,18 @@ test('dagre lays out task chains in reading direction with real dependency edges
 });
 
 test('graph renders positioned DOM nodes and SVG edges without duplicate dependency captions',()=>{
+  global.teamWorkflowTaskTitle=task=>task.prompt;
+  global.teamWorkflowMemberLabel=(member,task)=>member?member.name+' · '+member.agentKind:task.memberId;
   const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
-  screen.team=team;screen.detail={id:'r1',teamId:'t1',status:'running',tasks:[]};
+  screen.team=team;screen.detail={id:'r1',teamId:'t1',status:'running',tasks:[
+    {id:'lead',memberId:'kimi',status:'completed',prompt:'理解目标'},
+    {id:'review',memberId:'buddy',status:'running',prompt:'核对首页'},
+    {id:'summary',memberId:'kimi',status:'planned',prompt:'汇总结果'},
+  ]};
   screen.graph={loading:false,data:{nodes:[
-    {id:'lead',label:'lead',status:'completed',agentKinds:['kimi'],dependsOn:[]},
-    {id:'review',label:'lead-d1-0',status:'running',agentKinds:['workbuddy'],dependsOn:['lead']},
-    {id:'summary',label:'lead-d1-1',status:'planned',agentKinds:['kimi'],dependsOn:['lead','review']},
+    {id:'lead',label:'lead',status:'completed',memberIds:['kimi'],agentKinds:['kimi'],dependsOn:[]},
+    {id:'review',label:'lead-d1-0',status:'running',memberIds:['buddy'],agentKinds:['workbuddy'],dependsOn:['lead']},
+    {id:'summary',label:'lead-d1-1',status:'planned',memberIds:['kimi'],agentKinds:['kimi'],dependsOn:['lead','review']},
   ]}};
   const box=screen.renderGraph();
   const cards=find(box,'positioned');
@@ -154,7 +160,16 @@ test('graph renders positioned DOM nodes and SVG edges without duplicate depende
   assert.equal(find(box,'team-graph-deps').length,0);
   assert.ok(cards.every(card=>card.style.left&&card.style.top&&card.style.height));
   assert.equal(cards[1].dataset.status,'running');
+  assert.match(text(cards[0]),/理解目标/);
+  assert.match(text(cards[1]),/核对首页/);
+  assert.doesNotMatch(text(cards[1]),/lead-d1-0/);
+  assert.match(text(cards[1]),/workbuddy · workbuddy/);
   assert.equal(find(find(box,'team-graph-stage')[0],'team-graph-edges').length,1,'SVG 与节点必须共享居中坐标容器');
+  global.matchMedia=()=>({matches:true});
+  const mobile=screen.renderGraph();
+  assert.equal(find(mobile,'positioned').length,0,'手机端不使用超宽绝对定位画布');
+  assert.ok(find(mobile,'team-graph-layer').length>0,'手机端回退为全宽分层卡片');
+  delete global.matchMedia;
 });
 
 test('vertical graph with skip dependencies fits the phone content width',()=>{
