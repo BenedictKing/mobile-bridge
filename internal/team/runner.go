@@ -2973,6 +2973,16 @@ func (s *Service) slice() time.Duration {
 // （撤账本条目 / 取消会话 turn）。重复取消（已终态）返回冲突错误
 // （ErrRunFinished，HTTP 侧映射 409）。
 func (s *Service) Cancel(runID string) (*Run, error) {
+	return s.cancel(runID, nil)
+}
+
+// CancelParked only cancels the parked snapshot the caller confirmed. A
+// concurrent resume or update must not turn /new into cancellation of live work.
+func (s *Service) CancelParked(runID string, expectedVersion uint64) (*Run, error) {
+	return s.cancel(runID, &expectedVersion)
+}
+
+func (s *Service) cancel(runID string, expectedVersion *uint64) (*Run, error) {
 	state := s.stateFor(runID)
 	var targets []cancelTarget
 	err := func() error {
@@ -2984,6 +2994,10 @@ func (s *Service) Cancel(runID string) (*Run, error) {
 		}
 		if terminalRun(run.Status) {
 			return fmt.Errorf("%w: 当前状态 %s", ErrRunFinished, run.Status)
+		}
+		if expectedVersion != nil &&
+			(run.Version != *expectedVersion || run.Status != RunWaitingInput && run.Status != RunPaused) {
+			return fmt.Errorf("%w: Run 已发生变化", ErrVersionConflict)
 		}
 		team := s.store.Team(run.TeamID)
 		policy := policyOf(team)

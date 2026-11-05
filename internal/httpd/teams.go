@@ -1046,6 +1046,23 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 			return
 		}
 		h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
+	case "cancel-parked":
+		value, err := h.readJSON()
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		version, err := parseTeamVersion(value.(*jsoncompat.Object))
+		if err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return
+		}
+		run, err := h.server.Teams.CancelParked(runID, version)
+		if err != nil {
+			h.failTeamError(err)
+			return
+		}
+		h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
 	case "resume":
 		run, err := h.server.Teams.Resume(runID)
 		if err != nil {

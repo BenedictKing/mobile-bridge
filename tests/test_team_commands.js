@@ -80,3 +80,51 @@ test('command suggestions follow the chat mode',()=>{
   assert.equal(plain.composerCommandRows('nothing').length,0);
   assert.ok(plainRows.every(row=>row.label&&row.description),'rows need visible label and description');
 });
+
+function extractNewContext({runs=[],confirm=true,cancelError}={}){
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const start=source.indexOf('async function newTeamLeadContext(');
+  const end=source.indexOf('// 命令面板：',start);
+  assert.ok(start>=0&&end>start,'team /new flow not found in app.js');
+  const calls=[];
+  const context={
+    t:value=>value,encodeURIComponent,TEAM_TERMINAL_RUN_STATUSES:new Set(['completed','failed','cancelled','stopped','outcome_unknown']),
+    window:{confirm:message=>{calls.push(['confirm',message]);return confirm;}},
+    teamChat:{refreshRun:()=>calls.push(['refresh'])},
+    teamRequest:async(path,options)=>{
+      calls.push(['request',path,options]);
+      if(path.endsWith('/runs'))return{runs};
+      if(cancelError)throw cancelError;
+      return{status:'cancelled'};
+    },
+    leadContextAction:async()=>{calls.push(['new']);return{sessionId:'fresh'};},
+  };
+  vm.runInNewContext(source.slice(start,end)+'\nthis.newTeamLeadContext=newTeamLeadContext;',context);
+  return{run:()=>context.newTeamLeadContext({id:'team'},'old'),calls};
+}
+
+test('team /new cancels a confirmed parked run before switching lead',async()=>{
+  const flow=extractNewContext({runs:[{id:'run-1',status:'waiting_input',version:7}]});
+  assert.equal((await flow.run()).sessionId,'fresh');
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm','request','refresh','new']);
+  assert.deepEqual(JSON.parse(JSON.stringify(flow.calls[2])),['request','/api/teams/team/runs/run-1/cancel-parked',{method:'POST',body:{version:7}}]);
+  assert.match(flow.calls[1][1],/取消该 Run/);
+});
+
+test('team /new keeps a parked run when confirmation is declined',async()=>{
+  const flow=extractNewContext({runs:[{id:'run-1',status:'paused',version:4}],confirm:false});
+  assert.equal(await flow.run(),null);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm']);
+});
+
+test('team /new refuses an active run without cancelling it',async()=>{
+  const flow=extractNewContext({runs:[{id:'run-1',status:'dispatching',version:3}]});
+  await assert.rejects(flow.run(),/仍在执行/);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request']);
+});
+
+test('team /new does not switch lead when parked cancellation fails',async()=>{
+  const flow=extractNewContext({runs:[{id:'run-1',status:'waiting_input',version:7}],cancelError:Error('版本冲突')});
+  await assert.rejects(flow.run(),/版本冲突/);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm','request']);
+});

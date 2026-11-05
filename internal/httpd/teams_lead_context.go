@@ -147,7 +147,7 @@ func (h *handler) leadContextGuard(teamRow *team.Team, expectedSessionID string)
 	}
 	for _, run := range h.server.TeamStore.RunsByTeam(teamRow.ID) {
 		if !teamRunTerminal(run.Status) {
-			return errors.New("团队仍有未结束的 Run，请先暂停或等待完成后再操作主控上下文")
+			return errors.New("团队仍有未结束的 Run，请先完成或取消后再操作主控上下文")
 		}
 	}
 	if h.server.Queue != nil {

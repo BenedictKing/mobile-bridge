@@ -159,6 +159,49 @@ func TestLeadContextGuards(t *testing.T) {
 	}
 }
 
+func TestLeadContextNewAfterCancellingParkedRun(t *testing.T) {
+	env, teamID, lead, _ := leadContextEnv(t)
+	teamRow := env.store.Team(teamID)
+	run := &team.Run{ID: uuid.NewString(), TeamID: teamID, Goal: "停靠的任务", Status: team.RunWaitingInput,
+		Tasks: []team.Task{{ID: "pending", MemberID: "lead-1", Status: team.TaskPlanned}}}
+	if err := env.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	stored := env.store.Run(run.ID)
+	path := "/api/teams/" + teamID + "/runs/" + run.ID + "/cancel-parked"
+	newBody := `{"id":"` + uuid.NewString() + `","action":"new","version":` +
+		jsonUint(teamRow.Version) + `,"expectedSessionId":"` + lead + `"}`
+	if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/lead-context", newBody); response.Code != http.StatusConflict {
+		t.Fatalf("parked run must block /new before cancellation: %d %s", response.Code, response.Body.String())
+	}
+	if response := env.request(http.MethodPost, path, `{"version":`+jsonUint(stored.Version+1)+`}`); response.Code != http.StatusConflict {
+		t.Fatalf("stale version must not cancel parked run: %d %s", response.Code, response.Body.String())
+	}
+	if fresh := env.store.Run(run.ID); fresh.Status != team.RunWaitingInput {
+		t.Fatalf("stale cancellation changed run: %s", fresh.Status)
+	}
+	if response := env.request(http.MethodPost, path, `{"version":`+jsonUint(stored.Version)+`}`); response.Code != http.StatusOK {
+		t.Fatalf("cancel parked run: %d %s", response.Code, response.Body.String())
+	}
+	if fresh := env.store.Run(run.ID); fresh.Status != team.RunCancelled || fresh.Tasks[0].Status != team.TaskCancelled {
+		t.Fatalf("parked run not cancelled: %+v", fresh)
+	}
+	result := env.leadContext(t, teamID, newBody)
+	if result.SessionID == lead {
+		t.Fatal("/new did not switch lead after parked run was cancelled")
+	}
+	running := &team.Run{ID: uuid.NewString(), TeamID: teamID, Goal: "执行中的任务", Status: team.RunDispatching}
+	if err := env.store.SaveRun(running); err != nil {
+		t.Fatal(err)
+	}
+	running = env.store.Run(running.ID)
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+running.ID+"/cancel-parked",
+		`{"version":`+jsonUint(running.Version)+`}`)
+	if response.Code != http.StatusConflict || env.store.Run(running.ID).Status != team.RunDispatching {
+		t.Fatalf("running run must not be conditionally cancelled: %d %s", response.Code, response.Body.String())
+	}
+}
+
 // rebind（网关转录压缩后的换绑）：合法目标换绑、重复 rebind 幂等、其他成员
 // 占用的会话与未知会话拒绝。
 func TestLeadContextRebindValidates(t *testing.T) {
