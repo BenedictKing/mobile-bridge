@@ -1282,9 +1282,10 @@ func (h *handler) resolveProjectCwd(key any) string {
 	return ""
 }
 
-// projectListLimit caps how many projects /api/projects returns. Internal
-// callers (resolveProjectCwd, migration targets) pass 0 for the full list so
-// projects that aged out of the recent window still resolve by key.
+// projectListLimit caps how many recent projects /api/projects returns. Saved
+// desktop projects are returned in addition to this window. Internal callers
+// (resolveProjectCwd, migration targets) pass 0 for the full list so projects
+// that aged out of the recent window still resolve by key.
 const projectListLimit = 30
 
 type projectEntry struct {
@@ -1362,9 +1363,51 @@ func (h *handler) projectList(limit int) *jsoncompat.Object {
 			}
 		}
 	}
+	saved := []*projectEntry{}
+	savedSeen := map[string]bool{}
+	localProjects := readLocalProjects(h.server.CodexHome)
+	for id, roots := range localProjects.roots {
+		for _, cwd := range roots {
+			if cwd == "" {
+				continue
+			}
+			key := "codex:" + hashProject(cwd)
+			if savedSeen[key] {
+				continue
+			}
+			savedSeen[key] = true
+			entry := newProjectEntry(key, cwd, "codex", 0)
+			if name := localProjects.names[id]; name != "" {
+				entry.item.Set("name", name)
+			}
+			saved = append(saved, entry)
+			if limit == 0 && !seen[key] {
+				seen[key] = true
+				entries = append(entries, entry)
+			}
+		}
+	}
+	sort.Slice(saved, func(i, j int) bool {
+		left, _ := saved[i].item.MustGet("cwd").(string)
+		right, _ := saved[j].item.MustGet("cwd").(string)
+		return left < right
+	})
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].recency > entries[j].recency })
 	if limit > 0 {
 		entries = recentProjectEntries(entries, limit)
+		visible := map[string]bool{}
+		for _, entry := range entries {
+			cwd, _ := entry.item.MustGet("cwd").(string)
+			visible[filepath.Clean(cwd)] = true
+		}
+		for _, entry := range saved {
+			cwd, _ := entry.item.MustGet("cwd").(string)
+			if visible[filepath.Clean(cwd)] {
+				continue
+			}
+			entries = append(entries, entry)
+			visible[filepath.Clean(cwd)] = true
+		}
 	}
 	projects := &jsoncompat.Array{}
 	for _, entry := range entries {
