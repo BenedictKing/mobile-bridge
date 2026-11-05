@@ -83,6 +83,12 @@ func (p *localProjects) match(sessionID, cwd string) (string, bool) {
 			return id, true
 		}
 	}
+	return p.matchRoots(cwd)
+}
+
+// matchRoots is match() without the codex thread-assignment shortcut, so
+// non-codex agents join a desktop project only by working directory.
+func (p *localProjects) matchRoots(cwd string) (string, bool) {
 	normalized := strings.TrimRight(cwd, "/")
 	best, bestLen := "", -1
 	for id, roots := range p.roots {
@@ -100,15 +106,24 @@ func (p *localProjects) match(sessionID, cwd string) (string, bool) {
 	return best, best != ""
 }
 
-// decorateCodexRow mirrors AppHosts.decorate for the local codex host:
-// hostLabel, projectKey/projectName and the unified recency.
-func decorateCodexRow(projects *localProjects, row *jsoncompat.Object) {
-	cwd, _ := row.MustGet("cwd").(string)
-	id, _ := row.MustGet("id").(string)
-	projectKey, projectName := cwd, projectBaseName(cwd)
-	if projectID, ok := projects.match(id, cwd); ok {
-		projectKey = projectID
-		projectName = projects.names[projectID]
+// groupIdentity resolves the list-grouping fields (groupKey/groupName): codex
+// rows keep their explicit assignment priority, every other agent matches by
+// desktop-project root path alone, so sessions working in the same directory
+// share one group no matter which agent owns them. Sessions outside every
+// root fall back to the normalized working directory.
+func groupIdentity(projects *localProjects, sessionID, cwd string, byAssignment bool) (string, string) {
+	projectKey, projectName := strings.TrimRight(cwd, "/"), projectBaseName(cwd)
+	if projects != nil {
+		var projectID string
+		var ok bool
+		if byAssignment {
+			projectID, ok = projects.match(sessionID, cwd)
+		} else {
+			projectID, ok = projects.matchRoots(cwd)
+		}
+		if ok {
+			projectKey, projectName = projectID, projects.names[projectID]
+		}
 	}
 	if projectKey == "" {
 		projectKey = "unassigned"
@@ -116,9 +131,22 @@ func decorateCodexRow(projects *localProjects, row *jsoncompat.Object) {
 	if projectName == "" {
 		projectName = "未归类"
 	}
+	return "local|" + projectKey, projectName
+}
+
+// decorateCodexRow mirrors AppHosts.decorate for the local codex host:
+// hostLabel, projectKey/projectName and the unified recency. Codex 的
+// projectKey 与分组身份一致（显式归属优先），groupKey/groupName 供列表
+// 分组与其他 Agent 合并到同一组。
+func decorateCodexRow(projects *localProjects, row *jsoncompat.Object) {
+	cwd, _ := row.MustGet("cwd").(string)
+	id, _ := row.MustGet("id").(string)
+	key, name := groupIdentity(projects, id, cwd, true)
 	row.Set("hostLabel", "此电脑")
-	row.Set("projectKey", "local|"+projectKey)
-	row.Set("projectName", projectName)
+	row.Set("projectKey", key)
+	row.Set("projectName", name)
+	row.Set("groupKey", key)
+	row.Set("groupName", name)
 	row.Set("recency", recencyOf(row))
 }
 

@@ -83,6 +83,44 @@ func TestDecorateCodexRowMatchesAssignmentRootsAndFallbacks(t *testing.T) {
 	}
 }
 
+// 非 codex 行的分组身份：只按桌面项目根目录合组，不采纳 codex 线程的
+// 显式归属；目录不落在任何根下时按规范化 cwd 独立成组。
+func TestGroupIdentityForNonCodexAgents(t *testing.T) {
+	home := writeState(t, `{
+	  "local-projects": {
+	    "p1": {"id": "p1", "name": "alpha", "rootPaths": ["/tmp/x/a"]},
+	    "p2": {"id": "p2", "name": "beta", "rootPaths": ["/tmp/x/a/nested", "/tmp/y"]}
+	  },
+	  "thread-project-assignments": {
+	    "assigned": {"projectKind": "local", "projectId": "p1"}
+	  }
+	}`)
+	projects := readLocalProjects(home)
+
+	// 根目录下的会话（任意 Agent）并入对应桌面项目组。
+	if key, name := groupIdentity(projects, "kimi-1", "/tmp/x/a/deep", false); key != "local|p1" || name != "alpha" {
+		t.Fatalf("root-matched: key=%s name=%s", key, name)
+	}
+	// 嵌套根取最长匹配，与 codex 侧一致。
+	if key, name := groupIdentity(projects, "kimi-1", "/tmp/x/a/nested/deep", false); key != "local|p2" || name != "beta" {
+		t.Fatalf("nested: key=%s name=%s", key, name)
+	}
+	// 非 codex 行不读线程归属：同 id 走 codex 路径才会得到 p1。
+	if key, _ := groupIdentity(projects, "assigned", "/somewhere/else", false); key != "local|/somewhere/else" {
+		t.Fatalf("assignment must not leak: %s", key)
+	}
+	if key, _ := groupIdentity(projects, "assigned", "/somewhere/else", true); key != "local|p1" {
+		t.Fatalf("codex assignment should win: %s", key)
+	}
+	// 不在任何根下：规范化 cwd（去掉尾斜杠）独立成组。
+	if key, name := groupIdentity(projects, "kimi-1", "/tmp/z/other/", false); key != "local|/tmp/z/other" || name != "other" {
+		t.Fatalf("fallback: key=%s name=%s", key, name)
+	}
+	if key, name := groupIdentity(projects, "kimi-1", "", false); key != "local|unassigned" || name != "未归类" {
+		t.Fatalf("empty cwd: key=%s name=%s", key, name)
+	}
+}
+
 func TestProjectBaseNameEdges(t *testing.T) {
 	for path, want := range map[string]string{"/a/b/": "b", "b": "b", "": "", "/x": "x"} {
 		if got := projectBaseName(path); got != want {

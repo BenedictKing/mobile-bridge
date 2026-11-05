@@ -1121,12 +1121,14 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 	archived := queryValue(query, "archived", "false") == "true"
 	sessions := &jsoncompat.Array{}
 	agent := queryValue(query, "agent", "")
+	// 桌面项目归属同时服务 codex 行（显式归属优先）与 ACP 行（按根目录
+	// 匹配），两边的 groupKey 由同一份状态解析，保证同目录合组。
+	projects := readLocalProjects(h.server.CodexHome)
 	if h.server.Store != nil && (agent == "" || agent == "codex") {
 		rows, err := h.server.Store.List(text, 100+offset, 0, archived)
 		if err != nil {
 			return nil, err
 		}
-		projects := readLocalProjects(h.server.CodexHome)
 		for _, row := range rows {
 			if id, _ := row.MustGet("id").(string); h.server.hiddenSession(id) {
 				continue
@@ -1198,8 +1200,14 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 					if projectKey == "" {
 						projectKey = "unassigned"
 					}
+					// projectKey 维持按工作目录（新建聊天与预热按它分桶），
+					// groupKey/groupName 才是列表分组身份：落在桌面项目根
+					// 目录下的会话与其他 Agent 合到同一组。
+					groupKey, groupName := groupIdentity(projects, "", cwd, false)
 					item.Set("projectKey", "local|"+projectKey)
 					item.Set("projectName", projectName)
+					item.Set("groupKey", groupKey)
+					item.Set("groupName", groupName)
 					item.Set("recency", acpRecencyOf(row))
 					item.Set("connected", false)
 					sessions.Items = append(sessions.Items, item)

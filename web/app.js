@@ -201,27 +201,31 @@ function renderList(){
     const team=chat.host==='local'?teamChat?.teamForSession(chat.id):null;
     let parent=$('sessions');
     if(grouped){
-      const cwd=chat.projectKey.slice(chat.projectKey.indexOf('|')+1),project=chat.host==='local'?projectDirectory.find(row=>row.key===chat.projectKey||row.cwd===cwd):null;
-      if(!groups.has(chat.projectKey)){
+      // 分组身份用后端 groupKey：Codex 桌面项目与其根目录下其他 Agent 的
+      // 会话合为一个组；旧数据没有 groupKey 时退回 projectKey。
+      const groupKey=chat.groupKey||chat.projectKey, groupName=chat.groupName||chat.projectName;
+      // 团队入口按实际工作目录定位项目（桌面项目 ID 不是路径，从 projectKey 里取不到 cwd）。
+      const cwd=chat.cwd||chat.projectKey.slice(chat.projectKey.indexOf('|')+1),project=chat.host==='local'?projectDirectory.find(row=>row.key===chat.projectKey||row.cwd===cwd):null;
+      if(!groups.has(groupKey)){
         const details=el('details','project-group');
-        details.open=localStorage.getItem('group:'+chat.projectKey)!=='closed';
+        details.open=localStorage.getItem('group:'+groupKey)!=='closed';
         // 组头“＋”以组内最近会话预选项目打开新建聊天，省去在对话框里重新挑项目。
         const summary=el('summary');
-        summary.append(el('span','group-name',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+        summary.append(el('span','group-name',groupName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
         const add=el('button','group-add','＋');
         add.type='button';add.title=t('在此项目新建聊天');add.setAttribute('aria-label',t('在此项目新建聊天'));
         add.onclick=event=>{event.preventDefault();event.stopPropagation();openNewChat(chat);};
         summary.append(add);
         details.append(summary);
-        details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
+        details.ontoggle=()=>localStorage.setItem('group:'+groupKey,details.open?'open':'closed');
         if(project)details.append(renderDefaultTeam(project));
-        groups.set(chat.projectKey,details);$('sessions').append(details);
+        groups.set(groupKey,details);$('sessions').append(details);
       }
-      parent=groups.get(chat.projectKey);
+      parent=groups.get(groupKey);
       if(project&&team&&teamChat?.teamForProject(project)?.id===team.id)continue;
-      totals.set(chat.projectKey,(totals.get(chat.projectKey)||0)+1);
-      if((shown.get(chat.projectKey)||0)>=(projectGroupLimits.get(chat.projectKey)||PROJECT_GROUP_PAGE))continue;
-      shown.set(chat.projectKey,(shown.get(chat.projectKey)||0)+1);
+      totals.set(groupKey,(totals.get(groupKey)||0)+1);
+      if((shown.get(groupKey)||0)>=(projectGroupLimits.get(groupKey)||PROJECT_GROUP_PAGE))continue;
+      shown.set(groupKey,(shown.get(groupKey)||0)+1);
     }else{
       const days=(now-(chat.recency||0))/864e5;
       const bucket=TIME_BUCKETS.find(b=>days<=b.days)||TIME_BUCKETS[TIME_BUCKETS.length-1];

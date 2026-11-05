@@ -341,3 +341,54 @@ func TestSessionListPaginatesMergedRows(t *testing.T) {
 	}
 	_ = csrf
 }
+
+// 列表分组身份跨 Agent 合并：同一桌面项目根目录下的 codex 与 ACP 会话
+// 返回同一 groupKey（并带项目名），projectKey 维持各自语义不参与合组。
+func TestSessionsListGroupKeyMergesAgents(t *testing.T) {
+	server, _ := discoveryFixture(t)
+	server.CodexHome = writeState(t, `{
+	  "local-projects": {"p1": {"id": "p1", "name": "mobile-bridge", "rootPaths": ["/work"]}}
+	}`)
+	manager := acpruntime.NewCommand(fakeACPAgent(t, "/work"))
+	defer manager.Close()
+	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
+
+	token, _, err := server.Auth.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790/api/sessions", nil)
+	request.Host = "127.0.0.1:8790"
+	request.Header.Set("Origin", "http://127.0.0.1:8790")
+	request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", response.Code, response.Body.String())
+	}
+	decoded, err := jsoncompat.Unmarshal(response.Body.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, ok := decoded.(*jsoncompat.Object)
+	if !ok {
+		t.Fatalf("list body type=%T", decoded)
+	}
+	rows, _ := object.MustGet("sessions").(*jsoncompat.Array)
+	byID := map[string]*jsoncompat.Object{}
+	for _, item := range rows.Items {
+		row, _ := item.(*jsoncompat.Object)
+		id, _ := row.MustGet("id").(string)
+		byID[id] = row
+	}
+	codex := byID["desktop-1"]
+	if codex == nil || codex.MustGet("projectKey") != "local|p1" ||
+		codex.MustGet("groupKey") != "local|p1" || codex.MustGet("groupName") != "mobile-bridge" {
+		t.Fatalf("codex row: %v", codex)
+	}
+	kimi := byID["sess-old"]
+	if kimi == nil || kimi.MustGet("projectKey") != "local|/work" ||
+		kimi.MustGet("groupKey") != "local|p1" || kimi.MustGet("groupName") != "mobile-bridge" {
+		t.Fatalf("kimi row: %v", kimi)
+	}
+}

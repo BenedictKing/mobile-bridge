@@ -63,3 +63,62 @@ test('project groups hide only the pinned team lead from conversation history',(
   const recent=loadList('recent',{listRows,teamChat});
   assert.equal(find(recent,'session').length,2);
 });
+
+// 同一目录跨 Agent：Codex 桌面项目（groupKey=项目 ID）与该目录下其他
+// Agent 的会话（projectKey=目录）合并为一个组、一个组头、一个团队入口。
+test('agents in one project directory share a single group',()=>{
+  const listRows=[
+    {id:'codex-chat',host:'local',recency:Date.now(),title:'Codex 会话',projectKey:'local|p1',projectName:'mobile-bridge',groupKey:'local|p1',groupName:'mobile-bridge',cwd:'/w/mobile-bridge',agent:'codex'},
+    {id:'kimi-chat',host:'local',recency:Date.now()-1000,title:'Kimi 会话',projectKey:'local|/w/mobile-bridge',projectName:'mobile-bridge',groupKey:'local|p1',groupName:'mobile-bridge',cwd:'/w/mobile-bridge',agent:'kimi'},
+  ];
+  const projectDirectory=[{key:'acp:h1',cwd:'/w/mobile-bridge',name:'mobile-bridge',agent:'kimi'}];
+  const sessions=loadList('project',{listRows,projectDirectory});
+  assert.equal(find(sessions,'project-group').length,1);
+  // default-team 按钮也带 session class：2 条会话 + 1 个团队入口。
+  assert.equal(find(sessions,'session').length,3);
+  assert.equal(find(sessions,'default-team').length,1);
+  assert.equal(find(sessions,'group-name')[0].textContent,'mobile-bridge · 此电脑');
+});
+
+// 同名不同目录不合组；不同主机的同路径也各自成组（groupKey 缺省回退
+// projectKey，其中已含主机前缀）。
+test('same project name or path on different directories and hosts stays separate',()=>{
+  const listRows=[
+    {id:'a',host:'local',recency:Date.now(),title:'A',projectKey:'local|/a/work',projectName:'work',cwd:'/a/work',agent:'kimi'},
+    {id:'b',host:'local',recency:Date.now(),title:'B',projectKey:'local|/b/work',projectName:'work',cwd:'/b/work',agent:'kimi'},
+    {id:'c',host:'nas',recency:Date.now(),title:'C',projectKey:'nas|/work',projectName:'work',hostLabel:'NAS',cwd:'/work',agent:'kimi'},
+  ];
+  const sessions=loadList('project',{listRows,projectDirectory:[]});
+  assert.equal(find(sessions,'project-group').length,3);
+});
+
+test('merged group keys collapse state and add button by groupKey',()=>{
+  const listRows=[
+    {id:'codex-chat',host:'local',recency:Date.now(),title:'Codex 会话',projectKey:'local|p1',projectName:'P',groupKey:'local|p1',groupName:'P',cwd:'/p',agent:'codex'},
+    {id:'kimi-chat',host:'local',recency:Date.now()-1000,title:'Kimi 会话',projectKey:'local|/p',projectName:'P',groupKey:'local|p1',groupName:'P',cwd:'/p',agent:'kimi'},
+  ];
+  const stored=new Map();
+  let opened=null;
+  const sessions=loadList('project',{listRows,projectDirectory:[],
+    localStorage:{getItem:key=>stored.get(key)??null,setItem:(key,value)=>stored.set(key,value)},
+    openNewChat:chat=>{opened=chat;}});
+  const group=find(sessions,'project-group')[0];
+  group.ontoggle();
+  assert.deepEqual([...stored.keys()],['group:local|p1']);
+  find(sessions,'group-add')[0].onclick({preventDefault(){},stopPropagation(){}});
+  assert.equal(opened&&opened.id,'codex-chat');
+});
+
+test('merged group shares one show-more paging budget',()=>{
+  const listRows=Array.from({length:7},(_,index)=>({
+    id:'chat-'+index,host:'local',recency:Date.now()-index*1000,title:'会话'+index,
+    projectKey:index%2?'local|/p':'local|p1',projectName:'P',groupKey:'local|p1',groupName:'P',cwd:'/p',agent:index%2?'kimi':'codex',
+  }));
+  const sessions=loadList('project',{listRows,projectDirectory:[]});
+  assert.equal(find(sessions,'project-group').length,1);
+  assert.equal(find(sessions,'session').length,5);
+  const more=find(sessions,'group-more')[0];
+  assert.equal(more.textContent,'显示更多 · 2');
+  more.onclick();
+  assert.equal(find(sessions,'session').length,7);
+});
