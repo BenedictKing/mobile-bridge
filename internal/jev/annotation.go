@@ -8,22 +8,26 @@ import (
 
 // Annotation is the phone-facing record of one Jev verdict on a pending
 // card: Assessment feeds the risk badge and RecommendOption the starred
-// button. A nil Annotation means Jev never assessed the card (switch off, no
-// key, unsupported method, failed call), so the phone keeps its local label.
+// button. Pre-evaluation exits (switch off, no key, unsupported method) keep
+// the local label; a failed assessment is annotated so the manual fallback is visible.
 type Annotation struct {
 	Assessment      *jsoncompat.Object
 	RecommendOption string
 }
 
-// Annotate renders a decision for the pending card. Only verdicts that came
-// back from Jev (fresh or cached) produce an annotation.
+// Annotate renders a decision for the pending card. Fresh/cached verdicts and
+// failed assessments produce an annotation; pre-evaluation exits do not.
 func Annotate(method string, params *jsoncompat.Object, d Decision) *Annotation {
-	if !d.Assessed {
+	if !d.Assessed && d.Reason != "assess_failed" {
 		return nil
 	}
 	assessment := jsoncompat.NewObject()
 	assessment.Set("source", "jev")
-	assessment.Set("riskLabel", riskLabel(d.NegativeSum, d.Threshold))
+	label := riskLabel(d.NegativeSum, d.Threshold)
+	if d.Reason == "assess_failed" {
+		label = "unknown"
+	}
+	assessment.Set("riskLabel", label)
 	assessment.Set("negativeSum", numFloat(d.NegativeSum))
 	assessment.Set("threshold", numFloat(d.Threshold))
 	assessment.Set("reversible", numFloat(d.Reversible))

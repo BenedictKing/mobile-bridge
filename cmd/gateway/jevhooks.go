@@ -50,8 +50,12 @@ func jevEvaluate(settings *jev.Settings, agent, sessionID, requestID, method str
 	if decision.Response != nil {
 		response = string(jsoncompat.EncodeCompact(decision.Response))
 	}
-	log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 结果=%s 和=%.2f 阈值=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 请求=%q",
-		agent, sessionID, requestID, method, decision.Reason,
+	failure := decision.Error
+	if failure == "" {
+		failure = "-"
+	}
+	log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 结果=%s 错误=%s 和=%.2f 阈值=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 请求=%q",
+		agent, sessionID, requestID, method, decision.Reason, failure,
 		decision.NegativeSum, decision.Threshold, decision.Reversible, decision.Confidence, decision.Recommend,
 		response, jev.SubjectPrefix(params))
 	return decision

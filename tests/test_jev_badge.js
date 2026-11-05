@@ -40,6 +40,14 @@ test('an assessed card shows the Jev verdict and why it was held',()=>{
   assert.equal(reason.textContent,'未自动审核：可撤销性 40% < 80%');
 });
 
+test('a failed Jev assessment leaves an explicit manual-fallback trace',()=>{
+  const badge=loadBadge()({id:'r',assessment:{source:'jev',riskLabel:'unknown',reason:'assess_failed'}},params);
+  assert.equal(badge.tag,'#fragment');
+  const [risk,reason]=badge.children;
+  assert.equal(risk.textContent,'Jev 评估失败');
+  assert.equal(reason.textContent,'未自动审核：已转人工确认');
+});
+
 test('threshold holds show both numbers',()=>{
   const badge=loadBadge()({id:'r',assessment:{source:'jev',riskLabel:'elevated',confidence:0.18,reversible:0.93,reason:'recommend_review'}},params);
   assert.equal(badge.children[1].textContent,'未自动审核：Jev 建议人工查看');

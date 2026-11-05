@@ -7,6 +7,7 @@ const vm=require('node:vm');
 class FakeNode {
   constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.disabled=false;this.value='';}
   append(...nodes){this.children.push(...nodes);}
+  setAttribute(name,value){this[name]=value;}
   focus(){this.focused=true;}
   querySelectorAll(selector){
     const matches=[];
@@ -49,6 +50,15 @@ test('ACP plan revision requires feedback and submits its text',async()=>{
   assert.equal(calls.length,1);
   assert.equal(calls[0].body.response.optionId,'plan_revise');
   assert.equal(calls[0].body.response.text,'补充错误处理');
+});
+
+test('ACP permission heading is not repeated from params.title',()=>{
+  const {render}=loadApproval();
+  const card=render({id:'request-1',params:{title:'权限请求',command:'ls',options:[]}});
+  const headings=card.children.filter(node=>node.textContent==='权限请求');
+  assert.equal(headings.length,1);
+  assert.equal(headings[0].tag,'h3');
+  assert.equal(card.children[1].textContent,'ls');
 });
 
 test('other ACP plan options keep their original response shape',async()=>{

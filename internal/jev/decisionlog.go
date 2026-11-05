@@ -66,6 +66,9 @@ func (s *Settings) recordDecision(agent, sessionID, requestID, method string, d 
 	line.Set("request", requestID)
 	line.Set("method", method)
 	line.Set("reason", d.Reason)
+	if d.Error != "" {
+		line.Set("error", d.Error)
+	}
 	categories := jsoncompat.NewObject()
 	names := make([]string, 0, len(d.Categories))
 	for name := range d.Categories {

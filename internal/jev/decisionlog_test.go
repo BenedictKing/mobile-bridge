@@ -281,6 +281,28 @@ func TestJournalFailureNeverBlocksApproval(t *testing.T) {
 	}
 }
 
+func TestJournalRecordsAssessmentFailureDetail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	settings := journalSettings(t, dir, server.URL)
+	decision := settings.EvaluateSession("workbuddy", "s1", "req-1", "session/request_permission",
+		permissionCard("Bash", "ls", "allow_once", "opt-1"))
+	if decision.Reason != "assess_failed" || !strings.Contains(decision.Error, "503") {
+		t.Fatalf("failure detail = %+v", decision)
+	}
+	lines := journalLines(t, dir)
+	if len(lines) != 1 {
+		t.Fatalf("journal lines = %d, want 1", len(lines))
+	}
+	line := parseJournalLine(t, lines[0])
+	if !strings.Contains(jsoncompat.PyStr(line.MustGet("error")), "503") {
+		t.Fatalf("journal failure detail = %s", lines[0])
+	}
+}
+
 func TestJournalEncodesFloatsWithoutPanic(t *testing.T) {
 	dir := t.TempDir()
 	settings := New(filepath.Join(dir, "jev.json"))

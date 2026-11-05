@@ -20,10 +20,22 @@ func acpOptions(kinds ...string) *jsoncompat.Object {
 }
 
 func TestAnnotateSkipsUnassessedDecisions(t *testing.T) {
-	for _, reason := range []string{"auto_approve_off", "no_api_key", "unsupported_method", "assess_failed"} {
+	for _, reason := range []string{"auto_approve_off", "no_api_key", "unsupported_method"} {
 		if got := Annotate("session/request_permission", acpOptions("allow_once"), Decision{Reason: reason}); got != nil {
 			t.Fatalf("%s: unassessed decision must not annotate, got %+v", reason, got)
 		}
+	}
+}
+
+func TestAnnotateMarksAssessmentFailureForManualFallback(t *testing.T) {
+	got := Annotate("session/request_permission", acpOptions("allow_once"), Decision{Reason: "assess_failed"})
+	if got == nil {
+		t.Fatal("failed assessment must leave a manual-fallback annotation")
+	}
+	assessment := got.Assessment
+	if assessment.MustGet("source") != "jev" || assessment.MustGet("riskLabel") != "unknown" ||
+		assessment.MustGet("reason") != "assess_failed" || assessment.MustGet("approved") != false {
+		t.Fatalf("failure annotation = %s", jsoncompat.EncodeCompact(assessment))
 	}
 }
 

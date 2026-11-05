@@ -70,6 +70,47 @@ func TestEndTurnClassifiesBudgetStopsAsInterrupted(t *testing.T) {
 	}
 }
 
+// CodeBuddy may send a terminal tool_call with a fresh event id and extra
+// command metadata; it still folds into the unique pending row.
+func TestTerminalToolCallFoldsIntoUniquePendingCall(t *testing.T) {
+	view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+	view.BeginTurn("检查文件")
+	input := `{"command":"ls","description":"List files"}`
+	pendingInput := `{"command":"ls\n\n trailing event metadata","description":"List files"}`
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call","toolCallId":"event-start","title":"Bash","status":"in_progress","rawInput":`+pendingInput+`}`))
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call","toolCallId":"event-result","title":"`+"`ls`"+` · completed","status":"completed","rawInput":`+input+`,"content":[{"type":"text","text":"files"}]}`))
+
+	turn := view.Turns[0]
+	messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+	if len(messages.Items) != 2 {
+		t.Fatalf("user + folded tool rows = %d, want 2: %s", len(messages.Items), jsoncompat.EncodeCompact(turn))
+	}
+	message, _ := messages.Items[1].(*jsoncompat.Object)
+	if message.MustGet("id") != "tool-3" || message.MustGet("status") != "completed" ||
+		message.MustGet("output") != "files" {
+		t.Fatalf("terminal tool call did not update the pending row: %s", jsoncompat.EncodeCompact(message))
+	}
+}
+
+func TestTerminalToolCallDoesNotMergeAmbiguousParallelCalls(t *testing.T) {
+	view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+	view.BeginTurn("并行检查")
+	input := `{"command":"ls","description":"List files"}`
+	for _, id := range []string{"start-1", "start-2"} {
+		view.OnUpdate(notification(t,
+			`{"sessionUpdate":"tool_call","toolCallId":"`+id+`","title":"Bash","status":"in_progress","rawInput":`+input+`}`))
+	}
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call","toolCallId":"result","title":"`+"`ls`"+` · completed","status":"completed","rawInput":`+input+`}`))
+
+	messages, _ := view.Turns[0].MustGet("messages").(*jsoncompat.Array)
+	if len(messages.Items) != 4 {
+		t.Fatalf("ambiguous terminal call must stay separate; rows = %d, want 4", len(messages.Items))
+	}
+}
+
 // kimi injects <system-reminder> prompts and replays them as
 // user_message_chunk; stripped to empty they must not leave blank user
 // bubbles, but they still close a trailing agent turn.

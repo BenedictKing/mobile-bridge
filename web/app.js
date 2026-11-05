@@ -920,6 +920,11 @@ function approvalRisk(params){
 function assessmentBadge(request){
   const a=request?.assessment;
   if(!a||a.source!=='jev')return null;
+  if(a.reason==='assess_failed'){
+    const box=document.createDocumentFragment();
+    box.append(el('p','approval-risk risk-elevated',t('Jev 评估失败')),el('p','approval-context jev-reason',t('未自动审核：已转人工确认')));
+    return box;
+  }
   const labels={routine:'常规操作',low:'低风险',elevated:'中风险',high:'高风险'};
   const label=labels[a.riskLabel];
   if(!label)return null;
@@ -983,7 +988,9 @@ function renderAcpApproval(request){
   // kimi's AskUserQuestion arrives as a permission request whose options are
   // the answer choices: draw it as a question card, not a risk prompt.
   const question=!!params.question;
-  card.dataset.request=String(request.id);card.append(el('h3','',question?t('Agent 提问你'):t('权限请求')),el('p','',params.text||(params.title||'')));
+  const heading=question?t('Agent 提问你'):t('权限请求'),text=params.text||(params.title||'');
+  card.dataset.request=String(request.id);card.append(el('h3','',heading));
+  if(text&&text!==heading)card.append(el('p','',text));
   const badge=question?null:riskBadge(request,params);if(badge)card.append(badge);
   if(!question&&params.command){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
   const options=params.options||[],actions=el('div','actions'),error=el('p','error');

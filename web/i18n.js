@@ -797,6 +797,8 @@ const en={
   "未自动审核：": "Not auto-approved: ",
   "Jev 建议人工查看": "Jev recommends a manual review",
   "Jev 建议拒绝": "Jev recommends declining",
+  "Jev 评估失败": "Jev assessment failed",
+  "未自动审核：已转人工确认": "Not auto-approved: manual confirmation required",
   "永久授权需手动确认": "Permanent grants need a manual tap",
   "风险倾向": "Risk lean",
   "可撤销性": "Reversibility",

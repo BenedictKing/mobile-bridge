@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -36,6 +37,7 @@ const (
 type Decision struct {
 	Approved    bool
 	Reason      string
+	Error       string
 	Assessed    bool
 	Categories  map[string]float64
 	NegativeSum float64
@@ -73,9 +75,9 @@ func (s *Settings) Evaluate(method string, params *jsoncompat.Object) Decision {
 func (s *Settings) evaluate(config *jsoncompat.Object, key, method string, params *jsoncompat.Object) Decision {
 	policy, _, _ := parsePolicyValue(config.MustGet("policy"))
 	threshold := number(config.MustGet("threshold"), defaultThreshold)
-	assessment, ok := s.assess(config, key, method, params, policy)
-	if !ok {
-		return Decision{Reason: "assess_failed", Threshold: threshold}
+	assessment, err := s.assess(config, key, method, params, policy)
+	if err != nil {
+		return Decision{Reason: "assess_failed", Threshold: threshold, Error: err.Error()}
 	}
 	// 建议由两个 Noul 信号在代码里推导（控制流留在代码侧，问题只做窄判断）：
 	// unsafe 高 → 拒绝；needs_human 高 → 人工复核；否则本次允许。
@@ -141,6 +143,9 @@ func DecisionPayload(d Decision) *jsoncompat.Object {
 	payload.Set("assessed", d.Assessed)
 	payload.Set("approved", d.Approved)
 	payload.Set("reason", d.Reason)
+	if d.Error != "" {
+		payload.Set("error", d.Error)
+	}
 	categories := jsoncompat.NewObject()
 	names := make([]string, 0, len(d.Categories))
 	for name := range d.Categories {
@@ -308,27 +313,27 @@ type assessment struct {
 // policy verdict. The outcome answer must carry a full probability
 // distribution over every policy category (mirroring the reference client's
 // normalizeAnswer); anything short of that fails closed instead of guessing.
-func (s *Settings) assess(config *jsoncompat.Object, key, method string, params *jsoncompat.Object, policy []Category) (*assessment, bool) {
+func (s *Settings) assess(config *jsoncompat.Object, key, method string, params *jsoncompat.Object, policy []Category) (*assessment, error) {
 	payload := jsoncompat.NewObject()
 	payload.Set("model", config.MustGet("model"))
 	payload.Set("state", assessmentState(method, params))
 	payload.Set("questions", approvalQuestions(policy, method, params))
-	value, ok := s.post(config, key, payload)
-	if !ok {
-		return nil, false
+	value, err := s.post(config, key, payload)
+	if err != nil {
+		return nil, err
 	}
 	result, _ := value.(*jsoncompat.Object)
 	answers, _ := result.MustGet("answers").(*jsoncompat.Object)
 	if answers == nil {
-		return nil, false
+		return nil, errors.New("invalid response: missing answers")
 	}
 	outcome, _ := answers.MustGet("outcome").(*jsoncompat.Object)
 	if outcome == nil {
-		return nil, false
+		return nil, errors.New("invalid response: missing outcome")
 	}
 	probabilities, _ := outcome.MustGet("probabilities").(*jsoncompat.Object)
 	if probabilities == nil {
-		return nil, false
+		return nil, errors.New("invalid response: missing outcome probabilities")
 	}
 	choice, _ := outcome.MustGet("choice").(string)
 	known := map[string]bool{}
@@ -336,7 +341,7 @@ func (s *Settings) assess(config *jsoncompat.Object, key, method string, params 
 		known[category.Name] = true
 	}
 	if !known[choice] {
-		return nil, false
+		return nil, errors.New("invalid response: unknown outcome choice")
 	}
 	negative := negativeNames(policy)
 	categories := map[string]float64{}
@@ -344,11 +349,11 @@ func (s *Settings) assess(config *jsoncompat.Object, key, method string, params 
 	for _, category := range policy {
 		raw, exists := probabilities.Get(category.Name)
 		if !exists {
-			return nil, false
+			return nil, fmt.Errorf("invalid response: missing probability %s", category.Name)
 		}
 		probability := number(raw, math.NaN())
 		if math.IsNaN(probability) || math.IsInf(probability, 0) || probability < 0 || probability > 1 {
-			return nil, false
+			return nil, fmt.Errorf("invalid response: invalid probability %s", category.Name)
 		}
 		probability = math.Min(math.Max(probability, 0), 1)
 		categories[category.Name] = probability
@@ -366,11 +371,11 @@ func (s *Settings) assess(config *jsoncompat.Object, key, method string, params 
 	}
 	needsHuman, ok := noulAnswer(answers, "needs_human")
 	if !ok {
-		return nil, false
+		return nil, errors.New("invalid response: invalid needs_human answer")
 	}
 	unsafe, ok := noulAnswer(answers, "unsafe")
 	if !ok {
-		return nil, false
+		return nil, errors.New("invalid response: invalid unsafe answer")
 	}
 	return &assessment{
 		categories:  categories,
@@ -379,7 +384,7 @@ func (s *Settings) assess(config *jsoncompat.Object, key, method string, params 
 		reversible:  answerNumber(answers.MustGet("reversible"), "noul"),
 		needsHuman:  needsHuman,
 		unsafe:      unsafe,
-	}, true
+	}, nil
 }
 
 // noulAnswer reads one yes-probability. A missing or out-of-range answer fails
@@ -399,16 +404,16 @@ func noulAnswer(answers *jsoncompat.Object, key string) (float64, bool) {
 
 // post sends one assessment request through the optional proxy and decodes
 // the JSON reply. Authorization carries the key; it never reaches a payload.
-func (s *Settings) post(config *jsoncompat.Object, key string, payload *jsoncompat.Object) (any, bool) {
+func (s *Settings) post(config *jsoncompat.Object, key string, payload *jsoncompat.Object) (any, error) {
 	body := jsoncompat.EncodeCompact(payload)
 	base, _ := config.MustGet("baseUrl").(string)
 	endpoint, err := url.Parse(strings.TrimRight(base, "/") + "/v1/systemone")
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("invalid base URL: %w", err)
 	}
 	request, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+key)
 	request.Header.Set("Content-Type", "application/json")
@@ -419,22 +424,22 @@ func (s *Settings) post(config *jsoncompat.Object, key string, payload *jsoncomp
 		}
 	}
 	response, err := client.Do(request)
-	if err != nil || response.StatusCode != http.StatusOK {
-		if response != nil {
-			_ = response.Body.Close()
-		}
-		return nil, false
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http status %d", response.StatusCode)
+	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("read response: %w", err)
 	}
 	value, err := jsoncompat.Unmarshal(data)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	return value, true
+	return value, nil
 }
 
 // permissionRequestTitle is the placeholder title PermissionCard substitutes

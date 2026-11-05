@@ -438,6 +438,58 @@ func (v *View) applyConfigOption(option *jsoncompat.Object) {
 	}
 }
 
+func toolCommandText(value any) string {
+	text, _ := value.(string)
+	if index := strings.Index(text, "\n\n"); index >= 0 {
+		return text[:index]
+	}
+	return text
+}
+
+// foldTerminalToolCall handles agents that report a result as a fresh
+// tool_call with a new event id instead of tool_call_update. CodeBuddy carries
+// the same command and description on both rows; only a unique pending match
+// is safe to fold, so identical parallel calls remain separate.
+func (v *View) foldTerminalToolCall(callID string, update *jsoncompat.Object) bool {
+	status := statusMap(getDefault(update, "status", nil))
+	if status != "completed" && status != "failed" {
+		return false
+	}
+	if callID != "" && v.toolIndex[callID] != nil {
+		v.apply("tool_call_update", update)
+		return true
+	}
+	if callID == "" {
+		return false
+	}
+	metadata := SubagentMeta(update.MustGet("rawInput"), "")
+	description, _ := metadata.MustGet("subagentDescription").(string)
+	command := CommandSummary(update.MustGet("rawInput"))
+	turn := v.currentTurn()
+	if description == "" || command == "" || turn == nil {
+		return false
+	}
+	var pending *jsoncompat.Object
+	for _, item := range messages(turn).Items {
+		message := obj(item)
+		if message == nil || message.MustGet("status") != "inProgress" ||
+			message.MustGet("subagentDescription") != description ||
+			toolCommandText(message.MustGet("text")) != command {
+			continue
+		}
+		if pending != nil {
+			return false
+		}
+		pending = message
+	}
+	if pending == nil {
+		return false
+	}
+	v.toolIndex[callID] = pending
+	v.apply("tool_call_update", update)
+	return true
+}
+
 func (v *View) apply(kind string, update *jsoncompat.Object) {
 	switch kind {
 	case "user_message_chunk":
@@ -505,6 +557,9 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 	case "tool_call":
 		titleInput, _ := update.MustGet("title").(string)
 		callID, _ := update.MustGet("toolCallId").(string)
+		if v.foldTerminalToolCall(callID, update) {
+			return
+		}
 		metadata := SubagentMeta(update.MustGet("rawInput"), titleInput)
 		message := jsoncompat.NewObject()
 		message.Set("id", v.nextID("tool"))

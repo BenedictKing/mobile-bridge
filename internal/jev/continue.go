@@ -85,8 +85,8 @@ func (s *Settings) ContinueAssess(context *jsoncompat.Object) *ContinueAssessmen
 	payload.Set("model", config.MustGet("model"))
 	payload.Set("state", context)
 	payload.Set("questions", continueQuestions())
-	value, ok := s.post(config, key, payload)
-	if !ok {
+	value, err := s.post(config, key, payload)
+	if err != nil {
 		return nil
 	}
 	result, _ := value.(*jsoncompat.Object)
