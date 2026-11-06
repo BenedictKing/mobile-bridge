@@ -221,11 +221,15 @@ func (s *Service) CreateAmendRun(team *Team, parentRunID, runID, goal, mode, col
 	events := []*Event{newEvent(run.ID, EventRunCreated, "user", createdPayload)}
 	for i := range run.Tasks {
 		task := &run.Tasks[i]
-		events = append(events, newEvent(run.ID, EventTaskPlanned, "user", map[string]any{
+		payload := map[string]any{
 			"taskId":           task.ID,
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
-		}))
+		}
+		if task.Review != nil {
+			payload["review"] = *task.Review
+		}
+		events = append(events, newEvent(run.ID, EventTaskPlanned, "user", payload))
 		entry, hit := importByID[task.ID]
 		if !hit {
 			continue

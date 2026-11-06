@@ -326,6 +326,8 @@ autoPlan 一旦存在已完成的非 Lead 任务，成功终局前由 Team Servi
 
 `delegate`/`summarize` 可带可选字段 `writeLock`（`exclusive`（默认）/`none`，取值与计划任务同词汇）：纯读任务（review/test 类）声明 `none` 后按 §6.4 规则 3 与共享工作区的写任务并行；`summarize` 派生的摘要任务缺省即 `none`（汇总已有结果不写工作区）。`request_context` 不创建任务，不接受该字段。
 
+`delegate` 还可携带 `review`：仅独立审查任务写 `true`，实现、排查等普通执行写 `false`。主控也是默认执行成员，可以通过自我委派完成实现；默认评审同样能接执行任务，但只有 `review=true` 才注入 `[Team review]` 裁决协议并缺省 `writeLock=none`。`review=true` 只能指派给非主控的默认评审；缺省该字段时保持旧行为，默认评审成员的任务按审查处理。该标记进入 `inputHash`、`PlanHash`、快照和 journal，交付证据也只统计真正的审查任务。
+
 编排器拒绝以下情况：
 
 - 目标成员不存在、禁用或绑定会话失效（会话不属于任何 ACP Agent：已删除/从未接入；归属明确但暂时打不开的会话不算失效——动作照常执行，由派发路径与会话恢复兜底重试）。
@@ -666,7 +668,7 @@ GET    /api/teams/:teamID/quotas
 
 创建请求可同时携带顶层 `project`，并随 Team 账本持久化；未显式携带时从成员的项目键归一。项目型团队成员必须同属一个项目，后续新增或换绑会话也校验工作目录。旧的无项目 Team 账本继续按原规则读取。
 
-项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次打开时先通过 `GET /api/projects/:projectKey/agents` 让用户选择主控，确认后以 `{leadAgent}` 创建团队及项目历史 ACP Agent 的专用会话，取消则不创建；保存 `defaultForProject=true` 与稳定 `projectCwd`，重放复用已有团队且返回 `duplicate:true`。未携带 `leadAgent` 的旧客户端仍按候选首位创建，显式选择不在候选列表中的 Agent 返回 400。候选至少 3 个时默认分配主控、执行成员和末位评审；两个时为主控+执行成员，一个时仅主控，不为凑角色取消执行成员。默认团队查找同时接受项目键和 `projectCwd` 匹配，因此 `acp:` / `codex:` 前缀随项目去重策略变化时不会误创建或误显示待创建。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
+项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次打开时先通过 `GET /api/projects/:projectKey/agents` 让用户选择主控，确认后以 `{leadAgent}` 创建团队及项目历史 ACP Agent 的专用会话，取消则不创建；保存 `defaultForProject=true` 与稳定 `projectCwd`，重放复用已有团队且返回 `duplicate:true`。未携带 `leadAgent` 的旧客户端仍按候选首位创建，显式选择不在候选列表中的 Agent 返回 400。候选至少 3 个时默认分配主控、执行成员和末位评审；两个时为主控+执行成员，一个时仅主控并由主控自我委派执行，不为凑角色取消执行能力。默认团队查找同时接受项目键和 `projectCwd` 匹配，因此 `acp:` / `codex:` 前缀随项目去重策略变化时不会误创建或误显示待创建。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
 
 成员添加接受 `{agent,role}` 并创建项目内专用会话，候选下拉与新建对话、新建团队一致，使用 `GET /api/projects` 返回的已启用非 Codex ACP Agent，不要求当前项目已有该 Agent 的历史会话；只显示 Agent 类型而不混入会话标题。Team 以 `leadId` 与 `reviewerId` 分别持久化主控和默认评审；两者只需指向团队成员，允许同一成员同时担任主控和默认评审。PATCH 更换或移除默认评审在非终态 Run 存在时返回 409，移除该成员会清空失效的 `reviewerId`。旧 Lead 会话和历史 Run 保留。
 
@@ -679,7 +681,7 @@ POST /api/sessions/:leadSessionID/uploads
 POST /api/sessions/:leadSessionID/send
 ```
 
-发送体在普通消息字段上增加可选 `teamId` 与 `teamMode`。`teamMode=team` 或缺省时，网关在 direct-send 记账前识别 Lead：首条消息创建 `single + autoPlan` Run；后续消息追加为当前活跃 autoPlan Run 的 Lead 任务，旧 Run 已终态时自动创建带 `parentRunId` 的修订 Run，而不是每条对话都另起独立 Run。多个活跃 Run 返回 409，显式计划 Run 在其详情页处理。未携带 `teamId` 时仅自动识别唯一 Lead 团队，多团队歧义返回 409。`teamMode=direct` 明确跳过团队识别，走普通 Lead 会话直答且不创建 Run，保留给旧客户端与原生压缩等内部操作。团队页面不再要求用户选择“团队执行/主控直答”：消息统一进入 autoPlan，Lead 只对寒暄、进度说明和澄清问题等纯沟通用自然语言回复；排查、读写文件、运行命令、实现与评审等实质工作必须输出 `team-actions` 委派合适的启用成员，不得在主控会话亲自执行。Lead 根据成员 `agentKind` 和用户维护的 `tags` 制定工作流，自身的后续 delegate 仅用于汇总结果与继续规划。请求 `id` 是消息幂等键，前端把 `teamId` 与 `teamMode` 都纳入消息身份；后续消息的 `runId` 可以不同于 `inputId`。Lead Task 持久化 `attachments`，附件随 submissions 进入既有 `PromptWithBlocks` 链路，journal 重建和任务重试不丢失；后续 delegate 任务不重复携带这些附件。纯图片消息使用明确的目标占位文案。团队执行响应为 `{status:"accepted",teamId,runId,duplicate?}`，直答沿用普通发送响应。
+发送体在普通消息字段上增加可选 `teamId` 与 `teamMode`。`teamMode=team` 或缺省时，网关在 direct-send 记账前识别 Lead：首条消息创建 `single + autoPlan` Run；后续消息追加为当前活跃 autoPlan Run 的 Lead 任务，旧 Run 已终态时自动创建带 `parentRunId` 的修订 Run，而不是每条对话都另起独立 Run。多个活跃 Run 返回 409，显式计划 Run 在其详情页处理。未携带 `teamId` 时仅自动识别唯一 Lead 团队，多团队歧义返回 409。`teamMode=direct` 明确跳过团队识别，走普通 Lead 会话直答且不创建 Run，保留给旧客户端与原生压缩等内部操作。团队页面不再要求用户选择“团队执行/主控直答”：消息统一进入 autoPlan，Lead 只对寒暄、进度说明和澄清问题等纯沟通用自然语言回复；排查、读写文件、运行命令、实现与评审等实质工作必须输出 `team-actions` 委派合适的启用成员，不得在主控会话亲自执行。Lead 根据成员 `agentKind` 和用户维护的 `tags` 制定工作流；Lead 也是默认执行成员，可以通过后续 delegate 给自己分派实现任务，也可用于汇总结果与继续规划，但初始主控回合不得未经委派直接执行实质工作。请求 `id` 是消息幂等键，前端把 `teamId` 与 `teamMode` 都纳入消息身份；后续消息的 `runId` 可以不同于 `inputId`。Lead Task 持久化 `attachments`，附件随 submissions 进入既有 `PromptWithBlocks` 链路，journal 重建和任务重试不丢失；后续 delegate 任务不重复携带这些附件。纯图片消息使用明确的目标占位文案。团队执行响应为 `{status:"accepted",teamId,runId,duplicate?}`，直答沿用普通发送响应。
 
 聊天页读取最近 Run 的任务投影，以阶段轨道、成员 pill 和结果摘要展示 workflow，并周期追随刷新；显式 pipeline、定时 Run、修订和高级控制仍走下述 Run API。团队输入区不支持 Skill、计划/目标模式和 steer，普通发送与完成后发送可用。
 

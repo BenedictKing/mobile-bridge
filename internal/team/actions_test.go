@@ -1366,9 +1366,9 @@ func TestBuildLeadBriefing(t *testing.T) {
 		"id=dev", "tags=Claude Sonnet | 代码评审", "用户维护的 Agent 或模型能力提示",
 		"role=reviewer", "team-actions", `"sourceTaskId":"lead"`, "autoDispatch=true",
 		"给 Lead 自己一条 delegate 作为后续任务", "不要在该批动作中直接混用 summarize",
-		"你是上传下达的团队主控，只负责陪聊、澄清需求、制定工作流、分派和汇总",
-		"不得在主控会话中亲自执行", "不要 delegate 给自己来绕过分工",
-		"评审成员只承担独立审查", "不要把首轮排查、主要实现或全部工作直接交给评审",
+		"你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总",
+		"不得在主控回合中不经委派直接执行", "Lead 也是默认执行成员，允许 delegate 给自己",
+		"默认评审也是可执行任务的普通成员", "review=false", "review=true", "不要伪造评审结论",
 	} {
 		if !strings.Contains(briefing, want) {
 			t.Fatalf("Lead 简报缺少 %q:\n%s", want, briefing)
@@ -1383,7 +1383,7 @@ func TestBuildLeadBriefing(t *testing.T) {
 		t.Fatal("相同持久配置必须生成确定性 Lead 简报")
 	}
 	team.ReviewerID = "lead"
-	if got := BuildLeadBriefing(team, run, task, policy); strings.Contains(got, "评审成员只承担独立审查") {
+	if got := BuildLeadBriefing(team, run, task, policy); strings.Contains(got, "默认评审也是可执行任务的普通成员") {
 		t.Fatal("Lead 兼任评审时不应要求另设独立评审")
 	}
 	team.ReviewerID = ""

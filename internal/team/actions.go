@@ -62,7 +62,7 @@ const (
 // 不创建任务、不接受该字段（validateActionEntry 拒绝）。
 var actionKnownFields = map[string]bool{
 	"type": true, "sourceTaskId": true, "round": true, "member": true,
-	"task": true, "fromTaskId": true, "writeLock": true,
+	"task": true, "fromTaskId": true, "writeLock": true, "review": true,
 }
 
 // ActionKey 生成动作幂等键（§8.2 变体）：
@@ -333,10 +333,11 @@ func expectBareKey(stack []bool, last byte) bool {
 //   - 顶层只认 actions 数组（未知顶层键即 violation）；动作数 ≤
 //     min(MaxTasksPerRun, 8)；
 //   - 每条动作：字段集 ⊆ {type, sourceTaskId, round, member, task,
-//     fromTaskId, writeLock}；type ∈ {delegate, request_context, summarize}；
+//     fromTaskId, writeLock, review}；type ∈ {delegate, request_context, summarize}；
 //     sourceTaskId 必填且存在于本 Run；round 为 1..policy.MaxRounds 的整数；
 //     writeLock ∈ {exclusive, none} 且仅 delegate/summarize 可携带（§6.4
-//     规则 3：纯读任务声明 none 后可与写任务并行）；
+//     规则 3：纯读任务声明 none 后可与写任务并行）；review 仅 delegate
+//     可携带，true=独立审查，false=普通执行；
 //   - delegate/request_context 必带 member（存在且 enabled）与 task（非空，
 //     rune 上限同 PromptLimit 口径）；request_context 必带合法 fromTaskId
 //     （属于本 Run 且已完成的任务——「请求另一成员提供已有结果」的来源）；
@@ -394,6 +395,9 @@ func ValidateActions(payload *jsoncompat.Object, team *Team, run *Run, policy Te
 		action.Task, _ = entry.MustGet("task").(string)
 		action.FromTaskID, _ = entry.MustGet("fromTaskId").(string)
 		action.WriteLock, _ = entry.MustGet("writeLock").(string)
+		if review, exists := entry.MustGet("review").(bool); exists {
+			action.Review = reviewFlag(review)
+		}
 		action.ActionKey = ActionKey(run.TeamID, run.ID, action.SourceTaskID, action.Round, index)
 		actions = append(actions, action)
 	}
@@ -435,6 +439,19 @@ func validateActionEntry(entry *jsoncompat.Object, team *Team, run *Run, policy 
 			violations = append(violations, fmt.Sprintf("第 %d 条动作引用了不存在的成员：%q", ordinal, member))
 		} else if !target.Enabled {
 			violations = append(violations, fmt.Sprintf("第 %d 条动作引用了已停用的成员：%q", ordinal, member))
+		}
+	}
+	if raw, has := entry.Get("review"); has {
+		review, isBool := raw.(bool)
+		if !isBool {
+			violations = append(violations, fmt.Sprintf("第 %d 条动作的 review 必须是布尔值，实际是 %s", ordinal, jsonValueKind(raw)))
+		} else if actionType != ActionTypeDelegate {
+			violations = append(violations, fmt.Sprintf("第 %d 条动作（%s）不支持 review 字段", ordinal, actionType))
+		} else if review {
+			reviewer := team.ReviewerMemberID()
+			if reviewer == "" || reviewer == team.LeadID || member != reviewer {
+				violations = append(violations, fmt.Sprintf("第 %d 条动作的 review=true 只能指派给独立的默认评审成员", ordinal))
+			}
 		}
 	}
 	taskText, _ := entry.MustGet("task").(string)
@@ -512,7 +529,7 @@ func actionRoundViolation(entry *jsoncompat.Object, policy TeamPolicy, ordinal i
 
 // actionSchemaInstruction 是 Lead 简报与修复提示共用的动作协议说明。
 func actionSchemaInstruction() string {
-	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认 exclusive，纯读任务可声明 none 与写任务并行）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
+	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
 }
 
 // BuildLeadBriefing 返回 autoPlan Lead 的任务级成员目录与动作协议。修复提示
@@ -554,9 +571,9 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 	}
 	builder.WriteString("tags 是用户维护的 Agent 或模型能力提示；制定工作流和选择成员时应参考 tags 与 agent 类型，但不要臆测未标注的能力。\n")
 	if reviewer := team.ReviewerMemberID(); reviewer != "" && reviewer != team.LeadID {
-		builder.WriteString("评审成员只承担独立审查：先由 Lead 或普通成员形成可审查的产出，再让评审核对其中的证据、指出问题并给出裁决；不要把首轮排查、主要实现或全部工作直接交给评审。\n")
+		builder.WriteString("默认评审也是可执行任务的普通成员：实现、排查等执行任务委派给它时必须写 review=false，独立审查任务才写 review=true。审查应尽量由未参与实现的成员完成；没有合适的独立评审时明确说明未审查，不要伪造评审结论。\n")
 	}
-	builder.WriteString("你是上传下达的团队主控，只负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须通过 delegate 交给合适的启用成员，不得在主控会话中亲自执行，也不要 delegate 给自己来绕过分工。Lead 自己的 delegate 仅用于汇总结果和继续规划。需要编排时，")
+	builder.WriteString("你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须先通过 delegate 分派，不得在主控回合中不经委派直接执行。Lead 也是默认执行成员，允许 delegate 给自己；后续 Lead 执行任务应按任务内容直接完成，不要仅为转交而再次委派。Lead 自己的 delegate 也可用于汇总结果和继续规划。需要编排时，")
 	builder.WriteString(actionSchemaInstruction())
 	builder.WriteString("\n")
 	if policy.AutoDispatch {
@@ -1031,7 +1048,7 @@ func buildActionTask(run *Run, team *Team, action *Action) Task {
 	// none，delegate 保守 → exclusive。
 	writeLock := action.WriteLock
 	if writeLock != TaskWriteLockExclusive && writeLock != TaskWriteLockNone {
-		writeLock = defaultReviewWriteLock(team, memberID, "")
+		writeLock = defaultReviewWriteLock(team, memberID, "", action.Review)
 	}
 	if writeLock == "" {
 		if action.Type == ActionTypeSummarize {
@@ -1048,6 +1065,7 @@ func buildActionTask(run *Run, team *Team, action *Action) Task {
 		Ordinal:          ordinal + 1,
 		DependsOn:        deps,
 		WriteLock:        writeLock,
+		Review:           action.Review,
 		WorkspaceMode:    WorkspaceShared,
 		Status:           TaskPlanned,
 		InstructionsHead: InstructionsHead(prompt),

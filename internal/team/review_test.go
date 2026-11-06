@@ -1,6 +1,7 @@
 package team
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -126,5 +127,82 @@ func TestDispatchTextTitleIsAssignedTask(t *testing.T) {
 		if strings.Count(text, assignedTaskHeader) != 1 {
 			t.Fatalf("任务 %s 的派发文本应恰有一个 [Assigned task] 头:\n%s", run.Tasks[i].ID, text)
 		}
+	}
+}
+
+func TestReviewerExecutionAndReviewAreDistinct(t *testing.T) {
+	team := reviewTestTeam()
+	team.ReviewerID = "rev"
+	plan, err := ParsePlan(team, "实现并审查", ModePipeline, "", []PlanTaskInput{
+		{ID: "impl", MemberID: "rev", Prompt: "实现接口", Review: reviewFlag(false)},
+		{ID: "review", MemberID: "rev", Prompt: "独立审查", DependsOn: []string{"impl"}, Review: reviewFlag(true)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := &Run{ID: "r1", TeamID: team.ID, Tasks: plan.Tasks}
+	execution := &run.Tasks[0]
+	review := &run.Tasks[1]
+	if execution.WriteLock != TaskWriteLockExclusive || review.WriteLock != TaskWriteLockNone {
+		t.Fatalf("执行/审查写锁混淆: execution=%s review=%s", execution.WriteLock, review.WriteLock)
+	}
+	if IsReviewTask(team, execution) || !IsReviewTask(team, review) {
+		t.Fatal("review 标记应区分执行任务与审查任务")
+	}
+	if got := composeTaskDispatchMessage(team, run, execution, team.Policy).text; strings.Contains(got, "[Team review]") {
+		t.Fatalf("执行任务不得注入审查协议:\n%s", got)
+	}
+	if got := composeTaskDispatchMessage(team, run, review, team.Policy).text; !strings.Contains(got, "[Team review]") {
+		t.Fatalf("审查任务缺少裁决协议:\n%s", got)
+	}
+	action := &Action{Type: ActionTypeDelegate, SourceTaskID: "lead", Round: 1, Member: "rev", Task: "实现", Review: reviewFlag(false)}
+	if task := buildActionTask(run, team, action); task.WriteLock != TaskWriteLockExclusive || IsReviewTask(team, &task) {
+		t.Fatalf("review=false 的动作应生成普通执行任务: %+v", task)
+	}
+}
+
+func TestReviewFlagValidationAndActionParsing(t *testing.T) {
+	team := reviewTestTeam()
+	team.ReviewerID = "rev"
+	if _, err := ParsePlan(team, "错误审查", ModeSingle, "", []PlanTaskInput{
+		{ID: "review", MemberID: "dev", Prompt: "审查", Review: reviewFlag(true)},
+	}); err == nil || !strings.Contains(err.Error(), "只能指派给独立的默认评审成员") {
+		t.Fatalf("非默认评审的 review=true 应拒绝: %v", err)
+	}
+	run := &Run{ID: "r1", TeamID: team.ID, Tasks: []Task{{ID: "lead", MemberID: "lead", Status: TaskCompleted}}}
+	actions, violations := ParseLeadActions(`<team-actions>{"actions":[{"type":"delegate","sourceTaskId":"lead","round":1,"member":"rev","task":"实现","review":false}]}</team-actions>`, team, run, team.Policy)
+	if len(violations) != 0 || len(actions) != 1 || actions[0].Review == nil || *actions[0].Review {
+		t.Fatalf("review=false 解析失败: actions=%+v violations=%v", actions, violations)
+	}
+	_, violations = ParseLeadActions(`<team-actions>{"actions":[{"type":"delegate","sourceTaskId":"lead","round":1,"member":"dev","task":"审查","review":true}]}</team-actions>`, team, run, team.Policy)
+	if len(violations) == 0 {
+		t.Fatal("非默认评审的 review=true 动作应拒绝")
+	}
+}
+
+func TestReviewFlagSurvivesSnapshotCloneAndJournalRebuild(t *testing.T) {
+	original := &Task{ID: "impl", MemberID: "rev", Review: reviewFlag(false)}
+	raw, err := original.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Task
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Review == nil || *decoded.Review {
+		t.Fatalf("快照丢失 review=false: %s", raw)
+	}
+	clone := decoded.Clone()
+	*clone.Review = true
+	if *decoded.Review {
+		t.Fatal("Clone 不应共享 review 指针")
+	}
+	run := &Run{}
+	applyJournalEventToRun(run, newEvent("r1", EventTaskPlanned, "runner", map[string]any{
+		"taskId": "impl", "memberId": "rev", "review": false,
+	}))
+	if len(run.Tasks) != 1 || run.Tasks[0].Review == nil || *run.Tasks[0].Review {
+		t.Fatalf("journal 重建丢失 review=false: %+v", run.Tasks)
 	}
 }

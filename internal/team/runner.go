@@ -410,6 +410,9 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
 		}
+		if task.Review != nil {
+			payload["review"] = *task.Review
+		}
 		if len(task.Attachments) > 0 {
 			payload["attachments"] = append([]string(nil), task.Attachments...)
 		}
@@ -842,13 +845,17 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 		} else {
 			task := buildActionTask(fresh, team, action)
 			fresh.Tasks = append(fresh.Tasks, task)
-			event := newEvent(fresh.ID, EventTaskPlanned, "runner", map[string]any{
+			payload := map[string]any{
 				"taskId":           task.ID,
 				"memberId":         task.MemberID,
 				"instructionsHead": task.InstructionsHead,
 				"round":            jsoncompat.Num(action.Round),
 				"actionKey":        action.ActionKey,
-			})
+			}
+			if task.Review != nil {
+				payload["review"] = *task.Review
+			}
+			event := newEvent(fresh.ID, EventTaskPlanned, "runner", payload)
 			event.IdempotencyKey = actionExecutionKey(fresh.TeamID, fresh.ID, action.ActionKey)
 			events = []*Event{event}
 		}

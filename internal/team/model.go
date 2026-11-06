@@ -395,6 +395,7 @@ type Task struct {
 	WorkspaceID    string   `json:"workspaceId,omitempty"`
 	BaseRevision   string   `json:"baseRevision,omitempty"`
 	WriteLock      string   `json:"writeLock,omitempty"`
+	Review         *bool    `json:"review,omitempty"`
 	Status         string   `json:"status"`
 	SubmissionID   string   `json:"submissionId,omitempty"`
 	// ExecutionThreadID 是本任务所属的执行线程（阶段一契约）：派发时随
@@ -444,9 +445,10 @@ type TaskResult struct {
 // （§5.2「请求另一成员提供已有结果」——校验要求存在于本 Run 且已完成）；
 // WriteLock 是 delegate/summarize 动作可选声明的派生任务写锁（§6.4 规则 3，
 // ∈ {exclusive, none}；空＝按动作类型缺省归一，见 buildActionTask），
-// request_context 不创建任务、不接受该字段；ActionKey 是动作的幂等键
-// （team:{t}:run:{r}:action:{sourceTaskID}:{round}:{index}）；Reason 在
-// rejected 时非空。
+// request_context 不创建任务、不接受该字段；Review 是 delegate 的可选任务
+// 类型标记（true=独立审查，false=普通执行，nil=兼容旧任务）；ActionKey 是
+// 动作的幂等键（team:{t}:run:{r}:action:{sourceTaskID}:{round}:{index}）；
+// Reason 在 rejected 时非空。
 type Action struct {
 	Type         string `json:"type"`
 	SourceTaskID string `json:"sourceTaskId"`
@@ -455,6 +457,7 @@ type Action struct {
 	Task         string `json:"task,omitempty"`
 	FromTaskID   string `json:"fromTaskId,omitempty"`
 	WriteLock    string `json:"writeLock,omitempty"`
+	Review       *bool  `json:"review,omitempty"`
 	ActionKey    string `json:"actionKey,omitempty"`
 	Status       string `json:"status,omitempty"`
 	Reason       string `json:"reason,omitempty"`
@@ -556,7 +559,7 @@ var taskKnownFields = map[string]bool{
 	"id": true, "memberId": true, "prompt": true, "attachments": true, "inputHash": true,
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
-	"baseRevision": true, "writeLock": true,
+	"baseRevision": true, "writeLock": true, "review": true,
 	"status": true, "submissionId": true, "executionThreadId": true,
 	"result": true, "resultDetail": true,
 	"cachedFrom": true,
@@ -803,6 +806,9 @@ func (a *Action) jsonObject() *jsoncompat.Object {
 	if a.FromTaskID != "" {
 		object.Set("fromTaskId", a.FromTaskID)
 	}
+	if a.Review != nil {
+		object.Set("review", *a.Review)
+	}
 	if a.ActionKey != "" {
 		object.Set("actionKey", a.ActionKey)
 	}
@@ -1008,6 +1014,9 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	if t.SentText != "" {
 		object.Set("sentText", t.SentText)
 	}
+	if t.Review != nil {
+		object.Set("review", *t.Review)
+	}
 	if t.Reduction {
 		object.Set("reduction", true)
 	}
@@ -1024,6 +1033,9 @@ func (t *Task) Clone() *Task {
 		return nil
 	}
 	copied := *t
+	if t.Review != nil {
+		copied.Review = reviewFlag(*t.Review)
+	}
 	copied.DependsOn = append([]string(nil), t.DependsOn...)
 	copied.Attachments = append([]string(nil), t.Attachments...)
 	copied.ResultDetail = t.ResultDetail.Clone()

@@ -56,6 +56,7 @@ type PlanTaskInput struct {
 	Prompt        string   `json:"prompt"`
 	DependsOn     []string `json:"dependsOn,omitempty"`
 	WriteLock     string   `json:"writeLock,omitempty"`
+	Review        *bool    `json:"review,omitempty"`
 	WorkspaceMode string   `json:"workspaceMode,omitempty"`
 	WorkspaceID   string   `json:"workspaceId,omitempty"`
 }
@@ -176,6 +177,12 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 				return nil, fmt.Errorf("任务 %s 引用了已停用的成员：%s", input.ID, input.MemberID)
 			}
 		}
+		if input.Review != nil && *input.Review {
+			reviewer := team.ReviewerMemberID()
+			if reviewer == "" || reviewer == team.LeadID || input.MemberID != reviewer {
+				return nil, fmt.Errorf("任务 %s 的 review=true 只能指派给独立的默认评审成员", input.ID)
+			}
+		}
 		if strings.TrimSpace(input.Prompt) == "" {
 			return nil, fmt.Errorf("任务 %s 的内容不能为空", input.ID)
 		}
@@ -235,6 +242,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 				Prompt:        input.Prompt,
 				DependsOn:     input.DependsOn,
 				WriteLock:     input.WriteLock,
+				Review:        input.Review,
 				WorkspaceMode: input.WorkspaceMode,
 				WorkspaceID:   input.WorkspaceID,
 			})
@@ -320,7 +328,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 	tasks := make([]Task, 0, len(order))
 	for ordinal, input := range order {
 		// 评审成员缺省只读（review.go）；其余缺省独占。
-		writeLock := defaultReviewWriteLock(team, input.MemberID, input.WriteLock)
+		writeLock := defaultReviewWriteLock(team, input.MemberID, input.WriteLock, input.Review)
 		if writeLock == "" {
 			writeLock = TaskWriteLockExclusive
 		}
@@ -335,6 +343,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 			WorkspaceMode:    input.WorkspaceMode,
 			WorkspaceID:      input.WorkspaceID,
 			WriteLock:        writeLock,
+			Review:           input.Review,
 			Status:           TaskPlanned,
 			InstructionsHead: InstructionsHead(input.Prompt),
 		}
@@ -401,6 +410,9 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 		entry.Set("dependsOn", depends)
 		entry.Set("workspaceMode", task.WorkspaceMode)
 		entry.Set("writeLock", task.WriteLock)
+		if task.Review != nil {
+			entry.Set("review", *task.Review)
+		}
 		if len(task.Attachments) > 0 {
 			attachments := &jsoncompat.Array{}
 			for _, id := range task.Attachments {
@@ -430,6 +442,9 @@ func InputHashFor(task *Task, policyDigest, contextText string) string {
 	object.Set("dependsOn", depends)
 	object.Set("workspaceMode", task.WorkspaceMode)
 	object.Set("writeLock", task.WriteLock)
+	if task.Review != nil {
+		object.Set("review", *task.Review)
+	}
 	if len(task.Attachments) > 0 {
 		attachments := &jsoncompat.Array{}
 		for _, id := range task.Attachments {

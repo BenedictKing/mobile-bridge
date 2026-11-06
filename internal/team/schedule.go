@@ -241,6 +241,9 @@ func (p *PlanTaskInput) jsonObject() *jsoncompat.Object {
 	if p.WriteLock != "" {
 		object.Set("writeLock", p.WriteLock)
 	}
+	if p.Review != nil {
+		object.Set("review", *p.Review)
+	}
 	if p.WorkspaceMode != "" {
 		object.Set("workspaceMode", p.WorkspaceMode)
 	}

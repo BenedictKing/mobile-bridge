@@ -767,6 +767,42 @@ func TestTeamMemberTagsUpdate(t *testing.T) {
 	}
 }
 
+func TestTeamRunCreateSeparatesReviewerExecutionFromReview(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	teamRow := env.store.Team(teamID)
+	teamRow.ReviewerID = "rev"
+	teamRow.Members = append(teamRow.Members, team.TeamMember{ID: "rev", SessionID: "sess-rev", AgentKind: "kimi", Role: team.RoleReviewer, Enabled: true})
+	if err := env.store.SaveTeam(teamRow); err != nil {
+		t.Fatal(err)
+	}
+	runID := env.createRun(t, teamID, `{"goal":"主控实现，ZCode 评审","mode":"pipeline","plan":[
+		{"id":"impl","memberId":"lead","prompt":"主控自我委派实现","review":false},
+		{"id":"review","memberId":"rev","prompt":"独立审查实现","memberIds":null,"dependsOn":["impl"],"review":true}
+	]}`)
+	run := env.store.Run(runID)
+	if run == nil || len(run.Tasks) != 2 {
+		t.Fatalf("run=%+v", run)
+	}
+	execution, review := run.Tasks[0], run.Tasks[1]
+	if execution.Review == nil || *execution.Review || execution.WriteLock != team.TaskWriteLockExclusive {
+		t.Fatalf("主控执行任务标记或写锁错误: %+v", execution)
+	}
+	if review.Review == nil || !*review.Review || review.WriteLock != team.TaskWriteLockNone {
+		t.Fatalf("评审任务标记或写锁错误: %+v", review)
+	}
+	evidence := teamDeliveryEvidence(teamRow, &team.Run{Tasks: []team.Task{execution}})
+	if _, exists := evidence.Get("review"); exists {
+		t.Fatal("review=false 的执行任务不得计入独立评审证据")
+	}
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs", `{"goal":"非法标记","mode":"single","plan":[
+		{"id":"bad","memberId":"lead","prompt":"错误类型","review":"false"}
+	]}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "review 必须是布尔值") {
+		t.Fatalf("非布尔 review 应 400: %d %s", response.Code, response.Body.String())
+	}
+}
+
 // seedRunTeam 直落一支带 lead 成员的团队（绕过 HTTP 成员校验的 ACP 探测，
 // Run 创建链路只依赖 ParsePlan 的成员存在性检查）。注册收尾清理：取消该
 // 团队全部 Run，让调度循环先于 t.TempDir 的目录清理退出（否则循环写盘撞

@@ -2382,7 +2382,7 @@ func (h *handler) teamProject(teamRow *team.Team) *jsoncompat.Object {
 // 派生（零 I/O）：
 //   - agent：任务完成度（completed/total）；
 //   - resultSummary：逐任务结果头的有界摘要（超限置 truncated）；
-//   - review：评审任务（team.ReviewerMemberID）最后一个的显式裁决：只有
+//   - review：review=true（含旧任务缺省）的评审任务最后一个显式裁决：只有
 //     completed 且回复末行带裁决标记才是 passed/failed，其余（未完成、执行
 //     失败、未给裁决）都是 unknown——执行失败不等于审查不通过；无评审任务
 //     不带键；
@@ -2395,7 +2395,6 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 	completed := 0
 	heads := make([]string, 0, len(run.Tasks))
 	truncated := false
-	reviewerID := teamRow.ReviewerMemberID()
 	var reviewTask *team.Task
 	taskIDs := &jsoncompat.Array{}
 	workspaces := &jsoncompat.Array{}
@@ -2421,7 +2420,7 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 		if task.ResultDetail != nil && task.ResultDetail.Truncated {
 			truncated = true
 		}
-		if reviewerID != "" && reviewerID != teamRow.LeadID && task.MemberID == reviewerID && !task.Reduction {
+		if team.IsReviewTask(teamRow, task) {
 			reviewTask = task // Ordinal 递增遍历，留最后一个评审任务
 		}
 		if task.WorkspaceMode == team.WorkspaceIsolatedWorktree && task.WorkspaceID != "" {
@@ -3125,6 +3124,13 @@ func parsePlanInputs(raw any) ([]team.PlanTaskInput, error) {
 			WriteLock:     stringField(object, "writeLock"),
 			WorkspaceMode: stringField(object, "workspaceMode"),
 			WorkspaceID:   stringField(object, "workspaceId"),
+		}
+		if raw, exists := object.Get("review"); exists {
+			review, isBool := raw.(bool)
+			if !isBool {
+				return nil, errors.New("review 必须是布尔值")
+			}
+			input.Review = &review
 		}
 		if deps, hasDeps := object.MustGet("dependsOn").(*jsoncompat.Array); hasDeps {
 			for _, dep := range deps.Items {
