@@ -95,12 +95,15 @@ test('team chat prefers an unfinished run over a newer completed run',async()=>{
   controller.close();
 });
 
-test('team settings adds an agent with role and optimistic version',async()=>{
+test('team settings lists enabled agents without project history and adds with optimistic version',async()=>{
   const team={...teams[0],project:'acp:project',version:2};
   let added=null,changed=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
     if(path==='/api/teams/team-1'&&!options.method)return team;
-    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[{agent:'claude',sessionId:'sess-new',title:'只读排查最近交互项目排序'}]};
+    if(path==='/api/projects')return{agents:[
+      {kind:'codex',label:'Codex'},{kind:'kimi',label:'Kimi'},
+      {kind:'zcode',label:'ZCode'},{kind:'claude',label:'Claude'},
+    ]};
     if(path==='/api/teams/team-1/members'){
       added=options.body;
       return{...team,members:[...team.members,{id:added.id,sessionId:'sess-new',agentKind:'claude',name:'claude',role:added.role}]};
@@ -110,7 +113,9 @@ test('team settings adds an agent with role and optimistic version',async()=>{
   await settings.open(team);
   assert.equal(settings._dialog.open,true);
   assert.equal(find(settings.body,'team-role-select').length,2);
-  assert.equal(find(settings.body,'team-add-agent')[0].children[0].textContent,'claude');
+  const choices=find(settings.body,'team-add-agent')[0].children;
+  assert.deepEqual(choices.map(option=>option.value),['kimi','zcode','claude']);
+  assert.deepEqual(choices.map(option=>option.textContent),['Kimi','ZCode','Claude']);
   await settings.addMember('claude','reviewer');
   assert.equal(added.id,'member-claude');
   assert.equal(added.role,'reviewer');
@@ -123,7 +128,7 @@ test('team settings allows the lead to also be the default reviewer',async()=>{
   let patch=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
     if(path==='/api/teams/team-1'&&!options.method)return team;
-    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/projects')return{agents:[]};
     if(path==='/api/teams/team-1'&&options.method==='PATCH'){
       patch=options.body;return{...team,reviewerId:patch.reviewerId,version:3};
     }
@@ -143,7 +148,7 @@ test('team settings keeps member identity when selecting the default reviewer',a
   let patch=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
     if(path==='/api/teams/team-1'&&!options.method)return team;
-    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/projects')return{agents:[]};
     if(path==='/api/teams/team-1'&&options.method==='PATCH'){
       patch=options.body;return{...team,reviewerId:patch.reviewerId,version:3};
     }
@@ -168,7 +173,7 @@ test('team settings preserves member roles through repeated lead and reviewer sw
   const patches=[];
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
     if(path==='/api/teams/team-1'&&!options.method)return current;
-    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/projects')return{agents:[]};
     if(path==='/api/teams/team-1'&&options.method==='PATCH'){
       patches.push(options.body);current={...current,...options.body,version:current.version+1};return current;
     }
@@ -209,7 +214,7 @@ test('team settings shows one effective reviewer and distinguishes same-kind mem
   const patches=[];
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
     if(path==='/api/teams/team-1'&&!options.method)return current;
-    if(path==='/api/projects/acp%3Aproject/agents')return{agents:[]};
+    if(path==='/api/projects')return{agents:[]};
     if(path==='/api/teams/team-1'&&options.method==='PATCH'){
       patches.push(options.body);current={...current,...options.body,version:current.version+1};return current;
     }

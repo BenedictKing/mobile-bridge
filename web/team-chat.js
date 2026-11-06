@@ -386,7 +386,7 @@ class TeamSettingsDialog{
     try{
       const detail=await this.request('/api/teams/'+encodeURIComponent(team.id));this.team=detail;
       if(detail.project){
-        try{const value=await this.request('/api/projects/'+encodeURIComponent(detail.project)+'/agents');this.agents=value.agents||[];}catch{this.agents=[];}
+        try{const value=await this.request('/api/projects');this.agents=(value.agents||[]).filter(agent=>agent&&agent.kind&&agent.kind!=='codex');}catch{this.agents=[];}
       }
     }catch(error){this.error=error.message;}
     this.render();
@@ -428,7 +428,7 @@ class TeamSettingsDialog{
     // 不按 agent kind 去重。
     const candidates=this.agents;
     const select=document.createElement('select');select.className='team-add-agent';select.disabled=this.busy;
-    for(const agent of candidates)select.append(new Option(agent.agent,agent.agent));
+    for(const agent of candidates)select.append(new Option(agent.label||agent.kind,agent.kind));
     const role=document.createElement('select');role.className='team-add-role';role.disabled=this.busy;role.append(new Option(t_safe('成员'),'member'),new Option(t_safe('评审'),'reviewer'));
     const add=this.button(t_safe('＋ 添加 Agent'),()=>this.addMember(select.value,role.value));
     add.disabled=this.busy||!candidates.length;
