@@ -136,11 +136,12 @@ window.BridgeDiff = (() => {
     return wrap;
   }
 
-  // 每轮汇总:「本轮改动 N 个文件」+ 去重后的文件卡片。
+  // 每轮汇总:「本轮改动 N 个文件」+ 去重后的文件卡片；超过 5 个默认折叠。
   function summaryCard(changes, cwd, onOpen) {
-    const wrap = document.createElement('div');
+    const collapsible = changes.length > 5;
+    const wrap = document.createElement(collapsible ? 'details' : 'div');
     wrap.className = 'turn-diff-summary';
-    const title = document.createElement('div');
+    const title = document.createElement(collapsible ? 'summary' : 'div');
     title.className = 'turn-diff-title';
     const count = document.createElement('strong');
     count.textContent = String(changes.length);
