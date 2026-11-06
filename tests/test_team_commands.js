@@ -8,22 +8,24 @@ const vm=require('node:vm');
 // defaultCompact 模拟设置里的默认压缩档（BridgePresentation.defaultCompact）。
 function extract({team=false,defaultCompact}={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
-  const start=source.indexOf('const COMPACT_PREF_LABELS=');
-  const end=source.indexOf('// runNativeCompact',start);
+  const start=source.indexOf('const COMPACT_PROMPTS=');
+  const end=source.indexOf('async function runGatewayCompact',start);
   assert.ok(start>=0&&end>start,'composer command block not found in app.js');
   const context={t:value=>value,currentTeam:team,window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;',context);
+  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;this.nativeCompactPrompt=nativeCompactPrompt;',context);
   return context;
 }
 const same=(actual,expected)=>assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected);
 
-test('parseTeamCommand only intercepts exact command lines',()=>{
+test('parseTeamCommand handles /new exactly and passes compaction instructions',()=>{
   const {parseTeamCommand}=extract({team:true});
   same(parseTeamCommand('/new'),{kind:'new'});
   same(parseTeamCommand('  /new \n'),{kind:'new'});
-  // 带附加文字的按普通团队消息处理，绝不截断成命令。
+  // /new 带附加文字仍是普通团队消息；压缩命令的附加文字是后续指示。
   assert.equal(parseTeamCommand('/new 现在'),null);
-  assert.equal(parseTeamCommand('/compress main 立刻'),null);
+  same(parseTeamCommand('/compress main 立刻'),{kind:'native',scope:'main',instructions:'立刻'});
+  same(parseTeamCommand('/compress gateway full 继续补测试\n并修复失败项'),{kind:'gateway',scope:'full',instructions:'继续补测试\n并修复失败项'});
+  same(parseTeamCommand('/compress 接着实现'),{kind:'native',scope:'main',instructions:'接着实现'});
   assert.equal(parseTeamCommand('普通消息'),null);
   assert.equal(parseTeamCommand(''),null);
   // /compact 是 /compress 的等价写法；裸命令执行默认档。
@@ -42,6 +44,12 @@ test('bare /compress follows the configured default level',()=>{
   // 显式范围始终覆盖默认档；未知默认档回退 main。
   same(extract({defaultCompact:'bare'}).parseCompactCommand('/compress full'),{kind:'native',scope:'full'});
   same(extract({defaultCompact:'nope'}).defaultCompactPreference(),'main');
+});
+
+test('native compaction appends optional instructions without changing the bare prompt',()=>{
+  const {nativeCompactPrompt}=extract();
+  assert.equal(nativeCompactPrompt('bare',''),'/compact');
+  assert.equal(nativeCompactPrompt('main','  继续补测试  '),'/compact 保留主要历史、当前目标、关键决策和最新结果，重点压缩执行过程与工具输出。\n\n压缩完成后，请按以下用户指示继续：\n继续补测试');
 });
 
 test('plain chats parse /new as new-chat, /new stays un-interceptable via compact',()=>{

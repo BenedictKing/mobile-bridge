@@ -8,7 +8,7 @@ class MigrateControl {
     Object.assign(this,{root,request,onMigrated,onError,onBusy,enabled});
     this.view=null;this.busy=false;this.picked=null;
     this.prepared=null;this.choice={model:'',effort:''};  // Settings step: {id,kind,scope,catalog}.
-    this.epoch=0;this.confirming=false;
+    this.instructions='';this.epoch=0;this.confirming=false;
   }
   text(value){return typeof BridgeI18n==='undefined'?value:BridgeI18n.t(value);}
   locale(){return typeof BridgeI18n==='undefined'?'zh-CN':BridgeI18n.locale();}
@@ -17,7 +17,7 @@ class MigrateControl {
   targets(){return (this.view?.agents||[]).filter(agent=>agent&&agent.kind&&agent.kind!==this.view?.agent);}
   render(view){
     if(view){
-      if(this.view&&view.id!==this.view.id){this.cancel();this.picked=null;}  // Another chat's details.
+      if(this.view&&view.id!==this.view.id){this.cancel();this.picked=null;this.instructions='';}  // Another chat's details.
       this.view=view;
     }
     if(this.busy)return;  // A confirm/POST cycle owns the controls.
@@ -107,7 +107,7 @@ class MigrateControl {
   // The details dialog was closed or replaced: forget any half-made choice.
   dismiss(){
     this.cancel();
-    this.picked=null;
+    this.picked=null;this.instructions='';
     this.render();
   }
   models(){return Array.isArray(this.prepared?.catalog?.models)?this.prepared.catalog.models:[];}
@@ -144,10 +144,15 @@ class MigrateControl {
       paint();
       this.root.append(this.field('模型',modelSelect),this.field('思考强度',effortSelect));
     }
+    const instructions=this.node('textarea',undefined,'migrate-instructions');
+    instructions.rows=3;instructions.maxLength=8000;instructions.value=this.instructions;
+    instructions.placeholder=this.text('例如：继续实现剩余功能，并运行完整测试。');
+    instructions.oninput=()=>{this.instructions=instructions.value;};
+    this.root.append(this.field('后续指示（可选）',instructions));
     const row=this.node('div',undefined,'migrate-scopes');
     const start=this.node('button',this.text('开始迁移'));
     start.type='button';start.className='primary migrate-start';start.disabled=!this.enabled();
-    start.onclick=()=>this.migrate(this.picked,this.prepared.scope,'migrate',{id:this.prepared.id,model:this.choice.model,effort:this.choice.model?this.choice.effort:''});
+    start.onclick=()=>this.migrate(this.picked,this.prepared.scope,'migrate',{id:this.prepared.id,model:this.choice.model,effort:this.choice.model?this.choice.effort:'',instructions:this.instructions});
     const back=this.node('button',this.text('返回'));
     back.type='button';back.className='plain migrate-back';
     back.onclick=()=>this.back();
@@ -162,7 +167,9 @@ class MigrateControl {
     const buttons=[...this.root.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
     this.onBusy(true);
     try{
-      const body=this.body(kind,scope,options.id||this.newId(),options.model?{model:options.model,effort:options.effort||''}:{});
+      const extra=options.model?{model:options.model,effort:options.effort||''}:{};
+      const instructions=String(options.instructions||'').trim();if(instructions)extra.instructions=instructions;
+      const body=this.body(kind,scope,options.id||this.newId(),extra);
       const result=await this.request(body);
       this.prepared=null;  // The target session is now a real migration.
       this.onMigrated(result,label,body,operation);

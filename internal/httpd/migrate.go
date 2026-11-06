@@ -64,7 +64,7 @@ func isMigrationNoise(message *jsoncompat.Object) bool {
 type migrationTexts struct {
 	header, title, directory, truncated, sep, cont string
 	roles                                          map[string]string
-	latestHeader, latestContinue                   string
+	latestHeader, latestContinue, instructions     string
 }
 
 var migrationTextsByLocale = map[string]migrationTexts{
@@ -75,6 +75,7 @@ var migrationTextsByLocale = map[string]migrationTexts{
 		sep:       "：", cont: "以上是从 %s 迁移过来的会话转录，请在此基础上继续。",
 		latestHeader:   "【来自 %s 的最新问答】",
 		latestContinue: "以上是 %s 中最近一次提问与回答，请在此基础上继续。",
+		instructions:   "【用户后续指示】",
 	},
 	"en-US": {
 		header: "[Session migrated from %s]", title: "Title: ", directory: "Directory: ",
@@ -83,6 +84,7 @@ var migrationTextsByLocale = map[string]migrationTexts{
 		sep:       ": ", cont: "The transcript above was migrated from %s. Please continue from this context.",
 		latestHeader:   "[Latest exchange from %s]",
 		latestContinue: "The exchange above is the latest question and answer from %s. Please continue from this context.",
+		instructions:   "[User instructions for what to do next]",
 	},
 }
 
@@ -215,7 +217,7 @@ func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntr
 	return kept, dropped > 0
 }
 
-func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, scope string) string {
+func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, scope, instructions string) string {
 	texts := migrationTextsByLocale[normalizeUILocale(uiLocale)]
 	if scope == "latest" {
 		texts.header, texts.cont = texts.latestHeader, texts.latestContinue
@@ -240,6 +242,9 @@ func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, sco
 		lines = append(lines, role+texts.sep+entry.text)
 	}
 	lines = append(lines, "", sprintf(texts.cont, sourceLabel))
+	if instructions = strings.TrimSpace(instructions); instructions != "" {
+		lines = append(lines, "", texts.instructions, instructions)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -331,6 +336,11 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 	uiLocale := stringField(body, "uiLocale")
+	instructions := strings.TrimSpace(stringField(body, "instructions"))
+	if utf8.RuneCountInString(instructions) > 8000 {
+		h.fail(http.StatusBadRequest, errorBody("后续指示最多 8000 字"))
+		return
+	}
 	phase := stringField(body, "phase")
 	if phase != "" && phase != "prepare" && phase != "abandon" {
 		h.fail(http.StatusBadRequest, errorBody("未知的迁移阶段"))
@@ -539,7 +549,7 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 
-	message := migrationMessage(sourceLabel, view, uiLocale, scope)
+	message := migrationMessage(sourceLabel, view, uiLocale, scope, instructions)
 	if ledger != nil {
 		if err := ledger.setMessage(requestID, message); err != nil {
 			h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))

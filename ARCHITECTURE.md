@@ -207,7 +207,7 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 子 Agent：Codex 本地与 SSH 会话从 `thread_spawn_edges` 读取 child thread；ACP Agent 从 `tool_call` 的嵌套输出读取子 Agent transcript。此外，把子 Agent 存为独立落盘会话的 Agent 由各自的原生存储补充发现（`bridge/agents/native_subagents.py`）：kimi 读会话目录 `state.json` 的 agents 表与每子 `wire.jsonl`（子 ID 带 `父会话/` 前缀去重）；zcode 经 `~/.zcode/v2/acp-lazy-sessions.json` 把 ACP 会话映射到后端 `sess_*` 后读 `~/.zcode/cli/agents/<sid>/agent_*/` 的 metadata 与 transcript；claude 按 `~/.claude/projects/<slug>/<父会话>/subagents/*.jsonl` 目录约定发现 sidechain。读取均为只读、带字节与条目上限、按 mtime 缓存，布局缺失时静默返回空。dsh 的子会话是 zstd 压缩事件流，网关所用的 stdlib-only Python 无 zstd 解压能力，保持不可发现。时间线保留子 Agent ID、类型、状态、停止原因和命令输出，并将其作为可展开 activity 展示。
 
-`POST /api/sessions/<sid>/migrate`（body `{agent, scope?, project?, id, uiLocale?}`）把当前会话的上下文搬到另一个（或同一个）Agent 的新会话。`scope` 选择复制范围，默认 `main`：
+`POST /api/sessions/<sid>/migrate`（body `{agent, scope?, project?, id, uiLocale?, instructions?}`）把当前会话的上下文搬到另一个（或同一个）Agent 的新会话。`instructions` 是最多 8000 字的可选后续指示，去除首尾空白后作为独立段落追加在注入消息末尾；缺省或空白时注入消息保持原样。`scope` 选择复制范围，默认 `main`：
 
 - `main`：主要历史。user/assistant 保留全文，activity 压缩成"标题+首行"一行，输出丢弃；上限为最近 20 条且总量 30k 字符（单条 4k 截断），超出从头部丢弃并注明。
 - `full`：完全复制历史。同样的摊平规则，预算放大到 500 条 / 90k 字符（单条 12k，总量仍低于 send 的 100k 上限）。codex 源的保存历史是分页的，`Bridge.migrate` 会先把 `history_limit` 置为 None 重读完整 rollout（读取失败直接报错，不静默截断头部）；ACP 源附接时已是完整历史，无需扩展。
@@ -215,7 +215,7 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`；本机源匹配不到时自动以源目录在目标上创建（合成与 `AcpAdapter.projects()` 同构的 resolved 项目，key 为 `kind:sha256(cwd)[:12]`，结果带 `projectCreated: true`，目标随后列出该会话即自然收录该目录），远端源的 cwd 是远端路径、无法在本机目标上创建，仍报错并要求显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。源会话保持不变。
 
-聊天详情把“迁移到其他 Agent”和“上下文压缩”分成前后平级的独立区域，但都只在已连接、空闲、可写且无待答请求时可用。“迁移到其他 Agent”按 view 注入的 `agents` 列表显示当前以外的已启用 Agent，选择目标后再选择复制范围。“上下文压缩”要求先显式选择执行方式，不默认调用任何压缩：`Agent 原生压缩` 在当前会话通过既有 `send` 发送 `/compact <对应保留策略>`；`网关转录压缩` 直接显示复制范围，固定以当前 Agent 调用上述迁移接口创建转录新会话，不承担跨 Agent 迁移入口。原生压缩的未知送达结果不自动重试；任一压缩或迁移请求期间，相关操作均禁止重复提交。
+聊天详情把“迁移到其他 Agent”和“上下文压缩”分成前后平级的独立区域，但都只在已连接、空闲、可写且无待答请求时可用。“迁移到其他 Agent”按 view 注入的 `agents` 列表显示当前以外的已启用 Agent，选择目标后再选择复制范围；迁移设置与两种压缩都允许填写可选后续指示。“上下文压缩”要求先显式选择执行方式，不默认调用任何压缩：`Agent 原生压缩` 在当前会话通过既有 `send` 发送 `/compact <对应保留策略>`，有指示时追加“压缩完成后”的用户指示段落；`网关转录压缩` 直接显示复制范围，固定以当前 Agent 调用上述迁移接口创建转录新会话，并通过 `instructions` 传递指示，不承担跨 Agent 迁移入口。快捷命令 `/compress [gateway] [scope] [后续指示]` 复用同一路径。原生压缩的未知送达结果不自动重试；任一压缩或迁移请求期间，相关操作均禁止重复提交。
 
 ### 能力矩阵
 

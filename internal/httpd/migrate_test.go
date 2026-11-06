@@ -108,6 +108,12 @@ func TestMigrateAcrossAgents(t *testing.T) {
 		return response
 	}
 
+	tooLong := request(http.MethodPost, "/api/sessions/source/migrate",
+		`{"agent":"kimi","scope":"main","id":"0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","instructions":"`+strings.Repeat("指", 8001)+`"}`)
+	if tooLong.Code != http.StatusBadRequest || !strings.Contains(tooLong.Body.String(), "后续指示最多 8000 字") {
+		t.Fatalf("long instructions status=%d body=%s", tooLong.Code, tooLong.Body.String())
+	}
+
 	// A source chat on zcode with one user turn.
 	create := request(http.MethodPost, "/api/sessions",
 		`{"agent":"zcode","cwd":`+jsonText(cwd)+`,"title":"源聊天","id":"1aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`)
@@ -135,7 +141,7 @@ func TestMigrateAcrossAgents(t *testing.T) {
 	// directory itself becomes the project (projectCreated) and the
 	// transcript lands as the first prompt.
 	first := request(http.MethodPost, "/api/sessions/zcode-0/migrate",
-		`{"agent":"kimi","scope":"main","id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","uiLocale":"zh-CN"}`)
+		`{"agent":"kimi","scope":"main","id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","uiLocale":"zh-CN","instructions":"继续完成剩余测试"}`)
 	if first.Code != http.StatusOK {
 		t.Fatalf("migrate status=%d body=%s", first.Code, first.Body.String())
 	}
@@ -149,14 +155,16 @@ func TestMigrateAcrossAgents(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	migrated := request(http.MethodGet, "/api/sessions/kimi-0", "")
 	if !strings.Contains(migrated.Body.String(), "你好世界") ||
-		!strings.Contains(migrated.Body.String(), "从 ZCode 迁移的会话") {
-		t.Fatalf("migrated view missing transcript: %s", migrated.Body.String())
+		!strings.Contains(migrated.Body.String(), "从 ZCode 迁移的会话") ||
+		!strings.Contains(migrated.Body.String(), "【用户后续指示】") ||
+		!strings.Contains(migrated.Body.String(), "继续完成剩余测试") {
+		t.Fatalf("migrated view missing transcript or instructions: %s", migrated.Body.String())
 	}
 
 	// A retried request replays the recorded outcome: no second create, no
 	// second prompt.
 	retry := request(http.MethodPost, "/api/sessions/zcode-0/migrate",
-		`{"agent":"kimi","scope":"main","id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","uiLocale":"zh-CN"}`)
+		`{"agent":"kimi","scope":"main","id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","uiLocale":"zh-CN","instructions":"继续完成剩余测试"}`)
 	if retry.Code != http.StatusOK || !strings.Contains(retry.Body.String(), `"kimi-0"`) ||
 		!strings.Contains(retry.Body.String(), `"sent": true`) {
 		t.Fatalf("migrate retry status=%d body=%s", retry.Code, retry.Body.String())
@@ -284,16 +292,24 @@ func TestMigrationTranscriptTailBudget(t *testing.T) {
 
 func TestMigrationMessageLocales(t *testing.T) {
 	view := transcriptView()
-	zh := migrationMessage("ZCode", view, "zh-CN", "main")
+	zh := migrationMessage("ZCode", view, "zh-CN", "main", "")
 	if !strings.HasPrefix(zh, "【从 ZCode 迁移的会话】\n标题：标题\n目录：/tmp/project") ||
 		!strings.Contains(zh, "用户：第一个问题") || !strings.Contains(zh, "助手：第一个回答") ||
 		!strings.HasSuffix(zh, "以上是从 ZCode 迁移过来的会话转录，请在此基础上继续。") {
 		t.Fatalf("zh message=%q", zh)
 	}
-	en := migrationMessage("ZCode", view, "en_US", "latest")
+	zh = migrationMessage("ZCode", view, "zh-CN", "main", "  继续补完测试  ")
+	if !strings.HasSuffix(zh, "【用户后续指示】\n继续补完测试") {
+		t.Fatalf("zh instructions=%q", zh)
+	}
+	en := migrationMessage("ZCode", view, "en_US", "latest", "")
 	if !strings.HasPrefix(en, "[Latest exchange from ZCode]\nTitle: 标题\nDirectory: /tmp/project") ||
 		!strings.Contains(en, "User: 第二个问题") ||
 		!strings.HasSuffix(en, "The exchange above is the latest question and answer from ZCode. Please continue from this context.") {
 		t.Fatalf("en message=%q", en)
+	}
+	en = migrationMessage("ZCode", view, "en_US", "latest", "Run the remaining tests")
+	if !strings.HasSuffix(en, "[User instructions for what to do next]\nRun the remaining tests") {
+		t.Fatalf("en instructions=%q", en)
 	}
 }

@@ -858,16 +858,19 @@ function composerCommandRows(query){
   const q=String(query||'').toLocaleLowerCase();
   return rows.filter(row=>[row.token,row.token.replace('/compress','/compact'),row.label,row.description].join(' ').toLocaleLowerCase().includes(q)).slice(0,10);
 }
-// parseCompactCommand 识别可整句拦截的压缩命令（所有会话）：整段 trim 后
-// 精确匹配才算，带附加文字的（如「/compress main 立刻」）按普通消息发送。
-// 网关压缩可带范围（缺省 main）；裸 /compress 执行设置的默认档。
+// parseCompactCommand 识别压缩命令（所有会话）：范围后的附加文字是交给
+// 后续 Agent 的指示。网关压缩缺省 main；裸 /compress 执行设置的默认档。
+function compactCommand(kind,scope,instructions){
+  const result={kind,scope},text=String(instructions||'').trim();if(text)result.instructions=text;return result;
+}
 function parseCompactCommand(raw){
   const text=String(raw||'').trim();
-  let match=/^\/(?:compress|compact)\s+gateway(?:\s+(full|main|latest))?$/.exec(text);
-  if(match)return{kind:'gateway',scope:match[1]||'main'};
-  match=/^\/(?:compress|compact)(?:\s+(bare|full|main|latest))?$/.exec(text);
+  let match=/^\/(?:compress|compact)\s+gateway(?:\s+(full|main|latest))?(?:\s+([\s\S]+))?$/.exec(text);
+  if(match)return compactCommand('gateway',match[1]||'main',match[2]);
+  match=/^\/(?:compress|compact)(?:\s+(bare|full|main|latest))?(?:\s+([\s\S]+))?$/.exec(text);
   if(!match)return null;
-  return match[1]?{kind:'native',scope:match[1]}:resolveDefaultCompact();
+  const fallback=match[1]?{kind:'native',scope:match[1]}:resolveDefaultCompact();
+  return compactCommand(fallback.kind,fallback.scope,match[2]);
 }
 // parseTeamCommand 在团队模式额外识别 /new；压缩命令与普通会话共用。
 function parseTeamCommand(raw){
@@ -880,10 +883,16 @@ function parsePlainCommand(raw){
   if(String(raw||'').trim()==='/new')return{kind:'newchat'};
   return parseCompactCommand(raw);
 }
+function compactInstructions(){return $('compact-instructions').value.trim();}
+function nativeCompactPrompt(scope,instructions){
+  const prompt=COMPACT_PROMPTS[scope],extra=String(instructions||'').trim();
+  if(!prompt)return '';
+  return prompt+(extra?'\n\n'+t('压缩完成后，请按以下用户指示继续：')+'\n'+extra:'');
+}
 // runNativeCompact 在当前会话发送原生压缩提示（团队模式直达主控，不建 Run）；
 // onError 缺省用 toast，详情页入口沿用 compact-error 展示。
-async function runNativeCompact(scope,onError){
-  const text=COMPACT_PROMPTS[scope],target=currentId,targetHost=currentHost,targetKey=chatKey();
+async function runNativeCompact(scope,onError,instructions=''){
+  const text=nativeCompactPrompt(scope,instructions),target=currentId,targetHost=currentHost,targetKey=chatKey();
   if(!text||!target)return;
   compactChat.busy=true;$('compact-error').textContent='';renderCompactState();
   try{
@@ -895,20 +904,20 @@ async function runNativeCompact(scope,onError){
   }catch(error){(onError||(message=>toast(message)))(error.message);}
   finally{compactChat.busy=false;renderCompactState();}
 }
-async function runGatewayCompact(scope){
+async function runGatewayCompact(scope,instructions=''){
   if(!COMPACT_PROMPTS[scope]||!currentId||!compactAvailable())return false;
   $('compact-error').textContent='';
-  await migrateControl?.migrate(state.agent,scope,'compact');
+  await migrateControl?.migrate(state.agent,scope,'compact',{instructions});
   return true;
 }
 function compactGateway(scope){
   if(!COMPACT_PROMPTS[scope]||compactMethod!=='gateway'||compactChat.busy||migrateControl?.busy||!currentId||!compactAvailable())return;
-  runGatewayCompact(scope);
+  runGatewayCompact(scope,compactInstructions());
 }
 async function compactChat(scope){
   const targetKey=chatKey();
   if(!COMPACT_PROMPTS[scope]||compactMethod!=='native'||compactChat.busy||!currentId||!compactAvailable())return;
-  await runNativeCompact(scope,message=>{if(chatKey()===targetKey)$('compact-error').textContent=t(message);});
+  await runNativeCompact(scope,message=>{if(chatKey()===targetKey)$('compact-error').textContent=t(message);},compactInstructions());
 }
 function renderState(view){state=view;renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){sessionActivity.read(chatKey());renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');$('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?(view.agent==='codex'?t('正在加载桌面聊天…'):t('正在加载会话…')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');$('status').classList.toggle('offline',!view.connected);const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';if(retrying){const label=(retrying.statusCode===429?t('模型繁忙 · 重试'):t('请求失败 · 重试'))+retryCount;$('status').textContent=label;$('status').title=[label,retrying.errorMessage].filter(Boolean).join(' · ');}else $('status').removeAttribute('title');if(readOnly)$('status').textContent=t('只读');
   // 一切正常时不占用标题栏写「已连接」：收成一个绿点，把宽度还给聊天标题。
@@ -1282,7 +1291,7 @@ function openQueueEditor(row,target,host){
 }
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
 function syncSendButton(){$('send').disabled=!!state?.readOnly||sending||!state||state.loadingHistory||state.activating||!attachments.ready()||(!$('message').value.trim()&&!attachments.ids().length);}
-$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;if(!text.trim()&&!attachmentIds.length)return;const composerCommand=currentTeam?parseTeamCommand(text):parsePlainCommand(text);if(composerCommand){if(attachmentIds.length){toast(composerCommand.kind==='native'||composerCommand.kind==='gateway'?'请先移除附件后再压缩':'请先移除附件后再使用 /new');return;}if(composerCommand.kind==='new'){const team=currentTeam,sourceId=currentId;sending=true;try{const result=await newTeamLeadContext(team,sourceId);if(!result)return;$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));toast(t('主控已切换为空白会话'));if(currentId!==result.sessionId)await openChat(result.sessionId,'local',team.id);}catch(error){toast(error.message);}finally{sending=false;}return;}if(composerCommand.kind==='newchat'){const agent=state?.agent,cwd=state?.cwd,sourceId=currentId;if(!agent){toast('无法确定当前会话配置，请刷新后重试');return;}if(!cwd){toast('无法确定当前会话目录，请刷新后重试');return;}const title=Array.from((state?.title||'').trim()).slice(0,120).join('')||t('新建聊天');sending=true;try{const result=await api('/api/sessions',{id:uuid(),agent,cwd,title,inheritFrom:sourceId});$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));loadList(true).catch(e=>toast(e.message));if(currentId!==result.id)await openChat(result.id,result.host||'local');else toast(result.message||t('新会话已创建'));}catch(error){toast(error.message);}finally{sending=false;}return;}if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再压缩');return;}if(composerCommand.kind==='gateway'){await runGatewayCompact(composerCommand.scope);return;}await runNativeCompact(composerCommand.scope);return;}const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort(),teamFields=currentTeam?teamSubmissionFields($('team-message-mode').value,currentTeam.id):{};if(currentTeam&&teamFields.teamMode!=='direct'&&skills.length){toast('团队执行暂不支持 Skill，请切换为主控直答');return;}const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds)||(pending.teamId||'')!==(teamFields.teamId||'')||(pending.teamMode||'')!==(teamFields.teamMode||''))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale(),...teamFields};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);if(result.runId)teamChat?.accepted(result);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
+$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;if(!text.trim()&&!attachmentIds.length)return;const composerCommand=currentTeam?parseTeamCommand(text):parsePlainCommand(text);if(composerCommand){if(attachmentIds.length){toast(composerCommand.kind==='native'||composerCommand.kind==='gateway'?'请先移除附件后再压缩':'请先移除附件后再使用 /new');return;}if(composerCommand.kind==='new'){const team=currentTeam,sourceId=currentId;sending=true;try{const result=await newTeamLeadContext(team,sourceId);if(!result)return;$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));toast(t('主控已切换为空白会话'));if(currentId!==result.sessionId)await openChat(result.sessionId,'local',team.id);}catch(error){toast(error.message);}finally{sending=false;}return;}if(composerCommand.kind==='newchat'){const agent=state?.agent,cwd=state?.cwd,sourceId=currentId;if(!agent){toast('无法确定当前会话配置，请刷新后重试');return;}if(!cwd){toast('无法确定当前会话目录，请刷新后重试');return;}const title=Array.from((state?.title||'').trim()).slice(0,120).join('')||t('新建聊天');sending=true;try{const result=await api('/api/sessions',{id:uuid(),agent,cwd,title,inheritFrom:sourceId});$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));loadList(true).catch(e=>toast(e.message));if(currentId!==result.id)await openChat(result.id,result.host||'local');else toast(result.message||t('新会话已创建'));}catch(error){toast(error.message);}finally{sending=false;}return;}if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再压缩');return;}if(composerCommand.kind==='gateway'){await runGatewayCompact(composerCommand.scope,composerCommand.instructions);return;}await runNativeCompact(composerCommand.scope,undefined,composerCommand.instructions);return;}const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort(),teamFields=currentTeam?teamSubmissionFields($('team-message-mode').value,currentTeam.id):{};if(currentTeam&&teamFields.teamMode!=='direct'&&skills.length){toast('团队执行暂不支持 Skill，请切换为主控直答');return;}const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds)||(pending.teamId||'')!==(teamFields.teamId||'')||(pending.teamMode||'')!==(teamFields.teamMode||''))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale(),...teamFields};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);if(result.runId)teamChat?.accepted(result);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
 toast(result.runId?t('团队已受理'):workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){const busy=/^(.+) 正在执行。(.+)$/.exec(error.message);$('send-error').textContent=busy?busy[1]+t(' 正在执行。')+t(busy[2]):t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);syncSendButton();}};
 $('message').onkeydown=event=>{
   if(handleSkillKeydown(event))return;

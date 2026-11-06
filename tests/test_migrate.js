@@ -66,6 +66,8 @@ test('scope click prepares the target, then confirm migrates with the chosen set
   model.value='m2';model.onchange();
   assert.deepEqual(Array.from(effort.children,option=>option.value),['medium','xhigh']);
   assert.equal(effort.value,'xhigh');  // The picked model's default effort.
+  const [instructions]=byClass(root,'migrate-instructions');
+  instructions.value='  继续补完测试并修复失败项  ';instructions.oninput();
 
   await byClass(root,'migrate-start')[0].onclick();
   assert.equal(requests.length,2);
@@ -73,6 +75,7 @@ test('scope click prepares the target, then confirm migrates with the chosen set
   assert.equal(requests[1].id,requests[0].id);  // Confirm reuses the prepared session.
   assert.equal(requests[1].model,'m2');
   assert.equal(requests[1].effort,'xhigh');
+  assert.equal(requests[1].instructions,'继续补完测试并修复失败项');
   assert.equal(completed[0][3],'migrate');
 });
 
@@ -84,6 +87,7 @@ test('migrating on target defaults sends no model or effort',async()=>{
   await byClass(root,'migrate-start')[0].onclick();
   assert.equal('model' in requests[1],false);
   assert.equal('effort' in requests[1],false);
+  assert.equal('instructions' in requests[1],false);
 });
 
 test('an empty or failed catalog still migrates, on the target defaults',async()=>{
@@ -131,20 +135,23 @@ test('switching to another chat abandons a prepared session',async()=>{
   const {control,root}=loadControl({request:async body=>{requests.push(body);return {catalog:CATALOG};}});
   find(root,button=>button.dataset.agent==='kimi').onclick();
   await find(root,button=>button.dataset.scope==='main').onclick();
+  control.instructions='不要带到其他会话';
   control.render({id:'other',agent:'claude',agents:[{kind:'claude'},{kind:'codex'},{kind:'kimi'}]});
   assert.equal(requests.at(-1).phase,'abandon');
   assert.equal(control.prepared,null);
+  assert.equal(control.instructions,'');
 });
 
 test('gateway compaction keeps its operation type and rejects duplicate submission',async()=>{
   let release;
   const {control,requests,busy,completed}=loadControl({request:body=>{requests.push(body);return new Promise(resolve=>{release=resolve;});}});
-  const pending=control.migrate('claude','latest','compact');
+  const pending=control.migrate('claude','latest','compact',{instructions:'继续完成剩余测试'});
   await control.migrate('claude','full','compact');
   assert.equal(control.busy,true);
   assert.equal(requests.length,1);
   assert.equal(requests[0].agent,'claude');
   assert.equal(requests[0].scope,'latest');
+  assert.equal(requests[0].instructions,'继续完成剩余测试');
   release({sent:true});
   await pending;
   assert.equal(completed[0][3],'compact');
@@ -157,6 +164,8 @@ test('chat details keep migration before and outside the compaction section',()=
   const compact=html.match(/<section id="compact-control"[\s\S]*?<\/section>/)[0];
   assert(!compact.includes('id="migrate-control"'));
   assert.equal((compact.match(/data-gateway-compact=/g)||[]).length,3);
+  assert(compact.includes('id="compact-instructions"'));
+  assert(compact.includes('maxlength="8000"'));
   assert(compact.includes('在当前 Agent 创建转录压缩的新会话'));
   assert(html.indexOf('id="migrate-control"')<html.indexOf('id="compact-control"'));
 });
