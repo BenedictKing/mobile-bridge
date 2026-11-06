@@ -674,7 +674,7 @@ POST /api/sessions/:leadSessionID/uploads
 POST /api/sessions/:leadSessionID/send
 ```
 
-发送体在普通消息字段上增加可选 `teamId` 与 `teamMode`。`teamMode=team` 或缺省时，网关在 direct-send 记账前识别 Lead：首条消息创建 `single + autoPlan` Run；后续消息追加为当前活跃 autoPlan Run 的 Lead 任务，旧 Run 已终态时自动创建带 `parentRunId` 的修订 Run，而不是每条对话都另起独立 Run。多个活跃 Run 返回 409，显式计划 Run 在其详情页处理。未携带 `teamId` 时仅自动识别唯一 Lead 团队，多团队歧义返回 409。`teamMode=direct` 明确跳过团队识别，走普通 Lead 会话直答且不创建 Run。请求 `id` 是消息幂等键，前端把 `teamId` 与 `teamMode` 都纳入消息身份；后续消息的 `runId` 可以不同于 `inputId`。Lead Task 持久化 `attachments`，附件随 submissions 进入既有 `PromptWithBlocks` 链路，journal 重建和任务重试不丢失；后续 delegate 任务不重复携带这些附件。纯图片消息使用明确的目标占位文案。团队执行响应为 `{status:"accepted",teamId,runId,duplicate?}`，直答沿用普通发送响应。
+发送体在普通消息字段上增加可选 `teamId` 与 `teamMode`。`teamMode=team` 或缺省时，网关在 direct-send 记账前识别 Lead：首条消息创建 `single + autoPlan` Run；后续消息追加为当前活跃 autoPlan Run 的 Lead 任务，旧 Run 已终态时自动创建带 `parentRunId` 的修订 Run，而不是每条对话都另起独立 Run。多个活跃 Run 返回 409，显式计划 Run 在其详情页处理。未携带 `teamId` 时仅自动识别唯一 Lead 团队，多团队歧义返回 409。`teamMode=direct` 明确跳过团队识别，走普通 Lead 会话直答且不创建 Run，保留给旧客户端与原生压缩等内部操作。团队页面不再要求用户选择“团队执行/主控直答”：消息统一进入 autoPlan，Lead 对可直接回答或独立完成的任务用自然语言给出结果，需要协作时才输出 `team-actions` 委派成员。请求 `id` 是消息幂等键，前端把 `teamId` 与 `teamMode` 都纳入消息身份；后续消息的 `runId` 可以不同于 `inputId`。Lead Task 持久化 `attachments`，附件随 submissions 进入既有 `PromptWithBlocks` 链路，journal 重建和任务重试不丢失；后续 delegate 任务不重复携带这些附件。纯图片消息使用明确的目标占位文案。团队执行响应为 `{status:"accepted",teamId,runId,duplicate?}`，直答沿用普通发送响应。
 
 聊天页读取最近 Run 的任务投影，以阶段轨道、成员 pill 和结果摘要展示 workflow，并周期追随刷新；显式 pipeline、定时 Run、修订和高级控制仍走下述 Run API。团队输入区不支持 Skill、计划/目标模式和 steer，普通发送与完成后发送可用。
 

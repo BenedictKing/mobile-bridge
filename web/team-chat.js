@@ -1,7 +1,7 @@
 'use strict';
 
-function teamSubmissionFields(mode,teamID){
-  return mode==='direct'?{teamMode:'direct'}:{teamMode:'team',teamId:teamID};
+function teamSubmissionFields(teamID){
+  return {teamMode:'team',teamId:teamID};
 }
 
 // Lead 动作信封（internal/team/actions.go §5.1）是编排协议，不是给人读的正文：

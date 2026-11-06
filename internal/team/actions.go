@@ -512,7 +512,7 @@ func actionRoundViolation(entry *jsoncompat.Object, policy TeamPolicy, ordinal i
 
 // actionSchemaInstruction 是 Lead 简报与修复提示共用的动作协议说明。
 func actionSchemaInstruction() string {
-	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认 exclusive，纯读任务可声明 none 与写任务并行）。不要输出上述之外的字段；若无需任何动作，请输出 {\"actions\":[]}。"
+	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认 exclusive，纯读任务可声明 none 与写任务并行）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
 }
 
 // BuildLeadBriefing 返回 autoPlan Lead 的任务级成员目录与动作协议。修复提示
@@ -547,7 +547,7 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 	if reviewer := team.ReviewerMemberID(); reviewer != "" && reviewer != team.LeadID {
 		builder.WriteString("评审成员只承担独立审查：先由 Lead 或普通成员形成可审查的产出，再让评审核对其中的证据、指出问题并给出裁决；不要把首轮排查、主要实现或全部工作直接交给评审。\n")
 	}
-	builder.WriteString("需要编排时，")
+	builder.WriteString("只需你直接回答或独立完成任务时，直接用自然语言给出结果，不输出 team-actions，也不要为了形式委派任务。需要编排时，")
 	builder.WriteString(actionSchemaInstruction())
 	builder.WriteString("\n")
 	if policy.AutoDispatch {

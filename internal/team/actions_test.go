@@ -1365,6 +1365,7 @@ func TestBuildLeadBriefing(t *testing.T) {
 		"[Team delegation]", "id=lead", "name=主控 Agent", "role=lead · Lead",
 		"id=dev", "role=reviewer", "team-actions", `"sourceTaskId":"lead"`, "autoDispatch=true",
 		"给 Lead 自己一条 delegate 作为后续任务", "不要在该批动作中直接混用 summarize",
+		"只需你直接回答或独立完成任务时，直接用自然语言给出结果", "不要为了形式委派任务",
 		"评审成员只承担独立审查", "不要把首轮排查、主要实现或全部工作直接交给评审",
 	} {
 		if !strings.Contains(briefing, want) {

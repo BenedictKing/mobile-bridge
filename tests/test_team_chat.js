@@ -277,9 +277,12 @@ test('cancelling first team lead picker returns null without creating a team',as
   assert.equal(calls.filter(call=>call.options.method==='PUT').length,0);
 });
 
-test('team submission fields distinguish direct chat from orchestration',()=>{
-  assert.deepEqual(teamSubmissionFields('direct','team-1'),{teamMode:'direct'});
-  assert.deepEqual(teamSubmissionFields('team','team-1'),{teamMode:'team',teamId:'team-1'});
+test('team submission fields always enter autoPlan orchestration without a mode selector',()=>{
+  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1'});
+  const html=require('node:fs').readFileSync(require.resolve('../web/index.html'),'utf8');
+  const app=require('node:fs').readFileSync(require.resolve('../web/app.js'),'utf8');
+  assert.equal(html.includes('id="team-message-mode"'),false);
+  assert.equal(app.includes("$('team-message-mode')"),false);
 });
 
 test('completed run shows evidence without accept or discard',async()=>{
