@@ -1,6 +1,6 @@
 # ACP 网关托管 Goal 实施计划
 
-> 状态：待实施的设计方案（2026-11-06）
+> 状态：首版已实现并部署（2026-11-06）；fake ACP/Jev 自动续轮、无 Jev 人工复核、浏览器能力门控已验证，真实 Agent 的多轮执行仍待专门验收。
 >
 > 范围：为没有原生 Goal 接口的 ACP Agent 增加受 Jev 评估约束的网关托管 Goal。
 
@@ -8,7 +8,7 @@
 
 1. [摘要](#1-摘要)
 2. [目标与非目标](#2-目标与非目标)
-3. [当前实现基线](#3-当前实现基线)
+3. [实施前基线](#3-实施前基线)
 4. [产品语义](#4-产品语义)
 5. [状态机](#5-状态机)
 6. [架构与持久化](#6-架构与持久化)
@@ -43,15 +43,15 @@
 - 不在没有 Jev 评估或 Jev 结果不确定时，基于启发式猜测自动继续。
 - 初版不承诺 ACP Agent 之间迁移 Goal，不提供跨会话并行 Goal，也不提供通用 Token 预算；只有来源准确的 Agent 用量才能用于硬预算。
 
-## 3. 当前实现基线
+## 3. 实施前基线
 
-当前只有 `mcode` profile 声明 `goals`，并通过自定义 RPC 接入 Goal；`acpGoalTransport` 也允许未来显式声明该能力的 manager 走该 transport。Codex 则由 `internal/goal` 侧车读取和写入桌面原生 Goal。主要实现位于 `internal/acpagents/acpagents.go`、`internal/httpd/goal_send.go` 和 `internal/goal/goal.go`。
+实施前只有 `mcode` profile 声明 `goals`，并通过自定义 RPC 接入 Goal；Codex 则由 `internal/goal` 侧车读取和写入桌面原生 Goal。既有实现位于 `internal/acpagents/acpagents.go`、`internal/httpd/goal_send.go` 和 `internal/goal/goal.go`。
 
 现有 Jev 自动继续解决的是“已结束的一轮是否应该恢复”，不是有持久目标的多轮执行。`ContinueContext` 只收集最近一轮的用户请求、assistant 输出片段、错误和停止原因，没有独立保存的目标文本；`ContinueAssess` 使用固定的 complete / stop_kind / continue 问题集。生产 hook 还要求全局 `autoContinue` 开启、会话近期被查看且无待答请求，随后发送固定文本“继续”，并消耗 `MaxAutoContinue=5`。相关代码位于 `internal/jev/continue.go`、`cmd/gateway/jevhooks.go` 与 `internal/acpruntime/manager.go`。
 
-因此新 Goal 需要独立的目标存储、Goal 专用 Jev 评估上下文和独立派发预算。它不能直接借用 `ContinueAssess` 的默认“中断任务恢复”回退，也不能把 Goal 迭代计数写进普通自动继续预算。
+本次实现将 Goal 存储放在 `internal/acpgoal`，Goal 专用 Jev 评估放在 `internal/jev/goal.go`，HTTP 与派发放在 `internal/httpd/acp_goal.go`；它不借用 `ContinueAssess` 的中断回退，也不共用普通自动继续预算。
 
-当前 ACP Goal 路由和差异见 [架构能力矩阵](../ARCHITECTURE.md#能力矩阵)。本计划描述目标设计，不代表上述新能力已实现或通过运行验证。
+当前 provider 路由与差异见 [架构能力矩阵](../ARCHITECTURE.md#能力矩阵)。以下仍是完整目标契约；涉及重启对账、通知和真实 Agent 行为的条目以实际测试结果为准。
 
 ## 4. 产品语义
 

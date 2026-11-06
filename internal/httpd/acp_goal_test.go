@@ -125,6 +125,10 @@ func TestGatewayGoalWithoutJevWaitsForManualReview(t *testing.T) {
 	if created.Code != http.StatusOK {
 		t.Fatalf("create=%d %s", created.Code, created.Body.String())
 	}
+	emptyStatus := featureRequest(server, token, csrf, http.MethodGet, "/api/sessions/uuid-new/goal/status", "")
+	if emptyStatus.Code != http.StatusOK || !strings.Contains(emptyStatus.Body.String(), `"goal": null`) {
+		t.Fatalf("empty status=%d %s", emptyStatus.Code, emptyStatus.Body.String())
+	}
 	sent := featureRequest(server, token, csrf, http.MethodPost, "/api/sessions/uuid-new/send", `{"text":"人工目标","mode":"send","workMode":"goal","id":"3bbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`)
 	if sent.Code != http.StatusOK {
 		t.Fatalf("send=%d %s", sent.Code, sent.Body.String())

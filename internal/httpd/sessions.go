@@ -1007,13 +1007,15 @@ func (h *handler) handleGoalHTTP(write bool, path string) bool {
 		if match[2] != "status" {
 			return false
 		}
-		if kind, _, owned := h.server.acpGoalOwner(threadID); owned {
+		if kind, _, owned := h.server.acpGoalOwner(threadID); owned && kind != "mcode" && h.server.ACPGoals != nil {
+			result := jsoncompat.NewObject()
+			result.Set("provider", "gateway")
+			result.Set("goal", nil)
 			if goal, ok := h.server.gatewayGoalFor(kind, threadID); ok {
-				result := jsoncompat.NewObject()
 				result.Set("goal", gatewayGoalView(goal))
-				h.output(http.StatusOK, result, contentTypeJSON, "")
-				return true
 			}
+			h.output(http.StatusOK, result, contentTypeJSON, "")
+			return true
 		}
 		return false
 	}
