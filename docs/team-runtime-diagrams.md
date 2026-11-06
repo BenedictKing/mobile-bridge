@@ -360,16 +360,22 @@ flowchart LR
 flowchart TD
     Chat[Lead 会话发送 teamMode=team] --> Validate[校验目标、附件与 inputId]
     Input[POST /api/teams/:id/inputs] --> Validate
-    Validate --> Existing{同 inputId 的 Run 已存在?}
+    Validate --> Existing{同 inputId 的 Run 或任务已存在?}
     Existing -- 同内容 --> Duplicate[返回原 Run + duplicate]
     Existing -- 不同内容 --> Conflict[拒绝复用 ID]
-    Existing -- 否 --> Create[创建 single + autoPlan Run]
-    Create --> Route[routeStatus = new_task]
+    Existing -- 否 --> Active{恰有一个活跃 autoPlan Run?}
+    Active -- 是 --> Append[追加 Lead Task 到原 Run]
+    Active -- 多个 --> Conflict
+    Active -- 无且有终态 --> Amend[从最近终态 Run 创建 parentRunId 修订]
+    Active -- 无任何 Run --> Create[创建初始 single + autoPlan Run]
+    Append --> Route[routeStatus = new_task]
+    Amend --> Route
+    Create --> Route
     Direct[teamMode=direct] --> Normal[普通会话发送链路]
     Plan[POST /api/teams/:id/runs] --> Explicit[显式 Plan Run]
 ```
 
-当前 `inputId` 直接作为 `runId`，由 Run 账本保证幂等；尚无独立 TeamInput 状态账本。`follow_up`、`amend`、`answer`、`clarify`、`steer` 仅是预留路由词汇，不会由当前入口自动选择。依据：`internal/httpd/teams.go` 的 `createTeamInput`、`handleTeamConversationSend`。
+`inputId` 是消息幂等键；后续消息的 `runId` 可以是被复用的原 Run，任务 ID 由 `inputId` 确定性派生，尚无独立 TeamInput 状态账本。活跃 Run 追加新任务；终态 Run 不重开，自动形成 amend 血缘。结构化 `follow_up`、`amend`、`answer`、`clarify`、`steer` 仍是预留路由词汇，当前普通消息统一记为 `new_task`。依据：`internal/httpd/teams.go` 的 `createTeamInput`、`handleTeamConversationSend`。
 
 ## 13. 定时触发与通知
 

@@ -314,16 +314,16 @@ func (s *Service) stateFor(runID string) *runState {
 // payload.scheduledBy——回扫对账只认 journal 里的该事件，绝不依赖 HTTP 层
 // 的 creations 账本。空串=用户手工创建（HTTP 调用方恒传空串）。
 func (s *Service) CreateRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom string) (*Run, error) {
-	return s.createRun(team, runID, goal, mode, collect, verifyCommand, raw, autoPlan, scheduledFrom, nil)
+	return s.createRun(team, runID, goal, mode, collect, verifyCommand, raw, autoPlan, scheduledFrom, "", nil)
 }
 
 // CreateConversationRun 把一条主控团队消息创建为 autoPlan Run；附件只随首个
 // Lead 任务持久化和派发，后续 delegate 任务不重复携带。
 func (s *Service) CreateConversationRun(team *Team, runID, goal string, attachments []string) (*Run, error) {
-	return s.createRun(team, runID, goal, ModeSingle, "", nil, nil, true, "", attachments)
+	return s.createRun(team, runID, goal, ModeSingle, "", nil, nil, true, "", "", attachments)
 }
 
-func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom string, attachments []string) (*Run, error) {
+func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom, parentRunID string, attachments []string) (*Run, error) {
 	if team == nil {
 		return nil, errors.New("team 不能为 nil")
 	}
@@ -364,6 +364,7 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 		Tasks:         plan.Tasks,
 		VerifyCommand: append([]string(nil), verifyCommand...),
 		ScheduledFrom: scheduledFrom,
+		ParentRunID:   parentRunID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -379,6 +380,9 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 		"collectPolicy": plan.CollectPolicy,
 		"planHash":      plan.PlanHash,
 		"taskCount":     jsoncompat.Num(len(plan.Tasks)),
+	}
+	if parentRunID != "" {
+		createdPayload["parentRunId"] = parentRunID
 	}
 	if autoPlan {
 		createdPayload["autoPlan"] = true

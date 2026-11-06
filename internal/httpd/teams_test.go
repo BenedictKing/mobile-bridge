@@ -646,8 +646,9 @@ func TestTeamConversationSendCreatesRunWithAttachments(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("纯图片团队消息应可发送: %d %s", response.Code, response.Body.String())
 	}
-	if run := env.store.Run(imageOnlyID); run == nil || strings.TrimSpace(run.Goal) == "" {
-		t.Fatalf("纯图片消息缺少明确目标: %+v", run)
+	run = env.store.Run(messageID)
+	if run == nil || len(run.Tasks) != 2 || run.Tasks[1].ID != conversationTaskID(imageOnlyID) || strings.TrimSpace(run.Tasks[1].Prompt) == "" {
+		t.Fatalf("纯图片消息未追加明确目标: %+v", run)
 	}
 }
 

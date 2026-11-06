@@ -1,0 +1,90 @@
+package team
+
+import "fmt"
+
+// CreateConversationAmendRun 在旧 Run 已终态后延续团队对话。新消息始终形成
+// 新的 Lead 任务，不按相同文本复用旧结果；parentRunId 只负责保留修订血缘。
+func (s *Service) CreateConversationAmendRun(team *Team, parentRunID, runID, goal string, attachments []string) (*Run, error) {
+	if team == nil {
+		return nil, fmt.Errorf("team 不能为 nil")
+	}
+	if parentRunID == "" || parentRunID == runID {
+		return nil, fmt.Errorf("团队对话修订必须指定另一个父 Run")
+	}
+	parent := s.store.Run(parentRunID)
+	if parent == nil || parent.TeamID != team.ID {
+		return nil, fmt.Errorf("%w: run=%s", ErrNotFound, parentRunID)
+	}
+	if !terminalRun(parent.Status) {
+		return nil, fmt.Errorf("%w: 当前 Run 尚未结束，后续消息应追加到原 Run", ErrRunNotWaiting)
+	}
+	return s.createRun(team, runID, goal, ModeSingle, "", nil, nil, true, "", parentRunID, attachments)
+}
+
+// FollowUpConversationRun 把一条团队消息追加为当前 autoPlan Run 的 Lead 任务。
+// waiting_input/paused 由用户的新消息显式恢复；旧任务及其结果保持原样。
+func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string, attachments []string) (*Run, bool, error) {
+	if team == nil {
+		return nil, false, fmt.Errorf("team 不能为 nil")
+	}
+	state := s.stateFor(runID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	duplicate := false
+	var decisionErr error
+	err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+		if terminalRun(fresh.Status) {
+			decisionErr = fmt.Errorf("%w: 当前状态 %s", ErrRunFinished, fresh.Status)
+			return nil, false
+		}
+		if fresh.Status == RunReducing {
+			decisionErr = fmt.Errorf("%w: 当前 Run 正在验证，请稍后继续", ErrRunNotWaiting)
+			return nil, false
+		}
+		if !fresh.AutoPlan || fresh.Mode != ModeSingle {
+			decisionErr = fmt.Errorf("%w: 当前显式计划 Run 请在其详情页处理", ErrRunNotWaiting)
+			return nil, false
+		}
+		if existing := findTaskIn(fresh, taskID); existing != nil {
+			if existing.MemberID == team.LeadID && existing.Prompt == goal && sameStringSlices(existing.Attachments, attachments) {
+				duplicate = true
+				return nil, false
+			}
+			decisionErr = ErrRunContentMismatch
+			return nil, false
+		}
+		if limit := policyOf(team).MaxTasksPerRun; limit > 0 && len(fresh.Tasks) >= limit {
+			decisionErr = fmt.Errorf("%w: 当前 Run 已达 %d 个任务的上限，请先完成或取消后再继续", ErrRunNotWaiting, limit)
+			return nil, false
+		}
+		task := Task{
+			ID: taskID, MemberID: team.LeadID, Prompt: goal, Attachments: append([]string(nil), attachments...),
+			Ordinal: len(fresh.Tasks), Status: TaskPlanned, InstructionsHead: InstructionsHead(goal),
+		}
+		fresh.Tasks = append(fresh.Tasks, task)
+		if fresh.Status == RunWaitingInput || fresh.Status == RunPaused {
+			fresh.Status = RunDispatching
+			fresh.StopReason = ""
+		}
+		payload := map[string]any{
+			"taskId": task.ID, "memberId": task.MemberID, "instructionsHead": task.InstructionsHead,
+		}
+		if len(task.Attachments) > 0 {
+			payload["attachments"] = append([]string(nil), task.Attachments...)
+		}
+		return []*Event{newEvent(runID, EventTaskPlanned, "user", payload)}, true
+	})
+	if decisionErr != nil {
+		return nil, false, decisionErr
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if duplicate {
+		return s.store.Run(runID), true, nil
+	}
+	s.resetStallClockLocked(state)
+	s.startLoopLocked(state)
+	return s.store.Run(runID), false, nil
+}

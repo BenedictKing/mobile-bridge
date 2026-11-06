@@ -80,6 +80,21 @@ test('workflow renders run tasks and supports member collapse and details',async
   controller.close();assert.equal(root.hidden,true);
 });
 
+test('team chat prefers an unfinished run over a newer completed run',async()=>{
+  const root=new FakeNode('div'),calls=[];
+  const detail={id:'run-waiting',status:'waiting_input',tasks:[{id:'lead',memberId:'lead',status:'outcome_unknown',prompt:'先实现'}]};
+  const controller=new TeamChatController({root,request:async path=>{
+    calls.push(path);
+    if(path.endsWith('/runs'))return{runs:[{id:'run-waiting',status:'waiting_input'},{id:'run-newer',status:'completed'}]};
+    return detail;
+  },openRun(){}});
+  controller.setTeams(teams);controller.open(teams[0]);await flush();
+  assert.equal(controller.run.id,'run-waiting');
+  assert.ok(calls.includes('/api/teams/team-1/runs/run-waiting'));
+  assert.equal(calls.includes('/api/teams/team-1/runs/run-newer'),false);
+  controller.close();
+});
+
 test('team settings adds an agent with role and optimistic version',async()=>{
   const team={...teams[0],project:'acp:project',version:2};
   let added=null,changed=null;

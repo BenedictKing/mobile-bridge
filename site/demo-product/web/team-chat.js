@@ -220,7 +220,7 @@ class TeamChatController{
     const generation=this.generation;
     try{
       const listed=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs');
-      const rows=listed.runs||[],latest=rows[rows.length-1];
+      const rows=listed.runs||[],latest=[...rows].reverse().find(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))||rows[rows.length-1];
       if(!latest){if(generation===this.generation){this.run=null;this.refreshError='';this.render();}return;}
       const detail=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(latest.id));
       if(generation===this.generation&&this.current?.id===team.id){this.team=team;this.run=detail;this.refreshError='';this.render();}

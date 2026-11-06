@@ -113,15 +113,16 @@ func TestTeamInputsValidationAndAttachments(t *testing.T) {
 		t.Fatalf("goal 别名应生效: %+v", run)
 	}
 
-	// 纯附件：默认目标文案 + 附件随首个 Lead 任务（与主控聊天同语义）。
+	// 纯附件：默认目标文案 + 附件追加到当前活跃 Run 的新 Lead 任务。
 	const imageOnlyID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
 	response := env.postTeamInput(teamID, fmt.Sprintf(`{"id":%q,"attachments":[{"id":%q}]}`, imageOnlyID, uploadID))
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("纯附件输入应 202: %d %s", response.Code, response.Body.String())
 	}
-	run := env.store.Run(imageOnlyID)
-	if run == nil || strings.TrimSpace(run.Goal) == "" || len(run.Tasks) != 1 || len(run.Tasks[0].Attachments) != 1 {
-		t.Fatalf("纯附件输入应落默认目标与附件: %+v", run)
+	run := env.store.Run("00000000-0000-4000-8000-000000000004")
+	if run == nil || len(run.Tasks) != 2 || run.Tasks[1].ID != conversationTaskID(imageOnlyID) ||
+		run.Tasks[1].Prompt == "" || len(run.Tasks[1].Attachments) != 1 {
+		t.Fatalf("纯附件输入应追加默认目标与附件: %+v", run)
 	}
 }
 
@@ -171,9 +172,115 @@ func TestTeamInputGetProjection(t *testing.T) {
 	}
 }
 
+func TestTeamInputFollowUpResumesWaitingRun(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	t.Cleanup(func() {
+		for _, run := range env.store.RunsByTeam(teamID) {
+			_, _ = env.server.Teams.Cancel(run.ID)
+		}
+	})
+	const firstID = "1aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if response := env.postTeamInput(teamID, `{"id":"`+firstID+`","text":"先实现"}`); response.Code != http.StatusAccepted {
+		t.Fatalf("首条输入失败: %d %s", response.Code, response.Body.String())
+	}
+	original := env.store.Run(firstID)
+	original.Status = team.RunWaitingInput
+	original.StopReason = "等待用户处理"
+	original.Tasks[0].Status = team.TaskOutcomeUnknown
+	if err := env.store.SaveRun(original); err != nil {
+		t.Fatal(err)
+	}
+	// 较新的终态 Run 不得抢占仍活跃的旧 Run（复现现场的消息路由）。
+	const newerID = "5aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	newer, err := env.server.Teams.CreateConversationRun(env.store.Team(teamID), newerID, "较新的已完成对话", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer.Status = team.RunCompleted
+	newer.Tasks[0].Status = team.TaskCompleted
+	if err := env.store.SaveRun(newer); err != nil {
+		t.Fatal(err)
+	}
+
+	const secondID = "2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	body := `{"id":"` + secondID + `","text":"继续评审并汇总"}`
+	response := env.postTeamInput(teamID, body)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("后续输入应复用原 Run: %d %s", response.Code, response.Body.String())
+	}
+	var accepted map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted["inputId"] != secondID || accepted["runId"] != firstID {
+		t.Fatalf("后续输入的 inputId/runId 不符: %v", accepted)
+	}
+	run := env.store.Run(firstID)
+	if len(env.store.RunsByTeam(teamID)) != 2 || len(run.Tasks) != 2 {
+		t.Fatalf("后续输入不得新建 Run: %+v", run)
+	}
+	if run.Status != team.RunDispatching || run.StopReason != "" || run.Tasks[0].Status != team.TaskOutcomeUnknown {
+		t.Fatalf("后续输入应恢复执行且保留旧任务: %+v", run)
+	}
+	if task := run.Tasks[1]; task.ID != conversationTaskID(secondID) || task.Prompt != "继续评审并汇总" || task.MemberID != "lead" {
+		t.Fatalf("后续 Lead 任务不符: %+v", task)
+	}
+
+	response = env.postTeamInput(teamID, body)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"duplicate": true`) {
+		t.Fatalf("后续输入重放应幂等: %d %s", response.Code, response.Body.String())
+	}
+	if got := len(env.store.Run(firstID).Tasks); got != 2 {
+		t.Fatalf("重放不得重复追加任务: %d", got)
+	}
+	response = env.request(http.MethodGet, "/api/teams/"+teamID+"/inputs/"+secondID, "")
+	var projection map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &projection); err != nil {
+		t.Fatal(err)
+	}
+	if projection["inputId"] != secondID || projection["runId"] != firstID ||
+		projection["taskId"] != conversationTaskID(secondID) || projection["goal"] != "继续评审并汇总" {
+		t.Fatalf("后续输入投影不符: %v", projection)
+	}
+}
+
+func TestTeamInputAfterTerminalRunCreatesConversationAmend(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	t.Cleanup(func() {
+		for _, run := range env.store.RunsByTeam(teamID) {
+			_, _ = env.server.Teams.Cancel(run.ID)
+		}
+	})
+	const firstID = "3aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if response := env.postTeamInput(teamID, `{"id":"`+firstID+`","text":"继续"}`); response.Code != http.StatusAccepted {
+		t.Fatalf("首条输入失败: %d %s", response.Code, response.Body.String())
+	}
+	original := env.store.Run(firstID)
+	original.Status = team.RunCompleted
+	original.Tasks[0].Status = team.TaskCompleted
+	if err := env.store.SaveRun(original); err != nil {
+		t.Fatal(err)
+	}
+
+	const secondID = "4aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	response := env.postTeamInput(teamID, `{"id":"`+secondID+`","text":"继续"}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("终态后的输入应创建修订: %d %s", response.Code, response.Body.String())
+	}
+	amend := env.store.Run(secondID)
+	if amend == nil || amend.ParentRunID != firstID || len(amend.Tasks) != 1 || amend.Tasks[0].CachedFrom != "" {
+		t.Fatalf("终态后的输入应创建全新 Lead 修订任务: %+v", amend)
+	}
+	if len(env.store.RunsByTeam(teamID)) != 2 || env.store.Run(firstID).Status != team.RunCompleted {
+		t.Fatalf("修订不得重开父 Run: %+v", env.store.RunsByTeam(teamID))
+	}
+}
+
 func TestTeamInputsShareLedgerWithLeadConversation(t *testing.T) {
-	// 两个入口同一账本（§10「Lead Chat 继续兼容」）：主控会话发送创建的
-	// Run 能被 GET /inputs 回查，反之亦然——inputId 与 runID 是同一身份。
+	// 两个入口同一账本（§10「Lead Chat 继续兼容」）：主控会话创建的 Run
+	// 与后续任务都能被 GET /inputs 回查，反之亦然。
 	env := newTeamTestEnv(t, "queued", true)
 	teamID, _ := env.createTeam(t)
 	t.Cleanup(func() {
