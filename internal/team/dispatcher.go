@@ -172,6 +172,10 @@ func (s *Service) submitTaskLocked(state *runState, team *Team, run *Run, taskID
 // 由调用方在锁外执行——绝不在这里直接调 dispatchSubmission，派发时机完全
 // 属于既有队列。
 func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding) (*taskDispatch, error) {
+	return s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, "")
+}
+
+func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding, leadBriefing string) (*taskDispatch, error) {
 	task := findTaskIn(run, taskID)
 	if task == nil {
 		return nil, fmt.Errorf("任务不存在：%s", taskID)
@@ -186,7 +190,7 @@ func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, t
 
 	// ① 上下文与 Lead 简报合成 + 账本硬上限预检（planner 按 rune 预留余量，
 	//    多字节内容仍可能超过账本的 100000 字节校验——此处兜底，任务确定性失败）。
-	composed := composeTaskDispatchMessage(team, run, task, team.Policy)
+	composed := composeTaskDispatchMessageWithBriefing(team, run, task, team.Policy, leadBriefing)
 	sentText := composed.text
 	if len(sentText) > promptHardLimit {
 		return nil, fmt.Errorf("任务 %s 内容过长：合成消息 %d 字节，超过账本上限 %d 字节",
@@ -336,8 +340,16 @@ type composedTaskMessage struct {
 // 简报与评审裁决协议（二者互斥：评审成员不是 Lead）位于依赖上下文之前，
 // 共同进入派发期哈希，事件里的 contextChars 仍只计量依赖结果注入。
 func composeTaskDispatchMessage(team *Team, run *Run, task *Task, policy TeamPolicy) composedTaskMessage {
+	return composeTaskDispatchMessageWithBriefing(team, run, task, policy, "")
+}
+
+func composeTaskDispatchMessageWithBriefing(team *Team, run *Run, task *Task, policy TeamPolicy, leadBriefing string) composedTaskMessage {
 	context := BuildTaskContext(run, task, policy)
-	briefing := BuildLeadBriefing(team, run, task, policy) + BuildReviewBriefing(team, task)
+	lead := BuildLeadBriefing(team, run, task, policy)
+	if lead != "" {
+		lead += leadBriefing
+	}
+	briefing := lead + BuildReviewBriefing(team, task)
 	message := ComposeTaskMessage(context.Text, task.Prompt)
 	if briefing != "" && context.Text == "" {
 		// 简报后无依赖上下文时也补 [Assigned task] 头：会话标题清洗（textutil）与人工阅读都靠它切出真实任务。

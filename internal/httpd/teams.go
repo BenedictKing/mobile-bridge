@@ -150,6 +150,8 @@ func (h *handler) handleTeams(method string) {
 		h.handleRunGet(teamID, segments[2])
 	case len(segments) == 4 && segments[1] == "runs":
 		h.handleRunAction(method, teamID, segments[2], segments[3])
+	case len(segments) == 2 && segments[1] == "quotas" && method == http.MethodGet:
+		h.handleTeamQuotas(teamID)
 	case len(segments) == 2 && segments[1] == "aimd" && method == http.MethodGet:
 		// AIMD 桶状态快照（§6.3 阶段二：只读出口，无写端点）。
 		h.handleTeamAIMD(teamID)

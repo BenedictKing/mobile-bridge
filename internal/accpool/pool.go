@@ -936,6 +936,43 @@ func creditsView(c *CreditsQuota) *jsoncompat.Object {
 	return row
 }
 
+// ActiveQuota returns only the current account's quota snapshot. It performs
+// no network refresh and never exposes account ids, labels, email or tokens.
+func (m *Manager) ActiveQuota(kind string) (*jsoncompat.Object, error) {
+	if !m.supports(kind) {
+		return nil, fmt.Errorf("暂不支持的 Agent 类型: %s", kind)
+	}
+	result := jsoncompat.NewObject()
+	result.Set("kind", kind)
+	active := m.activeID(kind)
+	for _, acc := range m.list(kind) {
+		if acc.ID != active {
+			continue
+		}
+		result.Set("status", "ready")
+		result.Set("accountStatus", acc.Status)
+		if acc.Quota != nil {
+			result.Set("quota", quotaView(acc.Quota))
+			result.Set("quotaUpdatedAt", acc.QuotaUpdatedAt)
+		} else {
+			result.Set("quota", nil)
+			result.Set("quotaUpdatedAt", nil)
+		}
+		if acc.QuotaError != "" {
+			result.Set("quotaError", "额度刷新失败，当前显示的是历史快照")
+		} else {
+			result.Set("quotaError", nil)
+		}
+		return result, nil
+	}
+	result.Set("status", "no_active_account")
+	result.Set("accountStatus", nil)
+	result.Set("quota", nil)
+	result.Set("quotaUpdatedAt", nil)
+	result.Set("quotaError", nil)
+	return result, nil
+}
+
 // Detail is the GET /api/pool/{kind} payload.
 func (m *Manager) Detail(kind string) (*jsoncompat.Object, error) {
 	if !m.supports(kind) {

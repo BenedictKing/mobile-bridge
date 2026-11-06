@@ -313,6 +313,51 @@ func TestActiveIDMatchesSlot(t *testing.T) {
 	}
 }
 
+func TestActiveQuotaUsesOnlyCurrentRedactedSnapshot(t *testing.T) {
+	m := newTestManager(t)
+	home := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", home)
+	duration := int64(300)
+	account := &Account{
+		UserID: "u1", Email: "secret@example.com", AccessToken: "at1", RefreshToken: "rt1",
+		Status: StatusActive, QuotaUpdatedAt: 1700000000000,
+		Quota: &Quota{
+			Weekly: &WindowQuota{Used: 25, Limit: 100, ResetAt: "2026-11-07T00:00:00Z"},
+			Limits: []*WindowQuota{{Name: "5小时", Used: 40, Limit: 80, WindowDuration: &duration}},
+		},
+	}
+	if _, _, err := m.upsert("kimi", account); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := m.ActiveQuota("kimi")
+	if err != nil || empty.MustGet("status") != "no_active_account" {
+		t.Fatalf("no slot should mean no active account: %s %v", jsoncompat.EncodeCompact(empty), err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "credentials"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(kimiCredentials{AccessToken: "at1", RefreshToken: "rt1", TokenType: "Bearer"})
+	if err := os.WriteFile(filepath.Join(home, "credentials", "kimi-code.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	view, err := m.ActiveQuota("kimi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.MustGet("status") != "ready" || view.MustGet("accountStatus") != StatusActive || view.MustGet("quotaUpdatedAt") != int64(1700000000000) {
+		t.Fatalf("active quota projection: %s", jsoncompat.EncodeCompact(view))
+	}
+	encoded := string(jsoncompat.EncodeCompact(view))
+	for _, secret := range []string{"u_u1", "secret@example.com", "at1", "rt1"} {
+		if strings.Contains(encoded, secret) {
+			t.Fatalf("active quota leaked %q: %s", secret, encoded)
+		}
+	}
+	if _, err := m.ActiveQuota("claude"); err == nil {
+		t.Fatal("unsupported pool kind must fail")
+	}
+}
+
 // testKimiJWT builds an unsigned kimi-style access token carrying user_id.
 func testKimiJWT(t *testing.T, userID string) string {
 	t.Helper()

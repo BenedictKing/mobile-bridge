@@ -643,6 +643,8 @@ DELETE /api/teams/:teamID
 POST   /api/teams/:teamID/members
 PATCH  /api/teams/:teamID/members/:memberID
 DELETE /api/teams/:teamID/members/:memberID
+
+GET    /api/teams/:teamID/quotas
 ```
 
 创建 Team：
@@ -667,6 +669,8 @@ DELETE /api/teams/:teamID/members/:memberID
 项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次打开时先通过 `GET /api/projects/:projectKey/agents` 让用户选择主控，确认后以 `{leadAgent}` 创建团队及项目历史 ACP Agent 的专用会话，取消则不创建；保存 `defaultForProject=true` 与稳定 `projectCwd`，重放复用已有团队且返回 `duplicate:true`。未携带 `leadAgent` 的旧客户端仍按候选首位创建，显式选择不在候选列表中的 Agent 返回 400。候选至少 3 个时默认分配主控、执行成员和末位评审；两个时为主控+执行成员，一个时仅主控，不为凑角色取消执行成员。默认团队查找同时接受项目键和 `projectCwd` 匹配，因此 `acp:` / `codex:` 前缀随项目去重策略变化时不会误创建或误显示待创建。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
 
 成员添加接受 `{agent,role}` 并创建项目内专用会话，候选下拉与新建对话、新建团队一致，使用 `GET /api/projects` 返回的已启用非 Codex ACP Agent，不要求当前项目已有该 Agent 的历史会话；只显示 Agent 类型而不混入会话标题。Team 以 `leadId` 与 `reviewerId` 分别持久化主控和默认评审；两者只需指向团队成员，允许同一成员同时担任主控和默认评审。PATCH 更换或移除默认评审在非终态 Run 存在时返回 409，移除该成员会清空失效的 `reviewerId`。旧 Lead 会话和历史 Run 保留。
+
+`GET /api/teams/:teamID/quotas` 按启用成员的 Agent 类型返回当前账号的本地额度快照，支持 `ready`、`no_active_account`、`not_supported`、`unavailable` 状态。每个模型相关额度窗口规范化为 `used`、`limit`、`remaining`、`remainingPercent`、`resetAt`，并附 `quotaUpdatedAt`；响应不包含账号 ID、邮箱、令牌，也不触发远端刷新。主控 autoPlan 派发复用同一投影注入 `[Team account quotas]`，供 Lead 结合成员能力与剩余额度安排工作；动态简报进入 `inputHash` 并随 `SentText` 固定，普通成员与显式计划任务不注入。
 
 团队主控聊天复用 Lead 会话的既有上传与发送契约：
 

@@ -82,6 +82,10 @@ type Service struct {
 	// ErrTranscriptUnavailable。httpd 装配方注入。
 	Transcripts TranscriptSource
 
+	// LeadBriefing 提供本次派发的只读动态简报（如账号额度快照）。调用发生在
+	// state.mu 外；返回文本进入 Lead 派发全文与 inputHash，并随 SentText 落账。
+	LeadBriefing func(*Team) string
+
 	// Workspaces 是用户预备 worktree 的注册表端口（§6.4 + §16 默认决策 6，
 	// 可选）：isolated 任务的 Resolve/HeadRevision/Diff/Cleanup。nil（未
 	// 装配）时 isolated 任务派发确定性失败（ErrWorkspacesUnavailable），
@@ -1373,8 +1377,12 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	// 在同一 state.mu 段内减 teamPending——快照先落、计数后减，Team 级
 	// 读数不漏计；此后本主体的入队/取消收尾不再占窗口额度，取消窗口一的
 	// 等待期由池信号量（容量=MaxParallelTasks）兜底并发上限。
+	leadBriefing := ""
+	if s.LeadBriefing != nil && run.AutoPlan && task.MemberID == team.LeadID {
+		leadBriefing = s.LeadBriefing(team)
+	}
 	state.mu.Lock()
-	dispatch, err := s.accountDispatchLocked(state, team, run, taskID, cwd, binding)
+	dispatch, err := s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, leadBriefing)
 	if err == nil && dispatch != nil {
 		s.teamPendingDelta(teamID, -1)
 		accounted = true

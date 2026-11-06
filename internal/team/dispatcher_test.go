@@ -3915,3 +3915,33 @@ func TestAutoPlanLeadBriefingDispatchComposition(t *testing.T) {
 		t.Fatalf("简报、依赖上下文与任务顺序错误:\n%s", text)
 	}
 }
+
+func TestAutoPlanLeadDynamicBriefingDispatchComposition(t *testing.T) {
+	h := newDispatchHarness(t)
+	const dynamic = "[Team account quotas]\n- agent=kimi · remaining=75/100\n"
+	calls := 0
+	h.service.LeadBriefing = func(*Team) string {
+		calls++
+		return dynamic
+	}
+	run := h.createAutoPlanRun(t)
+	_, sentText := h.waitForSubmission(t, "s-lead", "autoPlan Lead 动态简报")
+	if calls != 1 {
+		t.Fatalf("Lead 动态简报应调用一次，实际 %d", calls)
+	}
+	if !strings.Contains(sentText, dynamic) {
+		t.Fatalf("Lead prompt 缺少动态简报:\n%s", sentText)
+	}
+	task := h.taskOf(run.ID, "lead")
+	composed := composeTaskDispatchMessageWithBriefing(h.team, run, &task, h.team.Policy, dynamic)
+	if want := InputHashFor(&task, PolicyDigest(h.team.Policy), composed.hashContext); task.InputHash != want {
+		t.Fatalf("派发期哈希应覆盖动态简报: want %s got %s", want, task.InputHash)
+	}
+	if got := h.service.sentTextFor(run, &task, h.team.Policy); got != sentText {
+		t.Fatal("动态简报应随 SentText 固定，后续重算不得漂移")
+	}
+	ordinary := &Task{ID: "dev-task", MemberID: "dev", Prompt: "普通成员任务"}
+	if got := composeTaskDispatchMessageWithBriefing(h.team, &Run{TeamID: h.team.ID, AutoPlan: true}, ordinary, h.team.Policy, dynamic).text; got != ordinary.Prompt || strings.Contains(got, dynamic) {
+		t.Fatalf("普通成员不得收到 Lead 动态简报:\n%s", got)
+	}
+}
