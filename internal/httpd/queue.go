@@ -474,12 +474,12 @@ func lineageInvalidMessage(err error) string {
 
 func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution, entry *submissionEntry) (dispatchOutcome, string) {
 	manager, session := resolution.manager, resolution.session
-	if session == nil {
+	if session == nil || session.ReadOnly() {
 		cwd := manager.CwdFor(threadID)
 		if cwd == "" {
 			cwd = "."
 		}
-		opened, err := manager.Open(threadID, cwd, manager.InitializeTimeout)
+		opened, err := manager.Attach(threadID, cwd, manager.InitializeTimeout)
 		if err != nil {
 			if sessionLineageInvalid(err) {
 				// Deterministic refusal (even after alias resolution): retrying
@@ -491,6 +491,9 @@ func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution
 			return outcomeRequeue, err.Error()
 		}
 		session = opened
+	}
+	if session.ReadOnly() {
+		return outcomeFailed, acpruntime.ReadOnlySessionMessage
 	}
 	text := entry.Text
 	if len(entry.Skills) > 0 {

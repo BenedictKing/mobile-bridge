@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
+	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
@@ -144,6 +145,53 @@ func TestACPQueueDispatchResolvesLazyPlaceholder(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("prompt ids = %v, want [%s 团队任务]", recordedFileLines(agentDir, "prompts.txt"), queueBackend)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// 重启预热只留下只读历史句柄时，团队派发必须先接入控制句柄，不能把
+// 尚未发送到 Agent 的提示词记成结果未知。
+func TestACPQueueDispatchAttachesPreloadedHistory(t *testing.T) {
+	agentDir := t.TempDir()
+	raw := `{"` + queuePlaceholder + `":{"zcodeSid":"` + queueBackend + `"}}`
+	if err := os.WriteFile(filepath.Join(agentDir, "acp-lazy-sessions.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, manager := newLazyQueueServer(t, agentDir, false)
+	defer manager.Close()
+	manager.NativeTranscript = func(string) (*acpview.NativeSnapshot, error) {
+		return &acpview.NativeSnapshot{Title: "预热历史", Turns: []*jsoncompat.Object{}}, nil
+	}
+	history, err := manager.OpenHistory(queueBackend, agentDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !history.ReadOnly() {
+		t.Fatal("preload did not produce a read-only history handle")
+	}
+
+	const submission = "9aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if _, _, err := server.Queue.enqueue(queuePlaceholder, submission, "重启后的团队任务", "queue", "", nil, nil, nil); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	server.dispatchQueuedThread(queuePlaceholder, "", nil)
+
+	entry := server.Queue.get(queuePlaceholder, submission)
+	if entry == nil || entry.Status != SubAccepted {
+		t.Fatalf("entry = %+v, want accepted", entry)
+	}
+	if live := manager.Get(queueBackend); live == nil || live.ReadOnly() {
+		t.Fatal("queue dispatch did not attach the preloaded history handle")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if prompts := recordedFileLines(agentDir, "prompts.txt"); len(prompts) == 1 &&
+			prompts[0] == queueBackend+" 重启后的团队任务" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("prompt ids = %v, want [%s 重启后的团队任务]", recordedFileLines(agentDir, "prompts.txt"), queueBackend)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
