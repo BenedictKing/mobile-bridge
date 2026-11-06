@@ -317,6 +317,8 @@ function newChatPins(){try{const pins=JSON.parse(localStorage.getItem('new-chat-
 function saveNewChatPins(pins){localStorage.setItem('new-chat-pins',JSON.stringify(pins.slice(0,20)));}
 function projectPinned(project){return newChatPins().some(pin=>pin.cwd===project.cwd&&pin.host===project.host);}
 function newChatOptionLabel(project){return newChatAgents.length>1?dirLabel(project):projectLabel(project);}
+const newChatCustomKey='__custom__';
+function newChatCustomSelected(){return $('new-chat-project').value===newChatCustomKey;}
 function renderNewChatProjects(){
   const select=$('new-chat-project'),previous=select.value,filter=$('new-chat-filter').value.trim().toLowerCase();
   select.replaceChildren();
@@ -327,12 +329,14 @@ function renderNewChatProjects(){
   }
   for(const project of pinned)select.append(new Option('★ '+newChatOptionLabel(project),project.key));
   for(const project of rest)select.append(new Option(newChatOptionLabel(project),project.key));
+  select.append(new Option(t('自定义项目目录…'),newChatCustomKey));
   if([...select.options].some(o=>o.value===previous))select.value=previous;
   updateNewChatPin();
 }
 function updateNewChatPin(){
-  const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
+  const custom=newChatCustomSelected(),project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
   const pinned=!!project&&projectPinned(project);
+  $('new-chat-pin').hidden=custom;
   $('new-chat-pin').classList.toggle('active',pinned);
   $('new-chat-pin').title=t(pinned?'取消置顶此项目':'置顶此项目');
 }
@@ -345,7 +349,7 @@ $('new-chat-pin').onclick=()=>{
   saveNewChatPins(pins);renderNewChatProjects();
 };
 // Codex chats open in the desktop App; ACP agents are spawned by the gateway.
-function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'在电脑 App 的已有项目中创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。':'在已有项目目录中创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
+function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'选择已保存项目或输入自定义目录来创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。':'选择已保存项目或输入自定义目录来创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 $('new-chat').onclick=()=>openNewChat();
@@ -391,30 +395,37 @@ async function openNewChat(preferred){
     $('new-chat-worktree').checked=localStorage.getItem('new-chat-worktree')==='1';
     $('new-chat-worktree-base').value=localStorage.getItem('new-chat-worktree-base')||'fresh';
     $('new-chat-project').onchange();updateNewChatDesc();
-    if(!options.length)$('new-chat-error').textContent=t('请先在对应 Agent 的客户端添加一个项目。');
-    $('new-chat-submit').disabled=!options.length;
+    $('new-chat-submit').disabled=false;
   }catch(e){$('new-chat-error').textContent=t(e.message);$('new-chat-path').textContent='';}
 };
 function updateWorktreeRow(){
   const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
-  const local=!!project&&project.host==='local';
+  const local=newChatCustomSelected()||!!project&&project.host==='local';
   $('new-chat-worktree-row').hidden=!local;
   if(!local)$('new-chat-worktree').checked=false;  // SSH 项目不支持 worktree，隐藏并取消勾选
   $('new-chat-worktree-base-row').hidden=!local||!$('new-chat-worktree').checked;
 }
-$('new-chat-project').onchange=()=>{$('new-chat-path').textContent=newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'';updateWorktreeRow();updateNewChatPin();};
+$('new-chat-project').onchange=()=>{
+  const custom=newChatCustomSelected();
+  $('new-chat-custom-row').hidden=!custom;
+  $('new-chat-path').textContent=custom?$('new-chat-custom-path').value.trim():(newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'');
+  updateWorktreeRow();updateNewChatPin();
+};
+$('new-chat-custom-path').oninput=()=>{if(newChatCustomSelected())$('new-chat-path').textContent=$('new-chat-custom-path').value.trim();};
 $('new-chat-worktree').onchange=()=>{localStorage.setItem('new-chat-worktree',$('new-chat-worktree').checked?'1':'0');updateWorktreeRow();};
 $('new-chat-worktree-base').onchange=()=>localStorage.setItem('new-chat-worktree-base',$('new-chat-worktree-base').value);
 $('new-chat-agent').onchange=updateNewChatDesc;
 $('new-chat-dialog').addEventListener('cancel',event=>{if(creatingChat)event.preventDefault();});
 $('new-chat-form').onsubmit=async event=>{
   event.preventDefault();if(creatingChat)return;
-  const project=$('new-chat-project').value,title=$('new-chat-title').value.trim(),agent=newChatAgents.length>1?$('new-chat-agent').value:null;
+  const custom=newChatCustomSelected(),cwd=custom?$('new-chat-custom-path').value.trim():'';
+  const project=custom?cwd:$('new-chat-project').value,title=$('new-chat-title').value.trim(),agent=newChatAgents.length>1?$('new-chat-agent').value:null;
   const worktree=$('new-chat-worktree').checked&&!$('new-chat-worktree-row').hidden?{base:$('new-chat-worktree-base').value}:null;
-  if(!project||!title){$('new-chat-error').textContent=t('请选择项目并填写聊天名称。');return;}
+  if(!project||!title){$('new-chat-error').textContent=t(custom?'请输入项目目录和聊天名称。':'请选择项目并填写聊天名称。');return;}
+  if(custom&&!/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(cwd)){$('new-chat-error').textContent=t('请输入电脑上已存在的目录绝对路径。');return;}
   let attempt;
   try{attempt=JSON.parse(sessionStorage.getItem('new-chat-attempt')||'null');}catch{}
-  if(!attempt||attempt.project!==project||attempt.title!==title||attempt.agent!==agent||JSON.stringify(attempt.worktree||null)!==JSON.stringify(worktree))attempt={id:uuid(),project,title,...(agent?{agent}:{}),...(worktree?{worktree}:{})};
+  if(!attempt||attempt.project!==project||(attempt.cwd||'')!==cwd||attempt.title!==title||attempt.agent!==agent||JSON.stringify(attempt.worktree||null)!==JSON.stringify(worktree))attempt={id:uuid(),project,title,...(custom?{cwd}:{}),...(agent?{agent}:{}),...(worktree?{worktree}:{})};
   sessionStorage.setItem('new-chat-attempt',JSON.stringify(attempt));
   creatingChat=true;setLanguageBusy();$('new-chat-error').textContent='';$('new-chat-submit').textContent=t('正在创建…');
   $('new-chat-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=true);
@@ -962,7 +973,15 @@ function markRecommendation(button,value,recommend){
   button.title=t('Jev 建议此选项');
   button.prepend(document.createTextNode('★ '));
 }
-function renderApprovals(requests){const stamp=JSON.stringify(requests);if(stamp===approvalStamp)return;approvalStamp=stamp;$('approvals').replaceChildren();for(const request of requests){if(request.method==='acp/requestInput'&&request.supported){$('approvals').append(renderAcpInput(request));continue;}if(request.method==='acp/requestPermission'&&request.supported){$('approvals').append(renderAcpApproval(request));continue;}if(request.supported&&request.params?.computerUse){$('approvals').append(renderComputerApproval(request));continue;}if(request.method==='item/plan/requestImplementation'&&request.supported){$('approvals').append(renderPlanApproval(request));continue;}const card=el('section','approval');card.dataset.request=String(request.id);const params=request.params||{}, method=request.method;const heading=method.includes('requestUserInput')?t('Codex 需要你的回复'):method.includes('fileChange')?t('允许修改文件？'):method.includes('commandExecution')?t('允许运行此命令？'):method.includes('permissions')?t('允许本轮权限？'):t('待确认请求');card.append(el('h3','',heading));const controls={};if(!request.supported){card.append(el('p','',params.message||t('请在桌面 App 处理此请求')));$('approvals').append(card);continue;}const badge=riskBadge(request,params);if(badge)card.append(badge);if(params.reason)card.append(el('p','',params.reason));if(params.command){const command=el('pre','approval-command',jsonPretty(params.command));command.setAttribute('aria-label',t('具体命令'));card.append(command);}if(params.cwd){const cwd=el('p','approval-context');cwd.append(el('span','approval-context-label',t('工作目录：')),document.createTextNode(params.cwd));card.append(cwd);}for(const key of ['changes','grantRoot','permissions','networkApprovalContext'])if(params[key])card.append(el('pre','approval-details',jsonPretty(params[key])));const form=el('form');if(method.includes('requestUserInput')){for(const question of params.questions||[]){const label=el('label','',question.question||question.header||question.id);if(question.options?.length){const select=el('select');select.append(new Option(t('请选择…'),''));for(const option of question.options)select.append(new Option(option.label+(option.description?' — '+option.description:''),option.label));select.append(new Option(t('自行填写'),'__custom__'));label.append(select);const custom=el('textarea');custom.rows=2;custom.hidden=true;custom.placeholder=t('输入你的回复');select.onchange=()=>custom.hidden=select.value!=='__custom__';label.append(custom);controls[question.id]=()=>select.value==='__custom__'?custom.value:select.value;}else{const input=el('textarea');input.rows=2;input.required=true;label.append(input);controls[question.id]=()=>input.value;}form.append(label);}}else if(method==='mcpServer/elicitation/request'){if(params.message)form.append(el('p','',params.message));const schema=params.requestedSchema||{};for(const [key,field] of Object.entries(schema.properties||{})){const label=el('label','',field.title||key);let input;if(field.enum){input=el('select');input.append(new Option(t('请选择…'),''));for(const [i,value] of field.enum.entries())input.append(new Option(field.enumNames?.[i]||String(value),String(value)));}else{input=el('input');input.type=field.type==='boolean'?'checkbox':['number','integer'].includes(field.type)?'number':'text';if(input.type==='number')input.step=field.type==='integer'?'1':'any';}input.required=(schema.required||[]).includes(key)&&input.type!=='checkbox';if(field.description)label.append(el('p','muted',field.description));label.append(input);form.append(label);controls[key]=()=>input.type==='checkbox'?input.checked:input.value===''?undefined:['number','integer'].includes(field.type)?Number(input.value):input.value;}}const actions=el('div','actions'),error=el('p','error');async function submit(response){const id=currentId,host=currentHost;approvalBusy++;setLanguageBusy();const buttons=card.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);error.textContent='';try{await api(sessionUrl(id,'respond',host),{requestId:request.id,response});submittedRequestIds.add(request.id);bumpRecency(id,host);toast('已发送回应');card.append(el('p','muted',t('已发送，等待桌面确认…')));}catch(e){error.textContent=t(e.message);buttons.forEach(b=>b.disabled=false);}finally{approvalBusy--;setLanguageBusy();}}const isInput=method.includes('requestUserInput'),isMcp=method==='mcpServer/elicitation/request';const yes=el('button','primary',isInput?t('提交回复'):t('本次允许'));markRecommendation(yes,'accept',request.recommend);yes.type='submit';const available=params.availableDecisions;const canAccept=!available||available.includes('accept');if(isInput||isMcp||canAccept)actions.append(yes);if(!isInput){const no=el('button','secondary',t('拒绝'));markRecommendation(no,'decline',request.recommend);no.type='button';no.onclick=()=>submit(isMcp?{action:'decline'}:{decision:'decline'});if(!available||available.includes('decline'))actions.append(no);if(method.includes('commandExecution')||method.includes('fileChange')||isMcp){const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.onclick=()=>submit(isMcp?{action:'cancel'}:{decision:'cancel'});if(!available||available.includes('cancel'))actions.append(cancel);}}form.onsubmit=event=>{event.preventDefault();if(isInput){const answers={};for(const [key,get] of Object.entries(controls)){const value=get();if(!value.trim()){error.textContent=t('请回答所有问题');return;}answers[key]=[value];}submit({answers});}else if(isMcp){const content={};for(const [key,get] of Object.entries(controls)){const value=get();if(value!==undefined)content[key]=value;}submit({action:'accept',content});}else submit({decision:'accept'});};form.append(actions,error);card.append(form);if(submittedRequestIds.has(request.id)){card.querySelectorAll('button').forEach(button=>button.disabled=true);card.append(el('p','muted',t('已发送，等待桌面确认…')));}$('approvals').append(card);}}
+function approvalRiskRank(request){
+  const assessment=request?.assessment;
+  if(assessment?.source!=='jev')return 4;
+  return ({high:0,elevated:1,low:2,routine:3})[assessment.riskLabel]??4;
+}
+function orderedApprovals(requests){
+  return requests.map((request,index)=>({request,index})).sort((a,b)=>approvalRiskRank(a.request)-approvalRiskRank(b.request)||a.index-b.index).map(entry=>entry.request);
+}
+function renderApprovals(requests){const stamp=JSON.stringify(requests);if(stamp===approvalStamp)return;approvalStamp=stamp;$('approvals').replaceChildren();for(const request of orderedApprovals(requests)){if(request.method==='acp/requestInput'&&request.supported){$('approvals').append(renderAcpInput(request));continue;}if(request.method==='acp/requestPermission'&&request.supported){$('approvals').append(renderAcpApproval(request));continue;}if(request.supported&&request.params?.computerUse){$('approvals').append(renderComputerApproval(request));continue;}if(request.method==='item/plan/requestImplementation'&&request.supported){$('approvals').append(renderPlanApproval(request));continue;}const card=el('section','approval');card.dataset.request=String(request.id);const params=request.params||{}, method=request.method;const heading=method.includes('requestUserInput')?t('Codex 需要你的回复'):method.includes('fileChange')?t('允许修改文件？'):method.includes('commandExecution')?t('允许运行此命令？'):method.includes('permissions')?t('允许本轮权限？'):t('待确认请求');card.append(el('h3','',heading));const controls={};if(!request.supported){card.append(el('p','',params.message||t('请在桌面 App 处理此请求')));$('approvals').append(card);continue;}const badge=riskBadge(request,params);if(badge)card.append(badge);if(params.reason)card.append(el('p','',params.reason));if(params.command){const command=el('pre','approval-command',jsonPretty(params.command));command.setAttribute('aria-label',t('具体命令'));card.append(command);}if(params.cwd){const cwd=el('p','approval-context');cwd.append(el('span','approval-context-label',t('工作目录：')),document.createTextNode(params.cwd));card.append(cwd);}for(const key of ['changes','grantRoot','permissions','networkApprovalContext'])if(params[key])card.append(el('pre','approval-details',jsonPretty(params[key])));const form=el('form');if(method.includes('requestUserInput')){for(const question of params.questions||[]){const label=el('label','',question.question||question.header||question.id);if(question.options?.length){const select=el('select');select.append(new Option(t('请选择…'),''));for(const option of question.options)select.append(new Option(option.label+(option.description?' — '+option.description:''),option.label));select.append(new Option(t('自行填写'),'__custom__'));label.append(select);const custom=el('textarea');custom.rows=2;custom.hidden=true;custom.placeholder=t('输入你的回复');select.onchange=()=>custom.hidden=select.value!=='__custom__';label.append(custom);controls[question.id]=()=>select.value==='__custom__'?custom.value:select.value;}else{const input=el('textarea');input.rows=2;input.required=true;label.append(input);controls[question.id]=()=>input.value;}form.append(label);}}else if(method==='mcpServer/elicitation/request'){if(params.message)form.append(el('p','',params.message));const schema=params.requestedSchema||{};for(const [key,field] of Object.entries(schema.properties||{})){const label=el('label','',field.title||key);let input;if(field.enum){input=el('select');input.append(new Option(t('请选择…'),''));for(const [i,value] of field.enum.entries())input.append(new Option(field.enumNames?.[i]||String(value),String(value)));}else{input=el('input');input.type=field.type==='boolean'?'checkbox':['number','integer'].includes(field.type)?'number':'text';if(input.type==='number')input.step=field.type==='integer'?'1':'any';}input.required=(schema.required||[]).includes(key)&&input.type!=='checkbox';if(field.description)label.append(el('p','muted',field.description));label.append(input);form.append(label);controls[key]=()=>input.type==='checkbox'?input.checked:input.value===''?undefined:['number','integer'].includes(field.type)?Number(input.value):input.value;}}const actions=el('div','actions'),error=el('p','error');async function submit(response){const id=currentId,host=currentHost;approvalBusy++;setLanguageBusy();const buttons=card.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);error.textContent='';try{await api(sessionUrl(id,'respond',host),{requestId:request.id,response});submittedRequestIds.add(request.id);bumpRecency(id,host);toast('已发送回应');card.append(el('p','muted',t('已发送，等待桌面确认…')));}catch(e){error.textContent=t(e.message);buttons.forEach(b=>b.disabled=false);}finally{approvalBusy--;setLanguageBusy();}}const isInput=method.includes('requestUserInput'),isMcp=method==='mcpServer/elicitation/request';const yes=el('button','primary',isInput?t('提交回复'):t('本次允许'));markRecommendation(yes,'accept',request.recommend);yes.type='submit';const available=params.availableDecisions;const canAccept=!available||available.includes('accept');if(isInput||isMcp||canAccept)actions.append(yes);if(!isInput){const no=el('button','secondary',t('拒绝'));markRecommendation(no,'decline',request.recommend);no.type='button';no.onclick=()=>submit(isMcp?{action:'decline'}:{decision:'decline'});if(!available||available.includes('decline'))actions.append(no);if(method.includes('commandExecution')||method.includes('fileChange')||isMcp){const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.onclick=()=>submit(isMcp?{action:'cancel'}:{decision:'cancel'});if(!available||available.includes('cancel'))actions.append(cancel);}}form.onsubmit=event=>{event.preventDefault();if(isInput){const answers={};for(const [key,get] of Object.entries(controls)){const value=get();if(!value.trim()){error.textContent=t('请回答所有问题');return;}answers[key]=[value];}submit({answers});}else if(isMcp){const content={};for(const [key,get] of Object.entries(controls)){const value=get();if(value!==undefined)content[key]=value;}submit({action:'accept',content});}else submit({decision:'accept'});};form.append(actions,error);card.append(form);if(submittedRequestIds.has(request.id)){card.querySelectorAll('button').forEach(button=>button.disabled=true);card.append(el('p','muted',t('已发送，等待桌面确认…')));}$('approvals').append(card);}}
 function renderComputerApproval(request){
   const id=currentId,host=currentHost,card=el('section','approval'),computer=request.params.computerUse;
   card.dataset.request=String(request.id);card.append(el('h3','',t('允许使用电脑应用？')),el('p','',computer.app));
@@ -1573,18 +1592,25 @@ $('rename-form').onsubmit=async event=>{
   finally{renameBusy=false;$('rename-save').disabled=false;}
 };
 
+function deleteChatConfirmation(native){
+  return native?t('将尝试从电脑 Codex 中永久删除这条聊天及其记录，无法撤销。若原生删除失败，会改为仅从列表移除，电脑端记录可能保留。确定删除？'):t('将从列表移除这条会话；Agent 侧的记录不会被删除。确定移除？');
+}
+function deleteChatMessage(result,native){
+  if(result.mode==='deleted')return t('会话已删除');
+  if(result.warning)return t('原生删除失败，已从列表移除；电脑端记录可能仍保留');
+  return native?t('已从列表移除；电脑端记录可能仍保留'):t('已从列表移除；Agent 侧记录仍保留');
+}
 let deleteChatBusy=false;
 $('delete-chat').onclick=async()=>{
   if(!currentId||deleteChatBusy)return;
   const target={id:currentId,host:currentHost};
   const native=target.host==='local'&&(state?.agent==='codex'||!state);
-  const confirmText=native?t('将从电脑 Codex 中永久删除这条聊天及其记录，无法撤销。确定删除？'):t('将从列表移除这条会话；Agent 侧的记录不会被删除。确定移除？');
-  if(!window.confirm(confirmText))return;
+  if(!window.confirm(deleteChatConfirmation(native)))return;
   deleteChatBusy=true;$('delete-chat').disabled=true;
   try{
     const result=await api(sessionUrl(target.id,'delete',target.host),{});
     $('chat-details-dialog').close();
-    toast(result.mode==='deleted'?t('会话已删除'):t('已从列表移除会话'));
+    toast(deleteChatMessage(result,native));
     listRevision=null;
     if(currentId===target.id&&currentHost===target.host){$('back').onclick();}
     else await loadList(true);

@@ -651,6 +651,71 @@ for line in sys.stdin:
 	}
 }
 
+func TestDshPermissionModes(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	modes := `{"currentModeId":"workspace-write","availableModes":[{"id":"read-only","name":"Read only"},{"id":"workspace-write","name":"Workspace"},{"id":"danger-full-access","name":"Full access"}]}`
+	options := `[{"id":"collaboration_mode","currentValue":"default","options":[{"value":"default"},{"value":"plan"}]}]`
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new": result={"sessionId":"sess-permissions","modes":json.loads('` + modes + `'),"configOptions":json.loads('` + options + `')}
+ elif method == "session/set_mode": result={}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	path := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewCommand([]string{python, "-u", path})
+	manager.Kind = "dsh"
+	manager.ModeOptionID = "collaboration_mode"
+	defer manager.Close()
+	session, err := manager.Create("seed", "/work", "dsh 会话", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := session.Permissions()
+	if supported, _ := state.MustGet("supported").(bool); !supported {
+		t.Fatalf("DeepSeek permissions unsupported: %+v", state)
+	}
+	if current := state.MustGet("current"); current != "workspace-write" {
+		t.Fatalf("initial permission=%v", current)
+	}
+	optionsValue, _ := state.MustGet("options").(*jsoncompat.Array)
+	if len(optionsValue.Items) != 3 {
+		t.Fatalf("permission options=%+v", optionsValue)
+	}
+	if err := session.SetPermission("read-only"); err != nil {
+		t.Fatalf("set permission: %v", err)
+	}
+	if current := session.Permissions().MustGet("current"); current != "read-only" {
+		t.Fatalf("permission after switch=%v", current)
+	}
+	if mode := session.Snapshot().MustGet("collaborationMode"); mode != "default" {
+		t.Fatalf("permission switch changed collaboration mode=%v", mode)
+	}
+	if err := session.SetPermission("plan"); err == nil {
+		t.Fatal("collaboration mode accepted as a permission preset")
+	}
+}
+
+func TestPermissionsDoNotReuseCollaborationModes(t *testing.T) {
+	modes := jsoncompat.NewObject()
+	modes.Set("currentModeId", "default")
+	session := &Session{kind: "kimi", modes: modes}
+	if supported, _ := session.Permissions().MustGet("supported").(bool); supported {
+		t.Fatal("Kimi collaboration modes exposed as permissions")
+	}
+	if err := session.SetPermission("default"); err == nil {
+		t.Fatal("Kimi collaboration mode accepted as a permission preset")
+	}
+}
+
 // dsh only advertises collaboration_mode while its runtime carries a plan
 // command; without the option the original refusal stands even though the
 // permission-preset modes object exists.

@@ -694,7 +694,7 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	}
 	var session *acpruntime.Session
 	var err error
-	if !write && manager.NativeTranscript != nil {
+	if !write && manager.NativeTranscript != nil && action != "permissions" {
 		session, err = manager.OpenHistory(threadID, cwd)
 	} else {
 		// Mutations attach in place: a pure-history view upgrades to a live
@@ -721,6 +721,10 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			h.output(http.StatusOK, result, contentTypeJSON, "")
 			return true
 		}
+		if action == "permissions" {
+			h.output(http.StatusOK, session.Permissions(), contentTypeJSON, "")
+			return true
+		}
 		return false
 	}
 	body, bodyErr := h.readJSON()
@@ -730,6 +734,14 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	}
 	object := body.(*jsoncompat.Object)
 	switch action {
+	case "permissions":
+		mode, _ := object.MustGet("mode").(string)
+		if err := session.SetPermission(mode); err != nil {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+			return true
+		}
+		h.output(http.StatusOK, session.Permissions(), contentTypeJSON, "")
+		return true
 	case "send":
 		text, _ := object.MustGet("text").(string)
 		mode, _ := object.MustGet("mode").(string)

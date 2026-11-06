@@ -74,10 +74,12 @@ test('user jump click scrolls to the message and scroll tracking updates the act
   timeline.dispose();
 });
 
-test('user jump is large-screen only',()=>{
+test('user jump uses a compact flow entry on phones and a floating panel on large screens',()=>{
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
-  assert.match(css,/\.user-jump\{display:none\}/);
-  assert.match(css,/@media\(min-width:721px\)\{\s*\.user-jump\{display:block/);
+  assert.match(css,/\.user-jump\{display:block;flex:none;align-self:flex-end/);
+  assert.match(css,/\.user-jump-list\{max-height:min\(30dvh,280px\)/);
+  assert.match(css,/@media\(min-width:721px\)\{\s*\.user-jump\{position:absolute/);
+  assert.doesNotMatch(css,/\.user-jump\{display:none\}/);
 });
 
 test('user jump lists prompts from the meta index beyond the loaded window',()=>{

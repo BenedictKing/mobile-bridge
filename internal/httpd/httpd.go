@@ -15,6 +15,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
@@ -572,12 +573,20 @@ func (h *handler) handleMethod(write bool) {
 		}
 		project, _ := body.MustGet("project").(string)
 		cwd, _ := body.MustGet("cwd").(string)
+		explicitCwd := cwd != ""
 		if cwd == "" {
 			cwd = h.resolveProjectCwd(body.MustGet("project"))
 		}
 		if cwd == "" {
 			h.fail(http.StatusBadRequest, errorBody("请选择电脑 App 中已保存的项目"))
 			return
+		}
+		if explicitCwd {
+			info, statErr := os.Stat(cwd)
+			if statErr != nil || !info.IsDir() {
+				h.fail(http.StatusBadRequest, errorBody("项目目录不存在或不是目录，请输入电脑上已存在的目录"))
+				return
+			}
 		}
 		if project == "" {
 			project = cwd

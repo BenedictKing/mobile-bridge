@@ -45,6 +45,7 @@ class ChatTimeline {
     this.older=document.getElementById('older');
     this.newer=document.getElementById('newer');
     this.userJump=document.getElementById('user-jump');
+    if(typeof window!=='undefined')this.userJump.open=window.matchMedia('(min-width:721px)').matches;
     this.userJumpList=document.getElementById('user-jump-list');
     this.userJumpCount=document.getElementById('user-jump-count');
     this.userJumpButtons=new Map();

@@ -36,7 +36,7 @@ SSH 参数包含非交互认证、严格主机指纹检查和禁用额外转发�
 
 ## 新建聊天
 
-登录后的 `GET /api/projects` 返回 App 已保存的本机及 SSH 项目；`POST /api/sessions` 接受项目键、名称和请求 UUID。服务端重新解析已保存项目，不接受客户端任意目录、主机、程序路径或配置覆盖。创建接口沿用 Host、Origin、登录和 CSRF 校验。
+登录后的 `GET /api/projects` 返回 App 已保存的本机及 SSH 项目；`POST /api/sessions` 接受项目键或显式 `cwd`、名称和请求 UUID。服务端重新解析已保存项目；显式 `cwd` 仅用于本机创建，必须是当前电脑已存在的目录，并在创建前经 `os.Stat` 校验。客户端不能指定任意主机、程序路径或配置覆盖，SSH 创建仍使用已保存项目。创建接口沿用 Host、Origin、登录和 CSRF 校验。
 
 `internal/codex/create.go` 使用所选主机的官方运行时完成 `initialize → thread/start(ephemeral=false) → thread/name/set`，随后关闭辅助 stdio 进程。此路径不调用 `turn/start`，不会发送模型任务；也不再执行旧 Python 路径的 `thread/read(includeTurns=true)`。新线程使用该主机、工作目录的运行时默认配置，不克隆已有聊天的临时设置。
 
