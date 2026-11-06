@@ -11,8 +11,8 @@ function extract({team=false,defaultCompact}={}){
   const start=source.indexOf('const COMPACT_PROMPTS=');
   const end=source.indexOf('async function runGatewayCompact',start);
   assert.ok(start>=0&&end>start,'composer command block not found in app.js');
-  const context={t:value=>value,currentTeam:team,window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;this.nativeCompactPrompt=nativeCompactPrompt;',context);
+  const context={t:value=>value,currentTeam:team,state:{agent:'kimi',agents:[{kind:'kimi'}]},window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
+  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.parseMigrateCommand=parseMigrateCommand;this.runMigrateCommand=runMigrateCommand;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;this.nativeCompactPrompt=nativeCompactPrompt;',context);
   return context;
 }
 const same=(actual,expected)=>assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected);
@@ -58,6 +58,45 @@ test('plain chats parse /new as new-chat, /new stays un-interceptable via compac
   assert.equal(parsePlainCommand('/new 顺便'),null);
   same(parsePlainCommand('/compress'),{kind:'native',scope:'main'});
   assert.equal(parseCompactCommand('/new'),null);
+});
+
+test('migrate command parses long and shorthand targets with multiline instructions',()=>{
+  const flow=extract({team:true});
+  flow.state={agent:'kimi',agents:[{kind:'kimi'},{kind:'zcode'},{kind:'codex'}]};
+  same(flow.parsePlainCommand('/migrate zcode'),{kind:'migrate',agent:'zcode',scope:'main'});
+  same(flow.parsePlainCommand('/migrate zcode full 继续补测试\n并修复失败项'),{kind:'migrate',agent:'zcode',scope:'full',instructions:'继续补测试\n并修复失败项'});
+  same(flow.parseTeamCommand('/migrate codex latest'),{kind:'migrate',agent:'codex',scope:'latest'});
+  same(flow.parsePlainCommand('/migrate'),{kind:'migrate',agent:'',scope:'main'});
+  same(flow.parsePlainCommand('/zcode'),{kind:'migrate',agent:'zcode',scope:'main'});
+  same(flow.parsePlainCommand('/zcode latest 继续补测试'),{kind:'migrate',agent:'zcode',scope:'latest',instructions:'继续补测试'});
+  same(flow.parseTeamCommand('/codex main 接着实现'),{kind:'migrate',agent:'codex',scope:'main',instructions:'接着实现'});
+  assert.equal(flow.parsePlainCommand('/unknown 普通消息'),null);
+});
+
+test('migrate command suggestions list enabled targets except the current agent',()=>{
+  const flow=extract();
+  flow.state={agent:'kimi',agents:[{kind:'kimi',label:'Kimi'},{kind:'zcode',label:'ZCode'},{kind:'codex',label:'Codex'}]};
+  const rows=flow.composerCommandRows('migrate');
+  same(rows.map(row=>row.token),['/zcode','/codex']);
+  assert.match(rows[0].label,/ZCode/);
+  assert.match(rows[0].description,/后续指示/);
+});
+
+test('migrate command validates the target and delegates with instructions',async()=>{
+  const flow=extract(),calls=[],messages=[];
+  flow.toast=message=>messages.push(message);
+  flow.compactAvailable=()=>true;
+  flow.state={agent:'kimi',agents:[{kind:'kimi'},{kind:'zcode'}]};
+  flow.migrateControl={migrate:async(...args)=>calls.push(args)};
+  assert.equal(await flow.runMigrateCommand({agent:'',scope:'main'}),false);
+  assert.equal(await flow.runMigrateCommand({agent:'kimi',scope:'main'}),false);
+  assert.equal(await flow.runMigrateCommand({agent:'codex',scope:'main'}),false);
+  assert.equal(calls.length,0);
+  assert.match(messages[0],/^用法：\/migrate/);
+  assert.match(messages[1],/不能是当前 Agent/);
+  assert.match(messages[2],/未启用/);
+  assert.equal(await flow.runMigrateCommand({agent:'zcode',scope:'latest',instructions:'继续完成剩余测试'}),true);
+  same(calls,[['zcode','latest','migrate',{instructions:'继续完成剩余测试'}]]);
 });
 
 test('command suggestions follow the chat mode',()=>{
