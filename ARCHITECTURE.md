@@ -141,6 +141,8 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 | `internal/acpruntime`、`internal/acp`、`internal/acpagents` | ACP 会话、线协议与 Agent 方言装配 |
 | `internal/acphost`、`cmd/agent-host` | 可选独立 Agent Host 与 socket 转发 |
 | `internal/team` | Team/Run/Task 模型、调度、journal、恢复与验证 |
+| `internal/jev`、`internal/conventions` | 权限预判与产物可见性约定 |
+| `internal/subagents` | 按各 Agent 磁盘布局发现子 Agent 记录 |
 | `internal/httpd/queue.go`、`internal/httpd/creations.go` | 提交与创建的持久幂等账本 |
 | `internal/goal`、`internal/httpd/goal_send.go` | 原生 Goal RPC 与命令账本 |
 | `internal/account`、`internal/accpool` | Codex 接入切换与 ACP 账号池 |
