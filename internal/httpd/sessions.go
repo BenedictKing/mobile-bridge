@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
+	"github.com/BenedictKing/mobile-bridge/internal/acpgoal"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -31,7 +32,7 @@ var threadRoute = regexp.MustCompile(
 	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
-var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status)$`)
+var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status|continue|complete)$`)
 
 // ScriptedSession is the conformance stand-in for service.LiveSession: an
 // epoch, a sequence and a predicate-based wait. Production wiring injects a
@@ -747,6 +748,10 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		mode, _ := object.MustGet("mode").(string)
 		workMode, _ := object.MustGet("workMode").(string)
 		if workMode == "goal" {
+			if kind != "mcode" && h.server.ACPGoals != nil {
+				h.handleGatewayGoalCreate(kind, threadID, session, readSubmissionPayload(object))
+				return true
+			}
 			// Goal-mode sends ride the shared command machine when the owning
 			// agent carries a goal transport (mcode); every other ACP agent is
 			// refused instead of silently degrading to a plain prompt.
@@ -948,6 +953,9 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		} else {
 			// A human answered a card; the auto-continue budget re-arms.
 			session.NoteHumanAction()
+			if goal, ok := h.server.gatewayGoalFor(kind, threadID); ok && goal.Status == acpgoal.StatusWaitingInput {
+				go h.server.GoalSettleACP(kind, session)
+			}
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
 		}
 	case "settings":
@@ -990,14 +998,39 @@ func readBodyLimit(request *http.Request, limit int) ([]byte, error) {
 }
 
 func (h *handler) handleGoalHTTP(write bool, path string) bool {
-	if !write {
-		return false
-	}
 	match := goalRoute.FindStringSubmatch(path)
 	if match == nil {
 		return false
 	}
 	threadID := match[1]
+	if !write {
+		if match[2] != "status" {
+			return false
+		}
+		if kind, _, owned := h.server.acpGoalOwner(threadID); owned {
+			if goal, ok := h.server.gatewayGoalFor(kind, threadID); ok {
+				result := jsoncompat.NewObject()
+				result.Set("goal", gatewayGoalView(goal))
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+				return true
+			}
+		}
+		return false
+	}
+	if h.server.ACPGoals != nil {
+		if kind, _, owned := h.server.acpGoalOwner(threadID); owned && kind != "mcode" {
+			value, err := h.readJSON()
+			if err != nil {
+				h.fail(http.StatusBadRequest, errorBody(err.Error()))
+				return true
+			}
+			return h.handleGatewayGoalControl(threadID, match[2], value.(*jsoncompat.Object))
+		}
+	}
+	if match[2] == "continue" || match[2] == "complete" {
+		h.fail(http.StatusConflict, errorBody("当前目标 provider 不支持此操作"))
+		return true
+	}
 	// Any usable transport qualifies: the codex sidecar or the owning ACP
 	// agent's own goal RPC (mcode). An ACP-owned thread without a goal
 	// surface answers the agent-specific refusal.

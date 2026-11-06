@@ -281,7 +281,7 @@ func ContinueContext(agent string, view *jsoncompat.Object) (context *jsoncompat
 			errors = append(errors, jsoncompat.PyStr(message.MustGet("text")))
 		}
 	}
-	if text := jsoncompat.PyStr(turn.MustGet("error")); text != "" {
+	if text, ok := turn.MustGet("error").(string); ok && text != "" {
 		errors = append(errors, text)
 	}
 	context = jsoncompat.NewObject()

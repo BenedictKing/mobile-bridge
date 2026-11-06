@@ -139,3 +139,23 @@ func TestSweepIdleClosesUntouchedSessions(t *testing.T) {
 	}
 	_ = fresh
 }
+
+func TestSweepIdlePreservesManagedBackgroundGoal(t *testing.T) {
+	argv, _ := silentAgent(t)
+	manager := NewCommand(argv)
+	defer manager.Close()
+	session, err := manager.Open("sess-goal", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.KeepAlive = func(id string) bool { return id == "sess-goal" }
+	session.mu.Lock()
+	session.touched = time.Now().Add(-10 * time.Minute)
+	session.mu.Unlock()
+	if closed := manager.SweepIdle(5 * time.Minute); closed != 0 {
+		t.Fatalf("closed=%d", closed)
+	}
+	if manager.Get("sess-goal") != session {
+		t.Fatal("background Goal session was evicted")
+	}
+}

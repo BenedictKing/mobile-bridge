@@ -35,11 +35,13 @@ async function goalAction(action,payload) {
   const id=currentId,host=currentHost;
   const result=await api(sessionUrl(id,'goal/'+action,host),payload);
   if(!result.confirmed)throw Error('目标操作结果尚未确认，请查看目标状态');
-  if(currentId===id&&currentHost===host){state={...state,goal:action==='cancel'?null:(result.result?.goal||result.result)};workModes.render(state,$('send-mode').value,false);}
-  toast(action==='cancel'?'目标已关闭':action==='edit'?'目标已修改，保持暂停':payload.status==='paused'?'目标已暂停':'目标已恢复');
+  if(currentId===id&&currentHost===host){state={...state,goal:result.goal||(action==='cancel'?null:(result.result?.goal||result.result))};workModes.render(state,$('send-mode').value,false);}
+  if(result.goal?.pendingControl){toast('控制请求已记录，等待派发结果确认');return;}
+  toast(action==='cancel'?'目标已关闭':action==='edit'?'目标已修改，保持暂停':action==='complete'?'目标已完成':action==='continue'?'已人工继续一轮':payload.status==='paused'?'目标已暂停':'目标已恢复');
 }
 const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
-  onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload)});
+  onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload),
+  onContinue:payload=>goalAction('continue',payload),onComplete:payload=>goalAction('complete',payload)});
 const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
 $('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
 const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),enabled:()=>compactAvailable()&&!compactChat.busy,

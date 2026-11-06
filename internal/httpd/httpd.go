@@ -28,6 +28,7 @@ import (
 
 	"github.com/BenedictKing/mobile-bridge/internal/account"
 	"github.com/BenedictKing/mobile-bridge/internal/accpool"
+	"github.com/BenedictKing/mobile-bridge/internal/acpgoal"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
@@ -83,6 +84,7 @@ type Server struct {
 	Creations        *creations
 	Queue            *submissions
 	GoalCmds         *goalLedger
+	ACPGoals         *acpgoal.Store
 	Hidden           *hiddenSessions
 	Forks            *forkLedger
 	WebFS            fs.FS

@@ -38,6 +38,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/account"
 	"github.com/BenedictKing/mobile-bridge/internal/accpool"
 	"github.com/BenedictKing/mobile-bridge/internal/acpagents"
+	"github.com/BenedictKing/mobile-bridge/internal/acpgoal"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/claude"
@@ -504,6 +505,11 @@ func runGateway(args []string) {
 	server.Uploads = uploads.New(dataDir)
 	server.NotificationDir = dataDir
 	server.Jev = jev.New(filepath.Join(dataDir, "jev.json"))
+	if goalStore, goalErr := acpgoal.Open(filepath.Join(dataDir, "acp-goals.json")); goalErr != nil {
+		log.Printf("ACP Goal 账本不可用: %v", goalErr)
+	} else {
+		server.ACPGoals = goalStore
+	}
 	server.Conventions = conventions.New(filepath.Join(dataDir, "conventions.json"))
 	var quickTunnel *tunnel.Quick
 	sshForwards := []*tunnel.SSHForward{}
@@ -874,6 +880,19 @@ func runGateway(args []string) {
 				manager.Usage = contextUsage
 				manager.Created = createdSessions
 				manager.Kind = kind
+				managedKind := kind
+				manager.KeepAlive = func(sessionID string) bool {
+					if server.ACPGoals == nil {
+						return false
+					}
+					for _, candidate := range append([]string{sessionID}, manager.Aliases(sessionID)...) {
+						goal, ok := server.ACPGoals.ForThread(managedKind, candidate)
+						if ok && (goal.Status == acpgoal.StatusActive || goal.Status == acpgoal.StatusDispatching || goal.Status == acpgoal.StatusEvaluating || goal.Status == acpgoal.StatusWaitingInput) {
+							return true
+						}
+					}
+					return false
+				}
 			}
 			if manager != nil && server.Jev != nil {
 				manager.AutoApprove = jevApprovalHook(server.Jev, kind)
@@ -890,6 +909,9 @@ func runGateway(args []string) {
 				}
 				quotaHook := poolQuotaHook(server.Pool, poolAuto, managedKind, manager, resumeAfterSwitch)
 				manager.AutoContinue = func(session *acpruntime.Session) {
+					if server.GoalSettleACP(managedKind, session) {
+						return
+					}
 					// Quota failover owns the settle edge when it fired: the
 					// resumed turn's next settle re-enters the chain.
 					if quotaHook(session) {

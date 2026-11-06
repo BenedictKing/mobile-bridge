@@ -164,6 +164,8 @@ type Manager struct {
 	// gateway can judge whether unfinished work should resume. The hook must
 	// re-check liveness itself; turns settle while the session stays open.
 	AutoContinue func(*Session)
+	// KeepAlive protects explicitly managed background work from idle eviction.
+	KeepAlive func(sessionID string) bool
 
 	// Label, Capabilities and EffortMap mirror the Python adapter profile
 	// (bridge/agents/*.py): list rows, views and the settings validator all
@@ -631,6 +633,9 @@ func (m *Manager) Aliases(id string) []string {
 	if canonical := m.canonicalLocked(id); canonical != "" && canonical != id {
 		aliases = append(aliases, canonical)
 	}
+	if m.Created == nil {
+		return aliases
+	}
 	for _, row := range m.Created.Rows(m.Kind) {
 		other, _ := row.MustGet("sessionId").(string)
 		if other == "" || other == id {
@@ -1018,6 +1023,11 @@ func (s *Session) AutoContinuePrompt(text string, idleTimeout time.Duration) err
 	return s.prompt(text, nil, idleTimeout, budgetAutoContinue)
 }
 
+// GoalPrompt draws its step budget from the persistent gateway Goal store.
+func (s *Session) GoalPrompt(text string, idleTimeout time.Duration) error {
+	return s.prompt(text, nil, idleTimeout, budgetGoal)
+}
+
 // ResumeAfterSwitchPrompt resumes a session whose turn died on an exhausted
 // quota after the account pool swapped credentials. It draws on its own
 // switch-resume budget (MaxSwitchResume) so the accidental-interruption
@@ -1050,6 +1060,7 @@ const (
 	budgetAutoContinue
 	budgetSwitchResume
 	budgetWarmup
+	budgetGoal
 )
 
 func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
@@ -1094,6 +1105,8 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 	case budgetWarmup:
 		// A warm-up is neither a human message nor a resume: leave both
 		// budgets exactly as they are.
+	case budgetGoal:
+		// Goal steps are counted in the durable Goal store.
 	default:
 		// Any human message re-arms both budgets.
 		s.autoContinueRuns = 0
@@ -2134,6 +2147,9 @@ func (m *Manager) SweepIdle(idle time.Duration) int {
 	m.mu.Unlock()
 	closed := 0
 	for _, session := range candidates {
+		if m.KeepAlive != nil && m.KeepAlive(session.ID) {
+			continue
+		}
 		if session.IdleFor() < idle {
 			continue
 		}

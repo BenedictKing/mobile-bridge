@@ -229,6 +229,14 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 		// gateway, so it needs no native evidence.
 		capabilities.Items = append(capabilities.Items, capability)
 	}
+	if s.ACPGoals != nil && kind != "mcode" && transport == nil {
+		capabilities.Items = append(capabilities.Items, "goals")
+		view.Set("goalRuntimeAvailable", true)
+		view.Set("goalProvider", "gateway")
+		if active, ok := s.gatewayGoalFor(kind, session.ID); ok {
+			view.Set("goal", gatewayGoalView(active))
+		}
+	}
 	if session.DesktopOwned() {
 		// A transcript-backed view of a desktop-owned session is readable
 		// but cannot steer or answer; branching stays available. A plain

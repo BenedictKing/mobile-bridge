@@ -144,7 +144,8 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 | `internal/jev`、`internal/conventions` | 权限预判与产物可见性约定 |
 | `internal/subagents` | 按各 Agent 磁盘布局发现子 Agent 记录 |
 | `internal/httpd/queue.go`、`internal/httpd/creations.go` | 提交与创建的持久幂等账本 |
-| `internal/goal`、`internal/httpd/goal_send.go` | 原生 Goal RPC 与命令账本 |
+| `internal/goal`、`internal/httpd/goal_send.go` | Codex 与 mcode 原生 Goal RPC、命令账本 |
+| `internal/acpgoal`、`internal/httpd/acp_goal.go` | ACP 网关托管 Goal 的持久状态机、Jev 评估与有界派发 |
 | `internal/account`、`internal/accpool` | Codex 接入切换与 ACP 账号池 |
 | `internal/notifications`、`internal/tunnel` | 通知对账、Quick Tunnel 与 SSH 转发 |
 | `internal/uploads`、`web/`、`android/` | 附件、网页与 Android WebView |
@@ -225,7 +226,7 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 | 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ | ✓（创建进程保活至首条消息，惰性占位） | ✓ | ✓ |
 | 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） | ✓（default 映射为 yolo） | ✓（`mode` 配置项走 set_config_option 回退，default 映射为 build） | ✗（未验证） |
 | steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） | ✗（无扩展 RPC） | ✗（未验证） |
-| goal 模式 | ✓ | ✗（ACP 无接口） | ✓（扩展 RPC） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） | ✗（ACP 无接口） |
+| goal 模式 | ✓（原生） | ✓（网关托管） | ✓（扩展 RPC） | ✓（网关托管） | ✓（网关托管） | ✓（网关托管） | ✓（网关托管） | ✓（网关托管） |
 | rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（未验证） |
 | Skill 选择 | ✓ | ✓（available_commands 斜杠命令，每次一条） | ✗ | ✗ | ✗ | ✗ | ✓（available_commands_update 斜杠命令，每次一条） | ✗ |
 | Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |

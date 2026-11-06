@@ -175,7 +175,7 @@ make build-gateway-package
 | SSH 会话 | 显示经网关 SSH 连接的主机聊天，操作继续交给对应主机的会话 |
 | 聊天列表 | 最近交互或项目视图、主机标签、运行中与完成未查看标识 |
 | 模型设置 | 更改当前聊天的模型与推理强度，支持自定义模型 ID；符合条件的官方账号可开关 Fast 模式 |
-| 计划与目标模式 | 从网页开启计划或原生目标；计划完成后可直接执行或继续修改 |
+| 计划与目标模式 | 从网页开启计划、原生目标或 ACP 网关托管目标；计划完成后可直接执行或继续修改 |
 | Skill | Codex 按会话所在主机与工作目录读取已安装技能，随消息发送原生 Skill 引用；Kimi 列出会话广告的技能，每条消息限选一个 |
 | ACP 账号池 | Kimi / ZCode / MiniMax / WorkBuddy 多账号池，按 Agent 分 tab 展示：面板内添加账号/重登（设备授权/扫码/OAuth）、捕获本机当前登录、删除快照、查看各账号窗口额度、手动切换；窗口限额（如 Kimi 5 小时窗口）耗尽时自动切到可用账号并续跑中断会话（ZCode 先消耗重置卡），可在面板关闭；Codex 账号只读展示，切换走「账号与接入」 |
 | 登录方式 | 独立账号密码；可配置免密 |
@@ -279,7 +279,7 @@ launchd 托管（`make start`）开机自启、崩溃自动拉活；登录会话
 GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode,opencode,workbuddy make serve
 ```
 
-前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+；OpenCode 自带 ACP 子命令，经 `opencode acp` 接入，可用 `OPENCODE_BIN` 指定其他启动命令，须先用 `opencode auth login` 登录；WorkBuddy 经 `codebuddy --acp` 接入，可用 `CODEBUDDY_BIN` 指定 CLI 路径），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可；WorkBuddy 在 WorkBuddy 桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。目标模式、补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏，能力矩阵见 `ARCHITECTURE.md` 的"多 Agent 适配"章节。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
+前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+；OpenCode 自带 ACP 子命令，经 `opencode acp` 接入，可用 `OPENCODE_BIN` 指定其他启动命令，须先用 `opencode auth login` 登录；WorkBuddy 经 `codebuddy --acp` 接入，可用 `CODEBUDDY_BIN` 指定 CLI 路径），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可；WorkBuddy 在 WorkBuddy 桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏；Goal 的 provider 分流见 `ARCHITECTURE.md` 的能力矩阵。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
 
 Kimi、ZCode、MiniMax 与 WorkBuddy 另有多账号池，网页账号对话框按 Agent 分 tab，一次只读取当前 tab 的池：
 
@@ -389,13 +389,15 @@ DeepSeek Harness 会话中，点击发送栏的 **权限** 可查看并切换当
 
 - **普通模式**：直接处理任务。
 - **计划模式**：先讨论并制定计划。计划完成后，可在网页展开全文、点击 **按照当前规划结果执行计划**，或填写修改意见后点击 **按照修改意见继续规划**。有修改意见时强调继续规划，并禁用直接执行，避免忽略意见。执行计划会切回普通模式，继续规划保留计划模式。
-- **目标模式**：输入要完成的目标。通过本机 Codex 原生 Goal 接口设置目标，再由原聊天的桌面 owner 开始执行。网页显示目标内容、状态和 Token 用量；操作结果未确认时保留请求标识，不自动重发。
+- **目标模式**：输入不超过 4000 字的目标。Codex 走桌面原生 Goal，MiniMax/mcode 走 Agent 扩展 RPC；其余本机 ACP Agent 由网关托管目标，每轮完成后让 Jev 评估，只有明确判断“未完成且可安全继续”、置信度至少 80% 时才自动派发下一轮。目标和最近输出摘要会发往配置的 Jev 服务；未配置 Jev 时首轮照常运行，随后停在“等待复核”，不会自动续跑。自动续轮最多 5 次。
 
 目标栏右侧的 **×** 可隐藏该栏，目标继续运行。隐藏后，点击发送键旁的 **目标进度** 恢复显示；窄屏下显示为目标图标。同一目标在当前浏览器标签页刷新后保持隐藏，新目标默认显示。
 
 模式选择跟随当前聊天，并保留手动选择。补充正在运行的任务会沿用该任务的模式；普通和计划消息可排队，目标需等当前任务结束后直接发送，最多 4000 字。已有未完成目标或尚未确认的目标请求时，不能重复开启。
 
-模式操作使用聊天原有的主机、模型、provider 和权限设置。目标提交成功后，后续消息恢复普通输入；这不会取消已经创建的目标。本机聊天的目标栏提供暂停、恢复、修改和关闭；SSH 聊天暂不支持这些操作。修改内容前须先暂停，修改会替换原目标并重置用量统计，保存后保持暂停、保留原 Token 预算，点击恢复后继续。暂停和关闭目标不等于中断当前回复；需要立即中断时使用“停止”。预算调整仍使用 Codex 原有操作。相关能力依赖桌面运行时支持，实测范围见[验证记录](VERIFICATION.md)。
+模式操作使用聊天原有的主机、模型、provider 和权限设置。目标提交成功后，后续消息恢复普通输入；这不会取消已经创建的目标。本机聊天的目标栏提供暂停、恢复、修改和关闭；SSH 聊天暂不支持这些操作。修改内容前须先暂停。Codex 原生目标的修改会重置用量统计并保留原 Token 预算；网关托管目标保留累计自动轮数和旧目标修订记录。暂停和关闭目标不等于中断当前回复；需要立即中断时使用“停止”。Codex 预算仍使用原有操作。原生能力依赖桌面运行时支持，实测范围见[验证记录](VERIFICATION.md)。
+
+网关托管 Goal 另提供“人工继续一轮”和“标记完成”（仅等待复核时）；暂停、取消只停止后续自动派发，不打断当前 Agent 回复。每次操作带目标修订号，旧页面的冲突操作会被拒绝。派发结果未知、Jev 失败、低置信度、额度或权限问题均不会自动重发；网关重启后未确认派发会停在结果未知，执行中的目标会停在等待复核，需先核实会话结果。
 
 ### 团队
 
@@ -499,6 +501,7 @@ flowchart TD
 | `submissions.json` | 本地聊天的发送去重记录、正文与队列 |
 | `creations.json` | 新建聊天、团队成员和迁移目标的创建占用与结果；发送中迁移不会自动重发 |
 | `goal-commands.json` | 原生目标操作的请求占用、确认与结果未知记录 |
+| `acp-goals.json` | ACP 网关托管 Goal 的目标、修订、派发与评估状态（0600）；与原生 Goal 账本独立 |
 | `hosts/<主机哈希>/submissions.json` | 按 SSH 主机隔离的发送记录 |
 | `uploads/`、`hosts/<主机哈希>/uploads/` | 本地附件和远端附件的本机副本，按会话隔离 |
 | `gateway.pid` | 本网关进程记录 |
