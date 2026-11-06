@@ -233,6 +233,12 @@ func (h *handler) handleGatewayGoalControl(threadID, action string, body *jsonco
 		}
 	case "continue":
 		next = acpgoal.StatusDispatching
+	case "review":
+		if expected != acpgoal.StatusOutcomeUnknown || body.MustGet("verified") != true {
+			h.fail(http.StatusBadRequest, errorBody("请先核实上一轮结果，再确认进入人工复核"))
+			return true
+		}
+		next = acpgoal.StatusWaitingReview
 	}
 	if action == "edit" {
 		objective, _ := body.MustGet("objective").(string)

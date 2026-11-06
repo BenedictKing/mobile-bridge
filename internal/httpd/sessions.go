@@ -32,7 +32,7 @@ var threadRoute = regexp.MustCompile(
 	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
-var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status|continue|complete)$`)
+var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status|continue|complete|review)$`)
 
 // ScriptedSession is the conformance stand-in for service.LiveSession: an
 // epoch, a sequence and a predicate-based wait. Production wiring injects a
@@ -1029,7 +1029,7 @@ func (h *handler) handleGoalHTTP(write bool, path string) bool {
 			return h.handleGatewayGoalControl(threadID, match[2], value.(*jsoncompat.Object))
 		}
 	}
-	if match[2] == "continue" || match[2] == "complete" {
+	if match[2] == "continue" || match[2] == "complete" || match[2] == "review" {
 		h.fail(http.StatusConflict, errorBody("当前目标 provider 不支持此操作"))
 		return true
 	}

@@ -21,7 +21,7 @@ function setup(provider='gateway'){
   global.document={createElement:tag=>new Node(tag)};
   global.BridgeI18n={t:value=>value,locale:()=>"zh-CN"};
   const modes=new WorkModes({select,hint,goalRoot:root,goalToggle:toggle,storage,newId:()=>"op-1",
-    onStatus:async payload=>calls.push(payload),onCancel:async()=>{},onEdit:async()=>{},onContinue:async()=>{},onComplete:async()=>{}});
+    onStatus:async payload=>calls.push(payload),onCancel:async()=>{},onEdit:async()=>{},onContinue:async()=>{},onComplete:async()=>{},onReview:async payload=>calls.push(payload)});
   modes.open('chat');
   modes.render({host:'local',status:'idle',capabilities:['goals'],goalRuntimeAvailable:true,
     goal:{provider,goalId:'goal-1',objective:'整理仓库',status:'waiting_review',revision:7,autoStepsUsed:1,autoStepsLimit:5}},'send',false);
@@ -50,4 +50,16 @@ test('waiting-review Goal offers manual decision controls',()=>{
   assert.ok(actions);
   assert.ok(actions.children.some(node=>node.textContent==='人工继续一轮'));
   assert.ok(actions.children.some(node=>node.textContent==='标记完成'));
+});
+
+test('unknown delivery requires an explicit verified review action',async()=>{
+  const {modes,root,calls}=setup();
+  modes.render({...modes.view,goal:{...modes.view.goal,status:'outcome_unknown'}},'send',false);
+  const actions=root.children.find(node=>node.className==='goal-actions');
+  const review=actions.children.find(node=>node.textContent==='已核实，进入复核');
+  assert.ok(review);
+  await review.onclick();
+  assert.equal(calls[0].verified,true);
+  assert.equal(calls[0].expectedState,'outcome_unknown');
+  assert.equal(calls[0].revision,7);
 });

@@ -429,6 +429,8 @@ const en={
   "人工继续一轮": "Continue one step manually",
   "标记完成": "Mark complete",
   "已人工继续一轮": "Continued one step manually",
+  "已核实，进入复核": "Reviewed the last step",
+  "已进入人工复核": "Ready for manual review",
   "控制请求已记录，等待派发结果确认": "Control request recorded. Waiting for dispatch confirmation.",
   "取消目标": "Cancel goal",
   "暂停目标": "Pause goal",

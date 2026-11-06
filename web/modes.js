@@ -1,8 +1,8 @@
 'use strict';
 
 class WorkModes {
-  constructor({select,hint,goalRoot,goalToggle,storage=sessionStorage,onCancel,onStatus,onEdit,onContinue,onComplete,newId=()=>crypto.randomUUID()}) {
-    this.select=select;this.hint=hint;this.goalRoot=goalRoot;this.goalToggle=goalToggle;this.storage=storage;this.onCancel=onCancel;this.onStatus=onStatus;this.onEdit=onEdit;this.onContinue=onContinue;this.onComplete=onComplete;this.newId=newId;this.sending=false;this.editing=false;this.editText="";
+  constructor({select,hint,goalRoot,goalToggle,storage=sessionStorage,onCancel,onStatus,onEdit,onContinue,onComplete,onReview,newId=()=>crypto.randomUUID()}) {
+    this.select=select;this.hint=hint;this.goalRoot=goalRoot;this.goalToggle=goalToggle;this.storage=storage;this.onCancel=onCancel;this.onStatus=onStatus;this.onEdit=onEdit;this.onContinue=onContinue;this.onComplete=onComplete;this.onReview=onReview;this.newId=newId;this.sending=false;this.editing=false;this.editText="";
     this.key=null;this.selection=null;this.view=null;this.cancelBusy=false;this.statusBusy=null;this.actionError='';
     select.onchange=()=>{this.selection=select.value;this.storage.setItem('work-mode:'+this.key,this.selection);this.actionError='';this.render();};
     goalToggle.onclick=()=>{this.storage.removeItem('hidden-goal:'+this.key);this.render();this.goalRoot.querySelector('.goal-close')?.focus();};
@@ -37,6 +37,7 @@ class WorkModes {
   saveEdit(){return this.action('edit',{objective:this.editText.trim()},payload=>this.onEdit(payload));}
   continueOnce(){return this.action('continue',{},payload=>this.onContinue(payload));}
   complete(){return this.action('complete',{},payload=>this.onComplete(payload));}
+  review(){return this.action('review',{verified:true},payload=>this.onReview(payload));}
   busy(){return !!(this.sending||this.cancelBusy||this.statusBusy);}
   render(view=this.view,sendMode=this.sendMode,sending=this.sending) {
     this.view=view;this.sendMode=sendMode;this.sending=!!sending;
@@ -94,6 +95,7 @@ class WorkModes {
         actions.append(button(t('人工继续一轮'),'goal-continue primary',()=>this.continueOnce(),this.busy()));
       }
       if(goal.provider==='gateway'&&goal.status==='waiting_review')actions.append(button(t('标记完成'),'goal-complete secondary',()=>this.complete(),this.busy()));
+      if(goal.provider==='gateway'&&goal.status==='outcome_unknown')actions.append(button(t('已核实，进入复核'),'goal-review secondary',()=>this.review(),this.busy()));
       if(goal.status==='paused')actions.append(button(t('修改目标'),'goal-edit secondary',()=>{this.editing=true;this.editText=goal.objective;this.render();this.goalRoot.querySelector('.goal-editor')?.focus();},this.busy()));
       if(!['complete','completed','cancelled'].includes(goal.status))actions.append(button(this.cancelBusy?t('正在关闭目标…'):t('关闭目标'),'goal-cancel secondary',()=>this.cancel(),this.busy()));
       this.goalRoot.append(node('p',t('暂停或关闭目标不会停止当前回复；如需立即停止，请点击“停止”。'),'muted'));

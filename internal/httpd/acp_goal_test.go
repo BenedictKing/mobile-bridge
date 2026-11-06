@@ -194,3 +194,38 @@ func TestGatewayGoalResolvesLazySessionAlias(t *testing.T) {
 		t.Fatalf("alias goal=%+v found=%v", goal, ok)
 	}
 }
+
+func TestGatewayGoalUnknownRequiresExplicitReview(t *testing.T) {
+	cwd, dataDir := t.TempDir(), t.TempDir()
+	server, token, csrf := newFeatureServer(t, dataDir)
+	manager := acpruntime.NewCommand(fakeACPAgent(t, cwd))
+	manager.Kind = "zcode"
+	manager.Created = acpruntime.LoadCreated(filepath.Join(dataDir, "created.json"))
+	manager.Created.Remember("zcode", "sess-old", cwd, "Goal", 1)
+	server.ACPAgents = map[string]*acpruntime.Manager{"zcode": manager}
+	var err error
+	server.ACPGoals, err = acpgoal.Open(filepath.Join(dataDir, "goals.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal, err := server.ACPGoals.Create("g", "create", "zcode", "sess-old", "目标", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := server.ACPGoals.MarkDispatched("g", goal.ActiveDispatchID, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := fmt.Sprintf(`{"id":"review","expectedState":"outcome_unknown","revision":%d`, unknown.Revision)
+	refused := featureRequest(server, token, csrf, http.MethodPost, "/api/sessions/sess-old/goal/review", base+`}`)
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("unverified=%d %s", refused.Code, refused.Body.String())
+	}
+	accepted := featureRequest(server, token, csrf, http.MethodPost, "/api/sessions/sess-old/goal/review", base+`,"verified":true}`)
+	if accepted.Code != http.StatusOK || !strings.Contains(accepted.Body.String(), `"status": "waiting_review"`) {
+		t.Fatalf("review=%d %s", accepted.Code, accepted.Body.String())
+	}
+	if manager.Get("sess-old") != nil {
+		t.Fatal("review spawned the ACP agent")
+	}
+}
