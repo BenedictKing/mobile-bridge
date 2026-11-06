@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -173,6 +174,54 @@ func TestProjectsDeduplicatesAcrossAgents(t *testing.T) {
 	h := &handler{server: server}
 	if cwd := h.resolveProjectCwd("acp:" + hashProject("/work")); cwd != "/work" {
 		t.Fatalf("旧 ACP 项目键无法解析：%q", cwd)
+	}
+}
+
+func TestProjectsDeleteHidesAllAliasesAndPersists(t *testing.T) {
+	server, _ := discoveryFixture(t)
+	manager := acpruntime.NewCommand(fakeACPAgent(t, "/work"))
+	defer manager.Close()
+	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
+	ledgerPath := filepath.Join(t.TempDir(), "hidden-projects.json")
+	server.HiddenProjects = LoadHiddenProjects(ledgerPath)
+	key := "acp:" + hashProject("/work")
+	if cwd := (&handler{server: server}).resolveProjectCwd(key); cwd != "/work" {
+		t.Fatalf("test setup project unresolved: %q", cwd)
+	}
+	token, session, err := server.Auth.NewSession("127.0.0.1", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove := func(target string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodDelete, "http://127.0.0.1:8790"+target, strings.NewReader("{}"))
+		request.Host = "127.0.0.1:8790"
+		request.Header.Set("Origin", "http://127.0.0.1:8790")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-CSRF-Token", session.MustGet("csrf").(string))
+		request.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		return response
+	}
+	response := remove("/api/projects/" + key)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status": "hidden"`) {
+		t.Fatalf("delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	if projects, _ := getProjects(t, server).MustGet("projects").(*jsoncompat.Array); len(projects.Items) != 0 {
+		t.Fatalf("hidden project still listed: %s", jsoncompat.EncodeCompact(projects))
+	}
+	if cwd := (&handler{server: server}).resolveProjectCwd("codex:" + hashProject("/work")); cwd != "" {
+		t.Fatalf("hidden codex alias still resolves: %q", cwd)
+	}
+	if !LoadHiddenProjects(ledgerPath).hidden("/work") {
+		t.Fatal("hidden project did not survive reload")
+	}
+	if response := remove("/api/projects/" + key); response.Code != http.StatusOK {
+		t.Fatalf("idempotent delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := remove("/api/projects/acp:000000000000"); response.Code != http.StatusNotFound {
+		t.Fatalf("unknown project status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

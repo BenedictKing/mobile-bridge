@@ -952,6 +952,7 @@ func runGateway(args []string) {
 	}
 	server.GoalCmds = goalCommands
 	server.Hidden = httpd.LoadHiddenSessions(filepath.Join(dataDir, "hidden-sessions.json"))
+	server.HiddenProjects = httpd.LoadHiddenProjects(filepath.Join(dataDir, "hidden-projects.json"))
 	server.Forks = httpd.LoadForks(filepath.Join(dataDir, "forks.json"))
 	// Team 编排（docs/team-orchestration-plan.md §8.3 启动顺序）：账本与
 	// journal 先装配，事件投影从 journal 预热后再对账恢复；恢复期产生的

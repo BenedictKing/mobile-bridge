@@ -86,6 +86,7 @@ type Server struct {
 	GoalCmds         *goalLedger
 	ACPGoals         *acpgoal.Store
 	Hidden           *hiddenSessions
+	HiddenProjects   *hiddenProjects
 	Forks            *forkLedger
 	WebFS            fs.FS
 	InstanceID       string
@@ -784,6 +785,10 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(h.request.Method != http.MethodGet) == nil {
 			return
 		}
+		if h.request.Method == http.MethodDelete {
+			h.handleProjectDelete(path)
+			return
+		}
 		if h.server.Teams == nil || h.server.TeamStore == nil {
 			h.fail(http.StatusConflict, errorBody("请启动支持团队编排的新版网关"))
 			return
@@ -1422,10 +1427,15 @@ func (h *handler) projectList(limit int) *jsoncompat.Object {
 	}
 	projects := &jsoncompat.Array{}
 	for _, entry := range entries {
+		cwd, _ := entry.item.MustGet("cwd").(string)
+		if h.server.hiddenProject(cwd) {
+			continue
+		}
 		projects.Items = append(projects.Items, entry.item)
 	}
 	result := jsoncompat.NewObject()
 	result.Set("projects", projects)
+	result.Set("hiddenCwds", h.server.HiddenProjects.list())
 	// The new-chat agent picker is capability-driven: with no ACP agents
 	// configured the roster stays empty (single-agent codex UX); otherwise it
 	// mirrors Python's registry.kinds() — every enabled agent plus codex.
