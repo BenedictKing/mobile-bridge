@@ -267,13 +267,15 @@ func truncateRunes(text string, limit int) string {
 	return string(runes[:limit])
 }
 
-// QueueAction mirrors queue_action: delete / edit / send.
+// QueueAction mirrors queue_action: delete / edit / reorder / send.
 func (b *Bridge) QueueAction(session *LiveSession, submissionID, action string, text any) (any, error) {
 	switch action {
 	case "delete":
 		return b.cancelQueued(session, submissionID)
 	case "edit":
 		return b.editQueued(session, submissionID, text)
+	case "reorder":
+		return b.reorderQueued(session, submissionID, text)
 	case "send":
 		return b.sendQueuedNow(session, submissionID)
 	}
@@ -336,6 +338,66 @@ func (b *Bridge) editQueued(session *LiveSession, submissionID string, text any)
 	result.Set("status", statusQueued)
 	result.Set("id", submissionID)
 	result.Set("text", value)
+	return result, nil
+}
+
+func (b *Bridge) reorderQueued(session *LiveSession, submissionID string, rawBeforeID any) (any, error) {
+	beforeID, isString := rawBeforeID.(string)
+	if rawBeforeID == nil {
+		beforeID = ""
+	} else if !isString {
+		return nil, valueError("目标消息标识无效")
+	}
+	if _, err := b.queuedEntry(session, submissionID, statusQueued); err != nil {
+		return nil, err
+	}
+	if beforeID == submissionID {
+		result := jsoncompat.NewObject()
+		result.Set("status", statusQueued)
+		result.Set("id", submissionID)
+		result.Set("beforeId", beforeID)
+		return result, nil
+	}
+	if beforeID != "" {
+		if _, err := b.queuedEntry(session, beforeID, statusQueued); err != nil {
+			return nil, err
+		}
+	}
+	sourceKey := session.ID + ":" + submissionID
+	targetKey := session.ID + ":" + beforeID
+	next := make([]string, 0, len(b.ledgerOrder))
+	for _, key := range b.ledgerOrder {
+		if key != sourceKey {
+			next = append(next, key)
+		}
+	}
+	insertAt := -1
+	if beforeID != "" {
+		for i, key := range next {
+			if key == targetKey {
+				insertAt = i
+				break
+			}
+		}
+	} else {
+		for i, key := range next {
+			if strings.HasPrefix(key, session.ID+":") {
+				insertAt = i + 1
+			}
+		}
+	}
+	if insertAt < 0 {
+		insertAt = len(next)
+	}
+	next = append(next, "")
+	copy(next[insertAt+1:], next[insertAt:])
+	next[insertAt] = sourceKey
+	b.ledgerOrder = next
+	session.Changed()
+	result := jsoncompat.NewObject()
+	result.Set("status", statusQueued)
+	result.Set("id", submissionID)
+	result.Set("beforeId", beforeID)
 	return result, nil
 }
 

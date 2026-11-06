@@ -1139,6 +1139,54 @@ function uniqueQueueRows(rows){
   const seen=new Set();
   return rows.filter(row=>{if(seen.has(row.id))return false;seen.add(row.id);return true;});
 }
+function moveQueueRows(rows,id,beforeID){
+  const from=rows.findIndex(row=>row.id===id);if(from<0||beforeID===id)return rows;
+  const next=[...rows],moving=next.splice(from,1)[0];
+  const at=beforeID?next.findIndex(row=>row.id===beforeID):next.length;
+  if(at<0)return rows;
+  next.splice(at,0,moving);
+  return next.every((row,index)=>row===rows[index])?rows:next;
+}
+async function reorderQueuedMessage(id,beforeID,target,host){
+  if(!state||currentId!==target||currentHost!==host)return;
+  const previous=state.submissions||[],next=moveQueueRows(previous,id,beforeID);if(next===previous)return;
+  state.submissions=next;renderQueue(next);
+  try{await api(sessionUrl(target,'queue',host),{id,action:'reorder',beforeId:beforeID});toast(t('排队顺序已更新'));}
+  catch(error){if(currentId===target&&currentHost===host&&state?.submissions===next){state.submissions=previous;renderQueue(previous);}toast(error.message);}
+}
+function queueDropBeforeID(sourceID,clientY){
+  const cards=[...$('queued').querySelectorAll('.queue-card[data-queue-id]')].filter(card=>card.dataset.queueId!==sourceID);
+  for(const card of cards){const rect=card.getBoundingClientRect();if(clientY<rect.top+rect.height/2)return card.dataset.queueId;}
+  return '';
+}
+function bindQueueDrag(handle,card,row,target,host){
+  let dragging=false,beforeID=null;
+  const clearIndicators=()=>$('queued').querySelectorAll('.queue-drop-before,.queue-drop-after').forEach(item=>item.classList.remove('queue-drop-before','queue-drop-after'));
+  handle.onpointerdown=event=>{
+    if(event.button!==0)return;
+    event.preventDefault();dragging=true;beforeID=null;card.classList.add('queue-dragging');handle.setPointerCapture?.(event.pointerId);
+    handle.onpointermove=moveEvent=>{
+      if(!dragging)return;event.preventDefault();beforeID=queueDropBeforeID(row.id,moveEvent.clientY);clearIndicators();
+      const cards=[...$('queued').querySelectorAll('.queue-card[data-queue-id]')].filter(item=>item!==card);
+      const dropCard=beforeID?cards.find(item=>item.dataset.queueId===beforeID):cards[cards.length-1];
+      dropCard?.classList.add(beforeID?'queue-drop-before':'queue-drop-after');
+    };
+    handle.onpointerup=handle.onpointercancel=finishEvent=>{
+      if(!dragging)return;dragging=false;card.classList.remove('queue-dragging');clearIndicators();
+      if(handle.hasPointerCapture?.(finishEvent.pointerId))handle.releasePointerCapture(finishEvent.pointerId);
+      handle.onpointermove=handle.onpointerup=handle.onpointercancel=null;
+      if(finishEvent.type==='pointerup'&&beforeID!==null)reorderQueuedMessage(row.id,beforeID,target,host);
+    };
+  };
+  handle.onkeydown=event=>{
+    if(event.key!=='ArrowUp'&&event.key!=='ArrowDown')return;
+    const queued=uniqueQueueRows(state?.submissions||[]).filter(item=>item.status==='queued'),index=queued.findIndex(item=>item.id===row.id);
+    if(index<0||(event.key==='ArrowUp'&&index===0)||(event.key==='ArrowDown'&&index===queued.length-1))return;
+    event.preventDefault();
+    const beforeID=event.key==='ArrowUp'?queued[index-1].id:(queued[index+2]?.id||'');
+    reorderQueuedMessage(row.id,beforeID,target,host);
+  };
+}
 function renderQueue(rows){
   $('queued').replaceChildren();
   const target=currentId,host=currentHost;
@@ -1151,7 +1199,13 @@ function renderQueue(rows){
     }
     const reply=row.text.startsWith('<send_user_message_question_reply>');
     const failed=row.status==='failed';
-    card.append(el('strong','',failed?t('发送失败：')+(row.error||row.lastQueueError||t('Agent 拒绝了这条消息')):row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认')),el('p','',reply?t('问题回复'):row.text));
+    const title=el('strong','',failed?t('发送失败：')+(row.error||row.lastQueueError||t('Agent 拒绝了这条消息')):row.status==='queued'?t('等待当前任务完成'):t('发送结果待确认'));
+    if(row.status==='queued'){
+      card.dataset.queueId=row.id;
+      const handle=el('button','queue-drag-handle','↕');handle.type='button';handle.title=t('拖拽排序（也可用上下方向键）');handle.setAttribute('aria-label',t('拖拽排序'));
+      const heading=el('div','queue-card-heading');heading.append(handle,title);card.append(heading);bindQueueDrag(handle,card,row,target,host);
+    }else card.append(title);
+    card.append(el('p','',reply?t('问题回复'):row.text));
     const attachments=renderQueueAttachments(row,target,host);if(attachments)card.append(attachments);
     if(row.status==='queued'||failed){
       const sendLabel=failed?t('重试发送'):t('立即发送');

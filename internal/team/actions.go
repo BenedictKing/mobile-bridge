@@ -539,15 +539,24 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 			role = RoleMember
 		}
 		fmt.Fprintf(&builder, "- id=%s · name=%s · agent=%s · role=%s", member.ID, truncateRunes(name, 120), member.AgentKind, role)
+		if len(member.Tags) > 0 {
+			tags := make([]string, 0, len(member.Tags))
+			for _, tag := range member.Tags {
+				tags = append(tags, truncateRunes(strings.Join(strings.Fields(tag), " "), 40))
+			}
+			builder.WriteString(" · tags=")
+			builder.WriteString(strings.Join(tags, " | "))
+		}
 		if member.ID == team.LeadID {
 			builder.WriteString(" · Lead")
 		}
 		builder.WriteString("\n")
 	}
+	builder.WriteString("tags 是用户维护的 Agent 或模型能力提示；制定工作流和选择成员时应参考 tags 与 agent 类型，但不要臆测未标注的能力。\n")
 	if reviewer := team.ReviewerMemberID(); reviewer != "" && reviewer != team.LeadID {
 		builder.WriteString("评审成员只承担独立审查：先由 Lead 或普通成员形成可审查的产出，再让评审核对其中的证据、指出问题并给出裁决；不要把首轮排查、主要实现或全部工作直接交给评审。\n")
 	}
-	builder.WriteString("只需你直接回答或独立完成任务时，直接用自然语言给出结果，不输出 team-actions，也不要为了形式委派任务。需要编排时，")
+	builder.WriteString("你是上传下达的团队主控，只负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须通过 delegate 交给合适的启用成员，不得在主控会话中亲自执行，也不要 delegate 给自己来绕过分工。Lead 自己的 delegate 仅用于汇总结果和继续规划。需要编排时，")
 	builder.WriteString(actionSchemaInstruction())
 	builder.WriteString("\n")
 	if policy.AutoDispatch {

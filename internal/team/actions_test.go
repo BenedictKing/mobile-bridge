@@ -1352,7 +1352,7 @@ func TestPassActionsUnknownSessionRejected(t *testing.T) {
 func TestBuildLeadBriefing(t *testing.T) {
 	team := &Team{LeadID: "lead", Members: []TeamMember{
 		{ID: "lead", SessionID: "secret-lead", AgentKind: "kimi", Name: "  主控\n Agent  ", Role: RoleLead, Enabled: true},
-		{ID: "dev", SessionID: "secret-dev", AgentKind: "codex", Role: RoleMember, Enabled: true},
+		{ID: "dev", SessionID: "secret-dev", AgentKind: "codex", Role: RoleMember, Enabled: true, Tags: []string{"  Claude\n Sonnet  ", "代码评审"}},
 		{ID: "rev", SessionID: "secret-rev", AgentKind: "zcode", Role: RoleReviewer, Enabled: true},
 		{ID: "ghost", SessionID: "secret-ghost", AgentKind: "zcode", Role: RoleMember, Enabled: false},
 	}}
@@ -1363,9 +1363,11 @@ func TestBuildLeadBriefing(t *testing.T) {
 	briefing := BuildLeadBriefing(team, run, task, policy)
 	for _, want := range []string{
 		"[Team delegation]", "id=lead", "name=主控 Agent", "role=lead · Lead",
-		"id=dev", "role=reviewer", "team-actions", `"sourceTaskId":"lead"`, "autoDispatch=true",
+		"id=dev", "tags=Claude Sonnet | 代码评审", "用户维护的 Agent 或模型能力提示",
+		"role=reviewer", "team-actions", `"sourceTaskId":"lead"`, "autoDispatch=true",
 		"给 Lead 自己一条 delegate 作为后续任务", "不要在该批动作中直接混用 summarize",
-		"只需你直接回答或独立完成任务时，直接用自然语言给出结果", "不要为了形式委派任务",
+		"你是上传下达的团队主控，只负责陪聊、澄清需求、制定工作流、分派和汇总",
+		"不得在主控会话中亲自执行", "不要 delegate 给自己来绕过分工",
 		"评审成员只承担独立审查", "不要把首轮排查、主要实现或全部工作直接交给评审",
 	} {
 		if !strings.Contains(briefing, want) {

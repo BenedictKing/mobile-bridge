@@ -59,6 +59,7 @@ type submissionEntry struct {
 	Error           string   `json:"error,omitempty"`
 	LastQueueError  string   `json:"lastQueueError,omitempty"`
 	CreatedAt       float64  `json:"createdAt"`
+	QueueOrder      int      `json:"queueOrder,omitempty"`
 	QueueAttempts   int      `json:"queueAttempts,omitempty"`
 }
 
@@ -121,7 +122,15 @@ func LoadSubmissions(path string) (*submissions, error) {
 	}
 	// The former map encoder sorted keys lexically. Its insertion order can
 	// only be recovered from createdAt; equal timestamps keep file order.
-	if len(ledger.order) > 1 && sort.StringsAreSorted(ledger.order) {
+	// Explicit queueOrder marks a user-reordered ledger whose file order wins.
+	explicitOrder := len(ledger.order) > 0
+	for _, key := range ledger.order {
+		if ledger.entries[key].QueueOrder <= 0 {
+			explicitOrder = false
+			break
+		}
+	}
+	if len(ledger.order) > 1 && sort.StringsAreSorted(ledger.order) && !explicitOrder {
 		completeTimes := true
 		for _, key := range ledger.order {
 			if ledger.entries[key].CreatedAt <= 0 {
@@ -363,6 +372,90 @@ func (q *submissions) edit(threadID, submissionID, text string) (*submissionEntr
 		return nil, errSubmissionGone
 	}
 	return q.get(threadID, submissionID), nil
+}
+
+// reorder moves one queued entry before another queued entry in the same
+// thread. An empty beforeID moves it after the thread's remaining entries.
+func (q *submissions) reorder(threadID, submissionID, beforeID string) (*submissionEntry, error) {
+	if beforeID != "" {
+		if _, err := uuid.Parse(beforeID); err != nil {
+			return nil, &queueMutationError{"目标消息标识无效"}
+		}
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	sourceKey := submissionKey(threadID, submissionID)
+	source := q.entries[sourceKey]
+	if source == nil || source.Status != SubQueued {
+		return nil, errSubmissionGone
+	}
+	if beforeID == submissionID {
+		copy := *source
+		return &copy, nil
+	}
+	targetKey := submissionKey(threadID, beforeID)
+	if beforeID != "" {
+		target := q.entries[targetKey]
+		if target == nil || target.Status != SubQueued {
+			return nil, errSubmissionGone
+		}
+	}
+	originalOrder := append([]string(nil), q.order...)
+	originalQueueOrders := make([]int, len(originalOrder))
+	for i, key := range originalOrder {
+		originalQueueOrders[i] = q.entries[key].QueueOrder
+	}
+	next := make([]string, 0, len(q.order))
+	for _, key := range q.order {
+		if key != sourceKey {
+			next = append(next, key)
+		}
+	}
+	insertAt := -1
+	if beforeID != "" {
+		for i, key := range next {
+			if key == targetKey {
+				insertAt = i
+				break
+			}
+		}
+	} else {
+		for i, key := range next {
+			if q.entries[key].ThreadID == threadID {
+				insertAt = i + 1
+			}
+		}
+	}
+	if insertAt < 0 {
+		insertAt = len(next)
+	}
+	next = append(next, "")
+	copy(next[insertAt+1:], next[insertAt:])
+	next[insertAt] = sourceKey
+	unchanged := len(next) == len(q.order)
+	for i := range next {
+		if next[i] != q.order[i] {
+			unchanged = false
+			break
+		}
+	}
+	if unchanged {
+		copy := *source
+		return &copy, nil
+	}
+	q.order = next
+	for i, key := range q.order {
+		q.entries[key].QueueOrder = i + 1
+	}
+	if err := q.saveLocked(); err != nil {
+		q.order = originalOrder
+		for i, key := range originalOrder {
+			q.entries[key].QueueOrder = originalQueueOrders[i]
+		}
+		return nil, err
+	}
+	copy := *source
+	return &copy, nil
 }
 
 // cancel mirrors cancel_queued.
@@ -835,6 +928,15 @@ func (q *submissions) enqueue(threadID, submissionID, text, mode, workMode strin
 		Text: text, Mode: mode, Skills: skills, WorkMode: workMode,
 		Attachments: attachments, AttachmentNames: attachmentNames,
 		Status: SubQueued, CreatedAt: float64(time.Now().UnixMilli()) / 1000}
+	lastOrder := 0
+	for _, existing := range q.entries {
+		if existing.QueueOrder > lastOrder {
+			lastOrder = existing.QueueOrder
+		}
+	}
+	if lastOrder > 0 {
+		entry.QueueOrder = lastOrder + 1
+	}
 	if mode != "queue" {
 		entry.Status = SubUnknown
 	}
@@ -965,9 +1067,9 @@ func (h *handler) recordDirectSend(threadID string, payload submissionPayload) (
 	return false, entry, nil
 }
 
-// handleQueueRoute serves POST /api/sessions/<id>/queue {id, action, text}:
-// send-now / edit / delete over the ledger, agent kind resolved here so both
-// runtimes share one route.
+// handleQueueRoute serves POST /api/sessions/<id>/queue:
+// {id, action, text} for send-now / edit / delete, and {id, action:"reorder",
+// beforeId} to move a queued message before another (or to the end when empty).
 func (h *handler) handleQueueRoute(threadID string, body *jsoncompat.Object) {
 	if h.server.Queue == nil {
 		h.fail(http.StatusConflict, errorBody("当前网关未启用排队发送"))
@@ -1007,6 +1109,26 @@ func (h *handler) handleQueueRoute(threadID string, body *jsoncompat.Object) {
 		result.Set("status", entry.Status)
 		result.Set("id", entry.ID)
 		result.Set("text", entry.Text)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+	case "reorder":
+		beforeID := stringField(body, "beforeId")
+		h.server.queueMu.Lock()
+		entry, err := h.server.Queue.reorder(threadID, submissionID, beforeID)
+		h.server.queueMu.Unlock()
+		if err != nil {
+			status := http.StatusBadRequest
+			if isQueueStoreError(err) {
+				status = http.StatusInternalServerError
+			} else if err == errSubmissionGone {
+				status = http.StatusConflict
+			}
+			h.fail(status, errorBody(err.Error()))
+			return
+		}
+		result := jsoncompat.NewObject()
+		result.Set("status", entry.Status)
+		result.Set("id", entry.ID)
+		result.Set("beforeId", beforeID)
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case "send":
 		h.queueSendNow(threadID, submissionID)

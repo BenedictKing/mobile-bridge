@@ -413,6 +413,7 @@ class TeamSettingsDialog{
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
     const memberSection=this.node('section',undefined,'team-settings-section');
     memberSection.append(this.node('h3',t_safe('成员')));
+    memberSection.append(this.node('p',t_safe('用逗号分隔能力或模型标签，主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
     for(const member of members){
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
@@ -420,7 +421,11 @@ class TeamSettingsDialog{
       const roleLabels=[member.id===team.leadId?t_safe('主控'):t_safe('成员')];
       if(member.id===reviewerID)roleLabels.push(t_safe('评审'));
       info.append(this.node('span',roleLabels.join(' · ')+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
-      row.append(info);
+      const tagsField=this.node('label',undefined,'team-member-tags');
+      const tagsInput=document.createElement('input');tagsInput.value=(member.tags||[]).join(', ');tagsInput.maxLength=400;
+      tagsInput.placeholder=t_safe('如：前端、React、Claude Sonnet');tagsInput.setAttribute('aria-label',teamSettingsMemberLabel(member)+t_safe(' 的能力标签'));tagsInput.disabled=this.busy;
+      const saveTags=this.button(t_safe('保存标签'),()=>this.changeTags(member.id,tagsInput.value));saveTags.disabled=this.busy;saveTags.className='team-member-save-tags';
+      tagsField.append(tagsInput,saveTags);info.append(tagsField);row.append(info);
       if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}
       memberSection.append(row);
     }
@@ -444,6 +449,12 @@ class TeamSettingsDialog{
     const current=teamReviewerMemberID(this.team);
     if(memberID===current)return;
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{reviewerId:memberID,version:this.team.version}}));
+  }
+  async changeTags(memberID,value){
+    const member=(this.team.members||[]).find(item=>item.id===memberID);if(!member)return;
+    const tags=[...new Set(value.split(/[,，]/).map(tag=>tag.trim()).filter(Boolean))];
+    if(JSON.stringify(tags)===JSON.stringify(member.tags||[]))return;
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID),{method:'PATCH',body:{tags,version:this.team.version}}));
   }
   async addMember(agent,role){
     if(!agent)return;

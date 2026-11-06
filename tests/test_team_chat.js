@@ -123,6 +123,25 @@ test('team settings lists enabled agents without project history and adds with o
   assert.equal(changed.members.length,3);
 });
 
+test('team settings edits agent capability tags for lead planning',async()=>{
+  const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端']:[]}))};
+  let patch=null;
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/teams/team-1/members/dev'&&options.method==='PATCH'){
+      patch=options.body;
+      return{...team,version:3,members:team.members.map(member=>member.id==='dev'?{...member,tags:patch.tags}:member)};
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(team);
+  const inputs=find(settings.body,'team-member-tags').map(field=>field.children[0]);
+  assert.deepEqual(inputs.map(input=>input.value),['','前端']);
+  await settings.changeTags('dev',' 前端，React, 代码评审，前端 ');
+  assert.deepEqual(patch,{tags:['前端','React','代码评审'],version:2});
+  assert.deepEqual(settings.team.members[1].tags,['前端','React','代码评审']);
+});
+
 test('team settings allows the lead to also be the default reviewer',async()=>{
   const team={...teams[0],project:'acp:project',version:2};
   let patch=null;

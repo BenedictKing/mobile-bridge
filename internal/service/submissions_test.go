@@ -97,6 +97,42 @@ func TestSubmissionsParity(t *testing.T) {
 	}
 }
 
+func TestQueueActionReorder(t *testing.T) {
+	bridge := NewBridge("local", "stub", []string{"resume", "chat"})
+	bridge.Adapter = &stubSubmissionAdapter{nextDispatch: map[string]any{"ok": true}}
+	session := &LiveSession{ID: "sess-sub", Connected: true}
+	bridge.Live[session.ID] = session
+	for _, id := range []string{"a", "b", "c"} {
+		if _, err := bridge.Send(session, id, id, "queue", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertOrder := func(want ...string) {
+		t.Helper()
+		pairs := bridge.orderedLedger(session.ID)
+		if len(pairs) != len(want) {
+			t.Fatalf("ledger=%v", pairs)
+		}
+		for i, pair := range pairs {
+			if pair[0] != session.ID+":"+want[i] {
+				t.Fatalf("order at %d=%v, want %s", i, pair[0], want[i])
+			}
+		}
+	}
+	if _, err := bridge.QueueAction(session, "c", "reorder", "a"); err != nil {
+		t.Fatal(err)
+	}
+	assertOrder("c", "a", "b")
+	if _, err := bridge.QueueAction(session, "c", "reorder", "c"); err != nil {
+		t.Fatal(err)
+	}
+	assertOrder("c", "a", "b")
+	if _, err := bridge.QueueAction(session, "c", "reorder", nil); err != nil {
+		t.Fatal(err)
+	}
+	assertOrder("a", "b", "c")
+}
+
 func runSubmissions(t *testing.T, threadID string, steps *jsoncompat.Array) *jsoncompat.Array {
 	t.Helper()
 	adapter := &stubSubmissionAdapter{nextDispatch: map[string]any{"ok": true}}

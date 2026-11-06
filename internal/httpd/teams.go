@@ -511,7 +511,7 @@ func (h *handler) handleMemberAdd(teamID string) {
 	h.output(http.StatusOK, h.teamProject(teamRow), contentTypeJSON, "")
 }
 
-// handleMemberUpdate 处理 PATCH member：name/role/enabled 与换绑 sessionId
+// handleMemberUpdate 处理 PATCH member：name/tags/role/enabled 与换绑 sessionId
 // （换绑重新解析 agentKind，非 ACP 会话仍拒绝）。
 func (h *handler) handleMemberUpdate(teamID, memberID string) {
 	teamRow := h.loadTeam(teamID)
@@ -546,6 +546,14 @@ func (h *handler) handleMemberUpdate(teamID, memberID string) {
 			return
 		}
 		member.Name = name
+	}
+	if raw, exists := body.Get("tags"); exists {
+		tags, tagsErr := parseTeamMemberTags(raw)
+		if tagsErr != nil {
+			h.fail(http.StatusBadRequest, errorBody(tagsErr.Error()))
+			return
+		}
+		member.Tags = tags
 	}
 	if raw, exists := body.Get("role"); exists {
 		role := objectString(raw)
@@ -2819,6 +2827,37 @@ func (h *handler) validateTeamSessionProject(project, sessionID string) error {
 	return nil
 }
 
+func parseTeamMemberTags(raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	array, ok := raw.(*jsoncompat.Array)
+	if !ok {
+		return nil, errors.New("成员能力标签必须是字符串数组")
+	}
+	tags := []string{}
+	seen := map[string]bool{}
+	for _, item := range array.Items {
+		text, isString := item.(string)
+		if !isString {
+			return nil, errors.New("成员能力标签必须是字符串数组")
+		}
+		tag := strings.TrimSpace(text)
+		if tag == "" || len([]rune(tag)) > 40 {
+			return nil, errors.New("每个成员能力标签须为 1–40 字")
+		}
+		if seen[tag] {
+			continue
+		}
+		if len(tags) >= 8 {
+			return nil, errors.New("每名成员最多设置 8 个能力标签")
+		}
+		seen[tag] = true
+		tags = append(tags, tag)
+	}
+	return tags, nil
+}
+
 // validateTeamMember 在任何会话创建副作用之前校验成员字段。项目成员使用
 // project+agent，旧客户端仍可传 sessionId；两者都缺失时拒绝。
 func (h *handler) validateTeamMember(entry *jsoncompat.Object, index int) error {
@@ -2847,6 +2886,9 @@ func (h *handler) validateTeamMember(entry *jsoncompat.Object, index int) error 
 		if _, isBool := raw.(bool); !isBool {
 			return fmt.Errorf("成员 %s 的启用状态必须是布尔值", id)
 		}
+	}
+	if _, err := parseTeamMemberTags(entry.MustGet("tags")); err != nil {
+		return fmt.Errorf("成员 %s：%s", id, err.Error())
 	}
 	if project != "" {
 		agent := stringField(entry, "agent")
@@ -2957,8 +2999,9 @@ func (h *handler) parseTeamMember(entry *jsoncompat.Object, index int) (team.Tea
 	if raw, exists := entry.Get("enabled"); exists {
 		enabled = raw.(bool)
 	}
+	tags, _ := parseTeamMemberTags(entry.MustGet("tags"))
 	return team.TeamMember{ID: id, SessionID: sessionID, AgentKind: kind,
-		Name: strings.TrimSpace(stringField(entry, "name")), Role: role, Enabled: enabled}, nil
+		Name: strings.TrimSpace(stringField(entry, "name")), Role: role, Enabled: enabled, Tags: tags}, nil
 }
 
 // teamPolicyIntField 描述 policy 的一个整数字段（校验下限/可选上限与写入
@@ -3127,7 +3170,10 @@ func sameTeamMembers(a, b []team.TeamMember) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if a[i].ID != b[i].ID || a[i].SessionID != b[i].SessionID ||
+			a[i].AgentKind != b[i].AgentKind || a[i].Name != b[i].Name ||
+			a[i].Role != b[i].Role || a[i].Enabled != b[i].Enabled ||
+			!sameStringSlices(a[i].Tags, b[i].Tags) {
 			return false
 		}
 	}

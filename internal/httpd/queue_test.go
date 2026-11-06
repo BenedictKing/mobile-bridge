@@ -341,6 +341,76 @@ func TestSubmissionsOrderSurvivesRepeatedReloads(t *testing.T) {
 	}
 }
 
+func TestSubmissionsReorderSurvivesReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "submissions.json")
+	ledger := mustLoadSubmissions(t, path)
+	ids := []string{
+		"ffffffff-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"0aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+		"9aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+	}
+	for _, id := range ids {
+		if _, _, err := ledger.enqueue("thread-1", id, id, "queue", "", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ledger.reorder("thread-1", ids[0], ""); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{ids[1], ids[2], ids[0]}
+	assertSubmissionOrder := func(queue *submissions) {
+		t.Helper()
+		entries := queue.threadEntries("thread-1")
+		if len(entries) != len(want) {
+			t.Fatalf("entries=%v", entries)
+		}
+		for i, entry := range entries {
+			if entry.ID != want[i] {
+				t.Fatalf("order at %d=%s, want %s", i, entry.ID, want[i])
+			}
+		}
+	}
+	assertSubmissionOrder(ledger)
+	reloaded := mustLoadSubmissions(t, path)
+	assertSubmissionOrder(reloaded)
+	newID := "1aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if _, _, err := reloaded.enqueue("thread-1", newID, newID, "queue", "", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reloaded.reorder("thread-1", newID, ids[2]); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{ids[1], newID, ids[2], ids[0]}
+	assertSubmissionOrder(mustLoadSubmissions(t, path))
+	if _, err := reloaded.reorder("thread-1", ids[0], "missing"); err == nil {
+		t.Fatal("missing reorder target must fail")
+	}
+}
+
+func TestQueueReorderRoute(t *testing.T) {
+	server, token, csrf := newFeatureServer(t, t.TempDir())
+	ids := []string{"1aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}
+	for _, id := range ids {
+		if _, _, err := server.Queue.enqueue("thread-1", id, id, "queue", "", nil, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response := featureRequest(server, token, csrf, http.MethodPost, "/api/sessions/thread-1/queue",
+		`{"id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","action":"reorder","beforeId":"1aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"beforeId": "1aaaaaaa`) {
+		t.Fatalf("reorder status=%d body=%s", response.Code, response.Body.String())
+	}
+	entries := server.Queue.threadEntries("thread-1")
+	if entries[0].ID != ids[1] || entries[1].ID != ids[0] {
+		t.Fatalf("HTTP reorder did not reach ledger: %+v", entries)
+	}
+	response = featureRequest(server, token, csrf, http.MethodPost, "/api/sessions/thread-1/queue",
+		`{"id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","action":"reorder","beforeId":"3aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("missing target status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestLoadSubmissionsRestoresLegacyMapOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "submissions.json")
 	ids := []string{

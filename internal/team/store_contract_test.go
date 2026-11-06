@@ -814,6 +814,27 @@ func sampleTeam(id string) *Team {
 	}
 }
 
+func TestTeamMemberTagsRoundTripAndClone(t *testing.T) {
+	original := sampleTeam("team-tags")
+	original.Members[0].Tags = []string{"前端", "Kimi K2"}
+	raw, err := original.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Team
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded.Members[0].Tags, original.Members[0].Tags) {
+		t.Fatalf("标签往返丢失：%v", decoded.Members[0].Tags)
+	}
+	clone := decoded.Clone()
+	clone.Members[0].Tags[0] = "已修改"
+	if decoded.Members[0].Tags[0] != "前端" {
+		t.Fatal("Clone 必须深拷贝成员标签")
+	}
+}
+
 func sampleRun(id, teamID string) *Run {
 	return &Run{
 		ID:        id,

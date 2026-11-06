@@ -368,6 +368,10 @@
 .team-member-info{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
 .team-member-info strong{font-size:12px;font-weight:500}
 .team-member-role{border-radius:8px;background:var(--soft);color:var(--green);padding:2px 6px;font-size:10px}
+.team-settings-tags-hint{font-size:11px;margin-bottom:8px}
+.team-member-tags{display:flex;align-items:center;gap:6px;flex:1 1 260px;min-width:220px;margin:0}
+.team-member-tags input{min-width:0;margin:0;padding:7px 9px;font-size:12px}
+.team-member-save-tags{border:1px solid var(--line);background:var(--soft);border-radius:7px;padding:6px 8px;color:var(--green);white-space:nowrap}
 .team-settings-member .team-member-remove{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
 .team-settings-add{display:grid;grid-template-columns:minmax(0,1fr) 92px auto;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
 .team-settings-add select{min-width:0;font-size:12px;padding:8px}
@@ -387,6 +391,7 @@
   .team-workflow-stage{flex:none;width:100%;min-width:0;padding-bottom:12px}
   .team-workflow-stage+.team-workflow-stage::before{content:"";position:absolute;left:8px;top:0;width:1px;height:24px;transform:translateX(-.5px);background:var(--line)}
   .team-workflow-station.chain::after{content:"";position:absolute;left:8px;top:16px;bottom:-12px;width:1px;transform:translateX(-.5px);background:var(--line)}
+  .team-member-tags{flex-basis:100%;min-width:0}
   .team-role-grid{grid-template-columns:1fr}.team-settings-add{grid-template-columns:minmax(0,1fr) 88px}.team-settings-add button{grid-column:1/-1;padding:10px}
 }
 

@@ -234,12 +234,13 @@ type Team struct {
 
 // TeamMember 引用一个既有会话（§4.1）。
 type TeamMember struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId"`
-	AgentKind string `json:"agentKind"`
-	Name      string `json:"name"`
-	Role      string `json:"role"` // lead | member | reviewer
-	Enabled   bool   `json:"enabled"`
+	ID        string   `json:"id"`
+	SessionID string   `json:"sessionId"`
+	AgentKind string   `json:"agentKind"`
+	Name      string   `json:"name"`
+	Role      string   `json:"role"` // lead | member | reviewer
+	Enabled   bool     `json:"enabled"`
+	Tags      []string `json:"tags,omitempty"`
 }
 
 // ExecutionThread 是某个 Run 中成员的一次独立工作上下文（三层分离的中间层：
@@ -630,6 +631,13 @@ func (m *TeamMember) jsonObject() *jsoncompat.Object {
 	object.Set("name", m.Name)
 	object.Set("role", m.Role)
 	object.Set("enabled", m.Enabled)
+	if len(m.Tags) > 0 {
+		tags := &jsoncompat.Array{}
+		for _, tag := range m.Tags {
+			tags.Items = append(tags.Items, tag)
+		}
+		object.Set("tags", tags)
+	}
 	return object
 }
 
@@ -660,6 +668,9 @@ func (t *Team) Clone() *Team {
 	}
 	copied := *t
 	copied.Members = append([]TeamMember(nil), t.Members...)
+	for i := range copied.Members {
+		copied.Members[i].Tags = append([]string(nil), t.Members[i].Tags...)
+	}
 	copied.extra = cloneExtra(t.extra)
 	return &copied
 }

@@ -725,6 +725,48 @@ func TestTeamLeadAndMemberChangesGuardActiveRuns(t *testing.T) {
 	}
 }
 
+func TestTeamMemberTagsUpdate(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	project := "acp:" + hashProject(env.dataDir)
+	created := env.request(http.MethodPost, "/api/teams", fmt.Sprintf(`{"name":"标签团队","project":%q,"members":[]}`, project))
+	if created.Code != http.StatusOK {
+		t.Fatalf("创建团队失败: %d %s", created.Code, created.Body.String())
+	}
+	var teamView struct {
+		ID      string `json:"id"`
+		Members []struct {
+			Tags []string `json:"tags"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &teamView); err != nil {
+		t.Fatal(err)
+	}
+	response := env.request(http.MethodPost, "/api/teams/"+teamView.ID+"/members",
+		`{"id":"dev","agent":"kimi","role":"member","tags":[" 前端 ","React","前端"],"version":1}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("添加带标签成员失败: %d %s", response.Code, response.Body.String())
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &teamView); err != nil {
+		t.Fatal(err)
+	}
+	if len(teamView.Members) != 1 || !reflect.DeepEqual(teamView.Members[0].Tags, []string{"前端", "React"}) {
+		t.Fatalf("成员标签未规范化: %+v", teamView.Members)
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamView.ID+"/members/dev",
+		`{"tags":["Claude Sonnet","代码评审"],"version":2}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("更新成员标签失败: %d %s", response.Code, response.Body.String())
+	}
+	if got := env.store.Team(teamView.ID).Members[0].Tags; !reflect.DeepEqual(got, []string{"Claude Sonnet", "代码评审"}) {
+		t.Fatalf("成员标签未持久化: %v", got)
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamView.ID+"/members/dev",
+		`{"tags":["1","2","3","4","5","6","7","8","9"],"version":3}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "最多设置 8 个") {
+		t.Fatalf("标签数量超限应 400: %d %s", response.Code, response.Body.String())
+	}
+}
+
 // seedRunTeam 直落一支带 lead 成员的团队（绕过 HTTP 成员校验的 ACP 探测，
 // Run 创建链路只依赖 ParsePlan 的成员存在性检查）。注册收尾清理：取消该
 // 团队全部 Run，让调度循环先于 t.TempDir 的目录清理退出（否则循环写盘撞

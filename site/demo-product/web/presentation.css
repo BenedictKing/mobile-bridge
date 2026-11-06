@@ -184,6 +184,13 @@ main{background:var(--page);overflow:hidden}
 .approval{background:var(--warning-bg);border-color:var(--warning-line);border-radius:12px}
 .secondary{color:var(--warning-text);border-color:var(--warning-line)}
 .queue-card{border-color:var(--control);background:var(--surface)}
+.queue-card-heading{display:flex;align-items:center;gap:8px}
+.queue-card-heading strong{flex:1;min-width:0}
+.queue-drag-handle{flex:none;width:32px;height:32px;border:0;border-radius:7px;background:var(--control);color:var(--muted);cursor:grab;touch-action:none;user-select:none;font-size:18px;line-height:1}
+.queue-drag-handle:active{cursor:grabbing}
+.queue-card.queue-dragging{opacity:.55}
+.queue-card.queue-drop-before{box-shadow:0 -3px 0 var(--green)}
+.queue-card.queue-drop-after{box-shadow:0 3px 0 var(--green)}
 .queue-attachments{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 2px}
 .queue-attachment-image{display:grid;gap:5px;width:112px;max-width:100%;color:var(--muted);text-decoration:none}
 .queue-attachments .attachment-image{width:112px;height:112px;min-height:0;max-height:112px;margin:0;border-radius:8px;object-fit:cover}
