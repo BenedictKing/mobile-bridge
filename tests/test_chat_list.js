@@ -121,4 +121,9 @@ test('merged group shares one show-more paging budget',()=>{
   assert.equal(more.textContent,'显示更多 · 2');
   more.onclick();
   assert.equal(find(sessions,'session').length,7);
+  const less=find(sessions,'group-more')[0];
+  assert.equal(less.textContent,'收起');
+  less.onclick();
+  assert.equal(find(sessions,'session').length,5);
+  assert.equal(find(sessions,'group-more')[0].textContent,'显示更多 · 2');
 });

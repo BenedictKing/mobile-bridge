@@ -256,11 +256,18 @@ function renderList(){
   }
   if(grouped)for(const [key,details] of groups){
     const hidden=(totals.get(key)||0)-(shown.get(key)||0);
-    if(hidden<=0)continue;
-    const more=el('button','group-more',t('显示更多')+' · '+hidden);
-    more.type='button';
-    more.onclick=()=>{projectGroupLimits.set(key,(projectGroupLimits.get(key)||PROJECT_GROUP_PAGE)+PROJECT_GROUP_STEP);renderList();};
-    details.append(more);
+    if(hidden>0){
+      const more=el('button','group-more',t('显示更多')+' · '+hidden);
+      more.type='button';
+      more.onclick=()=>{projectGroupLimits.set(key,(projectGroupLimits.get(key)||PROJECT_GROUP_PAGE)+PROJECT_GROUP_STEP);renderList();};
+      details.append(more);
+    }
+    if(projectGroupLimits.has(key)){
+      const less=el('button','group-more',t('收起'));
+      less.type='button';
+      less.onclick=()=>{projectGroupLimits.delete(key);renderList();};
+      details.append(less);
+    }
   }
   if(!listRows.length){
     // 空列表要说清原因并给出下一步：搜索无结果和「电脑上还没有聊天」是两件事。

@@ -59,7 +59,7 @@ class ChatTimeline {
       if(this.suppress)return;
       const upward=this.viewport.scrollTop<this.lastTop;
       this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
-      if(this.following)this.newer.hidden=true;
+      this.syncNewer();
       this.updateUserJumpActive();
       if(upward&&this.nearTop()&&!this.retryCount)this.loadOlder(100);
     };
@@ -67,7 +67,7 @@ class ChatTimeline {
     this.older.onclick=()=>this.sequence<0?this.start():this.loadOlder(this.retryCount||100);
     this.newer.onclick=()=>{this.jumpBottom();this.anchor=this.capture();};
     this.resize=new ResizeObserver(()=>this.restore(this.anchor,this.following));
-    this.resize.observe(this.container);
+    this.resize.observe(this.container);this.syncNewer();
   }
   dispose(){this.subscription?.();this.subscription=null;this.abort.abort();clearTimeout(this.startRetry);this.loadErrorEl?.remove();this.resize.disconnect();this.viewport.removeEventListener('scroll',this.onScroll);this.newer.hidden=true;this.userJump.hidden=true;}
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
@@ -86,7 +86,8 @@ class ChatTimeline {
     for(const [key,{node}] of this.nodes)node.hidden=!this.rowVisible(this.rows.get(key).row);
     this.restore(anchor,bottom);this.fillRecent();
   }
-  jumpBottom(){this.viewport.scrollTop=this.viewport.scrollHeight;this.following=true;this.newer.hidden=true;}
+  syncNewer(){this.newer.hidden=this.following;if(this.following)this.newer.textContent=timelineText('跳转到最后 ↓');}
+  jumpBottom(){this.viewport.scrollTop=this.viewport.scrollHeight;this.following=true;this.syncNewer();}
   restore(anchor,bottom=false){
     if(this.abort.signal.aborted)return;
     this.suppress=true;
@@ -123,7 +124,7 @@ class ChatTimeline {
     this.suppress=true;
     this.viewport.scrollTop+=target.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top-12;
     this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
-    if(this.following)this.newer.hidden=true;
+    this.syncNewer();
     this.updateUserJumpActive(false,key);
     requestAnimationFrame(()=>this.suppress=false);
   }

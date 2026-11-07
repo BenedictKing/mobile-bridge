@@ -132,3 +132,24 @@ test('ACP latest user edits use a branch while Codex keeps in-place edits',()=>{
     timeline.dispose();
   }
 });
+
+test('scrolling away from the latest message shows a persistent jump-to-latest button',()=>{
+  const{timeline,ids}=setup();
+  assert.equal(ids.newer.hidden,true);
+  assert.equal(ids.newer.textContent,'跳转到最后 ↓');
+  ids.timeline.scrollTop=0;
+  timeline.onScroll();
+  assert.equal(timeline.following,false);
+  assert.equal(ids.newer.hidden,false);
+  assert.equal(ids.newer.textContent,'跳转到最后 ↓');
+  ids.newer.textContent='有新内容 ↓';
+  ids.timeline.scrollTop=20;
+  timeline.onScroll();
+  assert.equal(ids.newer.textContent,'有新内容 ↓','scrolling must not erase the new-content hint');
+  ids.newer.onclick();
+  assert.equal(ids.timeline.scrollTop,ids.timeline.scrollHeight);
+  assert.equal(timeline.following,true);
+  assert.equal(ids.newer.hidden,true);
+  assert.equal(ids.newer.textContent,'跳转到最后 ↓');
+  timeline.dispose();
+});
