@@ -413,7 +413,7 @@ class TeamSettingsDialog{
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
     const memberSection=this.node('section',undefined,'team-settings-section');
     memberSection.append(this.node('h3',t_safe('成员')));
-    memberSection.append(this.node('p',t_safe('回车、空格或逗号分隔标签并生成胶囊，点右上角 × 移除，保存后生效；主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
+    memberSection.append(this.node('p',t_safe('输入标签后按回车或逗号生成胶囊；点胶囊内的 × 移除，保存后生效；主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
     for(const member of members){
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
@@ -421,7 +421,7 @@ class TeamSettingsDialog{
       const roleLabels=[member.id===team.leadId?t_safe('主控'):t_safe('成员')];
       if(member.id===reviewerID)roleLabels.push(t_safe('评审'));
       info.append(this.node('span',roleLabels.join(' · ')+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
-      // 能力标签：胶囊 + 右上角 ×。改动先进草稿，「保存标签」统一落库，
+      // 能力标签：胶囊内 × 只改草稿，「保存标签」统一落库，
       // 避免误触立即改写主控看到的成员目录。
       const draftTags=()=>this.draftTags.has(member.id)?this.draftTags.get(member.id):(member.tags||[]).slice();
       const tagsField=this.node('div',undefined,'team-member-tags');
@@ -451,13 +451,13 @@ class TeamSettingsDialog{
         if(!this.error){this.draftTags.delete(member.id);this.render();}
       });
       saveTags.className='team-member-save-tags';syncSave();
-      tagsInput.oninput=()=>{ // 空格/逗号即时成片，未完成的一段留在输入框继续输入。
-        const parts=tagsInput.value.split(/[ ,，]+/);const remainder=parts.pop()||'';
+      tagsInput.oninput=()=>{ // 逗号即时成片，保留标签中的空格。
+        const parts=tagsInput.value.split(/[,，]+/);const remainder=(parts.pop()||'').trimStart();
         const complete=parts.join(',');tagsInput.value=remainder;this.draftText.set(member.id,remainder);
         if(complete)addTags(complete);
       };
       tagsInput.onkeydown=event=>{
-        if(event.key!=='Enter'&&event.key!==','&&event.key!=='，')return;
+        if(event.key!=='Enter')return;
         event.preventDefault();const value=tagsInput.value;tagsInput.value='';this.draftText.set(member.id,'');
         addTags(value);
       };
@@ -493,7 +493,7 @@ class TeamSettingsDialog{
     if(JSON.stringify(tags)===JSON.stringify(member.tags||[]))return;
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID),{method:'PATCH',body:{tags,version:this.team.version}}));
   }
-  splitDraftTags(value){return [...new Set(String(value||'').split(/[,， ]+/).map(tag=>tag.trim()).filter(Boolean))];}
+  splitDraftTags(value){return [...new Set(String(value||'').split(/[,，]+/).map(tag=>tag.trim()).filter(Boolean))];}
   tagsUnsaved(member,draft){return JSON.stringify(draft)!==JSON.stringify(member.tags||[]);}
   async addMember(agent,role){
     if(!agent)return;

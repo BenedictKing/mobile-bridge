@@ -798,7 +798,7 @@ const en={
   "从列表移除项目": "Remove project from list",
   "仅从新建聊天项目列表移除，不删除磁盘目录、历史会话或团队。确定移除？": "Remove this project only from the new-chat list. Its directory, chat history and teams are not deleted. Continue?",
   "项目已从列表移除": "Project removed from list",
-  "回车、空格或逗号分隔标签并生成胶囊，点右上角 × 移除，保存后生效；主控制定工作流时会参考。": "Enter, space, or comma turns tags into capsules; tap the × on a capsule to remove. Save to apply. The lead uses them when planning workflows.",
+  "输入标签后按回车或逗号生成胶囊；点胶囊内的 × 移除，保存后生效；主控制定工作流时会参考。": "Press Enter or comma to add a tag. Click its × to remove; save to apply. The lead uses tags when planning workflows.",
   "如：前端、React、Claude Sonnet": "e.g. Frontend, React, Claude Sonnet",
   " 的能力标签": " capability tags",
   "移除标签": "Remove tag",

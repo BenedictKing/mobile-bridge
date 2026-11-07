@@ -148,7 +148,7 @@ test('team settings renders capability tags as capsules removable before save',a
   assert.deepEqual(settings.team.members[1].tags,['React']);
 });
 
-test('team settings splits new tags on enter space and comma with dedupe',async()=>{
+test('team settings accepts comma and enter while preserving spaces inside tags',async()=>{
   const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端']:[]}))};
   let patch=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
@@ -163,18 +163,23 @@ test('team settings splits new tags on enter space and comma with dedupe',async(
   const chipTexts=()=>find(settings.body,'team-tag-chip').map(chip=>chip.children[0].textContent);
   const input=find(settings.body,'team-member-tags')[1].children.find(node=>node.tag==='input');
   // 回车提交：空段过滤、重复合并。
-  input.value=' 前端，React, 代码评审，前端 ';
-  input.onkeydown({key:'Enter',preventDefault(){}});
-  assert.deepEqual(chipTexts(),['前端','React','代码评审']);
-  assert.equal(input.value,'');
-  // 空格即时分片，未完成的尾段留在输入框；保存时一并收进草稿。
-  input.value='Vue Solid';
+  input.value=' 前端，React, 代码评审，前端';
   input.oninput();
-  assert.deepEqual(chipTexts(),['前端','React','代码评审','Vue']);
-  assert.equal(input.value,'Solid');
+  assert.deepEqual(chipTexts(),['前端','React','代码评审']);
+  input.value='Claude Sonnet';
+  input.oninput();
+  assert.deepEqual(chipTexts(),['前端','React','代码评审']);
+  input.onkeydown({key:'Enter',preventDefault(){}});
+  assert.deepEqual(chipTexts(),['前端','React','代码评审','Claude Sonnet']);
+  assert.equal(input.value,'');
+  // 逗号即时提交完整标签，未完成的多词尾段保留到保存。
+  input.value='Vue, Solid Design';
+  input.oninput();
+  assert.deepEqual(chipTexts(),['前端','React','代码评审','Claude Sonnet','Vue']);
+  assert.equal(input.value,'Solid Design');
   find(settings.body,'team-member-save-tags')[1].onclick();await flush();
-  assert.deepEqual(patch,{tags:['前端','React','代码评审','Vue','Solid'],version:2});
-  assert.deepEqual(settings.team.members[1].tags,['前端','React','代码评审','Vue','Solid']);
+  assert.deepEqual(patch,{tags:['前端','React','代码评审','Claude Sonnet','Vue','Solid Design'],version:2});
+  assert.deepEqual(settings.team.members[1].tags,['前端','React','代码评审','Claude Sonnet','Vue','Solid Design']);
 });
 
 test('team settings allows the lead to also be the default reviewer',async()=>{
