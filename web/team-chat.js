@@ -427,7 +427,12 @@ class TeamSettingsDialog{
       const tagsField=this.node('div',undefined,'team-member-tags');
       const tagsInput=document.createElement('input');tagsInput.value=this.draftText.get(member.id)||'';tagsInput.maxLength=400;
       tagsInput.placeholder=t_safe('如：前端、React、Claude Sonnet');tagsInput.setAttribute('aria-label',teamSettingsMemberLabel(member)+t_safe(' 的能力标签'));tagsInput.disabled=this.busy;
-      const syncSave=()=>{saveTags.disabled=this.busy||this.tagsUnsaved(member,draftTags());};
+      const syncSave=()=>{
+        const draft=draftTags();
+        const pending=this.splitDraftTags(tagsInput.value).filter(tag=>!draft.includes(tag));
+        tagsInput.placeholder=draft.length?'':t_safe('如：前端、React、Claude Sonnet');
+        saveTags.disabled=this.busy||!this.tagsUnsaved(member,[...draft,...pending]);
+      };
       const chipFor=tag=>{
         const chip=this.node('span',undefined,'team-tag-chip');
         chip.append(this.node('span',tag,'team-tag-chip-text'));
@@ -455,11 +460,12 @@ class TeamSettingsDialog{
         const parts=tagsInput.value.split(/[,，]+/);const remainder=(parts.pop()||'').trimStart();
         const complete=parts.join(',');tagsInput.value=remainder;this.draftText.set(member.id,remainder);
         if(complete)addTags(complete);
+        syncSave();
       };
       tagsInput.onkeydown=event=>{
         if(event.key!=='Enter')return;
         event.preventDefault();const value=tagsInput.value;tagsInput.value='';this.draftText.set(member.id,'');
-        addTags(value);
+        addTags(value);syncSave();
       };
       for(const tag of draftTags())tagsField.append(chipFor(tag));
       tagsField.append(tagsInput,saveTags);info.append(tagsField);row.append(info);

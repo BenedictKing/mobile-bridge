@@ -139,13 +139,48 @@ test('team settings renders capability tags as capsules removable before save',a
   await settings.open(team);
   const chipTexts=()=>find(settings.body,'team-tag-chip').map(chip=>chip.children[0].textContent);
   assert.deepEqual(chipTexts(),['前端','React']);
+  assert.deepEqual(find(settings.body,'team-member-save-tags').map(button=>button.disabled),[true,true]);
   // 点 × 立即从界面摘下胶囊，但未保存不落库。
   find(settings.body,'team-tag-chip-remove')[0].onclick();
   assert.equal(patches.length,0);
   assert.deepEqual(chipTexts(),['React']);
+  assert.equal(find(settings.body,'team-member-save-tags')[1].disabled,false);
   find(settings.body,'team-member-save-tags')[1].onclick();await flush();
   assert.deepEqual(patches,[{tags:['React'],version:2}]);
   assert.deepEqual(settings.team.members[1].tags,['React']);
+  assert.deepEqual(find(settings.body,'team-member-save-tags').map(button=>button.disabled),[true,true]);
+});
+
+test('team settings enables save only when typed or committed tags change the member',async()=>{
+  const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端']:[]}))};
+  let patch=null;
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/teams/team-1/members/dev'&&options.method==='PATCH'){
+      patch=options.body;
+      return{...team,version:3,members:team.members.map(member=>member.id==='dev'?{...member,tags:patch.tags}:member)};
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(team);
+  const fields=find(settings.body,'team-member-tags'),save=find(settings.body,'team-member-save-tags');
+  const emptyInput=fields[0].children.find(node=>node.tag==='input');
+  const input=fields[1].children.find(node=>node.tag==='input');
+  assert.deepEqual(save.map(button=>button.disabled),[true,true]);
+  assert.match(emptyInput.placeholder,/前端/);
+  assert.equal(input.placeholder,'');
+  emptyInput.value='   ';emptyInput.oninput();
+  assert.equal(save[0].disabled,true);
+  input.value='前端';input.oninput();
+  assert.equal(save[1].disabled,true);
+  input.value='便宜';input.oninput();
+  assert.equal(save[1].disabled,false);
+  input.value='';input.oninput();
+  assert.equal(save[1].disabled,true);
+  input.value='便宜';input.oninput();
+  save[1].onclick();await flush();
+  assert.deepEqual(patch,{tags:['前端','便宜'],version:2});
+  assert.deepEqual(find(settings.body,'team-member-save-tags').map(button=>button.disabled),[true,true]);
 });
 
 test('team settings accepts comma and enter while preserving spaces inside tags',async()=>{

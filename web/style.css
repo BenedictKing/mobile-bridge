@@ -370,7 +370,7 @@
 .team-settings-tags-hint{font-size:11px;margin-bottom:8px}
 .team-member-tags{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex:1;min-width:0;margin:0;padding:5px;border:1px solid var(--control);border-radius:10px;background:var(--surface);transition:border-color .15s ease,box-shadow .15s ease}
 .team-member-tags:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
-.team-member-tags input{width:auto;flex:1 1 140px;min-width:9ch;max-width:100%;margin:0;padding:6px 4px;border:0;border-radius:0;background:transparent;font-size:12px;box-shadow:none}
+.picker .team-member-tags input:not([type=checkbox]):not([type=range]){width:auto;flex:1 1 140px;min-width:9ch;max-width:100%;min-height:34px;margin:0;padding:6px 4px;border:0;border-radius:0;background:transparent;font-size:12px;box-shadow:none}
 .team-member-tags input:focus-visible{outline:none;box-shadow:none}
 /* 标签和删除操作留在同一胶囊内，避免角标相互覆盖。 */
 .team-tag-chip{display:inline-flex;flex:0 1 auto;align-items:center;gap:3px;min-width:0;max-width:100%;min-height:34px;background:var(--soft);border:1px solid var(--control);border-radius:999px;padding:3px 4px 3px 10px;color:var(--green);font-size:11px;line-height:1.4;white-space:nowrap}
@@ -380,6 +380,7 @@
 .team-tag-chip-remove:focus-visible{outline-offset:1px;border-radius:50%}
 .team-member-save-tags{margin-left:auto;border:1px solid var(--line);background:var(--soft);border-radius:7px;padding:5px 9px;min-height:32px;font-size:12px;color:var(--green);white-space:nowrap}
 .team-member-save-tags:disabled{opacity:1;border-color:transparent;background:transparent;color:var(--muted)}
+.picker .team-member-save-tags:disabled{cursor:default;opacity:1}
 .team-settings-member .team-member-remove{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:4px 8px;font-size:11px;color:var(--muted)}
 .team-settings-add{display:grid;grid-template-columns:minmax(0,1fr) 92px auto;gap:8px;border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
 .team-settings-add select{min-width:0;font-size:12px;padding:8px}
@@ -401,6 +402,7 @@
   .team-graph-layer{flex-direction:column}
   .team-graph-node:not(.positioned){width:100%;min-width:0;max-width:none}
   .team-member-tags{min-width:0}
+  .picker .team-member-tags input:not([type=checkbox]):not([type=range]){flex-basis:80px;min-height:44px;font-size:16px}
   .team-member-save-tags{min-height:44px}
   .team-role-grid{grid-template-columns:1fr}.team-settings-add{grid-template-columns:minmax(0,1fr) 88px}.team-settings-add button{grid-column:1/-1;padding:10px}
 }
