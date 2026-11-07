@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
+	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
@@ -283,6 +284,9 @@ for line in sys.stdin:
   sid = (m.get("params") or {}).get("sessionId") or ""
   if sid == "broken-sess":
    reply({"jsonrpc": "2.0", "id": ident, "error": {"code": -32001, "message": "会话无法恢复：broken-sess"}})
+   continue
+  if sid == "lineage-sess":
+   reply({"jsonrpc": "2.0", "id": ident, "error": {"code": -32001, "message": "project.session-lineage-invalid"}})
    continue
   cwd = (m.get("params") or {}).get("cwd") or "."
   CWD["dir"] = cwd
@@ -1202,6 +1206,55 @@ func TestTeamIntegrationWriteLockMutualExclusion(t *testing.T) {
 	oneAt, twoAt := promptIndex(records, "ONE"), promptIndex(records, "TWO")
 	if oneAt != 0 || twoAt != 1 {
 		t.Fatalf("写任务应严格串行（首任务完整先于次任务）: ONE@%d TWO@%d", oneAt, twoAt)
+	}
+}
+
+// 预热只读历史掩盖的 zcode 血缘错误必须在预派发阶段触发自动重建：成员换绑
+// 新会话，原任务在新会话完成，而不是落入队列失败分诊。
+func TestTeamIntegrationRecreatesPreloadedLineageFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	const placeholder = "2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if err := os.WriteFile(filepath.Join(dataDir, "sessions.txt"),
+		[]byte("lineage-sess\x00"+dataDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mapping := `{"` + placeholder + `":{"zcodeSid":"lineage-sess"}}`
+	if err := os.WriteFile(filepath.Join(dataDir, "acp-lazy-sessions.json"), []byte(mapping), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := newTeamIntegrationEnv(t, dataDir)
+	env.manager.Kind = "zcode"
+	env.manager.Label = "ZCode"
+	env.manager.Canonical = queueLazyCanonical(dataDir)
+	env.server.ACPAgents = map[string]*acpruntime.Manager{"zcode": env.manager}
+	env.manager.NativeTranscript = func(string) (*acpview.NativeSnapshot, error) {
+		return &acpview.NativeSnapshot{Title: "血缘损坏的预热历史", Turns: []*jsoncompat.Object{}}, nil
+	}
+	if _, err := env.manager.OpenHistory("lineage-sess", dataDir); err != nil {
+		t.Fatal(err)
+	}
+	teamID := env.createTeamWithMembers(t, `[{"id":"dev","sessionId":"`+placeholder+`","role":"member"}]`)
+	runID := env.createRun(t, teamID, `{"goal":"恢复血缘损坏的成员","mode":"pipeline","plan":[
+		{"id":"t1","memberId":"dev","prompt":"恢复后执行 RECOVERED-CHECK","writeLock":"none"}]}`)
+
+	if !env.drive(t, teamIntegrationWait, func() bool {
+		return env.runDetail(t, teamID, runID)["status"] == "completed"
+	}) {
+		detail := env.runDetail(t, teamID, runID)
+		t.Fatalf("自动恢复后的 Run 未完成: %v", detail)
+	}
+	member := env.store.Team(teamID).Members[0]
+	if member.SessionID == "" || member.SessionID == placeholder || member.SessionID == "lineage-sess" {
+		t.Fatalf("成员未换绑到替代会话: %+v", member)
+	}
+	records := readTeamPrompts(t, dataDir)
+	if len(records) != 1 || records[0].session != member.SessionID ||
+		!strings.Contains(records[0].text, "RECOVERED-CHECK") {
+		t.Fatalf("任务应只派发到替代会话 %s: %+v", member.SessionID, records)
+	}
+	result := taskResultOf(t, teamTaskOf(t, env.runDetail(t, teamID, runID), "t1"))
+	if result["sessionId"] != member.SessionID {
+		t.Fatalf("结果应归属替代会话: %v", result)
 	}
 }
 

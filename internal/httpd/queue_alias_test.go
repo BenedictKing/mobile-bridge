@@ -197,6 +197,30 @@ func TestACPQueueDispatchAttachesPreloadedHistory(t *testing.T) {
 	}
 }
 
+// 团队预派发解析同样要接入只读历史：血缘错误必须随 Resolve 返回，才能触发
+// Service.executeDispatch 已有的成员会话自动重建，而非在队列里直接失败。
+func TestTeamResolverSurfacesPreloadedLineageFailure(t *testing.T) {
+	agentDir := t.TempDir()
+	raw := `{"` + queuePlaceholder + `":{"zcodeSid":"` + queueBackend + `"}}`
+	if err := os.WriteFile(filepath.Join(agentDir, "acp-lazy-sessions.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server, manager := newLazyQueueServer(t, agentDir, true)
+	defer manager.Close()
+	manager.NativeTranscript = func(string) (*acpview.NativeSnapshot, error) {
+		return &acpview.NativeSnapshot{Title: "损坏会话的预热历史", Turns: []*jsoncompat.Object{}}, nil
+	}
+	if _, err := manager.OpenHistory(queueBackend, agentDir); err != nil {
+		t.Fatal(err)
+	}
+
+	_, resolver := NewTeamAdapters(server)
+	_, session, err := resolver.Resolve(queuePlaceholder)
+	if session != nil || !sessionLineageInvalid(err) {
+		t.Fatalf("Resolve session=%v err=%v, want lineage failure", session, err)
+	}
+}
+
 // 别名解析后真实会话仍血缘损坏时必须立即失败（进入团队分诊），不得爬完
 // 10 级重试梯、不得反复拉起 Agent。
 func TestACPQueueLineageInvalidFailsFast(t *testing.T) {

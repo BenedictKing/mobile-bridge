@@ -668,13 +668,23 @@ func (m *Manager) CwdFor(id string) string {
 		return record.Cwd
 	}
 	m.listMu.Lock()
-	defer m.listMu.Unlock()
 	if cwd, ok := m.listIDs[id]; ok && cwd != "" {
+		m.listMu.Unlock()
 		return cwd
 	}
 	canonical := m.canonicalUnlocked(id)
+	cwd := m.listIDs[canonical]
+	m.listMu.Unlock()
+	if cwd != "" {
+		return cwd
+	}
 	if canonical != "" {
-		return m.listIDs[canonical]
+		m.mu.Lock()
+		session = m.sessions[canonical]
+		m.mu.Unlock()
+		if session != nil {
+			return session.Cwd
+		}
 	}
 	return ""
 }

@@ -136,9 +136,15 @@ func (a teamQueueAdapter) CancelSubmission(threadID, submissionID string) error 
 type teamSessionResolver struct{ server *Server }
 
 // Resolve 返回成员会话的归属（manager 为 nil 表示不属于任何 ACP Agent）；
-// session 可能为 nil（归属明确但当前打不开），err 携带打开失败原因。
+// session 可能为 nil（归属明确但当前打不开），err 携带打开失败原因。只读
+// 历史必须在这里接入控制句柄，让不可恢复错误进入团队会话重建路径，而不是
+// 延迟到队列 watcher 中变成普通任务失败。
 func (r teamSessionResolver) Resolve(threadID string) (*acpruntime.Manager, *acpruntime.Session, error) {
 	resolution := r.server.resolveACP(threadID)
+	if resolution.err == nil && resolution.manager != nil && resolution.session != nil && resolution.session.ReadOnly() {
+		session, err := resolution.manager.Attach(threadID, resolution.session.Cwd, resolution.manager.InitializeTimeout)
+		return resolution.manager, session, err
+	}
 	return resolution.manager, resolution.session, resolution.err
 }
 
