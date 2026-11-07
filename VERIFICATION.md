@@ -8,6 +8,8 @@
 - 实测抓到并已修复两个真实缺陷（提交 `5ff695c3`）：`parsePlanInputs` 丢弃 `reviewOf`（HTTP 显式计划的审查绑定从未生效——修复前所有绑定字段为空）；`Task.jsonObject` 漏序列化 `reviewOf/headRevision/diffHash/reviewVerdictStale`（重启将丢失 stale 与绑定）。修复后上述链路全部生效。
 - 未在真机覆盖（由 Go 集成测试覆盖）：非 git 工作区的审查停靠（`workspace_unresolvable`）与指纹 cwd 精确性——`TestReviewDispatchBindsWorkspaceVersion`/`TestReviewDispatchParksWhenFingerprintFails` 用注入的 fake resolver/fingerprint 精确控制；真机会话的 cwd 不受 harness 控制（真实 Agent 的会话 cwd 落在网关仓库目录，指纹随之绑定到该仓库），故场景 C 在真机不可判别。
 - harness 教训：`KIMI_BIN`/`GATEWAY_ACP_BINS` 覆盖在本机构建下未把 kimi manager 指到假 Agent（真实 kimi CLI 应答；`.tmp/queue-live` 位于主仓库内也会命中父 git）。后续隔离验证应在仓库外建数据目录，并先断言假 Agent 痕迹（sessions.txt/prompts.log 与「已完成：」前缀）再跑场景。
+- 追记（2026-11-08，用户重启含 `5ff695c3` 修复的实例后）：真实网关 8787 已确认载入新构建——`/team-chat.js` 含 `team-queue-panel`（阶段 4）与「已过期（改动后未重审）」（阶段 5）标记，同一二进制携带后端修复。harness 排查补充：`GATEWAY_ACP_BINS` 覆盖的 kind 会进入 manager 映射但不进「agents enabled」清单（main.go 的 profile 循环对既有 env manager `continue`，跳过了 `enabled` 追加——仅影响日志展示，`enabled` 列表无其他消费方）；惰性会话在首个 prompt 前不拉起进程，验证假 Agent 是否接管必须以 wrapper 调用日志/sessions.txt 为准，不能以会话创建成功为准。仓库外目录（/tmp/s5-live）+ `GATEWAY_AGENTS=kimi` 下任务仍未能派发到假 Agent，场景 C 的真机判定保持由 Go 集成测试覆盖的结论。
+
 - 自动化：`go test ./...`（37 包）、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js`（164 例）全绿；一次 `TestTeamIntegration2AIMDErrorPolicy` 与一次 `TestTeamRunCreate…` 在满负载全量跑中偶发超时，单独复跑均通过（既有测试的负载敏感，与本轮改动无关的形态，未观察到二次复现）。
 
 ## 团队多需求队列方案阶段 0–4 隔离网关实测（2026-11-07）
