@@ -183,7 +183,7 @@ test('team settings enables save only when typed or committed tags change the me
   assert.deepEqual(find(settings.body,'team-member-save-tags').map(button=>button.disabled),[true,true]);
 });
 
-test('team settings accepts comma and enter while preserving spaces inside tags',async()=>{
+test('team settings accepts spaces, commas, enter, and quoted multiword tags',async()=>{
   const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端']:[]}))};
   let patch=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
@@ -198,23 +198,52 @@ test('team settings accepts comma and enter while preserving spaces inside tags'
   const chipTexts=()=>find(settings.body,'team-tag-chip').map(chip=>chip.children[0].textContent);
   const input=find(settings.body,'team-member-tags')[1].children.find(node=>node.tag==='input');
   // 回车提交：空段过滤、重复合并。
-  input.value=' 前端，React, 代码评审，前端';
+  input.value=' 前端，React, "代码 评审"，前端';
   input.oninput();
-  assert.deepEqual(chipTexts(),['前端','React','代码评审']);
-  input.value='Claude Sonnet';
+  assert.deepEqual(chipTexts(),['前端','React','代码 评审']);
+  input.value='"Claude Sonnet"';
   input.oninput();
-  assert.deepEqual(chipTexts(),['前端','React','代码评审']);
+  assert.deepEqual(chipTexts(),['前端','React','代码 评审']);
   input.onkeydown({key:'Enter',preventDefault(){}});
-  assert.deepEqual(chipTexts(),['前端','React','代码评审','Claude Sonnet']);
+  assert.deepEqual(chipTexts(),['前端','React','代码 评审','Claude Sonnet']);
   assert.equal(input.value,'');
-  // 逗号即时提交完整标签，未完成的多词尾段保留到保存。
-  input.value='Vue, Solid Design';
+  // 逗号即时提交完整标签，未完成的引号尾段保留到保存。
+  input.value='Vue, "Solid Design"';
   input.oninput();
-  assert.deepEqual(chipTexts(),['前端','React','代码评审','Claude Sonnet','Vue']);
-  assert.equal(input.value,'Solid Design');
+  assert.deepEqual(chipTexts(),['前端','React','代码 评审','Claude Sonnet','Vue']);
+  assert.equal(input.value,'"Solid Design"');
   find(settings.body,'team-member-save-tags')[1].onclick();await flush();
-  assert.deepEqual(patch,{tags:['前端','React','代码评审','Claude Sonnet','Vue','Solid Design'],version:2});
-  assert.deepEqual(settings.team.members[1].tags,['前端','React','代码评审','Claude Sonnet','Vue','Solid Design']);
+  assert.deepEqual(patch,{tags:['前端','React','代码 评审','Claude Sonnet','Vue','Solid Design'],version:2});
+  assert.deepEqual(settings.team.members[1].tags,['前端','React','代码 评审','Claude Sonnet','Vue','Solid Design']);
+});
+
+test('space-delimited tag entry creates capsules without splitting IME composition',async()=>{
+  const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端']:[]}))};
+  let patch=null;
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/teams/team-1/members/dev'&&options.method==='PATCH'){
+      patch=options.body;
+      return{...team,version:3,members:team.members.map(member=>member.id==='dev'?{...member,tags:patch.tags}:member)};
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(team);
+  const chipTexts=()=>find(settings.body,'team-tag-chip').map(chip=>chip.children[0].textContent);
+  const field=find(settings.body,'team-member-tags')[1];
+  const input=field.children.find(node=>node.tag==='input');
+  const save=find(settings.body,'team-member-save-tags')[1];
+  input.value='便宜 稳定 灵活 ';input.oninput();
+  assert.deepEqual(chipTexts(),['前端','便宜','稳定','灵活']);
+  assert.equal(input.value,'');
+  assert.equal(save.disabled,false);
+  input.value='高 效 ';input.oninput({isComposing:true});
+  assert.deepEqual(chipTexts(),['前端','便宜','稳定','灵活']);
+  input.value='高效 ';input.oncompositionend();
+  input.value='“代码 评审” "R&D, Ops" ';input.oninput();
+  assert.deepEqual(chipTexts(),['前端','便宜','稳定','灵活','高效','代码 评审','R&D, Ops']);
+  save.onclick();await flush();
+  assert.deepEqual(patch,{tags:['前端','便宜','稳定','灵活','高效','代码 评审','R&D, Ops'],version:2});
 });
 
 test('team settings allows the lead to also be the default reviewer',async()=>{

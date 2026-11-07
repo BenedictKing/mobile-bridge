@@ -413,7 +413,7 @@ class TeamSettingsDialog{
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
     const memberSection=this.node('section',undefined,'team-settings-section');
     memberSection.append(this.node('h3',t_safe('成员')));
-    memberSection.append(this.node('p',t_safe('输入标签后按回车或逗号生成胶囊；点胶囊内的 × 移除，保存后生效；主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
+    memberSection.append(this.node('p',t_safe('空格、逗号或回车生成胶囊；多词标签用双引号。点 × 移除，保存后生效；主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
     for(const member of members){
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
@@ -425,12 +425,13 @@ class TeamSettingsDialog{
       // 避免误触立即改写主控看到的成员目录。
       const draftTags=()=>this.draftTags.has(member.id)?this.draftTags.get(member.id):(member.tags||[]).slice();
       const tagsField=this.node('div',undefined,'team-member-tags');
+      const tagsPlaceholder=t_safe('如：前端 React "Claude Sonnet"');
       const tagsInput=document.createElement('input');tagsInput.value=this.draftText.get(member.id)||'';tagsInput.maxLength=400;
-      tagsInput.placeholder=t_safe('如：前端、React、Claude Sonnet');tagsInput.setAttribute('aria-label',teamSettingsMemberLabel(member)+t_safe(' 的能力标签'));tagsInput.disabled=this.busy;
+      tagsInput.placeholder=tagsPlaceholder;tagsInput.setAttribute('aria-label',teamSettingsMemberLabel(member)+t_safe(' 的能力标签'));tagsInput.disabled=this.busy;
       const syncSave=()=>{
         const draft=draftTags();
-        const pending=this.splitDraftTags(tagsInput.value).filter(tag=>!draft.includes(tag));
-        tagsInput.placeholder=draft.length?'':t_safe('如：前端、React、Claude Sonnet');
+        const pending=this.parseDraftTags(tagsInput.value,true).tags.filter(tag=>!draft.includes(tag));
+        tagsInput.placeholder=draft.length?'':tagsPlaceholder;
         saveTags.disabled=this.busy||!this.tagsUnsaved(member,[...draft,...pending]);
       };
       const chipFor=tag=>{
@@ -441,8 +442,8 @@ class TeamSettingsDialog{
         remove.setAttribute('aria-label',t_safe('移除标签')+'：'+tag);
         chip.append(remove);return chip;
       };
-      const addTags=value=>{
-        const additions=this.splitDraftTags(value).filter(tag=>!draftTags().includes(tag));
+      const addTags=tags=>{
+        const additions=tags.filter(tag=>!draftTags().includes(tag));
         if(!additions.length)return;
         this.draftTags.set(member.id,[...draftTags(),...additions]);
         for(const tag of additions)tagsField.insertBefore(chipFor(tag),tagsInput);
@@ -450,22 +451,27 @@ class TeamSettingsDialog{
       };
       const saveTags=this.button(t_safe('保存标签'),async()=>{
         const pending=tagsInput.value; // 保存时把未成片的尾段一并收进草稿
-        if(pending){tagsInput.value='';this.draftText.delete(member.id);addTags(pending);}
-        await this.changeTags(member.id,draftTags().join(','));
+        if(pending){tagsInput.value='';this.draftText.delete(member.id);addTags(this.parseDraftTags(pending,true).tags);}
+        await this.changeTags(member.id,draftTags());
         // 保存成功回到服务端真值；失败保留草稿供重试。
         if(!this.error){this.draftTags.delete(member.id);this.render();}
       });
       saveTags.className='team-member-save-tags';syncSave();
-      tagsInput.oninput=()=>{ // 逗号即时成片，保留标签中的空格。
-        const parts=tagsInput.value.split(/[,，]+/);const remainder=(parts.pop()||'').trimStart();
-        const complete=parts.join(',');tagsInput.value=remainder;this.draftText.set(member.id,remainder);
-        if(complete)addTags(complete);
+      const processInput=()=>{
+        const {tags,remainder}=this.parseDraftTags(tagsInput.value);
+        tagsInput.value=remainder;this.draftText.set(member.id,remainder);
+        if(tags.length)addTags(tags);
         syncSave();
       };
+      tagsInput.oninput=event=>{
+        if(event?.isComposing){this.draftText.set(member.id,tagsInput.value);return;}
+        processInput();
+      };
+      tagsInput.oncompositionend=processInput;
       tagsInput.onkeydown=event=>{
-        if(event.key!=='Enter')return;
+        if(event.key!=='Enter'||event.isComposing||event.keyCode===229)return;
         event.preventDefault();const value=tagsInput.value;tagsInput.value='';this.draftText.set(member.id,'');
-        addTags(value);syncSave();
+        addTags(this.parseDraftTags(value,true).tags);syncSave();
       };
       for(const tag of draftTags())tagsField.append(chipFor(tag));
       tagsField.append(tagsInput,saveTags);info.append(tagsField);row.append(info);
@@ -493,13 +499,27 @@ class TeamSettingsDialog{
     if(memberID===current)return;
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{reviewerId:memberID,version:this.team.version}}));
   }
-  async changeTags(memberID,value){
+  async changeTags(memberID,tags){
     const member=(this.team.members||[]).find(item=>item.id===memberID);if(!member)return;
-    const tags=[...new Set(value.split(/[,，]/).map(tag=>tag.trim()).filter(Boolean))];
-    if(JSON.stringify(tags)===JSON.stringify(member.tags||[]))return;
-    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID),{method:'PATCH',body:{tags,version:this.team.version}}));
+    const normalized=[...new Set(tags.map(tag=>tag.trim()).filter(Boolean))];
+    if(JSON.stringify(normalized)===JSON.stringify(member.tags||[]))return;
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID),{method:'PATCH',body:{tags:normalized,version:this.team.version}}));
   }
-  splitDraftTags(value){return [...new Set(String(value||'').split(/[,，]+/).map(tag=>tag.trim()).filter(Boolean))];}
+  parseDraftTags(value,commitTail=false){
+    const source=String(value||''),tags=[];
+    let token='',quote='',start=0;
+    for(let index=0;index<source.length;index++){
+      const char=source[index];
+      if(quote){if(char===quote)quote='';else token+=char;}
+      else if((char==='"'||char==='“')&&!token)quote=char==='"'?'"':'”';
+      else if(/[\s,，]/u.test(char)){
+        if(token.trim())tags.push(token.trim());
+        token='';start=index+1;
+      }else token+=char;
+    }
+    if(commitTail&&token.trim())tags.push(token.trim());
+    return{tags:[...new Set(tags)],remainder:source.slice(start).trimStart()};
+  }
   tagsUnsaved(member,draft){return JSON.stringify(draft)!==JSON.stringify(member.tags||[]);}
   async addMember(agent,role){
     if(!agent)return;
