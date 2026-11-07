@@ -3239,6 +3239,17 @@ func parsePlanInputs(raw any) ([]team.PlanTaskInput, error) {
 				input.DependsOn = append(input.DependsOn, text)
 			}
 		}
+		// reviewOf（阶段 5）：审查任务声明的被审对象——HTTP 透传给 planner
+		// 校验（仅审查任务、引用存在、并入依赖）。
+		if refs, hasRefs := object.MustGet("reviewOf").(*jsoncompat.Array); hasRefs {
+			for _, ref := range refs.Items {
+				text, isString := ref.(string)
+				if !isString {
+					return nil, errors.New("reviewOf 列表必须全是任务 ID")
+				}
+				input.ReviewOf = append(input.ReviewOf, text)
+			}
+		}
 		if members, hasMembers := object.MustGet("memberIds").(*jsoncompat.Array); hasMembers {
 			for _, member := range members.Items {
 				text, isString := member.(string)

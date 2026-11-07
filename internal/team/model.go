@@ -1027,6 +1027,25 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	if t.WriteLock != "" {
 		object.Set("writeLock", t.WriteLock)
 	}
+	// 审查绑定（阶段 5）：reviewOf/headRevision/diffHash/reviewVerdictStale
+	// 必须落盘——漏序列化会让重启后 stale 与版本绑定静默失效（交付证据
+	// 据此判定旧裁决是否过期）。
+	if len(t.ReviewOf) > 0 {
+		reviewOf := &jsoncompat.Array{}
+		for _, id := range t.ReviewOf {
+			reviewOf.Items = append(reviewOf.Items, id)
+		}
+		object.Set("reviewOf", reviewOf)
+	}
+	if t.HeadRevision != "" {
+		object.Set("headRevision", t.HeadRevision)
+	}
+	if t.DiffHash != "" {
+		object.Set("diffHash", t.DiffHash)
+	}
+	if t.ReviewVerdictStale {
+		object.Set("reviewVerdictStale", true)
+	}
 	object.Set("status", t.Status)
 	if t.SubmissionID != "" {
 		object.Set("submissionId", t.SubmissionID)
