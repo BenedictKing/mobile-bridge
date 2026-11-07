@@ -1,6 +1,6 @@
 # 团队多需求编排与持久队列实施方案
 
-> 状态：阶段 0–4 已实施（2026-11-07），阶段 5 未实施 · 原方案定稿 2026-11-07
+> 状态：阶段 0–5 已实施（2026-11-07）· 原方案定稿 2026-11-07
 >
 > 基于 [团队总体设计](team-overall-design.md)、[持续反馈方案](team-autonomous-feedback-plan.md) 和现行 Go 网关。本文只定义增量实施与验收，不把目标设计描述为已实现功能。
 >
@@ -12,7 +12,9 @@
 > - 阶段 2 未尽事项：Lead 语义路由提案（answer/clarify 分类、多要求拆分的来源引用核对、超 Run 上限拆批）依赖 Lead 提案协议，属阶段 2 后续增量；当前对范围不明的输入停靠 waiting_input，不用猜测代替用户决定。
 > - 阶段 3 ✅：跨 Run 成员 lease（`teamMemberPending` 窗口记账 + Team 级 memberBusy，同一成员跨 Run 最多一个在途任务）；活跃 Run 准入 `maxActiveRuns`（默认 2，活跃=有在途任务或派发窗口的非终态 Run，`teamRunPending` 窗口口径，轮转释放不抢占）；路由公平（`RouteOrderAt`：3:1 优先配额 + 10 分钟老化提升，排序只依赖账本状态、重启同序）；Team 队列滚动派发预算 `queueDispatchBudget`（默认 48 次/24 小时，journal 的 task_dispatching 计量，超出停靠并提示重置时间；计量失败退化为不限）。
 > - 阶段 4 ✅（前端）：TeamChatController 渲染输入队列面板（`web/team-chat.js`）——每 Team 的 启用/停用排队 开关（localStorage 灰度，默认走旧路径）；面板列出逐输入的 状态/等待原因/目标 Run 跳转/工作项计数/修订次数，queued 行提供 立即发送/编辑/取消（操作 UUID + 期望版本），routing/waiting 行禁用并说明原因；发送侧 `teamSubmissionFields` 按开关附带 `teamQueueVersion:2`，202 queued 响应不依赖 runId 即刷新（`web/app.js`）；i18n 词条与手机窄屏样式已补。旧客户端（不带开关）契约不变。
-> - 验证：`go test ./...`、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js`（164 例）全绿；`make conformance` 的 golden 失败为存量问题（干净 HEAD 同样失败，与本次无关）。§9.1 要求的隔离 Team 真实浏览器验证与 VERIFICATION.md 记录尚未执行（网关已由用户重启加载新代码；建议在测试团队开启「启用排队」试用并记录 Run/输入 ID）。
+> - 阶段 5 ✅（版本绑定的审查与验证）：`reviewOf` 显式因果绑定（计划 PlanTaskInput 与动作 schema 均支持，解析后并入 DependsOn——被审实现完成、产物版本可定位后才可派发审查；同批 key 解析与环校验复用阶段 2 机制）；审查派发时经 `WorkspaceFingerprinter` 端口绑定共享 cwd 的 `rev-parse HEAD + git diff 哈希`（含未跟踪文件清单），随 task_dispatching 原子落账、journal 重建恢复；无法确定版本或端口未装配 → 审查停靠 `workspace_unresolvable`（不凭当前 HEAD 猜待审提交）；同 Run 写任务 completed 后已绑定版本的裁决自动 stale（事件 `review_stale`，幂等，不改写历史 verdict），交付投影携带 stale/reviewOf/版本绑定，前端独立「已过期（改动后未重审）」文案；验证闸门执行时记录同一工作区指纹。阶段 0 的保守屏障按方案由 reviewOf/dependsOn 覆盖口径替换（resolvedActionDeps 计入 reviewOf）。验收：审查后发生写入旧 verdict 自动 stale ✓；失败/unknown 不被汇总成成功 ✓（阶段 0 机制）；独立 worktree 审查绑定按方案另行立项。
+> - 阶段 5 未尽事项：`reviewPolicy=off/best_effort/required` 是 WorkItem 级策略，依赖 Lead 语义路由的 WorkItem 拆分（阶段 2 未尽事项），暂未落地——默认 best_effort 的可完成性行为与现状一致；审查失败（failed）后返回实现成员修复的回路保持 Lead 动作驱动（revfix 只覆盖 unknown 的格式修复）。
+> - 验证：`go test ./...`（37 包）、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js`（164 例）全绿；`make conformance` 的 golden 失败为存量问题（干净 HEAD 同样失败，与本次无关）。阶段 0–4 的隔离 Team 实测见 VERIFICATION.md；阶段 5 的新行为由 `internal/team/review_binding_test.go` 与交付投影测试覆盖，实测待网关重启后补充。
 
 ## 1. 问题与边界
 

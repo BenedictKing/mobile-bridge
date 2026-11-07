@@ -50,6 +50,9 @@ const (
 	OutcomeContextOverflow = "context_overflow"
 	OutcomeTransient       = "transient"
 	OutcomeUnknownText     = "unknown"
+	// OutcomeWorkspaceUnresolvable 是审查版本绑定失败（阶段 5，§6）：工作
+	// 区无法确定改动版本时审查停靠，不凭当前 HEAD 猜待审提交。
+	OutcomeWorkspaceUnresolvable = "workspace_unresolvable"
 )
 
 // 分类正则按优先级互斥：rate_limited > quota > auth > not_configured >

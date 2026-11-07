@@ -172,10 +172,10 @@ func (s *Service) submitTaskLocked(state *runState, team *Team, run *Run, taskID
 // 由调用方在锁外执行——绝不在这里直接调 dispatchSubmission，派发时机完全
 // 属于既有队列。
 func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding) (*taskDispatch, error) {
-	return s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, "")
+	return s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, "", "", "")
 }
 
-func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding, leadBriefing string) (*taskDispatch, error) {
+func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding, leadBriefing, reviewHead, reviewDiff string) (*taskDispatch, error) {
 	task := findTaskIn(run, taskID)
 	if task == nil {
 		return nil, fmt.Errorf("任务不存在：%s", taskID)
@@ -249,6 +249,12 @@ func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team,
 		// 派发全文随快照落盘（遗留④）：收养/超时/取消路径复用存量文本，
 		// 策略或上下文合成的后续变更不再让在途任务的 matchTurn 漂移。
 		current.SentText = sentText
+		// 审查版本绑定（阶段 5）：与派发事实同批原子落账（workspace_bound
+		// 先例）；payload 供 journal 重建恢复。
+		if reviewHead != "" || reviewDiff != "" {
+			current.HeadRevision = reviewHead
+			current.DiffHash = reviewDiff
+		}
 		// 执行线程绑定（阶段一契约）：成员在本 Run 的首派创建线程并落
 		// thread_bound 事实，线程事件先于派发事件落账；成员绑定会话被恢复
 		// 流程改写（session_recovery.go）后重派按新会话重落绑定。run 级事件
@@ -295,6 +301,10 @@ func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team,
 			"attempt":      jsoncompat.Num(attempt),
 			"contextChars": jsoncompat.Num(composed.context.InjectedChars),
 		})
+		if reviewHead != "" || reviewDiff != "" {
+			event.Payload["headRevision"] = reviewHead
+			event.Payload["diffHash"] = reviewDiff
+		}
 		event.IdempotencyKey = TaskIdempotencyKey(fresh.TeamID, fresh.ID, taskID, attempt)
 		events = append(events, event)
 		if binding != nil && current.BaseRevision == "" {

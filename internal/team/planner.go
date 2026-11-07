@@ -50,13 +50,17 @@ const (
 // 用 memberId（memberIds 留空）。workspaceId 是 isolated_worktree 任务的
 // 工作区注册键（§6.4，必填且过成员 ID 正则——注册表键空间与成员 ID 同形）。
 type PlanTaskInput struct {
-	ID            string   `json:"id"`
-	MemberID      string   `json:"memberId"`
-	MemberIDs     []string `json:"memberIds,omitempty"`
-	Prompt        string   `json:"prompt"`
-	DependsOn     []string `json:"dependsOn,omitempty"`
-	WriteLock     string   `json:"writeLock,omitempty"`
-	Review        *bool    `json:"review,omitempty"`
+	ID        string   `json:"id"`
+	MemberID  string   `json:"memberId"`
+	MemberIDs []string `json:"memberIds,omitempty"`
+	Prompt    string   `json:"prompt"`
+	DependsOn []string `json:"dependsOn,omitempty"`
+	WriteLock string   `json:"writeLock,omitempty"`
+	Review    *bool    `json:"review,omitempty"`
+	// ReviewOf 是审查任务声明的被审任务（阶段 5，§6）：仅审查任务可携带，
+	// 引用计划内任务（broadcast 引用展开为成员任务）；规范化后并入
+	// DependsOn（被审任务完成才可派发审查）并进入 PlanHash。
+	ReviewOf      []string `json:"reviewOf,omitempty"`
 	WorkspaceMode string   `json:"workspaceMode,omitempty"`
 	WorkspaceID   string   `json:"workspaceId,omitempty"`
 }
@@ -243,6 +247,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 				DependsOn:     input.DependsOn,
 				WriteLock:     input.WriteLock,
 				Review:        input.Review,
+				ReviewOf:      input.ReviewOf,
 				WorkspaceMode: input.WorkspaceMode,
 				WorkspaceID:   input.WorkspaceID,
 			})
@@ -255,7 +260,42 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 	// broadcast 条目的依赖展开为其全部成员任务；引用存在的条目才可展开。
 	dependencies := map[string][]string{}
 	for _, input := range expanded {
-		deps := make([]string, 0, len(input.DependsOn))
+		deps := make([]string, 0, len(input.DependsOn)+len(input.ReviewOf))
+		// reviewOf（阶段 5）：仅审查任务可携带；引用解析与依赖同规则
+		//（broadcast 展开），去重后并入 deps——被审实现完成、产物版本可
+		// 定位后才可派发审查。
+		if len(input.ReviewOf) > 0 {
+			if !planInputIsReview(team, input) {
+				return nil, fmt.Errorf("任务 %s 的 reviewOf 只能用于审查任务", input.ID)
+			}
+			for _, ref := range input.ReviewOf {
+				targets := []string{ref}
+				if mode == ModeBroadcast {
+					expandedTargets, ok := expansionOf[ref]
+					if !ok {
+						return nil, fmt.Errorf("任务 %s 的 reviewOf 引用了不存在的任务：%s", input.ID, ref)
+					}
+					targets = expandedTargets
+				} else if !seen[ref] {
+					return nil, fmt.Errorf("任务 %s 的 reviewOf 引用了不存在的任务：%s", input.ID, ref)
+				}
+				for _, target := range targets {
+					if target == input.ID {
+						return nil, fmt.Errorf("计划存在循环依赖：%s → %s", input.ID, input.ID)
+					}
+					duplicate := false
+					for _, existing := range deps {
+						if existing == target {
+							duplicate = true
+							break
+						}
+					}
+					if !duplicate {
+						deps = append(deps, target)
+					}
+				}
+			}
+		}
 		for _, dep := range input.DependsOn {
 			targets := []string{dep}
 			if mode == ModeBroadcast {
@@ -336,6 +376,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 			ID:               input.ID,
 			MemberID:         input.MemberID,
 			Prompt:           input.Prompt,
+			ReviewOf:         append([]string(nil), input.ReviewOf...),
 			Attempt:          0,
 			Ordinal:          ordinal,
 			DependsOn:        dependencies[input.ID],
@@ -412,6 +453,13 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 		entry.Set("writeLock", task.WriteLock)
 		if task.Review != nil {
 			entry.Set("review", *task.Review)
+		}
+		if len(task.ReviewOf) > 0 {
+			reviewOf := &jsoncompat.Array{}
+			for _, id := range task.ReviewOf {
+				reviewOf.Items = append(reviewOf.Items, id)
+			}
+			entry.Set("reviewOf", reviewOf)
 		}
 		if len(task.Attachments) > 0 {
 			attachments := &jsoncompat.Array{}

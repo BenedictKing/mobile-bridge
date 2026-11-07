@@ -57,6 +57,16 @@ func IsReviewTask(team *Team, task *Task) bool {
 	return reviewer != "" && reviewer != team.LeadID && task.MemberID == reviewer
 }
 
+// planInputIsReview 判定计划条目是否承担审查语义（IsReviewTask 的创建期
+// 口径）：review=true 显式；未声明时默认评审成员承接的条目按审查兼容。
+func planInputIsReview(team *Team, input PlanTaskInput) bool {
+	if input.Review != nil {
+		return *input.Review
+	}
+	reviewer := team.ReviewerMemberID()
+	return reviewer != "" && reviewer != team.LeadID && input.MemberID == reviewer
+}
+
 // defaultReviewWriteLock 归一评审任务的缺省写锁：未声明时只读。
 func defaultReviewWriteLock(team *Team, memberID, writeLock string, review ...*bool) string {
 	if writeLock != "" {
@@ -75,11 +85,19 @@ func BuildReviewBriefing(team *Team, task *Task) string {
 	if !IsReviewTask(team, task) {
 		return ""
 	}
-	return "[Team review]\n你是本团队的评审成员，本任务只做审查，不要修改文件。" +
+	briefing := "[Team review]\n你是本团队的评审成员，本任务只做审查，不要修改文件。" +
 		"审查结束后，请在回复的最后一行单独输出裁决：通过写 " +
 		reviewVerdictOpenTag + ReviewVerdictPassed + reviewVerdictCloseTag +
 		"，不通过写 " + reviewVerdictOpenTag + ReviewVerdictFailed + reviewVerdictCloseTag +
 		"，并在前文列出问题。\n"
+	// 版本绑定说明（阶段 5，§6）：声明 reviewOf 的审查告知被审对象与绑定
+	// 语义——裁决基于当前工作区实际内容；之后的再次写入会使本裁决过期。
+	if task != nil && len(task.ReviewOf) > 0 {
+		briefing += "本任务审查以下实现任务的结果与当前工作区的实际改动：" +
+			strings.Join(task.ReviewOf, "、") +
+			"。请以你实际查看的当前工作区内容为准；本裁决绑定当前工作区版本，之后发生的改动会使它过期，需重新审查。\n"
+	}
+	return briefing
 }
 
 // ExtractReviewVerdict 从评审回复全文解析裁决：只看最后一个非空行，且该行

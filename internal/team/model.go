@@ -123,6 +123,10 @@ const (
 	// truncated}。命中结果仍作为本 Run 的新节点实例入账（§6.4.1 规则 4：
 	// 不跳过事件写入）——任务在创建批次内直接落 completed，task 级事件。
 	EventTaskCacheHit = "task_cache_hit"
+	// EventReviewStale 是审查裁决过期事实（阶段 5，§6）：同 Run 的写任务
+	// completed 之后，已绑定工作区版本的审查裁决不再充当当前版本的证据。
+	// payload：{taskId（审查任务）, causeTaskId（触发的写任务）}。
+	EventReviewStale = "review_stale"
 	// 成员主动提问的事件（§5.4，阶段三）：question_opened {questionId,
 	// taskId, version, kind, summary, options}、question_resolved
 	// {questionId, taskId, answerHead}（IdempotencyKey=decision 键，§9 决策
@@ -383,6 +387,10 @@ type VerifyResult struct {
 	OutputHead string    `json:"outputHead"`
 	Truncated  bool      `json:"truncated"`
 	FinishedAt time.Time `json:"finishedAt"`
+	// HeadRevision/DiffHash 是验证执行时的工作区版本绑定（阶段 5）：验证
+	// 结论只对同一工作区版本有效；空=未绑定（未装配指纹端口）。
+	HeadRevision string `json:"headRevision,omitempty"`
+	DiffHash     string `json:"diffHash,omitempty"`
 
 	extra *jsoncompat.Object
 }
@@ -412,8 +420,20 @@ type Task struct {
 	BaseRevision   string   `json:"baseRevision,omitempty"`
 	WriteLock      string   `json:"writeLock,omitempty"`
 	Review         *bool    `json:"review,omitempty"`
-	Status         string   `json:"status"`
-	SubmissionID   string   `json:"submissionId,omitempty"`
+	// ReviewOf 是审查任务声明的被审任务（阶段 5，docs/team-demand-queue-plan.md
+	// §6）：显式因果绑定，规范化后并入 DependsOn（被审任务完成才可派发审查）。
+	ReviewOf []string `json:"reviewOf,omitempty"`
+	// HeadRevision/DiffHash 是审查任务派发时记录的工作区版本绑定（共享 cwd
+	// 的 rev-parse HEAD 与 git diff 哈希）：审查后的再次写入使裁决过期
+	//（ReviewVerdictStale），旧 passed 不能充当新版本的交付证据。空=未绑定
+	//（未声明 reviewOf 的审查保持旧行为）。
+	HeadRevision string `json:"headRevision,omitempty"`
+	DiffHash     string `json:"diffHash,omitempty"`
+	// ReviewVerdictStale 由同 Run 后续写任务的 completed 事实置位（journal
+	// 事件 review_stale）：交付投影据此把旧裁决展示为已过期。
+	ReviewVerdictStale bool   `json:"reviewVerdictStale,omitempty"`
+	Status             string `json:"status"`
+	SubmissionID       string `json:"submissionId,omitempty"`
 	// ExecutionThreadID 是本任务所属的执行线程（阶段一契约）：派发时随
 	// task_dispatching 落账；结算侧按它防旧线程/旧 attempt 的迟到事件。
 	ExecutionThreadID string      `json:"executionThreadId,omitempty"`
@@ -481,6 +501,10 @@ type Action struct {
 	// DependsOn 是本动作派生任务的依赖列表：同批 key 或本 Run 既有任务 ID；
 	// 旧 fromTaskId 保留「引用既有结果」语义，可与 dependsOn 并存。
 	DependsOn []string `json:"dependsOn,omitempty"`
+	// ReviewOf 是审查动作声明的被审任务（阶段 5，§6）：仅审查 delegate 可
+	// 携带；条目为同批 key 或本 Run 任务 ID，解析后写入派生任务并并入
+	// DependsOn——审查与被审实现的因果由显式绑定表达。
+	ReviewOf  []string `json:"reviewOf,omitempty"`
 	ActionKey string   `json:"actionKey,omitempty"`
 	Status    string   `json:"status,omitempty"`
 	Reason    string   `json:"reason,omitempty"`
@@ -588,6 +612,7 @@ var taskKnownFields = map[string]bool{
 	"cachedFrom": true,
 	"error":      true, "outcome": true, "stopReason": true, "instructionsHead": true,
 	"sentText": true, "reduction": true, "triageFor": true,
+	"reviewOf": true, "headRevision": true, "diffHash": true, "reviewVerdictStale": true,
 }
 
 var taskResultKnownFields = map[string]bool{
@@ -1063,6 +1088,7 @@ func (t *Task) Clone() *Task {
 		copied.Review = reviewFlag(*t.Review)
 	}
 	copied.DependsOn = append([]string(nil), t.DependsOn...)
+	copied.ReviewOf = append([]string(nil), t.ReviewOf...)
 	copied.Attachments = append([]string(nil), t.Attachments...)
 	copied.ResultDetail = t.ResultDetail.Clone()
 	copied.extra = cloneExtra(t.extra)
@@ -1151,6 +1177,12 @@ func (v *VerifyResult) jsonObject() *jsoncompat.Object {
 	object.Set("outputHead", v.OutputHead)
 	object.Set("truncated", v.Truncated)
 	object.Set("finishedAt", v.FinishedAt.Format(time.RFC3339Nano))
+	if v.HeadRevision != "" {
+		object.Set("headRevision", v.HeadRevision)
+	}
+	if v.DiffHash != "" {
+		object.Set("diffHash", v.DiffHash)
+	}
 	mergeExtras(object, v.extra)
 	return object
 }

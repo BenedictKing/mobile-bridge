@@ -48,9 +48,13 @@ type Service struct {
 
 	// inputs 是持久输入队列账本（阶段 2，inputroute.go）：main.go/测试环境
 	// 在 NewService 后经 SetInputs 直赋；nil 时路由器停用。
-	inputs      *InputLedger
-	routingOnce sync.Once
-	routingWake chan struct{}
+	inputs *InputLedger
+	// Fingerprints 是工作区指纹端口（阶段 5，§6）：审查任务派发时记录
+	// rev-parse HEAD 与 git diff 哈希，实现版本绑定的审查与验证。
+	// main.go 装配；nil 时声明 reviewOf 的审查停靠（不能无绑定派发）。
+	Fingerprints WorkspaceFingerprinter
+	routingOnce  sync.Once
+	routingWake  chan struct{}
 
 	// OnEvent 在每条 journal 事件成功落账后被调用（httpd 装配侧接
 	// EventFeed.Add，把事实投影到事件流）。nil 表示无人订阅。
@@ -429,6 +433,10 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 		if task.Review != nil {
 			payload["review"] = *task.Review
 		}
+		if len(task.ReviewOf) > 0 {
+			// reviewOf（阶段 5）：审查绑定随创建事实入账，供 journal 重建。
+			payload["reviewOf"] = append([]string(nil), task.ReviewOf...)
+		}
 		if len(task.Attachments) > 0 {
 			payload["attachments"] = append([]string(nil), task.Attachments...)
 		}
@@ -769,7 +777,7 @@ func (s *Service) passActions(state *runState) {
 	// 任务 ID，并把本批 runnable 按依赖拓扑排序——被依赖的派生任务先落
 	// Run，下游 DependsOn 引用的 ID 在创建时已存在。解析正确性由
 	// ValidateActions 的批级校验保证，这里容错（解析不到不重排）。
-	batchKeys, _ := validateActionBatchKeys(run, proposed)
+	batchKeys, _ := validateActionBatchKeys(team, run, proposed)
 	sortActionsByBatchDependencies(runnable, batchKeys)
 	pre := &actionPrefetch{sessionLive: map[string]bool{}, teamInFlight: -1}
 	pre.facts = s.actionFacts(state.runID)
@@ -1495,6 +1503,25 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		}
 		cwd = binding.path
 	}
+	// (2.6) 审查版本绑定（阶段 5，§6）：声明 reviewOf 的审查任务在派发前
+	// 记录工作区指纹（rev-parse HEAD + git diff 哈希，锁外 I/O）；无法确定
+	// 版本时停靠（waiting_input）——不能凭当前 HEAD 猜待审提交。绑定值随
+	// task_dispatching 同批落账（accountDispatchLocked 闭包内写入）。
+	reviewHead, reviewDiff := "", ""
+	if len(task.ReviewOf) > 0 {
+		if s.Fingerprints == nil {
+			s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable,
+				"网关未装配工作区指纹端口，审查任务无法绑定工作区版本")
+			return
+		}
+		head, diffHash, fpErr := s.Fingerprints.Fingerprint(cwd)
+		if fpErr != nil {
+			s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable,
+				fmt.Sprintf("无法确定工作区改动版本（%v），审查已停靠：请先提交或固定基线后继续", fpErr))
+			return
+		}
+		reviewHead, reviewDiff = head, diffHash
+	}
 	// (3) 短暂持锁：记账（先记账后发送，§3.1 原则 4）。accountDispatchLocked
 	// 的调用约定是持有 state.mu（写 state.taskCwds 等 run 级内存状态）——
 	// broadcast 的多个派发池 worker 会并发到达此处，裸调是 map 数据竞争
@@ -1508,7 +1535,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		leadBriefing = s.LeadBriefing(team)
 	}
 	state.mu.Lock()
-	dispatch, err := s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, leadBriefing)
+	dispatch, err := s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, leadBriefing, reviewHead, reviewDiff)
 	if err == nil && dispatch != nil {
 		s.teamPendingDelta(teamID, -1)
 		s.teamMemberPendingDelta(teamID, dispatchMember, -1)
@@ -2395,6 +2422,7 @@ func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome
 // 交付投影明示「未取得裁决」。
 func (s *Service) completeTask(state *runState, runID, taskID string, result *TaskResult) bool {
 	team := s.reviewRepairTeam(runID, taskID, result)
+	writeCompletes := s.completingWriteTask(runID, taskID)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	stopReason := ""
@@ -2402,9 +2430,13 @@ func (s *Service) completeTask(state *runState, runID, taskID string, result *Ta
 		stopReason = result.StopReason
 	}
 	if team == nil {
-		return s.applyTaskTerminalLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher")
+		applied := s.applyTaskTerminalLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher")
+		if applied && writeCompletes {
+			s.markStaleReviewsLocked(state, runID, taskID)
+		}
+		return applied
 	}
-	return s.applyTaskTerminalWithExtrasLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher",
+	applied := s.applyTaskTerminalWithExtrasLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher",
 		func(fresh *Run, events []*Event) ([]*Event, bool) {
 			// buildReviewRepairTask 在 fresh 上幂等（已有修复/上限已到/ID 不可用
 			// 均返回 false，不追加事件）；payload 带 prompt/dependsOn/writeLock
@@ -2423,6 +2455,60 @@ func (s *Service) completeTask(state *runState, runID, taskID string, result *Ta
 			planned.IdempotencyKey = reviewRepairPlannedKey(fresh.TeamID, fresh.ID, repair.ID)
 			return append(events, planned), true
 		})
+	if applied && writeCompletes {
+		s.markStaleReviewsLocked(state, runID, taskID)
+	}
+	return applied
+}
+
+// completingWriteTask 报告即将 completed 的任务是否为会改动工作区的执行
+// 任务（非审查、非汇总、写锁非 none——阶段 5 stale 判定的触发面）。
+func (s *Service) completingWriteTask(runID, taskID string) bool {
+	run := s.store.Run(runID)
+	if run == nil {
+		return false
+	}
+	team := s.store.Team(run.TeamID)
+	task := findTaskIn(run, taskID)
+	if team == nil || task == nil {
+		return false
+	}
+	return !IsReviewTask(team, task) && !task.Reduction && task.WriteLock != TaskWriteLockNone
+}
+
+// markStaleReviewsLocked 把同 Run 内已绑定工作区版本的审查裁决标记为过期
+// （阶段 5，§6「实现后再次写入使 verdict 变 stale」）：写任务 completed 后，
+// 旧 passed 不能充当新版本的交付证据。事件 review_stale 供 journal 重建；
+// 幂等（已 stale 不重复落账）。调用方持有 state.mu。
+func (s *Service) markStaleReviewsLocked(state *runState, runID, writeTaskID string) {
+	err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+		if terminalRun(fresh.Status) {
+			return nil, false
+		}
+		var events []*Event
+		for i := range fresh.Tasks {
+			review := &fresh.Tasks[i]
+			// 只标记已绑定版本的审查（DiffHash 非空）：它们审的是写入前的
+			// 工作区状态；writeTaskID 完成后该版本已被取代。之后才派发的
+			// 新审查会指纹新版本，不受影响。已 stale 的幂等跳过。
+			if review.DiffHash == "" || review.ReviewVerdictStale {
+				continue
+			}
+			review.ReviewVerdictStale = true
+			event := newEvent(fresh.ID, EventReviewStale, "watcher", map[string]any{
+				"taskId": review.ID, "causeTaskId": writeTaskID,
+			})
+			event.IdempotencyKey = "team:" + fresh.TeamID + ":run:" + fresh.ID + ":stale:" + review.ID + ":" + writeTaskID
+			events = append(events, event)
+		}
+		if len(events) == 0 {
+			return nil, false
+		}
+		return events, true
+	})
+	if err != nil {
+		log.Printf("team run %s 审查过期标记失败（下次写任务完成时补）: %v", runID, err)
+	}
 }
 
 // reviewRepairTeam 在锁外解析审查格式修复所需的团队：仅当本次结果没有可
@@ -2635,6 +2721,10 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				if len(action.DependsOn) > 0 {
 					payload["dependsOn"] = append([]string(nil), action.DependsOn...)
 				}
+				// reviewOf（阶段 5）：审查绑定随动作事实入账，供 journal 重建。
+				if len(action.ReviewOf) > 0 {
+					payload["reviewOf"] = append([]string(nil), action.ReviewOf...)
+				}
 				event := newEvent(fresh.ID, EventActionProposed, "watcher", payload)
 				event.IdempotencyKey = action.ActionKey
 				events = append(events, event)
@@ -2822,6 +2912,8 @@ func blockedStopReason(outcome string) string {
 		return "Agent 或账号未配置，任务已停靠"
 	case OutcomeMemberDisabled:
 		return "成员已下线，任务已停靠"
+	case OutcomeWorkspaceUnresolvable:
+		return "工作区版本无法确定，审查任务已停靠"
 	}
 	return "账号或配置问题，任务已停靠"
 }

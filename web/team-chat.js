@@ -90,7 +90,9 @@ function renderTeamDeliveryEvidence(container,delivery,make){
   if(!delivery||typeof delivery!=='object')return;
   const evidence=make('div',undefined,'team-delivery-evidence');
   const agent=delivery.agent,review=delivery.review,verify=delivery.verify;
-  const reviewText=!review?null:(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知'));
+  // stale（阶段 5）：审查后又有新写入——旧裁决不再充当当前版本的证据，
+  // 独立文案展示，绝不与「已通过」混同。
+  const reviewText=!review?null:(review.stale?t_safe('已过期（改动后未重审）'):(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知')));
   const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待验证')));
   const dims=[
     t_safe('Agent')+t_safe('：')+(agent?agent.completed+'/'+agent.total+' '+t_safe('已完成'):'—'),

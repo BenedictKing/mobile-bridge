@@ -992,6 +992,9 @@ func runGateway(args []string) {
 	// routing 的输入按 intent 对账补齐（inputroute.go 的幂等创建路径）。
 	server.Teams.SetInputs(server.TeamInputs)
 	server.TeamQueueAutoRoute = true
+	// 审查版本绑定（阶段 5）：共享 cwd 的 git 指纹（rev-parse HEAD + diff
+	// 哈希）——审查派发与验证执行据此绑定工作区版本。
+	server.Teams.Fingerprints = httpd.NewGitFingerprinter()
 	for _, teamRow := range teamStore.Teams() {
 		server.Teams.RoutePendingInputs(teamRow.ID)
 	}

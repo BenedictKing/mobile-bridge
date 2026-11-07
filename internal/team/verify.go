@@ -225,12 +225,22 @@ func (s *Service) executeVerifyCommand(teamID string, argv []string) verifyOutco
 		merged += stderr.buf.String()
 	}
 	head, headTruncated := truncateUTF8(merged, verifyHeadBytes)
+	// 版本绑定（阶段 5，§6）：验证结论只对执行时的工作区版本有效——best-
+	// effort 记录指纹（未装配端口/非 git 目录留空，不阻断闸门本身）。
+	bindHead, bindDiff := "", ""
+	if s.Fingerprints != nil {
+		if fpHead, fpDiff, fpErr := s.Fingerprints.Fingerprint(dir); fpErr == nil {
+			bindHead, bindDiff = fpHead, fpDiff
+		}
+	}
 	return verifyOutcome{
 		result: VerifyResult{
-			ExitCode:   exitCode,
-			OutputHead: head,
-			Truncated:  headTruncated || stdout.truncated || stderr.truncated,
-			FinishedAt: time.Now(),
+			ExitCode:     exitCode,
+			OutputHead:   head,
+			Truncated:    headTruncated || stdout.truncated || stderr.truncated,
+			FinishedAt:   time.Now(),
+			HeadRevision: bindHead,
+			DiffHash:     bindDiff,
 		},
 		reason:     reason,
 		durationMs: int(time.Since(started).Milliseconds()),
@@ -320,6 +330,12 @@ func (s *Service) settleVerifyGateLocked(state *runState, runID string, outcome 
 	}
 	if outcome.reason != "" {
 		payload["reason"] = outcome.reason
+	}
+	if outcome.result.HeadRevision != "" {
+		payload["headRevision"] = outcome.result.HeadRevision
+	}
+	if outcome.result.DiffHash != "" {
+		payload["diffHash"] = outcome.result.DiffHash
 	}
 	if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
 		if terminalRun(fresh.Status) || fresh.Verify != nil {

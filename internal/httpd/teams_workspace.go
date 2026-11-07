@@ -11,6 +11,8 @@ package httpd
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -306,4 +308,37 @@ func cutUTF8(text string, max int) string {
 		cut--
 	}
 	return text[:cut]
+}
+
+// gitFingerprinter 是 team.WorkspaceFingerprinter 的 git 实现（阶段 5，
+// docs/team-demand-queue-plan.md §6）：head=rev-parse HEAD；diffHash 覆盖
+// 已跟踪改动（git diff HEAD）与未跟踪文件清单（ls-files -o）——新建文件
+// 是任务的正常产出，只哈希已跟踪 diff 会漏掉它们。全部走固定 argv，绝不
+// 过 shell；任一 git 失败返回错误（调用方按停靠/未绑定处理）。
+type gitFingerprinter struct{}
+
+// NewGitFingerprinter 返回共享 cwd 的 git 指纹实现。
+func NewGitFingerprinter() team.WorkspaceFingerprinter { return gitFingerprinter{} }
+
+func (gitFingerprinter) Fingerprint(path string) (string, string, error) {
+	head, err := gitWorkspaceOutput(path, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", err
+	}
+	diff, err := gitWorkspaceOutput(path, "diff", "HEAD")
+	if err != nil {
+		return "", "", err
+	}
+	untracked, err := gitWorkspaceOutput(path, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return "", "", err
+	}
+	digest := sha256.New()
+	digest.Write([]byte("head\x00"))
+	digest.Write([]byte(head))
+	digest.Write([]byte("diff\x00"))
+	digest.Write([]byte(diff))
+	digest.Write([]byte("untracked\x00"))
+	digest.Write([]byte(untracked))
+	return strings.TrimSpace(head), hex.EncodeToString(digest.Sum(nil)), nil
 }

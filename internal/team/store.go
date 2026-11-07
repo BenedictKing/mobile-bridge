@@ -607,6 +607,14 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			run.Status = RunCancelled
 		case EventRunStopped:
 			run.Status = RunStopped
+		case EventReviewStale:
+			// 审查过期事实（阶段 5）：已绑定版本的审查裁决被后续写入取代；
+			// 重建恢复 ReviewVerdictStale（交付投影据此展示「已过期」）。
+			if reviewID := payloadString(event.Payload, "taskId"); reviewID != "" {
+				if review := findTaskIn(run, reviewID); review != nil {
+					review.ReviewVerdictStale = true
+				}
+			}
 		case EventRunVerify:
 			// 闸门结果随事件重建（§6.4.1）：RunReducing 态的 run 崩溃后凭
 			// Verify 判定终局/等待 resume，缺了它会被误折成 completed。
@@ -616,6 +624,9 @@ func applyJournalEventToRun(run *Run, event *Event) {
 				FinishedAt: event.CreatedAt,
 			}
 			verify.Truncated, _ = event.Payload["truncated"].(bool)
+			// 版本绑定（阶段 5）：验证结论的工作区指纹随重建恢复。
+			verify.HeadRevision = payloadString(event.Payload, "headRevision")
+			verify.DiffHash = payloadString(event.Payload, "diffHash")
 			run.Verify = verify
 		case EventActionProposed:
 			// Lead 自动动作的入账事实（§5.1，阶段三）：重建默认 Round=1，
@@ -638,6 +649,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 					Status:       ActionStatusProposed,
 				}
 				rebuilt.DependsOn = payloadStrings(event.Payload, "dependsOn")
+				rebuilt.ReviewOf = payloadStrings(event.Payload, "reviewOf")
 				run.PendingActions = append(run.PendingActions, rebuilt)
 			}
 			advanceRebuildRound(run, event)
@@ -718,6 +730,10 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		}
 		task.Reduction = payloadBool(event.Payload, "reduction")
 		task.TriageFor = payloadString(event.Payload, "triageFor")
+		// reviewOf（阶段 5）：显式计划与动作派生的审查绑定随重建恢复。
+		if refs := payloadStrings(event.Payload, "reviewOf"); len(refs) > 0 {
+			task.ReviewOf = refs
+		}
 		if task.Reduction || task.TriageFor != "" {
 			task.Prompt = payloadString(event.Payload, "prompt")
 			task.DependsOn = payloadStrings(event.Payload, "dependsOn")
@@ -742,6 +758,13 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.SubmissionID = payloadString(event.Payload, "submissionId")
 		task.ExecutionThreadID = payloadString(event.Payload, "threadId")
 		task.InputHash = payloadString(event.Payload, "inputHash")
+		// 审查版本绑定（阶段 5）：headRevision/diffHash 随派发事实恢复。
+		if head := payloadString(event.Payload, "headRevision"); head != "" {
+			task.HeadRevision = head
+		}
+		if diffHash := payloadString(event.Payload, "diffHash"); diffHash != "" {
+			task.DiffHash = diffHash
+		}
 		if attempt := payloadInt(event.Payload, "attempt"); attempt > 0 {
 			task.Attempt = attempt
 		}

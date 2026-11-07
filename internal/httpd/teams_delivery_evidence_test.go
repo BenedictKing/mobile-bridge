@@ -24,8 +24,12 @@ type deliveryEvidenceView struct {
 		Truncated bool   `json:"truncated"`
 	} `json:"resultSummary"`
 	Review *struct {
-		TaskID  string `json:"taskId"`
-		Verdict string `json:"verdict"`
+		TaskID       string   `json:"taskId"`
+		Verdict      string   `json:"verdict"`
+		Stale        bool     `json:"stale"`
+		ReviewOf     []string `json:"reviewOf"`
+		HeadRevision string   `json:"headRevision"`
+		DiffHash     string   `json:"diffHash"`
 	} `json:"review"`
 	Verify struct {
 		Configured bool   `json:"configured"`
@@ -257,5 +261,44 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	}
 	if len([]rune(trunc.ResultSummary.Text)) > 1200 {
 		t.Fatalf("摘要应有界: %d 字", len([]rune(trunc.ResultSummary.Text)))
+	}
+}
+
+// TestDeliveryEvidenceStaleReview（阶段 5，§6）：审查后发生写入——旧裁决
+// 保留 passed 本体但独立标记 stale，并携带版本绑定；不能把旧通过冒充当前
+// 版本的证据。
+func TestDeliveryEvidenceStaleReview(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	teamRow := env.store.Team(teamID)
+	teamRow.ReviewerID = "rev"
+	teamRow.Members = append(teamRow.Members, team.TeamMember{
+		ID: "rev", SessionID: "sess-rev", AgentKind: "zcode", Role: team.RoleReviewer, Enabled: true,
+	})
+	if err := env.store.SaveTeam(teamRow); err != nil {
+		t.Fatal(err)
+	}
+	run := &team.Run{
+		ID: "run-ev-stale", TeamID: teamID, Goal: "实现并审查", Status: team.RunCompleted,
+		Tasks: []team.Task{
+			{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Ordinal: 0},
+			{ID: "rev", MemberID: "rev", Status: team.TaskCompleted, Ordinal: 1,
+				ReviewOf: []string{"impl"}, HeadRevision: "h1", DiffHash: "d1",
+				ReviewVerdictStale: true,
+				ResultDetail:       &team.TaskResult{Result: "审查通过", ReviewVerdict: team.ReviewVerdictPassed}},
+		},
+	}
+	if err := env.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	evidence := fetchDeliveryEvidence(t, env, teamID, run.ID)
+	if evidence.Review == nil {
+		t.Fatal("应含审查证据")
+	}
+	if evidence.Review.Verdict != team.ReviewVerdictPassed || !evidence.Review.Stale {
+		t.Fatalf("旧裁决保留 passed 且独立标记 stale: %+v", evidence.Review)
+	}
+	if len(evidence.Review.ReviewOf) != 1 || evidence.Review.HeadRevision != "h1" || evidence.Review.DiffHash != "d1" {
+		t.Fatalf("审查证据应携带被审对象与版本绑定: %+v", evidence.Review)
 	}
 }

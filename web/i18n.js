@@ -1782,6 +1782,7 @@ const en={
   "无法连接电脑网关，请检查网络或确认电脑端正在运行。": "Can't reach the gateway. Check your network or make sure it is running on your computer.",
   "团队动作": "Team actions",
   "输入队列": "Input queue",
+  "已过期（改动后未重审）": "Stale (changed after review)",
   "启用排队": "Enable queueing",
   "停用排队": "Disable queueing",
   "启用后新消息先入持久队列，可随时编辑、插队与取消；路由进度在这里追。": "New messages enter a persistent queue first; edit, prioritize, or cancel them anytime. Routing progress shows up here.",

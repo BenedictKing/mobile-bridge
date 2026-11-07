@@ -2526,11 +2526,34 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 			verdict = reviewTask.ResultDetail.ReviewVerdict
 		}
 		review.Set("verdict", verdict)
+		// 版本绑定与过期（阶段 5，§6）：审查结论绑定派发时的工作区版本；
+		// 之后的再次写入使旧裁决 stale——不能把旧 passed 当新版本的证据。
+		if reviewTask.ReviewVerdictStale {
+			review.Set("stale", true)
+		}
+		if len(reviewTask.ReviewOf) > 0 {
+			reviewOf := &jsoncompat.Array{}
+			reviewOf.Items = append(reviewOf.Items, toAnySlice(reviewTask.ReviewOf)...)
+			review.Set("reviewOf", reviewOf)
+		}
+		if reviewTask.HeadRevision != "" {
+			review.Set("headRevision", reviewTask.HeadRevision)
+		}
+		if reviewTask.DiffHash != "" {
+			review.Set("diffHash", reviewTask.DiffHash)
+		}
 		evidence.Set("review", review)
 	}
 	verify := jsoncompat.NewObject()
 	verify.Set("configured", len(run.VerifyCommand) > 0)
 	if run.Verify != nil {
+		// 验证版本绑定（阶段 5）：结论只对同一工作区版本有效。
+		if run.Verify.HeadRevision != "" {
+			verify.Set("headRevision", run.Verify.HeadRevision)
+		}
+		if run.Verify.DiffHash != "" {
+			verify.Set("diffHash", run.Verify.DiffHash)
+		}
 		verify.Set("exitCode", jsoncompat.Num(run.Verify.ExitCode))
 		if run.Verify.ExitCode == 0 {
 			verify.Set("status", "passed")
