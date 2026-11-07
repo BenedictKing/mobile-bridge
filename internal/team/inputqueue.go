@@ -72,6 +72,24 @@ var (
 // MaxTasksPerRun 的可调上限，容量与速率应依据真实负载再调）。
 const DefaultMaxPendingInputs = 64
 
+// 阶段 3 默认值与常量（§5，docs/team-demand-queue-plan.md）。
+const (
+	// DefaultMaxActiveRuns 是每 Team 活跃 Run 准入上限的建议值。
+	DefaultMaxActiveRuns = 2
+	// DefaultQueueDispatchBudget 是 Team 队列滚动 24 小时派发总额的默认值
+	//（任务派发次数而非 token 额度）。
+	DefaultQueueDispatchBudget = 48
+	// queueDispatchWindow 是队列预算的滚动窗口。
+	queueDispatchWindow = 24 * time.Hour
+	// routerAgingAfter 是普通输入的反饥饿提升线（等待超过即视同优先，
+	// §5「普通输入等待超过 10 分钟即提升到下一次路由」）。
+	routerAgingAfter = 10 * time.Minute
+	// routerPriorityQuota 是优先/普通配额（§5「每处理 3 条优先输入至少
+	// 处理 1 条普通输入」）：连续 routed 的优先输入达到该数后，下一条
+	// 强制取最早的普通输入。
+	routerPriorityQuota = 3
+)
+
 // InputRevision 是输入正文的一个不可变版本（§3.1「修订不改历史」）：编辑
 // 新增版本并将旧版本标记为被替换，不原地改写已接受事实。
 type InputRevision struct {
@@ -601,9 +619,13 @@ func (l *InputLedger) MarkWaitingInput(teamID, inputID, reason string) error {
 	})
 }
 
-// RouteOrder 返回按路由优先级排序的输入（优先输入在前，各自按接受序；
-// 阶段 3 的公平配额在此基础上再加反饥饿），只含 queued/routing/waiting_input。
-func (l *InputLedger) RouteOrder(teamID string) []*TeamInput {
+// RouteOrderAt 返回按公平策略排序的待路由输入（阶段 3，§5）：优先输入在
+// 前、各自按接受序；普通输入等待超过 routerAgingAfter 视同优先（反饥饿）；
+// 连续 routerPriorityQuota 条优先输入已 routed 后，最早的普通输入强制插队
+// （「每处理 3 条优先输入至少处理 1 条普通输入」）。排序只依赖账本状态——
+// 重启后同一状态得到同一顺序（§5「所有排序决定落事件，重启后顺序相同」：
+// 状态本身即事件投影）。只含 queued/routing/waiting_input。
+func (l *InputLedger) RouteOrderAt(teamID string, now time.Time) []*TeamInput {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	priorityOrder := make([]string, 0, 8)
@@ -618,10 +640,33 @@ func (l *InputLedger) RouteOrder(teamID string) []*TeamInput {
 		default:
 			continue
 		}
-		if input.Priority {
+		if input.Priority || now.Sub(input.AcceptedAt) > routerAgingAfter {
 			priorityOrder = append(priorityOrder, key)
 		} else {
 			normalOrder = append(normalOrder, key)
+		}
+	}
+	// 配额：最近 routerPriorityQuota 条 routed 输入全为优先时，最早普通输入
+	// 提到队首（按 UpdatedAt 倒序取最近 routed）。
+	if len(normalOrder) > 0 {
+		routed := make([]string, 0, routerPriorityQuota)
+		for index := len(l.order) - 1; index >= 0 && len(routed) < routerPriorityQuota; index-- {
+			input := l.inputs[l.order[index]]
+			if input == nil || input.TeamID != teamID || input.QueueStatus != InputRouted {
+				continue
+			}
+			routed = append(routed, l.order[index])
+		}
+		allPriority := len(routed) == routerPriorityQuota
+		for _, key := range routed {
+			if !l.inputs[key].Priority && now.Sub(l.inputs[key].AcceptedAt) <= routerAgingAfter {
+				allPriority = false // 该优先位来自老化提升，不算连续插队
+				break
+			}
+		}
+		if allPriority {
+			priorityOrder = append([]string{normalOrder[0]}, priorityOrder...)
+			normalOrder = normalOrder[1:]
 		}
 	}
 	rows := make([]*TeamInput, 0, len(priorityOrder)+len(normalOrder))

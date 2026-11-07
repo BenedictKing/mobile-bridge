@@ -19,6 +19,7 @@ package team
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"time"
 )
@@ -79,17 +80,38 @@ func (s *Service) RoutePendingInputs(teamID string) int {
 		return 0
 	}
 	routed := 0
-	for _, input := range s.inputs.RouteOrder(teamID) {
-		if s.routeOneInput(team, input) {
+	// 队列预算计量一次、逐条复用（journal 全量重放，泵多条输入不重复读）。
+	budgetExceeded, budgetReason := s.queueBudgetState(team)
+	for _, input := range s.inputs.RouteOrderAt(teamID, s.nowFn()) {
+		if s.routeOneInput(team, input, budgetExceeded, budgetReason) {
 			routed++
 		}
 	}
 	return routed
 }
 
+// queueBudgetState 预计算团队的队列预算停靠态（阶段 3，§5）：计量=journal
+// 的 task_dispatching 事实跨 Run 汇总（防拆 Run 绕过成本上限）；≤0 不限。
+// journal 读取失败退化为不限——绝不因读账失败卡死路由。
+func (s *Service) queueBudgetState(team *Team) (bool, string) {
+	budget := team.Policy.QueueDispatchBudget
+	if budget <= 0 {
+		return false, ""
+	}
+	count, oldest := s.teamDispatchCount(team.ID)
+	if count < budget {
+		return false, ""
+	}
+	reset := "滚动窗口即将重置"
+	if !oldest.IsZero() {
+		reset = "额度重置约 " + oldest.Add(queueDispatchWindow).Format("15:04")
+	}
+	return true, fmt.Sprintf("团队队列预算已用完（24 小时滚动上限 %d 次派发，当前 %d 次）：%s，或调整 queueDispatchBudget", budget, count, reset)
+}
+
 // routeOneInput 推进单条输入：意图 → 创建/追加 → 确认。返回是否在本轮
 // 确认 routed（停靠/幂等跳过返回 false）。
-func (s *Service) routeOneInput(team *Team, input *TeamInput) bool {
+func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded bool, budgetReason string) bool {
 	runs := s.store.RunsByTeam(team.ID)
 	active := make([]*Run, 0, 1)
 	for _, run := range runs {
@@ -118,6 +140,15 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput) bool {
 	}
 	if waitReason != "" {
 		if err := s.inputs.MarkWaitingInput(team.ID, input.ID, waitReason); err != nil {
+			log.Printf("team %s 输入 %s 停靠记账失败: %v", team.ID, input.ID, err)
+		}
+		return false
+	}
+	// ⓪ Team 队列滚动派发预算（阶段 3，§5）：超出后新路由停靠并提示重置
+	// 时间（计量由 RoutePendingInputs 预计算复用）。旧路径（budgetUnits）
+	// 语义不变。
+	if budgetExceeded {
+		if err := s.inputs.MarkWaitingInput(team.ID, input.ID, budgetReason); err != nil {
 			log.Printf("team %s 输入 %s 停靠记账失败: %v", team.ID, input.ID, err)
 		}
 		return false
@@ -164,4 +195,48 @@ func (s *Service) materializeRoute(team *Team, input *TeamInput, kind, runID, ta
 	default:
 		return errors.New("未知路由种类：" + kind)
 	}
+}
+
+// teamDispatchCount 统计团队在滚动 24 小时窗口内的派发次数（journal 的
+// task_dispatching 事实，runId→teamId 映射来自 run_created 载荷与账本快照
+// ——已删 Run 的事件仍可映射）。返回 (次数, 窗口内最早一次的时间)；journal
+// 读取失败返回 (0, 零值)——预算闸门退化为不限，绝不因读账失败卡死路由。
+func (s *Service) teamDispatchCount(teamID string) (int, time.Time) {
+	if s.journal == nil {
+		return 0, time.Time{}
+	}
+	events, err := s.journal.Replay()
+	if err != nil {
+		log.Printf("team %s 队列预算计量失败（本轮不限）：journal 重放失败 %v", teamID, err)
+		return 0, time.Time{}
+	}
+	teamOfRun := map[string]string{}
+	for _, run := range s.store.Runs() {
+		teamOfRun[run.ID] = run.TeamID
+	}
+	cutoff := s.nowFn().Add(-queueDispatchWindow)
+	count := 0
+	var oldest time.Time
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		if event.Type == "run_created" {
+			if id := payloadString(event.Payload, "teamId"); id != "" {
+				teamOfRun[event.RunID] = id
+			}
+			continue
+		}
+		if event.Type != EventTaskDispatching || teamOfRun[event.RunID] != teamID {
+			continue
+		}
+		if event.CreatedAt.Before(cutoff) {
+			continue
+		}
+		count++
+		if oldest.IsZero() || event.CreatedAt.Before(oldest) {
+			oldest = event.CreatedAt
+		}
+	}
+	return count, oldest
 }

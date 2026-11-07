@@ -129,6 +129,14 @@ type Service struct {
 	// Team 级 inFlight——同 Team 多 Run 并发时在途合计不超过
 	// policy.MaxParallelTasks。纯内存，重启即空（与 pendingDispatch 同存亡）。
 	teamPending map[string]int
+	// teamMemberPending 是各 Run 派发窗口（投递池→快照落 dispatching 之间）
+	// 占用的成员计数（teamID→memberID→n，s.mu 保护）：跨 Run 成员 lease 的
+	// 窗口期记账，与 teamPending 同点登记、同点对称释放。
+	teamMemberPending map[string]map[string]int
+	// teamRunPending 是各 Run 派发窗口的任务计数（teamID→runID→n，s.mu
+	// 保护）：活动 Run 准入的窗口期口径——快照尚未落 dispatching 的派发
+	// 同样占用活跃 Run 槽位（两 Run 竞速时先注册窗口者先占槽）。
+	teamRunPending map[string]map[string]int
 
 	// pools 是团队级派发池（teamID → 信号量池，§6.3 层 1）。容量取 Team
 	// 策略的 MaxParallelTasks，策略变更时整体重建；在途派发持有旧池信号
@@ -179,19 +187,21 @@ func (s *Service) poolFor(team *Team) *teamDispatchPool {
 // 测试注入内存实现）。
 func NewService(store TeamStore, journal *Journal, queue QueueAdapter, resolver SessionResolver) *Service {
 	service := &Service{
-		store:         store,
-		journal:       journal,
-		queue:         queue,
-		resolver:      resolver,
-		locks:         NewLockRegistry(),
-		AIMD:          newAIMDRegistry(nil),
-		verifyTimeout: defaultVerifyTimeout,
-		waitSlice:     defaultWaitSlice,
-		stallAfter:    defaultStallAfter,
-		nowFn:         time.Now,
-		runs:          map[string]*runState{},
-		teamPending:   map[string]int{},
-		pools:         map[string]*teamDispatchPool{},
+		store:             store,
+		journal:           journal,
+		queue:             queue,
+		resolver:          resolver,
+		locks:             NewLockRegistry(),
+		AIMD:              newAIMDRegistry(nil),
+		verifyTimeout:     defaultVerifyTimeout,
+		waitSlice:         defaultWaitSlice,
+		stallAfter:        defaultStallAfter,
+		nowFn:             time.Now,
+		runs:              map[string]*runState{},
+		teamPending:       map[string]int{},
+		teamMemberPending: map[string]map[string]int{},
+		teamRunPending:    map[string]map[string]int{},
+		pools:             map[string]*teamDispatchPool{},
 	}
 	service.cancelAgentTurn = service.cancelTurnIfOurs
 	service.respondAgent = func(session *acpruntime.Session, requestID string, response *jsoncompat.Object) error {
@@ -1096,6 +1106,58 @@ func (s *Service) teamInFlight(teamID string) int {
 	return count
 }
 
+// teamMemberPendingDelta 对称调整团队派发窗口的成员占用计数（s.mu 保护）；
+// 归零删除键防长期运行下无限增长（teamPendingDelta 同款纪律）。
+func (s *Service) teamMemberPendingDelta(teamID, memberID string, delta int) {
+	if memberID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	members := s.teamMemberPending[teamID]
+	if members == nil {
+		if delta > 0 {
+			members = map[string]int{}
+			s.teamMemberPending[teamID] = members
+		} else {
+			return
+		}
+	}
+	members[memberID] += delta
+	if members[memberID] <= 0 {
+		delete(members, memberID)
+	}
+	if len(members) == 0 {
+		delete(s.teamMemberPending, teamID)
+	}
+}
+
+// teamRunPendingDelta 对称调整团队派发窗口的按 Run 计数（s.mu 保护）；
+// teamMemberPendingDelta 同款纪律。
+func (s *Service) teamRunPendingDelta(teamID, runID string, delta int) {
+	if runID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runs := s.teamRunPending[teamID]
+	if runs == nil {
+		if delta > 0 {
+			runs = map[string]int{}
+			s.teamRunPending[teamID] = runs
+		} else {
+			return
+		}
+	}
+	runs[runID] += delta
+	if runs[runID] <= 0 {
+		delete(runs, runID)
+	}
+	if len(runs) == 0 {
+		delete(s.teamRunPending, teamID)
+	}
+}
+
 // teamPendingDelta 调整团队的派发窗口计数（s.mu 保护）；归零/负值即删除键，
 // 防长期运行下按 teamID 无限增长。计数与 pendingDispatch 严格 1:1（登记一次
 // 必有一次收尾清除），负值只在防御意义下出现。
@@ -1146,12 +1208,6 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 		return true
 	}
 	memberBusy := map[string]bool{}
-	for i := range run.Tasks {
-		task := &run.Tasks[i]
-		if task.Status == TaskDispatching || task.Status == TaskRunning {
-			memberBusy[task.MemberID] = true
-		}
-	}
 	// 已投递派发池、快照尚未落 dispatching 的任务同样占成员互斥（窗口期
 	// 记账，防重复选中）。
 	for taskID := range state.pendingDispatch {
@@ -1168,16 +1224,47 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 	// 计数、合计超发。等待中的兄弟 Run 派发窗口任务已计入 teamPending，本
 	// 临界区与它们的登记/清除互斥，读数不会漏（快照先落、计数后减，计数只
 	// 可能短暂偏大，绝不偏小）。
+	//
+	// 成员 lease 与活动 Run 准入（阶段 3，§5）在同一临界区扩展：
+	//   - 成员互斥升级为 Team 级口径——兄弟 Run 的 dispatching/running 任务
+	//     与各 Run 派发窗口（teamMemberPending）占用的成员一律视为忙，
+	//     跨 Run 同一成员最多一个在途任务；
+	//   - 活跃 Run（有在途任务的非终态 Run）超过 MaxActiveRuns 时，未激活
+	//     的 Run 本轮不派发（planned 保持，槽位随在飞收尾轮转释放，不抢占）。
 	s.mu.Lock()
 	inFlight := 0
+	activeRuns := 0
+	selfActive := false
 	for _, sibling := range s.store.RunsByTeam(run.TeamID) {
 		if terminalRun(sibling.Status) {
 			continue
 		}
+		siblingInFlight := false
 		for i := range sibling.Tasks {
 			if sibling.Tasks[i].Status == TaskDispatching || sibling.Tasks[i].Status == TaskRunning {
 				inFlight++
+				memberBusy[sibling.Tasks[i].MemberID] = true
+				siblingInFlight = true
 			}
+		}
+		if !siblingInFlight && s.teamRunPending[run.TeamID][sibling.ID] <= 0 {
+			continue // 无在途任务且无派发窗口：不占活跃槽
+		}
+		if sibling.ID == run.ID {
+			selfActive = true
+			continue
+		}
+		activeRuns++
+	}
+	if !selfActive && policy.MaxActiveRuns > 0 && activeRuns >= policy.MaxActiveRuns {
+		// 活跃 Run 准入已满：本轮不选任务（等待片节奏重试；在飞收尾后
+		// 槽位自然释放——轮转只跳过没有就绪任务的 Run，不抢占已派发任务）。
+		s.mu.Unlock()
+		return true
+	}
+	for memberID, pending := range s.teamMemberPending[run.TeamID] {
+		if pending > 0 {
+			memberBusy[memberID] = true
 		}
 	}
 	inFlight += s.teamPending[run.TeamID]
@@ -1196,7 +1283,23 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 	for _, taskID := range selected {
 		state.pendingDispatch[taskID] = true
 		s.teamPending[run.TeamID]++
-		s.dispatchViaPool(state, team, policy, run.TeamID, run.ID, taskID, cwdByTask[taskID])
+		memberID := ""
+		if task := findTaskIn(run, taskID); task != nil {
+			memberID = task.MemberID
+			members := s.teamMemberPending[run.TeamID]
+			if members == nil {
+				members = map[string]int{}
+				s.teamMemberPending[run.TeamID] = members
+			}
+			members[memberID]++
+		}
+		runs := s.teamRunPending[run.TeamID]
+		if runs == nil {
+			runs = map[string]int{}
+			s.teamRunPending[run.TeamID] = runs
+		}
+		runs[run.ID]++
+		s.dispatchViaPool(state, team, policy, run.TeamID, run.ID, taskID, memberID, cwdByTask[taskID])
 	}
 	s.mu.Unlock()
 	return true
@@ -1257,12 +1360,12 @@ func (s *Service) passFold(state *runState) bool {
 // dispatchViaPool 把一次派发投递到团队派发池（§6.3）：信号量满时排队等待
 // ——阻塞期即取消窗口一（executeDispatch 获槽后先复查终态）。teamID 是计数
 // 键（run.TeamID 的显式传递——team 快照可能为 nil，登记/清除必须用同一键）。
-func (s *Service) dispatchViaPool(state *runState, team *Team, policy TeamPolicy, teamID, runID, taskID, cwd string) {
+func (s *Service) dispatchViaPool(state *runState, team *Team, policy TeamPolicy, teamID, runID, taskID, memberID, cwd string) {
 	pool := s.poolFor(team)
 	go func() {
 		pool.sem <- struct{}{}
 		defer func() { <-pool.sem }()
-		s.executeDispatch(state, team, policy, teamID, runID, taskID, cwd)
+		s.executeDispatch(state, team, policy, teamID, runID, taskID, memberID, cwd)
 	}()
 }
 
@@ -1289,7 +1392,7 @@ func (s *Service) dispatchViaPool(state *runState, team *Team, policy TeamPolicy
 //	    时对称 OnSettle。
 //
 // 确定性失败（内容超限、账本拒绝、成员缺失）落任务 failed，分支级联终止。
-func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy, teamID, runID, taskID, cwd string) {
+func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy, teamID, runID, taskID, dispatchMember, cwd string) {
 	// spawnSkipped 标记「已记账入队但 watcher 未生成」（前一代 watcher 尚
 	// 未退出，spawnWatcherLocked 幂等跳过）：收尾时额外唤醒循环，让
 	// adoptWatchersLocked 在旧 watcher 退出后补收养，否则要等一个等待片。
@@ -1311,6 +1414,8 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		state.mu.Unlock()
 		if !accounted {
 			s.teamPendingDelta(teamID, -1)
+			s.teamMemberPendingDelta(teamID, dispatchMember, -1)
+			s.teamRunPendingDelta(teamID, runID, -1)
 		}
 	}()
 	// (1) 取消窗口一：获槽后先复查（等待期间状态可能已变）。
@@ -1406,6 +1511,8 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	dispatch, err := s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, leadBriefing)
 	if err == nil && dispatch != nil {
 		s.teamPendingDelta(teamID, -1)
+		s.teamMemberPendingDelta(teamID, dispatchMember, -1)
+		s.teamRunPendingDelta(teamID, runID, -1)
 		accounted = true
 		// 预算计量（§9）：task_dispatching 事实已落 journal，已派发数 +1
 		//（与 countRunDispatches 的重放口径一致——每次成功记账恰一次）。

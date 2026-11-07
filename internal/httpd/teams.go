@@ -3104,6 +3104,10 @@ var teamPolicyIntFields = []teamPolicyIntField{
 	{"budgetUnits", 0, 0, func(p *team.TeamPolicy, v int) { p.BudgetUnits = v }},
 	// maxPendingInputs（阶段 1 输入队列背压）：0=不设上限。
 	{"maxPendingInputs", 0, 0, func(p *team.TeamPolicy, v int) { p.MaxPendingInputs = v }},
+	// maxActiveRuns（阶段 3 活跃 Run 准入）：0=不设上限。
+	{"maxActiveRuns", 0, 0, func(p *team.TeamPolicy, v int) { p.MaxActiveRuns = v }},
+	// queueDispatchBudget（阶段 3 队列滚动派发预算）：0=不设上限。
+	{"queueDispatchBudget", 0, 0, func(p *team.TeamPolicy, v int) { p.QueueDispatchBudget = v }},
 }
 
 // parseTeamPolicy 把请求里的 policy 部分字段合并进 base（未提供的字段保持

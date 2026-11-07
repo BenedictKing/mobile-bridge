@@ -36,7 +36,7 @@ func TestDispatchRecreatesUnrecoverableSessionAndRebindsMember(t *testing.T) {
 				ID: "task", MemberID: "dev", Prompt: "继续执行", Status: TaskPlanned, WriteLock: TaskWriteLockNone,
 			}}}
 			state := h.saveExecRun(t, run)
-			h.service.executeDispatch(state, h.team, h.team.Policy, h.team.ID, run.ID, "task", "/tmp/dev")
+			h.service.executeDispatch(state, h.team, h.team.Policy, h.team.ID, run.ID, "task", "dev", "/tmp/dev")
 
 			if recreator.calls != 1 {
 				t.Fatalf("无法恢复的会话应只重建一次，实际 %d", recreator.calls)
@@ -65,7 +65,7 @@ func TestSessionRecoveryFailureFallsBackToLeadTriage(t *testing.T) {
 		ID: "dev-task", MemberID: "dev", Prompt: "继续执行", Status: TaskPlanned, WriteLock: TaskWriteLockNone,
 	})
 	state := h.saveExecRun(t, run)
-	h.service.executeDispatch(state, h.team, h.team.Policy, h.team.ID, run.ID, "dev-task", "/tmp/dev")
+	h.service.executeDispatch(state, h.team, h.team.Policy, h.team.ID, run.ID, "dev-task", "dev", "/tmp/dev")
 	if task := findTaskIn(h.store.Run(run.ID), "dev-task"); task.Status != TaskFailed {
 		t.Fatalf("恢复失败应落原任务失败: %+v", task)
 	}

@@ -1328,7 +1328,9 @@ func writeTeamPhase3RecoveryState(t *testing.T, dataDir string) (teamID, runAct,
 		Tasks: []team.Task{{ID: "lead", MemberID: "lead", Prompt: "主线任务", Ordinal: 0,
 			Status: team.TaskCompleted, WriteLock: team.TaskWriteLockNone, Result: "主线产出", ResultDetail: leadResult}},
 		CreatedAt: now, UpdatedAt: now}
-	actionOK := team.Action{Type: team.ActionTypeDelegate, SourceTaskID: "lead", Round: 2, Member: "dev",
+	// 补执行动作派给 lead：阶段 3 的跨 Run 成员 lease 下，dev 被在途的 q1
+	//（带未答提问）合法占用，本用例验证的是动作恢复而非成员争用。
+	actionOK := team.Action{Type: team.ActionTypeDelegate, SourceTaskID: "lead", Round: 2, Member: "lead",
 		Task: "恢复补执行任务 PH3-RECOVER", ActionKey: team.ActionKey(teamID, runAct, "lead", 2, 0), Status: team.ActionStatusProposed}
 	actionBad := team.Action{Type: team.ActionTypeDelegate, SourceTaskID: "lead", Round: 1, Member: "ghost",
 		Task: "未知成员动作", ActionKey: team.ActionKey(teamID, runAct, "lead", 1, 1), Status: team.ActionStatusProposed}
@@ -1374,7 +1376,7 @@ func writeTeamPhase3RecoveryState(t *testing.T, dataDir string) (teamID, runAct,
 		{ID: uuid.NewString(), RunID: runAct, Type: team.EventActionProposed, Source: "watcher", CreatedAt: now,
 			IdempotencyKey: actionOK.ActionKey,
 			Payload: map[string]any{"taskId": "lead", "actionKey": actionOK.ActionKey, "type": actionOK.Type,
-				"round": 2, "sourceTaskId": "lead", "member": "dev", "taskHead": actionOK.Task}},
+				"round": 2, "sourceTaskId": "lead", "member": "lead", "taskHead": actionOK.Task}},
 		{ID: uuid.NewString(), RunID: runAct, Type: team.EventActionProposed, Source: "watcher", CreatedAt: now,
 			IdempotencyKey: actionBad.ActionKey,
 			Payload: map[string]any{"taskId": "lead", "actionKey": actionBad.ActionKey, "type": actionBad.Type,

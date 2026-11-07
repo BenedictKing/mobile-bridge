@@ -1,6 +1,6 @@
 # 团队多需求编排与持久队列实施方案
 
-> 状态：阶段 0–2 已实施（2026-11-07），阶段 3–5 未实施 · 原方案定稿 2026-11-07
+> 状态：阶段 0–3 已实施（2026-11-07），阶段 4–5 未实施 · 原方案定稿 2026-11-07
 >
 > 基于 [团队总体设计](team-overall-design.md)、[持续反馈方案](team-autonomous-feedback-plan.md) 和现行 Go 网关。本文只定义增量实施与验收，不把目标设计描述为已实现功能。
 >
@@ -10,6 +10,7 @@
 > - 阶段 1 ✅：输入账本 `internal/team/inputqueue.go`（team-inputs.jsonl 事实 + team-inputs.json 快照，损坏隔离重建）；`POST/GET /api/teams/:id/inputs`（queueVersion:2 分流）、`PATCH`（仅 queued、操作 UUID 幂等、版本冲突 409）、`prioritize`/`cancel`；容量背压 `maxPendingInputs`（默认 64，未路由积压口径，429）；会话发送 `teamQueueVersion:2` 分流；重启重放与操作幂等跨重启成立。
 > - 阶段 2 ✅（机械路由部分）：同批 `key`/`dependsOn` 动作扩展（批级校验：key 唯一/不与既有任务同名/引用可解析/无环；拓扑序执行；审查可用显式依赖覆盖执行任务，未覆盖保持阶段 0 保守拒绝）；输入路由器 `internal/team/inputroute.go`（intent→幂等创建→routed 确认，new_task/follow_up/amend，多活跃 Run 停靠 waiting_input 并记录原因，崩溃重泵对账）；WorkItem 索引随 routed 落账。自动路由由 `TeamQueueAutoRoute` 灰度开关控制（main.go 已开启，测试环境关闭以获得确定排队态）。
 > - 阶段 2 未尽事项：Lead 语义路由提案（answer/clarify 分类、多要求拆分的来源引用核对、超 Run 上限拆批）依赖 Lead 提案协议，属阶段 2 后续增量；当前对范围不明的输入停靠 waiting_input，不用猜测代替用户决定。
+> - 阶段 3 ✅：跨 Run 成员 lease（`teamMemberPending` 窗口记账 + Team 级 memberBusy，同一成员跨 Run 最多一个在途任务）；活跃 Run 准入 `maxActiveRuns`（默认 2，活跃=有在途任务或派发窗口的非终态 Run，`teamRunPending` 窗口口径，轮转释放不抢占）；路由公平（`RouteOrderAt`：3:1 优先配额 + 10 分钟老化提升，排序只依赖账本状态、重启同序）；Team 队列滚动派发预算 `queueDispatchBudget`（默认 48 次/24 小时，journal 的 task_dispatching 计量，超出停靠并提示重置时间；计量失败退化为不限）。
 > - 验证：`go test ./...`、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js` 全绿；`make conformance` 的 golden 失败为存量问题（干净 HEAD 同样失败，与本次无关）。§9.1 要求的隔离 Team 真实浏览器验证与 VERIFICATION.md 记录尚未执行（需网关重启，由用户决定）。
 
 ## 1. 问题与边界

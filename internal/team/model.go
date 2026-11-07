@@ -283,6 +283,15 @@ type TeamPolicy struct {
 	// team-demand-queue-plan.md §3.2，阶段 1）：独立于 MaxTasksPerRun 的
 	// 入口背压；≤0 视为不限（DefaultPolicy 给 DefaultMaxPendingInputs）。
 	MaxPendingInputs int `json:"maxPendingInputs"`
+	// MaxActiveRuns 是每 Team 的活跃 Run 准入上限（§5，阶段 3）：活跃=
+	// 有在途任务（dispatching/running）的非终态 Run；超出的 Run 保持
+	// planned 等待释放（轮转准入，不抢占已派发任务）。≤0 视为不限。
+	MaxActiveRuns int `json:"maxActiveRuns"`
+	// QueueDispatchBudget 是 Team 队列滚动 24 小时的派发总额（§5，阶段 3）：
+	// 计量=task_dispatching 事实（journal），防拆成多个 Run 绕过成本上限；
+	// 超出后新路由停靠 waiting_input 并提示重置时间。≤0 视为不限。这是任务
+	// 派发次数而非 token 额度；旧路径（budgetUnits）语义不变。
+	QueueDispatchBudget int `json:"queueDispatchBudget"`
 }
 
 // DefaultPolicy 返回 §4.2 的默认策略。
@@ -304,6 +313,8 @@ func DefaultPolicy() TeamPolicy {
 		AutoDispatch:           false,
 		AutoApplyChanges:       false,
 		MaxPendingInputs:       DefaultMaxPendingInputs,
+		MaxActiveRuns:          DefaultMaxActiveRuns,
+		QueueDispatchBudget:    DefaultQueueDispatchBudget,
 	}
 }
 
@@ -674,6 +685,8 @@ func (p *TeamPolicy) jsonObject() *jsoncompat.Object {
 	object.Set("autoDispatch", p.AutoDispatch)
 	object.Set("autoApplyChanges", p.AutoApplyChanges)
 	object.Set("maxPendingInputs", jsoncompat.Num(p.MaxPendingInputs))
+	object.Set("maxActiveRuns", jsoncompat.Num(p.MaxActiveRuns))
+	object.Set("queueDispatchBudget", jsoncompat.Num(p.QueueDispatchBudget))
 	return object
 }
 
