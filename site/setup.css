@@ -46,3 +46,10 @@
 .setup-footer{max-width:1180px;margin:0 auto;padding:28px;display:flex;justify-content:space-between;gap:20px;font-size:13px}
 @media(max-width:900px){.method-picker{grid-template-columns:repeat(3,minmax(0,1fr))}.step-body{padding-left:0}.map-node{padding:13px}}
 @media(max-width:600px){.setup-page .bar{gap:10px}.setup-page .bar>a:not(.brand){order:3;width:100%}.setup-page .languages{margin-left:auto}.setup-intro{padding-top:34px}.method-picker{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.method-picker a{padding:12px}.method-picker a:last-child{grid-column:1/-1}.setup-panel{scroll-margin-top:130px}.network-map{padding:16px}.map-flow{grid-template-columns:1fr;gap:7px}.map-node{min-height:0;padding:14px 16px}.map-index{float:right;margin:0}.map-arrow{transform:rotate(90deg);font-size:21px;line-height:1.1}.step-head{gap:12px}.step-head h3{font-size:19px}.step-number{width:36px;height:36px;font-size:13px}.guide-step{padding:25px 0}.scenario{padding:0 14px}.setup-page td,.setup-page th{padding:11px;min-width:110px}.setup-footer{flex-direction:column}.code-block pre{font-size:12px}.boundary-note{font-size:12px}}
+/* 站点页不加载 web/style.css，自带按压反馈与复制成功/需手动复制的按钮态。 */
+button{cursor:pointer;transition:transform .12s ease,background-color .12s ease}
+button:not(:disabled):active{transform:scale(.97)}
+button:disabled{cursor:wait;opacity:.55}
+@media(prefers-reduced-motion:reduce){button:not(:disabled):active{transform:none!important}*,*:before,*:after{transition:none!important}}
+.setup-page button[data-copy].copied{background:#2f5b20;border-color:#2f5b20;color:#fff}
+.setup-page button[data-copy].copy-manual{background:#8a6a12;border-color:#8a6a12;color:#fff}

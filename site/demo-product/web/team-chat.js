@@ -372,7 +372,7 @@ function teamReviewerMemberID(team){
   return (team.members||[]).find(member=>member.enabled&&member.role==='reviewer')?.id||'';
 }
 class TeamSettingsDialog{
-  constructor({request,onChange}){this.request=request;this.onChange=onChange;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';}
+  constructor({request,onChange}){this.request=request;this.onChange=onChange;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';this.draftTags=new Map();this.draftText=new Map();}
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
   dialog(){
@@ -383,7 +383,7 @@ class TeamSettingsDialog{
     this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);this._dialog=dialog;return dialog;
   }
   async open(team){
-    const dialog=this.dialog();this.team=team;this.error='';this.render();dialog.showModal();
+    const dialog=this.dialog();this.team=team;this.error='';this.draftTags.clear();this.draftText.clear();this.render();dialog.showModal();
     try{
       const detail=await this.request('/api/teams/'+encodeURIComponent(team.id));this.team=detail;
       if(detail.project){
@@ -414,7 +414,7 @@ class TeamSettingsDialog{
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
     const memberSection=this.node('section',undefined,'team-settings-section');
     memberSection.append(this.node('h3',t_safe('成员')));
-    memberSection.append(this.node('p',t_safe('用逗号分隔能力或模型标签，主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
+    memberSection.append(this.node('p',t_safe('回车、空格或逗号分隔标签并生成胶囊，点右上角 × 移除，保存后生效；主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
     for(const member of members){
       const row=this.node('div',undefined,'team-settings-member');
       const info=this.node('div',undefined,'team-member-info');
@@ -422,10 +422,47 @@ class TeamSettingsDialog{
       const roleLabels=[member.id===team.leadId?t_safe('主控'):t_safe('成员')];
       if(member.id===reviewerID)roleLabels.push(t_safe('评审'));
       info.append(this.node('span',roleLabels.join(' · ')+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
-      const tagsField=this.node('label',undefined,'team-member-tags');
-      const tagsInput=document.createElement('input');tagsInput.value=(member.tags||[]).join(', ');tagsInput.maxLength=400;
+      // 能力标签：胶囊 + 右上角 ×。改动先进草稿，「保存标签」统一落库，
+      // 避免误触立即改写主控看到的成员目录。
+      const draftTags=()=>this.draftTags.has(member.id)?this.draftTags.get(member.id):(member.tags||[]).slice();
+      const tagsField=this.node('div',undefined,'team-member-tags');
+      const tagsInput=document.createElement('input');tagsInput.value=this.draftText.get(member.id)||'';tagsInput.maxLength=400;
       tagsInput.placeholder=t_safe('如：前端、React、Claude Sonnet');tagsInput.setAttribute('aria-label',teamSettingsMemberLabel(member)+t_safe(' 的能力标签'));tagsInput.disabled=this.busy;
-      const saveTags=this.button(t_safe('保存标签'),()=>this.changeTags(member.id,tagsInput.value));saveTags.disabled=this.busy;saveTags.className='team-member-save-tags';
+      const syncSave=()=>{saveTags.disabled=this.busy||this.tagsUnsaved(member,draftTags());};
+      const chipFor=tag=>{
+        const chip=this.node('span',undefined,'team-tag-chip');
+        chip.append(this.node('span',tag,'team-tag-chip-text'));
+        const remove=this.button('×',()=>{this.draftTags.set(member.id,draftTags().filter(item=>item!==tag));chip.remove();syncSave();});
+        remove.className='team-tag-chip-remove';remove.disabled=this.busy;
+        remove.setAttribute('aria-label',t_safe('移除标签')+'：'+tag);
+        chip.append(remove);return chip;
+      };
+      const addTags=value=>{
+        const additions=this.splitDraftTags(value).filter(tag=>!draftTags().includes(tag));
+        if(!additions.length)return;
+        this.draftTags.set(member.id,[...draftTags(),...additions]);
+        for(const tag of additions)tagsField.insertBefore(chipFor(tag),tagsInput);
+        syncSave();
+      };
+      const saveTags=this.button(t_safe('保存标签'),async()=>{
+        const pending=tagsInput.value; // 保存时把未成片的尾段一并收进草稿
+        if(pending){tagsInput.value='';this.draftText.delete(member.id);addTags(pending);}
+        await this.changeTags(member.id,draftTags().join(','));
+        // 保存成功回到服务端真值；失败保留草稿供重试。
+        if(!this.error){this.draftTags.delete(member.id);this.render();}
+      });
+      saveTags.className='team-member-save-tags';syncSave();
+      tagsInput.oninput=()=>{ // 空格/逗号即时成片，未完成的一段留在输入框继续输入。
+        const parts=tagsInput.value.split(/[ ,，]+/);const remainder=parts.pop()||'';
+        const complete=parts.join(',');tagsInput.value=remainder;this.draftText.set(member.id,remainder);
+        if(complete)addTags(complete);
+      };
+      tagsInput.onkeydown=event=>{
+        if(event.key!=='Enter'&&event.key!==','&&event.key!=='，')return;
+        event.preventDefault();const value=tagsInput.value;tagsInput.value='';this.draftText.set(member.id,'');
+        addTags(value);
+      };
+      for(const tag of draftTags())tagsField.append(chipFor(tag));
       tagsField.append(tagsInput,saveTags);info.append(tagsField);row.append(info);
       if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}
       memberSection.append(row);
@@ -457,6 +494,8 @@ class TeamSettingsDialog{
     if(JSON.stringify(tags)===JSON.stringify(member.tags||[]))return;
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID),{method:'PATCH',body:{tags,version:this.team.version}}));
   }
+  splitDraftTags(value){return [...new Set(String(value||'').split(/[,， ]+/).map(tag=>tag.trim()).filter(Boolean))];}
+  tagsUnsaved(member,draft){return JSON.stringify(draft)!==JSON.stringify(member.tags||[]);}
   async addMember(agent,role){
     if(!agent)return;
     const base='member-'+agent.replace(/[^A-Za-z0-9_-]/g,'-');let id=base,index=2;
@@ -472,7 +511,7 @@ class TeamSettingsDialog{
   async mutate(operation){
     if(this.busy)return;
     this.busy=true;this.error='';this.render();
-    try{this.team=await operation();this.onChange&&this.onChange(this.team);}
+    try{this.team=await operation();this.onChange&&this.onChange(this.team);globalThis.BridgeFeedback?.ok('团队设置已更新');}
     catch(error){this.error=error.message;}
     finally{this.busy=false;this.render();}
   }

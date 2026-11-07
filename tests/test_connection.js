@@ -74,3 +74,19 @@ test('aborted direct request does not deactivate or retry',async()=>{
   assert.equal(BridgeConnection.active,true);
   assert.equal(calls.length,1);
 });
+
+test('logout reports a failed server sign-out instead of swallowing it',async()=>{
+  await bootstrap();
+  const calls=[];
+  globalThis.fetch=async path=>{calls.push(path);if(path.startsWith(origin))return new Response('{}',{status:500});return json({ok:true});};
+  assert.equal(await BridgeConnection.logout(),true);
+  assert.equal(calls.length,2);
+  assert.equal(BridgeConnection.active,false);
+});
+
+test('logout returns false when every endpoint succeeds',async()=>{
+  await bootstrap();
+  globalThis.fetch=async()=>json({ok:true});
+  assert.equal(await BridgeConnection.logout(),false);
+  assert.equal(BridgeConnection.active,false);
+});

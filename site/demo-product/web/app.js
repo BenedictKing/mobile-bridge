@@ -154,7 +154,8 @@ async function enter(){
   await list;
 }
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=loginErrorText(error);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
-$('logout').onclick=async()=>{await BridgeConnection.logout();csrf='';state=null;currentId=null;currentTeam=null;teamChat?.close();listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();};
+// 注销失败时不能静默当成成功：本地凭据已清但服务端会话可能仍然有效，必须在登录页明确告警。
+$('logout').onclick=async()=>{const button=$('logout'),label=button.querySelector('span');if(button.disabled)return;const original=label.textContent;button.disabled=true;label.textContent=t('正在退出…');let logoutFailed=false;try{logoutFailed=await BridgeConnection.logout();}catch(error){logoutFailed=true;}csrf='';state=null;currentId=null;currentTeam=null;teamChat?.close();listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();button.disabled=false;label.textContent=original;if(logoutFailed)$('login-error').textContent=t('本地已退出，但服务端注销失败；请重新登录后再退出一次，或关闭浏览器清除会话。');};
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 let listMode=localStorage.getItem('list-mode')==='project'?'project':'recent';
 function renderListMode(){const label=listMode==='project'?'按项目':'最近交互';$('list-mode-label').textContent=t(label);$('list-mode-label').dataset.i18n=label;}
@@ -297,7 +298,7 @@ function loadListOnScroll(){
   if(listHasMore&&!listLoading&&list.scrollHeight-list.clientHeight-list.scrollTop<240)loadList().catch(e=>toast(e.message));
 }
 $('sessions').onscroll=loadListOnScroll;
-$('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).catch(e=>toast(e.message));
+$('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).then(()=>toast(t('会话列表已刷新'))).catch(e=>toast(e.message));
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
 let newChatProjects=[],newChatAgents=[],newChatHiddenCwds=new Set(),creatingChat=false,approvalBusy=0;
 function projectCwdKey(project){return String(project?.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'')||'/';}
@@ -519,16 +520,25 @@ async function loadPermissionSettings(id=currentId,host=currentHost){
   const request=++permissionRequest;
   try{
     const result=await api(sessionUrl(target,'permissions',targetHost));
-    if(request!==permissionRequest||target!==currentId||targetHost!==currentHost)return;
+    if(request!==permissionRequest||target!==currentId||targetHost!==currentHost)return true;
     permissionState=result;renderPermissionState();
+    return true;
   }catch(error){
-    if(request===permissionRequest&&target===currentId&&targetHost===currentHost){permissionState={supported:false,options:[],current:null};renderPermissionState();}
+    if(request!==permissionRequest||target!==currentId||targetHost!==currentHost)return false;
+    // 加载失败不能静默隐藏入口并把面板留成空白：对话框打开时就地报错、
+    // 保存按钮保持禁用；后台预加载失败则保留上次状态，重新打开即可重试。
+    if($('permission-dialog').open)$('permission-error').textContent=t(error.message)||t('权限设置加载失败，请重试');
+    return false;
   }
 }
 $('permission-button').onclick=async()=>{
-  $('permission-error').textContent='';$('permission-dialog').showModal();
-  await loadPermissionSettings();
-  if($('permission-dialog').open&&permissionState.supported)$('permission-select').value=permissionState.current||'';
+  const key=chatKey();
+  $('permission-error').textContent='';$('permission-select').disabled=true;$('permission-save').disabled=true;
+  $('permission-dialog').showModal();
+  const loaded=await loadPermissionSettings();
+  if(!$('permission-dialog').open||key!==chatKey()||!loaded)return;
+  $('permission-select').disabled=false;$('permission-save').disabled=false;
+  $('permission-select').value=permissionState.current||'';
 };
 $('permission-form').onsubmit=async event=>{
   event.preventDefault();
@@ -1352,12 +1362,12 @@ $('message').onkeydown=event=>{
   const enterSends=document.documentElement.dataset.enterMode==='send';
   if(event.metaKey||event.ctrlKey||event.shiftKey!==enterSends){event.preventDefault();$('composer').requestSubmit();}
 };
-$('stop').onclick=async()=>{try{await api('/api/sessions/'+currentId+'/stop',{});toast('已请求停止');}catch(e){toast(e.message);}};
+$('stop').onclick=async()=>{const button=$('stop');if(button.disabled)return;button.disabled=true;try{await api('/api/sessions/'+currentId+'/stop',{});toast('已请求停止');}catch(e){toast(e.message);}finally{button.disabled=false;}};
 document.querySelectorAll('[data-compact-method]').forEach(button=>button.onclick=()=>selectCompactMethod(button.dataset.compactMethod));
 document.querySelectorAll('[data-compact]').forEach(button=>button.onclick=()=>compactChat(button.dataset.compact));
 document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.onclick=()=>compactGateway(button.dataset.gatewayCompact));
-$('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
-$('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
+$('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});toast(t('已请求加载完整历史'));}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
+$('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});toast(t('会话已重新连接'));}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
 $('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话；请勿同时在桌面端继续此会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
 async function loadCatalogKind(kind,refresh=false){

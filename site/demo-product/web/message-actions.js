@@ -3,14 +3,20 @@ const actionText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(sou
 window.BridgeClipboard={
   async copy(getText,button){
     if(button.disabled)return;
-    const label=button.textContent;button.disabled=true;button.textContent=actionText('正在读取…');
+    // 连点时始终以首次的原始文案复位，避免按钮卡在「已复制」。
+    const label=button.copyLabel||button.textContent;
+    button.copyLabel=label;
+    if(button.copyTimer){clearTimeout(button.copyTimer);button.copyTimer=null;}
+    const restore=()=>{button.textContent=label;button.classList?.remove('copied');button.copyTimer=null;};
+    button.disabled=true;button.textContent=actionText('正在读取…');
     try{
       const text=await getText();
       try{
         if(!navigator.clipboard?.writeText)throw Error('Clipboard unavailable');
         await navigator.clipboard.writeText(text);
         button.textContent=actionText('已复制');
-        setTimeout(()=>{button.textContent=label;},1500);
+        button.classList?.add('copied');
+        button.copyTimer=setTimeout(restore,1500);
       }catch{
         const dialog=document.createElement('dialog');dialog.className='picker copy-dialog';
         const heading=document.createElement('h2');heading.textContent=actionText('复制内容');
@@ -21,10 +27,28 @@ window.BridgeClipboard={
         // 点框外关闭（backdrop 点击落在 dialog 自身，同 diff/图片弹窗）；只读内容，误触无损失。
         dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();});
         dialog.onclose=()=>{dialog.remove();button.focus();};dialog.showModal();input.focus();input.select();input.setSelectionRange(0,text.length);
-        button.textContent=label;
+        restore();
       }
-    }catch(error){button.textContent=label;document.dispatchEvent(new CustomEvent('bridge-message-error',{detail:error.message}));}
+    }catch(error){restore();document.dispatchEvent(new CustomEvent('bridge-message-error',{detail:error.message}));}
     finally{button.disabled=false;}
+  }
+};
+
+// 统一的操作成功反馈：优先复用主界面的 toast（app.js 顶层函数），
+// 缺失时退回页面自带的 #toast，各面板无需各自维护一套提示区。
+// 附带按钮短态，保证没有浮层的页面也能看到结果。
+window.BridgeFeedback={
+  ok(text,button){
+    const message=actionText(text);
+    if(typeof window.toast==='function')window.toast(message);
+    else{
+      const el=typeof document!=='undefined'&&document.getElementById?document.getElementById('toast'):null;
+      if(el){el.textContent=message;el.hidden=false;clearTimeout(window.BridgeFeedback.timer);window.BridgeFeedback.timer=setTimeout(()=>{el.hidden=true;},2400);}
+    }
+    if(button&&button.classList){
+      button.classList.add('copied');clearTimeout(button.feedbackTimer);
+      button.feedbackTimer=setTimeout(()=>button.classList.remove('copied'),1500);
+    }
   }
 };
 

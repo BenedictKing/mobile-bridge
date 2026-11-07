@@ -539,11 +539,12 @@ class TeamsPanel{
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
   runBadge(status){return teamStatusBadge(status,TEAM_RUN_STATUS_LABELS);}
   async refresh(){
-    if(this.loading)return;
-    this.loading=true;this.error='';this.render();
-    try{const value=await this.request('/api/teams');this.teams=value.teams||[];this.onChange&&this.onChange(this.teams);}
+    if(this.loading)return false;
+    this.loading=true;this.error='';this.render();let succeeded=false;
+    try{const value=await this.request('/api/teams');this.teams=value.teams||[];this.onChange&&this.onChange(this.teams);succeeded=true;}
     catch(error){this.error=error.message;}
     finally{this.loading=false;this.render();}
+    return succeeded;
   }
   async send(method,path,body){
     if(this.busy)return null;
@@ -571,7 +572,7 @@ class TeamsPanel{
     const t=BridgeI18n.t,root=this.root;
     root.replaceChildren();
     const toolbar=this.node('div',undefined,'team-toolbar');
-    const refresh=this.button(t('刷新'),()=>this.refresh());
+    const refresh=this.button(t('刷新'),async()=>{if(await this.refresh())globalThis.BridgeFeedback?.ok('团队列表已刷新');});
     refresh.disabled=this.loading||this.busy;
     const create=this.button(this.create?t('收起新建'):t('新建团队'),()=>{
       this.create=this.create?null:{name:'',project:'',autoDispatch:true,error:'',requestId:teamUUID(),attempt:'',members:[{agent:'',role:'lead',name:''}]};
@@ -966,7 +967,7 @@ class TeamsPanel{
       goal:'',mode:'single',collect:'all',
       tasks:[{id:'t1',memberId:'',memberIds:new Set(),deps:new Set(),prompt:'',writeLock:'none'}],
       submit:payload=>this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs',{method:'POST',body:payload}),
-      onSuccess:run=>{this.openRun&&this.openRun(team.id,run.id);this.loadRuns(team.id);},
+      onSuccess:run=>{this.openRun&&this.openRun(team.id,run.id);this.loadRuns(team.id);globalThis.BridgeFeedback?.ok('Run 已创建');},
     });
   }
 }
@@ -977,6 +978,8 @@ class TeamRunScreen{
     this.teamId=null;this.runId=null;this.team=null;this.detail=null;this.meta=null;
     this.epoch='';this.lastSeq=-1;this.generation=0;
     this.stopFn=null;this.refetchTimer=null;this.actionError='';
+    this.actionBusy=false;     // Run 控制按钮的请求中状态（防连点重复 POST）
+    this.refetchError='';      // 补读重试耗尽后的就地告警
     this.terminalSynced=false; // 终态后的整页补读只做一次
     this.refetchFailures=0;    // 补读失败的有限重试计数
     this.reconnecting=false;   // 断线 chip：由 'reconnecting' 置位、成功帧自清
@@ -1007,6 +1010,7 @@ class TeamRunScreen{
     const generation=++this.generation;
     this.teamId=teamId;this.runId=runId;
     this.team=null;this.detail=null;this.meta=null;this.actionError='';this.actionNotice='';
+    this.actionBusy=false;this.refetchError='';
     this.epoch='';this.lastSeq=-1;this._lastMetaJSON='';
     this.terminalSynced=false;this.refetchFailures=0;
     this.reconnecting=false;this.taskDiffs.clear();this.diffOpen.clear();
@@ -1184,7 +1188,7 @@ class TeamRunScreen{
       const detail=await this.request(this.runUrl(''));
       if(generation!==this.generation)return;
       this.detail=detail;
-      this.refetchFailures=0;
+      this.refetchFailures=0;this.refetchError='';
       // 拿到权威快照后解除 decision 卡的 busy：已作答的问题转灰态；仍 open 的
       // 可重新作答（答案只允许消费一次，重复提交由服务端 409 拦截后整页补读）。
       for(const entry of this.questionState.values())entry.busy=false;
@@ -1193,7 +1197,11 @@ class TeamRunScreen{
       // 连接问题交给 transport 重连；此处有限重试，避免终态帧后的唯一一次
       // 补读失败把任务卡永远留在旧状态。
       if(generation!==this.generation||!this.stopFn)return;
-      if(++this.refetchFailures<=5)this.scheduleRefetch(1000);
+      if(++this.refetchFailures<=5){this.scheduleRefetch(1000);return;}
+      // 重试耗尽：解除决策卡 busy 并就地报错，否则按钮会永久变灰且用户不知情。
+      for(const entry of this.questionState.values())entry.busy=false;
+      this.refetchError=BridgeI18n.t('同步 Run 状态失败，请刷新页面后重试');
+      this.render();
     }
   }
   /* ---- 阶段图（§11.3，GET runUrl(graph)）----
@@ -1586,6 +1594,9 @@ class TeamRunScreen{
     box.append(this.button(t('创建修订 Run'),()=>this.openAmend()));
     if(this.actionNotice)box.append(this.node('span',this.actionNotice,'team-notice'));
     if(this.actionError)box.append(this.node('span',this.actionError,'error'));
+    if(this.refetchError)box.append(this.node('span',this.refetchError,'error'));
+    // 动作进行中禁用整排控制按钮：之前 postAction 全程无 busy 态，连点会重复 POST。
+    if(this.actionBusy)for(const button of box.querySelectorAll('button'))button.disabled=true;
     return box;
   }
   renderDelivery(){
@@ -1594,22 +1605,26 @@ class TeamRunScreen{
     return box;
   }
   async postAction(action){
-    if(!this.detail)return;
-    this.actionError='';this.actionNotice='';
-    const runId=this.runId,teamId=this.teamId;
+    if(!this.detail||this.actionBusy)return;
+    this.actionBusy=true;this.actionError='';this.actionNotice=BridgeI18n.t('正在处理…');
+    const runId=this.runId,teamId=this.teamId,generation=this.generation;
+    this.render(); // 立即进入 busy 态：按钮禁用 + 「正在处理…」
     try{
       const detail=await this.request(this.runUrl(action),{method:'POST'});
-      if(teamId!==this.teamId||runId!==this.runId)return;
+      if(teamId!==this.teamId||runId!==this.runId||generation!==this.generation)return;
       this.detail=detail;this.meta=null;
-      this.render();
+      this.actionNotice=({resume:BridgeI18n.t('已继续运行'),pause:BridgeI18n.t('已暂停运行'),cancel:BridgeI18n.t('已取消运行')})[action]||BridgeI18n.t('操作已完成');
       // 暂停/继续/取消会改变图节点状态与统计口径：动作成功后补拉一次补充视图
       //（404 静默回退，旧网关不报错）。
       this.loadGraph();
       this.loadStats();
     }catch(error){
-      if(teamId!==this.teamId||runId!==this.runId)return;
-      this.actionError=error.message;
-      this.render();
+      if(teamId!==this.teamId||runId!==this.runId||generation!==this.generation)return;
+      this.actionNotice='';this.actionError=error.message;
+    }finally{
+      // 切页后也必须复位，否则新 Run 的控制按钮会一直保持禁用；旧 Run 的提示不串页。
+      if(generation!==this.generation){this.actionNotice='';this.actionError='';}
+      this.actionBusy=false;this.render();
     }
   }
   renderTask(task){

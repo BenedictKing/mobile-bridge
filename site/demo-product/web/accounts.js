@@ -1,4 +1,10 @@
 /* Shared account selector; enrollment controls exist only in the desktop host. */
+// perform() 成功后的统一确认文案；switch 走多阶段状态行、configure 已有按钮短态，故不登记。
+const ACCOUNT_ACTION_NOTICE={
+  scan:'配置扫描完成',rename:'名称已保存',models:'可用模型已更新',import:'账号已导入',
+  addApi:'接入已添加',login:'登录流程已启动',openLogin:'已打开官方登录页',cancelLogin:'登录已取消',
+  delete:'账号已删除',recover:'已恢复原接入',ignoreSubmission:'已忽略未确认记录'
+};
 class AccountsPanel {
   constructor({root,read,request,desktop=false,onChanged=()=>{},onUpdate=()=>{}}){
     Object.assign(this,{root,read,request,desktop,onChanged,onUpdate});this.value=null;this.busy=false;this.timer=null;this.generation=0;this.operationError=false;this.expandedModels=new Set();
@@ -27,7 +33,7 @@ class AccountsPanel {
     this.root.append(this.node('p','切换将重启此电脑的 Codex 桌面应用，手机网关保持运行。','account-muted'));
     this.status=this.node('p',undefined,'account-muted');this.status.setAttribute('role','status');
     this.error=this.node('p',undefined,'error');this.error.setAttribute('role','alert');
-    this.rows=this.node('div');this.refreshButton=this.button('刷新',()=>this.refresh());
+    this.rows=this.node('div');this.refreshButton=this.button('刷新',async()=>{if(await this.refresh())globalThis.BridgeFeedback?.ok('账号信息已刷新');});
     this.current=this.node('p',undefined,'accounts-current');this.blocked=this.node('div',undefined,'account-muted');this.root.append(this.current,this.status,this.error,this.blocked,this.rows,this.refreshButton);
     if(!this.desktop){this.remoteHint=this.node('p','添加、修改与删除账号请在电脑端完成。','account-muted');this.root.append(this.remoteHint);return;}
     const scanDetails=this.node('details');scanDetails.append(this.node('summary','扫描本机配置'));
@@ -73,7 +79,15 @@ class AccountsPanel {
     this.loginBox=this.node('div');details.append(this.loginBox);this.root.append(details);this.addDetails=details;
     const settings=this.node('details');settings.append(this.node('summary','桌面程序与恢复'));
     this.executable=this.field('桌面程序路径');this.executable.input.placeholder=this.text('实际桌面可执行文件，不是 Codex CLI');
-    settings.append(this.executable.wrap,this.button('保存程序路径',()=>this.perform({action:'configure',desktopExecutable:this.executable.input.value})));
+    // 保存成功时按钮自身给一句短确认：perform() 有防连点与失败提示，但成功是全静默的。
+    this.executableSave=this.button('保存程序路径',async()=>{
+      if(!await this.perform({action:'configure',desktopExecutable:this.executable.input.value}))return;
+      const button=this.executableSave,label=this.text('保存程序路径');
+      button.textContent=this.text('已保存');button.classList.add('copied');
+      clearTimeout(this.executableSaveTimer);
+      this.executableSaveTimer=setTimeout(()=>{button.textContent=label;button.classList.remove('copied');},1500);
+    });
+    settings.append(this.executable.wrap,this.executableSave);
     this.recover=this.button('恢复原接入',()=>{if(window.confirm(this.text('确认恢复原接入并重启 Codex 桌面应用？')))this.perform({action:'recover',confirmed:true});});
     settings.append(this.recover);this.root.append(settings);
   }
@@ -84,16 +98,32 @@ class AccountsPanel {
     this.url.input.value=row.baseUrl;this.model.input.value=row.model||'';this.url.input.disabled=true;this.key.input.disabled=true;this.model.input.focus();
   }
   async perform(payload){
-    if(this.busy)return false;clearTimeout(this.timer);this.generation++;this.loading=false;this.busy=true;this.operationError=false;this.error.textContent='';this.render();const generation=this.generation;
-    try{const value=await this.request(payload);if(generation===this.generation){this.accept(value);return true;}return false;}
+    if(this.busy)return false;clearTimeout(this.timer);clearTimeout(this.executableSaveTimer);
+    if(this.executableSave){this.executableSave.textContent=this.text('保存程序路径');this.executableSave.classList.remove('copied');}
+    this.generation++;this.loading=false;this.busy=true;this.operationError=false;this.error.textContent='';this.render();const generation=this.generation;
+    try{
+      const value=await this.request(payload);
+      if(generation===this.generation){
+        this.accept(value);
+        // 刷新、扫描、删除等结果只是列表重绘，容易被忽略：统一补一句成功确认。
+        const notice=payload.action==='details'
+          ?(payload.section==='usage'?'额度已刷新':'可用模型已更新')
+          :ACCOUNT_ACTION_NOTICE[payload.action];
+        if(notice)globalThis.BridgeFeedback?.ok(notice);
+        return true;
+      }
+      return false;
+    }
     catch(error){if(generation===this.generation){this.operationError=true;this.error.textContent=this.text(String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,''));}return false;}
     finally{if(generation===this.generation){this.busy=false;this.render();this.timer=setTimeout(()=>this.refresh(),2000);}}
   }
   async refresh(){
-    clearTimeout(this.timer);if(this.loading||this.busy)return;this.loading=true;const generation=this.generation;
-    try{const value=await this.read();if(generation===this.generation){if(!this.operationError)this.error.textContent='';this.accept(value);await this.loadUsage(generation);}}
+    clearTimeout(this.timer);if(this.loading||this.busy)return false;this.loading=true;const generation=this.generation;
+    let succeeded=false;
+    try{const value=await this.read();if(generation===this.generation){if(!this.operationError)this.error.textContent='';this.accept(value);await this.loadUsage(generation);succeeded=true;}}
     catch(error){if(generation===this.generation)this.error.textContent=this.text(String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/,''));}
     finally{if(generation===this.generation){this.loading=false;this.render();this.timer=setTimeout(()=>{const dialog=this.root.closest('dialog');if(!this.root.closest('[hidden]')&&!document.hidden&&(!dialog||dialog.open))this.refresh();},2000);}}
+    return succeeded;
   }
   visible(){const dialog=this.root.closest('dialog');return !this.root.closest('[hidden]')&&!document.hidden&&(!dialog||dialog.open);}
   async loadUsage(generation){
@@ -184,6 +214,7 @@ class AccountsPanel {
     if(!this.desktop&&value.canSwitch===false&&value.accounts.length)this.rows.append(this.node('p','免密访问不能切换账号，请在桌面端操作','account-muted'));
     if(this.desktop){
       this.renameSave.disabled=this.busy||switching;this.scanButton.disabled=this.busy||switching;this.modelsButton.disabled=this.busy||switching;
+      this.executableSave.disabled=this.busy||switching;
       this.scanSource.input.placeholder=value.codexHome||this.text('留空使用当前 Codex 数据目录');this.scanRows.replaceChildren();
       if(value.discovery){const scan=value.discovery;const source=this.node('p',undefined,'account-muted');source.textContent=scan.source||'';this.scanRows.append(source);
         if(scan.notice)this.scanRows.append(this.node('p',scan.notice,'account-muted'));

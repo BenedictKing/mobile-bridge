@@ -16,6 +16,7 @@ class FakeNode{
   setAttribute(name,value){this.attributes[name]=value;if(name==='class')this.className=value;}
   addEventListener(){}
   querySelector(){return null;}
+  querySelectorAll(selector){const rows=[];const visit=current=>{for(const child of current.children||[]){if(selector==='*'||child.tag===selector)rows.push(child);visit(child);}};visit(this);return rows;}
   get childNodes(){return this.children;}
   get classList(){const node=this;return{add(name){node.className+=(node.className?' ':'')+name;},remove(){},toggle(){},contains(name){return node.className.split(/\s+/).includes(name);}};}
 }
@@ -241,4 +242,31 @@ test('an older detail response cannot overwrite a meta-only run transition',asyn
   await reading;
   clearTimeout(screen.refetchTimer);
   assert.equal(screen.detail.status,'waiting_input');
+});
+
+test('run control actions are disabled in flight and confirm success',async()=>{
+  let resolveAction;
+  const action=new Promise(resolve=>{resolveAction=resolve;});
+  const posts=[];
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async(url,options={})=>{
+    if(options.method==='POST'){posts.push(url);return action;}
+    throw Object.assign(Error('not found'),{status:404});
+  }});
+  screen.teamId='t1';screen.runId='r1';screen.team=team;
+  screen.detail={id:'r1',teamId:'t1',status:'dispatching',version:1,tasks:[]};
+  screen.render();
+  assert.equal(screen.actionBusy,false);
+  const running=screen.postAction('pause');
+  assert.equal(screen.actionBusy,true);
+  const buttons=find(screen.root,'team-run-actions')[0].children.filter(node=>node.tag==='button');
+  assert.ok(buttons.length>=2);
+  assert.equal(buttons.every(node=>node.disabled),true,'busy 时整排控制按钮必须禁用');
+  assert.equal(posts.length,1);
+  // 第二次点击在 busy 期间应被直接丢弃。
+  await screen.postAction('pause');
+  assert.equal(posts.length,1);
+  resolveAction({...screen.detail,status:'paused'});
+  await running;
+  assert.equal(screen.actionBusy,false);
+  assert.match(text(screen.root),/Run paused/);
 });

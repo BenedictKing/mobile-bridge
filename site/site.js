@@ -62,14 +62,29 @@ function selectDevice(key,scene,focus=false){
  if(!experienceCopy[key])return;
  demoPlatform=key;deviceStage.dataset.platform=key;deviceStage.setAttribute('aria-labelledby','device-'+key);
  deviceButtons.forEach(b=>{const active=b.dataset.device===key;b.setAttribute('aria-selected',String(active));b.tabIndex=active?0:-1;if(active&&focus)b.focus();});
- const url=new URL('./demo.html',location.href);url.searchParams.set('platform',key);url.searchParams.set('lang',language);if(scene)url.searchParams.set('scene',scene);
- demoFrame.src=url.href;refreshExperience();
+ const url=new URL('./demo.html',location.href);url.searchParams.set('platform',key);url.searchParams.set('lang',language);if(scene||activeScene)url.searchParams.set('scene',scene||activeScene);
+ demoFrame.src=url.href;demoReady=false;refreshExperience();
 }
 deviceButtons.forEach((b,i)=>{b.onclick=()=>selectDevice(b.dataset.device);b.onkeydown=e=>{let next;if(e.key==='ArrowRight')next=(i+1)%deviceButtons.length;if(e.key==='ArrowLeft')next=(i+deviceButtons.length-1)%deviceButtons.length;if(e.key==='Home')next=0;if(e.key==='End')next=deviceButtons.length-1;if(next!==undefined){e.preventDefault();selectDevice(deviceButtons[next].dataset.device,undefined,true);}};});
-function showDemoScene(scene,scroll=false){demoFrame.contentWindow?.postMessage({type:'bridge-demo-scene',scene},'*');if(scroll)document.getElementById('experience').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'start'});}
+const sceneButtons=[...document.querySelectorAll('[data-scene]')];
+const demoStatus=document.getElementById('demo-status');
+let demoReady=false,pendingScene=null,activeScene=null;
+function postDemoScene(scene){
+  const target=demoFrame.contentWindow;
+  if(!target){demoStatus.hidden=false;return;}
+  try{target.postMessage({type:'bridge-demo-scene',scene},'*');pendingScene=null;demoStatus.hidden=true;}
+  catch{demoStatus.hidden=false;}
+}
+function showDemoScene(scene,scroll=false){
+  activeScene=scene;
+  pendingScene=scene; // iframe 未就绪时由 onload 补发，消息不会静默丢失
+  sceneButtons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.scene===scene)));
+  if(demoReady)postDemoScene(scene);else demoStatus.hidden=false;
+  if(scroll)document.getElementById('experience').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'start'});
+}
 document.querySelectorAll('[data-scene]').forEach(b=>b.onclick=()=>showDemoScene(b.dataset.scene));
 document.querySelectorAll('[data-demo-jump]').forEach(b=>b.onclick=()=>showDemoScene(b.dataset.demoJump,true));
-demoFrame.onload=refreshExperience;
+demoFrame.onload=()=>{demoReady=true;refreshExperience();if(pendingScene)postDemoScene(pendingScene);};
 window.addEventListener('message',e=>{if(e.source!==demoFrame.contentWindow||e.origin!=='null'||e.data?.type!=='bridge-demo-handoff')return;selectDevice('ios','chat');});
 selectDevice('ios');
 

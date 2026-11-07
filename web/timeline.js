@@ -119,8 +119,11 @@ class ChatTimeline {
     this.updateUserJumpActive(bottom);
   }
   async jumpToUser(key){
-    if(!this.nodes.get(key))await this.loadUntilKey(key);
-    const target=this.nodes.get(key)?.node;if(!target)return;
+    const pages=!this.nodes.get(key)?await this.loadUntilKey(key):0;
+    const target=this.nodes.get(key)?.node;
+    // 跳到旧消息可能要翻最多 24 轮历史：给一句结果反馈，找不到也要说明，而不是静默无反应。
+    if(!target){globalThis.BridgeFeedback?.ok('未找到该条消息，已加载可用历史');return;}
+    if(pages)globalThis.BridgeFeedback?.ok('已加载历史消息并跳转');
     this.suppress=true;
     this.viewport.scrollTop+=target.getBoundingClientRect().top-this.viewport.getBoundingClientRect().top-12;
     this.lastTop=this.viewport.scrollTop;this.following=this.atBottom();this.anchor=this.capture();
@@ -131,11 +134,13 @@ class ChatTimeline {
   // Jumping to a prompt older than the loaded window pages history up until
   // the row exists, bounded so a huge chat cannot page forever.
   async loadUntilKey(key){
+    let pages=0;
     for(let i=0;i<24&&this.hasMore&&!this.nodes.has(key)&&!this.abort.signal.aborted;i++){
       while(this.busy&&!this.abort.signal.aborted)await this.pause(40);
       if(!this.hasMore||this.nodes.has(key))break;
-      await this.loadOlder(100);
+      await this.loadOlder(100);pages++;
     }
+    return pages;
   }
   updateUserJumpActive(bottom=false,selected=''){
     const keys=[...this.userJumpButtons.keys()];if(!keys.length)return;

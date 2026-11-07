@@ -10,8 +10,10 @@ const {splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,TeamCha
 
 class FakeNode{
   constructor(tag){this.tag=tag;this.children=[];this.attributes={};this.style={};this.hidden=false;this.className='';this.textContent='';this.dataset={};this.listeners={};}
-  append(...nodes){this.children.push(...nodes);}
-  replaceChildren(...nodes){this.children=[...nodes];}
+  append(...nodes){for(const node of nodes)node._parent=this;this.children.push(...nodes);}
+  replaceChildren(...nodes){this.children=[...nodes];for(const node of nodes)node._parent=this;}
+  remove(){const siblings=this._parent&&this._parent.children;if(siblings){const index=siblings.indexOf(this);if(index>=0)siblings.splice(index,1);}}
+  insertBefore(node,reference){const index=this.children.indexOf(reference);if(index>=0)this.children.splice(index,0,node);else this.children.push(node);node._parent=this;}
   setAttribute(name,value){this.attributes[name]=value;}
   addEventListener(type,listener){(this.listeners[type]||(this.listeners[type]=[])).push(listener);}
   showModal(){this.open=true;}
@@ -123,23 +125,56 @@ test('team settings lists enabled agents without project history and adds with o
   assert.equal(changed.members.length,3);
 });
 
-test('team settings edits agent capability tags for lead planning',async()=>{
+test('team settings renders capability tags as capsules removable before save',async()=>{
+  const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端','React']:[]}))};
+  const patches=[];
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/teams/team-1/members/dev'&&options.method==='PATCH'){
+      patches.push(options.body);
+      return{...team,version:3,members:team.members.map(member=>member.id==='dev'?{...member,tags:options.body.tags}:member)};
+    }
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(team);
+  const chipTexts=()=>find(settings.body,'team-tag-chip').map(chip=>chip.children[0].textContent);
+  assert.deepEqual(chipTexts(),['前端','React']);
+  // 点 × 立即从界面摘下胶囊，但未保存不落库。
+  find(settings.body,'team-tag-chip-remove')[0].onclick();
+  assert.equal(patches.length,0);
+  assert.deepEqual(chipTexts(),['React']);
+  find(settings.body,'team-member-save-tags')[1].onclick();await flush();
+  assert.deepEqual(patches,[{tags:['React'],version:2}]);
+  assert.deepEqual(settings.team.members[1].tags,['React']);
+});
+
+test('team settings splits new tags on enter space and comma with dedupe',async()=>{
   const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端']:[]}))};
   let patch=null;
   const settings=new TeamSettingsDialog({request:async(path,options={})=>{
     if(path==='/api/teams/team-1'&&!options.method)return team;
     if(path==='/api/teams/team-1/members/dev'&&options.method==='PATCH'){
       patch=options.body;
-      return{...team,version:3,members:team.members.map(member=>member.id==='dev'?{...member,tags:patch.tags}:member)};
+      return{...team,version:3,members:team.members.map(member=>member.id==='dev'?{...member,tags:options.body.tags}:member)};
     }
     throw new Error('unexpected request '+path);
   }});
   await settings.open(team);
-  const inputs=find(settings.body,'team-member-tags').map(field=>field.children[0]);
-  assert.deepEqual(inputs.map(input=>input.value),['','前端']);
-  await settings.changeTags('dev',' 前端，React, 代码评审，前端 ');
-  assert.deepEqual(patch,{tags:['前端','React','代码评审'],version:2});
-  assert.deepEqual(settings.team.members[1].tags,['前端','React','代码评审']);
+  const chipTexts=()=>find(settings.body,'team-tag-chip').map(chip=>chip.children[0].textContent);
+  const input=find(settings.body,'team-member-tags')[1].children.find(node=>node.tag==='input');
+  // 回车提交：空段过滤、重复合并。
+  input.value=' 前端，React, 代码评审，前端 ';
+  input.onkeydown({key:'Enter',preventDefault(){}});
+  assert.deepEqual(chipTexts(),['前端','React','代码评审']);
+  assert.equal(input.value,'');
+  // 空格即时分片，未完成的尾段留在输入框；保存时一并收进草稿。
+  input.value='Vue Solid';
+  input.oninput();
+  assert.deepEqual(chipTexts(),['前端','React','代码评审','Vue']);
+  assert.equal(input.value,'Solid');
+  find(settings.body,'team-member-save-tags')[1].onclick();await flush();
+  assert.deepEqual(patch,{tags:['前端','React','代码评审','Vue','Solid'],version:2});
+  assert.deepEqual(settings.team.members[1].tags,['前端','React','代码评审','Vue','Solid']);
 });
 
 test('team settings allows the lead to also be the default reviewer',async()=>{
@@ -498,4 +533,21 @@ test('a recovered refresh clears the error even when the team has no runs yet',a
   assert.match(text(root),/刷新失败：网关重启中/);
   fail=false;await controller.refreshRun(true);
   assert.doesNotMatch(text(root),/刷新失败/);
+});
+
+test('team settings mutations report a success confirmation',async()=>{
+  const team={...teams[0],version:2};
+  const notices=[];
+  globalThis.BridgeFeedback={ok:text=>notices.push(text)};
+  try{
+    const settings=new TeamSettingsDialog({request:async()=>({...team,version:3})});
+    await settings.open(team);
+    await settings.mutate(async()=>({...team,version:4}));
+    assert.deepEqual(notices,['团队设置已更新']);
+    const failures=[];
+    globalThis.BridgeFeedback={ok:text=>failures.push(text)};
+    await settings.mutate(async()=>{throw Error('请求失败');});
+    assert.deepEqual(failures,[],'失败不得报成功');
+    assert.equal(settings.error,'请求失败');
+  }finally{delete globalThis.BridgeFeedback;}
 });

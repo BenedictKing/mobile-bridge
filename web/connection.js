@@ -86,7 +86,10 @@ var BridgeConnection=(()=>{
     const requests=[];
     if(endpoint)requests.push(globalThis.fetch(endpoint.origin+'/api/logout',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json','X-CSRF-Token':endpoint.csrf},body:'{}'}));
     if(publicToken)requests.push(globalThis.fetch('/api/logout',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':publicToken},body:'{}'}));
-    await Promise.allSettled(requests);reset();
+    const results=await Promise.allSettled(requests);
+    reset();
+    // 任一注销请求失败（含 HTTP 非 2xx）：服务端会话可能仍有效，把结果交给调用方明确告警。
+    return results.some(result=>result.status==='rejected'||!result.value?.ok);
   }
   if(typeof document!=='undefined')document.addEventListener('error',event=>{
     const image=event.target;

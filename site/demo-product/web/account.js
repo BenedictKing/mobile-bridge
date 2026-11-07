@@ -18,17 +18,18 @@ class AccountPanel {
     if(this.visible())this.timer=setTimeout(()=>{if(this.visible())this.refresh(false);},Math.max(0,300000-(Date.now()-this.checkedAt)));
   }
   async refresh(refresh=true){
-    if(this.loading||this.busy)return;
-    const generation=this.generation;this.loading=true;this.render();
+    if(this.loading||this.busy)return false;
+    const generation=this.generation;this.loading=true;this.render();let succeeded=false;
     try{
       const value=await this.read(refresh);
-      if(generation!==this.generation)return;
-      this.accept(value);this.checkedAt=Date.now();
+      if(generation!==this.generation)return false;
+      this.accept(value);this.checkedAt=Date.now();succeeded=true;
     }catch(error){
-      if(generation!==this.generation)return;
+      if(generation!==this.generation)return false;
       // A failed login-type check cannot leave a previous account visible.
       this.value=null;this.checkedAt=Date.now();this.error=error.message;this.root.replaceChildren(this.node('p',BridgeI18n.t('登录状态暂不可用'),'error'));
     }finally{if(generation===this.generation){this.loading=false;this.render();this.schedule();}}
+    return succeeded;
   }
   accept(value){
     if(!value?.visible){
@@ -72,7 +73,7 @@ class AccountPanel {
     const t=BridgeI18n.t,root=this.root;root.replaceChildren();
     const heading=this.node('div',undefined,'account-heading'),refresh=this.node('button',t('查看剩余额度'));
     refresh.type='button';refresh.disabled=this.loading||this.busy;
-    refresh.onclick=()=>this.refresh();
+    refresh.onclick=async()=>{if(await this.refresh())globalThis.BridgeFeedback?.ok('额度已刷新');};
     heading.append(this.node('strong',value.email||t('ChatGPT 账号')),refresh);root.append(heading);
     root.append(this.node('p',t('此电脑 · 账号共享额度')+(value.planType?' · '+value.planType:''),'account-muted'));
     if(value.error)root.append(this.node('p',t(value.error),'error'));
@@ -147,10 +148,15 @@ class AccountPanel {
       this.message={reset:'已使用重置卡，额度已刷新',alreadyRedeemed:'此重置已完成，额度已刷新',nothingToReset:'当前没有可重置的额度窗口',noCredit:'当前没有可用重置卡'}[result.outcome]||'请刷新查看重置结果';
     }catch(error){
       if(generation!==this.generation)return;
-      this.error=error.message;
-      // Fetch the persisted attempt, retaining its key if the refresh also fails.
-      try{const latest=await this.read();if(generation===this.generation){this.pending=null;this.accept(latest);}}
-      catch{if(generation===this.generation)this.clear();}
+      const reason=t(error.message);
+      // 二次读取只用于恢复权威状态：绝不能 clear() 抹掉刚写入的错误和整个面板，
+      // 并保留原请求凭据，让用户可以重试同一次消费（结果只允许消费一次）。
+      let refreshed=true;
+      try{const latest=await this.read();if(generation===this.generation)this.accept(latest);}
+      catch{refreshed=false;}
+      if(generation!==this.generation)return;
+      if(this.value?.accountKey===attempt.accountKey)this.pending=attempt;
+      this.error=refreshed?reason:reason+' · '+t('状态刷新失败，请稍后重试');
     }finally{this.busy=false;if(generation===this.generation)this.render();}
   }
 }

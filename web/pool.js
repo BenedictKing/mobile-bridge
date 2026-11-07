@@ -76,9 +76,20 @@ class PoolPanel {
   async perform(action,payload={}){
     if(this.busy)return;
     this.busy=true;this.error='';this.render();
-    try{this.value=await this.request(action,payload);}
+    let succeeded=false;
+    try{this.value=await this.request(action,payload);succeeded=true;}
     catch(error){this.error=error.message;}
-    finally{this.busy=false;this.render();}
+    finally{
+      this.busy=false;
+      // checkin/provision/capture 由服务端回执给出具体通知；阈值保存另有 notice，这里只补其余静默成功的动作。
+      if(succeeded&&!this.error&&!this.value?.error){
+        const notice=action==='settings'
+          ?(payload.autoSwitch===undefined?null:'自动切换设置已保存')
+          :({refresh:'额度已刷新',switch:'账号已切换',remove:'账号已删除'})[action];
+        if(notice)globalThis.BridgeFeedback?.ok(notice);
+      }
+      this.render();
+    }
   }
   async switchTo(row){
     const t=BridgeI18n.t;
@@ -175,9 +186,19 @@ class PoolPanel {
   }
   async cancelLogin(){
     const login=this.login;
-    this.stopLoginPolling();
-    try{await this.request('login/cancel');}catch(error){/* 忽略 */}
-    this.login=null;this.render();
+    if(!login||login.cancelling)return;
+    login.cancelling=true;this.error='';this.render();
+    try{
+      await this.request('login/cancel');
+      // 请求期间轮询可能已完成登录：不要把「已取消」盖在「登录成功」上。
+      if(this.login===login){this.stopLoginPolling();this.login=null;this.notice=BridgeI18n.t('登录已取消');}
+    }catch(error){
+      // 服务端可能仍在等待授权，取消失败时保留登录框与错误，让用户重试。
+      if(this.login===login){delete login.cancelling;this.error=error.message||BridgeI18n.t('取消登录失败，请重试');}
+      this.render();
+      return;
+    }
+    this.render();
   }
   loginBox(){
     const t=BridgeI18n.t,login=this.login;
@@ -208,14 +229,15 @@ class PoolPanel {
     if(challenge.url){
       const link=this.node('a',challenge.url);link.href=challenge.url;link.target='_blank';link.rel='noopener noreferrer';
       const line=this.node('p');line.append(link);box.append(line);
-      const copy=this.button(t('复制链接'),()=>{navigator.clipboard?.writeText(challenge.url);});
+      const copy=this.button(t('复制链接'),()=>window.BridgeClipboard?.copy(()=>challenge.url,copy));
       box.append(copy);
     }
     if(login.deadline){
       const left=Math.max(0,Math.round((login.deadline-Date.now())/1000));
       box.append(this.node('p',t('请在有效期内完成授权，剩余约 ')+Math.floor(left/60)+t(' 分钟'),'account-muted'));
     }
-    const cancel=this.button(t('取消登录'),()=>this.cancelLogin());
+    const cancel=this.button(login.cancelling?t('正在取消…'):t('取消登录'),()=>this.cancelLogin());
+    cancel.disabled=!!login.cancelling;
     box.append(cancel);
     return box;
   }

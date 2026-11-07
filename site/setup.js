@@ -19,11 +19,17 @@ function showMethod(){
 }
 document.querySelectorAll('[data-language]').forEach(button=>button.onclick=()=>setLanguage(button.dataset.language,true));
 document.querySelectorAll('[data-copy]').forEach(button=>button.onclick=async()=>{
+  if(button.disabled)return;
   const code=button.parentElement.querySelector('code'),status=document.getElementById('copy-status');
+  const label=button.textContent;
+  button.disabled=true;button.textContent=language==='en'?'Copying…':'正在复制…';
   let copied=false;
   try{await navigator.clipboard.writeText(code.textContent);copied=true;}catch{
     const range=document.createRange();range.selectNodeContents(code);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);
   }
+  button.disabled=false;button.textContent=label;
+  button.classList.remove('copied','copy-manual');button.classList.add(copied?'copied':'copy-manual');
+  clearTimeout(button.copyTimer);button.copyTimer=setTimeout(()=>button.classList.remove('copied','copy-manual'),1500);
   status.textContent=copied?(language==='en'?'Copied. Run only in the location stated above.':'已复制。请在步骤标明的位置操作。'):(language==='en'?'Text selected. Copy it with your browser.':'已选中文本，请使用浏览器复制。');
   status.hidden=false;clearTimeout(copyTimer);copyTimer=setTimeout(()=>status.hidden=true,5000);
 });
