@@ -1,3 +1,15 @@
+## 团队多需求队列方案阶段 5 隔离网关实测（2026-11-08）
+
+- 方法：同源网关二进制（含阶段 5），隔离端口 18797 + 独立数据目录；成员会话为真实 ACP Agent（见下「harness 教训」）。真实网关（8787）未触碰。
+- 实测通过（git 工作区团队，Run `674d5335` 一轮、`1264d321`/`a2a40318` 复验）：
+  - `reviewOf` 因果：审查任务仅在 `impl` 完成后派发（HTTP 创建的显式计划）。
+  - 版本绑定：审查任务快照与交付投影均携带 `headRevision/diffHash/reviewOf`（与 task_dispatching 同批落账）。
+  - 写入后 stale：`impl`→审查（在途，已绑定）→`impl2`（独占写）完成 → 审查被标记 `reviewVerdictStale`；放行后审查完成，verdict 本体保留（failed/passed 均验证过）、stale 独立标记；交付投影 `{"verdict":"failed","stale":true,"reviewOf":["impl"],"headRevision":"…","diffHash":"…"}`。
+- 实测抓到并已修复两个真实缺陷（提交 `5ff695c3`）：`parsePlanInputs` 丢弃 `reviewOf`（HTTP 显式计划的审查绑定从未生效——修复前所有绑定字段为空）；`Task.jsonObject` 漏序列化 `reviewOf/headRevision/diffHash/reviewVerdictStale`（重启将丢失 stale 与绑定）。修复后上述链路全部生效。
+- 未在真机覆盖（由 Go 集成测试覆盖）：非 git 工作区的审查停靠（`workspace_unresolvable`）与指纹 cwd 精确性——`TestReviewDispatchBindsWorkspaceVersion`/`TestReviewDispatchParksWhenFingerprintFails` 用注入的 fake resolver/fingerprint 精确控制；真机会话的 cwd 不受 harness 控制（真实 Agent 的会话 cwd 落在网关仓库目录，指纹随之绑定到该仓库），故场景 C 在真机不可判别。
+- harness 教训：`KIMI_BIN`/`GATEWAY_ACP_BINS` 覆盖在本机构建下未把 kimi manager 指到假 Agent（真实 kimi CLI 应答；`.tmp/queue-live` 位于主仓库内也会命中父 git）。后续隔离验证应在仓库外建数据目录，并先断言假 Agent 痕迹（sessions.txt/prompts.log 与「已完成：」前缀）再跑场景。
+- 自动化：`go test ./...`（37 包）、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js`（164 例）全绿；一次 `TestTeamIntegration2AIMDErrorPolicy` 与一次 `TestTeamRunCreate…` 在满负载全量跑中偶发超时，单独复跑均通过（既有测试的负载敏感，与本轮改动无关的形态，未观察到二次复现）。
+
 ## 团队多需求队列方案阶段 0–4 隔离网关实测（2026-11-07）
 
 - 方法：隔离网关（端口 18797、`GATEWAY_AUTH={"mode":"none"}`、独立数据目录 `.tmp/queue-live/`、`KIMI_BIN` 指向最小 stdio 假 ACP Agent `.tmp/queue-live/fake-agent.py`——支持 `HOLDUNTIL:key` 门控制造可控活跃窗口，评审任务自动附 `<team-review>passed</team-review>`）；网关二进制与用户已重启实例同源同码。真实网关（8787）与其数据全程未触碰。
