@@ -108,13 +108,16 @@ func (s *Source) Meta(sessionID string) (string, int64) {
 	return strings.TrimSpace(title), updated
 }
 
-// List enumerates persisted sessions without starting zcode-acp. Directory is
-// the execution root recorded by ZCode, not a value inferred from a project id.
+// List enumerates persisted top-level tasks without starting zcode-acp. Task
+// type, not parentage, controls visibility: forks have parents but remain
+// independent tasks, while subagents belong to their parent's activity view.
+// Directory is the execution root recorded by ZCode, not a project id inference.
 func (s *Source) List() []*jsoncompat.Object {
 	if s == nil || s.db == nil {
 		return nil
 	}
 	rows, err := s.db.Query(`SELECT id, title, directory, time_updated FROM session
+		WHERE COALESCE(task_type, 'interactive') IN ('interactive', 'fork', 'workflow_parent')
 		ORDER BY time_updated DESC`)
 	if err != nil {
 		return nil
