@@ -1,3 +1,11 @@
+## 团队多需求队列方案阶段 0–4 隔离网关实测（2026-11-07）
+
+- 方法：隔离网关（端口 18797、`GATEWAY_AUTH={"mode":"none"}`、独立数据目录 `.tmp/queue-live/`、`KIMI_BIN` 指向最小 stdio 假 ACP Agent `.tmp/queue-live/fake-agent.py`——支持 `HOLDUNTIL:key` 门控制造可控活跃窗口，评审任务自动附 `<team-review>passed</team-review>`）；网关二进制与用户已重启实例同源同码。真实网关（8787）与其数据全程未触碰。
+- 后端 API 实测（curl，团队 `d752f3cd-…`）：首条输入 `POST /inputs`（queueVersion:2）→ 202 `{status:queued, runIds:[]}` 无 runId，2s 内自动路由 `new_task`（runId=inputId，WorkItem 链接 lead 任务，输入 `6df2c995-…`）；活跃 Run 期间第二条 → `follow_up` 追加 `input-{uuid}` 任务并因跨 Run 成员 lease 保持 planned（输入 `02472d75-…`）；双活跃 Run 下第三条 → 停靠 `waiting_input` 且原因可见，任一 Run 收敛后 ≤15s 重泵按终态走 `amend`（Run `ec9a590b-…`）；队列列表给出 `pendingCount`（waiting 计入未路由积压）与逐输入状态；完成 Run 的 delivery 证据（agent 计数、评审成员经协议回执 passed）正常投影。
+- 前端实测（Ego Browser，1440×900 + 390×844）：默认显示「启用排队」提示卡（旧路径不变）；启用后面板列出历史输入（状态徽标、上限计数）；UI 发送即时入队并自动 routed（面板 4s 节奏追平）；双活跃 Run 时新行显示等待原因与「排队操作不可用」；390px 无横向溢出。截图存 `.tmp/queue-live/`（临时目录，不入库）。
+- 未覆盖（诚实边界）：queued 态三操作（立即发送/编辑/删除）的点击流——自动路由使 queued 窗口为毫秒级无法稳定截取，渲染与请求契约由 `tests/test_team_chat.js` 覆盖；`revfix` 修复与 `key/dependsOn` 同批依赖端到端由 Go 集成测试覆盖（`internal/team/review_order_test.go`、`action_deps_test.go`）；真实网关灰度试用待用户在真实团队开启「启用排队」后进行。
+- 自动化：`go test ./...`、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js`（164 例）全绿；`make conformance` 静态资源 golden 失败为存量漂移。阶段 5（reviewOf/diffHash 版本绑定审查与 stale）未实施。
+
 ## 写入幂等与结果未知边界复核（2026-11-05）
 
 - 创建与 Goal 命令账本在启动时严格读取，损坏或不可读直接报错；首次外部创建/目标写入前先落盘占用请求 ID，写盘失败阻止外部调用。创建完成结果写盘失败保留无 ID 占用，避免重试生成第二个会话。
