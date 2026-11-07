@@ -165,6 +165,9 @@ test('chat details keep migration before and outside the compaction section',()=
   assert(!compact.includes('id="migrate-control"'));
   assert.equal((compact.match(/data-gateway-compact=/g)||[]).length,3);
   assert(compact.includes('id="compact-instructions"'));
+  assert(compact.includes('id="compact-instructions-field" class="migrate-field" hidden'));
+  assert(compact.includes('id="compact-confirm"'));
+  assert(compact.indexOf('id="compact-gateway-scopes"')<compact.indexOf('id="compact-instructions-field"'));
   assert(compact.includes('maxlength="8000"'));
   assert(compact.includes('在当前 Agent 创建转录压缩的新会话'));
   assert(html.indexOf('id="migrate-control"')<html.indexOf('id="compact-control"'));

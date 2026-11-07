@@ -1216,6 +1216,8 @@ const en={
   "预览图片": "Preview image",
   "本轮改动": "Changed",
   "个文件": "file(s):",
+  "个文件已更改": "files changed",
+  "部分统计不可用": "some counts unavailable",
   "已截断": "truncated",
   "继续显示": "Show more",
   "仅显示新增内容": "File too large for a line-by-line diff; new content only.",

@@ -5,6 +5,7 @@ const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(s
 // MCP 的 mcpToolCall/dynamicToolCall。折叠行为按「是否工具行」统一判定。
 const TOOL_ROW_KINDS=/^(toolCall|tool_call|storedToolEvent|mcpToolCall|dynamicToolCall)$/;
 const toolRow=row=>row.role==='activity'&&TOOL_ROW_KINDS.test(row.kind);
+const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title==='steered');
 
 // Agent 送来的工具标题形态各异：纯工具名（"Bash"）、「工具名: 命令」、
 // 「工具名(命令)」，甚至整条命令自带状态后缀（CodeBuddy 的 "git add … · completed"）。
@@ -23,6 +24,7 @@ const toolLabel=title=>{
 // Heading label for one row; plan rows surface live completion counts.
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
+  if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
   let label=row.title||row.kind;
   if(toolRow(row))label=toolLabel(row.title);
   if(row.kind==='plan'&&row.entries?.length){
@@ -281,13 +283,14 @@ class ChatTimeline {
   }
   renderRow(row,open){
     const activity=row.role==='activity',
+          steered=steeredRow(row),
           planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
-          node=document.createElement(activity?'details':'div');
-    node.className=activity?'activity timeline-row':'message timeline-row '+row.role;
+          node=document.createElement(activity&&!steered?'details':'div');
+    node.className=activity?'activity timeline-row'+(steered?' status-event':''):'message timeline-row '+row.role;
     if(activity&&row.kind)node.dataset.kind=row.kind;
     // CSS 以 data-tool（而非具体 kind）区分工具行：所有管线的工具调用折叠态一致。
     if(toolRow(row))node.dataset.tool='';
-    const heading=document.createElement(activity?'summary':'span');heading.className=activity?'':'who';
+    const heading=document.createElement(activity&&!steered?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
       heading.textContent=rowLabel(row);
@@ -300,6 +303,7 @@ class ChatTimeline {
       }
       node.append(heading);
     }
+    if(steered)return node;
     const body=document.createElement(activity&&!planEntries?'pre':'div');
     body.className=activity?(planEntries?'activity-body plan-body':'activity-body'):'message-body';
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
@@ -372,11 +376,6 @@ class ChatTimeline {
       attachment.textContent=timelineText('附件：')+row.attachments.map(a=>a.name||a.type).join('、');
       attachments.append(attachment);node.append(attachments);
     }
-    // 本条改动涉及的文件卡片:点开差异审阅面板。
-    if(activity&&row.changes?.length){
-      const cwd=this.meta?.cwd||'';
-      node.append(window.BridgeDiff.fileCards(row.changes,cwd,change=>window.BridgeDiff.open(change,cwd)));
-    }
     if(activity){node.open=!!open;node.ontoggle=()=>{if(node.open&&!this.details.has(row.key)&&!planEntries)load();};}
     return node;
   }
@@ -384,6 +383,7 @@ class ChatTimeline {
   // 取最新),放在该轮最后一行之后。节点不在 this.nodes 里,仅由本方法
   // 重建;capture() 会跳过它们以保持滚动锚定在真实行上。
   renderTurnSummaries(ordered){
+    const expanded=new Set([...this.container.querySelectorAll('[data-summary][open]')].map(node=>node.dataset.turnId));
     for(const node of this.container.querySelectorAll('[data-summary]'))node.remove();
     const cwd=this.meta?.cwd||'',byTurn=new Map();
     for(const row of ordered){
@@ -398,6 +398,8 @@ class ChatTimeline {
       if(!anchor)continue;
       const card=window.BridgeDiff.summaryCard([...map.values()],cwd,change=>window.BridgeDiff.open(change,cwd));
       card.dataset.summary='1';
+      card.dataset.turnId=String(turnId);
+      card.open=expanded.has(String(turnId));
       anchor.after(card);
     }
   }

@@ -70,7 +70,7 @@ const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl
     toast(result.sent?(operation==='compact'?t('网关转录压缩已完成，正在打开新会话'):t('已迁移到 ')+label+t('，正在打开新会话')):t('目标会话已创建，正在等待 ')+label+t(' 加载：')+(result.warning||''));
     if(currentId!==result.id)openChat(result.id,result.host||'local').catch(e=>toast(e.message));},
   onError:(error,operation)=>{if(operation==='compact')$('compact-error').textContent=t(error.message);else toast(error.message);}});
-$('chat-details-dialog').addEventListener('close',()=>migrateControl?.dismiss());
+$('chat-details-dialog').addEventListener('close',()=>{migrateControl?.dismiss();compactMethod='';compactScope='';$('compact-instructions').value='';renderCompactState();});
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
@@ -812,7 +812,7 @@ const COMPACT_PROMPTS={
   main:'/compact 保留主要历史、当前目标、关键决策和最新结果，重点压缩执行过程与工具输出。',
   latest:'/compact 只保留最新提问和结果，其余历史尽量压缩。'
 };
-let compactMethod='';
+let compactMethod='',compactScope='';
 function formatTokenCount(value){if(value<1000)return String(value);if(value<1000000)return (value/1000).toFixed(value<10000?1:0).replace(/\.0$/,'')+'k';return (value/1000000).toFixed(value<10000000?1:0).replace(/\.0$/,'')+'M';}
 function renderContextUsage(view){
   const node=$('context-usage'),used=Number(view.usage?.used),size=Number(view.usage?.size),valid=Number.isFinite(used)&&used>=0&&Number.isFinite(size)&&size>0;
@@ -826,13 +826,17 @@ function renderContextUsage(view){
   node.title=(stale?t('上次记录的上下文用量：'):t('上下文用量：'))+used.toLocaleString(locale)+' / '+size.toLocaleString(locale)+' tokens · '+percent+'%';
 }
 function compactAvailable(){return !!state?.connected&&state.status==='idle'&&!state.readOnly&&!(state.requests||[]).length;}
-function selectCompactMethod(method){if(!['native','gateway'].includes(method))return;compactMethod=method;$('compact-error').textContent='';renderCompactState();}
+function selectCompactMethod(method){if(!['native','gateway'].includes(method))return;if(compactMethod!==method){compactScope='';$('compact-instructions').value='';}compactMethod=method;$('compact-error').textContent='';renderCompactState();}
+function selectCompactScope(scope){if(!COMPACT_PROMPTS[scope]||!compactMethod)return;compactScope=scope;$('compact-error').textContent='';renderCompactState();}
 function renderCompactState(){
   const disabled=compactChat.busy||migrateControl?.busy||!compactAvailable();
+  $('compact-instructions-field').hidden=!compactScope;
+  $('compact-confirm').hidden=!compactScope;
+  $('compact-confirm').disabled=disabled;
   $('compact-native-hint').hidden=compactMethod!=='native';$('compact-native-scopes').hidden=compactMethod!=='native';$('compact-gateway').hidden=compactMethod!=='gateway';
   document.querySelectorAll('[data-compact-method]').forEach(button=>button.classList.toggle('selected',button.dataset.compactMethod===compactMethod));
-  document.querySelectorAll('[data-compact]').forEach(button=>button.disabled=disabled||compactMethod!=='native');
-  document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.disabled=disabled||compactMethod!=='gateway');
+  document.querySelectorAll('[data-compact]').forEach(button=>{button.disabled=disabled||compactMethod!=='native';button.classList.toggle('selected',compactMethod==='native'&&button.dataset.compact===compactScope);});
+  document.querySelectorAll('[data-gateway-compact]').forEach(button=>{button.disabled=disabled||compactMethod!=='gateway';button.classList.toggle('selected',compactMethod==='gateway'&&button.dataset.gatewayCompact===compactScope);});
   migrateControl?.render();
 }
 // leadContextAction 调用主控上下文管理端点（/new 换绑与网关压缩后的 rebind），
@@ -1421,8 +1425,9 @@ $('message').onkeydown=event=>{
 };
 $('stop').onclick=async()=>{const button=$('stop');if(button.disabled)return;button.disabled=true;try{await api('/api/sessions/'+currentId+'/stop',{});toast('已请求停止');}catch(e){toast(e.message);}finally{button.disabled=false;}};
 document.querySelectorAll('[data-compact-method]').forEach(button=>button.onclick=()=>selectCompactMethod(button.dataset.compactMethod));
-document.querySelectorAll('[data-compact]').forEach(button=>button.onclick=()=>compactChat(button.dataset.compact));
-document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.onclick=()=>compactGateway(button.dataset.gatewayCompact));
+document.querySelectorAll('[data-compact]').forEach(button=>button.onclick=()=>selectCompactScope(button.dataset.compact));
+document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.onclick=()=>selectCompactScope(button.dataset.gatewayCompact));
+$('compact-confirm').onclick=()=>{if(!compactScope)return;if(compactMethod==='native')compactChat(compactScope);else if(compactMethod==='gateway')compactGateway(compactScope);};
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});toast(t('已请求加载完整历史'));}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
 $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});toast(t('会话已重新连接'));}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
 $('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话；请勿同时在桌面端继续此会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};

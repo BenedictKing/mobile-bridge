@@ -113,12 +113,14 @@ window.BridgeDiff = (() => {
       mark.textContent = t('已截断');
       card.append(mark);
     }
-    if (typeof change.diff === 'string' || change.oldText != null || change.newText != null) {
+    if (!change.truncated && (typeof change.diff === 'string' || change.oldText != null || change.newText != null)) {
       const stats = lineStats(change);
-      const add = document.createElement('span'); add.className = 'diff-stat-add'; add.textContent = '+' + stats.add;
-      const del = document.createElement('span'); del.className = 'diff-stat-del'; del.textContent = '−' + stats.del;
-      card.append(add, del);
-    } else {
+      if (!stats.degraded) {
+        const add = document.createElement('span'); add.className = 'diff-stat-add'; add.textContent = '+' + stats.add;
+        const del = document.createElement('span'); del.className = 'diff-stat-del'; del.textContent = '−' + stats.del;
+        card.append(add, del);
+      }
+    } else if (!change.truncated) {
       const note = document.createElement('span');
       note.className = 'diff-stat-mut';
       note.textContent = t('差异过大，仅显示文件名');
@@ -136,16 +138,24 @@ window.BridgeDiff = (() => {
     return wrap;
   }
 
-  // 每轮汇总:「本轮改动 N 个文件」+ 去重后的文件卡片；超过 5 个默认折叠。
+  // 每轮汇总默认折叠；只合计能准确计算的文件，避免截断差异误报。
   function summaryCard(changes, cwd, onOpen) {
-    const collapsible = changes.length > 5;
-    const wrap = document.createElement(collapsible ? 'details' : 'div');
+    const wrap = document.createElement('details');
     wrap.className = 'turn-diff-summary';
-    const title = document.createElement(collapsible ? 'summary' : 'div');
+    const title = document.createElement('summary');
     title.className = 'turn-diff-title';
-    const count = document.createElement('strong');
-    count.textContent = String(changes.length);
-    title.append(t('本轮改动'), ' ', count, ' ', t('个文件'));
+    let added = 0, deleted = 0, incomplete = false;
+    for (const change of changes) {
+      if (change.truncated || !(typeof change.diff === 'string' || change.oldText != null || change.newText != null)) { incomplete = true; continue; }
+      const stats = lineStats(change);
+      if (stats.degraded) { incomplete = true; continue; }
+      added += stats.add; deleted += stats.del;
+    }
+    title.append(String(changes.length), ' ', t('个文件已更改'));
+    const add = document.createElement('span'); add.className = 'diff-stat-add'; add.textContent = '+' + added;
+    const del = document.createElement('span'); del.className = 'diff-stat-del'; del.textContent = '−' + deleted;
+    title.append(' ', add, ' ', del);
+    if (incomplete) title.append(' · ', t('部分统计不可用'));
     wrap.append(title, fileCards(changes, cwd, onOpen));
     return wrap;
   }

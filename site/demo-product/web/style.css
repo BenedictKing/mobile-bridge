@@ -102,10 +102,15 @@
 .diff-exit.ok{color:#1d8a4b;background:rgba(29,138,75,.14)}
 .diff-exit.fail{color:var(--error);background:rgba(200,71,61,.14)}
 
-/* 每轮汇总卡:本轮改动 N 个文件 */
-.turn-diff-summary{margin:12px 0;padding:10px 12px;border:1px dashed var(--line);border-radius:10px;font-size:12px;max-width:560px}
-.turn-diff-title{color:var(--muted);margin-bottom:2px}
-.turn-diff-title strong{color:var(--text)}
+/* 文件汇总入口保持单行，展开后才展示逐文件差异。 */
+.turn-diff-summary{margin:12px auto;max-width:560px;font-size:12px;text-align:center}
+.turn-diff-title{display:inline-flex;align-items:center;gap:5px;padding:7px 11px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--muted);cursor:pointer;list-style:none}
+.turn-diff-title::-webkit-details-marker{display:none}
+.turn-diff-title:hover{border-color:var(--accent)}
+.turn-diff-title:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.turn-diff-summary>.diff-cards{margin:8px auto 0;padding:6px;border:1px solid var(--line);border-radius:8px;background:var(--surface);text-align:left}
+.turn-diff-summary .diff-card{border:0;background:transparent;border-radius:4px;padding:8px;font-size:12px}
+.turn-diff-summary .diff-card:hover{background:var(--soft)}
 
 /* 差异审阅面板(<dialog class="picker">) */
 .diff-review-title{font:600 13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;min-width:0;overflow-wrap:anywhere}

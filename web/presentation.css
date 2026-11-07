@@ -154,6 +154,7 @@ main{background:var(--page);overflow:hidden}
 .message pre,.activity pre{background:var(--code);border-color:var(--line);font-size:var(--code-size);border-radius:9px}
 .activity{margin:0;font-size:13px}
 .activity summary{padding:5px 0;min-height:32px;border-radius:6px}
+.activity.status-event{padding:5px 0;color:var(--muted)}
 .activity.timeline-row:has(summary:first-child){border-left-color:var(--control)}
 /* Chrome 131+ 把折叠 details 的全部子节点收进 ::details-content 并用
    content-visibility:hidden 隐藏：只覆写子元素的 display 已经不起作用，

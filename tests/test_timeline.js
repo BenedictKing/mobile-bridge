@@ -153,3 +153,12 @@ test('scrolling away from the latest message shows a persistent jump-to-latest b
   assert.equal(ids.newer.textContent,'跳转到最后 ↓');
   timeline.dispose();
 });
+
+test('steered event is a readable status without raw JSON',()=>{
+  const{timeline}=setup();
+  const node=timeline.renderRow({role:'activity',kind:'steered',title:'steered',text:'{"type":"steered","id":"internal"}'},false);
+  assert.equal(node.tagName,'DIV');
+  assert.equal(node.children.length,1);
+  assert.equal(node.children[0].textContent,'已向进行中的对话补充指示');
+  timeline.dispose();
+});
