@@ -446,6 +446,21 @@ func toolCommandText(value any) string {
 	return text
 }
 
+// toolTitle applies the gateway display convention for command calls: the
+// description labels the row, while rawInput.command remains its detail text.
+func toolTitle(update *jsoncompat.Object) any {
+	if rawInput := obj(update.MustGet("rawInput")); rawInput != nil {
+		command, hasCommand := rawInput.MustGet("command").(string)
+		description, hasDescription := rawInput.MustGet("description").(string)
+		if hasCommand && strings.TrimSpace(command) != "" && hasDescription {
+			if description = strings.TrimSpace(description); description != "" {
+				return description
+			}
+		}
+	}
+	return update.MustGet("title")
+}
+
 // foldTerminalToolCall handles agents that report a result as a fresh
 // tool_call with a new event id instead of tool_call_update. CodeBuddy carries
 // the same command and description on both rows; only a unique pending match
@@ -565,7 +580,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		message.Set("id", v.nextID("tool"))
 		message.Set("kind", "toolCall")
 		message.Set("role", "activity")
-		message.Set("title", truthyOr(update.MustGet("title"),
+		message.Set("title", truthyOr(toolTitle(update),
 			truthyOr(update.MustGet("kind"), "工具调用")))
 		summary := QuestionSummary(update.MustGet("rawInput"))
 		question := questionTitle(titleInput) || summary != ""
@@ -605,7 +620,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		if status := getDefault(update, "status", nil); jsoncompat.Truthy(status) {
 			message.Set("status", statusMap(status))
 		}
-		if title := getDefault(update, "title", nil); jsoncompat.Truthy(title) {
+		if title := toolTitle(update); jsoncompat.Truthy(title) {
 			message.Set("title", title)
 		}
 		fallbackTitle, _ := truthyOr(message.MustGet("title"), "").(string)

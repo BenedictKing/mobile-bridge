@@ -89,8 +89,43 @@ func TestTerminalToolCallFoldsIntoUniquePendingCall(t *testing.T) {
 	}
 	message, _ := messages.Items[1].(*jsoncompat.Object)
 	if message.MustGet("id") != "tool-3" || message.MustGet("status") != "completed" ||
-		message.MustGet("output") != "files" {
+		message.MustGet("output") != "files" || message.MustGet("title") != "List files" {
 		t.Fatalf("terminal tool call did not update the pending row: %s", jsoncompat.EncodeCompact(message))
+	}
+}
+
+func TestToolCallUsesDescriptionAsTitleAndKeepsCommand(t *testing.T) {
+	view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+	view.BeginTurn("检查测试")
+	input := `{"command":"head -20 tests/test_timeline.js","description":"查看现有测试文件结构"}`
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Bash","status":"in_progress","rawInput":`+input+`}`))
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call_update","toolCallId":"call-1","title":"Bash","status":"completed","rawInput":`+input+`}`))
+
+	messages, _ := view.Turns[0].MustGet("messages").(*jsoncompat.Array)
+	message, _ := messages.Items[1].(*jsoncompat.Object)
+	if message.MustGet("title") != "查看现有测试文件结构" {
+		t.Fatalf("tool title = %q, want rawInput.description", message.MustGet("title"))
+	}
+	if message.MustGet("text") != "head -20 tests/test_timeline.js" {
+		t.Fatalf("tool detail = %q, want rawInput.command", message.MustGet("text"))
+	}
+	if message.MustGet("status") != "completed" {
+		t.Fatalf("tool status = %q, want completed", message.MustGet("status"))
+	}
+}
+
+func TestToolCallWithoutDescriptionKeepsAgentTitle(t *testing.T) {
+	view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+	view.BeginTurn("检查文件")
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Bash","rawInput":{"command":"ls","description":"  "}}`))
+
+	messages, _ := view.Turns[0].MustGet("messages").(*jsoncompat.Array)
+	message, _ := messages.Items[1].(*jsoncompat.Object)
+	if message.MustGet("title") != "Bash" {
+		t.Fatalf("blank description must keep agent title, got %q", message.MustGet("title"))
 	}
 }
 
