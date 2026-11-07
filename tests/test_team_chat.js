@@ -620,3 +620,84 @@ test('team settings mutations report a success confirmation',async()=>{
     assert.equal(settings.error,'请求失败');
   }finally{delete globalThis.BridgeFeedback;}
 });
+
+// ---- 输入队列面板（阶段 4，docs/team-demand-queue-plan.md §7）----
+
+async function withQueueStorage(entries,run){
+  const store=new Map(Object.entries(entries));
+  globalThis.localStorage={getItem:key=>store.has(key)?store.get(key):null,setItem:(k,v)=>store.set(k,v),removeItem:k=>store.delete(k)};
+  try{return await run();}finally{delete globalThis.localStorage;}
+}
+
+test('submission fields opt into the persistent queue per team',async()=>{
+  await withQueueStorage({'teamQueueMode:team-1':'1'},()=>{
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamQueueVersion:'2'});
+    assert.deepEqual(teamSubmissionFields('team-2'),{teamMode:'team',teamId:'team-2'});
+  });
+  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1'});
+});
+
+test('queue panel lists inputs with reasons, work items and queued actions',async()=>{
+  await withQueueStorage({'teamQueueMode:team-1':'1'},async()=>{
+    const posts=[];
+    const queueData={pendingCount:2,maxPendingInputs:64,inputs:[
+      {inputId:'in-2',sequence:2,queueStatus:'queued',text:'第二条排队消息',revision:1,version:1},
+      {inputId:'in-1',sequence:1,queueStatus:'waiting_input',text:'等待目标收敛的第一条',revision:2,version:3,
+        priority:true,waitingReason:'团队有多个未结束的 Run，请先在 Run 详情页收敛目标（完成或取消）后重试',
+        runIds:[],workItems:[]},
+      {inputId:'in-0',sequence:0,queueStatus:'routed',text:'已路由的早期消息',revision:1,version:2,
+        targetRunId:'run-9',runIds:['run-9'],workItems:[{id:'wi-in-0',taskIds:['lead']}]},
+    ]};
+    const root=new FakeNode('div');
+    const controller=new TeamChatController({root,request:async(path,options)=>{
+      if(path.endsWith('/inputs?limit=50'))return queueData;
+      if(path.endsWith('/runs'))return{runs:[]};
+      posts.push({path,method:options?.method,body:options?.body});
+      return{};
+    },openRun:(teamId,runId)=>posts.push({openRun:runId})});
+    controller.setTeams(teams);controller.open(teams[0]);
+    await flush();await flush();
+    const panel=find(root,'team-queue-panel')[0];
+    assert.ok(panel,'队列面板应渲染');
+    const rows=find(root,'team-queue-row');
+    assert.equal(rows.length,3);
+    const labels=find(root,'team-queue-status').map(node=>node.textContent);
+    assert.deepEqual(labels,['排队中','等待处理','已路由']);
+    // 等待原因与路由提示分开说。
+    assert.match(text(rows[1]),/多个未结束的 Run/);
+    assert.match(text(rows[1]),/排队操作不可用/);
+    // 已路由：目标 Run 可跳转，工作项计数可见，修订次数可见。
+    assert.equal(find(rows[2],'team-queue-run').length,1);
+    assert.match(text(rows[2]),/工作项 1/);
+    assert.match(text(rows[1]),/第2次修订/);
+    // 排队行有 立即发送/编辑/删除；waiting/routed 行没有。
+    const queuedButtons=find(rows[0],'team-queue-actions')[0].children.map(node=>node.textContent);
+    assert.deepEqual(queuedButtons,['立即发送','编辑','删除']);
+    assert.equal(find(rows[1],'team-queue-actions').length,0);
+    // 已是优先的排队输入不再显示「立即发送」。
+    assert.equal(find(rows[1],'team-queue-priority').length,1);
+    // 立即发送携带操作 UUID 与期望版本。
+    const prioritize=find(rows[0],'team-queue-actions')[0].children[0];
+    prioritize.onclick();
+    await flush();await flush();
+    const posted=posts.find(call=>call.path&&call.path.endsWith('/inputs/in-2/prioritize'));
+    assert.ok(posted&&posted.method==='POST');
+    assert.equal(posted.body.version,1);
+    assert.ok(posted.body.id);
+  });
+});
+
+test('queue mode off keeps the panel as an entry hint only',async()=>{
+  const root=new FakeNode('div');
+  const controller=new TeamChatController({root,request:async path=>{
+    if(path.endsWith('/inputs?limit=50'))throw Error('不应拉取队列');
+    if(path.endsWith('/runs'))return{runs:[]};
+    return{};
+  }});
+  controller.setTeams(teams);controller.open(teams[0]);
+  await flush();
+  const panel=find(root,'team-queue-panel')[0];
+  assert.ok(panel);
+  assert.match(text(panel),/启用排队/);
+  assert.equal(find(root,'team-queue-list').length,0);
+});

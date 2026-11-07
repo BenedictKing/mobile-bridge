@@ -412,3 +412,31 @@
 .selection-bar button{border:0;background:none;color:var(--green);font-size:13px;font-weight:600;line-height:1.1;padding:9px 15px;border-radius:999px;white-space:nowrap}
 .selection-bar button:hover,.selection-bar button:active{background:var(--soft)}
 .team-lead-hint{margin:0 0 8px;font-size:12px;line-height:1.6;color:var(--muted)}
+
+/* 团队输入队列面板（docs/team-demand-queue-plan.md §7，阶段 4）：排队开关、
+   逐输入状态/等待原因/目标 Run 与排队态操作。 */
+.team-queue-panel{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:11px 16px 12px;margin:0 0 14px;max-width:760px}
+.team-queue-head{display:flex;align-items:center;gap:12px}
+.team-queue-head strong{font-size:13px}
+.team-queue-toggle{min-height:0;padding:2px 0;border:0;border-radius:0;background:none;font-size:11.5px;color:var(--green)}
+.team-queue-hint{margin:6px 0 0;font-size:11.5px;line-height:1.6;color:var(--muted)}
+.team-queue-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:6px}
+.team-queue-list{margin-top:8px;display:flex;flex-direction:column;gap:8px}
+.team-queue-row{border-top:1px solid var(--line);padding-top:8px}
+.team-queue-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.team-queue-seq{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.team-queue-text{font-size:12.5px;line-height:1.5;flex:1 1 160px;min-width:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.team-queue-priority{font-size:12px}
+.team-queue-status{font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.team-queue-row[data-queue-status="queued"] .team-queue-status{color:var(--green);border-color:currentColor}
+.team-queue-row[data-queue-status="waiting_input"] .team-queue-status{color:#b8860b;border-color:currentColor}
+.team-queue-row[data-queue-status="routed"] .team-queue-status{color:var(--muted)}
+.team-queue-row[data-queue-status="cancelled"] .team-queue-status{opacity:.6;text-decoration:line-through}
+.team-queue-reason{margin:4px 0 0;font-size:11.5px;line-height:1.6;color:var(--muted)}
+.team-queue-details{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:5px}
+.team-queue-run{min-height:0;padding:1px 0;border:0;border-radius:0;background:none;font-size:11.5px;color:var(--green);text-decoration:underline}
+.team-queue-workitems,.team-queue-revision{font-size:11px;color:var(--muted)}
+.team-queue-actions{display:flex;gap:4px;margin-top:6px}
+.team-queue-actions button{min-height:0;padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:none;font-size:11.5px;color:var(--green)}
+.team-queue-more{min-height:0;margin-top:8px;padding:2px 0;border:0;border-radius:0;background:none;font-size:11.5px;color:var(--green)}
+.team-queue-edit textarea{width:100%;box-sizing:border-box;resize:vertical}

@@ -1,7 +1,32 @@
 'use strict';
 
+// 团队输入队列（docs/team-demand-queue-plan.md §3.2/§7，阶段 4）：按 Team 灰
+// 度开关（localStorage）决定会话发送是否带 teamQueueVersion:2——开启后先落
+// 持久账本（202 queued，不给 runId），路由结果由队列面板追；旧路径保持
+// 「立即给 runId」的同步契约。
+function teamQueueStorage(){
+  try{return globalThis.localStorage;}catch{return null;}
+}
+function teamQueueModeEnabled(teamID){
+  const store=teamQueueStorage();
+  return !!store&&teamID&&store.getItem('teamQueueMode:'+teamID)==='1';
+}
 function teamSubmissionFields(teamID){
-  return {teamMode:'team',teamId:teamID};
+  const fields={teamMode:'team',teamId:teamID};
+  if(teamQueueModeEnabled(teamID))fields.teamQueueVersion='2';
+  return fields;
+}
+
+// 输入队列状态词条（queueStatus → 展示文案）。
+const TEAM_INPUT_STATUS_LABELS={queued:'排队中',routing:'路由中',routed:'已路由',waiting_input:'等待处理',failed:'失败',cancelled:'已取消'};
+function teamInputStatusLabel(status){return TEAM_INPUT_STATUS_LABELS[status]||String(status||'');}
+function teamInputHead(text){
+  const source=String(text||'').trim();
+  const row=(source.split(/\r?\n/).find(line=>line.trim())||'').trim();
+  return Array.from(row).slice(0,60).join('')+(Array.from(row).length>60?'…':'')||'（附件消息）';
+}
+function teamQueueOpID(){
+  return globalThis.crypto?.randomUUID?.()||'op-'+Date.now()+'-'+Math.random().toString(16).slice(2);
 }
 
 // Lead 动作信封（internal/team/actions.go §5.1）是编排协议，不是给人读的正文：
@@ -182,6 +207,7 @@ class TeamChatController{
     Object.assign(this,{root,request,openRun,onChange});
     this.teams=[];this.current=null;this.run=null;this.team=null;
     this.pending=false;this.queued=false;this.lastFetch=0;this.generation=0;this.compact=false;
+    this.queue=null;this.queueError='';this.queueExpanded=false;
   }
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
@@ -196,19 +222,152 @@ class TeamChatController{
     const matches=this.teams.filter(team=>(team.members||[]).some(member=>member.id===team.leadId&&member.sessionId===sessionId));
     return matches.length===1?matches[0]:null;
   }
+  queueMode(){return teamQueueModeEnabled(this.current?.id);}
+  setQueueMode(on){
+    const store=teamQueueStorage();
+    if(!store)return;
+    if(on)store.setItem('teamQueueMode:'+this.current.id,'1');
+    else store.removeItem('teamQueueMode:'+this.current.id);
+    this.queue=null;this.queueError='';
+    this.render();
+    if(on)this.refreshQueue();
+  }
+  async refreshQueue(){
+    const team=this.current;
+    if(!team||!this.queueMode())return;
+    const generation=this.generation;
+    try{
+      const queue=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/inputs?limit=50');
+      if(generation===this.generation&&this.current?.id===team.id){this.queue=queue;this.queueError='';this.render();}
+    }catch(error){
+      if(generation===this.generation&&this.current?.id===team.id){this.queueError=error.message;this.render();}
+    }
+  }
+  async queueAction(input,action){
+    const team=this.current;
+    if(!team||!input)return;
+    try{
+      await this.request('/api/teams/'+encodeURIComponent(team.id)+'/inputs/'+encodeURIComponent(input.inputId)+'/'+action,
+        {method:'POST',body:{id:teamQueueOpID(),version:input.version}});
+      await this.refreshQueue();
+      this.refreshRun(true);
+    }catch(error){this.queueError=error.message;this.render();}
+  }
+  openQueueEdit(input){
+    const team=this.current;
+    if(!team||!input)return;
+    const dialog=document.createElement('dialog');dialog.className='picker team-queue-edit';
+    const head=this.node('div',undefined,'picker-head');
+    head.append(this.node('h2',t_safe('编辑排队输入')));
+    const close=this.node('button','×','icon-button');close.type='button';close.setAttribute('aria-label',t_safe('关闭'));
+    close.onclick=()=>dialog.close();head.append(close);
+    const body=this.node('div',undefined,'picker-body');
+    const editor=document.createElement('textarea');editor.value=input.text||'';editor.rows=6;
+    editor.setAttribute('aria-label',t_safe('输入内容'));
+    const errorLine=this.node('p','','error');
+    const save=this.button(t_safe('保存'),async()=>{
+      const text=editor.value.trim();
+      if(!text){errorLine.textContent=t_safe('内容不能为空');return;}
+      save.disabled=true;
+      try{
+        await this.request('/api/teams/'+encodeURIComponent(team.id)+'/inputs/'+encodeURIComponent(input.inputId),
+          {method:'PATCH',body:{id:teamQueueOpID(),version:input.version,text}});
+        dialog.close();
+        await this.refreshQueue();
+      }catch(error){errorLine.textContent=error.message;save.disabled=false;}
+    });
+    const cancel=this.button(t_safe('取消'),()=>dialog.close());cancel.className='plain';
+    body.append(editor,errorLine,save,cancel);
+    dialog.append(head,body);document.body.append(dialog);
+    dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+    dialog.showModal();
+  }
+  // renderQueuePanel 渲染输入队列面板（§7）：排队开关、待处理计数、逐输入的
+  // 状态/等待原因/目标 Run 与工作项，以及排队态的 立即发送/编辑/取消。
+  renderQueuePanel(){
+    const team=this.team,root=this.root;
+    const panel=this.node('section',undefined,'team-queue-panel');
+    const head=this.node('div',undefined,'team-queue-head');
+    head.append(this.node('strong',t_safe('输入队列')));
+    const mode=this.queueMode();
+    const toggle=this.button(mode?t_safe('停用排队'):t_safe('启用排队'),()=>this.setQueueMode(!mode));
+    toggle.className='team-queue-toggle';toggle.setAttribute('aria-pressed',String(mode));
+    head.append(toggle);
+    panel.append(head);
+    if(!mode){
+      panel.append(this.node('p',t_safe('启用后新消息先入持久队列，可随时编辑、插队与取消；路由进度在这里追。'),'team-queue-hint'));
+      root.append(panel);return;
+    }
+    const queue=this.queue;
+    if(!queue){
+      panel.append(this.node('p',this.queueError?t_safe('读取失败：')+this.queueError:t_safe('读取中…'),'team-queue-hint'));
+      root.append(panel);return;
+    }
+    const meta=this.node('div',undefined,'team-queue-meta');
+    const cap=Number(queue.maxPendingInputs||0);
+    meta.append(this.node('span',t_safe('待处理')+' '+Number(queue.pendingCount||0)+(cap?t_safe(' · 上限')+' '+cap:'')));
+    if(this.queueError)meta.append(this.node('span',t_safe('刷新失败：')+this.queueError,'error'));
+    panel.append(meta);
+    const inputs=Array.isArray(queue.inputs)?queue.inputs:[];
+    if(!inputs.length){panel.append(this.node('p',t_safe('队列为空：发送新消息会立即受理。'),'team-queue-hint'));root.append(panel);return;}
+    const rows=this.queueExpanded?inputs:inputs.slice(0,5);
+    const list=this.node('div',undefined,'team-queue-list');
+    for(const input of rows){
+      const row=this.node('div',undefined,'team-queue-row');
+      row.dataset.queueStatus=input.queueStatus||'';
+      const line=this.node('div',undefined,'team-queue-line');
+      const status=input.queueStatus||'queued';
+      line.append(this.node('span','#'+Number(input.sequence||0),'team-queue-seq'));
+      line.append(this.node('span',teamInputHead(input.text),'team-queue-text'));
+      if(input.priority)line.append(this.node('span','⚡','team-queue-priority'));
+      const badge=this.node('span',t_safe(teamInputStatusLabel(status)),'team-queue-status');
+      badge.dataset.status=status;
+      line.append(badge);
+      row.append(line);
+      if(input.waitingReason)row.append(this.node('p',input.waitingReason,'team-queue-reason'));
+      const details=this.node('div',undefined,'team-queue-details');
+      const runID=input.targetRunId||(Array.isArray(input.runIds)&&input.runIds[input.runIds.length-1])||'';
+      if(runID){
+        const link=this.button(t_safe('Run')+' '+runID.slice(0,8),()=>this.openRun&&this.openRun(team.id,runID));
+        link.className='team-queue-run';details.append(link);
+      }
+      const items=Array.isArray(input.workItems)?input.workItems:[];
+      if(items.length)details.append(this.node('span',t_safe('工作项')+' '+items.length,'team-queue-workitems'));
+      const revised=Number(input.revision||1)>1;
+      if(revised)details.append(this.node('span',t_safe('第')+Number(input.revision||1)+t_safe('次修订'),'team-queue-revision'));
+      row.append(details);
+      if(status==='queued'){
+        const actions=this.node('div',undefined,'team-queue-actions');
+        if(!input.priority)actions.append(this.button(t_safe('立即发送'),()=>this.queueAction(input,'prioritize')));
+        actions.append(this.button(t_safe('编辑'),()=>this.openQueueEdit(input)));
+        actions.append(this.button(t_safe('删除'),()=>this.queueAction(input,'cancel')));
+        row.append(actions);
+      }else if(status==='waiting_input'||status==='routing'){
+        row.append(this.node('p',t_safe('已进入路由，排队操作不可用；运行中的修订请发送新消息。'),'team-queue-reason'));
+      }
+      list.append(row);
+    }
+    panel.append(list);
+    if(inputs.length>5){
+      const more=this.button(this.queueExpanded?t_safe('收起'):t_safe('展开全部')+' ('+inputs.length+')',()=>{this.queueExpanded=!this.queueExpanded;this.render();});
+      more.className='team-queue-more';panel.append(more);
+    }
+    root.append(panel);
+  }
   open(team){
     clearTimeout(this.timer);
     this.current=team||null;this.team=team||null;this.run=null;this.compact=false;this.generation++;
-    this.refreshError='';
-    this.render();if(this.current)this.refreshRun(true);
+    this.refreshError='';this.queue=null;this.queueError='';this.queueExpanded=false;
+    this.render();if(this.current){this.refreshRun(true);this.refreshQueue();}
   }
   close(){this.open(null);}
   openSettings(){if(this.current)new TeamSettingsDialog({request:this.request,onChange:team=>{this.onChange&&this.onChange(team);}}).open(this.current);}
-  accepted(){this.refreshRun(true);}
+  accepted(){this.refreshRun(true);this.refreshQueue();}
   schedule(){
     clearTimeout(this.timer);if(!this.current)return;
-    if(this.run&&TEAM_TERMINAL_RUN_STATUSES.has(this.run.status))return;
-    this.timer=setTimeout(()=>this.refreshRun(true),4000);this.timer.unref?.();
+    // 队列模式下终局 Run 也要继续追队列（新输入排队/停靠），不因 Run 终态停泵。
+    if(this.run&&TEAM_TERMINAL_RUN_STATUSES.has(this.run.status)&&!this.queueMode())return;
+    this.timer=setTimeout(()=>{this.refreshRun(true);this.refreshQueue();},4000);this.timer.unref?.();
   }
   async refreshRun(force=false){
     const team=this.current;
@@ -237,6 +396,7 @@ class TeamChatController{
     root.replaceChildren();
     if(!this.current||!team){root.hidden=true;return;}
     root.hidden=false;
+    this.renderQueuePanel();
     if(!run){
       const empty=this.node('section',undefined,'team-workflow-empty');
       empty.append(this.node('strong',t_safe('团队已就绪，给团队发第一条消息')));
@@ -541,4 +701,4 @@ class TeamSettingsDialog{
     finally{this.busy=false;this.render();}
   }
 }
-if(typeof module!=='undefined')module.exports={splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};
+if(typeof module!=='undefined')module.exports={splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamQueueModeEnabled,teamInputStatusLabel,teamInputHead,teamWorkflowStages,teamWorkflowTaskTitle,teamWorkflowCounts,teamWorkflowOutcome,teamWorkflowMemberLabel};

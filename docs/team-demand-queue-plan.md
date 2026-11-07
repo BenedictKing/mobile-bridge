@@ -1,6 +1,6 @@
 # 团队多需求编排与持久队列实施方案
 
-> 状态：阶段 0–3 已实施（2026-11-07），阶段 4–5 未实施 · 原方案定稿 2026-11-07
+> 状态：阶段 0–4 已实施（2026-11-07），阶段 5 未实施 · 原方案定稿 2026-11-07
 >
 > 基于 [团队总体设计](team-overall-design.md)、[持续反馈方案](team-autonomous-feedback-plan.md) 和现行 Go 网关。本文只定义增量实施与验收，不把目标设计描述为已实现功能。
 >
@@ -11,7 +11,8 @@
 > - 阶段 2 ✅（机械路由部分）：同批 `key`/`dependsOn` 动作扩展（批级校验：key 唯一/不与既有任务同名/引用可解析/无环；拓扑序执行；审查可用显式依赖覆盖执行任务，未覆盖保持阶段 0 保守拒绝）；输入路由器 `internal/team/inputroute.go`（intent→幂等创建→routed 确认，new_task/follow_up/amend，多活跃 Run 停靠 waiting_input 并记录原因，崩溃重泵对账）；WorkItem 索引随 routed 落账。自动路由由 `TeamQueueAutoRoute` 灰度开关控制（main.go 已开启，测试环境关闭以获得确定排队态）。
 > - 阶段 2 未尽事项：Lead 语义路由提案（answer/clarify 分类、多要求拆分的来源引用核对、超 Run 上限拆批）依赖 Lead 提案协议，属阶段 2 后续增量；当前对范围不明的输入停靠 waiting_input，不用猜测代替用户决定。
 > - 阶段 3 ✅：跨 Run 成员 lease（`teamMemberPending` 窗口记账 + Team 级 memberBusy，同一成员跨 Run 最多一个在途任务）；活跃 Run 准入 `maxActiveRuns`（默认 2，活跃=有在途任务或派发窗口的非终态 Run，`teamRunPending` 窗口口径，轮转释放不抢占）；路由公平（`RouteOrderAt`：3:1 优先配额 + 10 分钟老化提升，排序只依赖账本状态、重启同序）；Team 队列滚动派发预算 `queueDispatchBudget`（默认 48 次/24 小时，journal 的 task_dispatching 计量，超出停靠并提示重置时间；计量失败退化为不限）。
-> - 验证：`go test ./...`、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js` 全绿；`make conformance` 的 golden 失败为存量问题（干净 HEAD 同样失败，与本次无关）。§9.1 要求的隔离 Team 真实浏览器验证与 VERIFICATION.md 记录尚未执行（需网关重启，由用户决定）。
+> - 阶段 4 ✅（前端）：TeamChatController 渲染输入队列面板（`web/team-chat.js`）——每 Team 的 启用/停用排队 开关（localStorage 灰度，默认走旧路径）；面板列出逐输入的 状态/等待原因/目标 Run 跳转/工作项计数/修订次数，queued 行提供 立即发送/编辑/取消（操作 UUID + 期望版本），routing/waiting 行禁用并说明原因；发送侧 `teamSubmissionFields` 按开关附带 `teamQueueVersion:2`，202 queued 响应不依赖 runId 即刷新（`web/app.js`）；i18n 词条与手机窄屏样式已补。旧客户端（不带开关）契约不变。
+> - 验证：`go test ./...`、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js`（164 例）全绿；`make conformance` 的 golden 失败为存量问题（干净 HEAD 同样失败，与本次无关）。§9.1 要求的隔离 Team 真实浏览器验证与 VERIFICATION.md 记录尚未执行（网关已由用户重启加载新代码；建议在测试团队开启「启用排队」试用并记录 Run/输入 ID）。
 
 ## 1. 问题与边界
 
