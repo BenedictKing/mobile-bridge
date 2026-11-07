@@ -1162,7 +1162,7 @@ func TestPipelineRunsByDependencyWithBoundedContext(t *testing.T) {
 	if !strings.Contains(reviewText, "来源任务：implement") || strings.Contains(reviewText, "来源任务：design") {
 		t.Fatalf("review 应只注入上一轮摘要:\n%s", reviewText)
 	}
-	h.completeSubmission("s-rev", reviewSub, reviewText, "审查通过。")
+	h.completeSubmission("s-rev", reviewSub, reviewText, "审查通过。\n<team-review>passed</team-review>")
 
 	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
 	for _, taskID := range []string{"design", "implement", "review"} {
@@ -1270,7 +1270,7 @@ func TestResumeRedispatchesHealthyBranchOnly(t *testing.T) {
 	if got := h.queue.callCount(subA); got != 1 {
 		t.Fatalf("未决 unknown 不得重发: %d 次", got)
 	}
-	h.completeSubmission("s-rev", subC, textC, "审查通过。")
+	h.completeSubmission("s-rev", subC, textC, "审查通过。\n<team-review>passed</team-review>")
 	waitFor(t, "run 终态", func() bool { return terminalRun(h.store.Run(run.ID).Status) })
 	after := h.store.Run(run.ID)
 	if after.Status != RunStopped {
@@ -2153,7 +2153,7 @@ func TestDispatchPoolCapsConcurrentInFlightTasks(t *testing.T) {
 		t.Fatal("rev 的派发必须发生在 lead 终态之后（池容量限流）")
 	}
 	h.completeSubmission("s-dev", devSub, devText, "Dev 版方案。")
-	h.completeSubmission("s-rev", revSub, revText, "Rev 版方案。")
+	h.completeSubmission("s-rev", revSub, revText, "Rev 版方案。\n<team-review>passed</team-review>")
 	waitFor(t, "run 完成", func() bool { return h.store.Run(run.ID).Status == RunCompleted })
 }
 

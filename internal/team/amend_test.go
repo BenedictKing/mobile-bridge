@@ -373,7 +373,7 @@ func TestCreateAmendRunPartialImportContinuesFresh(t *testing.T) {
 
 	// review 完成后整 Run 终局（导入任务 + 新执行任务同批 fold）。
 	entry, _ := h.queue.firstEntry("s-rev")
-	h.completeSubmission("s-rev", entry.submissionID, sentText, "测试已补齐。")
+	h.completeSubmission("s-rev", entry.submissionID, sentText, "测试已补齐。\n<team-review>passed</team-review>")
 	waitFor(t, "amend run 完成", func() bool { return h.store.Run("run-amend").Status == RunCompleted })
 
 	// 父 Run 快照不变：任务状态原样、版本不因 amend 前进。

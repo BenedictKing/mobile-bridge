@@ -245,12 +245,20 @@ func newTeamTestEnv(t *testing.T, queueStatus string, withAgent bool, agentScrip
 	server.TeamJournal = journal
 	server.TeamSchedules = team.LoadScheduleStore(filepath.Join(dataDir, "team-schedules.json"))
 	server.TeamFeeds = NewTeamFeedRegistry(journal, store)
+	// 持久输入队列（阶段 1，main.go 同构装配）：独立 journal + 可重建快照。
+	inputJournal, inputJournalErr := team.OpenJournal(filepath.Join(dataDir, "team-inputs.jsonl"))
+	if inputJournalErr != nil {
+		t.Fatal(inputJournalErr)
+	}
+	t.Cleanup(func() { inputJournal.Close() })
+	server.TeamInputs = team.LoadInputLedger(filepath.Join(dataDir, "team-inputs.json"), inputJournal)
 	// changes 端点已是长轮询（teams.go）：测试默认把等待上限压到毫秒级，
 	// 「游标最新」的用例不至于各挂 12s；长轮询行为本身由
 	// TestTeamsRunChangesLongPoll 显式调大等待上限验证。
 	server.TeamChangesWait = 20 * time.Millisecond
 	server.Teams = team.NewService(store, journal, env.queue, env.resolver)
 	server.Teams.OnEvent = server.TeamFeeds.Ingest
+	server.Teams.SetInputs(server.TeamInputs)
 	return env
 }
 

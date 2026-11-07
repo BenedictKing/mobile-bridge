@@ -621,10 +621,11 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			// Lead 自动动作的入账事实（§5.1，阶段三）：重建默认 Round=1，
 			// 轮次以事件载荷的 round 增载（max 语义，0=缺省不动）。任务正文
 			// 只回 taskHead（§10.3 有界 payload；完整动作文本随 Run 快照存
-			// 活，快照重建与 task_planned 的 prompt 同为有界降级）。
+			// 活，快照重建与 task_planned 的 prompt 同为有界降级）。key/
+			// dependsOn（阶段 2）是同批依赖的解析依据，必须随重建恢复。
 			actionKey := payloadString(event.Payload, "actionKey")
 			if actionKey != "" {
-				run.PendingActions = append(run.PendingActions, Action{
+				rebuilt := Action{
 					Type:         payloadString(event.Payload, "type"),
 					SourceTaskID: payloadString(event.Payload, "sourceTaskId"),
 					Round:        payloadInt(event.Payload, "round"),
@@ -632,9 +633,12 @@ func applyJournalEventToRun(run *Run, event *Event) {
 					Task:         payloadString(event.Payload, "taskHead"),
 					FromTaskID:   payloadString(event.Payload, "fromTaskId"),
 					WriteLock:    payloadString(event.Payload, "writeLock"),
+					Key:          payloadString(event.Payload, "key"),
 					ActionKey:    actionKey,
 					Status:       ActionStatusProposed,
-				})
+				}
+				rebuilt.DependsOn = payloadStrings(event.Payload, "dependsOn")
+				run.PendingActions = append(run.PendingActions, rebuilt)
 			}
 			advanceRebuildRound(run, event)
 		case EventActionRejected:
@@ -717,6 +721,16 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		if task.Reduction || task.TriageFor != "" {
 			task.Prompt = payloadString(event.Payload, "prompt")
 			task.DependsOn = payloadStrings(event.Payload, "dependsOn")
+		}
+		// 审查格式修复任务（revfix-*，阶段 0）：完整恢复 prompt/依赖与只读
+		// 写锁——重建不能只回标题（重派发需要确定性 Prompt；写锁缺失会让
+		// 只读审查退化为独占写锁，同 cwd 的写任务被无谓串行）。
+		if repairFor := payloadString(event.Payload, "reviewRepairFor"); repairFor != "" {
+			task.Prompt = payloadString(event.Payload, "prompt")
+			task.DependsOn = payloadStrings(event.Payload, "dependsOn")
+			if lock := payloadString(event.Payload, "writeLock"); lock != "" {
+				task.WriteLock = lock
+			}
 		}
 		// 修复任务（actfix-*）的 task_planned 携带 round 增载（§5.1 修复
 		// 回路随轮次推进）；携带 actionKey 的是执行流落地动作的凭据

@@ -977,9 +977,24 @@ func runGateway(args []string) {
 	// TeamJournal 供 /stats 端点全量重放 journal（§12 阶段四：内存投影每
 	// Run 只留 500 条，长 Run 的早期事件只在磁盘）；与 TeamStore 同源装配。
 	server.TeamJournal = teamJournal
+	// 持久输入队列（docs/team-demand-queue-plan.md §3，阶段 1）：独立 journal
+	//（team-inputs.jsonl）+ 可重建快照（team-inputs.json）；queueVersion:2
+	// 入口先记账再返回，旧 TeamInput 路径不受影响。
+	inputJournal, inputJournalErr := team.OpenJournal(filepath.Join(dataDir, "team-inputs.jsonl"))
+	if inputJournalErr != nil {
+		log.Fatalf("team input journal: %v", inputJournalErr)
+	}
+	server.TeamInputs = team.LoadInputLedger(filepath.Join(dataDir, "team-inputs.json"), inputJournal)
 	server.TeamFeeds = httpd.NewTeamFeedRegistry(teamJournal, teamStore)
 	teamQueue, teamResolver := httpd.NewTeamAdapters(server)
 	server.Teams = team.NewService(teamStore, teamJournal, teamQueue, teamResolver)
+	// 输入路由器（阶段 2）：账本装配后重泵全部 Team——崩溃窗口里停在
+	// routing 的输入按 intent 对账补齐（inputroute.go 的幂等创建路径）。
+	server.Teams.SetInputs(server.TeamInputs)
+	server.TeamQueueAutoRoute = true
+	for _, teamRow := range teamStore.Teams() {
+		server.Teams.RoutePendingInputs(teamRow.ID)
+	}
 	server.Teams.Transcripts = httpd.NewTeamTranscriptSource(server)
 	server.Teams.LeadBriefing = httpd.NewTeamLeadBriefingSource(server)
 	// worktree 注册表（§6.4 + §16 默认决策 6）：注册/列表端点与 Service 的

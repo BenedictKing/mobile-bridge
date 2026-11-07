@@ -241,7 +241,13 @@ def handle_prompt(m, ident):
     fh.write("agent 产出：" + text + "\n")
   except Exception:
    pass
- reply({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "已完成：" + text}}}})
+ # 审查任务（[Team review] 简报）与审查格式修复任务按裁决协议作答：末行给
+ # passed 标记——通用回显不含标记会触发编排器的 revfix 修复回路（阶段 0），
+ # 让成员换绑/额度恢复等用例的派发计数多出修复轮。
+ body = "已完成：" + text
+ if "[Team review]" in text or "没有可识别的裁决标记" in text:
+  body += "\n<team-review>passed</team-review>"
+ reply({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": body}}}})
  stop = "end_turn"
  if "HOLDLONG" in text:
   with LOCK:
@@ -376,6 +382,13 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	t.Cleanup(func() { journal.Close() })
 	queueAdapter, resolver := NewTeamAdapters(server)
 	server.TeamStore = store
+	// 持久输入队列（阶段 1，main.go 同构装配）：独立 journal + 可重建快照。
+	inputJournal, inputJournalErr := team.OpenJournal(filepath.Join(dataDir, "team-inputs.jsonl"))
+	if inputJournalErr != nil {
+		t.Fatal(inputJournalErr)
+	}
+	t.Cleanup(func() { inputJournal.Close() })
+	server.TeamInputs = team.LoadInputLedger(filepath.Join(dataDir, "team-inputs.json"), inputJournal)
 	// TeamJournal 供 /stats 端点全量重放 journal（main.go:928-930 的同构
 	// 装配：与 TeamStore 同源；缺它 stats 端点按 409 拒绝）。
 	server.TeamJournal = journal
@@ -384,6 +397,7 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	server.TeamChangesWait = 20 * time.Millisecond
 	server.Teams = team.NewService(store, journal, queueAdapter, resolver)
 	server.Teams.SetWaitSlice(2 * time.Millisecond)
+	server.Teams.SetInputs(server.TeamInputs)
 	server.Teams.OnEvent = server.TeamFeeds.Ingest
 	// 阶段二端口（main.go:935-940 的同构装配）：转发转录源 + worktree 注册表
 	// （注册表与 Service.Workspaces 共用同一份 team-workspaces.json）。

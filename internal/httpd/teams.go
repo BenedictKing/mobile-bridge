@@ -127,14 +127,36 @@ func (h *handler) handleTeams(method string) {
 		h.handleTeamLeadContext(teamID)
 	case len(segments) == 2 && segments[1] == "inputs":
 		// TeamInput 长期入口（§10 阶段二）：POST 202 {inputId, routeStatus}，
-		// 同 id 幂等重放；GET 按 inputId 回查路由结果。
-		if method == http.MethodPost {
+		// 同 id 幂等重放；GET 按接受序分页查看持久队列（阶段 1，
+		// docs/team-demand-queue-plan.md §3.2）。
+		switch method {
+		case http.MethodPost:
 			h.handleTeamInputsCreate(teamID)
-		} else {
+		case http.MethodGet:
+			h.handleTeamInputsList(teamID)
+		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}
-	case len(segments) == 3 && segments[1] == "inputs" && method == http.MethodGet:
-		h.handleTeamInputGet(teamID, segments[2])
+	case len(segments) == 3 && segments[1] == "inputs":
+		inputID := segments[2]
+		switch method {
+		case http.MethodGet:
+			h.handleTeamInputGet(teamID, inputID)
+		case http.MethodPatch:
+			h.handleTeamInputRevise(teamID, inputID)
+		default:
+			h.fail(http.StatusNotFound, errorBody("页面不存在"))
+		}
+	case len(segments) == 4 && segments[1] == "inputs" && method == http.MethodPost:
+		// 排队操作（阶段 1）：立即发送只提前路由顺序；取消仅未派发部分。
+		switch segments[3] {
+		case "prioritize":
+			h.handleTeamInputPrioritize(teamID, segments[2])
+		case "cancel":
+			h.handleTeamInputCancel(teamID, segments[2])
+		default:
+			h.fail(http.StatusNotFound, errorBody("页面不存在"))
+		}
 	case len(segments) == 2 && segments[1] == "schedule":
 		// 定时触发配置（§12 阶段四工作项 1 的 HTTP 配置面）：GET 无配置
 		// 404（前端据此展示未配置态）、PUT 全量模板写。
@@ -440,6 +462,13 @@ func (h *handler) handleTeamDelete(teamID string) {
 		h.failTeamStoreError(err)
 		return
 	}
+	// 输入账本随之清理（阶段 1）：journal 原件保留（清理事实另落一条事件），
+	// 投影不再跟随团队复活。
+	if h.server.TeamInputs != nil {
+		if err := h.server.TeamInputs.PurgeTeam(teamID); err != nil {
+			log.Printf("team %s 输入账本清理失败: %v", teamID, err)
+		}
+	}
 	result := jsoncompat.NewObject()
 	result.Set("ok", true)
 	h.output(http.StatusOK, result, contentTypeJSON, "")
@@ -718,8 +747,9 @@ type teamInputError struct {
 func (e *teamInputError) Error() string { return e.message }
 
 // conversationTaskID 是后续团队消息的确定性任务 ID；inputID 不再机械地
-// 等于 runID，重放可在全部 Run 中找到原任务，避免重复派单。
-func conversationTaskID(inputID string) string { return "input-" + inputID }
+// 等于 runID，重放可在全部 Run 中找到原任务，避免重复派单。team 包的路由
+// 器（ConversationTaskID）用同一约定。
+func conversationTaskID(inputID string) string { return team.ConversationTaskID(inputID) }
 
 // findTeamInput 按消息幂等键查找初始 Run 或后续任务，供两个 TeamInput 入口
 // 和 GET 投影共用。只识别主控 autoPlan 对话，显式计划 Run 不混入。
@@ -843,6 +873,21 @@ func (h *handler) handleTeamConversationSend(threadID string, object *jsoncompat
 		h.fail(http.StatusBadRequest, errorBody("未知发送方式"))
 		return true
 	}
+	// 持久输入队列分流（阶段 1，§3.2）：teamQueueVersion:2 的会话发送先落
+	// 输入账本（202 queued），旧客户端继续走「立即给 runId」的同步路径。
+	if stringField(object, "teamQueueVersion") == teamQueueVersionGate {
+		if h.server.TeamInputs == nil {
+			h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
+			return true
+		}
+		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, threadID, payload.id, payload.text, payload.attachments)
+		if acceptErr != nil {
+			h.failTeamInputError(acceptErr)
+			return true
+		}
+		h.outputQueuedTeamInput(input, duplicate)
+		return true
+	}
 	run, duplicate, createErr := h.createTeamInput(teamRow, threadID, payload.id, payload.text, payload.attachments)
 	if createErr != nil {
 		var inputErr *teamInputError
@@ -872,7 +917,10 @@ func (h *handler) outputTeamConversation(inputID string, run *team.Run, duplicat
 // handleTeamInputsCreate 是 TeamInput 长期入口（§10 阶段二）：POST
 // /api/teams/:teamId/inputs → 202 {inputId, runId, routeStatus}。inputId 是
 // 消息幂等键；runId 是实际复用或创建的 Run。普通团队消息加入当前 DAG，
-// routeStatus 保持 new_task；显式 follow_up/amend/answer/clarify 仍是后续扩展。
+// routeStatus 保持 new_task。带 queueVersion:2 的请求改走持久输入队列（阶段
+// 1，docs/team-demand-queue-plan.md §3.2）：先持久化再返回
+// {inputId, queueStatus:"queued", runIds:[]}，不给 runId——新客户端用
+// inputId 追踪路由，旧客户端的同步契约保持不变。
 func (h *handler) handleTeamInputsCreate(teamID string) {
 	teamRow := h.loadTeam(teamID)
 	if teamRow == nil {
@@ -895,6 +943,19 @@ func (h *handler) handleTeamInputsCreate(teamID string) {
 	}
 	if payload.mode != "send" {
 		h.fail(http.StatusBadRequest, errorBody("团队输入请使用普通发送方式"))
+		return
+	}
+	if stringField(body, "queueVersion") == teamQueueVersionGate {
+		if h.server.TeamInputs == nil {
+			h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
+			return
+		}
+		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, teamLeadSessionID(teamRow), payload.id, payload.text, payload.attachments)
+		if acceptErr != nil {
+			h.failTeamInputError(acceptErr)
+			return
+		}
+		h.outputQueuedTeamInput(input, duplicate)
 		return
 	}
 	goal := payload.text
@@ -923,12 +984,20 @@ func (h *handler) handleTeamInputsCreate(teamID string) {
 	h.output(http.StatusAccepted, result, contentTypeJSON, "")
 }
 
-// handleTeamInputGet 回查一条 TeamInput 的路由结果：初始消息指向其创建 Run，
-// 后续消息指向被追加 Lead 任务的原 Run；显式计划/其他团队一律 404。
+// handleTeamInputGet 回查一条 TeamInput：持久队列输入（queueVersion:2 家族）
+// 优先按账本投影（含排队状态与修订历史）；不在账本的输入回落旧契约——初始
+// 消息指向其创建 Run，后续消息指向被追加 Lead 任务的原 Run；显式计划/其他
+// 团队一律 404。
 func (h *handler) handleTeamInputGet(teamID, inputID string) {
 	teamRow := h.loadTeam(teamID)
 	if teamRow == nil {
 		return
+	}
+	if h.server.TeamInputs != nil {
+		if input := h.server.TeamInputs.Get(teamID, inputID); input != nil {
+			h.output(http.StatusOK, teamQueueInputProject(input), contentTypeJSON, "")
+			return
+		}
 	}
 	run, task := h.findTeamInput(teamID, inputID)
 	if run == nil || task == nil {
@@ -3033,6 +3102,8 @@ var teamPolicyIntFields = []teamPolicyIntField{
 	{"taskTimeoutSecs", 1, 0, func(p *team.TeamPolicy, v int) { p.TaskTimeoutSecs = v }},
 	{"runTimeoutSecs", 1, 0, func(p *team.TeamPolicy, v int) { p.RunTimeoutSecs = v }},
 	{"budgetUnits", 0, 0, func(p *team.TeamPolicy, v int) { p.BudgetUnits = v }},
+	// maxPendingInputs（阶段 1 输入队列背压）：0=不设上限。
+	{"maxPendingInputs", 0, 0, func(p *team.TeamPolicy, v int) { p.MaxPendingInputs = v }},
 }
 
 // parseTeamPolicy 把请求里的 policy 部分字段合并进 base（未提供的字段保持

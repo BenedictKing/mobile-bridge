@@ -279,6 +279,10 @@ type TeamPolicy struct {
 	WritePolicy            string `json:"writePolicy"`   // exclusive | parallel
 	AutoDispatch           bool   `json:"autoDispatch"`
 	AutoApplyChanges       bool   `json:"autoApplyChanges"`
+	// MaxPendingInputs 是每 Team 待路由输入的上限（docs/
+	// team-demand-queue-plan.md §3.2，阶段 1）：独立于 MaxTasksPerRun 的
+	// 入口背压；≤0 视为不限（DefaultPolicy 给 DefaultMaxPendingInputs）。
+	MaxPendingInputs int `json:"maxPendingInputs"`
 }
 
 // DefaultPolicy 返回 §4.2 的默认策略。
@@ -299,6 +303,7 @@ func DefaultPolicy() TeamPolicy {
 		WritePolicy:            WritePolicyExclusive,
 		AutoDispatch:           false,
 		AutoApplyChanges:       false,
+		MaxPendingInputs:       DefaultMaxPendingInputs,
 	}
 }
 
@@ -458,9 +463,16 @@ type Action struct {
 	FromTaskID   string `json:"fromTaskId,omitempty"`
 	WriteLock    string `json:"writeLock,omitempty"`
 	Review       *bool  `json:"review,omitempty"`
-	ActionKey    string `json:"actionKey,omitempty"`
-	Status       string `json:"status,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	// Key 是同批次局部别名（docs/team-demand-queue-plan.md §4，阶段 2）：
+	// 供同批 dependsOn 引用；网关解析全部提案后映射到确定性派生任务 ID。
+	// 空=不参与同批依赖。
+	Key string `json:"key,omitempty"`
+	// DependsOn 是本动作派生任务的依赖列表：同批 key 或本 Run 既有任务 ID；
+	// 旧 fromTaskId 保留「引用既有结果」语义，可与 dependsOn 并存。
+	DependsOn []string `json:"dependsOn,omitempty"`
+	ActionKey string   `json:"actionKey,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
 }
 
 // Action 状态取值（§5.2/§12 阶段三）：proposed 已入账待执行；executed 已由
@@ -661,6 +673,7 @@ func (p *TeamPolicy) jsonObject() *jsoncompat.Object {
 	object.Set("writePolicy", p.WritePolicy)
 	object.Set("autoDispatch", p.AutoDispatch)
 	object.Set("autoApplyChanges", p.AutoApplyChanges)
+	object.Set("maxPendingInputs", jsoncompat.Num(p.MaxPendingInputs))
 	return object
 }
 

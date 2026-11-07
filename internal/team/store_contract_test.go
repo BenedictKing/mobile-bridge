@@ -1297,6 +1297,7 @@ func TestDefaultPolicy(t *testing.T) {
 		WritePolicy:            WritePolicyExclusive,
 		AutoDispatch:           false,
 		AutoApplyChanges:       false,
+		MaxPendingInputs:       DefaultMaxPendingInputs, // 阶段 1 输入队列背压
 	}
 	if policy != want {
 		t.Fatalf("DefaultPolicy 与 §4.2 不一致:\n得到 %+v\n期望 %+v", policy, want)

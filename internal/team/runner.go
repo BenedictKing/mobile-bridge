@@ -46,6 +46,12 @@ type Service struct {
 	resolver SessionResolver
 	locks    *LockRegistry
 
+	// inputs 是持久输入队列账本（阶段 2，inputroute.go）：main.go/测试环境
+	// 在 NewService 后经 SetInputs 直赋；nil 时路由器停用。
+	inputs      *InputLedger
+	routingOnce sync.Once
+	routingWake chan struct{}
+
 	// OnEvent 在每条 journal 事件成功落账后被调用（httpd 装配侧接
 	// EventFeed.Add，把事实投影到事件流）。nil 表示无人订阅。
 	OnEvent func(*Event)
@@ -749,6 +755,12 @@ func (s *Service) passActions(state *runState) {
 	if len(runnable) == 0 {
 		return
 	}
+	// 同批 key/dependsOn（阶段 2，§4）：以整批 proposed 动作解析 key → 派生
+	// 任务 ID，并把本批 runnable 按依赖拓扑排序——被依赖的派生任务先落
+	// Run，下游 DependsOn 引用的 ID 在创建时已存在。解析正确性由
+	// ValidateActions 的批级校验保证，这里容错（解析不到不重排）。
+	batchKeys, _ := validateActionBatchKeys(run, proposed)
+	sortActionsByBatchDependencies(runnable, batchKeys)
 	pre := &actionPrefetch{sessionLive: map[string]bool{}, teamInFlight: -1}
 	pre.facts = s.actionFacts(state.runID)
 	// ① 锁外预取（慢 I/O）：目标成员会话可达性（delegate/request_context 用
@@ -795,14 +807,14 @@ func (s *Service) passActions(state *runState) {
 	pre.teamInFlight = s.teamInFlight(team.ID)
 	// ③ 逐动作执行/收敛/拒绝。
 	for i := range runnable {
-		s.executeAction(state, team, policy, &runnable[i], pre)
+		s.executeAction(state, team, policy, &runnable[i], pre, batchKeys)
 	}
 }
 
 // executeAction 执行单个 proposed 动作：journal 已有终局事实的先做崩溃窗口
 // 收敛（只补快照、不重复记账）；delegate/summarize 走单批 commitRun；request_
 // context 锁内判定、锁外转发。
-func (s *Service) executeAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch) {
+func (s *Service) executeAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch, batchKeys map[string]string) {
 	if pre != nil && pre.facts != nil {
 		if verdict, settled := pre.facts.settled[action.ActionKey]; settled {
 			s.convergeAction(state, team, action, verdict, pre.facts.reason[action.ActionKey])
@@ -811,7 +823,7 @@ func (s *Service) executeAction(state *runState, team *Team, policy TeamPolicy, 
 	}
 	switch action.Type {
 	case ActionTypeDelegate, ActionTypeSummarize:
-		s.executePlannedAction(state, team, policy, action, pre)
+		s.executePlannedAction(state, team, policy, action, pre, batchKeys)
 	case ActionTypeRequestContext:
 		s.executeForwardAction(state, team, policy, action, pre)
 	}
@@ -821,7 +833,7 @@ func (s *Service) executeAction(state *runState, team *Team, policy TeamPolicy, 
 // 全部在单批 commitRun 内原子落账。普通 delegate 新建派生任务；分诊 delegate
 // 通过 task_retry_scheduled 重臂原任务并恢复其级联停止的下游。两类结果都交
 // 同 pass 的 ReadyTasks/executeDispatch 全套派出。
-func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch) {
+func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch, batchKeys map[string]string) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	err := s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
@@ -832,7 +844,9 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 		if index < 0 {
 			return nil, false // 已被并发处理（first-wins）。
 		}
-		if ok, reason := ValidateExecutable(fresh, team, policy, action, pre, memberBusyOf(fresh, state.pendingDispatch)); !ok {
+		// 审查顺序屏障的执行期复判需要「解析后的显式依赖」（同批 key →
+		// 派生任务 ID；阶段 2），与 buildActionTaskWithKeys 同一映射。
+		if ok, reason := ValidateExecutableWithDeps(fresh, team, policy, action, pre, memberBusyOf(fresh, state.pendingDispatch), resolvedActionDeps(action, batchKeys)); !ok {
 			fresh.PendingActions[index].Status = ActionStatusRejected
 			fresh.PendingActions[index].Reason = reason
 			event := newEvent(fresh.ID, EventActionRejected, "runner", actionRejectedPayload(action, reason))
@@ -843,7 +857,7 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 		if target, retriage := failureRetriageTarget(fresh, action); retriage {
 			events = applyRetriage(fresh, target, action)
 		} else {
-			task := buildActionTask(fresh, team, action)
+			task := buildActionTaskWithKeys(fresh, team, action, batchKeys)
 			fresh.Tasks = append(fresh.Tasks, task)
 			payload := map[string]any{
 				"taskId":           task.ID,
@@ -2151,6 +2165,19 @@ func (s *Service) expireRun(state *runState) (finished, dwellPass bool) {
 // （非空时写 Task.Outcome 与事件 payload，recovery 重放据此推导重派语义）。
 // 返回是否真的落账。
 func (s *Service) applyTaskTerminalLocked(state *runState, runID, taskID, status, stopReason, errorText, outcome string, result *TaskResult, eventType, source string) bool {
+	return s.applyTaskTerminalWithExtrasLocked(state, runID, taskID, status, stopReason, errorText, outcome, result, eventType, source, nil)
+}
+
+// taskTerminalExtras 在任务终态事实与问题撤回之后同批追加派生事实（如审查
+// 格式修复任务）；返回 (events, false) 时整批放弃（与 settleLeadTaskLocked
+// 的「任务 completed 与动作事实单批原子落账」同一原则——两段式提交的后段
+// 失败会让先落的事实堵死收口路径）。
+type taskTerminalExtras func(fresh *Run, events []*Event) ([]*Event, bool)
+
+// applyTaskTerminalWithExtrasLocked 是 applyTaskTerminalLocked 的可扩展段：
+// extras 非空时在锁内闭包里对 fresh 快照追加事件（任务终态 + 撤回问题 +
+// extras 原子一批）。extras 内部不得再做 I/O，只做确定性构造。
+func (s *Service) applyTaskTerminalWithExtrasLocked(state *runState, runID, taskID, status, stopReason, errorText, outcome string, result *TaskResult, eventType, source string, extras taskTerminalExtras) bool {
 	applied := false
 	err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
 		if terminalRun(fresh.Status) {
@@ -2165,6 +2192,13 @@ func (s *Service) applyTaskTerminalLocked(state *runState, runID, taskID, status
 		// 收口路径）。
 		events := append([]*Event{event},
 			withdrawTaskQuestions(fresh, taskID, questionWithdrawTaskTerminal, source)...)
+		if extras != nil {
+			var proceed bool
+			events, proceed = extras(fresh, events)
+			if !proceed {
+				return nil, false
+			}
+		}
 		applied = true
 		return events, true
 	})
@@ -2248,15 +2282,63 @@ func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome
 }
 
 // completeTask 落任务 completed（§6.5 salvage：结果产生即入账，携带
-// TaskResult 引用）。
+// TaskResult 引用）。审查任务未取得可识别裁决（unknown）时，与 completed
+// 事实同批原子追加一次有界的格式修复任务（review.go，阶段 0）——修复任务
+// 经正常派发流交给原 Reviewer；上限已到或无法构造时确定性收场为 unknown，
+// 交付投影明示「未取得裁决」。
 func (s *Service) completeTask(state *runState, runID, taskID string, result *TaskResult) bool {
+	team := s.reviewRepairTeam(runID, taskID, result)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	stopReason := ""
 	if result != nil {
 		stopReason = result.StopReason
 	}
-	return s.applyTaskTerminalLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher")
+	if team == nil {
+		return s.applyTaskTerminalLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher")
+	}
+	return s.applyTaskTerminalWithExtrasLocked(state, runID, taskID, TaskCompleted, stopReason, "", "", result, EventTaskCompleted, "watcher",
+		func(fresh *Run, events []*Event) ([]*Event, bool) {
+			// buildReviewRepairTask 在 fresh 上幂等（已有修复/上限已到/ID 不可用
+			// 均返回 false，不追加事件）；payload 带 prompt/dependsOn/writeLock
+			// 供 journal 重建完整恢复（store.go 的 task_planned 重建分支）。
+			repair, ok := buildReviewRepairTask(fresh, team, taskID)
+			if !ok {
+				return events, true
+			}
+			fresh.Tasks = append(fresh.Tasks, repair)
+			planned := newEvent(fresh.ID, EventTaskPlanned, "watcher", map[string]any{
+				"taskId": repair.ID, "memberId": repair.MemberID,
+				"instructionsHead": repair.InstructionsHead, "prompt": repair.Prompt,
+				"dependsOn": repair.DependsOn, "writeLock": repair.WriteLock,
+				"review": true, "reviewRepairFor": taskID,
+			})
+			planned.IdempotencyKey = reviewRepairPlannedKey(fresh.TeamID, fresh.ID, repair.ID)
+			return append(events, planned), true
+		})
+}
+
+// reviewRepairTeam 在锁外解析审查格式修复所需的团队：仅当本次结果没有可
+// 识别裁决（ReviewVerdict 为空，即 unknown）且任务按当前快照承担审查语义
+// 时返回团队；其余路径返回 nil（保持原 completeTask 行为）。store 的读写
+// 与 state.mu 的持锁顺序与 settleLeadTaskLocked 的解析段一致。
+func (s *Service) reviewRepairTeam(runID, taskID string, result *TaskResult) *Team {
+	if result == nil || result.ReviewVerdict != "" {
+		return nil
+	}
+	run := s.store.Run(runID)
+	if run == nil {
+		return nil
+	}
+	task := findTaskIn(run, taskID)
+	if task == nil {
+		return nil
+	}
+	team := s.store.Team(run.TeamID)
+	if team == nil || !IsReviewTask(team, task) {
+		return nil
+	}
+	return team
 }
 
 // settlesLeadActions 报告该任务的 completed 回复是否要做 team-actions 解析
@@ -2437,6 +2519,14 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				}
 				if action.WriteLock != "" {
 					payload["writeLock"] = action.WriteLock
+				}
+				// 同批依赖（阶段 2，§4）：key/dependsOn 随动作事实入账，
+				// 供快照损坏后的 journal 重建恢复。
+				if action.Key != "" {
+					payload["key"] = action.Key
+				}
+				if len(action.DependsOn) > 0 {
+					payload["dependsOn"] = append([]string(nil), action.DependsOn...)
 				}
 				event := newEvent(fresh.ID, EventActionProposed, "watcher", payload)
 				event.IdempotencyKey = action.ActionKey

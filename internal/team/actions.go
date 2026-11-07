@@ -63,6 +63,7 @@ const (
 var actionKnownFields = map[string]bool{
 	"type": true, "sourceTaskId": true, "round": true, "member": true,
 	"task": true, "fromTaskId": true, "writeLock": true, "review": true,
+	"key": true, "dependsOn": true,
 }
 
 // ActionKey 生成动作幂等键（§8.2 变体）：
@@ -395,13 +396,166 @@ func ValidateActions(payload *jsoncompat.Object, team *Team, run *Run, policy Te
 		action.Task, _ = entry.MustGet("task").(string)
 		action.FromTaskID, _ = entry.MustGet("fromTaskId").(string)
 		action.WriteLock, _ = entry.MustGet("writeLock").(string)
+		action.Key, _ = entry.MustGet("key").(string)
+		if raw, has := entry.Get("dependsOn"); has {
+			if dependsList, isArray := raw.(*jsoncompat.Array); isArray {
+				deps := make([]string, 0, len(dependsList.Items))
+				for _, entry2 := range dependsList.Items {
+					if text, isString := entry2.(string); isString {
+						deps = append(deps, text)
+					}
+				}
+				action.DependsOn = deps
+			}
+		}
 		if review, exists := entry.MustGet("review").(bool); exists {
 			action.Review = reviewFlag(review)
 		}
 		action.ActionKey = ActionKey(run.TeamID, run.ID, action.SourceTaskID, action.Round, index)
 		actions = append(actions, action)
 	}
+	byKey, keyViolations := validateActionBatchKeys(run, actions)
+	if len(keyViolations) > 0 {
+		return nil, keyViolations
+	}
+	if orderViolations := validateActionReviewOrder(team, run, actions, byKey); len(orderViolations) > 0 {
+		return nil, orderViolations
+	}
 	return actions, nil
+}
+
+// delegateActionIsReview 判定 delegate 动作是否承担审查语义（docs/
+// team-demand-queue-plan.md §8 阶段 0）：review=true 显式审查；未声明时默认
+// 评审成员承接的委派按审查兼容（IsReviewTask 的缺省口径）；review=false
+// 显式执行。request_context/summarize 不创建成员任务，一律不算。
+func delegateActionIsReview(team *Team, action *Action) bool {
+	if action == nil || action.Type != ActionTypeDelegate {
+		return false
+	}
+	if action.Review != nil {
+		return *action.Review
+	}
+	reviewer := team.ReviewerMemberID()
+	return reviewer != "" && reviewer != team.LeadID && action.Member == reviewer
+}
+
+// runHasUnfinishedExecution 报告 Run 快照是否仍有未终态的执行任务：排除审查
+// 任务（IsReviewTask）、Reduction 汇总与 Lead 任务（含 actfix 修复回合——编排
+// 载体，可与审查并行）。2026-11-07 的真实 Run 正是「实现 17:19 才完成、审查
+// 17:15 已派发」：该口径是阶段 0 的保守屏障，reviewOf/dependsOn 上线（阶段 5）
+// 后由版本绑定的因果依赖替换。
+func runHasUnfinishedExecution(team *Team, run *Run) bool {
+	if team == nil || run == nil {
+		return false
+	}
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		if IsReviewTask(team, task) || task.Reduction || task.MemberID == team.LeadID {
+			continue
+		}
+		switch task.Status {
+		case TaskCompleted, TaskFailed, TaskCancelled, TaskOutcomeUnknown, TaskStopped:
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// validateActionReviewOrder 是审查顺序屏障，只作用于 autoPlan 的 Lead 动作
+// （ValidateActions 仅从 ParseLeadActions 进入；显式 Plan 走 ParsePlan 的
+// DAG 依赖，不受此限制）。阶段 0 的保守形态是「混排拒绝 + 未完成执行拒
+// 绝」；阶段 2 起 dependsOn 上线（docs/team-demand-queue-plan.md §8），
+// 审查动作可用显式依赖覆盖执行任务：
+//   - 同批混排时，每条审查动作的 dependsOn（经 byKey 解析）必须覆盖本批
+//     创建的全部执行任务；
+//   - Run 仍有未完成执行任务时，审查动作的显式依赖必须覆盖它们全部。
+//
+// 未覆盖的保持保守拒绝——审查先于实现完成启动的根因正是「都只依赖根
+// Lead」。reviewOf 版本绑定（阶段 5）上线后按方案替换为因果+版本双闸门。
+func validateActionReviewOrder(team *Team, run *Run, actions []Action, byKey map[string]string) []string {
+	hasExecution := false
+	reviews := make([]*Action, 0, 1)
+	batchExecutions := make([]string, 0, len(actions)) // 本批执行动作的派生任务 ID
+	for i := range actions {
+		action := &actions[i]
+		if delegateActionIsReview(team, action) {
+			reviews = append(reviews, action)
+			continue
+		}
+		if action.Type == ActionTypeDelegate {
+			hasExecution = true
+			if derived := ActionDerivedTaskID(action); derived != "" {
+				batchExecutions = append(batchExecutions, derived)
+			}
+		}
+	}
+	if len(reviews) == 0 {
+		return nil
+	}
+	// 既有未完成执行任务（阶段 0 口径的过滤器）。
+	unfinished := make([]string, 0, 4)
+	if run != nil {
+		for i := range run.Tasks {
+			task := &run.Tasks[i]
+			if IsReviewTask(team, task) || task.Reduction || task.MemberID == team.LeadID {
+				continue
+			}
+			switch task.Status {
+			case TaskCompleted, TaskFailed, TaskCancelled, TaskOutcomeUnknown, TaskStopped:
+				continue
+			}
+			unfinished = append(unfinished, task.ID)
+		}
+	}
+	var violations []string
+	for _, review := range reviews {
+		covered := resolvedActionDeps(review, byKey)
+		var uncovered []string
+		if hasExecution {
+			for _, derived := range batchExecutions {
+				if !containsString(covered, derived) {
+					uncovered = append(uncovered, derived)
+				}
+			}
+		}
+		for _, taskID := range unfinished {
+			if !containsString(covered, taskID) {
+				uncovered = append(uncovered, taskID)
+			}
+		}
+		if len(uncovered) > 0 {
+			violations = append(violations, fmt.Sprintf("审查动作（%s）未用 dependsOn 覆盖执行任务 %s：审查必须显式依赖本批与在途的全部实现任务，或等实现完成后单独成批",
+				actionLabel(review, ActionDerivedTaskID(review)), strings.Join(boundedViolationIDs(uncovered), "、")))
+		}
+	}
+	return violations
+}
+
+// resolvedActionDeps 把动作的 dependsOn 经同批 key 映射解析为任务 ID 列表
+// （fromTaskId 一并计入——它同样是显式依赖）。
+func resolvedActionDeps(action *Action, byKey map[string]string) []string {
+	deps := make([]string, 0, len(action.DependsOn)+1)
+	for _, ref := range action.DependsOn {
+		if derived, isKey := byKey[ref]; isKey {
+			deps = append(deps, derived)
+		} else {
+			deps = append(deps, ref)
+		}
+	}
+	if action.FromTaskID != "" {
+		deps = append(deps, action.FromTaskID)
+	}
+	return deps
+}
+
+// boundedViolationIDs 把未覆盖清单裁到有界形态（≤8 条 + 省略说明）。
+func boundedViolationIDs(ids []string) []string {
+	const bound = 8
+	if len(ids) <= bound {
+		return ids
+	}
+	return append(append([]string(nil), ids[:bound]...), fmt.Sprintf("（其余 %d 项已省略）", len(ids)-bound))
 }
 
 // validateActionEntry 校验单条动作（报错带序号与实际值，仿 planner.go 的
@@ -493,7 +647,180 @@ func validateActionEntry(entry *jsoncompat.Object, team *Team, run *Run, policy 
 			}
 		}
 	}
+	// key/dependsOn（可选，仅 delegate，docs/team-demand-queue-plan.md §4 阶段 2）：
+	// key 是同批次局部别名（成员 ID 正则词汇）；dependsOn 的条目在批级解析
+	//（同批 key 或本 Run 既有任务 ID），这里只做形态校验。
+	if raw, has := entry.Get("key"); has && raw != nil {
+		key, ok := raw.(string)
+		if !ok {
+			violations = append(violations, fmt.Sprintf("第 %d 条动作的 key 必须是字符串，实际是 %s", ordinal, jsonValueKind(raw)))
+		} else if !ValidMemberID(key) {
+			violations = append(violations, fmt.Sprintf("第 %d 条动作的 key 无效：%q（字母/数字/下划线/连字符，1-64 字符）", ordinal, key))
+		} else if actionType != ActionTypeDelegate {
+			violations = append(violations, fmt.Sprintf("第 %d 条动作（%s）不支持 key 字段：同批依赖只用于创建任务的 delegate", ordinal, actionType))
+		}
+	}
+	if raw, has := entry.Get("dependsOn"); has && raw != nil {
+		list, ok := raw.(*jsoncompat.Array)
+		if !ok {
+			violations = append(violations, fmt.Sprintf("第 %d 条动作的 dependsOn 必须是字符串数组，实际是 %s", ordinal, jsonValueKind(raw)))
+		} else {
+			if actionType != ActionTypeDelegate {
+				violations = append(violations, fmt.Sprintf("第 %d 条动作（%s）不支持 dependsOn 字段：同批依赖只用于创建任务的 delegate", ordinal, actionType))
+			}
+			for _, item := range list.Items {
+				ref, isString := item.(string)
+				if !isString || !ValidMemberID(ref) {
+					violations = append(violations, fmt.Sprintf("第 %d 条动作的 dependsOn 条目无效：%v（应为同批 key 或本 Run 任务 ID）", ordinal, item))
+					break
+				}
+			}
+		}
+	}
 	return violations
+}
+
+// validateActionBatchKeys 是同批 key/dependsOn 的批级校验与解析（§4 阶段 2）：
+//   - key 批内唯一，且不得与既有任务 ID 同名（dependsOn 解析的二义性防线）；
+//   - dependsOn 条目必须解析为同批 key 或本 Run 既有任务 ID；
+//   - 合并图（新派生任务 + 既有任务）过 findDependencyCycle，环整体拒绝。
+//
+// 返回 key → 派生任务 ID 的映射（执行期 buildActionTask 复用同一解析）。
+func validateActionBatchKeys(run *Run, actions []Action) (map[string]string, []string) {
+	byKey := map[string]string{}
+	var violations []string
+	for i := range actions {
+		action := &actions[i]
+		if action.Key == "" {
+			continue
+		}
+		derived := ActionDerivedTaskID(action)
+		if derived == "" {
+			continue // 幂等键不可解析：ValidateExecutable 会拒绝，这里不重复报
+		}
+		if _, duplicate := byKey[action.Key]; duplicate {
+			violations = append(violations, fmt.Sprintf("同批动作 key 重复：%s", action.Key))
+			continue
+		}
+		if findTaskIn(run, action.Key) != nil {
+			violations = append(violations, fmt.Sprintf("动作 key %s 与本 Run 既有任务 ID 同名，请换一个别名", action.Key))
+			continue
+		}
+		byKey[action.Key] = derived
+	}
+	dependencies := map[string][]string{}
+	for i := range run.Tasks {
+		dependencies[run.Tasks[i].ID] = run.Tasks[i].DependsOn
+	}
+	for i := range actions {
+		action := &actions[i]
+		if len(action.DependsOn) == 0 {
+			continue
+		}
+		derived := ActionDerivedTaskID(action)
+		deps := make([]string, 0, len(action.DependsOn))
+		for _, ref := range action.DependsOn {
+			switch {
+			case byKey[ref] != "":
+				deps = append(deps, byKey[ref])
+			case findTaskIn(run, ref) != nil:
+				deps = append(deps, ref)
+			default:
+				violations = append(violations, fmt.Sprintf("动作 %s 的 dependsOn 引用无法解析：%q（既不是同批 key，也不是本 Run 任务）", actionLabel(action, derived), ref))
+			}
+		}
+		if derived != "" {
+			dependencies[derived] = deps
+		}
+	}
+	if len(violations) > 0 {
+		return nil, violations
+	}
+	// 环检测以新派生任务为起点（findDependencyCycle 沿 dependencies 深入既有
+	// 任务，合并图的回边都能被切出）。
+	nodes := make([]PlanTaskInput, 0, len(actions))
+	for i := range actions {
+		if derived := ActionDerivedTaskID(&actions[i]); derived != "" {
+			nodes = append(nodes, PlanTaskInput{ID: derived})
+		}
+	}
+	if cycle := findDependencyCycle(nodes, dependencies); cycle != "" {
+		return nil, []string{"同批动作依赖存在循环：" + cycle}
+	}
+	return byKey, nil
+}
+
+// actionLabel 返回动作的人类可读标识（key 优先，回退派生 ID）。
+func actionLabel(action *Action, derived string) string {
+	if action != nil && action.Key != "" {
+		return action.Key
+	}
+	return derived
+}
+
+// containsString 报告切片是否含指定字符串。
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+// sortActionsByBatchDependencies 把同批 delegate 动作按 key 依赖稳定拓扑排序
+// （解析失败的引用原样保留）：被依赖的先执行，派生任务先落 Run，下游
+// DependsOn 引用的 ID 在创建时已存在。解析由 validateActionBatchKeys 保证，
+// 这里防御性容忍未解析引用（不重排）。
+func sortActionsByBatchDependencies(actions []Action, byKey map[string]string) {
+	derivedOf := map[string]string{}
+	for i := range actions {
+		if actions[i].Key != "" {
+			if derived := ActionDerivedTaskID(&actions[i]); derived != "" {
+				derivedOf[actions[i].Key] = derived
+			}
+		}
+	}
+	position := make(map[string]int, len(actions))
+	for i := range actions {
+		position[actions[i].ActionKey] = i
+	}
+	visited := map[string]int{} // 0=未访问 1=访问中 2=完成
+	var order []int
+	var visit func(index int)
+	visit = func(index int) {
+		if visited[actions[index].ActionKey] != 0 {
+			return
+		}
+		visited[actions[index].ActionKey] = 1
+		for _, ref := range actions[index].DependsOn {
+			derived := byKey[ref]
+			if derived == "" {
+				derived = derivedOf[ref]
+			}
+			if derived == "" {
+				continue
+			}
+			for j := range actions {
+				if j != index && ActionDerivedTaskID(&actions[j]) == derived && visited[actions[j].ActionKey] == 0 {
+					visit(j)
+				}
+			}
+		}
+		visited[actions[index].ActionKey] = 2
+		order = append(order, index)
+	}
+	for i := range actions {
+		visit(i)
+	}
+	if len(order) != len(actions) {
+		return // 防御：不应发生（解析已拒绝环）
+	}
+	sorted := make([]Action, 0, len(actions))
+	for _, index := range order {
+		sorted = append(sorted, actions[index])
+	}
+	copy(actions, sorted)
 }
 
 // actionRoundOf 读取 round 整数值（调用方已通过 actionRoundViolation 校验）。
@@ -529,7 +856,7 @@ func actionRoundViolation(entry *jsoncompat.Object, policy TeamPolicy, ordinal i
 
 // actionSchemaInstruction 是 Lead 简报与修复提示共用的动作协议说明。
 func actionSchemaInstruction() string {
-	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
+	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象，且整段回复只包含这一个动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）、key 与 dependsOn（可选，仅 delegate：同一动作块内先实现后审查等先后关系用它们表达——key 是本批内的唯一别名，dependsOn 列出本批其它动作的 key 或本 Run 既有任务 ID，被依赖的动作先执行；不要用自然语言描述顺序代替依赖）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
 }
 
 // BuildLeadBriefing 返回 autoPlan Lead 的任务级成员目录与动作协议。修复提示
@@ -571,7 +898,7 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 	}
 	builder.WriteString("tags 是用户维护的 Agent 或模型能力提示；制定工作流和选择成员时应参考 tags 与 agent 类型，但不要臆测未标注的能力。\n")
 	if reviewer := team.ReviewerMemberID(); reviewer != "" && reviewer != team.LeadID {
-		builder.WriteString("默认评审也是可执行任务的普通成员：实现、排查等执行任务委派给它时必须写 review=false，独立审查任务才写 review=true。审查应尽量由未参与实现的成员完成；没有合适的独立评审时明确说明未审查，不要伪造评审结论。\n")
+		builder.WriteString("默认评审也是可执行任务的普通成员：实现、排查等执行任务委派给它时必须写 review=false，独立审查任务才写 review=true。审查应尽量由未参与实现的成员完成；没有合适的独立评审时明确说明未审查，不要伪造评审结论。审查动作必须单独成批：不要与普通执行任务放在同一动作块，也不要在实现任务尚未全部完成时委派审查——需要等实现后再审查时，先给 Lead 自己委派后续任务，等实现完成、后续 Lead 任务取得结果后再单独输出审查动作。\n")
 	}
 	builder.WriteString("你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须先通过 delegate 分派，不得在主控回合中不经委派直接执行。Lead 也是默认执行成员，允许 delegate 给自己；后续 Lead 执行任务应按任务内容直接完成，不要仅为转交而再次委派。Lead 自己的 delegate 也可用于汇总结果和继续规划。需要编排时，")
 	builder.WriteString(actionSchemaInstruction())
@@ -886,6 +1213,12 @@ func countActionKey(run *Run, actionKey string) int {
 // delegate/request_context 停在 proposed（§11 动作预览的免执行形态），不是
 // 拒绝；解析门（autoPlan）在 settleLeadTaskLocked，两道门分开（§10.2）。
 func ValidateExecutable(run *Run, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch, memberBusy map[string]bool) (bool, string) {
+	return ValidateExecutableWithDeps(run, team, policy, action, pre, memberBusy, nil)
+}
+
+// ValidateExecutableWithDeps 是 ValidateExecutable 的同批依赖版：resolvedDeps
+// 是审查动作经 key 映射解析后的显式依赖（非审查动作忽略该参数）。
+func ValidateExecutableWithDeps(run *Run, team *Team, policy TeamPolicy, action *Action, pre *actionPrefetch, memberBusy map[string]bool, resolvedDeps []string) (bool, string) {
 	if run == nil || team == nil || action == nil {
 		return false, "动作执行缺少运行上下文"
 	}
@@ -932,6 +1265,30 @@ func ValidateExecutable(run *Run, team *Team, policy TeamPolicy, action *Action,
 	if pre != nil && pre.sessionLive != nil {
 		if live, resolved := pre.sessionLive[targetMember]; resolved && !live {
 			return false, fmt.Sprintf("动作目标成员的绑定会话已失效：%s", targetMember)
+		}
+	}
+	// 审查顺序屏障（docs/team-demand-queue-plan.md §8，阶段 2 起）：解析通过
+	// 的动作可能延迟执行（崩溃恢复窗口、策略变更），执行期按当时快照复判，
+	// 与解析期同一口径——审查动作必须显式依赖（resolvedDeps）覆盖全部未完成
+	// 执行任务，否则等实现完成后单独委派。
+	if delegateActionIsReview(team, action) {
+		var uncovered []string
+		for i := range run.Tasks {
+			task := &run.Tasks[i]
+			if IsReviewTask(team, task) || task.Reduction || task.MemberID == team.LeadID {
+				continue
+			}
+			switch task.Status {
+			case TaskCompleted, TaskFailed, TaskCancelled, TaskOutcomeUnknown, TaskStopped:
+				continue
+			}
+			if !containsString(resolvedDeps, task.ID) {
+				uncovered = append(uncovered, task.ID)
+			}
+		}
+		if len(uncovered) > 0 {
+			return false, fmt.Sprintf("存在未被审查动作依赖覆盖的执行任务 %s：请补 dependsOn 或等实现任务全部完成后再委派审查",
+				strings.Join(boundedViolationIDs(uncovered), "、"))
 		}
 	}
 	// request_context：fromTaskId 必须指向本 Run 已完成且有可转发内容的任务
@@ -995,10 +1352,11 @@ func ValidateExecutable(run *Run, team *Team, policy TeamPolicy, action *Action,
 }
 
 // buildActionTask 构造动作派生任务（确定性：同 run 快照 + 同动作恒等）：
-//   - delegate：Member=action.Member、Prompt=action.Task、DependsOn 仅含
-//     fromTaskId（schema 已校验其为既有已完成任务——新任务不可能成环，
-//     §12 工作项 6 的循环依赖拒绝由 planner 创建期 DFS 保证，动作派生不
-//     需要新环检测）；
+//   - delegate：Member=action.Member、Prompt=action.Task；DependsOn 优先取
+//     显式依赖——fromTaskId（schema 已校验为既有已完成任务）与 dependsOn
+//     （同批 key 由 batchKeys 映射为派生任务 ID、其余为本 Run 既有任务，
+//     批级校验已拒绝环与未解析引用，docs/team-demand-queue-plan.md §4 阶段2）；
+//     无任何显式依赖时保留旧缺省——来源任务 + Lead 委派的「等全部在途」；
 //   - summarize：Member=Lead、DependsOn=快照里全部已完成任务集——
 //     BuildTaskContext 派发时自动注入依赖结果摘要（context.go），即「摘要
 //     交回 Lead」的实现；
@@ -1010,17 +1368,42 @@ func ValidateExecutable(run *Run, team *Team, policy TeamPolicy, action *Action,
 //     同款）；WorkspaceMode 固定 shared（动作 schema 无 workspaceId，无法
 //     引用预备 worktree）。
 func buildActionTask(run *Run, team *Team, action *Action) Task {
+	return buildActionTaskWithKeys(run, team, action, nil)
+}
+
+// buildActionTaskWithKeys 是 buildActionTask 的同批 key 解析版（执行流从
+// passActions 传入本批 key → 派生任务 ID 映射）。
+func buildActionTaskWithKeys(run *Run, team *Team, action *Action, batchKeys map[string]string) Task {
 	var deps []string
-	if action.Type == ActionTypeDelegate && action.FromTaskID != "" {
-		deps = []string{action.FromTaskID}
-	} else if action.Type == ActionTypeDelegate {
-		deps = append(deps, action.SourceTaskID)
-		if action.Member == team.LeadID {
-			for i := range run.Tasks {
-				status := run.Tasks[i].Status
-				if run.Tasks[i].MemberID != team.LeadID && !run.Tasks[i].Reduction &&
-					status != TaskFailed && status != TaskCancelled && status != TaskOutcomeUnknown && status != TaskStopped {
-					deps = append(deps, run.Tasks[i].ID)
+	if action.Type == ActionTypeDelegate {
+		explicit := false
+		if len(action.DependsOn) > 0 {
+			explicit = true
+			for _, ref := range action.DependsOn {
+				mapped := ref
+				if derived, isKey := batchKeys[ref]; isKey {
+					mapped = derived
+				}
+				if mapped != "" && !containsString(deps, mapped) {
+					deps = append(deps, mapped)
+				}
+			}
+		}
+		if action.FromTaskID != "" {
+			explicit = true
+			if !containsString(deps, action.FromTaskID) {
+				deps = append(deps, action.FromTaskID)
+			}
+		}
+		if !explicit {
+			deps = append(deps, action.SourceTaskID)
+			if action.Member == team.LeadID {
+				for i := range run.Tasks {
+					status := run.Tasks[i].Status
+					if run.Tasks[i].MemberID != team.LeadID && !run.Tasks[i].Reduction &&
+						status != TaskFailed && status != TaskCancelled && status != TaskOutcomeUnknown && status != TaskStopped {
+						deps = append(deps, run.Tasks[i].ID)
+					}
 				}
 			}
 		}

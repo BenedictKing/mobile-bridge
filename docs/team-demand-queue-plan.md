@@ -1,8 +1,16 @@
 # 团队多需求编排与持久队列实施方案
 
-> 状态：待评审方案，未实施 · 2026-11-07
+> 状态：阶段 0–2 已实施（2026-11-07），阶段 3–5 未实施 · 原方案定稿 2026-11-07
 >
 > 基于 [团队总体设计](team-overall-design.md)、[持续反馈方案](team-autonomous-feedback-plan.md) 和现行 Go 网关。本文只定义增量实施与验收，不把目标设计描述为已实现功能。
+>
+> **实施记录（2026-11-07，提交见 git log）**
+>
+> - 阶段 0 ✅：autoPlan 动作的同批混排与未完成执行屏障（actions.go `validateActionReviewOrder`/`ValidateExecutableWithDeps`）；unknown 裁决一次有界格式修复（review.go `revfix-*`，与 completed 事实同批原子落账，journal 重建恢复）；汇总任务派发注入结构化交付事实（`BuildDeliveryBriefing`——unknown 只能表述为「未取得裁决」，无审查必须写明未安排）。
+> - 阶段 1 ✅：输入账本 `internal/team/inputqueue.go`（team-inputs.jsonl 事实 + team-inputs.json 快照，损坏隔离重建）；`POST/GET /api/teams/:id/inputs`（queueVersion:2 分流）、`PATCH`（仅 queued、操作 UUID 幂等、版本冲突 409）、`prioritize`/`cancel`；容量背压 `maxPendingInputs`（默认 64，未路由积压口径，429）；会话发送 `teamQueueVersion:2` 分流；重启重放与操作幂等跨重启成立。
+> - 阶段 2 ✅（机械路由部分）：同批 `key`/`dependsOn` 动作扩展（批级校验：key 唯一/不与既有任务同名/引用可解析/无环；拓扑序执行；审查可用显式依赖覆盖执行任务，未覆盖保持阶段 0 保守拒绝）；输入路由器 `internal/team/inputroute.go`（intent→幂等创建→routed 确认，new_task/follow_up/amend，多活跃 Run 停靠 waiting_input 并记录原因，崩溃重泵对账）；WorkItem 索引随 routed 落账。自动路由由 `TeamQueueAutoRoute` 灰度开关控制（main.go 已开启，测试环境关闭以获得确定排队态）。
+> - 阶段 2 未尽事项：Lead 语义路由提案（answer/clarify 分类、多要求拆分的来源引用核对、超 Run 上限拆批）依赖 Lead 提案协议，属阶段 2 后续增量；当前对范围不明的输入停靠 waiting_input，不用猜测代替用户决定。
+> - 验证：`go test ./...`、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js` 全绿；`make conformance` 的 golden 失败为存量问题（干净 HEAD 同样失败，与本次无关）。§9.1 要求的隔离 Team 真实浏览器验证与 VERIFICATION.md 记录尚未执行（需网关重启，由用户决定）。
 
 ## 1. 问题与边界
 

@@ -350,6 +350,13 @@ func composeTaskDispatchMessageWithBriefing(team *Team, run *Run, task *Task, po
 		lead += leadBriefing
 	}
 	briefing := lead + BuildReviewBriefing(team, task)
+	if task.Reduction {
+		// 汇总任务（summarize 动作派生 / 自动收尾）注入结构化交付事实（阶段 0，
+		// docs/team-demand-queue-plan.md §6）：Lead 的自然语言摘要必须与编排器
+		// 记账的机器裁决一致，unknown 只能表述为「未取得裁决」——2026-11-07
+		// 真实 Run 里 Lead 曾把 unknown 摘要成「独立审查未发现问题」。
+		briefing += BuildDeliveryBriefing(team, run)
+	}
 	message := ComposeTaskMessage(context.Text, task.Prompt)
 	if briefing != "" && context.Text == "" {
 		// 简报后无依赖上下文时也补 [Assigned task] 头：会话标题清洗（textutil）与人工阅读都靠它切出真实任务。

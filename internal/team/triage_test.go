@@ -125,7 +125,7 @@ func TestRetriageRearmsOriginalTaskAndDependencyBranch(t *testing.T) {
 		Member: "rev", Task: "换成员重做", ActionKey: ActionKey(run.TeamID, run.ID, "lead-triage-1", 2, 0), Status: ActionStatusProposed}
 	run.PendingActions = []Action{action}
 	state := h.saveExecRun(t, run)
-	h.service.executePlannedAction(state, h.team, h.team.Policy, &action, nil)
+	h.service.executePlannedAction(state, h.team, h.team.Policy, &action, nil, nil)
 
 	fresh := h.store.Run(run.ID)
 	if len(fresh.Tasks) != len(run.Tasks) {

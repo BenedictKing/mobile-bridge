@@ -119,6 +119,15 @@ type Server struct {
 	Teams     *team.Service
 	TeamStore team.TeamStore
 	TeamFeeds *TeamFeedRegistry
+	// TeamInputs 是持久输入队列账本（docs/team-demand-queue-plan.md §3，
+	// 阶段 1）：{dataDir}/team-inputs.jsonl 事实 + team-inputs.json 快照，
+	// main.go 构造后直赋；未装配（nil）时 queueVersion:2 入口报 409，旧
+	// TeamInput 路径不受影响。
+	TeamInputs *team.InputLedger
+	// TeamQueueAutoRoute 控制受理后是否自动泵路由（阶段 2 灰度开关）：
+	// main.go 置 true（无歧义输入自动派发）；测试环境保持 false 以获得
+	// 确定的排队态，路由用例显式置 true 或直调 RoutePendingInputs。
+	TeamQueueAutoRoute bool
 	// TeamWorkspaceRegistry 是 /api/teams/workspaces 注册/列表端点的读写面
 	//（§6.4 + §16 默认决策 6），与 Service.Workspaces 共用同一份
 	// {dataDir}/team-workspaces.json；main.go 构造后直赋，未装配（nil）时

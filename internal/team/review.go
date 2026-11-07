@@ -11,7 +11,11 @@ package team
 //   - BuildReviewBriefing 在派发文本前注入裁决协议，ExtractReviewVerdict
 //     只认回复最后一个非空行的裁决标记（转述协议的中间行不误判）。
 
-import "strings"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // 评审裁决取值：passed/failed 来自评审回复末行标记；unknown 表示回合结束
 // 但未给出可识别的裁决（不得按通过处理）。
@@ -94,4 +98,129 @@ func ExtractReviewVerdict(fullText string) string {
 		return ReviewVerdictFailed
 	}
 	return ReviewVerdictUnknown
+}
+
+// ---- 审查格式修复与交付事实简报（docs/team-demand-queue-plan.md §6/§8 阶段 0）----
+//
+// 2026-11-07 的真实 Run 暴露两类交付风险：Reviewer 回合结束但末行没有裁决
+// 标记，交付投影为 unknown 而 Lead 摘要却写「独立审查未发现问题」。这里补两
+// 道机械防线：unknown 给 Reviewer 一次有界修复机会（revfix-*，只重试一次，
+// 次数与结果随 task_planned/task_completed 入账）；汇总任务派发前注入结构化
+// 交付事实，Lead 只能撰写说明，不能把 unknown 表述为通过。
+
+const (
+	// reviewRepairPrefix 是审查格式修复任务 ID 前缀（revfix-{taskID}-{n}）。
+	reviewRepairPrefix = "revfix-"
+	// maxReviewRepairs 是 unknown 裁决的有界修复次数：只重试一次，仍 unknown
+	// 不再派单，交付保持「未取得裁决」。
+	maxReviewRepairs = 1
+)
+
+// reviewRepairPrompt 是修复任务的确定性提示词（不含易变字段，同输入恒等，
+// InputHash 语义与 RepairPrompt 同根）。
+const reviewRepairPrompt = "你上一条审查回复的最后一行没有可识别的裁决标记，编排器无法确认审查结论。请补充给出最终裁决：通过写 <team-review>passed</team-review>，不通过写 <team-review>failed</team-review>，并在裁决行之前用一两句话说明依据。除说明与裁决外不要输出其他内容。"
+
+// reviewRepairPlannedKey 是修复任务 task_planned 事实的幂等键（actionRepair
+// PlannedKey 同款拼装）。
+func reviewRepairPlannedKey(teamID, runID, repairTaskID string) string {
+	return fmt.Sprintf("team:%s:run:%s:revfix:%s", teamID, runID, repairTaskID)
+}
+
+// countReviewRepairs 统计原审查任务已有的修复回合数（revfix-{taskID}- 前缀
+// 且余段为纯整数——countActionRepairs 同款口径）。修复任务随快照持久化，
+// 计数跨重启存活。
+func countReviewRepairs(run *Run, reviewTaskID string) int {
+	if run == nil {
+		return 0
+	}
+	prefix := reviewRepairPrefix + reviewTaskID + "-"
+	count := 0
+	for i := range run.Tasks {
+		rest := strings.TrimPrefix(run.Tasks[i].ID, prefix)
+		if rest == run.Tasks[i].ID {
+			continue
+		}
+		if _, err := strconv.Atoi(rest); err == nil {
+			count++
+		}
+	}
+	return count
+}
+
+// buildReviewRepairTask 在原审查任务刚落 completed 且裁决 unknown 时构造
+// 修复任务（成员仍是该 Reviewer、只读、依赖原审查任务——依赖已终态，立即可
+// 派发）。修复任务本身不再派生修复（前缀守卫），防 revfix-revfix-* 无限链。
+// 已达修复上限、原任务不承担审查语义、ID 超长/占用或 Run 任务数满时返回
+// false（确定性收场为 unknown，不循环派单）。
+func buildReviewRepairTask(run *Run, team *Team, reviewTaskID string) (Task, bool) {
+	if run == nil || team == nil || strings.HasPrefix(reviewTaskID, reviewRepairPrefix) {
+		return Task{}, false
+	}
+	review := findTaskIn(run, reviewTaskID)
+	if review == nil || !IsReviewTask(team, review) {
+		return Task{}, false
+	}
+	attempt := countReviewRepairs(run, reviewTaskID) + 1
+	if attempt > maxReviewRepairs {
+		return Task{}, false
+	}
+	if limit := team.Policy.MaxTasksPerRun; limit > 0 && len(run.Tasks) >= limit {
+		return Task{}, false
+	}
+	id := fmt.Sprintf("%s%s-%d", reviewRepairPrefix, reviewTaskID, attempt)
+	if !ValidMemberID(id) || findTaskIn(run, id) != nil {
+		return Task{}, false
+	}
+	ordinal := 0
+	for i := range run.Tasks {
+		if run.Tasks[i].Ordinal > ordinal {
+			ordinal = run.Tasks[i].Ordinal
+		}
+	}
+	task := Task{
+		ID: id, MemberID: review.MemberID, Prompt: reviewRepairPrompt,
+		DependsOn: []string{reviewTaskID}, WriteLock: TaskWriteLockNone,
+		Review: reviewFlag(true), Ordinal: ordinal + 1, Status: TaskPlanned,
+		InstructionsHead: InstructionsHead(reviewRepairPrompt), WorkspaceMode: WorkspaceShared,
+	}
+	task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
+	return task, true
+}
+
+// BuildDeliveryBriefing 为汇总（Reduction）任务注入结构化交付事实（§6
+// 「Lead 只撰写说明，不能覆盖网关的 unknown/stale/failed」）：逐审查任务
+// 报出编排器记账的机器裁决，并明确 unknown 的表述义务；没有审查任务时强制
+// 摘要写明未安排独立审查。内容只依赖 Run 快照（零 I/O、无易变字段），同
+// 快照恒等，进入派发期 inputHash。
+func BuildDeliveryBriefing(team *Team, run *Run) string {
+	if team == nil || run == nil {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("[Team delivery]\n以下是编排器记账的交付事实，你的汇总必须与其一致，不能改写机器结论：\n")
+	found := false
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		if !IsReviewTask(team, task) {
+			continue
+		}
+		found = true
+		verdict := ReviewVerdictUnknown
+		if task.Status == TaskCompleted && task.ResultDetail != nil && task.ResultDetail.ReviewVerdict != "" {
+			verdict = task.ResultDetail.ReviewVerdict
+		}
+		switch verdict {
+		case ReviewVerdictPassed:
+			fmt.Fprintf(&builder, "- 审查任务 %s：已完成，机器裁决=已通过。\n", task.ID)
+		case ReviewVerdictFailed:
+			fmt.Fprintf(&builder, "- 审查任务 %s：已完成，机器裁决=未通过。\n", task.ID)
+		default:
+			fmt.Fprintf(&builder, "- 审查任务 %s（状态 %s）：机器裁决=未取得裁决。摘要只能表述为「未取得裁决」，不得写成已通过或未通过。\n", task.ID, task.Status)
+		}
+	}
+	if !found {
+		builder.WriteString("- 本 Run 未安排独立审查任务。摘要必须明确写「未安排独立审查」，不得声称已经过审查。\n")
+	}
+	builder.WriteString("你的自然语言总结不能覆盖以上机器状态。\n")
+	return builder.String()
 }
