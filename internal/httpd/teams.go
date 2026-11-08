@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acp"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
@@ -236,10 +237,6 @@ func (h *handler) handleTeamsCreate() {
 		return
 	}
 	project := stringField(body, "project")
-	if project != "" && h.resolveProjectCwd(project) == "" {
-		h.fail(http.StatusBadRequest, errorBody("团队的项目空间无效，请刷新项目列表"))
-		return
-	}
 	rawMembers, _ := body.MustGet("members").(*jsoncompat.Array)
 	memberItems := []any{}
 	if rawMembers != nil {
@@ -285,7 +282,13 @@ func (h *handler) handleTeamsCreate() {
 		seen[memberID] = true
 		entries = append(entries, entry)
 	}
+	projectCwd := ""
 	if project != "" {
+		projectCwd = h.resolveProjectCwd(project)
+		if projectCwd == "" {
+			h.fail(http.StatusBadRequest, errorBody("团队的项目空间无效，请刷新项目列表"))
+			return
+		}
 		for _, entry := range entries {
 			if sessionID := stringField(entry, "sessionId"); sessionID != "" {
 				if projectErr := h.validateTeamSessionProject(project, sessionID); projectErr != nil {
@@ -308,15 +311,16 @@ func (h *handler) handleTeamsCreate() {
 		h.fail(http.StatusBadRequest, errorBody(policyErr.Error()))
 		return
 	}
+	createdSessions := h.createTeamProjectSessions(entries, name, requestID, projectCwd)
 	members := make([]team.TeamMember, 0, len(memberItems))
 	for index, entry := range entries {
-		if stringField(entry, "project") != "" {
-			sessionID, status, createErr := h.createTeamProjectSession(entry, name, requestID)
-			if createErr != nil {
-				h.fail(status, errorBody(createErr.Error()))
-				return
-			}
-			entry.Set("sessionId", sessionID)
+		createdSession := createdSessions[index]
+		if createdSession.err != nil {
+			h.fail(createdSession.status, errorBody(createdSession.err.Error()))
+			return
+		}
+		if createdSession.sessionID != "" {
+			entry.Set("sessionId", createdSession.sessionID)
 		}
 		member, memberErr := h.parseTeamMember(entry, index)
 		if memberErr != nil {
@@ -350,7 +354,7 @@ func (h *handler) handleTeamsCreate() {
 		teamID = uuid.NewString()
 	}
 	now := time.Now()
-	created := &team.Team{ID: teamID, Name: name, Project: project, ProjectCwd: h.resolveProjectCwd(project), Members: members,
+	created := &team.Team{ID: teamID, Name: name, Project: project, ProjectCwd: projectCwd, Members: members,
 		LeadID: leadID, Policy: policy, CreatedAt: now, UpdatedAt: now}
 	if err := h.server.TeamStore.SaveTeam(created); err != nil {
 		// 版本哨兵 409，磁盘/IO 500（评审遗留①：不再是统一的 409）。
@@ -520,7 +524,12 @@ func (h *handler) handleMemberAdd(teamID string) {
 			return
 		}
 		body.Set("project", teamRow.Project)
-		sessionID, status, createErr := h.createTeamProjectSession(body, teamRow.Name, teamRow.ID)
+		cwd := h.resolveProjectCwd(teamRow.Project)
+		if cwd == "" {
+			h.fail(http.StatusBadRequest, errorBody("团队的项目空间无效，请刷新项目列表"))
+			return
+		}
+		sessionID, status, createErr := h.createTeamProjectSession(body, teamRow.Name, teamRow.ID, cwd)
 		if createErr != nil {
 			h.fail(status, errorBody(createErr.Error()))
 			return
@@ -3001,20 +3010,43 @@ func (h *handler) validateTeamMember(entry *jsoncompat.Object, index int) error 
 		if agent == "" || agent == "codex" || h.server.acpAgentSet()[agent] == nil {
 			return fmt.Errorf("成员 %s 的执行 Agent 无效或当前网关未启用", id)
 		}
-		if h.resolveProjectCwd(project) == "" {
-			return fmt.Errorf("成员 %s 的项目空间无效，请刷新项目列表", id)
-		}
 	}
 	return nil
 }
 
-// createTeamProjectSession 按新建聊天的项目键与 ACP Manager 创建成员专用会话。
+type teamProjectSessionResult struct {
+	sessionID string
+	status    int
+	err       error
+}
+
+// createTeamProjectSessions 有界并发地冷启动成员会话，结果仍按成员顺序返回。
+func (h *handler) createTeamProjectSessions(entries []*jsoncompat.Object, teamName, requestID, cwd string) []teamProjectSessionResult {
+	results := make([]teamProjectSessionResult, len(entries))
+	slots := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for index, entry := range entries {
+		if stringField(entry, "project") == "" {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			results[index].sessionID, results[index].status, results[index].err = h.createTeamProjectSession(entry, teamName, requestID, cwd)
+		}()
+	}
+	wg.Wait()
+	return results
+}
+
+// createTeamProjectSession 按新建聊天的项目目录与 ACP Manager 创建成员专用会话。
 // 团队请求 ID + 成员 ID 派生会话幂等键，重放团队创建时复用创建账本中的会话。
-func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, requestID string) (string, int, error) {
+func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, requestID, cwd string) (string, int, error) {
 	memberID := stringField(entry, "id")
 	project := stringField(entry, "project")
 	agent := stringField(entry, "agent")
-	cwd := h.resolveProjectCwd(project)
 	memberName := strings.TrimSpace(stringField(entry, "name"))
 	if memberName == "" {
 		memberName = memberID
@@ -3044,6 +3076,13 @@ func (h *handler) createTeamProjectSession(entry *jsoncompat.Object, teamName, r
 	manager := h.server.acpAgentSet()[agent]
 	session, err := manager.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
 	if err != nil {
+		var acpErr *acp.Error
+		definiteFailure := !errors.As(err, &acpErr) || acpErr.Kind == acp.KindError || acpErr.Kind == acp.KindAuthRequired
+		if ledger != nil && definiteFailure {
+			if releaseErr := ledger.release(creationID); releaseErr != nil {
+				return "", http.StatusServiceUnavailable, releaseErr
+			}
+		}
 		return "", http.StatusConflict, err
 	}
 	if ledger != nil {

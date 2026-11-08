@@ -209,11 +209,17 @@ class TeamChatController{
     Object.assign(this,{root,request,openRun,onChange});
     this.teams=[];this.current=null;this.run=null;this.team=null;
     this.pending=false;this.queued=false;this.lastFetch=0;this.generation=0;this.compact=false;
-    this.queue=null;this.queueError='';this.queueExpanded=false;
+    this.queue=null;this.queueError='';this.queueExpanded=false;this.excludedRuns=new Map();
   }
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
   setTeams(teams){this.teams=Array.isArray(teams)?teams:[];}
+  resetWorkflow(teamId,runs){
+    const excluded=new Set(this.excludedRuns.get(teamId)||[]);
+    for(const run of runs||[])if(run?.id)excluded.add(run.id);
+    this.excludedRuns.set(teamId,excluded);
+    if(this.current?.id===teamId){this.run=null;this.refreshError='';this.render();}
+  }
   teamById(id){return this.teams.find(team=>team.id===id)||null;}
   teamForProject(project){
     const key=typeof project==='string'?project:project.key,cwd=typeof project==='string'?'':project.cwd;
@@ -381,7 +387,9 @@ class TeamChatController{
     const generation=this.generation;
     try{
       const listed=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs');
-      const rows=listed.runs||[],latest=[...rows].reverse().find(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))||rows[rows.length-1];
+      const excluded=this.excludedRuns.get(team.id);
+      const rows=(listed.runs||[]).filter(run=>!excluded?.has(run.id));
+      const latest=[...rows].reverse().find(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))||rows[rows.length-1];
       if(!latest){if(generation===this.generation){this.run=null;this.refreshError='';this.render();}return;}
       const detail=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(latest.id));
       if(generation===this.generation&&this.current?.id===team.id){this.team=team;this.run=detail;this.refreshError='';this.render();}

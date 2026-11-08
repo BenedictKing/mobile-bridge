@@ -157,7 +157,10 @@ function extractNewContext({runs=[],confirm=true,cancelError}={}){
   const context={
     t:value=>value,encodeURIComponent,TEAM_TERMINAL_RUN_STATUSES:new Set(['completed','failed','cancelled','stopped','outcome_unknown']),
     window:{confirm:message=>{calls.push(['confirm',message]);return confirm;}},
-    teamChat:{refreshRun:()=>calls.push(['refresh'])},
+    teamChat:{
+      refreshRun:()=>calls.push(['refresh']),
+      resetWorkflow:(teamId,rows)=>calls.push(['reset',teamId,rows.map(run=>run.id)]),
+    },
     teamRequest:async(path,options)=>{
       calls.push(['request',path,options]);
       if(path.endsWith('/runs'))return{runs};
@@ -173,8 +176,9 @@ function extractNewContext({runs=[],confirm=true,cancelError}={}){
 test('team /new cancels a confirmed parked run before switching lead',async()=>{
   const flow=extractNewContext({runs:[{id:'run-1',status:'waiting_input',version:7}]});
   assert.equal((await flow.run()).sessionId,'fresh');
-  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm','request','refresh','new']);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm','request','refresh','new','reset']);
   assert.deepEqual(JSON.parse(JSON.stringify(flow.calls[2])),['request','/api/teams/team/runs/run-1/cancel-parked',{method:'POST',body:{version:7}}]);
+  assert.deepEqual(flow.calls[5],['reset','team',['run-1']]);
   assert.match(flow.calls[1][1],/取消该 Run/);
 });
 

@@ -373,6 +373,27 @@ test('team without runs shows a ready empty state instead of a blank panel',asyn
   assert.match(text(root),/团队已就绪/);
 });
 
+test('team /new keeps old runs hidden until a new workflow arrives',async()=>{
+  const root=new FakeNode('div');
+  let runs=[{id:'run-old',status:'completed'}];
+  const controller=new TeamChatController({root,request:async path=>{
+    if(path.endsWith('/runs'))return{runs};
+    const latest=runs[runs.length-1];
+    return{id:latest.id,status:latest.status,tasks:[]};
+  },openRun(){}});
+  controller.setTeams(teams);controller.open(teams[0]);await flush();
+  assert.equal(controller.run.id,'run-old');
+  controller.resetWorkflow('team-1',runs);
+  assert.equal(controller.run,null);
+  assert.equal(find(root,'team-workflow-empty').length,1);
+  await controller.refreshRun(true);
+  assert.equal(controller.run,null,'刷新不得重新拉回 /new 前的 Workflow');
+  runs=[...runs,{id:'run-new',status:'running'}];
+  await controller.refreshRun(true);
+  assert.equal(controller.run.id,'run-new');
+  controller.close();
+});
+
 test('first team lead picker returns the selected agent kind',async()=>{
   const calls=[];
   const picker=new TeamLeadPicker({request:async(path,options={})=>{

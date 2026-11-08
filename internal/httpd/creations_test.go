@@ -51,6 +51,32 @@ func TestCreationsFailedCompletionRetainsClaim(t *testing.T) {
 	}
 }
 
+func TestCreationsReleaseRetriesOnlyIdlessClaim(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "creations.json")
+	ledger := mustLoadCreations(t, path)
+	if _, claimed, err := ledger.begin("request-1", &creationEntry{Agent: "kimi"}); err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	if err := ledger.release("request-1"); err != nil {
+		t.Fatal(err)
+	}
+	if entry := mustLoadCreations(t, path).lookup("request-1"); entry != nil {
+		t.Fatalf("released claim must stay deleted after reload: %+v", entry)
+	}
+	if _, claimed, err := ledger.begin("request-1", &creationEntry{Agent: "kimi"}); err != nil || !claimed {
+		t.Fatalf("retry claim: claimed=%v err=%v", claimed, err)
+	}
+	if err := ledger.complete("request-1", "sess-created"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.release("request-1"); err != nil {
+		t.Fatal(err)
+	}
+	if entry := ledger.lookup("request-1"); entry == nil || entry.ID != "sess-created" {
+		t.Fatalf("completed creation must not be released: %+v", entry)
+	}
+}
+
 func TestCreationsDispatchClaimSurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "creations.json")
 	ledger := mustLoadCreations(t, path)

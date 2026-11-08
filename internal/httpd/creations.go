@@ -101,6 +101,23 @@ func (c *creations) complete(requestID, id string) error {
 	return c.update(requestID, func(entry *creationEntry) { entry.ID = id })
 }
 
+// release removes an id-less claim after the target definitively failed to
+// create. Callers must retain unknown-result claims to prevent double creation.
+func (c *creations) release(requestID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry := c.entries[requestID]
+	if entry == nil || entry.ID != "" {
+		return nil
+	}
+	delete(c.entries, requestID)
+	if err := c.saveLocked(); err != nil {
+		c.entries[requestID] = entry
+		return err
+	}
+	return nil
+}
+
 // markSent records that a migration's transcript injection dispatched, so a
 // retry of the same request reports "sent" without prompting again.
 func (c *creations) markSent(requestID string) error {

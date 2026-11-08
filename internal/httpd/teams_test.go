@@ -609,6 +609,123 @@ func TestTeamsCreateFromProject(t *testing.T) {
 	}
 }
 
+func TestTeamsCreateFromProjectRetriesDefiniteFailure(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true, func(t *testing.T, dir string) []string {
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip(err)
+		}
+		script := `import json,os,sys
+DIR = "` + dir + `"
+def attempt():
+ path=os.path.join(DIR,"attempts.txt")
+ try:
+  with open(path) as fh: n=int(fh.read())
+ except FileNotFoundError: n=0
+ n+=1
+ with open(path,"w") as fh: fh.write(str(n))
+ return n
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize":
+  result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new":
+  n=attempt()
+  if n == 2:
+   print(json.dumps({"jsonrpc":"2.0","id":ident,"error":{"code":-32603,"message":"创建被明确拒绝"}}),flush=True)
+   continue
+  result={"sessionId":"km-team-"+str(n),"modes":{"currentModeId":"default","availableModes":[{"id":"default"}]},"configOptions":[]}
+ elif method == "session/list":
+  result={"sessions":[{"sessionId":"km-team-1","cwd":DIR,"title":"成员会话","updatedAt":1}]}
+ else:
+  result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+		path := filepath.Join(t.TempDir(), "agent.py")
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return []string{python, "-u", path}
+	})
+	env.server.Creations = mustLoadCreations(t, filepath.Join(env.dataDir, "creations.json"))
+	const requestID = "4aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	project := "acp:" + hashProject(env.dataDir)
+	payload := fmt.Sprintf(`{"id":%q,"name":"失败重试团队","members":[{"id":"lead","project":%q,"agent":"kimi","role":"lead"}],"leadId":"lead"}`, requestID, project)
+	response := env.request(http.MethodPost, "/api/teams", payload)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "创建被明确拒绝") {
+		t.Fatalf("首次明确失败应返回原错误: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPost, "/api/teams", payload)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "结果尚不确定") {
+		t.Fatalf("同内容重试应重新创建: %d %s", response.Code, response.Body.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(env.dataDir, "attempts.txt"))
+	if err != nil || string(raw) != "3" {
+		t.Fatalf("初始、失败、重试应各创建一次: %q %v", raw, err)
+	}
+}
+
+func TestTeamsCreateFromProjectCreatesMembersConcurrently(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true, func(t *testing.T, dir string) []string {
+		python, err := exec.LookPath("python3")
+		if err != nil {
+			t.Skip(err)
+		}
+		script := `import fcntl,json,os,sys,time
+DIR = "` + dir + `"
+def change(delta):
+ with open(os.path.join(DIR,"concurrency.lock"),"w") as lock:
+  fcntl.flock(lock,fcntl.LOCK_EX)
+  path=os.path.join(DIR,"concurrency.json")
+  try:
+   with open(path) as fh: state=json.load(fh)
+  except FileNotFoundError: state={"active":0,"maximum":0,"count":0}
+  state["active"]+=delta
+  if delta>0:
+   state["count"]+=1
+   state["maximum"]=max(state["maximum"],state["active"])
+  with open(path,"w") as fh: json.dump(state,fh)
+  return state["count"]
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize":
+  result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/new":
+  n=change(1);time.sleep(0.25);change(-1)
+  result={"sessionId":"km-team-"+str(n),"modes":{"currentModeId":"default","availableModes":[{"id":"default"}]},"configOptions":[]}
+ elif method == "session/list":
+  result={"sessions":[{"sessionId":"km-team-1","cwd":DIR,"title":"成员会话","updatedAt":1}]}
+ else:
+  result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+		path := filepath.Join(t.TempDir(), "agent.py")
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return []string{python, "-u", path}
+	})
+	project := "acp:" + hashProject(env.dataDir)
+	payload := fmt.Sprintf(`{"name":"并发团队","members":[{"id":"lead","project":%q,"agent":"kimi","role":"lead"},{"id":"dev","project":%q,"agent":"kimi"},{"id":"review","project":%q,"agent":"kimi","role":"reviewer"}],"leadId":"lead"}`, project, project, project)
+	response := env.request(http.MethodPost, "/api/teams", payload)
+	if response.Code != http.StatusOK {
+		t.Fatalf("并发创建团队失败: %d %s", response.Code, response.Body.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(env.dataDir, "concurrency.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Maximum int `json:"maximum"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Maximum < 2 {
+		t.Fatalf("成员会话应并发冷启动，最大并发=%d", state.Maximum)
+	}
+}
+
 func TestTeamConversationSendCreatesRunWithAttachments(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	env.server.Uploads = uploads.New(env.dataDir)

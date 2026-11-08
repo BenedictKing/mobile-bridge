@@ -896,8 +896,11 @@ async function newTeamLeadContext(team,expectedSessionId){
     await teamRequest(base+'/runs/'+encodeURIComponent(parked.id)+'/cancel-parked',{method:'POST',body:{version:parked.version}});
     teamChat?.refreshRun(true);
   }
-  try{return await leadContextAction(team,'new',expectedSessionId);}
-  catch(error){if(parked)throw Error(t('旧 Run 已取消，但空白主控创建失败：')+error.message);throw error;}
+  try{
+    const result=await leadContextAction(team,'new',expectedSessionId);
+    teamChat?.resetWorkflow(team.id,runs);
+    return result;
+  }catch(error){if(parked)throw Error(t('旧 Run 已取消，但空白主控创建失败：')+error.message);throw error;}
 }
 // 命令面板：输入 / 触发命令建议（与 Skill 建议共用列表、键盘流与 aria），
 // 选中把命令填入输入框，发送时由 composer 拦截执行。/compress（/compact

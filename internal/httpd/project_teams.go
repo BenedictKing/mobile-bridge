@@ -170,21 +170,25 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 	name := filepath.Base(filepath.Clean(cwd)) + "团队"
 	policy := team.DefaultPolicy()
 	policy.AutoDispatch = true
-	members := make([]team.TeamMember, 0, len(candidates))
+	entries := make([]*jsoncompat.Object, 0, len(candidates))
 	for index, candidate := range candidates {
 		entry := jsoncompat.NewObject()
-		memberID := "member-" + candidate.Agent
-		entry.Set("id", memberID)
+		entry.Set("id", "member-"+candidate.Agent)
 		entry.Set("project", projectKey)
 		entry.Set("agent", candidate.Agent)
 		entry.Set("role", defaultTeamRole(index, len(candidates)))
 		entry.Set("name", candidate.Agent)
-		sessionID, status, err := h.createTeamProjectSession(entry, name, teamID)
-		if err != nil {
-			h.fail(status, errorBody(err.Error()))
+		entries = append(entries, entry)
+	}
+	createdSessions := h.createTeamProjectSessions(entries, name, teamID, cwd)
+	members := make([]team.TeamMember, 0, len(candidates))
+	for index, entry := range entries {
+		createdSession := createdSessions[index]
+		if createdSession.err != nil {
+			h.fail(createdSession.status, errorBody(createdSession.err.Error()))
 			return
 		}
-		entry.Set("sessionId", sessionID)
+		entry.Set("sessionId", createdSession.sessionID)
 		member, err := h.parseTeamMember(entry, index)
 		if err != nil {
 			h.fail(http.StatusBadRequest, errorBody(err.Error()))
