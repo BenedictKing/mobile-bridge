@@ -205,7 +205,7 @@ main{background:var(--page);overflow:hidden}
 .code-copy{min-height:32px;border-radius:6px}
 
 /* Composer: all frequently used actions stay visible at 360px. */
-.composer{margin:0 max(24px,calc((100% - 780px)/2));padding:10px 0 max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--line)}
+.composer{margin:0 max(24px,calc((100% - 780px)/2));padding:8px 0 max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--line)}
 .composer-tools{display:flex;align-items:center;gap:6px;margin:0 0 8px;min-width:0}
 .tool-button{background:transparent;border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:18px;padding:6px 10px;min-height:36px;color:var(--muted);max-width:none;flex:none}
 .tool-button:hover{background:var(--surface);color:var(--text);border-color:var(--control)}

@@ -77,6 +77,8 @@ test('user jump click scrolls to the message and scroll tracking updates the act
 test('user jump uses a compact flow entry on phones and a floating panel on large screens',()=>{
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   assert.match(css,/\.user-jump\{display:block;flex:none;align-self:flex-end/);
+  assert.match(css,/\.user-jump\{[^}]*margin:8px max\(16px,env\(safe-area-inset-right\)\) 0 max\(16px,env\(safe-area-inset-left\)\)/);
+  assert.match(css,/\.composer\{[^}]*padding:8px 0 max\(12px,env\(safe-area-inset-bottom\)\)/);
   assert.match(css,/\.user-jump-list\{max-height:min\(30dvh,280px\)/);
   assert.match(css,/@media\(min-width:721px\)\{\s*\.user-jump\{position:absolute/);
   assert.doesNotMatch(css,/\.user-jump\{display:none\}/);

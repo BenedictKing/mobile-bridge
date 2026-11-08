@@ -212,7 +212,7 @@ main{background:var(--page);overflow:hidden}
 .code-copy{min-height:32px;border-radius:6px}
 
 /* Composer: all frequently used actions stay visible at 360px. */
-.composer{margin:0 max(24px,calc((100% - 780px)/2));padding:10px 0 max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--line)}
+.composer{margin:0 max(24px,calc((100% - 780px)/2));padding:8px 0 max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--line)}
 .composer-tools{display:flex;align-items:center;gap:6px;margin:0 0 8px;min-width:0}
 .tool-button{background:transparent;border:1px solid var(--line);border-radius:8px;font-size:12px;line-height:18px;padding:6px 10px;min-height:36px;color:var(--muted);max-width:none;flex:none}
 .tool-button:hover{background:var(--surface);color:var(--text);border-color:var(--control)}
@@ -651,7 +651,7 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
 }
 
 /* 窄屏在输入区上方折叠展开，展开列表占用自身布局高度，不遮挡消息。 */
-.user-jump{display:block;flex:none;align-self:flex-end;width:auto;max-width:calc(100% - 32px);margin:6px max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left));border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--raised) 94%,transparent);box-shadow:0 8px 28px #18291d14;color:var(--muted);font-size:12px;overflow:hidden}
+.user-jump{display:block;flex:none;align-self:flex-end;width:auto;max-width:calc(100% - 32px);margin:8px max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left));border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--raised) 94%,transparent);box-shadow:0 8px 28px #18291d14;color:var(--muted);font-size:12px;overflow:hidden}
 .user-jump[open]{align-self:stretch}
 .user-jump>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:9px 12px;cursor:pointer;list-style-position:inside;color:var(--text);font-weight:600;white-space:nowrap}
 .user-jump-count{margin-left:auto;color:var(--muted);font-size:11px;font-weight:400}
