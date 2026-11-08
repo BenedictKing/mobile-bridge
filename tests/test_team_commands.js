@@ -60,6 +60,21 @@ test('plain chats parse /new as new-chat, /new stays un-interceptable via compac
   assert.equal(parseCompactCommand('/new'),null);
 });
 
+test('goal command parses objectives and is suggested only for capable plain chats',()=>{
+  const flow=extract();
+  same(flow.parsePlainCommand('/goal'),{kind:'goal',objective:''});
+  same(flow.parsePlainCommand(' /goal  完成迁移\n并运行测试 '),{kind:'goal',objective:'完成迁移\n并运行测试'});
+  assert.equal(flow.parsePlainCommand('/goalkeeper'),null);
+  assert.equal(extract({team:true}).parseTeamCommand('/goal 团队目标'),null);
+  flow.state={agent:'kimi',agents:[],host:'local',capabilities:['goals'],goalRuntimeAvailable:true};
+  const rows=flow.composerCommandRows('goal');
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].token,'/goal ');
+  assert.equal(rows[0].label,'设定目标');
+  flow.state.capabilities=[];
+  assert.equal(flow.composerCommandRows('goal').length,0);
+});
+
 test('migrate command parses long and shorthand targets with multiline instructions',()=>{
   const flow=extract({team:true});
   flow.state={agent:'kimi',agents:[{kind:'kimi'},{kind:'zcode'},{kind:'codex'}]};

@@ -58,7 +58,7 @@ class WorkModes {
     const goalOption=this.select.querySelector('[value=goal]');
     goalOption.hidden=!hasGoals;
     goalOption.disabled=!goalSupported||!!(view?.status==='active'||(view?.goal&&!['complete','completed','cancelled'].includes(view.goal.status))||['pending','unknown'].includes(view?.goalSubmission?.status));
-    goalOption.title=t(goalSupported?'':goalUnavailableReason);
+    goalOption.title=t(goalSupported?(view?.status==='active'?'当前回复结束后可开启目标模式':''):goalUnavailableReason);
     this.hint.textContent=t(sendMode==='steer'?'补充内容沿用当前任务模式':this.select.value==='plan'?'先讨论并制定计划，确认后执行。':this.select.value==='goal'?(goalSupported?'设定目标后持续执行，直到完成、暂停或取消。':goalUnavailableReason):'');
     this.hint.hidden=!this.hint.textContent;
     this.select.title=this.hint.textContent;

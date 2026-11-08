@@ -1,6 +1,8 @@
 'use strict';
 const test=require('node:test');
 const assert=require('node:assert/strict');
+const {readFileSync}=require('node:fs');
+const vm=require('node:vm');
 const {WorkModes}=require('../web/modes.js');
 
 class Node {
@@ -25,7 +27,7 @@ function setup(provider='gateway'){
   modes.open('chat');
   modes.render({host:'local',status:'idle',capabilities:['goals'],goalRuntimeAvailable:true,
     goal:{provider,goalId:'goal-1',objective:'整理仓库',status:'waiting_review',revision:7,autoStepsUsed:1,autoStepsLimit:5}},'send',false);
-  return {modes,root,calls};
+  return {modes,root,calls,select};
 }
 
 test('gateway Goal actions carry state and revision for CAS',async()=>{
@@ -64,6 +66,13 @@ test('unknown delivery requires an explicit verified review action',async()=>{
   assert.equal(calls[0].revision,7);
 });
 
+test('running replies explain why Goal cannot be selected',()=>{
+  const {modes,select}=setup();
+  modes.render({host:'local',status:'active',capabilities:['goals'],goalRuntimeAvailable:true},'steer',false);
+  assert.equal(select.option.disabled,true);
+  assert.equal(select.option.title,'当前回复结束后可开启目标模式');
+});
+
 test('compact mode menu keeps per-chat selection and shows only the active mode',()=>{
   const saved=new Map(),options={};
   for(const value of ['default','plan','goal'])options[value]=Object.assign(new Node('option'),{hidden:false,disabled:false});
@@ -84,4 +93,48 @@ test('compact mode menu keeps per-chat selection and shows only the active mode'
   assert.equal(saved.get('work-mode:compact'),'plan');
   assert.equal(label.textContent,'计划');
   assert.equal(menu.hidden,true);
+});
+
+function goalComposer({active=false}={}){
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const goalStart=source.indexOf('function parseGoalCommand'),goalEnd=source.indexOf('function compactInstructions',goalStart);
+  const submitStart=source.indexOf("$('composer').onsubmit="),submitEnd=source.indexOf("$('message').onkeydown",submitStart);
+  const nodes={composer:new Node('form'),message:new Node('textarea'),'work-mode':new Node('select'),'send-mode':new Node('select'),send:new Node('button'),'send-error':new Node()};
+  nodes['work-mode'].option=Object.assign(new Node('option'),{disabled:active,hidden:false});nodes['send-mode'].value='send';
+  const values=new Map(),calls=[];
+  const context={
+    $:id=>nodes[id],t:value=>value,BridgeI18n:{locale:()=> 'zh-CN'},window:{BridgePresentation:{resizeMessage(){}}},
+    sending:false,currentId:'chat',currentHost:'local',currentTeam:null,state:{status:active?'active':'idle'},
+    closeSkillSuggestions(){},attachments:{ready:()=>true,ids:()=>[],setLocked(){},clear(){}},
+    invalidSkills:new Set(),selectedSkills:new Set(),sessionStorage:{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},
+    workModes:{selection:null,value:()=>nodes['work-mode'].value,render(){},submitted(){}},
+    chatKey:()=> 'local|chat',sessionUrl:()=> '/api/sessions/chat/send?host=local',uuid:()=> 'request-1',
+    api:async(path,body)=>{calls.push({path,body});return{status:'accepted'};},bumpRecency(){},renderSkillPills(){},renderQueue(){},toast(){},saveDraft(){},syncSendButton(){},
+  };
+  vm.runInNewContext(source.slice(goalStart,goalEnd)+'\n'+source.slice(submitStart,submitEnd),context);
+  return{nodes,calls,context};
+}
+
+test('/goal submits its objective through the real composer path',async()=>{
+  const {nodes,calls,context}=goalComposer();
+  nodes.message.value='/goal 完成迁移\n并运行测试';
+  await nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].body.text,'完成迁移\n并运行测试');
+  assert.equal(calls[0].body.workMode,'goal');
+  assert.equal(calls[0].body.mode,'send');
+  assert.equal(nodes.message.value,'');
+  assert.equal(context.workModes.selection,'goal');
+});
+
+test('bare /goal only selects Goal and active replies reject the command',async()=>{
+  const bare=goalComposer();bare.nodes.message.value='/goal';
+  await bare.nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(bare.calls.length,0);
+  assert.equal(bare.nodes['work-mode'].value,'goal');
+  assert.equal(bare.nodes.message.value,'');
+  const active=goalComposer({active:true});active.nodes.message.value='/goal 不应发送';
+  await active.nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(active.calls.length,0);
+  assert.equal(active.nodes['send-error'].textContent,'当前回复结束后可开启目标模式');
 });

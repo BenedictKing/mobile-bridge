@@ -104,7 +104,7 @@ test('remove project calls the gateway and clears its pin',async()=>{
   await open();
   assert.equal(nodes['new-chat-project'].options.length,2);
   await nodes['new-chat-remove'].onclick();
-  const removed=calls.find(call=>call.path==='/api/projects/codex%3Aabc');
+  const removed=calls.find(call=>call.path==='/api/projects/codex%3Aabc?cwd=%2Fwork');
   assert.deepEqual({...removed.options},{method:'DELETE'});
   assert.equal(nodes['new-chat-project'].options.length,1);
   assert.equal(nodes['new-chat-project'].value,customKey);

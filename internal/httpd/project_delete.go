@@ -119,8 +119,9 @@ func (s *Server) hiddenProject(cwd string) bool {
 	return s.HiddenProjects.hidden(cwd)
 }
 
-// handleProjectDelete serves DELETE /api/projects/:key. The key is resolved
-// before hiding, so both codex and acp aliases of the directory disappear.
+// handleProjectDelete serves DELETE /api/projects/:key. A cwd query hides a
+// local session group directly, including projects outside the recent window;
+// key-only requests remain compatible and hide both codex and acp aliases.
 func (h *handler) handleProjectDelete(path string) {
 	key := strings.TrimPrefix(path, "/api/projects/")
 	if key == "" || strings.Contains(key, "/") {
@@ -131,7 +132,10 @@ func (h *handler) handleProjectDelete(path string) {
 		h.fail(http.StatusConflict, errorBody("当前网关未启用项目隐藏"))
 		return
 	}
-	cwd := h.server.HiddenProjects.hiddenKeyCwd(key)
+	cwd := h.request.URL.Query().Get("cwd")
+	if cwd == "" {
+		cwd = h.server.HiddenProjects.hiddenKeyCwd(key)
+	}
 	if cwd == "" {
 		cwd = h.resolveProjectCwd(key)
 	}

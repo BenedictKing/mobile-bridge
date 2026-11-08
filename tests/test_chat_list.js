@@ -125,7 +125,7 @@ test('project group remove calls the gateway and clears the merged group and pin
   const remove=find(sessions,'group-remove')[0];
   assert.equal(remove.textContent,'×');assert.equal(remove.title,'从列表移除项目');
   await remove.onclick({preventDefault(){},stopPropagation(){}});
-  assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/projects/acp%3Ap');assert.equal(calls[0].options.method,'DELETE');
+  assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/projects/acp%3Ap?cwd=%2Fp');assert.equal(calls[0].options.method,'DELETE');
   assert.equal(find(sessions,'project-group').length,0);
   assert.deepEqual(pins,[]);assert.equal(hidden.has('/p'),true);
 });
@@ -139,10 +139,19 @@ test('failed project removal keeps the group and re-enables the button',async()=
   assert.equal(remove.disabled,false);
 });
 
-test('groups without a gateway project have no remove button',()=>{
-  const sessions=loadList('project',{projectDirectory:[]});
-  assert.equal(find(sessions,'group-add').length,1);
-  assert.equal(find(sessions,'group-remove').length,0);
+test('local groups outside the project directory can be removed without hiding remote paths',async()=>{
+  const listRows=[
+    {id:'old',host:'local',recency:Date.now(),title:'旧项目',projectKey:'local|/old',projectName:'old',cwd:'/old',agent:'kimi'},
+    {id:'remote',host:'nas',recency:Date.now(),title:'远程项目',projectKey:'nas|/old',projectName:'old',hostLabel:'NAS',cwd:'/old',agent:'kimi'},
+  ],calls=[];
+  const sessions=loadList('project',{listRows,projectDirectory:[],teamRequest:async(path,options)=>{calls.push({path,options});return{status:'hidden'};}});
+  assert.equal(find(sessions,'group-remove').length,1);
+  assert.equal(find(sessions,'default-team').length,0);
+  await find(sessions,'group-remove')[0].onclick({preventDefault(){},stopPropagation(){}});
+  assert.equal(calls[0].path,'/api/projects/local%7C%2Fold?cwd=%2Fold');
+  assert.equal(calls[0].options.method,'DELETE');
+  assert.equal(find(sessions,'project-group').length,1);
+  assert.equal(find(sessions,'group-name')[0].textContent,'old · NAS');
 });
 
 test('merged group shares one show-more paging budget',()=>{

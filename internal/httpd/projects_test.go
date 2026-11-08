@@ -223,6 +223,12 @@ func TestProjectsDeleteHidesAllAliasesAndPersists(t *testing.T) {
 	if response := remove("/api/projects/acp:000000000000"); response.Code != http.StatusNotFound {
 		t.Fatalf("unknown project status=%d body=%s", response.Code, response.Body.String())
 	}
+	if response := remove("/api/projects/session-group?cwd=%2Fold-project"); response.Code != http.StatusOK {
+		t.Fatalf("cwd delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !server.HiddenProjects.hidden("/old-project") {
+		t.Fatal("cwd delete did not hide the old local project")
+	}
 }
 
 func TestRecentProjectEntriesDedupesByCwd(t *testing.T) {

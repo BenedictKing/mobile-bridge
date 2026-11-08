@@ -674,7 +674,7 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
 .composer-options #model-button{flex:0 1 auto;min-width:0;max-width:240px}
 .composer-options .composer-toggle{margin-left:0}
 #composer-toggle-label{display:none}
-.mode-button{display:inline-flex;align-items:center;gap:5px}
+.mode-button{display:inline-flex;align-items:center;justify-content:center;width:36px;padding:6px}
 .mode-button.active{border-color:var(--control);background:var(--soft);color:var(--green)}
 .mode-control,.send-split{position:relative;display:flex;flex:none}
 .composer-options-button{display:none}
