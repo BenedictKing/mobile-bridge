@@ -151,5 +151,7 @@ test('working status and scroll hints float above the timeline instead of consum
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   assert.match(css,/\.timeline-shell\{position:relative;flex:1;min-height:0\}/);
   assert.match(css,/\.timeline-overlay\{position:absolute;z-index:3;[^}]*display:flex;[^}]*justify-content:space-between/);
+  assert.match(css,/\.timeline-overlay\{[^}]*padding:0 max\(24px,calc\(\(100% - 780px\)\/2\)\) 8px/);
+  assert.match(css,/\.timeline-overlay\{padding-left:[^}]*padding-bottom:8px\}/);
   assert.match(css,/\.timeline-overlay \.newer\{[^}]*pointer-events:auto/);
 });
