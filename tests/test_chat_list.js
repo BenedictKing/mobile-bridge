@@ -141,3 +141,15 @@ test('show more and show less share one row at opposite ends',()=>{
   const css=readFileSync(require.resolve('../web/style.css'),'utf8');
   assert.match(css,/\.group-pagination\{display:flex;align-items:center;justify-content:space-between\}/);
 });
+
+test('working status and scroll hints float above the timeline instead of consuming flow',()=>{
+  const html=readFileSync(require.resolve('../web/index.html'),'utf8');
+  const shell=html.match(/<div class="timeline-shell">[\s\S]*?<details id="user-jump"/)[0];
+  assert(shell.indexOf('id="timeline"')<shell.indexOf('class="timeline-overlay"'));
+  assert(shell.indexOf('class="timeline-overlay"')<shell.indexOf('id="working"'));
+  assert(shell.indexOf('id="working"')<shell.indexOf('id="newer"'));
+  const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
+  assert.match(css,/\.timeline-shell\{position:relative;flex:1;min-height:0\}/);
+  assert.match(css,/\.timeline-overlay\{position:absolute;z-index:3;[^}]*display:flex;[^}]*justify-content:space-between/);
+  assert.match(css,/\.timeline-overlay \.newer\{[^}]*pointer-events:auto/);
+});
