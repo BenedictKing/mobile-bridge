@@ -112,6 +112,9 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 	if input.TargetTaskID != "" {
 		object.Set("targetTaskId", input.TargetTaskID)
 	}
+	if input.ParentRunID != "" {
+		object.Set("parentRunId", input.ParentRunID)
+	}
 	if len(input.RunIDs) > 0 {
 		runIDs := &jsoncompat.Array{}
 		runIDs.Items = append(runIDs.Items, toAnySlice(input.RunIDs)...)
@@ -131,6 +134,14 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 			entry.Set("sourceInputId", item.SourceInputID)
 			entry.Set("sourceRevision", jsoncompat.Num(item.SourceRevision))
 			entry.Set("requirementText", item.RequirementText)
+			entry.Set("sourceStart", jsoncompat.Num(item.SourceStart))
+			entry.Set("sourceEnd", jsoncompat.Num(item.SourceEnd))
+			if item.MemberID != "" {
+				entry.Set("memberId", item.MemberID)
+			}
+			if item.ReviewPolicy != "" {
+				entry.Set("reviewPolicy", item.ReviewPolicy)
+			}
 			if item.RunID != "" {
 				entry.Set("runId", item.RunID)
 			}
@@ -303,6 +314,59 @@ func (h *handler) handleTeamInputRevise(teamID, inputID string) {
 	h.output(http.StatusOK, result, contentTypeJSON, "")
 }
 
+// handleTeamInputPropose 接收 Lead 的结构化工作项提案；语义分类只是提案，
+// 来源、依赖、容量与策略版本由服务端校验后才形成路由意图。
+func (h *handler) handleTeamInputPropose(teamID, inputID string) {
+	teamRow := h.loadTeam(teamID)
+	if teamRow == nil {
+		return
+	}
+	if h.server.TeamInputs == nil || h.server.Teams == nil {
+		h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
+		return
+	}
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	body := value.(*jsoncompat.Object)
+	opID := stringField(body, "id")
+	if opID == "" {
+		h.fail(http.StatusBadRequest, errorBody("缺少操作标识，请刷新后重试"))
+		return
+	}
+	version, ok := bodyVersion(body)
+	if !ok {
+		h.fail(http.StatusBadRequest, errorBody("缺少期望版本，请携带输入当前 version"))
+		return
+	}
+	raw, exists := body.Get("workItems")
+	if !exists {
+		h.fail(http.StatusBadRequest, errorBody("缺少工作项提案"))
+		return
+	}
+	var items []team.WorkItem
+	if err := json.Unmarshal(jsoncompat.EncodeCompact(raw), &items); err != nil {
+		h.fail(http.StatusBadRequest, errorBody("工作项提案格式无效"))
+		return
+	}
+	input, duplicate, err := h.server.Teams.ProposeInputRoute(teamID, inputID, opID, items, version)
+	if err != nil {
+		if errors.Is(err, team.ErrRouteProposal) {
+			h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		} else {
+			h.failTeamInputError(err)
+		}
+		return
+	}
+	result := teamQueueInputProject(input)
+	if duplicate {
+		result.Set("duplicate", true)
+	}
+	h.output(http.StatusAccepted, result, contentTypeJSON, "")
+}
+
 // handleTeamInputPrioritize 是 POST .../inputs/:inputId/prioritize：「立即发送」
 // 只提升路由顺序，不绕过容量、并发与写锁。
 func (h *handler) handleTeamInputPrioritize(teamID, inputID string) {
@@ -316,6 +380,13 @@ func (h *handler) handleTeamInputPrioritize(teamID, inputID string) {
 func (h *handler) handleTeamInputCancel(teamID, inputID string) {
 	h.teamInputQueueOp(teamID, inputID, func(ledger *team.InputLedger, opID string, version uint64) (*team.TeamInput, bool, error) {
 		return ledger.Cancel(teamID, inputID, opID, version)
+	})
+}
+
+// handleTeamInputRevokeRoute 撤销未落成的路由意图，允许人工确认后重新规划。
+func (h *handler) handleTeamInputRevokeRoute(teamID, inputID string) {
+	h.teamInputQueueOp(teamID, inputID, func(ledger *team.InputLedger, opID string, version uint64) (*team.TeamInput, bool, error) {
+		return ledger.RevokeRoutingIntent(teamID, inputID, opID, version)
 	})
 }
 

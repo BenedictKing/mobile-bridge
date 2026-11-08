@@ -125,6 +125,10 @@ func (h *handler) handleTeams(method string) {
 		// 主控上下文管理（/new 换绑与网关转录压缩后的 rebind）：只动 Lead
 		// 一人的绑定，不创建 Run、不触碰其他成员。
 		h.handleTeamLeadContext(teamID)
+	case len(segments) == 2 && segments[1] == "tasks" && method == http.MethodGet:
+		h.handleTeamTaskList(teamID)
+	case len(segments) == 2 && segments[1] == "task-events" && method == http.MethodGet:
+		h.handleTeamTaskEvents(teamID)
 	case len(segments) == 2 && segments[1] == "inputs":
 		// TeamInput 长期入口（§10 阶段二）：POST 202 {inputId, routeStatus}，
 		// 同 id 幂等重放；GET 按接受序分页查看持久队列（阶段 1，
@@ -154,6 +158,10 @@ func (h *handler) handleTeams(method string) {
 			h.handleTeamInputPrioritize(teamID, segments[2])
 		case "cancel":
 			h.handleTeamInputCancel(teamID, segments[2])
+		case "revoke-route":
+			h.handleTeamInputRevokeRoute(teamID, segments[2])
+		case "propose":
+			h.handleTeamInputPropose(teamID, segments[2])
 		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}
@@ -177,6 +185,11 @@ func (h *handler) handleTeams(method string) {
 	case len(segments) == 2 && segments[1] == "aimd" && method == http.MethodGet:
 		// AIMD 桶状态快照（§6.3 阶段二：只读出口，无写端点）。
 		h.handleTeamAIMD(teamID)
+	case len(segments) == 5 && segments[1] == "runs" && segments[3] == "tasks" && method == http.MethodGet:
+		h.handleTeamTaskCheck(teamID, segments[2], segments[4])
+	case len(segments) == 6 && segments[1] == "runs" && segments[3] == "tasks" &&
+		segments[5] == "update" && method == http.MethodPost:
+		h.handleTeamTaskUpdate(teamID, segments[2], segments[4])
 	case len(segments) == 6 && segments[1] == "runs" && segments[3] == "tasks" &&
 		segments[5] == "diff" && method == http.MethodGet:
 		// 任务级新段形状（§10.2 阶段二增量）：runs/:runID/tasks/:taskID/diff。

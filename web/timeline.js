@@ -4,8 +4,19 @@ const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(s
 // 工具调用行不止一种 kind：ACP 管线的 toolCall、桌面回放的 storedToolEvent、
 // MCP 的 mcpToolCall/dynamicToolCall。折叠行为按「是否工具行」统一判定。
 const TOOL_ROW_KINDS=/^(toolCall|tool_call|storedToolEvent|mcpToolCall|dynamicToolCall)$/;
-const toolRow=row=>row.role==='activity'&&TOOL_ROW_KINDS.test(row.kind);
+const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecution)$/.test(row.kind)||row.toolKind==='execute');
+const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row));
 const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title==='steered');
+const commandState=row=>{
+  const status=String(row.status||'');
+  if(/^(cancelled|canceled|interrupted|stopped)$/.test(status))return'cancelled';
+  if(/^(failed|error)$/.test(status))return'failed';
+  if(/^(outcome_unknown|unknown)$/.test(status))return'unknown';
+  if(typeof row.exitCode==='number')return row.exitCode===0?'completed':'failed';
+  if(/^(completed|complete|success|succeeded)$/.test(status))return'unknown';
+  return'inProgress';
+};
+const commandStateText=state=>timelineText({inProgress:'进行中',completed:'成功',failed:'失败',cancelled:'已取消',unknown:'结果未知'}[state]||'结果未知');
 
 // Agent 送来的工具标题形态各异：纯工具名（"Bash"）、「工具名: 命令」、
 // 「工具名(命令)」，甚至整条命令自带状态后缀（CodeBuddy 的 "git add … · completed"）。
@@ -25,6 +36,7 @@ const toolLabel=title=>{
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
+  if(commandRow(row))return timelineText('执行命令')+'（'+commandStateText(commandState(row))+'）';
   let label=row.title||row.kind;
   if(toolRow(row))label=toolLabel(row.title);
   if(row.kind==='plan'&&row.entries?.length){
@@ -290,15 +302,19 @@ class ChatTimeline {
     if(activity&&row.kind)node.dataset.kind=row.kind;
     // CSS 以 data-tool（而非具体 kind）区分工具行：所有管线的工具调用折叠态一致。
     if(toolRow(row))node.dataset.tool='';
+    if(commandRow(row)){node.dataset.command='';node.dataset.commandStatus=commandState(row);}
     const heading=document.createElement(activity&&!steered?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
       heading.textContent=rowLabel(row);
-      // 命令执行结果徽标:0 成功、非 0 失败,未知(无 exitCode)不标注。
-      if(activity&&typeof row.exitCode==='number'){
+      // 命令失败即使缺退出码也保留图标；只有 exitCode=0 才显示成功勾。
+      const commandFailed=commandRow(row)&&commandState(row)==='failed';
+      if(activity&&(typeof row.exitCode==='number'||commandFailed)){
+        const failed=commandFailed||row.exitCode!==0;
         const exit=document.createElement('span');
-        exit.className='diff-exit '+(row.exitCode===0?'ok':'fail');
-        exit.textContent=row.exitCode===0?'✓':'✗';
+        exit.className='diff-exit '+(failed?'fail':'ok');
+        exit.textContent=failed?'✗':'✓';
+        exit.setAttribute('aria-hidden','true');
         heading.append(' ',exit);
       }
       node.append(heading);

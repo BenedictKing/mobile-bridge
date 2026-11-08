@@ -63,6 +63,7 @@ const (
 const (
 	EventRunCreated            = "run_created"
 	EventTaskPlanned           = "task_planned"
+	EventTaskUpdateIntent      = "task_update_intent"
 	EventTaskDispatching       = "task_dispatching"
 	EventTaskRunning           = "task_running"
 	EventTaskCompleted         = "task_completed"
@@ -451,6 +452,10 @@ type Task struct {
 	SentText         string `json:"sentText,omitempty"`
 	Reduction        bool   `json:"reduction,omitempty"`
 	TriageFor        string `json:"triageFor,omitempty"`
+	UpdateID         string `json:"updateId,omitempty"`
+	UpdateOf         string `json:"updateOf,omitempty"`
+	UpdateStrategy   string `json:"updateStrategy,omitempty"`
+	UpdateStatus     string `json:"updateStatus,omitempty"`
 
 	extra *jsoncompat.Object
 }
@@ -1092,6 +1097,18 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	}
 	if t.TriageFor != "" {
 		object.Set("triageFor", t.TriageFor)
+	}
+	if t.UpdateID != "" {
+		object.Set("updateId", t.UpdateID)
+	}
+	if t.UpdateOf != "" {
+		object.Set("updateOf", t.UpdateOf)
+	}
+	if t.UpdateStrategy != "" {
+		object.Set("updateStrategy", t.UpdateStrategy)
+	}
+	if t.UpdateStatus != "" {
+		object.Set("updateStatus", t.UpdateStatus)
 	}
 	mergeExtras(object, t.extra)
 	return object

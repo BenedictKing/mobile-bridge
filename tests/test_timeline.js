@@ -162,3 +162,45 @@ test('steered event is a readable status without raw JSON',()=>{
   assert.equal(node.children[0].textContent,'已向进行中的对话补充指示');
   timeline.dispose();
 });
+
+test('command rows are collapsed to an accessible status and expand to full text',()=>{
+  const cases=[
+    [{kind:'commandExecution',status:'inProgress',text:'go test ./...'},'执行命令（进行中）','inProgress'],
+    [{kind:'commandExecution',status:'completed',exitCode:0,text:'go test ./...\nPASS'},'执行命令（成功）','completed'],
+    [{kind:'commandExecution',status:'completed',exitCode:2,text:'a very long command\nmultiple\noutput lines'},'执行命令（失败）','failed'],
+    [{kind:'CommandExecution',status:'cancelled',text:'stop this'},'执行命令（已取消）','cancelled'],
+    [{kind:'commandExecution',status:'completed',text:'missing exit code'},'执行命令（结果未知）','unknown'],
+    [{kind:'commandExecution',status:'outcome_unknown',exitCode:0,text:'uncertain'},'执行命令（结果未知）','unknown'],
+    [{kind:'toolCall',toolKind:'execute',status:'failed',text:'make check'},'执行命令（失败）','failed'],
+  ];
+  for(const [fixture,label,state] of cases){
+    const{timeline}=setup();
+    const row={key:'command-1',role:'activity',version:1,truncated:true,...fixture};
+    const node=timeline.renderRow(row,false);
+    assert.equal(node.tagName,'DETAILS');
+    assert.equal(node.open,false,'new commands must start collapsed');
+    assert.equal(node.dataset.tool,'');
+    assert.equal(node.dataset.command,'');
+    assert.equal(node.dataset.commandStatus,state);
+    assert.equal(node.children[0].tagName,'SUMMARY');
+    assert.equal(node.children[0].textContent,label);
+    assert.ok(!node.children[0].textContent.includes(row.text),'summary must not expose command or output');
+    assert.equal(node.children[1].textContent,row.text,'expanded body keeps command and output');
+    assert.equal(node.children[1].hidden,false);
+    assert.equal(node.children[2].hidden,false,'truncated rows keep continuation control');
+    const opened=timeline.renderRow(row,true);
+    assert.equal(opened.open,true,'redraw preserves an open command');
+    timeline.dispose();
+  }
+});
+
+test('command CSS hides all body preview and keeps non-command activities unchanged',()=>{
+  const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
+  assert.match(css,/\.activity\[data-command\]:not\(\[open\]\) \.activity-body/);
+  assert.match(css,/\.activity summary:focus-visible/);
+  const{timeline}=setup();
+  const thought=timeline.renderRow({key:'thought',role:'activity',kind:'reasoning',title:'思考摘要',text:'摘要'},false);
+  assert.equal(thought.dataset.command,undefined);
+  assert.equal(thought.dataset.tool,undefined);
+  timeline.dispose();
+});

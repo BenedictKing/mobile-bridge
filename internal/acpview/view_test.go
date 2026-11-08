@@ -191,3 +191,20 @@ func TestUserReminderChunkLeavesNoBlankRow(t *testing.T) {
 		t.Fatalf("user text = %q", text)
 	}
 }
+
+func TestToolCallPreservesStructuredExecuteKind(t *testing.T) {
+	view := NewView("sess-1", "标题", "/work", func() float64 { return 0 })
+	view.BeginTurn("运行测试")
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call","toolCallId":"call-execute","title":"Bash","kind":"execute","status":"in_progress","rawInput":{"command":"go test ./..."}}`))
+	messages, _ := view.Turns[0].MustGet("messages").(*jsoncompat.Array)
+	message, _ := messages.Items[1].(*jsoncompat.Object)
+	if message.MustGet("toolKind") != "execute" {
+		t.Fatalf("execute 工具类型应进入时间线投影: %s", jsoncompat.EncodeCompact(message))
+	}
+	view.OnUpdate(notification(t,
+		`{"sessionUpdate":"tool_call_update","toolCallId":"call-execute","kind":"execute","status":"completed"}`))
+	if message.MustGet("toolKind") != "execute" || message.MustGet("status") != "completed" {
+		t.Fatalf("更新后工具类型与状态应保留: %s", jsoncompat.EncodeCompact(message))
+	}
+}

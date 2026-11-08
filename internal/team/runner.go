@@ -106,7 +106,8 @@ type Service struct {
 	// 会话副作用）。独立成字段是测试注入点：acpruntime.Session 的 changed
 	// 通道未导出，进程外手工构造的 Session 调 Cancel 会 panic（signalLocked
 	// 关闭 nil 通道）；生产实现恒为 cancelTurnIfOurs。
-	cancelAgentTurn func(session *acpruntime.Session, sentText string) bool
+	cancelAgentTurn    func(session *acpruntime.Session, sentText string) bool
+	interruptAgentTurn func(session *acpruntime.Session, sentText string) error
 
 	// respondAgent 把问题答案投递到成员会话（§5.4 decision 的 Respond 步）。
 	// 独立成字段是测试注入点，与 cancelAgentTurn 同因：手工构造的 Session
@@ -208,6 +209,7 @@ func NewService(store TeamStore, journal *Journal, queue QueueAdapter, resolver 
 		pools:             map[string]*teamDispatchPool{},
 	}
 	service.cancelAgentTurn = service.cancelTurnIfOurs
+	service.interruptAgentTurn = service.interruptTurnAndConfirm
 	service.respondAgent = func(session *acpruntime.Session, requestID string, response *jsoncompat.Object) error {
 		return session.Respond(requestID, response)
 	}
@@ -1531,8 +1533,11 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	// 读数不漏计；此后本主体的入队/取消收尾不再占窗口额度，取消窗口一的
 	// 等待期由池信号量（容量=MaxParallelTasks）兜底并发上限。
 	leadBriefing := ""
-	if s.LeadBriefing != nil && run.AutoPlan && task.MemberID == team.LeadID {
-		leadBriefing = s.LeadBriefing(team)
+	if run.AutoPlan && task.MemberID == team.LeadID {
+		if s.LeadBriefing != nil {
+			leadBriefing = s.LeadBriefing(team)
+		}
+		leadBriefing += s.backgroundTaskBriefing(run, task.ID)
 	}
 	state.mu.Lock()
 	dispatch, err := s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, leadBriefing, reviewHead, reviewDiff)

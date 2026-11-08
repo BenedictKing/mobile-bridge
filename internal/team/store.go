@@ -545,7 +545,7 @@ func (s *Store) RebuildRunsFromJournal(events []*Event) {
 // 只认事实，不做终态回退保护（journal 本身就是权威顺序）。
 func applyJournalEventToRun(run *Run, event *Event) {
 	run.UpdatedAt = event.CreatedAt
-	if !isTaskScopedEvent(event.Type) && event.Type != EventTaskPlanned {
+	if !isTaskScopedEvent(event.Type) && event.Type != EventTaskPlanned && event.Type != EventTaskUpdateIntent {
 		switch event.Type {
 		case EventRunWaitingInput:
 			run.Status = RunWaitingInput
@@ -730,6 +730,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		}
 		task.Reduction = payloadBool(event.Payload, "reduction")
 		task.TriageFor = payloadString(event.Payload, "triageFor")
+		applyTaskUpdateFields(task, event)
 		// reviewOf（阶段 5）：显式计划与动作派生的审查绑定随重建恢复。
 		if refs := payloadStrings(event.Payload, "reviewOf"); len(refs) > 0 {
 			task.ReviewOf = refs
@@ -753,6 +754,11 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		// （actions-exec 契约），对应动作置 executed。
 		advanceRebuildRound(run, event)
 		markRebuildActionExecuted(run, payloadString(event.Payload, "actionKey"))
+	case EventTaskUpdateIntent:
+		task.Status = TaskStopped
+		task.MemberID = payloadString(event.Payload, "memberId")
+		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
+		applyTaskUpdateFields(task, event)
 	case EventTaskDispatching:
 		task.Status = TaskDispatching
 		task.SubmissionID = payloadString(event.Payload, "submissionId")
@@ -817,6 +823,10 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	case EventTaskStopped:
 		task.Status = taskStoppedStatus(event)
 		task.Outcome = payloadString(event.Payload, "outcome")
+		if payloadString(event.Payload, "updateStatus") == TaskUpdateOutcomeUnknown {
+			task.Status = TaskOutcomeUnknown
+			task.UpdateStatus = TaskUpdateOutcomeUnknown
+		}
 	case EventTaskInputHashMismatch:
 		task.Status = TaskStopped
 		task.Outcome = payloadString(event.Payload, "outcome")
@@ -824,6 +834,19 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	if reason := payloadString(event.Payload, "stopReason"); reason != "" && event.Type != EventTaskDispatching {
 		task.StopReason = reason
 	}
+}
+
+func applyTaskUpdateFields(task *Task, event *Event) {
+	task.UpdateID = payloadString(event.Payload, "updateId")
+	if task.UpdateID == "" {
+		return
+	}
+	task.UpdateOf = payloadString(event.Payload, "updateOf")
+	task.UpdateStrategy = payloadString(event.Payload, "updateStrategy")
+	task.UpdateStatus = payloadString(event.Payload, "updateStatus")
+	task.Prompt = payloadString(event.Payload, "prompt")
+	task.DependsOn = payloadStrings(event.Payload, "dependsOn")
+	task.WriteLock = payloadString(event.Payload, "writeLock")
 }
 
 // payloadInt 读取载荷里的整数字段（journal 解码保持 json.Number 字面量）。
@@ -908,6 +931,9 @@ func markRebuildActionExecuted(run *Run, actionKey string) {
 // payloadStrings 读取载荷里的字符串数组字段（run_created 的 verifyCommand
 // 等）；缺失或形态不符返回 nil。
 func payloadStrings(payload map[string]any, key string) []string {
+	if values, ok := payload[key].([]string); ok {
+		return append([]string(nil), values...)
+	}
 	items, ok := payload[key].([]any)
 	if !ok {
 		return nil

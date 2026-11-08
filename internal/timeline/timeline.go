@@ -32,7 +32,7 @@ const (
 
 // rowWhitelist is copied from the source message in this order.
 var rowWhitelist = [...]string{
-	"role", "kind", "status", "title", "phase", "requestId",
+	"role", "kind", "toolKind", "status", "title", "phase", "requestId",
 	"subagentId", "subagentType", "subagentDescription", "subagentPrompt", "stopReason",
 }
 

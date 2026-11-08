@@ -1,17 +1,27 @@
 # 团队异步编排质量收敛与命令展示方案
 
-> 状态：设计中；2026-11-08。本文是增量方案，未实施运行时代码。
+> 状态：已实现仓库内范围；2026-11-08。桌面宿主宰卡片仍需宿主侧单独验收。
 > 依据：[多需求队列方案](team-demand-queue-plan.md)、[团队运行设计](team-orchestration-plan.md)、2026-11-08 代码审查和 [LangChain: Agents Are Going Async](https://www.langchain.com/blog/agents-are-going-async)。
 
 ## 1. 目标、现状与边界
 
 目标是让 Lead 在成员执行长任务时仍能接收用户输入、知道哪些任务在途，并可靠地更新、排队或取消后续工作；同时让聊天时间线默认保持可扫描性，命令正文和输出按需展开。先保证输入账本和恢复正确，再扩大自动编排能力。
 
-已实现：持久 TeamInput、机械路由、跨 Run 成员互斥和预算、`reviewOf` 版本绑定及 stale 投影。`docs/team-demand-queue-plan.md` 的阶段 0–5 标记不等于语义路由、多要求 WorkItem 拆分和工作项级审查策略全部完成。现有 `routeOneInput` 主要依据显式目标和活跃 Run 数量决定归属；Lead 的结构化路由提案尚未进入该路径。现有 Run/Task journal、提交队列、审批和通知应继续复用，不引入第二套 Agent runtime。
+既有基础包括持久 TeamInput、机械路由、跨 Run 成员互斥和预算、`reviewOf` 版本绑定及 stale 投影。本次增量复用同一 Run/Task journal、提交队列、审批和通知，没有引入第二套 Agent runtime。
 
 LangChain 文章的可借鉴机制是：主控与后台任务分离；启动后立即返回任务 ID；提供查询、更新、取消、列表；任务完成时通知主控；主控忙、闲、等待审批时都能正确接收结果；更新可选 `interrupt` 或 `enqueue`。这些是行为参考，不意味着直接引入 Deep Agents 或照搬其 API。
 
 截图显示的期望是：折叠态只呈现“执行命令（状态）”，点击后才显示实际命令、输出和错误。仓库可控制的是移动 Web 时间线 `web/timeline.js`、`web/presentation.css` 及其投影；如果截图属于 Codex 桌面宿主自身的工具卡片，宿主界面不在本仓库控制范围，需将同一交互规范提交给宿主实现，不把 Web 修改误报为桌面生效。
+
+### 1.1 本次实施记录
+
+- 输入 ID 保持全局唯一，异 Team 重放返回冲突且不泄露记录；WorkItem/Revision 内层切片已深拷贝。
+- 路由意图固定 kind、Run/Task 与 amend 父 ID；`POST .../inputs/:id/revoke-route` 记录撤销事件后才允许重新规划。
+- `GET /api/teams/:id/tasks`、`GET .../tasks?all=1`、`GET .../runs/:runId/tasks/:taskId` 提供列表与单任务查询；`GET /api/teams/:id/task-events?after=N` 按持久序号补读通知并按事件 ID 去重。
+- `POST .../tasks/:taskId/update` 接收操作 UUID、Run 版本、正文和 `enqueue/interrupt`；enqueue 是依赖原任务终态的后继 Task，interrupt 未确认停止时停靠 `outcome_unknown`，不自动重发。取消继续复用现有 Run 取消接口。
+- `POST .../inputs/:inputId/propose` 接收 Lead 工作项提案；网关校验 rune 来源区间、完整且不重叠的原文覆盖、成员、依赖、容量和策略版本。`required/best_effort` 生成带 `reviewOf` 的审查任务，独立工作项可超 Run 上限拆批，跨批依赖拒绝抢跑。
+- 原生命令 `commandExecution` 与 ACP `toolKind=execute` 使用 `data-command`，默认只显示状态标题；审批卡路径未修改。
+- 验收通过：`go test ./...`、Team/HTTP race、`go vet ./...`、`go build ./...`、170 个前端测试；固定 fixture 的桌面/手机浏览器检查覆盖折叠、失败、键盘展开与无横向溢出。
 
 ## 2. 先收敛账本与恢复正确性
 

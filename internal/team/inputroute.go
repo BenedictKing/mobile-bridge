@@ -112,31 +112,33 @@ func (s *Service) queueBudgetState(team *Team) (bool, string) {
 // routeOneInput 推进单条输入：意图 → 创建/追加 → 确认。返回是否在本轮
 // 确认 routed（停靠/幂等跳过返回 false）。
 func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded bool, budgetReason string) bool {
-	runs := s.store.RunsByTeam(team.ID)
-	active := make([]*Run, 0, 1)
-	for _, run := range runs {
-		if !terminalRun(run.Status) {
-			active = append(active, run)
+	kind, runID, taskID, parentRunID := input.RouteStatus, input.TargetRunID, input.TargetTaskID, input.ParentRunID
+	hasIntent := (input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput) && kind != ""
+	waitReason := ""
+	if !hasIntent {
+		runs := s.store.RunsByTeam(team.ID)
+		active := make([]*Run, 0, 1)
+		for _, run := range runs {
+			if !terminalRun(run.Status) {
+				active = append(active, run)
+			}
 		}
-	}
-	kind, runID, taskID, waitReason := "", "", "", ""
-	switch {
-	case input.ExplicitTarget && input.TargetTaskID != "" && input.TargetRunID != "":
-		// 显式目标优先（§4 路由顺序第 1 条）：仅用户显式指定（API 透传），
-		// 路由意图自记的确定性目标在重泵时按 Run 状态重推导，不走此分支。
-		kind, runID, taskID = "follow_up", input.TargetRunID, input.TargetTaskID
-	case len(active) > 1:
-		waitReason = "团队有多个未结束的 Run，请先在 Run 详情页收敛目标（完成或取消）后重试"
-	case len(active) == 1:
-		if !active[0].AutoPlan || active[0].Mode != ModeSingle {
-			waitReason = "当前活跃 Run 是显式计划，请在 Run 详情页处理"
-			break
+		switch {
+		case input.ExplicitTarget && input.TargetTaskID != "" && input.TargetRunID != "":
+			kind, runID, taskID = "follow_up", input.TargetRunID, input.TargetTaskID
+		case len(active) > 1:
+			waitReason = "团队有多个未结束的 Run，请先在 Run 详情页收敛目标（完成或取消）后重试"
+		case len(active) == 1:
+			if !active[0].AutoPlan || active[0].Mode != ModeSingle {
+				waitReason = "当前活跃 Run 是显式计划，请在 Run 详情页处理"
+				break
+			}
+			kind, runID, taskID = "follow_up", active[0].ID, ConversationTaskID(input.ID)
+		case len(runs) > 0:
+			kind, runID, taskID, parentRunID = "amend", input.ID, "lead", runs[len(runs)-1].ID
+		default:
+			kind, runID, taskID = "new_task", input.ID, "lead"
 		}
-		kind, runID, taskID = "follow_up", active[0].ID, ConversationTaskID(input.ID)
-	case len(runs) > 0:
-		kind, runID, taskID = "amend", input.ID, "lead"
-	default:
-		kind, runID, taskID = "new_task", input.ID, "lead"
 	}
 	if waitReason != "" {
 		if err := s.inputs.MarkWaitingInput(team.ID, input.ID, waitReason); err != nil {
@@ -154,12 +156,12 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded boo
 		return false
 	}
 	// ① 意图先持久化（同意图幂等；queued/waiting → routing）。
-	if err := s.inputs.MarkRoutingIntent(team.ID, input.ID, kind, runID, taskID); err != nil {
+	if err := s.inputs.MarkRoutingIntent(team.ID, input.ID, kind, runID, taskID, parentRunID); err != nil {
 		log.Printf("team %s 输入 %s 路由意图落账失败: %v", team.ID, input.ID, err)
 		return false
 	}
 	// ② 幂等创建 Run/Task（确定性 ID：重放命中既有 Run/Task）。
-	createErr := s.materializeRoute(team, input, kind, runID, taskID)
+	createErr := s.materializeRoute(team, input, kind, runID, taskID, parentRunID)
 	if createErr != nil {
 		waitReason = createErr.Error()
 		if err := s.inputs.MarkWaitingInput(team.ID, input.ID, waitReason); err != nil {
@@ -167,34 +169,74 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded boo
 		}
 		return false
 	}
-	// ③ 确认 routed + 工作项链接。
-	if err := s.inputs.MarkRouted(team.ID, input.ID, kind, runID, taskID); err != nil {
-		log.Printf("team %s 输入 %s 路由确认失败（重泵补齐）: %v", team.ID, input.ID, err)
-		return false
+	targets := []struct{ runID, taskID string }{{runID, taskID}}
+	if kind == "planned" {
+		targets = plannedRouteTargets(input)
 	}
-	return true
+	for _, target := range targets {
+		if err := s.validateRouteTarget(team.ID, kind, target.runID, target.taskID, parentRunID); err != nil {
+			if waitErr := s.inputs.MarkWaitingInput(team.ID, input.ID, err.Error()); waitErr != nil {
+				log.Printf("team %s 输入 %s 停靠记账失败: %v", team.ID, input.ID, waitErr)
+			}
+			return false
+		}
+		// ③ 确认 routed + 工作项链接。
+		if err := s.inputs.MarkRouted(team.ID, input.ID, kind, target.runID, target.taskID); err != nil {
+			log.Printf("team %s 输入 %s 路由确认失败（重泵补齐）: %v", team.ID, input.ID, err)
+			return false
+		}
+	}
+	return len(targets) > 0
 }
 
 // materializeRoute 按路由种类幂等落成 Run/Task（复用既有会话化路径——
 // 首条输入创建初始 Run、活跃 Run 追加 Lead 任务、终态后血缘修订）。
-func (s *Service) materializeRoute(team *Team, input *TeamInput, kind, runID, taskID string) error {
+func (s *Service) materializeRoute(team *Team, input *TeamInput, kind, runID, taskID, parentRunID string) error {
+	if kind == "new_task" || kind == "amend" {
+		if existing := s.store.Run(runID); existing != nil {
+			task := findTaskIn(existing, taskID)
+			if existing.TeamID != team.ID || !existing.AutoPlan || existing.Mode != ModeSingle ||
+				existing.Goal != input.Text || task == nil || task.MemberID != team.LeadID ||
+				task.Prompt != input.Text || !sameStringSlices(task.Attachments, input.AttachmentIDs) ||
+				(kind == "amend" && existing.ParentRunID != parentRunID) ||
+				(kind == "new_task" && existing.ParentRunID != "") {
+				return errors.New("路由目标已存在但内容或血缘不一致")
+			}
+			return nil
+		}
+	}
 	switch kind {
 	case "new_task":
 		_, err := s.CreateConversationRun(team, runID, input.Text, input.AttachmentIDs)
 		return err
 	case "amend":
-		runs := s.store.RunsByTeam(team.ID)
-		if len(runs) == 0 {
-			return errors.New("修订目标缺失：团队没有可延续的 Run")
+		if parentRunID == "" {
+			return errors.New("修订目标缺失：路由意图没有固定父 Run")
 		}
-		_, err := s.CreateConversationAmendRun(team, runs[len(runs)-1].ID, runID, input.Text, input.AttachmentIDs)
+		_, err := s.CreateConversationAmendRun(team, parentRunID, runID, input.Text, input.AttachmentIDs)
 		return err
 	case "follow_up":
 		_, _, err := s.FollowUpConversationRun(team, runID, taskID, input.Text, input.AttachmentIDs)
 		return err
+	case "planned":
+		return s.materializePlannedRoute(team, input)
 	default:
 		return errors.New("未知路由种类：" + kind)
 	}
+}
+
+func (s *Service) validateRouteTarget(teamID string, kind, runID, taskID, parentRunID string) error {
+	run := s.store.Run(runID)
+	if run == nil || run.TeamID != teamID {
+		return fmt.Errorf("路由目标缺失：Run 不存在或不属于当前团队")
+	}
+	if kind == "amend" && run.ParentRunID != parentRunID {
+		return fmt.Errorf("路由目标异常：amend 父 Run 与持久意图不一致")
+	}
+	if findTaskIn(run, taskID) == nil {
+		return fmt.Errorf("路由目标缺失：目标任务不存在")
+	}
+	return nil
 }
 
 // teamDispatchCount 统计团队在滚动 24 小时窗口内的派发次数（journal 的

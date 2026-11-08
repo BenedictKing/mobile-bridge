@@ -256,3 +256,99 @@ func TestInputLedgerUnknownEventForwardCompat(t *testing.T) {
 		t.Fatalf("未知事件不得破坏重放: %+v", input)
 	}
 }
+
+func TestInputLedgerNeverReturnsAnotherTeamsInput(t *testing.T) {
+	ledger, snapshotPath, journalPath := newInputLedgerFixture(t)
+	if _, _, err := ledger.Accept("team-1", "shared-id", "团队一正文", nil, "digest", 8); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"团队一正文", "团队二正文"} {
+		if input, duplicate, err := ledger.Accept("team-2", "shared-id", text, nil, "digest", 8); !errors.Is(err, ErrInputContentMismatch) || input != nil || duplicate {
+			t.Fatalf("跨 Team 同 ID 必须冲突且不得返回记录: input=%+v duplicate=%v err=%v", input, duplicate, err)
+		}
+	}
+	if got := ledger.Get("team-2", "shared-id"); got != nil {
+		t.Fatalf("Get 不得跨 Team 串读: %+v", got)
+	}
+	if _, _, err := ledger.Prioritize("team-1", "shared-id", "op-team-1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if input, _, err := ledger.Prioritize("team-2", "shared-id", "op-team-1", 2); !errors.Is(err, ErrNotFound) || input != nil {
+		t.Fatalf("操作重放不得跨 Team 返回记录: input=%+v err=%v", input, err)
+	}
+	reopened, err := OpenJournal(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+	rebuilt := LoadInputLedger(snapshotPath, reopened)
+	if got := rebuilt.Get("team-2", "shared-id"); got != nil {
+		t.Fatalf("快照与重放后仍不得跨 Team 串读: %+v", got)
+	}
+	if _, _, err := rebuilt.Accept("team-2", "shared-id", "团队一正文", nil, "digest", 8); !errors.Is(err, ErrInputContentMismatch) {
+		t.Fatalf("重启后跨 Team 冲突仍应生效: %v", err)
+	}
+}
+
+func TestInputLedgerCloneCopiesNestedSlices(t *testing.T) {
+	ledger, _, _ := newInputLedgerFixture(t)
+	if _, _, err := ledger.Accept("team-1", "in-clone", "初版", []string{"att-1"}, "digest", 8); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ledger.Revise("team-1", "in-clone", "op-clone", "修订", []string{"att-2"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.MarkRoutingIntent("team-1", "in-clone", "new_task", "run-clone", "lead", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.MarkRouted("team-1", "in-clone", "new_task", "run-clone", "lead"); err != nil {
+		t.Fatal(err)
+	}
+	ledger.inputs["in-clone"].WorkItems[0].DependsOnItemIDs = []string{"wi-parent"}
+	if got := ledger.Get("team-1", "in-clone"); len(got.AttachmentIDs) == 0 || len(got.Revisions) != 2 ||
+		len(got.Revisions[0].AttachmentIDs) == 0 || len(got.Revisions[1].AttachmentIDs) == 0 || len(got.WorkItems) != 1 {
+		t.Fatalf("克隆 fixture 不完整: %+v", got)
+	}
+	mutate := func(input *TeamInput) {
+		input.AttachmentIDs[0] = "mutated"
+		input.Revisions[0].AttachmentIDs[0] = "mutated"
+		input.Revisions[1].AttachmentIDs[0] = "mutated"
+		input.WorkItems[0].TaskIDs[0] = "mutated"
+		input.WorkItems[0].DependsOnItemIDs[0] = "mutated"
+	}
+	mutate(ledger.Get("team-1", "in-clone"))
+	rows, _ := ledger.ListInputs("team-1", "", 10)
+	mutate(rows[0])
+	got := ledger.Get("team-1", "in-clone")
+	if got.AttachmentIDs[0] != "att-2" || got.Revisions[0].AttachmentIDs[0] != "att-1" ||
+		got.Revisions[1].AttachmentIDs[0] != "att-2" || got.WorkItems[0].TaskIDs[0] != "lead" ||
+		got.WorkItems[0].DependsOnItemIDs[0] != "wi-parent" {
+		t.Fatalf("Get/List 返回值不得共享内层切片: %+v", got)
+	}
+}
+
+func TestInputLedgerRevokeRoutingIntentIsAuditedAndIdempotent(t *testing.T) {
+	ledger, _, _ := newInputLedgerFixture(t)
+	if _, _, err := ledger.Accept("team-1", "in-revoke", "正文", nil, "digest", 8); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.MarkRoutingIntent("team-1", "in-revoke", "amend", "run-new", "lead", "run-parent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.MarkWaitingInput("team-1", "in-revoke", "目标已失效"); err != nil {
+		t.Fatal(err)
+	}
+	input := ledger.Get("team-1", "in-revoke")
+	revoked, duplicate, err := ledger.RevokeRoutingIntent("team-1", "in-revoke", "op-revoke", input.Version)
+	if err != nil || duplicate || revoked.QueueStatus != InputQueued || revoked.RouteStatus != "" ||
+		revoked.TargetRunID != "" || revoked.TargetTaskID != "" || revoked.ParentRunID != "" || revoked.WaitingReason != "" {
+		t.Fatalf("撤销意图状态异常: %+v duplicate=%v err=%v", revoked, duplicate, err)
+	}
+	replay, duplicate, err := ledger.RevokeRoutingIntent("team-1", "in-revoke", "op-revoke", input.Version)
+	if err != nil || !duplicate || replay.Version != revoked.Version {
+		t.Fatalf("撤销重放应幂等: %+v duplicate=%v err=%v", replay, duplicate, err)
+	}
+	if err := ledger.MarkRoutingIntent("team-1", "in-revoke", "new_task", "run-replanned", "lead", ""); err != nil {
+		t.Fatalf("撤销后应允许重新规划: %v", err)
+	}
+}

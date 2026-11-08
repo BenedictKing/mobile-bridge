@@ -580,6 +580,9 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		message.Set("id", v.nextID("tool"))
 		message.Set("kind", "toolCall")
 		message.Set("role", "activity")
+		if toolKind, ok := update.MustGet("kind").(string); ok && toolKind != "" {
+			message.Set("toolKind", toolKind)
+		}
 		message.Set("title", truthyOr(toolTitle(update),
 			truthyOr(update.MustGet("kind"), "工具调用")))
 		summary := QuestionSummary(update.MustGet("rawInput"))
@@ -619,6 +622,9 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		}
 		if status := getDefault(update, "status", nil); jsoncompat.Truthy(status) {
 			message.Set("status", statusMap(status))
+		}
+		if toolKind, ok := update.MustGet("kind").(string); ok && toolKind != "" {
+			message.Set("toolKind", toolKind)
 		}
 		if title := toolTitle(update); jsoncompat.Truthy(title) {
 			message.Set("title", title)

@@ -5,11 +5,10 @@ package team
 // journal（追加事实），再写 team-inputs.json 快照（可重建投影）。崩溃后
 // 重放 journal 幂等补齐，已接受输入在规划前重启仍可查询和继续。
 //
-//   - 事件：input_accepted / input_revised / input_prioritized /
-//     input_cancelled（route_intent/routed/waiting_input/work_item_linked 是
-//     阶段 2 的路由事件，常量先登记、本阶段不产生）；
-//   - 幂等：Accept 以 inputID 为幂等键——同 ID 同内容重放返回原状态，
-//     异内容返回 ErrInputContentMismatch（HTTP 映射 409）；修订/优先/取消
+//   - 事件：接受、修订、排队操作、路由意图/撤销/确认、工作项提案与链接
+//     均追加落账，快照只是可重建投影；
+//   - 幂等：Accept 以全局 inputID 为幂等键——同 Team 同 ID 同内容重放返回
+//     原状态，异 Team 或异内容返回 ErrInputContentMismatch（HTTP 映射 409）；修订/优先/取消
 //     以操作 UUID 幂等，重复操作返回既有结果，版本冲突返回 ErrVersionConflict；
 //   - 排队中的「编辑」新增 revision 并保留旧版本（修订不可变），routing 后
 //     拒绝原地编辑；
@@ -46,15 +45,17 @@ const (
 
 // 输入事件类型（journal 只增不删，§9.2）。
 const (
-	EventInputAccepted     = "input_accepted"
-	EventInputRevised      = "input_revised"
-	EventInputPrioritized  = "input_prioritized"
-	EventInputCancelled    = "input_cancelled"
-	EventInputRouteIntent  = "input_route_intent"
-	EventInputRouted       = "input_routed"
-	EventInputWaitingInput = "input_waiting_input"
-	EventWorkItemLinked    = "work_item_linked"
-	EventInputTeamPurged   = "input_team_purged"
+	EventInputAccepted           = "input_accepted"
+	EventInputRevised            = "input_revised"
+	EventInputPrioritized        = "input_prioritized"
+	EventInputCancelled          = "input_cancelled"
+	EventInputRouteIntent        = "input_route_intent"
+	EventInputRouteIntentRevoked = "input_route_intent_revoked"
+	EventInputRouted             = "input_routed"
+	EventInputWaitingInput       = "input_waiting_input"
+	EventWorkItemLinked          = "work_item_linked"
+	EventWorkItemsProposed       = "work_items_proposed"
+	EventInputTeamPurged         = "input_team_purged"
 )
 
 // 输入账本错误（HTTP 层按类型映射状态码）。
@@ -109,6 +110,10 @@ type WorkItem struct {
 	SourceInputID    string   `json:"sourceInputId"`
 	SourceRevision   int      `json:"sourceRevision"`
 	RequirementText  string   `json:"requirementText"`
+	SourceStart      int      `json:"sourceStart"`
+	SourceEnd        int      `json:"sourceEnd"`
+	MemberID         string   `json:"memberId,omitempty"`
+	ReviewPolicy     string   `json:"reviewPolicy,omitempty"`
 	RunID            string   `json:"runId,omitempty"`
 	TaskIDs          []string `json:"taskIds,omitempty"`
 	DependsOnItemIDs []string `json:"dependsOnItemIds,omitempty"`
@@ -130,6 +135,7 @@ type TeamInput struct {
 	RouteStatus   string     `json:"routeStatus"`
 	TargetRunID   string     `json:"targetRunId,omitempty"`
 	TargetTaskID  string     `json:"targetTaskId,omitempty"`
+	ParentRunID   string     `json:"parentRunId,omitempty"`
 	Priority      bool       `json:"priority,omitempty"`
 	PolicyDigest  string     `json:"policyDigest,omitempty"`
 	Version       uint64     `json:"version"` // 乐观版本：接受=1，每次状态变更 +1
@@ -139,9 +145,8 @@ type TeamInput struct {
 	// WaitingReason 是 waiting_input 停靠的原因（阶段 2：多活跃 Run、Run 收
 	// 集中等），UI/API 据此提示下一步。
 	WaitingReason string `json:"waitingReason,omitempty"`
-	// ExplicitTarget 标记 TargetRunID/TargetTaskID 是用户显式指定的目标
-	//（区别于路由意图自行推导的确定性目标——重泵时后者按 Run 状态重推导，
-	// 不作为显式目标消费）。
+	// ExplicitTarget 只用于尚无路由意图的输入；一旦意图落账，重泵始终使用
+	// 持久化的 RouteStatus/TargetRunID/TargetTaskID/ParentRunID，不再重新规划。
 	ExplicitTarget bool            `json:"explicitTarget,omitempty"`
 	Revisions      []InputRevision `json:"revisions,omitempty"`
 	UpdatedAt      time.Time       `json:"updatedAt"`
@@ -157,7 +162,14 @@ func (i *TeamInput) Clone() *TeamInput {
 	copied.RunIDs = append([]string(nil), i.RunIDs...)
 	copied.WorkItemIDs = append([]string(nil), i.WorkItemIDs...)
 	copied.WorkItems = append([]WorkItem(nil), i.WorkItems...)
+	for index := range copied.WorkItems {
+		copied.WorkItems[index].TaskIDs = append([]string(nil), i.WorkItems[index].TaskIDs...)
+		copied.WorkItems[index].DependsOnItemIDs = append([]string(nil), i.WorkItems[index].DependsOnItemIDs...)
+	}
 	copied.Revisions = append([]InputRevision(nil), i.Revisions...)
+	for index := range copied.Revisions {
+		copied.Revisions[index].AttachmentIDs = append([]string(nil), i.Revisions[index].AttachmentIDs...)
+	}
 	return &copied
 }
 
@@ -266,7 +278,7 @@ func (l *InputLedger) Accept(teamID, inputID, text string, attachments []string,
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if existing := l.inputs[inputID]; existing != nil {
-		if existing.ContentHash != hash {
+		if existing.TeamID != teamID || existing.ContentHash != hash {
 			return nil, false, ErrInputContentMismatch
 		}
 		return existing.Clone(), true, nil
@@ -417,10 +429,11 @@ func (l *InputLedger) replayOpLocked(teamID, inputID, opID string) (*TeamInput, 
 	if owner != inputID {
 		return nil, true, ErrInputContentMismatch
 	}
-	if input := l.inputs[inputID]; input != nil {
-		return input.Clone(), true, nil
+	input := l.inputs[inputID]
+	if input == nil || input.TeamID != teamID {
+		return nil, false, ErrNotFound
 	}
-	return nil, false, nil
+	return input.Clone(), true, nil
 }
 
 // Get 返回输入的深拷贝；不存在或不属于该团队返回 nil。
@@ -475,6 +488,19 @@ func (l *InputLedger) ListInputs(teamID, cursor string, limit int) ([]*TeamInput
 	return rows, next
 }
 
+// ListAll 返回 Team 全部输入的深拷贝，供内部任务血缘投影使用。
+func (l *InputLedger) ListAll(teamID string) []*TeamInput {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rows := []*TeamInput{}
+	for _, key := range l.order {
+		if input := l.inputs[key]; input != nil && input.TeamID == teamID {
+			rows = append(rows, input.Clone())
+		}
+	}
+	return rows
+}
+
 // PendingCount 返回团队当前待路由（queued）输入数。
 func (l *InputLedger) PendingCount(teamID string) int {
 	l.mu.Lock()
@@ -512,19 +538,26 @@ func (l *InputLedger) PurgeTeam(teamID string) error {
 // routing 或出现「已 routed 却无任务」。waiting_input 是可恢复停靠：原因
 // 记账，随重泵复核。
 
-// MarkRoutingIntent 落路由意图（queued → routing）：kind ∈ new_task/
-// follow_up/amend，targetRunID/targetTaskID 是确定性目标（new_task 的
-// runID=inputID、taskID=ConversationTaskID(inputID)）。已 routing 且目标
-// 一致时幂等跳过（崩溃恢复重放同 intent 不双写）。
-func (l *InputLedger) MarkRoutingIntent(teamID, inputID, kind, targetRunID, targetTaskID string) error {
+// MarkRoutingIntent 落完整路由意图（queued → routing）。routing/waiting_input
+// 中已有意图只允许完整字段一致的重放；改派必须先显式撤销旧意图。
+func (l *InputLedger) MarkRoutingIntent(teamID, inputID, kind, targetRunID, targetTaskID, parentRunID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	input := l.inputs[inputID]
 	if input == nil || input.TeamID != teamID {
 		return ErrNotFound
 	}
-	if input.QueueStatus == InputRouting && input.TargetRunID == targetRunID && input.TargetTaskID == targetTaskID {
-		return nil // 同意图重放
+	switch kind {
+	case "new_task", "follow_up", "amend", "planned":
+	default:
+		return errors.New("未知路由种类：" + kind)
+	}
+	if (input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput) && input.RouteStatus != "" {
+		if input.RouteStatus == kind && input.TargetRunID == targetRunID &&
+			input.TargetTaskID == targetTaskID && input.ParentRunID == parentRunID {
+			return nil
+		}
+		return errors.New("输入已有不同的路由意图，请先撤销原意图")
 	}
 	if input.QueueStatus != InputQueued && input.QueueStatus != InputWaitingInput && input.QueueStatus != InputRouting {
 		return fmt.Errorf("%w：当前 %s", ErrInputNotQueued, input.QueueStatus)
@@ -532,11 +565,42 @@ func (l *InputLedger) MarkRoutingIntent(teamID, inputID, kind, targetRunID, targ
 	event := newEvent("", EventInputRouteIntent, "router", map[string]any{
 		"inputId": inputID, "teamId": teamID, "routeKind": kind,
 		"targetRunId": targetRunID, "targetTaskId": targetTaskID,
+		"parentRunId": parentRunID,
 	})
 	event.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":intent:" + kind + ":" + targetRunID
 	return l.commitLocked(event, func() {
 		l.applyInputEvent(event)
 	})
+}
+
+// RevokeRoutingIntent 显式撤销未落成的路由意图，使输入回到 queued 重新规划。
+// 操作 UUID 与期望版本保证人工处置可重放且不会误撤销后续状态。
+func (l *InputLedger) RevokeRoutingIntent(teamID, inputID, opID string, expectedVersion uint64) (*TeamInput, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if input, duplicate, err := l.replayOpLocked(teamID, inputID, opID); duplicate || err != nil {
+		return input, duplicate, err
+	}
+	input := l.inputs[inputID]
+	if input == nil || input.TeamID != teamID {
+		return nil, false, ErrNotFound
+	}
+	if input.QueueStatus != InputRouting && input.QueueStatus != InputWaitingInput || input.RouteStatus == "" {
+		return nil, false, fmt.Errorf("%w：当前没有可撤销的路由意图", ErrInputNotQueued)
+	}
+	if input.Version != expectedVersion {
+		return nil, false, ErrVersionConflict
+	}
+	event := newEvent("", EventInputRouteIntentRevoked, "api", map[string]any{
+		"inputId": inputID, "teamId": teamID, "opId": opID,
+		"routeKind": input.RouteStatus, "targetRunId": input.TargetRunID,
+		"targetTaskId": input.TargetTaskID, "parentRunId": input.ParentRunID,
+	})
+	event.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":revoke-intent:" + opID
+	if err := l.commitLocked(event, func() { l.applyInputEvent(event) }); err != nil {
+		return nil, false, err
+	}
+	return input.Clone(), false, nil
 }
 
 // MarkRouted 确认路由完成（routing → routed）：runID/taskID 落账并同批追加
@@ -552,12 +616,31 @@ func (l *InputLedger) MarkRouted(teamID, inputID, kind, runID, taskID string) er
 	if input.QueueStatus == InputRouted && containsString(input.RunIDs, runID) {
 		return nil // 已确认（崩溃恢复重放）
 	}
+	if input.QueueStatus != InputRouting && input.QueueStatus != InputWaitingInput &&
+		!(kind == "planned" && input.QueueStatus == InputRouted) {
+		return fmt.Errorf("%w：当前 %s", ErrInputNotQueued, input.QueueStatus)
+	}
+	matches := input.RouteStatus == kind && input.TargetRunID == runID && input.TargetTaskID == taskID
+	if kind == "planned" && !matches {
+		for _, target := range plannedRouteTargets(input) {
+			if target.runID == runID && target.taskID == taskID {
+				matches = true
+				break
+			}
+		}
+	}
+	if !matches {
+		return errors.New("路由确认与已持久化意图不一致")
+	}
 	routed := newEvent("", EventInputRouted, "router", map[string]any{
 		"inputId": inputID, "teamId": teamID, "routeKind": kind,
 		"runId": runID, "taskId": taskID,
 		"sourceRevision": jsoncompat.Num(input.Revision),
 	})
 	routed.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":routed:" + runID
+	if len(input.WorkItems) > 0 {
+		return l.commitLocked(routed, func() { l.applyInputEvent(routed) })
+	}
 	workItem := WorkItem{
 		ID: "wi-" + inputID, SourceInputID: inputID, SourceRevision: input.Revision,
 		RequirementText: InstructionsHead(input.Text), RunID: runID,
@@ -817,15 +900,46 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		if input == nil {
 			return
 		}
-		if input.QueueStatus == InputRouting && input.TargetRunID == payloadString(event.Payload, "targetRunId") {
+		kind := payloadString(event.Payload, "routeKind")
+		runID := payloadString(event.Payload, "targetRunId")
+		taskID := payloadString(event.Payload, "targetTaskId")
+		parentRunID := payloadString(event.Payload, "parentRunId")
+		if (input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput) &&
+			input.RouteStatus == kind && input.TargetRunID == runID &&
+			input.TargetTaskID == taskID && input.ParentRunID == parentRunID {
 			return // 同意图重放
 		}
 		if input.QueueStatus == InputRouted || input.QueueStatus == InputCancelled {
 			return // 终态不回退
 		}
 		input.QueueStatus = InputRouting
-		input.TargetRunID = payloadString(event.Payload, "targetRunId")
-		input.TargetTaskID = payloadString(event.Payload, "targetTaskId")
+		input.RouteStatus = kind
+		input.TargetRunID = runID
+		input.TargetTaskID = taskID
+		input.ParentRunID = parentRunID
+		input.WaitingReason = ""
+		input.Version++
+		input.UpdatedAt = event.CreatedAt
+	case EventInputRouteIntentRevoked:
+		inputID := payloadString(event.Payload, "inputId")
+		input := l.inputs[inputID]
+		if opID := payloadString(event.Payload, "opId"); opID != "" {
+			l.ops[opID] = inputID
+		}
+		if input == nil || input.QueueStatus == InputRouted || input.QueueStatus == InputCancelled {
+			return
+		}
+		if input.QueueStatus == InputQueued && input.RouteStatus == "" {
+			return
+		}
+		input.QueueStatus = InputQueued
+		input.RouteStatus = ""
+		input.TargetRunID = ""
+		input.TargetTaskID = ""
+		input.ParentRunID = ""
+		input.ExplicitTarget = false
+		input.WorkItems = nil
+		input.WorkItemIDs = nil
 		input.WaitingReason = ""
 		input.Version++
 		input.UpdatedAt = event.CreatedAt
@@ -850,6 +964,12 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		if runID != "" {
 			input.TargetRunID = runID
 		}
+		for index := range input.WorkItems {
+			if input.WorkItems[index].RunID == runID {
+				input.WorkItems[index].Status = "linked"
+				input.WorkItems[index].EvidenceRef = runID + "#" + payloadString(event.Payload, "taskId")
+			}
+		}
 		input.WaitingReason = ""
 		input.Version++
 		input.UpdatedAt = event.CreatedAt
@@ -867,6 +987,8 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		input.WaitingReason = reason
 		input.Version++
 		input.UpdatedAt = event.CreatedAt
+	case EventWorkItemsProposed:
+		l.applyWorkItemsProposed(event)
 	case EventWorkItemLinked:
 		inputID := payloadString(event.Payload, "inputId")
 		input := l.inputs[inputID]

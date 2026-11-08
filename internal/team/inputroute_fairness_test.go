@@ -152,7 +152,7 @@ func TestRouteOrderQuotaAfterThreePriority(t *testing.T) {
 		if _, _, err := ledger.Prioritize("team-1", id, "op-"+id, 1); err != nil {
 			t.Fatal(err)
 		}
-		if err := ledger.MarkRoutingIntent("team-1", id, "new_task", "r"+id, "lead"); err != nil {
+		if err := ledger.MarkRoutingIntent("team-1", id, "new_task", "r"+id, "lead", ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := ledger.MarkRouted("team-1", id, "new_task", "r"+id, "lead"); err != nil {

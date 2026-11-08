@@ -157,7 +157,7 @@ func TestRouterResumesRoutingAfterRestart(t *testing.T) {
 	h.service.SetInputs(ledger)
 	h.acceptInput(t, "in-crash", "崩溃前接受的输入")
 	// 只落意图（模拟在 intent 与创建之间的崩溃）。
-	if err := ledger.MarkRoutingIntent(h.team.ID, "in-crash", "new_task", "in-crash", "lead"); err != nil {
+	if err := ledger.MarkRoutingIntent(h.team.ID, "in-crash", "new_task", "in-crash", "lead", ""); err != nil {
 		t.Fatal(err)
 	}
 	inputJournal.Close()
@@ -201,5 +201,84 @@ func TestRouterHonorsRevisions(t *testing.T) {
 	input := h.service.inputs.Get(h.team.ID, "in-rev")
 	if input.WorkItems[0].SourceRevision != 2 {
 		t.Fatalf("工作项应记录来源修订: %+v", input.WorkItems)
+	}
+}
+
+func TestRouterReusesPersistedFollowUpIntentWhenActiveRunsChange(t *testing.T) {
+	h := newRouterHarness(t)
+	h.acceptInput(t, "in-original", "原始任务")
+	h.service.RoutePendingInputs(h.team.ID)
+	h.acceptInput(t, "in-fixed", "固定追加目标")
+	if err := h.service.inputs.MarkRoutingIntent(h.team.ID, "in-fixed", "follow_up", "in-original", ConversationTaskID("in-fixed"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SaveRun(&Run{ID: "run-other", TeamID: h.team.ID, Goal: "其他活跃 Run", Mode: ModeSingle,
+		AutoPlan: true, Status: RunDispatching, Round: 1,
+		Tasks: []Task{{ID: "lead", MemberID: "lead", Status: TaskRunning}}}); err != nil {
+		t.Fatal(err)
+	}
+	if routed := h.service.RoutePendingInputs(h.team.ID); routed != 1 {
+		t.Fatalf("已有意图不应因活跃 Run 增加而改派或停靠: %d", routed)
+	}
+	input := h.service.inputs.Get(h.team.ID, "in-fixed")
+	if input.TargetRunID != "in-original" || findTaskIn(h.store.Run("in-original"), ConversationTaskID("in-fixed")) == nil {
+		t.Fatalf("应落到原意图 Run: %+v", input)
+	}
+	if findTaskIn(h.store.Run("run-other"), ConversationTaskID("in-fixed")) != nil {
+		t.Fatal("不得在另一活跃 Run 创建重复归属")
+	}
+}
+
+func TestRouterKeepsPersistedAmendParent(t *testing.T) {
+	h := newRouterHarness(t)
+	h.acceptInput(t, "run-parent", "父任务")
+	h.service.RoutePendingInputs(h.team.ID)
+	if _, err := h.service.Cancel("run-parent"); err != nil {
+		t.Fatal(err)
+	}
+	h.acceptInput(t, "run-amend", "修订")
+	if err := h.service.inputs.MarkRoutingIntent(h.team.ID, "run-amend", "amend", "run-amend", "lead", "run-parent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SaveRun(&Run{ID: "run-newer-terminal", TeamID: h.team.ID, Goal: "更新的历史", Mode: ModeSingle,
+		AutoPlan: true, Status: RunCompleted, Round: 1, ParentRunID: "run-parent",
+		Tasks: []Task{{ID: "lead", MemberID: "lead", Status: TaskCompleted}}}); err != nil {
+		t.Fatal(err)
+	}
+	if routed := h.service.RoutePendingInputs(h.team.ID); routed != 1 {
+		t.Fatalf("固定父血缘的 amend 应落成: %d", routed)
+	}
+	if run := h.store.Run("run-amend"); run == nil || run.ParentRunID != "run-parent" {
+		t.Fatalf("amend 不得改挂最新历史 Run: %+v", run)
+	}
+}
+
+func TestRouterReconnectsCreatedRunBeforeConfirmation(t *testing.T) {
+	h := newRouterHarness(t)
+	h.acceptInput(t, "in-after-create", "创建后崩溃")
+	if err := h.service.inputs.MarkRoutingIntent(h.team.ID, "in-after-create", "new_task", "in-after-create", "lead", ""); err != nil {
+		t.Fatal(err)
+	}
+	input := h.service.inputs.Get(h.team.ID, "in-after-create")
+	if err := h.service.materializeRoute(h.team, input, "new_task", input.TargetRunID, input.TargetTaskID, ""); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := OpenJournal(h.service.inputs.journal.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { journal.Close() })
+	_, _ = h.service.Cancel("in-after-create")
+	restarted := NewService(h.store, h.journal, h.queue, h.resolver)
+	restarted.SetInputs(LoadInputLedger(h.service.inputs.snapshotPath, journal))
+	if routed := restarted.RoutePendingInputs(h.team.ID); routed != 1 {
+		t.Fatalf("创建后确认前崩溃应由重泵确认: %d", routed)
+	}
+	if got := restarted.Inputs().Get(h.team.ID, "in-after-create"); got.QueueStatus != InputRouted {
+		t.Fatalf("应对账到 routed: %+v", got)
+	}
+	restarted.RoutePendingInputs(h.team.ID)
+	if run := h.store.Run("in-after-create"); run == nil || len(run.Tasks) != 1 {
+		t.Fatalf("重复重泵不得重复创建 Run/Task: %+v", run)
 	}
 }

@@ -313,3 +313,65 @@ func TestTeamInputsQueueAutoRoutesWithFlag(t *testing.T) {
 		t.Fatalf("应创建初始 autoPlan Run: %+v", run)
 	}
 }
+
+func TestTeamInputsQueueCrossTeamIDConflictAndRevokeRoute(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamOne, _ := env.createTeam(t)
+	teamTwo, _ := env.createTeam(t)
+	const inputID = "9bbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	body := `{"id":"` + inputID + `","text":"团队一输入","queueVersion":"2"}`
+	if response := env.postQueuedTeamInput(teamOne, body); response.Code != http.StatusAccepted {
+		t.Fatalf("团队一受理失败: %d %s", response.Code, response.Body.String())
+	}
+	if response := env.postQueuedTeamInput(teamTwo, body); response.Code != http.StatusConflict ||
+		strings.Contains(response.Body.String(), "团队一输入") {
+		t.Fatalf("跨 Team 重放不得返回异 Team 内容: %d %s", response.Code, response.Body.String())
+	}
+	if response := env.request(http.MethodGet, "/api/teams/"+teamTwo+"/inputs/"+inputID, ""); response.Code != http.StatusNotFound {
+		t.Fatalf("异 Team Get 应 404: %d %s", response.Code, response.Body.String())
+	}
+	if response := env.request(http.MethodGet, "/api/teams/"+teamTwo+"/inputs", ""); strings.Contains(response.Body.String(), inputID) {
+		t.Fatalf("异 Team 列表不得包含输入: %s", response.Body.String())
+	}
+	if err := env.server.TeamInputs.MarkRoutingIntent(teamOne, inputID, "amend", "new-run", "lead", "fixed-parent"); err != nil {
+		t.Fatal(err)
+	}
+	response := env.request(http.MethodPost, "/api/teams/"+teamOne+"/inputs/"+inputID+"/revoke-route",
+		`{"id":"99999999-9999-4999-8999-999999999999","version":2}`)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"queueStatus": "queued"`) ||
+		strings.Contains(response.Body.String(), "fixed-parent") {
+		t.Fatalf("撤销路由意图投影异常: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestTeamInputRouteProposalHTTP(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	const inputID = "9ccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if response := env.postQueuedTeamInput(teamID, `{"id":"`+inputID+`","text":"实现 A\n实现 B","queueVersion":"2"}`); response.Code != http.StatusAccepted {
+		t.Fatalf("受理失败: %d %s", response.Code, response.Body.String())
+	}
+	proposal := `{"id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","version":1,"workItems":[
+		{"id":"impl-a","requirementText":"实现 A","sourceStart":0,"sourceEnd":4,"memberId":"lead","reviewPolicy":"off"},
+		{"id":"impl-b","requirementText":"实现 B","sourceStart":5,"sourceEnd":9,"memberId":"lead","reviewPolicy":"off"}]}`
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/inputs/"+inputID+"/propose", proposal)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"routeStatus": "planned"`) ||
+		!strings.Contains(response.Body.String(), `"sourceEnd": 9`) {
+		t.Fatalf("提案 HTTP 投影异常: %d %s", response.Code, response.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		response = env.request(http.MethodGet, "/api/teams/"+teamID+"/inputs/"+inputID, "")
+		if strings.Contains(response.Body.String(), `"queueStatus": "routed"`) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(response.Body.String(), `"queueStatus": "routed"`) {
+		t.Fatalf("提案应落成 Run: %s", response.Body.String())
+	}
+	response = env.request(http.MethodPost, "/api/teams/"+teamID+"/inputs/"+inputID+"/propose", proposal)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"duplicate": true`) {
+		t.Fatalf("提案重放应幂等: %d %s", response.Code, response.Body.String())
+	}
+}

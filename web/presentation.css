@@ -162,9 +162,13 @@ main{background:var(--page);overflow:hidden}
 .activity::details-content{content-visibility:visible}
 /* 工具调用和子 Agent 折叠态只显示标题，展开后才显示具体内容；data-tool 由
    timeline.js 按统一规则打上，覆盖各管线的工具行 kind（toolCall/storedToolEvent/mcp…）。
+   data-command 独立标识 commandExecution/execute，失败状态在折叠标题保留。
    其他 activity（思考摘要、计划）保留三行预览。 */
-.activity[data-tool]:not([open]) .activity-body,.activity[data-kind=subagent]:not([open]) .activity-body{display:none}
-.activity:not([data-tool]):not([data-kind=subagent]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
+.activity[data-tool]:not([open]) .activity-body,.activity[data-command]:not([open]) .activity-body,.activity[data-kind=subagent]:not([open]) .activity-body{display:none}
+.activity:not([data-tool]):not([data-command]):not([data-kind=subagent]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
+.activity[data-command][data-command-status=failed]>summary{color:var(--error)}
+.activity[data-command]>summary{overflow-wrap:anywhere}
+.activity summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .activity-body{max-height:60vh;overflow:auto}
 /* 长命令、长 URL 整段无空格也换行展示，不再右缘硬切或出现横向滚动。 */
 .activity-body:not(.plan-body){white-space:pre-wrap;overflow-wrap:anywhere}
