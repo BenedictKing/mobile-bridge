@@ -173,6 +173,7 @@ test('command rows are collapsed to an accessible status and expand to full text
     [{kind:'CommandExecution',status:'cancelled',text:'stop this'},'执行命令（已取消）','cancelled'],
     [{kind:'commandExecution',status:'completed',text:'missing exit code'},'执行命令（结果未知）','unknown'],
     [{kind:'commandExecution',status:'outcome_unknown',exitCode:0,text:'uncertain'},'执行命令（结果未知）','unknown'],
+    [{kind:'toolCall',toolKind:'execute',status:'completed',text:'git diff --check'},'执行命令（成功）','completed'],
     [{kind:'toolCall',toolKind:'execute',status:'failed',text:'make check'},'执行命令（失败）','failed'],
   ];
   for(const [fixture,label,state] of cases){
@@ -186,6 +187,7 @@ test('command rows are collapsed to an accessible status and expand to full text
     assert.equal(node.dataset.commandStatus,state);
     assert.equal(node.children[0].tagName,'SUMMARY');
     assert.equal(node.children[0].textContent,label);
+    if(state==='completed')assert.equal(node.children[0].children.at(-1).className,'diff-exit ok');
     assert.ok(!node.children[0].textContent.includes(row.text),'summary must not expose command or output');
     assert.equal(node.children[1].textContent,row.text,'expanded body keeps command and output');
     assert.equal(node.children[1].hidden,false);

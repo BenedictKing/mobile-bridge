@@ -13,7 +13,7 @@ const commandState=row=>{
   if(/^(failed|error)$/.test(status))return'failed';
   if(/^(outcome_unknown|unknown)$/.test(status))return'unknown';
   if(typeof row.exitCode==='number')return row.exitCode===0?'completed':'failed';
-  if(/^(completed|complete|success|succeeded)$/.test(status))return'unknown';
+  if(/^(completed|complete|success|succeeded)$/.test(status))return row.toolKind==='execute'?'completed':'unknown';
   return'inProgress';
 };
 const commandStateText=state=>timelineText({inProgress:'进行中',completed:'成功',failed:'失败',cancelled:'已取消',unknown:'结果未知'}[state]||'结果未知');
@@ -307,10 +307,10 @@ class ChatTimeline {
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
       heading.textContent=rowLabel(row);
-      // 命令失败即使缺退出码也保留图标；只有 exitCode=0 才显示成功勾。
-      const commandFailed=commandRow(row)&&commandState(row)==='failed';
-      if(activity&&(typeof row.exitCode==='number'||commandFailed)){
-        const failed=commandFailed||row.exitCode!==0;
+      // 命令按结构化结果显示图标；失败即使缺退出码也保留。
+      const commandResult=commandRow(row)?commandState(row):'',commandFailed=commandResult==='failed';
+      if(activity&&(typeof row.exitCode==='number'||commandFailed||commandResult==='completed')){
+        const failed=commandFailed||(typeof row.exitCode==='number'&&row.exitCode!==0);
         const exit=document.createElement('span');
         exit.className='diff-exit '+(failed?'fail':'ok');
         exit.textContent=failed?'✗':'✓';
