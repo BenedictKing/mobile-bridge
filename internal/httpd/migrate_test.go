@@ -279,6 +279,21 @@ func TestMigrationTranscriptScopes(t *testing.T) {
 	}
 }
 
+func TestMigrationTranscriptMainKeepsLongAssistantSummary(t *testing.T) {
+	view := transcriptView()
+	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
+	turn, _ := turns.Items[len(turns.Items)-1].(*jsoncompat.Object)
+	messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+	assistant, _ := messages.Items[len(messages.Items)-1].(*jsoncompat.Object)
+	summary := "最终总结：" + strings.Repeat("关键结论与完整上下文。", 1000)
+	assistant.Set("text", summary)
+
+	entries, _ := migrationTranscript(view, "main")
+	if len(entries) == 0 || entries[len(entries)-1].text != summary {
+		t.Fatalf("main 应完整保留助手长总结，实际末尾长度=%d", len(entries[len(entries)-1].text))
+	}
+}
+
 func TestMigrationTranscriptTailBudget(t *testing.T) {
 	view := transcriptView()
 	original := migrationBudgets["main"]

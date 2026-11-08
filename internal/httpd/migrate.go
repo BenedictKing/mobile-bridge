@@ -115,8 +115,9 @@ type migrationEntry struct {
 
 // migrationTranscript flattens a normalized view into (role, text) entries,
 // biased to the tail: user/assistant turns keep full text, activities
-// collapse to a one-line summary, outputs drop. "latest" keeps only the
-// final user question plus what followed.
+// collapse to a one-line summary, outputs drop. "main" lets long assistant
+// summaries use the total budget instead of the ordinary per-entry cap.
+// "latest" keeps only the final user question plus what followed.
 func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntry, bool) {
 	entries := []migrationEntry{}
 	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
@@ -190,8 +191,12 @@ func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntr
 	maxMessages, maxChars, entryChars := migrationBudgets[scope][0], migrationBudgets[scope][1], migrationBudgets[scope][2]
 	capped := make([]migrationEntry, 0, len(entries))
 	for _, entry := range entries {
-		if utf8.RuneCountInString(entry.text) > entryChars {
-			entry.text = string([]rune(entry.text)[:entryChars]) + "…"
+		limit := entryChars
+		if scope == "main" && entry.role == "assistant" {
+			limit = maxChars
+		}
+		if utf8.RuneCountInString(entry.text) > limit {
+			entry.text = string([]rune(entry.text)[:limit]) + "…"
 		}
 		capped = append(capped, entry)
 	}

@@ -70,16 +70,19 @@ test('migrate command parses long and shorthand targets with multiline instructi
   same(flow.parsePlainCommand('/zcode'),{kind:'migrate',agent:'zcode',scope:'main'});
   same(flow.parsePlainCommand('/zcode latest 继续补测试'),{kind:'migrate',agent:'zcode',scope:'latest',instructions:'继续补测试'});
   same(flow.parseTeamCommand('/codex main 接着实现'),{kind:'migrate',agent:'codex',scope:'main',instructions:'接着实现'});
+  same(flow.parsePlainCommand('/kimi full 压缩后继续'),{kind:'migrate',agent:'kimi',scope:'full',instructions:'压缩后继续'});
   assert.equal(flow.parsePlainCommand('/unknown 普通消息'),null);
 });
 
-test('migrate command suggestions list enabled targets except the current agent',()=>{
+test('migrate command suggestions include the current agent as gateway compaction',()=>{
   const flow=extract();
   flow.state={agent:'kimi',agents:[{kind:'kimi',label:'Kimi'},{kind:'zcode',label:'ZCode'},{kind:'codex',label:'Codex'}]};
   const rows=flow.composerCommandRows('migrate');
-  same(rows.map(row=>row.token),['/zcode','/codex']);
-  assert.match(rows[0].label,/ZCode/);
-  assert.match(rows[0].description,/后续指示/);
+  same(rows.map(row=>row.token),['/kimi','/zcode','/codex']);
+  assert.match(rows[0].label,/当前 Agent 压缩并新建会话/);
+  assert.match(rows[0].description,/网关创建压缩新会话并打开/);
+  assert.match(rows[1].label,/ZCode/);
+  assert.match(rows[1].description,/后续指示/);
 });
 
 test('migrate command validates the target and delegates with instructions',async()=>{
@@ -89,28 +92,30 @@ test('migrate command validates the target and delegates with instructions',asyn
   flow.state={agent:'kimi',agents:[{kind:'kimi'},{kind:'zcode'}]};
   flow.migrateControl={migrate:async(...args)=>calls.push(args)};
   assert.equal(await flow.runMigrateCommand({agent:'',scope:'main'}),false);
-  assert.equal(await flow.runMigrateCommand({agent:'kimi',scope:'main'}),false);
   assert.equal(await flow.runMigrateCommand({agent:'codex',scope:'main'}),false);
   assert.equal(calls.length,0);
   assert.match(messages[0],/^用法：\/migrate/);
-  assert.match(messages[1],/不能是当前 Agent/);
-  assert.match(messages[2],/未启用/);
+  assert.match(messages[1],/未启用/);
+  assert.equal(await flow.runMigrateCommand({agent:'kimi',scope:'full',instructions:'压缩后继续'}),true);
   assert.equal(await flow.runMigrateCommand({agent:'zcode',scope:'latest',instructions:'继续完成剩余测试'}),true);
-  same(calls,[['zcode','latest','migrate',{instructions:'继续完成剩余测试'}]]);
+  same(calls,[
+    ['kimi','full','compact',{instructions:'压缩后继续'}],
+    ['zcode','latest','migrate',{instructions:'继续完成剩余测试'}],
+  ]);
 });
 
 test('command suggestions follow the chat mode',()=>{
   const team=extract({team:true}),plain=extract({team:false});
-  // 九行：/new、默认档、原生 bare/full/main/latest、网关 main/full/latest。
+  // 十行：当前 Agent、/new、默认档、原生 bare/full/main/latest、网关 main/full/latest。
   const teamRows=team.composerCommandRows(''),plainRows=plain.composerCommandRows('');
-  assert.equal(teamRows.length,9);
-  assert.equal(plainRows.length,9);
+  assert.equal(teamRows.length,10);
+  assert.equal(plainRows.length,10);
   assert.equal(teamRows[0].token,'/new');
   assert.match(teamRows[0].label,/更换空白主控/);
   assert.equal(plainRows[0].token,'/new');
   assert.match(plainRows[0].label,/新建会话/);
   // 默认档行展示当前生效档位。
-  const customized=extract({team:true,defaultCompact:'gateway-full'}).composerCommandRows('')[1];
+  const customized=extract({team:true,defaultCompact:'gateway-full'}).composerCommandRows('')[2];
   assert.equal(customized.token,'/compress');
   assert.match(customized.description,/网关 · 完整/);
   // 网关三档齐全，描述按模式区分「换绑主控/并打开」。

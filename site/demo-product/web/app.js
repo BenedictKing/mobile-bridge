@@ -850,8 +850,9 @@ function composerCommandRows(query){
   ];
   const agents=typeof state==='undefined'?[]:(state?.agents||[]),migrationRows=[];
   for(const agent of agents){
-    if(!agent?.kind||agent.kind===state?.agent)continue;
-    migrationRows.push({command:true,token:'/'+agent.kind,aliases:['/migrate '+agent.kind],label:t('迁移到 ')+(agent.label||agent.kind),description:t('默认复制主要历史；可追加范围与后续指示')});
+    if(!agent?.kind)continue;
+    const current=agent.kind===state?.agent;
+    migrationRows.push({command:true,token:'/'+agent.kind,aliases:['/migrate '+agent.kind],label:current?t('当前 Agent 压缩并新建会话'):t('迁移到 ')+(agent.label||agent.kind),description:(current?gatewayDescription+'；':'')+t('默认复制主要历史；可追加范围与后续指示')});
   }
   rows.splice(1,0,...migrationRows);
   const q=String(query||'').toLocaleLowerCase();
@@ -920,11 +921,11 @@ async function runNativeCompact(scope,onError,instructions=''){
 }
 async function runMigrateCommand(command){
   if(!command?.agent){toast('用法：/migrate <目标Agent> [full|main|latest] [后续指示]');return false;}
-  if(command.agent===state?.agent){toast('迁移目标不能是当前 Agent；压缩上下文请使用 /compress');return false;}
   const target=(state?.agents||[]).find(agent=>agent?.kind===command.agent);
   if(!target){toast('目标 Agent 未启用：'+command.agent);return false;}
   if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再迁移');return false;}
-  await migrateControl?.migrate(command.agent,command.scope,'migrate',{instructions:command.instructions});
+  const operation=command.agent===state?.agent?'compact':'migrate';
+  await migrateControl?.migrate(command.agent,command.scope,operation,{instructions:command.instructions});
   return true;
 }
 async function runGatewayCompact(scope,instructions=''){
