@@ -94,9 +94,16 @@ func TestACPActivityIncludesTurnAndPendingRequests(t *testing.T) {
 	live.View.Requests = append(live.View.Requests, jsoncompat.NewObject())
 	response := request("/api/activity", `{"hosts":{"local":["km-feature"]}}`)
 	body := response.Body.String()
-	for _, needle := range []string{`"turnId":`, `"turnStatus": "completed"`, `"pendingRequests": 1`, `"recency": ` + strconv.FormatInt(live.LastActivity(), 10)} {
+	for _, needle := range []string{`"turnId":`, `"turnStatus": "completed"`, `"pendingRequests": 1`, `"pending": true`, `"recency": ` + strconv.FormatInt(live.LastActivity(), 10)} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("activity missing %s: %s", needle, body)
 		}
+	}
+	if read := request("/api/sessions/km-feature/read", `{}`); read.Code != http.StatusOK {
+		t.Fatalf("read status=%d body=%s", read.Code, read.Body.String())
+	}
+	afterRead := request("/api/activity", `{"hosts":{"local":["km-feature"]}}`)
+	if !strings.Contains(afterRead.Body.String(), `"pending": false`) {
+		t.Fatalf("read state missing from activity: %s", afterRead.Body.String())
 	}
 }

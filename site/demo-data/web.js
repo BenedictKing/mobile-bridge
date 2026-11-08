@@ -23,6 +23,7 @@ const meta=new Map([
  [ids[2],{...baseMeta(sessions[2]),requests:[],submissions:[]}]
 ]);
 let sequence=1;
+const unread=new Set(ids);
 const lastSequence=new Map();
 const rows=new Map([
  [ids[0],[
@@ -75,7 +76,10 @@ window.fetch=async(input,options={})=>{
  if(p==='/api/projects')return response({projects:[{key:'local|website',name:'website',cwd:'/projects/website',host:'local'},{key:'local|ops',name:'ops',cwd:'/projects/ops',host:'local'}]});
  if(p==='/api/sessions'&&options.method==='POST'){const created=crypto.randomUUID();sessions.unshift({...sessions[0],id:created,title:body.title||T('新聊天','New chat')});meta.set(created,{...baseMeta(sessions[0]),requests:[],submissions:[]});rows.set(created,[]);return response({id:created,host:'local',message:T('聊天已创建','Chat created')});}
  if(p==='/api/sessions')return response({sessions:sessions.filter(session=>session.title.toLowerCase().includes((url.searchParams.get('q')||'').toLowerCase())),unavailableHosts:[]});
- if(p==='/api/activity')return response({sessions:sessions.map(session=>({...session,status:'idle',connected:true,turnStatus:'completed'}))});
+ if(p==='/api/activity'){
+  if(body.visible)unread.delete(body.visible.replace(/^local\|/,''));
+  return response({sessions:sessions.map(session=>({...session,status:'idle',connected:true,turnId:'turn-'+session.id,turnStatus:'completed',pending:unread.has(session.id)}))});
+ }
  if(p==='/api/teams')return response({teams:[team]});
  if(p==='/api/teams/'+teamId)return response(team);
  if(p==='/api/teams/'+teamId+'/runs')return response({runs:[{id:run.id,status:run.status,createdAt:run.createdAt}]});
@@ -105,6 +109,7 @@ window.fetch=async(input,options={})=>{
  if(p.endsWith('/stop'))return response({ok:true});
  if(p.endsWith('/respond')){m.requests=[];return response({ok:true});}
  if(p.endsWith('/rename')){m.title=body.title;const row=sessions.find(session=>session.id===id);if(row)row.title=body.title;return response({title:body.title});}
+ if(p.endsWith('/read')){unread.delete(id);return response({ok:true});}
  if(p.endsWith('/delete'))return response({mode:'deleted'});
  if(p.endsWith('/notifications'))return response({available:true,watching:false,notifyOnCompletion:false});
  if(p.endsWith('/reconnect')||p.endsWith('/history'))return response({ok:true});

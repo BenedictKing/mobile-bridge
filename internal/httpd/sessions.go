@@ -29,7 +29,7 @@ import (
 )
 
 var threadRoute = regexp.MustCompile(
-	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input))?$`)
+	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input|read))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
 var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status|continue|complete|review)$`)
@@ -276,6 +276,16 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	}
 	if write && action == "delete" {
 		h.handleSessionDelete(threadID)
+		return true
+	}
+	if write && action == "read" {
+		if err := h.server.markActivityRead(queryValue(query, "host", "local"), threadID); err != nil {
+			h.fail(http.StatusInternalServerError, errorBody(err.Error()))
+			return true
+		}
+		result := jsoncompat.NewObject()
+		result.Set("ok", true)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 		return true
 	}
 	// ACP dispatch mirrors Python's registry routing: an explicit agent param

@@ -946,6 +946,11 @@ func runGateway(args []string) {
 		log.Fatalf("submissions ledger: %v", queueErr)
 	}
 	server.Queue = queue
+	activity, activityErr := httpd.LoadActivity(filepath.Join(dataDir, "session-activity.json"))
+	if activityErr != nil {
+		log.Fatalf("session activity ledger: %v", activityErr)
+	}
+	server.Activity = activity
 	goalCommands, goalErr := httpd.NewGoalLedger(filepath.Join(dataDir, "goal-commands.json"))
 	if goalErr != nil {
 		log.Fatalf("goal command ledger: %v", goalErr)

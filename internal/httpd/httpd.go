@@ -83,6 +83,7 @@ type Server struct {
 	Auth             *auth.Auth
 	Creations        *creations
 	Queue            *submissions
+	Activity         *activityStore
 	GoalCmds         *goalLedger
 	ACPGoals         *acpgoal.Store
 	Hidden           *hiddenSessions
@@ -179,6 +180,7 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 			"http://localhost:" + strconv.Itoa(port): true},
 		SecureHosts:    map[string]bool{},
 		DirectByPublic: map[string]string{}, PublicByDirect: map[string]string{},
+		Activity:      &activityStore{entries: map[string]*activityEntry{}},
 		directGrants:  newDirectGrantStore(),
 		projections:   map[string]*projectionSlot{},
 		artifactCache: map[string]*artifactMemo{}, desktopPaths: map[string]map[string]string{}}
@@ -683,7 +685,9 @@ func (h *handler) handleMethod(write bool) {
 			h.fail(http.StatusBadRequest, errorBody(err.Error()))
 			return
 		}
-		groups, ok := value.(*jsoncompat.Object).MustGet("hosts").(*jsoncompat.Object)
+		body := value.(*jsoncompat.Object)
+		visible, _ := body.MustGet("visible").(string)
+		groups, ok := body.MustGet("hosts").(*jsoncompat.Object)
 		if !ok || groups.Len() > 20 {
 			h.fail(http.StatusBadRequest, errorBody("会话状态请求无效"))
 			return
@@ -782,6 +786,10 @@ func (h *handler) handleMethod(write bool) {
 					rows.Items = append(rows.Items, row)
 				}
 			}
+		}
+		if err := h.server.observeActivity(rows, visible); err != nil {
+			h.fail(http.StatusInternalServerError, errorBody(err.Error()))
+			return
 		}
 		result := jsoncompat.NewObject()
 		result.Set("sessions", rows)
