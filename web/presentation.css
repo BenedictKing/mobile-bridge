@@ -642,8 +642,9 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
   .list-mode>span{display:none}
 }
 
-/* 窄屏在输入区上方折叠展开，展开列表占用自身布局高度，不遮挡消息。 */
-.user-jump{display:block;flex:none;align-self:flex-end;width:auto;max-width:calc(100% - 32px);margin:8px max(16px,env(safe-area-inset-right)) 0 max(16px,env(safe-area-inset-left));border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--raised) 94%,transparent);box-shadow:0 8px 28px #18291d14;color:var(--muted);font-size:12px;overflow:hidden}
+/* 用户消息定位统一悬浮在聊天区域右上角，不再挤占手机输入区上方空间。 */
+.chat{position:relative}
+.user-jump{position:absolute;z-index:4;top:76px;right:max(16px,env(safe-area-inset-right));display:block;width:auto;max-width:min(320px,calc(100% - 32px));max-height:calc(100% - 84px);margin:0;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--raised) 94%,transparent);box-shadow:0 8px 28px #18291d14;color:var(--muted);font-size:12px;overflow:hidden}
 .user-jump[open]{align-self:stretch}
 .user-jump>summary{display:flex;align-items:center;gap:8px;min-height:40px;padding:9px 12px;cursor:pointer;list-style-position:inside;color:var(--text);font-weight:600;white-space:nowrap}
 .user-jump-count{margin-left:auto;color:var(--muted);font-size:11px;font-weight:400}

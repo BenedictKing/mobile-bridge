@@ -74,10 +74,11 @@ test('user jump click scrolls to the message and scroll tracking updates the act
   timeline.dispose();
 });
 
-test('user jump uses a compact flow entry on phones and a floating panel on large screens',()=>{
+test('user jump floats at the top right on phones and large screens',()=>{
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
-  assert.match(css,/\.user-jump\{display:block;flex:none;align-self:flex-end/);
-  assert.match(css,/\.user-jump\{[^}]*margin:8px max\(16px,env\(safe-area-inset-right\)\) 0 max\(16px,env\(safe-area-inset-left\)\)/);
+  assert.match(css,/\.chat\{position:relative\}/);
+  assert.match(css,/\.user-jump\{position:absolute;z-index:4;top:76px;right:max\(16px,env\(safe-area-inset-right\)\)/);
+  assert.match(css,/\.user-jump\{[^}]*margin:0/);
   assert.match(css,/\.composer\{position:relative;padding:6px 0 max\(8px,env\(safe-area-inset-bottom\)\)/);
   assert.match(css,/\.composer-options\.is-open\{display:grid\}/);
   assert.match(css,/\.user-jump-list\{max-height:min\(30dvh,280px\)/);
