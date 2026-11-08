@@ -28,6 +28,8 @@ function loadList(listMode,overrides={}){
     document:{createElement:tag=>new FakeNode(tag)},localStorage:{getItem:()=>null,setItem(){}},
     t:value=>value,BridgeI18n:{agentLabel:value=>value,agentTag:value=>value},
     dateText:()=> '刚刚',renderActivity(){},openNewChat(){},openChat:async()=>{},
+    hiddenProjectCwds:new Set(),newChatProjects:[],projectCwdKey:project=>String(project?.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'')||'/',
+    newChatPins:()=>[],saveNewChatPins(){},teamRequest:async()=>({status:'hidden'}),window:{confirm:()=>true},toast(){},
   };
   Object.assign(context,overrides);
   vm.runInNewContext(source.slice(elStart,elEnd)+'\n'+source.slice(start,end)+'\nthis.render=renderList;',context);
@@ -109,6 +111,40 @@ test('merged group keys collapse state and add button by groupKey',()=>{
   assert.equal(opened&&opened.id,'codex-chat');
 });
 
+test('project group remove calls the gateway and clears the merged group and pin',async()=>{
+  const listRows=[
+    {id:'codex-chat',host:'local',recency:Date.now(),title:'Codex 会话',projectKey:'local|p1',projectName:'P',groupKey:'local|p1',groupName:'P',cwd:'/p',agent:'codex'},
+    {id:'kimi-chat',host:'local',recency:Date.now()-1000,title:'Kimi 会话',projectKey:'local|/p',projectName:'P',groupKey:'local|p1',groupName:'P',cwd:'/p',agent:'kimi'},
+  ];
+  const project={key:'acp:p',cwd:'/p',name:'P',agent:'kimi'},calls=[],hidden=new Set();
+  let pins=[project];
+  const sessions=loadList('project',{listRows,projectDirectory:[project],newChatProjects:[project],hiddenProjectCwds:hidden,
+    newChatPins:()=>pins,saveNewChatPins:value=>{pins=value;},
+    teamRequest:async(path,options)=>{calls.push({path,options});return{status:'hidden'};},
+  });
+  const remove=find(sessions,'group-remove')[0];
+  assert.equal(remove.textContent,'×');assert.equal(remove.title,'从列表移除项目');
+  await remove.onclick({preventDefault(){},stopPropagation(){}});
+  assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/projects/acp%3Ap');assert.equal(calls[0].options.method,'DELETE');
+  assert.equal(find(sessions,'project-group').length,0);
+  assert.deepEqual(pins,[]);assert.equal(hidden.has('/p'),true);
+});
+
+test('failed project removal keeps the group and re-enables the button',async()=>{
+  const project={key:'codex|/work',cwd:'/work',name:'work',agent:'codex'};
+  const sessions=loadList('project',{projectDirectory:[project],teamRequest:async()=>{throw new Error('网关不可用');}});
+  const remove=find(sessions,'group-remove')[0];
+  await remove.onclick({preventDefault(){},stopPropagation(){}});
+  assert.equal(find(sessions,'project-group').length,1);
+  assert.equal(remove.disabled,false);
+});
+
+test('groups without a gateway project have no remove button',()=>{
+  const sessions=loadList('project',{projectDirectory:[]});
+  assert.equal(find(sessions,'group-add').length,1);
+  assert.equal(find(sessions,'group-remove').length,0);
+});
+
 test('merged group shares one show-more paging budget',()=>{
   const listRows=Array.from({length:7},(_,index)=>({
     id:'chat-'+index,host:'local',recency:Date.now()-index*1000,title:'会话'+index,
@@ -140,6 +176,25 @@ test('show more and show less share one row at opposite ends',()=>{
   assert.deepEqual(Array.from(controls[0].children,button=>button.textContent),['显示更多 · 1','收起']);
   const css=readFileSync(require.resolve('../web/style.css'),'utf8');
   assert.match(css,/\.group-pagination\{display:flex;align-items:center;justify-content:space-between\}/);
+});
+
+test('hidden projects stay out of reloaded local lists without hiding remote paths',async()=>{
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const start=source.indexOf('async function loadList'),end=source.indexOf('function loadListOnScroll',start);
+  const nodes={search:{value:''},archived:{checked:false},'host-errors':{textContent:'',hidden:false}};
+  const context={
+    listLoading:false,listGeneration:0,listOffset:0,listRows:[],listHasMore:false,listQuery:'',hiddenProjectCwds:new Set(['/work']),
+    $:id=>nodes[id],api:async()=>({sessions:[
+      {id:'hidden',host:'local',projectKey:'local|/work',cwd:'/work',recency:3},
+      {id:'visible',host:'local',projectKey:'local|/other',cwd:'/other',recency:2},
+      {id:'remote',host:'nas',projectKey:'nas|/work',cwd:'/work',recency:1},
+    ]}),
+    chatProjectCwd:chat=>String(chat.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'')||'/',
+    chatKey:(id,host)=>host+'|'+id,recentInteractions:new Map(),renderList(){},refreshActivity(){},loadListOnScroll(){},
+  };
+  vm.runInNewContext(source.slice(start,end),context);
+  await context.loadList(true);
+  assert.deepEqual(Array.from(context.listRows,row=>row.id),['visible','remote']);
 });
 
 test('working status and scroll hints float above the timeline instead of consuming flow',()=>{

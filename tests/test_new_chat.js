@@ -37,7 +37,7 @@ function loadNewChat(data){
   const context={
     $:id=>nodes[id],document:{querySelector:()=>closeButton},t:value=>value,
     Option:class{constructor(text,value){this.textContent=text;this.value=value;}},
-    BridgeI18n:{agentTag:value=>value},listRows:[],currentId:null,currentHost:'local',window:{confirm:()=>true},
+    BridgeI18n:{agentTag:value=>value},listRows:[],projectDirectory:[],currentId:null,currentHost:'local',window:{confirm:()=>true},
     localStorage:{getItem:key=>storage.get('local:'+key)||null,setItem:(key,value)=>storage.set('local:'+key,value)},
     sessionStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
     api:async(path,body)=>{
@@ -46,9 +46,11 @@ function loadNewChat(data){
       return{id:'created-chat',host:'local',message:'created'};
     },
     teamRequest:async(path,options)=>{calls.push({path,options});return{status:'hidden'};},
-    uuid:()=>`request-${++nextId}`,setLanguageBusy(){},toast(){},openChat:async()=>{},loadList:async()=>{},
+    uuid:()=>`request-${++nextId}`,setLanguageBusy(){},toast(){},openChat:async()=>{},loadList:async()=>{},renderList(){},
+    chatProjectCwd:chat=>String(chat.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'')||'/',
   };
-  vm.runInNewContext(source.slice(start,end)+'\nthis.openNewChat=openNewChat;this.customKey=newChatCustomKey;',context);
+  const hideStart=source.indexOf('async function hideProject'),hideEnd=source.indexOf('async function removeProjectGroup',hideStart);
+  vm.runInNewContext(source.slice(hideStart,hideEnd)+'\n'+source.slice(start,end)+'\nthis.openNewChat=openNewChat;this.customKey=newChatCustomKey;',context);
   return{nodes,calls,storage,open:()=>context.openNewChat(),customKey:context.customKey};
 }
 

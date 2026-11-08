@@ -148,7 +148,7 @@ async function start(){
 async function enter(){
   $('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();
   if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);}catch(error){toast(error.message);}
-  try{const value=await api('/api/projects');projectDirectory=value.projects||[];}catch(error){toast(error.message);}
+  try{const value=await api('/api/projects');projectDirectory=value.projects||[];hiddenProjectCwds=new Set(value.hiddenCwds||[]);}catch(error){toast(error.message);}
   const list=loadList(true).catch(e=>toast(e.message)),runRoute=typeof parseRunHash==='function'?parseRunHash():null,teamRoute=typeof parseTeamHash==='function'?parseTeamHash():null;
   if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);
   else if(teamRoute){const team=teamChat?.teamById(teamRoute.teamId);if(team)openTeamChat(team);else toast('团队不存在或已删除');}
@@ -195,6 +195,25 @@ async function openDefaultTeam(project){
   }
   openTeamChat(team);
 }
+async function hideProject(project){
+  await teamRequest('/api/projects/'+encodeURIComponent(project.key),{method:'DELETE'});
+  const cwd=projectCwdKey(project);
+  hiddenProjectCwds.add(cwd);
+  saveNewChatPins(newChatPins().filter(pin=>projectCwdKey(pin)!==cwd));
+  newChatProjects=newChatProjects.filter(item=>projectCwdKey(item)!==cwd);
+  projectDirectory=projectDirectory.filter(item=>projectCwdKey(item)!==cwd);
+  listRows=listRows.filter(row=>row.host!=='local'||chatProjectCwd(row)!==cwd);
+}
+async function removeProjectGroup(project,button,groupKey){
+  if(!window.confirm(t('将从聊天列表和新建聊天项目列表移除，不删除磁盘目录、历史会话或团队。确定移除？')))return;
+  button.disabled=true;
+  try{
+    await hideProject(project);
+    projectGroupLimits.delete(groupKey);renderList();toast(t('项目已从列表移除'));
+  }catch(error){toast(error.message);}
+  finally{button.disabled=false;}
+}
+function chatProjectCwd(chat){return projectCwdKey({cwd:chat.cwd||chat.projectKey.slice(chat.projectKey.indexOf('|')+1)});}
 function renderList(){
   const grouped=listMode==='project';
   $('sessions').replaceChildren();
@@ -215,7 +234,13 @@ function renderList(){
         // 组头“＋”以组内最近会话预选项目打开新建聊天，省去在对话框里重新挑项目。
         const summary=el('summary');
         summary.append(el('span','group-name',groupName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
-        const add=el('button','group-add','＋');
+        if(project){
+          const remove=el('button','group-action group-remove','×');
+          remove.type='button';remove.title=t('从列表移除项目');remove.setAttribute('aria-label',t('从列表移除项目'));
+          remove.onclick=event=>{event.preventDefault();event.stopPropagation();return removeProjectGroup(project,remove,groupKey);};
+          summary.append(remove);
+        }
+        const add=el('button','group-action group-add','＋');
         add.type='button';add.title=t('在此项目新建聊天');add.setAttribute('aria-label',t('在此项目新建聊天'));
         add.onclick=event=>{event.preventDefault();event.stopPropagation();openNewChat(chat);};
         summary.append(add);
@@ -301,7 +326,10 @@ async function loadList(reset=false){
     const result=await api('/api/sessions?q='+encodeURIComponent(listQuery)+'&offset='+listOffset+'&archived='+$('archived').checked);
     if(generation!==listGeneration)return;
     const rows=new Map(listRows.map(row=>[chatKey(row.id,row.host),row]));
-    for(const row of result.sessions){const key=chatKey(row.id,row.host);row.recency=Math.max(row.recency,recentInteractions.get(key)||0);rows.set(key,row);}
+    for(const row of result.sessions){
+      if(row.host==='local'&&hiddenProjectCwds.has(chatProjectCwd(row)))continue;
+      const key=chatKey(row.id,row.host);row.recency=Math.max(row.recency,recentInteractions.get(key)||0);rows.set(key,row);
+    }
     listRows=[...rows.values()];listRows.sort((a,b)=>b.recency-a.recency);
     listOffset+=result.sessions.length;listHasMore=result.sessions.length===100;
     $('host-errors').textContent=(result.unavailableHosts||[]).map(h=>h.label+'：'+h.error).join('\n');
@@ -316,7 +344,7 @@ function loadListOnScroll(){
 $('sessions').onscroll=loadListOnScroll;
 $('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).then(()=>toast(t('会话列表已刷新'))).catch(e=>toast(e.message));
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
-let newChatProjects=[],newChatAgents=[],newChatHiddenCwds=new Set(),creatingChat=false,approvalBusy=0;
+let newChatProjects=[],newChatAgents=[],hiddenProjectCwds=new Set(),creatingChat=false,approvalBusy=0;
 function projectCwdKey(project){return String(project?.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'')||'/';}
 function projectLabel(project){const kind=project.agent||(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
 function dirLabel(project){const base=(project.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||project.name;return base+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
@@ -338,7 +366,7 @@ function renderNewChatProjects(){
   select.replaceChildren();
   const pinned=[],rest=[];
   for(const project of newChatProjects){
-    if(newChatHiddenCwds.has(projectCwdKey(project)))continue;
+    if(hiddenProjectCwds.has(projectCwdKey(project)))continue;
     if(filter&&!(newChatOptionLabel(project)+' '+(project.cwd||'')).toLowerCase().includes(filter))continue;
     (projectPinned(project)?pinned:rest).push(project);
   }
@@ -366,14 +394,11 @@ $('new-chat-pin').onclick=()=>{
 };
 $('new-chat-remove').onclick=async()=>{
   const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);if(!project)return;
-  if(!window.confirm(t('仅从新建聊天项目列表移除，不删除磁盘目录、历史会话或团队。确定移除？')))return;
-  const button=$('new-chat-remove'),cwd=projectCwdKey(project);button.disabled=true;
+  if(!window.confirm(t('将从聊天列表和新建聊天项目列表移除，不删除磁盘目录、历史会话或团队。确定移除？')))return;
+  const button=$('new-chat-remove');button.disabled=true;
   try{
-    await teamRequest('/api/projects/'+encodeURIComponent(project.key),{method:'DELETE'});
-    newChatHiddenCwds.add(cwd);
-    saveNewChatPins(newChatPins().filter(pin=>projectCwdKey(pin)!==cwd));
-    newChatProjects=newChatProjects.filter(item=>projectCwdKey(item)!==cwd);
-    renderNewChatProjects();$('new-chat-project').onchange();toast(t('项目已从列表移除'));
+    await hideProject(project);
+    renderNewChatProjects();$('new-chat-project').onchange();renderList();toast(t('项目已从列表移除'));
   }catch(error){toast(error.message);}
   finally{button.disabled=false;}
 };
@@ -392,8 +417,8 @@ async function openNewChat(preferred){
   $('new-chat-dialog').showModal();
   try{
     const data=await api('/api/projects');
-    newChatHiddenCwds=new Set(data.hiddenCwds||[]);
-    newChatProjects=(data.projects||[]).filter(project=>!newChatHiddenCwds.has(projectCwdKey(project)));newChatAgents=(data.agents||[]).filter(a=>a&&a.kind);
+    hiddenProjectCwds=new Set(data.hiddenCwds||[]);
+    newChatProjects=(data.projects||[]).filter(project=>!hiddenProjectCwds.has(projectCwdKey(project)));newChatAgents=(data.agents||[]).filter(a=>a&&a.kind);
     const multi=newChatAgents.length>1;
     $('new-chat-agent-row').hidden=!multi;
     const agentSelect=$('new-chat-agent');agentSelect.replaceChildren();
@@ -413,7 +438,7 @@ async function openNewChat(preferred){
     }
     if(ref?.projectKey&&ref?.cwd&&!options.some(p=>p.key===ref.projectKey||p.cwd===ref.cwd))
       options.unshift({key:ref.projectKey,cwd:ref.cwd,name:ref.projectName||(ref.cwd.replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||''),host:ref.host,hostLabel:ref.hostLabel,agent:ref.agent});
-    const visibleOptions=options.filter(project=>!newChatHiddenCwds.has(projectCwdKey(project)));
+    const visibleOptions=options.filter(project=>!hiddenProjectCwds.has(projectCwdKey(project)));
     newChatProjects=visibleOptions;
     $('new-chat-filter').value='';renderNewChatProjects();
     if(multi){

@@ -12,8 +12,8 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
-// hiddenProjects is a durable list of working directories hidden from the
-// new-chat project picker. It never deletes project or session data.
+// hiddenProjects is a durable list of working directories hidden from project
+// pickers and chat lists. It never deletes project or session data.
 type hiddenProjects struct {
 	mu    sync.Mutex
 	path  string

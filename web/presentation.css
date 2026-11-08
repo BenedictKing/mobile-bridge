@@ -118,9 +118,9 @@ main{background:var(--page);overflow:hidden}
 .session.selected::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:2px;background:var(--accent)}
 .session strong{font-size:14px;line-height:20px;font-weight:600}
 .session small{font-size:12px;line-height:18px;margin-top:4px;gap:8px}
-.project-group>summary{min-height:44px;padding:12px 34px 12px 10px;border-radius:8px;font-size:13px}
+.project-group>summary{min-height:44px;padding:12px 70px 12px 10px;border-radius:8px;font-size:13px}
 .project-group>summary:hover{background:var(--active)}
-.group-add{width:36px;height:36px;padding:0;display:grid;place-items:center}
+.group-action{width:36px;height:36px;padding:0;display:grid;place-items:center}
 .project-group .session{padding-left:16px}
 .sidebar-foot{min-height:46px;display:grid;grid-template-columns:1fr auto auto auto;align-items:center;gap:0 4px;padding:5px 0 max(5px,env(safe-area-inset-bottom));font-size:12px;border-color:var(--line)}
 .sidebar-foot>span{grid-column:1/-1;padding:4px 7px 2px;font-size:12px}
