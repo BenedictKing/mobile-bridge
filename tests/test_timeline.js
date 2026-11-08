@@ -86,6 +86,15 @@ test('user jump floats at the top right on phones and large screens',()=>{
   assert.doesNotMatch(css,/\.user-jump\{display:none\}/);
 });
 
+test('composer tools and work mode use distinct icons',()=>{
+  const html=readFileSync(require.resolve('../web/index.html'),'utf8');
+  const tools=html.match(/<button id="composer-options-button"[\s\S]*?<\/button>/)[0];
+  const mode=html.match(/<button id="work-mode-button"[\s\S]*?<\/button>/)[0];
+  assert.match(tools,/<rect x="4" y="4"/);
+  assert.match(mode,/M4 7h16M4 17h16/);
+  assert.notEqual(tools.match(/<svg[\s\S]*?<\/svg>/)[0],mode.match(/<svg[\s\S]*?<\/svg>/)[0]);
+});
+
 test('user jump lists prompts from the meta index beyond the loaded window',()=>{
   const{timeline,ids}=setup();
   timeline.userIndex=[{key:'u-old',text:'很早的一条消息'},{key:'u1',text:'最新消息'}];
