@@ -546,6 +546,7 @@ const selectionQuote=BridgeSelection.attach({root:$('messages'),textarea:$('mess
 async function openChat(id,host="local",teamId=""){
   currentTeam=host==='local'?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
   teamChat?.open(currentTeam);
+  if(currentTeam)$('send-mode').value=teamQueueModeEnabled(currentTeam.id)?'queue':'send';
 // Run 页与聊天互斥：任何 openChat 路径（含 messageActions pending 早退）都要先
 // 收起 Run 页（停订阅、隐藏区块），否则两块 height:100% 的 section 叠层破版
 // 且 Run 页在后台继续轮询。
@@ -1039,10 +1040,13 @@ function renderState(view){state=view;renderAPKDownload(view.files);renderContex
   $('status').classList.toggle('idle',idle);
   if(idle)$('status').title=t('已连接');
 $('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(view.agent==='codex'?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');const workingSpan=$('working').querySelector('span');if(workingSpan){workingSpan.textContent=retrying?(retrying.statusCode===429?t('模型服务繁忙（429），正在自动重试'):t('模型请求失败，正在自动重试'))+retryCount+'…':agentName+t(' 正在工作…');workingSpan.title=retrying?.errorMessage||'';}$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected||readOnly;syncSendButton();const steerOption=$('send-mode').querySelector('[value=steer]');steerOption.hidden=!caps.has('steer');steerOption.disabled=!caps.has('steer')||view.status!=='active';if((!caps.has('steer')||view.status!=='active')&&$('send-mode').value==='steer')$('send-mode').value='send';
-  // 运行中默认排队；用户在菜单里的显式选择保持到本轮结束。
-  if(view.status==='active'&&$('send-mode').value==='send'&&!autoQueueArmed){autoQueueArmed=true;$('send-mode').value='queue';}
+  // 普通会话运行中默认排队；团队由发送菜单显式选择并按 Team 保存。
+  if(!currentTeam&&view.status==='active'&&$('send-mode').value==='send'&&!autoQueueArmed){autoQueueArmed=true;$('send-mode').value='queue';}
   if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();syncSendButton();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('send-menu-button').hidden=readOnly;$('work-mode-button').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);updateSkillSuggestions();syncTeamComposer();syncDocumentTitle();}
-$('send-mode').onchange=()=>{autoQueueArmed=state?.status==='active';workModes.render(state,$('send-mode').value,sending);syncSendButton();};
+function syncTeamQueueMode(mode){
+  if(currentTeam&&(mode==='send'||mode==='queue'))teamChat?.setQueueMode(mode==='queue');
+}
+$('send-mode').onchange=()=>{autoQueueArmed=!currentTeam&&state?.status==='active';syncTeamQueueMode($('send-mode').value);workModes.render(state,$('send-mode').value,sending);syncSendButton();};
 const sendModeMenu=$('send-mode-menu'),sendModeButton=$('send-menu-button');
 const closeSendModeMenu=()=>{sendModeMenu.hidden=true;sendModeButton.setAttribute('aria-expanded','false');};
 sendModeButton.onclick=()=>{if(sendModeButton.disabled)return;sendModeMenu.hidden=!sendModeMenu.hidden;sendModeButton.setAttribute('aria-expanded',String(!sendModeMenu.hidden));};

@@ -708,7 +708,7 @@ test('queue panel lists inputs with reasons, work items and queued actions',asyn
   });
 });
 
-test('queue mode off keeps the panel as an entry hint only',async()=>{
+test('queue mode off hides the standalone panel and queue requests',async()=>{
   const root=new FakeNode('div');
   const controller=new TeamChatController({root,request:async path=>{
     if(path.endsWith('/inputs?limit=50'))throw Error('不应拉取队列');
@@ -717,8 +717,28 @@ test('queue mode off keeps the panel as an entry hint only',async()=>{
   }});
   controller.setTeams(teams);controller.open(teams[0]);
   await flush();
-  const panel=find(root,'team-queue-panel')[0];
-  assert.ok(panel);
-  assert.match(text(panel),/启用排队/);
-  assert.equal(find(root,'team-queue-list').length,0);
+  assert.equal(find(root,'team-queue-panel').length,0);
+  assert.equal(find(root,'team-queue-toggle').length,0);
+});
+
+test('send queue selection owns the persistent mode without a second toggle',async()=>{
+  await withQueueStorage({},async()=>{
+    const root=new FakeNode('div');
+    const controller=new TeamChatController({root,request:async path=>{
+      if(path.endsWith('/inputs?limit=50'))return{inputs:[]};
+      if(path.endsWith('/runs'))return{runs:[]};
+      return{};
+    }});
+    controller.setTeams(teams);controller.open(teams[0]);await flush();
+    controller.setQueueMode(true);await flush();
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamQueueVersion:'2'});
+    assert.equal(find(root,'team-queue-panel').length,1);
+    assert.equal(find(root,'team-queue-toggle').length,0);
+    controller.setQueueMode(false);
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1'});
+    assert.equal(find(root,'team-queue-panel').length,0);
+  });
+  const app=require('node:fs').readFileSync(require.resolve('../web/app.js'),'utf8');
+  assert.ok(app.includes("syncTeamQueueMode($('send-mode').value)"),'发送方式菜单应同步唯一排队开关');
+  assert.ok(app.includes("teamQueueModeEnabled(currentTeam.id)?'queue':'send'"),'打开团队应恢复其发送方式');
 });

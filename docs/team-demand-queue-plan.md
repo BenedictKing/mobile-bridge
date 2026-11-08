@@ -11,7 +11,7 @@
 > - 阶段 2 ✅（机械路由部分）：同批 `key`/`dependsOn` 动作扩展（批级校验：key 唯一/不与既有任务同名/引用可解析/无环；拓扑序执行；审查可用显式依赖覆盖执行任务，未覆盖保持阶段 0 保守拒绝）；输入路由器 `internal/team/inputroute.go`（intent→幂等创建→routed 确认，new_task/follow_up/amend，多活跃 Run 停靠 waiting_input 并记录原因，崩溃重泵对账）；WorkItem 索引随 routed 落账。自动路由由 `TeamQueueAutoRoute` 灰度开关控制（main.go 已开启，测试环境关闭以获得确定排队态）。
 > - 阶段 2 未尽事项：Lead 语义路由提案（answer/clarify 分类、多要求拆分的来源引用核对、超 Run 上限拆批）依赖 Lead 提案协议，属阶段 2 后续增量；当前对范围不明的输入停靠 waiting_input，不用猜测代替用户决定。
 > - 阶段 3 ✅：跨 Run 成员 lease（`teamMemberPending` 窗口记账 + Team 级 memberBusy，同一成员跨 Run 最多一个在途任务）；活跃 Run 准入 `maxActiveRuns`（默认 2，活跃=有在途任务或派发窗口的非终态 Run，`teamRunPending` 窗口口径，轮转释放不抢占）；路由公平（`RouteOrderAt`：3:1 优先配额 + 10 分钟老化提升，排序只依赖账本状态、重启同序）；Team 队列滚动派发预算 `queueDispatchBudget`（默认 48 次/24 小时，journal 的 task_dispatching 计量，超出停靠并提示重置时间；计量失败退化为不限）。
-> - 阶段 4 ✅（前端）：TeamChatController 渲染输入队列面板（`web/team-chat.js`）——每 Team 的 启用/停用排队 开关（localStorage 灰度，默认走旧路径）；面板列出逐输入的 状态/等待原因/目标 Run 跳转/工作项计数/修订次数，queued 行提供 立即发送/编辑/取消（操作 UUID + 期望版本），routing/waiting 行禁用并说明原因；发送侧 `teamSubmissionFields` 按开关附带 `teamQueueVersion:2`，202 queued 响应不依赖 runId 即刷新（`web/app.js`）；i18n 词条与手机窄屏样式已补。旧客户端（不带开关）契约不变。
+> - 阶段 4 ✅（前端）：发送方式菜单中的「排队发送」是按 Team 保存的唯一排队开关（localStorage，普通发送走旧路径）；选择后 TeamChatController 才渲染输入队列面板（`web/team-chat.js`），列出逐输入的 状态/等待原因/目标 Run 跳转/工作项计数/修订次数，queued 行提供 立即发送/编辑/取消（操作 UUID + 期望版本），routing/waiting 行禁用并说明原因；发送侧 `teamSubmissionFields` 按该选择附带 `teamQueueVersion:2`，202 queued 响应不依赖 runId 即刷新（`web/app.js`）；i18n 词条与手机窄屏样式已补。旧客户端（不带 teamQueueVersion）契约不变。
 > - 阶段 5 ✅（版本绑定的审查与验证）：`reviewOf` 显式因果绑定（计划 PlanTaskInput 与动作 schema 均支持，解析后并入 DependsOn——被审实现完成、产物版本可定位后才可派发审查；同批 key 解析与环校验复用阶段 2 机制）；审查派发时经 `WorkspaceFingerprinter` 端口绑定共享 cwd 的 `rev-parse HEAD + git diff 哈希`（含未跟踪文件清单），随 task_dispatching 原子落账、journal 重建恢复；无法确定版本或端口未装配 → 审查停靠 `workspace_unresolvable`（不凭当前 HEAD 猜待审提交）；同 Run 写任务 completed 后已绑定版本的裁决自动 stale（事件 `review_stale`，幂等，不改写历史 verdict），交付投影携带 stale/reviewOf/版本绑定，前端独立「已过期（改动后未重审）」文案；验证闸门执行时记录同一工作区指纹。阶段 0 的保守屏障按方案由 reviewOf/dependsOn 覆盖口径替换（resolvedActionDeps 计入 reviewOf）。验收：审查后发生写入旧 verdict 自动 stale ✓；失败/unknown 不被汇总成成功 ✓（阶段 0 机制）；独立 worktree 审查绑定按方案另行立项。
 > - 阶段 5 未尽事项：`reviewPolicy=off/best_effort/required` 是 WorkItem 级策略，依赖 Lead 语义路由的 WorkItem 拆分（阶段 2 未尽事项），暂未落地——默认 best_effort 的可完成性行为与现状一致；审查失败（failed）后返回实现成员修复的回路保持 Lead 动作驱动（revfix 只覆盖 unknown 的格式修复）。
 > - 验证：`go test ./...`（37 包）、`go test -race ./internal/team ./internal/httpd`、`go vet ./...`、`node --test tests/*.js`（164 例）全绿；`make conformance` 的 golden 失败为存量问题（干净 HEAD 同样失败，与本次无关）。阶段 0–4 的隔离 Team 实测见 VERIFICATION.md；阶段 5 的新行为由 `internal/team/review_binding_test.go` 与交付投影测试覆盖，实测待网关重启后补充。
@@ -136,7 +136,7 @@ WorkItem 明确 `reviewPolicy=off/best_effort/required`，默认 `best_effort` �
 
 继续以 Team Chat 为主入口，输入框可一次接收多个要求和附件。发送后立即在时间线显示“已受理/排队中”，随后展示路由结果；不要等 Lead 规划完成才让用户确认消息已保存。顶部提供队列计数和当前活动 Run 数；展开后按输入顺序列出摘要、优先级、等待原因、目标 Run/Task、受理时间和最近变化。
 
-排队中的输入提供与现有会话队列一致的 **立即发送、编辑、删除** 操作。立即发送只提升路由顺序；编辑产生新 revision 并显示旧版本已替换；删除是取消未路由输入，保留审计记录。输入一旦开始 routing，这三个操作禁用并说明原因；运行中的修订通过新的 TeamInput 提交，不能伪装成原消息编辑。沿用现有“每聊天启用/停用排队”的用户心智，但 TeamInput 积压与 ACP 会话发送队列在 UI 上分别命名。
+排队中的输入提供与现有会话队列一致的 **立即发送、编辑、删除** 操作。立即发送只提升路由顺序；编辑产生新 revision 并显示旧版本已替换；删除是取消未路由输入，保留审计记录。输入一旦开始 routing，这三个操作禁用并说明原因；运行中的修订通过新的 TeamInput 提交，不能伪装成原消息编辑。每个 Team 直接以发送方式菜单里的“排队发送”作为唯一开关，不再提供独立的启用卡片；TeamInput 积压与 ACP 会话发送队列在 UI 上分别命名。
 
 一个输入拆成多个 WorkItem 时，先显示原始要求，再以简洁列表显示每项归属及状态；一个 WorkItem 关联多个 Task 时可展开任务时间线。多个 Run 以工作流分组而不是在聊天里复制消息；“第 N 次修订”展示 parentRunId 血缘。任务等待时区分依赖、成员忙、模型冷却、写锁、预算和待用户输入；不把不同原因一律显示为“处理中”。
 

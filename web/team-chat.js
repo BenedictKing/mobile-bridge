@@ -1,9 +1,9 @@
 'use strict';
 
-// 团队输入队列（docs/team-demand-queue-plan.md §3.2/§7，阶段 4）：按 Team 灰
-// 度开关（localStorage）决定会话发送是否带 teamQueueVersion:2——开启后先落
-// 持久账本（202 queued，不给 runId），路由结果由队列面板追；旧路径保持
-// 「立即给 runId」的同步契约。
+// 团队输入队列（docs/team-demand-queue-plan.md §3.2/§7，阶段 4）：发送方式
+// 中的「排队发送」就是按 Team 保存的开关；选择后会话发送带
+// teamQueueVersion:2，先落持久账本（202 queued，不给 runId），路由结果由
+// 队列面板追；普通发送保持「立即给 runId」的同步契约。
 function teamQueueStorage(){
   try{return globalThis.localStorage;}catch{return null;}
 }
@@ -233,7 +233,7 @@ class TeamChatController{
   queueMode(){return teamQueueModeEnabled(this.current?.id);}
   setQueueMode(on){
     const store=teamQueueStorage();
-    if(!store)return;
+    if(!store||!this.current||this.queueMode()===on)return;
     if(on)store.setItem('teamQueueMode:'+this.current.id,'1');
     else store.removeItem('teamQueueMode:'+this.current.id);
     this.queue=null;this.queueError='';
@@ -290,22 +290,15 @@ class TeamChatController{
     dialog.addEventListener('close',()=>dialog.remove(),{once:true});
     dialog.showModal();
   }
-  // renderQueuePanel 渲染输入队列面板（§7）：排队开关、待处理计数、逐输入的
-  // 状态/等待原因/目标 Run 与工作项，以及排队态的 立即发送/编辑/取消。
+  // renderQueuePanel 只在发送区选择「排队发送」后展示队列内容与操作；
+  // 开关本身由发送方式菜单统一承载。
   renderQueuePanel(){
+    if(!this.queueMode())return;
     const team=this.team,root=this.root;
     const panel=this.node('section',undefined,'team-queue-panel');
     const head=this.node('div',undefined,'team-queue-head');
     head.append(this.node('strong',t_safe('输入队列')));
-    const mode=this.queueMode();
-    const toggle=this.button(mode?t_safe('停用排队'):t_safe('启用排队'),()=>this.setQueueMode(!mode));
-    toggle.className='team-queue-toggle';toggle.setAttribute('aria-pressed',String(mode));
-    head.append(toggle);
     panel.append(head);
-    if(!mode){
-      panel.append(this.node('p',t_safe('启用后新消息先入持久队列，可随时编辑、插队与取消；路由进度在这里追。'),'team-queue-hint'));
-      root.append(panel);return;
-    }
     const queue=this.queue;
     if(!queue){
       panel.append(this.node('p',this.queueError?t_safe('读取失败：')+this.queueError:t_safe('读取中…'),'team-queue-hint'));

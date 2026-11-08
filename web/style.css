@@ -422,12 +422,10 @@
 .selection-bar button:hover,.selection-bar button:active{background:var(--soft)}
 .team-lead-hint{margin:0 0 8px;font-size:12px;line-height:1.6;color:var(--muted)}
 
-/* 团队输入队列面板（docs/team-demand-queue-plan.md §7，阶段 4）：排队开关、
-   逐输入状态/等待原因/目标 Run 与排队态操作。 */
+/* 团队输入队列面板：逐输入状态/等待原因/目标 Run 与排队态操作。 */
 .team-queue-panel{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:11px 16px 12px;margin:0 0 14px;max-width:760px}
 .team-queue-head{display:flex;align-items:center;gap:12px}
 .team-queue-head strong{font-size:13px}
-.team-queue-toggle{min-height:0;padding:2px 0;border:0;border-radius:0;background:none;font-size:11.5px;color:var(--green)}
 .team-queue-hint{margin:6px 0 0;font-size:11.5px;line-height:1.6;color:var(--muted)}
 .team-queue-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:6px}
 .team-queue-list{margin-top:8px;display:flex;flex-direction:column;gap:8px}
