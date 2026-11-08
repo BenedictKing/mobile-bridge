@@ -153,5 +153,5 @@ test('working status and scroll hints float above the timeline instead of consum
   assert.match(css,/\.timeline-overlay\{position:absolute;z-index:3;[^}]*display:flex;[^}]*justify-content:space-between/);
   assert.match(css,/\.timeline-overlay\{[^}]*padding:0 max\(24px,calc\(\(100% - 780px\)\/2\)\) 8px/);
   assert.match(css,/\.timeline-overlay\{padding-left:[^}]*padding-bottom:8px\}/);
-  assert.match(css,/\.timeline-overlay \.newer\{[^}]*pointer-events:auto/);
+  assert.match(css,/\.timeline-overlay \.newer\{[^}]*margin:0 0 0 auto;[^}]*pointer-events:auto/);
 });
