@@ -20,7 +20,7 @@ var requestFields = []struct {
 	{"tool/requestUserInput", []string{"questions"}},
 	{"item/plan/requestImplementation", []string{"turnId", "planContent"}},
 	{"mcpServer/elicitation/request", []string{"serverName", "message", "mode", "requestedSchema"}},
-	{"acp/requestPermission", []string{"title", "command", "options"}},
+	{"acp/requestPermission", []string{"title", "command", "text", "planContent", "allowedPrompts", "options"}},
 	{"acp/requestInput", []string{"message", "schema"}},
 }
 

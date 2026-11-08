@@ -1540,6 +1540,12 @@ func buildActionTaskWithKeys(run *Run, team *Team, action *Action, batchKeys map
 		InstructionsHead: InstructionsHead(prompt),
 		Reduction:        action.Type == ActionTypeSummarize,
 	}
+	if memberID == team.LeadID {
+		task.ExecutionContext = ExecutionContextLeadRun
+		if task.Reduction {
+			task.ExecutionContext = ExecutionContextLeadControl
+		}
+	}
 	// 创建期确定性字段（与 planner/修复任务同口径）：contextText 恒空串，
 	// 派发期按真实注入上下文重算（accountDispatchLocked）。
 	task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")

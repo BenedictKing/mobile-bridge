@@ -1141,11 +1141,21 @@ function renderAcpApproval(request){
   // kimi's AskUserQuestion arrives as a permission request whose options are
   // the answer choices: draw it as a question card, not a risk prompt.
   const question=!!params.question;
-  const heading=question?t('Agent 提问你'):t('权限请求'),text=params.text||(params.title||'');
+  const heading=question?t('Agent 提问你'):t('权限请求'),planText=typeof params.planContent==='string'?params.planContent:'',text=params.text||planText||(params.title||'');
   card.dataset.request=String(request.id);card.append(el('h3','',heading));
-  if(text&&text!==heading)card.append(el('p','',text));
+  if(text&&text!==heading){const body=el('div','approval-markdown');renderMarkdown(body,text,[],()=>null);card.append(body);}
+  if(planText&&planText!==text){const details=el('details','approval-plan'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');renderMarkdown(content,planText,[],()=>null);details.append(summary,content);card.append(details);}
+  if(Array.isArray(params.allowedPrompts)&&params.allowedPrompts.length){
+    const details=el('details','approval-plan-operations'),summary=el('summary','',t('请求允许的操作')+' ('+params.allowedPrompts.length+')'),list=el('ul');
+    for(const value of params.allowedPrompts){
+      const prompt=typeof value?.prompt==='string'?value.prompt:'';
+      const tool=typeof value?.tool==='string'?value.tool:'';
+      list.append(el('li','',(prompt||JSON.stringify(value))+(tool?' ('+tool+')':'')));
+    }
+    details.append(summary,list);card.append(details);
+  }
   const badge=question?null:riskBadge(request,params);if(badge)card.append(badge);
-  if(!question&&params.command){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
+  if(!question&&params.command&&!planText){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
   const options=params.options||[],actions=el('div','actions'),error=el('p','error');
   const feedback=options.some(option=>option.id==='plan_revise')?el('textarea'):null;
   if(feedback){const label=el('label','',t('修改意见（可选）'));feedback.rows=3;feedback.maxLength=20000;label.append(feedback);card.append(label);}

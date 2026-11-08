@@ -14,17 +14,19 @@ import (
 // transcript injection already dispatched, so a retried migrate request
 // never re-sends it.
 type creationEntry struct {
-	Agent    string  `json:"agent,omitempty"`
-	Project  string  `json:"project"`
-	Title    string  `json:"title"`
-	Host     string  `json:"host"`
-	At       float64 `json:"at"`
-	ID       string  `json:"id,omitempty"`
-	Sent     bool    `json:"sent,omitempty"`
-	State    string  `json:"state,omitempty"`
-	Warning  string  `json:"warning,omitempty"`
-	Attempts int     `json:"attempts,omitempty"`
-	Message  string  `json:"message,omitempty"`
+	Agent          string  `json:"agent,omitempty"`
+	Project        string  `json:"project"`
+	ProjectCwd     string  `json:"projectCwd,omitempty"`
+	ProjectCreated bool    `json:"projectCreated,omitempty"`
+	Title          string  `json:"title"`
+	Host           string  `json:"host"`
+	At             float64 `json:"at"`
+	ID             string  `json:"id,omitempty"`
+	Sent           bool    `json:"sent,omitempty"`
+	State          string  `json:"state,omitempty"`
+	Warning        string  `json:"warning,omitempty"`
+	Attempts       int     `json:"attempts,omitempty"`
+	Message        string  `json:"message,omitempty"`
 	// Model/Effort are the target settings chosen in the migrate dialog; they
 	// are applied before the transcript is injected, on every send path.
 	Model  string `json:"model,omitempty"`

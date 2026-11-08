@@ -34,6 +34,7 @@ func (s *Service) ensureFailureTriageLocked(state *runState, run *Run) bool {
 		event := newEvent(fresh.ID, EventTaskPlanned, "triage", map[string]any{
 			"taskId": task.ID, "memberId": task.MemberID, "instructionsHead": task.InstructionsHead,
 			"prompt": task.Prompt, "triageFor": task.TriageFor,
+			"executionContext": task.ExecutionContext,
 		})
 		event.IdempotencyKey = "team:" + fresh.TeamID + ":run:" + fresh.ID + ":triage:" + taskID
 		return []*Event{event}, true
@@ -89,6 +90,7 @@ func buildFailureTriageTask(run *Run, team *Team, failed *Task) Task {
 		ID: fmt.Sprintf("lead-triage-%d", countFailureTriages(run)+1), MemberID: team.LeadID,
 		Prompt: text, Ordinal: ordinal + 1, WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
 		Status: TaskPlanned, InstructionsHead: InstructionsHead(text), TriageFor: failed.ID,
+		ExecutionContext: ExecutionContextLeadControl,
 	}
 	task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
 	return task
@@ -116,8 +118,8 @@ func failureRetriageTarget(run *Run, action *Action) (*Task, bool) {
 	return findTaskIn(run, source.TriageFor), true
 }
 
-func applyRetriage(run *Run, target *Task, action *Action) []*Event {
-	applyTaskRetryAssignment(target, newRetriageAssignment(target, action))
+func applyRetriage(run *Run, target *Task, action *Action, leadID string) []*Event {
+	applyTaskRetryAssignment(target, newRetriageAssignment(target, action, leadID))
 	events := []*Event{retriageActionEvent(target, action, run, true)}
 	recovered := map[string]bool{target.ID: true}
 	for _, ordered := range sortTasksByOrdinal(run.Tasks) {
@@ -153,6 +155,7 @@ func retriageActionEvent(task *Task, action *Action, run *Run, reassigned bool) 
 		payload["prompt"] = task.Prompt
 		payload["instructionsHead"] = task.InstructionsHead
 		payload["writeLock"] = task.WriteLock
+		payload["executionContext"] = task.ExecutionContext
 	}
 	event := newEvent(run.ID, EventTaskRetryScheduled, "triage", payload)
 	event.IdempotencyKey = actionExecutionKey(run.TeamID, run.ID, action.ActionKey)
@@ -168,9 +171,10 @@ type taskRetryAssignment struct {
 	prompt           string
 	instructionsHead string
 	writeLock        string
+	executionContext string
 }
 
-func newRetriageAssignment(task *Task, action *Action) taskRetryAssignment {
+func newRetriageAssignment(task *Task, action *Action, leadID string) taskRetryAssignment {
 	next := task.Attempt + 1
 	if next < firstAttempt {
 		next = firstAttempt
@@ -180,9 +184,14 @@ func newRetriageAssignment(task *Task, action *Action) taskRetryAssignment {
 		writeLock = task.WriteLock
 	}
 	prompt := ActionTaskPrompt(action)
+	executionContext := ""
+	if action.Member == leadID {
+		executionContext = ExecutionContextLeadRun
+	}
 	return taskRetryAssignment{
 		attempt: next, memberID: action.Member, prompt: prompt,
 		instructionsHead: InstructionsHead(prompt), writeLock: writeLock,
+		executionContext: executionContext,
 	}
 }
 
@@ -190,7 +199,7 @@ func retryAssignmentFromEvent(event *Event) taskRetryAssignment {
 	return taskRetryAssignment{
 		attempt: payloadInt(event.Payload, "attempt"), memberID: payloadString(event.Payload, "memberId"),
 		prompt: payloadString(event.Payload, "prompt"), instructionsHead: payloadString(event.Payload, "instructionsHead"),
-		writeLock: payloadString(event.Payload, "writeLock"),
+		writeLock: payloadString(event.Payload, "writeLock"), executionContext: payloadString(event.Payload, "executionContext"),
 	}
 }
 
@@ -211,6 +220,7 @@ func applyTaskRetryAssignment(task *Task, assignment taskRetryAssignment) {
 		task.Prompt = assignment.prompt
 		task.InstructionsHead = assignment.instructionsHead
 		task.WriteLock = assignment.writeLock
+		task.ExecutionContext = assignment.executionContext
 	}
 }
 

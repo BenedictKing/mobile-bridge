@@ -439,8 +439,12 @@ func (s *Service) AnswerQuestion(runID, questionID string, version uint64, decis
 	if member == nil {
 		return nil, false, fmt.Errorf("%w: 问题来源任务或成员不存在：%s", ErrNotFound, question.TaskID)
 	}
+	task := findTaskIn(run, question.TaskID)
+	if task == nil {
+		return nil, false, fmt.Errorf("%w: 问题来源任务不存在：%s", ErrNotFound, question.TaskID)
+	}
 	// ③ 投递（锁外慢 I/O：resolver.Resolve 冷探测可达 15s）。
-	_, session, resolveErr := s.resolver.Resolve(member.SessionID)
+	_, session, resolveErr := s.resolver.Resolve(taskProviderSessionID(run, task, member))
 	if session == nil {
 		return nil, false, fmt.Errorf("成员会话不可达，回答未送达（问题保持待回答）: %w", resolveErr)
 	}

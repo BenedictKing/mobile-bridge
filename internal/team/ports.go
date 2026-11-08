@@ -64,6 +64,12 @@ type SessionResolver interface {
 	Cwd(threadID string) string
 }
 
+// ExecutionSessionProvisioner supplies a durable Run-scoped session for a
+// Lead execution task. Implementations must deduplicate by team/run/member.
+type ExecutionSessionProvisioner interface {
+	EnsureExecutionSession(teamID, runID string, member *TeamMember, cwd string) (sessionID string, err error)
+}
+
 // SessionRecreator 是可选的会话恢复端口：仅在 session/load 明确报告会话
 // 不存在或确定无法恢复（如 zcode 血缘链损坏）时创建同 Agent、cwd 的替代
 // 会话；调用方负责回写成员绑定。

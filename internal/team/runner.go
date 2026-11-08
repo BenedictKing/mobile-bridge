@@ -44,7 +44,10 @@ type Service struct {
 	journal  *Journal
 	queue    QueueAdapter
 	resolver SessionResolver
-	locks    *LockRegistry
+	// ExecutionSessions creates the Lead's Run-scoped worker sessions. Nil keeps
+	// the legacy member binding for non-production/test adapters.
+	ExecutionSessions ExecutionSessionProvisioner
+	locks             *LockRegistry
 
 	// inputs 是持久输入队列账本（阶段 2，inputroute.go）：main.go/测试环境
 	// 在 NewService 后经 SetInputs 直赋；nil 时路由器停用。
@@ -208,6 +211,9 @@ func NewService(store TeamStore, journal *Journal, queue QueueAdapter, resolver 
 		teamRunPending:    map[string]map[string]int{},
 		pools:             map[string]*teamDispatchPool{},
 	}
+	if provisioner, ok := resolver.(ExecutionSessionProvisioner); ok {
+		service.ExecutionSessions = provisioner
+	}
 	service.cancelAgentTurn = service.cancelTurnIfOurs
 	service.interruptAgentTurn = service.interruptTurnAndConfirm
 	service.respondAgent = func(session *acpruntime.Session, requestID string, response *jsoncompat.Object) error {
@@ -365,6 +371,11 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 	if err != nil {
 		return nil, err
 	}
+	if autoPlan && scheduledFrom == "" && len(plan.Tasks) > 0 && plan.Tasks[0].MemberID == team.LeadID {
+		plan.Tasks[0].ExecutionContext = ExecutionContextLeadControl
+		plan.Tasks[0].InputHash = InputHashFor(&plan.Tasks[0], PolicyDigest(team.Policy), "")
+		plan.PlanHash = PlanHash(plan.Mode, plan.CollectPolicy, plan.Goal, plan.Tasks)
+	}
 	if len(attachments) > 0 {
 		if !autoPlan || len(plan.Tasks) != 1 {
 			return nil, errors.New("团队聊天附件只能随首个 Lead 任务创建")
@@ -431,6 +442,9 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 			"taskId":           task.ID,
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
+		}
+		if task.ExecutionContext != "" {
+			payload["executionContext"] = task.ExecutionContext
 		}
 		if task.Review != nil {
 			payload["review"] = *task.Review
@@ -875,7 +889,7 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 		}
 		var events []*Event
 		if target, retriage := failureRetriageTarget(fresh, action); retriage {
-			events = applyRetriage(fresh, target, action)
+			events = applyRetriage(fresh, target, action, team.LeadID)
 		} else {
 			task := buildActionTaskWithKeys(fresh, team, action, batchKeys)
 			fresh.Tasks = append(fresh.Tasks, task)
@@ -885,6 +899,9 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 				"instructionsHead": task.InstructionsHead,
 				"round":            jsoncompat.Num(action.Round),
 				"actionKey":        action.ActionKey,
+			}
+			if task.ExecutionContext != "" {
+				payload["executionContext"] = task.ExecutionContext
 			}
 			if task.Review != nil {
 				payload["review"] = *task.Review
@@ -1003,7 +1020,7 @@ func (s *Service) convergeAction(state *runState, team *Team, action *Action, ve
 		fresh.PendingActions[index].Status = ActionStatusExecuted
 		if target, retriage := failureRetriageTarget(fresh, action); retriage {
 			if target != nil && target.Status == TaskFailed {
-				_ = applyRetriage(fresh, target, action)
+				_ = applyRetriage(fresh, target, action, team.LeadID)
 			}
 		} else if action.Type == ActionTypeDelegate || action.Type == ActionTypeSummarize {
 			if derived := ActionDerivedTaskID(action); derived != "" && findTaskIn(fresh, derived) == nil {
@@ -1447,13 +1464,59 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		s.stopTaskBlocked(state, runID, taskID, OutcomeMemberDisabled, "成员已下线，请重新上线或换绑其他 Agent 后继续")
 		return
 	}
-	_, session, resolveErr := s.resolver.Resolve(member.SessionID)
-	if sessionRecreationNeeded(resolveErr) {
+	providerSessionID := member.SessionID
+	independentExecution := task.ExecutionContext == ExecutionContextLeadRun && s.ExecutionSessions != nil
+	if independentExecution {
+		executionCwd := cwd
+		if task.WorkspaceMode == WorkspaceIsolatedWorktree {
+			if s.Workspaces == nil {
+				s.failDispatch(state, runID, taskID, ErrWorkspacesUnavailable.Error())
+				return
+			}
+			path, workspaceErr := s.Workspaces.Resolve(task.WorkspaceID)
+			if workspaceErr != nil {
+				s.failDispatch(state, runID, taskID, fmt.Sprintf("工作区不存在：%s（%v）", task.WorkspaceID, workspaceErr))
+				return
+			}
+			executionCwd = path
+		}
+		if executionCwd == "" {
+			executionCwd = s.resolver.Cwd(member.SessionID)
+		}
+		if executionCwd == "" {
+			s.failDispatch(state, runID, taskID, "无法确定 Lead 执行会话的项目目录")
+			return
+		}
+		var createErr error
+		providerSessionID, createErr = s.ExecutionSessions.EnsureExecutionSession(team.ID, run.ID, member, executionCwd)
+		if createErr != nil {
+			s.failDispatch(state, runID, taskID, fmt.Sprintf("创建 Lead 执行会话失败：%v", createErr))
+			return
+		}
+	}
+	_, session, resolveErr := s.resolver.Resolve(providerSessionID)
+	if sessionRecreationNeeded(resolveErr) && !independentExecution {
 		if err := s.recoverMissingMemberSession(team, member, cwd); err != nil {
 			s.failDispatch(state, runID, taskID, err.Error())
 			return
 		}
-		_, session, _ = s.resolver.Resolve(member.SessionID)
+		providerSessionID = member.SessionID
+		_, session, _ = s.resolver.Resolve(providerSessionID)
+	}
+	if independentExecution && sessionRecreationNeeded(resolveErr) {
+		s.failDispatch(state, runID, taskID, fmt.Sprintf("Lead 执行会话无法恢复，请检查该 Run 的执行聊天后重试：%v", resolveErr))
+		return
+	}
+	if independentExecution && session == nil {
+		reason := "Agent 未返回 Lead 执行会话"
+		if resolveErr != nil {
+			reason = resolveErr.Error()
+		}
+		s.failDispatch(state, runID, taskID, "Lead 执行会话暂不可用："+reason)
+		return
+	}
+	if cwd == "" {
+		cwd = s.resolver.Cwd(providerSessionID)
 	}
 	// (2) 锁外慢 I/O：AIMD 桶准入（§6.3）+ 测试注入缝。桶键按会话快照的
 	// latestModel 聚桶，解析不到降级 kind 级（防误聚桶）；Touch 登记该
@@ -1498,7 +1561,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	binding := (*workspaceBinding)(nil)
 	if task.WorkspaceMode == WorkspaceIsolatedWorktree {
 		var bindErr error
-		binding, bindErr = s.resolveWorkspaceBinding(task, member)
+		binding, bindErr = s.resolveWorkspaceBindingForSession(task, member, providerSessionID)
 		if bindErr != nil {
 			s.failDispatch(state, runID, taskID, bindErr.Error())
 			return
@@ -1540,7 +1603,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		leadBriefing += s.backgroundTaskBriefing(run, task.ID)
 	}
 	state.mu.Lock()
-	dispatch, err := s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, leadBriefing, reviewHead, reviewDiff)
+	dispatch, err := s.accountDispatchLockedWithBriefingSession(state, team, run, taskID, cwd, binding, leadBriefing, reviewHead, reviewDiff, providerSessionID)
 	if err == nil && dispatch != nil {
 		s.teamPendingDelta(teamID, -1)
 		s.teamMemberPendingDelta(teamID, dispatchMember, -1)
@@ -1629,7 +1692,7 @@ func (s *Service) applyCollectLocked(state *runState, run *Run, team *Team, poli
 				continue
 			}
 			targets = append(targets, cancelTarget{
-				sessionID:    member.SessionID,
+				sessionID:    taskProviderSessionID(fresh, task, member),
 				submissionID: task.SubmissionID,
 				sentText:     s.sentTextFor(fresh, task, policy),
 			})
@@ -1683,7 +1746,7 @@ func (s *Service) adoptWatchersLocked(state *runState, team *Team, run *Run, pol
 			}
 			adoptions = append(adoptions, isolatedAdoption{
 				task:      *task.Clone(),
-				sessionID: member.SessionID,
+				sessionID: taskProviderSessionID(run, task, member),
 			})
 			continue
 		}
@@ -1694,7 +1757,8 @@ func (s *Service) adoptWatchersLocked(state *runState, team *Team, run *Run, pol
 		// 已持同 cwd 锁（重启前就并发的既成事实），同样留痕跳过。
 		if task.WriteLock != TaskWriteLockNone {
 			if _, held := state.taskCwds[task.ID]; !held {
-				if cwd := s.resolver.Cwd(member.SessionID); cwd != "" {
+				sessionID := taskProviderSessionID(run, task, member)
+				if cwd := s.resolver.Cwd(sessionID); cwd != "" {
 					if s.locks.Acquire(cwd, task.ID) {
 						state.taskCwds[task.ID] = cwd
 					} else {
@@ -1703,7 +1767,7 @@ func (s *Service) adoptWatchersLocked(state *runState, team *Team, run *Run, pol
 					}
 				} else {
 					log.Printf("team run %s 收养 exclusive 任务 %s 时无法解析会话 %s 的 cwd，写锁未登记",
-						run.ID, task.ID, member.SessionID)
+						run.ID, task.ID, sessionID)
 				}
 			}
 		}
@@ -1715,7 +1779,7 @@ func (s *Service) adoptWatchersLocked(state *runState, team *Team, run *Run, pol
 		// 误落 outcome_unknown。空串（旧账本迁移窗口）才确定性重算。
 		s.spawnWatcherLocked(state, &taskDispatch{
 			taskID:       task.ID,
-			sessionID:    member.SessionID,
+			sessionID:    taskProviderSessionID(run, task, member),
 			threadID:     task.ExecutionThreadID,
 			submissionID: task.SubmissionID,
 			sentText:     s.sentTextFor(run, task, policy),
@@ -2246,7 +2310,7 @@ func (s *Service) expireRun(state *runState) (finished, dwellPass bool) {
 					continue
 				}
 				targets = append(targets, cancelTarget{
-					sessionID:    member.SessionID,
+					sessionID:    taskProviderSessionID(fresh, task, member),
 					submissionID: task.SubmissionID,
 					sentText:     s.sentTextFor(fresh, task, policy),
 				})
@@ -2455,7 +2519,8 @@ func (s *Service) completeTask(state *runState, runID, taskID string, result *Ta
 				"taskId": repair.ID, "memberId": repair.MemberID,
 				"instructionsHead": repair.InstructionsHead, "prompt": repair.Prompt,
 				"dependsOn": repair.DependsOn, "writeLock": repair.WriteLock,
-				"review": true, "reviewRepairFor": taskID,
+				"executionContext": repair.ExecutionContext,
+				"review":           true, "reviewRepairFor": taskID,
 			})
 			planned.IdempotencyKey = reviewRepairPlannedKey(fresh.TeamID, fresh.ID, repair.ID)
 			return append(events, planned), true
@@ -2554,7 +2619,7 @@ func (s *Service) settlesLeadActions(state *runState, taskID string) bool {
 		return false
 	}
 	team := s.store.Team(run.TeamID)
-	return team != nil && team.LeadID != "" && task.MemberID == team.LeadID
+	return team != nil && team.LeadID != "" && task.MemberID == team.LeadID && !strings.HasPrefix(task.ID, "lead-auto-reduce")
 }
 
 // settleLeadTaskLocked 结算 AutoPlan Run 中 Lead 任务的 completed 回复（§5.1，
@@ -2671,6 +2736,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 					WorkspaceMode:    WorkspaceShared,
 					Status:           TaskPlanned,
 					InstructionsHead: InstructionsHead(prompt),
+					ExecutionContext: ExecutionContextLeadControl,
 				}
 				// 创建期确定性字段（与 planner 同口径）：修复任务无依赖，
 				// 创建期与派发期的 InputHash 相同（contextText 恒空串）。
@@ -2681,6 +2747,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 						"taskId":           repairID,
 						"memberId":         team.LeadID,
 						"instructionsHead": repair.InstructionsHead,
+						"executionContext": repair.ExecutionContext,
 						"round":            jsoncompat.Num(fresh.Round),
 					})
 					event.IdempotencyKey = key
@@ -3337,7 +3404,7 @@ func (s *Service) cancel(runID string, expectedVersion *uint64) (*Run, error) {
 					continue
 				}
 				targets = append(targets, cancelTarget{
-					sessionID:    member.SessionID,
+					sessionID:    taskProviderSessionID(fresh, task, member),
 					submissionID: task.SubmissionID,
 					sentText:     s.sentTextFor(fresh, task, policy),
 				})

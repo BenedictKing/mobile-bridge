@@ -352,6 +352,7 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { journal.Close() })
 	// team-runs.json 整文件损坏时按 journal 重建（main.go:921-930 的同构启动
 	// 序列；损坏原件已由 LoadStore 改名留存）。阶段三恢复面用例据此覆盖
 	// pendingQuestions/pendingActions/缓存完成事实的重建。
@@ -368,6 +369,7 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8791, "instance")
 	server.Queue = mustLoadSubmissions(t, filepath.Join(dataDir, "submissions.json"))
+	server.Creations = mustLoadCreations(t, filepath.Join(dataDir, "creations.json"))
 	manager := acpruntime.NewCommand(teamAgent(t, dataDir))
 	manager.Label = "Kimi"
 	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
@@ -377,9 +379,6 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 	manager.AutoContinue = func(session *acpruntime.Session) {
 		server.QueueSettleACP("kimi", session)
 	}
-	t.Cleanup(func() { manager.AutoContinue = nil })
-	t.Cleanup(func() { manager.Close() })
-	t.Cleanup(func() { journal.Close() })
 	queueAdapter, resolver := NewTeamAdapters(server)
 	server.TeamStore = store
 	// 持久输入队列（阶段 1，main.go 同构装配）：独立 journal + 可重建快照。
@@ -388,6 +387,8 @@ func newTeamIntegrationEnv(t *testing.T, dataDir string) *teamIntegrationEnv {
 		t.Fatal(inputJournalErr)
 	}
 	t.Cleanup(func() { inputJournal.Close() })
+	t.Cleanup(func() { manager.Close() })
+	t.Cleanup(func() { manager.AutoContinue = nil })
 	server.TeamInputs = team.LoadInputLedger(filepath.Join(dataDir, "team-inputs.json"), inputJournal)
 	// TeamJournal 供 /stats 端点全量重放 journal（main.go:928-930 的同构
 	// 装配：与 TeamStore 同源；缺它 stats 端点按 409 拒绝）。
@@ -505,6 +506,23 @@ func (e *teamIntegrationEnv) runDetail(t *testing.T, teamID, runID string) map[s
 	return run
 }
 
+func taskExecutionSession(t *testing.T, run map[string]any, taskID string) string {
+	t.Helper()
+	task := teamTaskOf(t, run, taskID)
+	threadID, _ := task["executionThreadId"].(string)
+	threads, _ := run["threads"].([]any)
+	for _, value := range threads {
+		thread, _ := value.(map[string]any)
+		if thread["id"] == threadID {
+			if sessionID, _ := thread["providerSessionId"].(string); sessionID != "" {
+				return sessionID
+			}
+		}
+	}
+	t.Fatalf("任务 %s 没有绑定可用的执行会话: thread=%s run=%v", taskID, threadID, run)
+	return ""
+}
+
 // drive 是派发驱动②：每个节拍同步执行一次派发巡检（即 StartQueueWorker 的
 // ticker 循环体），随后评估 check；check 为 true 或超时返回 false。节拍 120ms，
 // requeue 爬梯 10 次（queue.go:158-171）约 1.2s 完成。
@@ -571,11 +589,9 @@ func taskResultOf(t *testing.T, task map[string]any) map[string]any {
 
 // ---- 用例 1：§12 验收全链路——双会话 pipeline 按依赖执行、每结果可查 ----
 
-// TestTeamIntegrationPipelineAcceptance 建团队绑两个伪会话（lead=A、dev=B），
-// design→implement→review 流水线：断言 prompts.log 严格按依赖顺序落盘、design
-// 完成结果在 implement 运行期间即可见（§6.5 结果即时入账）、终态三任务全带
-// result 引用、原会话 timeline 能看到同样内容（验收“每个结果可在 Team 和原会话
-// 查看”）。
+// TestTeamIntegrationPipelineAcceptance 建团队绑两个控制会话（lead=A、dev=B），
+// 验证 Lead 执行任务使用独立 Run 会话、结果及时入账且不混入控制会话；普通
+// 成员仍使用自己的会话，依赖任务携带上游结果。
 func TestTeamIntegrationPipelineAcceptance(t *testing.T) {
 	env := newTeamIntegrationEnv(t, t.TempDir())
 	sessionA := env.createMemberSession(t, "lead-sess", "设计会话")
@@ -601,7 +617,7 @@ func TestTeamIntegrationPipelineAcceptance(t *testing.T) {
 		case "dispatching", "running":
 			result := taskResultOf(t, design)
 			text, _ := result["result"].(string)
-			if result["sessionId"] == sessionA && result["turnId"] != "" && strings.Contains(text, "DESIGN") {
+			if result["sessionId"] != "" && result["sessionId"] != sessionA && result["turnId"] != "" && strings.Contains(text, "DESIGN") {
 				sawDesignResultEarly = true
 			}
 			return true
@@ -636,6 +652,11 @@ func TestTeamIntegrationPipelineAcceptance(t *testing.T) {
 			t.Fatalf("任务 %s 的 resultChars 应为正: %v", taskID, result)
 		}
 	}
+	designResult := taskResultOf(t, teamTaskOf(t, detail, "design"))
+	designSession, _ := designResult["sessionId"].(string)
+	if designSession == "" || designSession == sessionA || !env.manager.Knows(designSession) {
+		t.Fatalf("Lead design 应归属独立执行会话，控制会话=%s result=%v", sessionA, designResult)
+	}
 	if result := taskResultOf(t, teamTaskOf(t, detail, "implement")); result["sessionId"] != sessionB {
 		t.Fatalf("implement 结果应归属会话 B: %v", result["sessionId"])
 	}
@@ -653,9 +674,9 @@ func TestTeamIntegrationPipelineAcceptance(t *testing.T) {
 	if !(designAt < implementAt && implementAt < reviewAt) {
 		t.Fatalf("派发顺序应严格为 design→implement→review: %d %d %d", designAt, implementAt, reviewAt)
 	}
-	if records[designAt].session != sessionA || records[implementAt].session != sessionB ||
+	if records[designAt].session != designSession || records[implementAt].session != sessionB ||
 		records[reviewAt].session != sessionB {
-		t.Fatalf("任务应派发到绑定成员的会话: A=%s B=%s 记录=%v", sessionA, sessionB, records)
+		t.Fatalf("任务应派发到 Lead 执行会话和普通成员会话: lead=%s B=%s 记录=%v", designSession, sessionB, records)
 	}
 	// 依赖任务的提示词带 [Team context] 信封与上游结果（§7.1）。
 	if !strings.Contains(records[implementAt].text, "[Team context]") ||
@@ -664,11 +685,16 @@ func TestTeamIntegrationPipelineAcceptance(t *testing.T) {
 		t.Fatalf("implement 应携带 design 的结果上下文: %q", records[implementAt].text)
 	}
 
-	// 验收“每个结果可在原会话查看”：成员会话 timeline 能看到任务往返内容。
+	// Lead 控制聊天只负责收发与反馈；执行 transcript 留在 Run 专属会话。
 	timelineA := env.request(http.MethodGet, "/api/sessions/"+sessionA+"/timeline?limit=50", "")
-	if timelineA.Code != http.StatusOK || !strings.Contains(timelineA.Body.String(), "DESIGN") ||
-		!strings.Contains(timelineA.Body.String(), "已完成：") {
-		t.Fatalf("会话 A timeline 应含 design 内容与结果: %d %s", timelineA.Code, timelineA.Body.String())
+	if timelineA.Code != http.StatusOK || strings.Contains(timelineA.Body.String(), "DESIGN") ||
+		strings.Contains(timelineA.Body.String(), "已完成：") {
+		t.Fatalf("Lead 控制会话不应混入 design 执行记录: %d %s", timelineA.Code, timelineA.Body.String())
+	}
+	timelineDesign := env.request(http.MethodGet, "/api/sessions/"+designSession+"/timeline?limit=50", "")
+	if timelineDesign.Code != http.StatusOK || !strings.Contains(timelineDesign.Body.String(), "DESIGN") ||
+		!strings.Contains(timelineDesign.Body.String(), "已完成：") {
+		t.Fatalf("Lead 执行会话 timeline 应含 design 内容与结果: %d %s", timelineDesign.Code, timelineDesign.Body.String())
 	}
 	timelineB := env.request(http.MethodGet, "/api/sessions/"+sessionB+"/timeline?limit=50", "")
 	if timelineB.Code != http.StatusOK || !strings.Contains(timelineB.Body.String(), "IMPLEMENT") ||
@@ -838,13 +864,14 @@ func TestTeamIntegrationUnknownOutcomeWaitingInputAndResume(t *testing.T) {
 	if submissionID == "" {
 		t.Fatal("任务未在时限内完成派发记账")
 	}
-	entry := env.server.Queue.get(sessionA, submissionID)
+	workerSession := taskExecutionSession(t, env.runDetail(t, teamID, runID), "t1")
+	entry := env.server.Queue.get(workerSession, submissionID)
 	if entry == nil || entry.Status != SubQueued {
 		t.Fatalf("入账条目应 queued: %+v", entry)
 	}
 	// 手动落“派发结果未知”状态（生产里 dispatchSubmission 返回 outcomeUnknown
 	// 时即此形态，queue.go:551）。
-	env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
+	env.server.Queue.setStatus(workerSession, submissionID, SubUnknown)
 
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
@@ -859,7 +886,7 @@ func TestTeamIntegrationUnknownOutcomeWaitingInputAndResume(t *testing.T) {
 	if records := readTeamPrompts(t, env.dataDir); len(records) != 0 {
 		t.Fatalf("结果未知只对账不重发，提示词应为空: %v", records)
 	}
-	if entries := env.server.Queue.threadEntries(sessionA); len(entries) != 1 {
+	if entries := env.server.Queue.threadEntries(workerSession); len(entries) != 1 {
 		t.Fatalf("不应有第二次入账: %+v", entries)
 	}
 
@@ -1178,9 +1205,11 @@ func TestTeamIntegrationRestartAdoptsWriteLock(t *testing.T) {
 // 串行落盘（首任务完整先于次任务，无 interleave）。
 func TestTeamIntegrationWriteLockMutualExclusion(t *testing.T) {
 	env := newTeamIntegrationEnv(t, t.TempDir())
+	leadSession := env.createMemberSession(t, "lead-sess", "主控")
 	sessionA := env.createMemberSession(t, "dev1-sess", "写者一")
 	sessionB := env.createMemberSession(t, "dev2-sess", "写者二")
-	teamID := env.createTeamWithMembers(t, `[{"id":"dev1","sessionId":"`+sessionA+
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+leadSession+
+		`","role":"lead"},{"id":"dev1","sessionId":"`+sessionA+
 		`","role":"member"},{"id":"dev2","sessionId":"`+sessionB+`","role":"member"}]`)
 	runID := env.createRun(t, teamID, `{"goal":"写锁互斥","mode":"pipeline","plan":[
 		{"id":"w1","memberId":"dev1","prompt":"首任务 hold 独占写入 ONE","writeLock":"exclusive"},
@@ -1247,7 +1276,9 @@ func TestTeamIntegrationRecreatesPreloadedLineageFailure(t *testing.T) {
 	if _, err := env.manager.OpenHistory("lineage-sess", dataDir); err != nil {
 		t.Fatal(err)
 	}
-	teamID := env.createTeamWithMembers(t, `[{"id":"dev","sessionId":"`+placeholder+`","role":"member"}]`)
+	leadSession := env.createMemberSession(t, "lineage-lead", "血缘恢复主控")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+leadSession+
+		`","role":"lead"},{"id":"dev","sessionId":"`+placeholder+`","role":"member"}]`)
 	runID := env.createRun(t, teamID, `{"goal":"恢复血缘损坏的成员","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"dev","prompt":"恢复后执行 RECOVERED-CHECK","writeLock":"none"}]}`)
 
@@ -1257,7 +1288,7 @@ func TestTeamIntegrationRecreatesPreloadedLineageFailure(t *testing.T) {
 		detail := env.runDetail(t, teamID, runID)
 		t.Fatalf("自动恢复后的 Run 未完成: %v", detail)
 	}
-	member := env.store.Team(teamID).Members[0]
+	member := env.store.Team(teamID).Members[1]
 	if member.SessionID == "" || member.SessionID == placeholder || member.SessionID == "lineage-sess" {
 		t.Fatalf("成员未换绑到替代会话: %+v", member)
 	}
@@ -1287,11 +1318,13 @@ func TestTeamIntegrationDeadMemberRequeueLadder(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := newTeamIntegrationEnv(t, dataDir)
+	leadSession := env.createMemberSession(t, "dead-member-lead", "失效成员主控")
 	// 预热 list 缓存（生产由 discovery 周期执行，绑定校验与 cwd 解析靠它）。
 	if _, err := env.manager.List(15 * time.Second); err != nil {
 		t.Fatalf("session/list 预热失败: %v", err)
 	}
-	teamID := env.createTeamWithMembers(t, `[{"id":"dev","sessionId":"broken-sess","role":"member"}]`)
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+leadSession+
+		`","role":"lead"},{"id":"dev","sessionId":"broken-sess","role":"member"}]`)
 	runID := env.createRun(t, teamID, `{"goal":"成员失效","mode":"pipeline","plan":[
 		{"id":"t1","memberId":"dev","prompt":"坏成员任务 BROKEN-CHECK","writeLock":"none"}]}`)
 
@@ -1328,8 +1361,8 @@ func TestTeamIntegrationDeadMemberRequeueLadder(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &teamView); err != nil {
 		t.Fatal(err)
 	}
-	if len(teamView.Members) != 1 || teamView.Members[0].ID != "dev" ||
-		teamView.Members[0].SessionID != "broken-sess" {
+	if len(teamView.Members) != 2 || teamView.Members[1].ID != "dev" ||
+		teamView.Members[1].SessionID != "broken-sess" {
 		t.Fatalf("失效成员应保留原绑定: %s", response.Body.String())
 	}
 }
@@ -1401,16 +1434,21 @@ func TestTeamIntegrationIdempotentRedispatch(t *testing.T) {
 		t.Fatal("Run 未在时限内完成")
 	}
 	detail := env.runDetail(t, teamID, runID)
-	submissionID, _ := teamTaskOf(t, detail, "t1")["submissionId"].(string)
+	task := teamTaskOf(t, detail, "t1")
+	submissionID, _ := task["submissionId"].(string)
 	if submissionID == "" {
 		t.Fatal("完成任务应带 submissionId")
+	}
+	workerSession := taskExecutionSession(t, detail, "t1")
+	if result := taskResultOf(t, task); result["sessionId"] != workerSession || workerSession == sessionA {
+		t.Fatalf("Lead 执行结果应归属独立会话而非控制会话: control=%s result=%v", sessionA, result)
 	}
 	if got := len(readTeamPrompts(t, env.dataDir)); got != 1 {
 		t.Fatalf("应恰好派发一次: %d", got)
 	}
 
 	// 生产 QueueAdapter 重放同 id 同内容：duplicate=true，零副作用。
-	status, duplicate, err := env.queueAdp.Enqueue(sessionA, submissionID, prompt)
+	status, duplicate, err := env.queueAdp.Enqueue(workerSession, submissionID, prompt)
 	if err != nil || !duplicate || status != SubAccepted {
 		t.Fatalf("重放应命中账本幂等: status=%s duplicate=%v err=%v", status, duplicate, err)
 	}
@@ -1858,7 +1896,11 @@ func TestTeamIntegration2BroadcastParallel(t *testing.T) {
 		t.Fatal("Run 未在时限内完成")
 	}
 	detail := env.runDetail(t, teamID, runID)
-	branches := []struct{ id, session string }{{"grp-lead", sessionA}, {"grp-dev", sessionB}}
+	leadExecutionSession := taskExecutionSession(t, detail, "grp-lead")
+	if leadExecutionSession == sessionA {
+		t.Fatalf("Lead broadcast 分支不应复用控制会话 %s", sessionA)
+	}
+	branches := []struct{ id, session string }{{"grp-lead", leadExecutionSession}, {"grp-dev", sessionB}}
 	for _, branch := range branches {
 		card := teamTaskOf(t, detail, branch.id)
 		if card["status"] != "completed" {
@@ -1882,9 +1924,9 @@ func TestTeamIntegration2BroadcastParallel(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("应恰好两条分支提示词: %d 条", len(records))
 	}
-	if records[0].session == records[1].session ||
-		(records[0].session != sessionA && records[0].session != sessionB) {
-		t.Fatalf("两条提示词应落在不同成员会话: %v", records)
+	if !((records[0].session == leadExecutionSession && records[1].session == sessionB) ||
+		(records[1].session == leadExecutionSession && records[0].session == sessionB)) {
+		t.Fatalf("两条提示词应分别落在 Lead 执行会话和开发会话: %v", records)
 	}
 	if records[0].text != records[1].text || records[0].text != prompt {
 		t.Fatalf("广播分支提示词应同文且完整无交错: %q vs %q", records[0].text, records[1].text)
@@ -1997,11 +2039,15 @@ func TestTeamIntegration2FirstSuccessEarlyStop(t *testing.T) {
 			completedSeq, stoppedSeq)
 	}
 	// 落败分支的 turn 被真取消（interrupted）且账本条目不被重排队。
-	if status := teamSessionTurnStatus(env.manager.Get(sessionA), grpPrompt); status != "interrupted" {
+	workerSessionA := taskExecutionSession(t, detail, "grp-a")
+	if workerSessionA == sessionA {
+		t.Fatalf("Lead 败选分支不应复用控制会话 %s", sessionA)
+	}
+	if status := teamSessionTurnStatus(env.manager.Get(workerSessionA), grpPrompt); status != "interrupted" {
 		t.Fatalf("落败分支的 turn 应被取消为 interrupted: %q", status)
 	}
 	loserSubmission, _ := loser["submissionId"].(string)
-	entry := env.server.Queue.get(sessionA, loserSubmission)
+	entry := env.server.Queue.get(workerSessionA, loserSubmission)
 	if entry == nil || entry.Status != SubAccepted || entry.QueueAttempts != 0 {
 		t.Fatalf("落败分支的账本条目应保持 accepted 且不爬梯: %+v", entry)
 	}
@@ -2044,7 +2090,8 @@ func TestTeamIntegration2FirstSuccessEarlyStop(t *testing.T) {
 	}) {
 		t.Fatal("重臂的合并任务未在时限内并行在途")
 	}
-	releaseAgentTurn(t, env.dataDir, "k2", sessionA)
+	mergeASession := taskExecutionSession(t, env.runDetail(t, teamID, runID), "merge-a")
+	releaseAgentTurn(t, env.dataDir, "k2", mergeASession)
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {

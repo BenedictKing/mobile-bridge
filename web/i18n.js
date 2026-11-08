@@ -476,6 +476,7 @@ const en={
   "目标已创建，启动已排队": "Goal created. Start queued",
   "计划已就绪": "Plan ready",
   "查看计划": "View plan",
+  "请求允许的操作": "Requested operations",
   "修改意见（可选）": "Requested changes (optional)",
   "执行计划": "Implement plan",
   "继续修改": "Revise plan",

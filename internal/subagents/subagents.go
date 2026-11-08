@@ -13,7 +13,10 @@
 package subagents
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -43,6 +46,10 @@ type Child struct {
 	UpdatedAtMs      int64
 	FirstUserMessage string
 	Transcript       string
+	OutputFile       string
+	TaskOutputFile   string
+	ShowCompleted    bool
+	CacheSignature   string
 }
 
 // Row is one flattened parent activity row (Python's _subagent_activity).
@@ -301,10 +308,51 @@ func (s *baseStore) cached(cache map[string]cacheEntry, key string, signature [2
 }
 
 func signatureOf(path string) [2]int64 {
-	if info, err := os.Stat(path); err == nil {
-		return [2]int64{info.ModTime().UnixNano(), info.Size()}
+	return signatureOfPaths([]string{path})
+}
+
+func signatureOfPaths(paths []string) [2]int64 {
+	digest := sha256.New()
+	var metadata [16]byte
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		digest.Write([]byte(filepath.Clean(path)))
+		digest.Write([]byte{0})
+		binary.LittleEndian.PutUint64(metadata[:8], uint64(info.ModTime().UnixNano()))
+		binary.LittleEndian.PutUint64(metadata[8:], uint64(info.Size()))
+		digest.Write(metadata[:])
 	}
-	return [2]int64{}
+	sum := digest.Sum(nil)
+	return [2]int64{
+		int64(binary.LittleEndian.Uint64(sum[:8])),
+		int64(binary.LittleEndian.Uint64(sum[8:16])),
+	}
+}
+
+func safeRegularFile(baseDir, path string) string {
+	if path == "" {
+		return ""
+	}
+	base, err := filepath.Abs(baseDir)
+	if err != nil {
+		return ""
+	}
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	relative, err := filepath.Rel(base, resolved)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxTranscriptBytes {
+		return ""
+	}
+	return resolved
 }
 
 // allRosterRows: history lookups arrive right after a roster scan; transcript
@@ -351,9 +399,11 @@ func (s *ZcodeStore) Children(parentID string) []Child {
 		return nil
 	}
 	agentsDir := filepath.Join(s.root, "cli", "agents", sid)
+	matches, _ := filepath.Glob(filepath.Join(agentsDir, "agent_*", "metadata.json"))
+	sort.Strings(matches)
+	rosterSignature := signatureOfPaths(matches)
+	cacheSignature := fmt.Sprintf("%016x%016x", uint64(rosterSignature[0]), uint64(rosterSignature[1]))
 	build := func() any {
-		matches, _ := filepath.Glob(filepath.Join(agentsDir, "agent_*", "metadata.json"))
-		sort.Strings(matches)
 		rows := []Child{}
 		for _, metaPath := range matches {
 			if len(rows) >= maxChildren {
@@ -380,31 +430,58 @@ func (s *ZcodeStore) Children(parentID string) []Child {
 			if updated == 0 {
 				updated = isoMs(meta.MustGet("completedAt"))
 			}
+			if info, err := os.Stat(metaPath); err == nil && info.ModTime().UnixMilli() > updated {
+				updated = info.ModTime().UnixMilli()
+			}
 			prompt, _ := meta.MustGet("prompt").(string)
+			childDir := filepath.Dir(metaPath)
+			transcript := safeRegularFile(childDir, filepath.Join(childDir, "transcript.jsonl"))
+			outputPath, _ := meta.MustGet("outputFile").(string)
+			taskOutputPath, _ := meta.MustGet("taskOutputFile").(string)
+			outputFile := safeRegularFile(childDir, outputPath)
+			taskOutputFile := safeRegularFile(childDir, taskOutputPath)
 			rows = append(rows, Child{ID: childID, Name: name, AgentRole: role, SpawnStatus: status,
-				UpdatedAtMs: updated, FirstUserMessage: truncate(prompt, 4000),
-				Transcript: filepath.Join(filepath.Dir(metaPath), "transcript.jsonl")})
+				UpdatedAtMs: updated, FirstUserMessage: truncate(prompt, 4000), Transcript: transcript,
+				OutputFile: outputFile, TaskOutputFile: taskOutputFile,
+				ShowCompleted:  transcript != "" || outputFile != "" || taskOutputFile != "",
+				CacheSignature: cacheSignature})
 		}
 		return rows
 	}
-	children, _ := s.cached(s.rosterCache, sid, signatureOf(agentsDir), build).([]Child)
+	children, _ := s.cached(s.rosterCache, sid, rosterSignature, build).([]Child)
 	return children
 }
 
 func (s *ZcodeStore) History(childID string) *jsoncompat.Object {
-	var transcript, name, id string
+	var transcript, outputFile, taskOutputFile, prompt, name, id string
 	for _, candidate := range s.allRosterRows() {
 		if candidate.ID == childID {
-			transcript, name, id = candidate.Transcript, candidate.Name, candidate.ID
+			transcript, outputFile, taskOutputFile = candidate.Transcript, candidate.OutputFile, candidate.TaskOutputFile
+			prompt, name, id = candidate.FirstUserMessage, candidate.Name, candidate.ID
 			break
 		}
 	}
-	if transcript == "" {
+	path := transcript
+	if path == "" {
+		path = outputFile
+	}
+	if path == "" {
+		path = taskOutputFile
+	}
+	if path == "" {
 		return jsoncompat.NewObject()
 	}
-	path := transcript
 	build := func() any {
 		builder := newHistoryBuilder()
+		if transcript == "" {
+			content, err := os.ReadFile(path)
+			if err == nil && int64(len(content)) <= maxTranscriptBytes {
+				builder.userMessage(prompt)
+				builder.agentMessage(string(content))
+				builder.endTurn("completed")
+			}
+			return builder.finish(id, name)
+		}
 		events := 0
 		iterLines(path, maxTranscriptBytes, func(event *jsoncompat.Object) bool {
 			events++
@@ -775,7 +852,7 @@ func Flatten(store Store, parentID string) Activity {
 	activity := Activity{Rows: []Row{}}
 	for _, child := range children {
 		activity.Revision = max64(activity.Revision, child.UpdatedAtMs)
-		if child.ID == "" || child.SpawnStatus == "" || child.SpawnStatus == "completed" {
+		if child.ID == "" || child.SpawnStatus == "" || (child.SpawnStatus == "completed" && !child.ShowCompleted) {
 			continue
 		}
 		history := store.History(child.ID)
@@ -843,7 +920,13 @@ func Flatten(store Store, parentID string) Activity {
 		status := child.SpawnStatus
 		rowText := strings.Join(lines, "\n\n")
 		if rowText == "" {
-			rowText = "子 Agent 暂无可显示的执行记录"
+			if child.SpawnStatus == "completed" {
+				rowText = "子 Agent 已完成；没有可读取的结果文件"
+			} else if child.FirstUserMessage != "" {
+				rowText = "[任务]\n" + child.FirstUserMessage + "\n\n子 Agent 正在运行；执行结果尚未写入"
+			} else {
+				rowText = "子 Agent 正在运行；执行结果尚未写入"
+			}
 		}
 		activity.Rows = append(activity.Rows, Row{
 			ID: "subagent:" + child.ID, Kind: "subagent", Role: "activity",
@@ -933,8 +1016,9 @@ type Flattener struct {
 }
 
 type cachedFlatten struct {
-	revision int64
-	activity Activity
+	revision  int64
+	signature string
+	activity  Activity
 }
 
 // NewFlattener wraps one store with revision-keyed activity caching.
@@ -945,19 +1029,27 @@ func NewFlattener(store Store) *Flattener {
 // Activity returns the flattened rows for one parent session.
 func (f *Flattener) Activity(parentID string) Activity {
 	revision := int64(0)
+	var signature strings.Builder
 	for _, child := range f.store.Children(parentID) {
 		revision = max64(revision, child.UpdatedAtMs)
+		fmt.Fprintf(&signature, "%s\x00%s\x00%d\x00%s\n", child.ID, child.SpawnStatus, child.UpdatedAtMs, child.CacheSignature)
 	}
+	signatureText := signature.String()
 	f.mu.Lock()
-	if hit, ok := f.cache[parentID]; ok && hit.revision == revision {
-		f.mu.Unlock()
-		return hit.activity
+	if hit, ok := f.cache[parentID]; ok {
+		if hit.signature == signatureText {
+			f.mu.Unlock()
+			return hit.activity
+		}
+		if revision <= hit.revision {
+			revision = hit.revision + 1
+		}
 	}
 	f.mu.Unlock()
 	activity := Flatten(f.store, parentID)
 	activity.Revision = revision
 	f.mu.Lock()
-	f.cache[parentID] = cachedFlatten{revision: revision, activity: activity}
+	f.cache[parentID] = cachedFlatten{revision: revision, signature: signatureText, activity: activity}
 	f.mu.Unlock()
 	return activity
 }

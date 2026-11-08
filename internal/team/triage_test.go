@@ -163,7 +163,7 @@ func TestRetriageJournalRestoresAssignmentAfterCrash(t *testing.T) {
 		Member: "rev", Task: "换成员重做", ActionKey: ActionKey(run.TeamID, run.ID, "lead-triage-1", 2, 0)}
 	broken := run.Clone()
 	replay := run.Clone()
-	events := applyRetriage(run, findTaskIn(run, "dev-task"), &action)
+	events := applyRetriage(run, findTaskIn(run, "dev-task"), &action, "lead")
 
 	transitions := ReconcileRun(broken, events, newFakeProbe())
 	for _, taskID := range []string{"dev-task", "review"} {

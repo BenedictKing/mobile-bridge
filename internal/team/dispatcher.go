@@ -8,6 +8,7 @@ package team
 // team-logic（planner/scheduler/reducer/recovery），本文件只做顺序与 I/O。
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,29 @@ func TaskSubmissionID(teamID, runID, taskID string, attempt int) string {
 // memberID 在 Team 内唯一，故线程 ID 在 Run 内唯一。
 func ExecutionThreadIDFor(memberID string) string {
 	return "th_" + memberID
+}
+
+func executionThreadIDForTask(task *Task) string {
+	if task == nil {
+		return ""
+	}
+	if task.ExecutionThreadID != "" {
+		return task.ExecutionThreadID
+	}
+	return ExecutionThreadIDForContext(task.MemberID, task.ExecutionContext)
+}
+
+func taskProviderSessionID(run *Run, task *Task, member *TeamMember) string {
+	if member == nil {
+		return ""
+	}
+	threadID := executionThreadIDForTask(task)
+	if run != nil {
+		if thread := findThreadIn(run, threadID); thread != nil && thread.ProviderSessionID != "" {
+			return thread.ProviderSessionID
+		}
+	}
+	return member.SessionID
 }
 
 // taskDispatch 是一次成功派发的产物（watcher 的输入）。bucketKey 是该次
@@ -84,6 +108,13 @@ type workspaceBinding struct {
 //  3. 首派（Task.BaseRevision 为空）读取当前 HEAD 作为基线，读取失败同样
 //     确定性失败；重派（重试/resume 重臂）沿用既有基线。
 func (s *Service) resolveWorkspaceBinding(task *Task, member *TeamMember) (*workspaceBinding, error) {
+	if member == nil {
+		return nil, errors.New("任务成员不存在")
+	}
+	return s.resolveWorkspaceBindingForSession(task, member, member.SessionID)
+}
+
+func (s *Service) resolveWorkspaceBindingForSession(task *Task, member *TeamMember, sessionID string) (*workspaceBinding, error) {
 	if s.Workspaces == nil {
 		return nil, ErrWorkspacesUnavailable
 	}
@@ -91,7 +122,7 @@ func (s *Service) resolveWorkspaceBinding(task *Task, member *TeamMember) (*work
 	if err != nil {
 		return nil, fmt.Errorf("工作区不存在：%s（%v）", task.WorkspaceID, err)
 	}
-	if cwd := s.resolver.Cwd(member.SessionID); filepath.Clean(cwd) != filepath.Clean(path) {
+	if cwd := s.resolver.Cwd(sessionID); filepath.Clean(cwd) != filepath.Clean(path) {
 		return nil, fmt.Errorf("成员会话工作区与任务工作区不一致，请把会话开在 worktree 中（%s）", path)
 	}
 	base := task.BaseRevision
@@ -172,10 +203,25 @@ func (s *Service) submitTaskLocked(state *runState, team *Team, run *Run, taskID
 // 由调用方在锁外执行——绝不在这里直接调 dispatchSubmission，派发时机完全
 // 属于既有队列。
 func (s *Service) accountDispatchLocked(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding) (*taskDispatch, error) {
-	return s.accountDispatchLockedWithBriefing(state, team, run, taskID, cwd, binding, "", "", "")
+	task := findTaskIn(run, taskID)
+	member := (*TeamMember)(nil)
+	if task != nil {
+		member = memberOf(team, task.MemberID)
+	}
+	return s.accountDispatchLockedWithBriefingSession(state, team, run, taskID, cwd, binding, "", "", "", taskProviderSessionID(run, task, member))
 }
 
 func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding, leadBriefing, reviewHead, reviewDiff string) (*taskDispatch, error) {
+	task := findTaskIn(run, taskID)
+	member := (*TeamMember)(nil)
+	if task != nil {
+		member = memberOf(team, task.MemberID)
+	}
+	return s.accountDispatchLockedWithBriefingSession(state, team, run, taskID, cwd, binding,
+		leadBriefing, reviewHead, reviewDiff, taskProviderSessionID(run, task, member))
+}
+
+func (s *Service) accountDispatchLockedWithBriefingSession(state *runState, team *Team, run *Run, taskID, cwd string, binding *workspaceBinding, leadBriefing, reviewHead, reviewDiff, providerSessionID string) (*taskDispatch, error) {
 	task := findTaskIn(run, taskID)
 	if task == nil {
 		return nil, fmt.Errorf("任务不存在：%s", taskID)
@@ -186,6 +232,9 @@ func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team,
 	member := memberOf(team, task.MemberID)
 	if member == nil {
 		return nil, fmt.Errorf("任务 %s 引用的成员不存在：%s", taskID, task.MemberID)
+	}
+	if providerSessionID == "" {
+		providerSessionID = member.SessionID
 	}
 
 	// ① 上下文与 Lead 简报合成 + 账本硬上限预检（planner 按 rune 预留余量，
@@ -259,48 +308,55 @@ func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team,
 		// thread_bound 事实，线程事件先于派发事件落账；成员绑定会话被恢复
 		// 流程改写（session_recovery.go）后重派按新会话重落绑定。run 级事件
 		// 不带 taskId 键（provider_throttled 同款约定），来源任务用 sourceTaskId。
-		threadID := ExecutionThreadIDFor(current.MemberID)
+		threadID := executionThreadIDForTask(current)
 		events := []*Event{}
 		if thread := findThreadIn(fresh, threadID); thread == nil {
 			now := time.Now()
 			fresh.Threads = append(fresh.Threads, ExecutionThread{
 				ID:                threadID,
 				MemberID:          current.MemberID,
+				ExecutionContext:  current.ExecutionContext,
 				AgentKind:         member.AgentKind,
-				ProviderSessionID: member.SessionID,
+				ProviderSessionID: providerSessionID,
 				SourceTaskID:      taskID,
 				CreatedAt:         now,
 				UpdatedAt:         now,
 			})
 			events = append(events, newEvent(fresh.ID, EventThreadBound, "runner", map[string]any{
-				"threadId":          threadID,
-				"memberId":          current.MemberID,
-				"providerSessionId": member.SessionID,
-				"agentKind":         member.AgentKind,
-				"sourceTaskId":      taskID,
+				"threadId": threadID, "memberId": current.MemberID,
+				"providerSessionId": providerSessionID, "agentKind": member.AgentKind,
+				"sourceTaskId": taskID,
 			}))
-		} else if thread.ProviderSessionID != member.SessionID || thread.AgentKind != member.AgentKind {
-			thread.ProviderSessionID = member.SessionID
+			if current.ExecutionContext != "" {
+				events[len(events)-1].Payload["executionContext"] = current.ExecutionContext
+			}
+		} else if thread.ProviderSessionID != providerSessionID || thread.AgentKind != member.AgentKind || thread.ExecutionContext != current.ExecutionContext {
+			thread.ProviderSessionID = providerSessionID
 			thread.AgentKind = member.AgentKind
+			thread.ExecutionContext = current.ExecutionContext
 			thread.UpdatedAt = time.Now()
 			events = append(events, newEvent(fresh.ID, EventThreadBound, "runner", map[string]any{
-				"threadId":          threadID,
-				"memberId":          current.MemberID,
-				"providerSessionId": member.SessionID,
-				"agentKind":         member.AgentKind,
+				"threadId": threadID, "memberId": current.MemberID,
+				"providerSessionId": providerSessionID, "agentKind": member.AgentKind,
 			}))
+			if current.ExecutionContext != "" {
+				events[len(events)-1].Payload["executionContext"] = current.ExecutionContext
+			}
 		}
 		current.ExecutionThreadID = threadID
 		boundThreadID = threadID
 		event := newEvent(fresh.ID, EventTaskDispatching, "runner", map[string]any{
 			"taskId":       taskID,
-			"sessionId":    member.SessionID,
+			"sessionId":    providerSessionID,
 			"threadId":     threadID,
 			"submissionId": submissionID,
 			"inputHash":    inputHash,
 			"attempt":      jsoncompat.Num(attempt),
 			"contextChars": jsoncompat.Num(composed.context.InjectedChars),
 		})
+		if current.ExecutionContext != "" {
+			event.Payload["executionContext"] = current.ExecutionContext
+		}
 		if reviewHead != "" || reviewDiff != "" {
 			event.Payload["headRevision"] = reviewHead
 			event.Payload["diffHash"] = reviewDiff
@@ -333,7 +389,7 @@ func (s *Service) accountDispatchLockedWithBriefing(state *runState, team *Team,
 
 	return &taskDispatch{
 		taskID:       taskID,
-		sessionID:    member.SessionID,
+		sessionID:    providerSessionID,
 		threadID:     boundThreadID,
 		submissionID: submissionID,
 		sentText:     sentText,

@@ -2,6 +2,7 @@ package httpd
 
 import (
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -282,6 +283,24 @@ func (h *handler) targetProjects(kind string) []*jsoncompat.Object {
 	return rows
 }
 
+func migrationProjectMatches(entry *creationEntry, targetKind, projectKey, cwd string) bool {
+	if entry.ProjectCwd != "" {
+		return filepath.Clean(entry.ProjectCwd) == filepath.Clean(cwd)
+	}
+	if entry.Project == projectKey {
+		return true
+	}
+	legacyHash := hashProject(cwd)
+	return entry.Project == targetKind+":"+legacyHash || entry.Project == "acp:"+legacyHash
+}
+
+func migrationProjectWasCreated(entry *creationEntry, targetKind, cwd string) bool {
+	if entry.ProjectCwd != "" {
+		return entry.ProjectCreated
+	}
+	return entry.Project == targetKind+":"+hashProject(cwd)
+}
+
 // migrationSourceView resolves the source chat's normalized view: ACP live
 // snapshot first, then the codex live follower, then saved history. Scope
 // "full" on a codex thread reloads the complete rollout, not the loaded tail.
@@ -452,6 +471,18 @@ func (h *handler) handleMigrate(threadID string) {
 		h.fail(http.StatusBadRequest, errorBody("源会话缺少目录信息，无法匹配目标项目"))
 		return
 	}
+	ledger := h.server.Creations
+	if ledger != nil {
+		if existing := ledger.lookup(requestID); existing != nil {
+			if existing.Agent != targetKind || existing.Title != title ||
+				!migrationProjectMatches(existing, targetKind, projectKey, cwd) {
+				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
+				return
+			}
+			projectKey = existing.Project
+			projectCreated = migrationProjectWasCreated(existing, targetKind, cwd)
+		}
+	}
 
 	// Codex lists its models without a thread, so the settings step needs no
 	// target session at all; the thread is created when the phone confirms.
@@ -469,18 +500,18 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 
-	ledger := h.server.Creations
 	createdID := ""
 	alreadySent := false
 	if ledger != nil {
 		entry, claimed, claimErr := ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
-			Title: title, Host: "local", At: ledger.now(), State: "creating"})
+			ProjectCwd: cwd, ProjectCreated: projectCreated, Title: title, Host: "local", At: ledger.now(), State: "creating"})
 		if claimErr != nil {
 			h.fail(http.StatusServiceUnavailable, errorBody(claimErr.Error()))
 			return
 		}
 		if !claimed {
-			if entry.Agent != targetKind || entry.Project != projectKey || entry.Title != title {
+			if entry.Agent != targetKind || entry.Project != projectKey || entry.Title != title ||
+				!migrationProjectMatches(entry, targetKind, projectKey, cwd) {
 				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
 				return
 			}

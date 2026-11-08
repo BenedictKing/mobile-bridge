@@ -198,6 +198,43 @@ func TestAddPermissionSurfacesAskUserQuestion(t *testing.T) {
 	}
 }
 
+func TestAddPermissionSurfacesStructuredPlan(t *testing.T) {
+	view := NewView("sess-1", "Demo", "/work", func() float64 { return 1 })
+	plan := "# 修复设计缺陷\n\n- 保持上下文"
+	rawInput := jsoncompat.NewObject()
+	rawInput.Set("plan", plan)
+	allowed := jsoncompat.NewObject()
+	allowed.Set("prompt", "run server tests")
+	allowed.Set("tool", "Bash")
+	rawInput.Set("allowedPrompts", &jsoncompat.Array{Items: []any{allowed}})
+	toolCall := jsoncompat.NewObject()
+	toolCall.Set("title", "Plan approval")
+	toolCall.Set("rawInput", rawInput)
+	content := jsoncompat.NewObject()
+	content.Set("type", "text")
+	content.Set("text", plan)
+	block := jsoncompat.NewObject()
+	block.Set("type", "content")
+	block.Set("content", content)
+	toolCall.Set("content", &jsoncompat.Array{Items: []any{block}})
+	params := jsoncompat.NewObject()
+	params.Set("toolCall", toolCall)
+	params.Set("options", &jsoncompat.Array{})
+	view.AddPermission("req-plan", params)
+
+	requests := view.Snapshot().MustGet("requests").(*jsoncompat.Array)
+	entryParams := requests.Items[0].(*jsoncompat.Object).MustGet("params").(*jsoncompat.Object)
+	if entryParams.MustGet("command") != "" {
+		t.Fatalf("structured plan was exposed as a command: %s", jsoncompat.EncodeCompact(entryParams))
+	}
+	if entryParams.MustGet("text") != plan || entryParams.MustGet("planContent") != plan {
+		t.Fatalf("plan text was not surfaced separately: %s", jsoncompat.EncodeCompact(entryParams))
+	}
+	if prompts := entryParams.MustGet("allowedPrompts").(*jsoncompat.Array); len(prompts.Items) != 1 {
+		t.Fatalf("allowed prompts were not preserved: %s", jsoncompat.EncodeCompact(entryParams))
+	}
+}
+
 func TestToolCallRendersQuestionSummary(t *testing.T) {
 	view := NewView("sess-1", "Demo", "/work", func() float64 { return 1 })
 	view.BeginTurn("问一下")

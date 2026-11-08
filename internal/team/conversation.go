@@ -61,7 +61,9 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 		task := Task{
 			ID: taskID, MemberID: team.LeadID, Prompt: goal, Attachments: append([]string(nil), attachments...),
 			Ordinal: len(fresh.Tasks), Status: TaskPlanned, InstructionsHead: InstructionsHead(goal),
+			ExecutionContext: ExecutionContextLeadControl,
 		}
+		task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
 		fresh.Tasks = append(fresh.Tasks, task)
 		if fresh.Status == RunWaitingInput || fresh.Status == RunPaused {
 			fresh.Status = RunDispatching
@@ -69,6 +71,7 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 		}
 		payload := map[string]any{
 			"taskId": task.ID, "memberId": task.MemberID, "instructionsHead": task.InstructionsHead,
+			"executionContext": task.ExecutionContext,
 		}
 		if len(task.Attachments) > 0 {
 			payload["attachments"] = append([]string(nil), task.Attachments...)

@@ -201,6 +201,9 @@ func buildReviewRepairTask(run *Run, team *Team, reviewTaskID string) (Task, boo
 		Review: reviewFlag(true), Ordinal: ordinal + 1, Status: TaskPlanned,
 		InstructionsHead: InstructionsHead(reviewRepairPrompt), WorkspaceMode: WorkspaceShared,
 	}
+	if task.MemberID == team.LeadID {
+		task.ExecutionContext = ExecutionContextLeadRun
+	}
 	task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
 	return task, true
 }

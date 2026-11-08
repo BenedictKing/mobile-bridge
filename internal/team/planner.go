@@ -388,6 +388,9 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 			Status:           TaskPlanned,
 			InstructionsHead: InstructionsHead(input.Prompt),
 		}
+		if task.MemberID == team.LeadID {
+			task.ExecutionContext = ExecutionContextLeadRun
+		}
 		task.InputHash = InputHashFor(&task, policyDigest, "")
 		tasks = append(tasks, task)
 	}
@@ -451,6 +454,9 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 		entry.Set("dependsOn", depends)
 		entry.Set("workspaceMode", task.WorkspaceMode)
 		entry.Set("writeLock", task.WriteLock)
+		if task.ExecutionContext != "" {
+			entry.Set("executionContext", task.ExecutionContext)
+		}
 		if task.Review != nil {
 			entry.Set("review", *task.Review)
 		}
@@ -483,6 +489,7 @@ func InputHashFor(task *Task, policyDigest, contextText string) string {
 	object := jsoncompat.NewObject()
 	object.Set("memberId", task.MemberID)
 	object.Set("prompt", task.Prompt)
+	object.Set("executionContext", task.ExecutionContext)
 	depends := &jsoncompat.Array{}
 	for _, dep := range task.DependsOn {
 		depends.Items = append(depends.Items, dep)

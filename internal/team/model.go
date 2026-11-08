@@ -32,6 +32,11 @@ const (
 	TaskStopped        = "stopped"
 )
 
+const (
+	ExecutionContextLeadControl = "lead_control"
+	ExecutionContextLeadRun     = "lead_execution"
+)
+
 // Run 状态（§4.3 状态图）。planning 由阶段三 Lead 自动规划使用，显式 Plan
 // 不经过该状态；reducing 是验证闸门窗口（§6.4.1，阶段二）：全任务终态且
 // fold 判 completed 后先过闸门再终局——闸门未过 → waiting_input 可修可
@@ -204,6 +209,19 @@ var memberIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // ValidMemberID 报告 id 是否可作为 TeamMember.ID。
 func ValidMemberID(id string) bool { return memberIDPattern.MatchString(id) }
 
+// ExecutionThreadIDForContext allows one member to keep a control chat and a
+// separate execution chat in the same Run without overloading either thread.
+func ExecutionThreadIDForContext(memberID, executionContext string) string {
+	switch executionContext {
+	case ExecutionContextLeadControl:
+		return "th_" + memberID + "_control"
+	case ExecutionContextLeadRun:
+		return "th_" + memberID + "_execution"
+	default:
+		return ExecutionThreadIDFor(memberID)
+	}
+}
+
 // instructionsHeadRunes 是任务卡摘要的截断长度（§11.4：Prompt 前 240 字符）。
 const instructionsHeadRunes = 240
 
@@ -249,15 +267,14 @@ type TeamMember struct {
 }
 
 // ExecutionThread 是某个 Run 中成员的一次独立工作上下文（三层分离的中间层：
-// memberId → executionThreadId → providerSessionId）。阶段一契约：一个
-// Run + Member 默认一条线程，首个任务派发时创建并绑定 Provider 会话——当前
-// 取成员绑定会话，专用会话分配（成员私人上下文隔离）属后续阶段，届时只改
-// 绑定来源、契约不变。生命周期随 Run：线程关闭态由 Run 终态派生（投影侧
-// 计算），不落盘、重建与运行期天然一致。ProviderSessionID 是绑定快照，
-// 成员会话被恢复流程改写后重派按新会话重落 thread_bound。
+// memberId → executionThreadId → providerSessionId）。Lead 控制对话与 Run
+// 执行对话可分别绑定线程；普通成员继续复用其团队专用会话。生命周期随 Run：
+// 线程关闭态由 Run 终态派生（投影侧计算），不落盘，重建与运行期天然一致。
+// ProviderSessionID 是绑定快照，显式恢复/换绑后重派按新会话重落 thread_bound。
 type ExecutionThread struct {
 	ID                string `json:"id"`
 	MemberID          string `json:"memberId"`
+	ExecutionContext  string `json:"executionContext,omitempty"`
 	AgentKind         string `json:"agentKind,omitempty"`
 	ProviderSessionID string `json:"providerSessionId"`
 	// SourceTaskID 是触发线程创建的首个任务（任务来源血缘）：审计与 UI
@@ -437,9 +454,12 @@ type Task struct {
 	SubmissionID       string `json:"submissionId,omitempty"`
 	// ExecutionThreadID 是本任务所属的执行线程（阶段一契约）：派发时随
 	// task_dispatching 落账；结算侧按它防旧线程/旧 attempt 的迟到事件。
-	ExecutionThreadID string      `json:"executionThreadId,omitempty"`
-	Result            string      `json:"result,omitempty"`
-	ResultDetail      *TaskResult `json:"resultDetail,omitempty"`
+	ExecutionThreadID string `json:"executionThreadId,omitempty"`
+	// ExecutionContext 明确 Lead 任务属于控制聊天还是 Run 专属执行聊天。
+	// 空值保留旧快照语义：复用成员绑定会话。
+	ExecutionContext string      `json:"executionContext,omitempty"`
+	Result           string      `json:"result,omitempty"`
+	ResultDetail     *TaskResult `json:"resultDetail,omitempty"`
 	// CachedFrom 是 amend 缓存导入的来源任务 ID（§6.4.1，阶段三）：本 Run 的
 	// 新节点实例在创建批次内直接落 completed，Result/ResultDetail 深拷贝自
 	// 父 Run 的同名任务，SubmissionID/SentText 留空——缓存任务绝不重派发。
@@ -612,7 +632,7 @@ var taskKnownFields = map[string]bool{
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
 	"baseRevision": true, "writeLock": true, "review": true,
-	"status": true, "submissionId": true, "executionThreadId": true,
+	"status": true, "submissionId": true, "executionThreadId": true, "executionContext": true,
 	"result": true, "resultDetail": true,
 	"cachedFrom": true,
 	"error":      true, "outcome": true, "stopReason": true, "instructionsHead": true,
@@ -913,6 +933,9 @@ func (t *ExecutionThread) jsonObject() *jsoncompat.Object {
 	object := jsoncompat.NewObject()
 	object.Set("id", t.ID)
 	object.Set("memberId", t.MemberID)
+	if t.ExecutionContext != "" {
+		object.Set("executionContext", t.ExecutionContext)
+	}
 	if t.AgentKind != "" {
 		object.Set("agentKind", t.AgentKind)
 	}
@@ -1059,6 +1082,9 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	// 任务失去线程归属——迟到事件防护与 UI 原会话跳转都依赖它。
 	if t.ExecutionThreadID != "" {
 		object.Set("executionThreadId", t.ExecutionThreadID)
+	}
+	if t.ExecutionContext != "" {
+		object.Set("executionContext", t.ExecutionContext)
 	}
 	if t.Result != "" {
 		object.Set("result", t.Result)

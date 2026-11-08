@@ -38,6 +38,7 @@ func (s *Service) ensureAutoPlanReductionLocked(state *runState, run *Run) bool 
 	events := []*Event{newEvent(run.ID, EventTaskPlanned, "reducer", map[string]any{
 		"taskId": task.ID, "memberId": task.MemberID, "instructionsHead": task.InstructionsHead,
 		"prompt": task.Prompt, "dependsOn": task.DependsOn, "reduction": true,
+		"executionContext": task.ExecutionContext,
 	})}
 	if len(run.Tasks) >= policy.MaxTasksPerRun {
 		task.Status = TaskFailed
@@ -95,6 +96,7 @@ func buildAutoReductionTask(run *Run, team *Team) Task {
 		ID: id, MemberID: team.LeadID, Prompt: autoReductionPrompt, Ordinal: ordinal + 1,
 		DependsOn: depends, WriteLock: TaskWriteLockNone, WorkspaceMode: WorkspaceShared,
 		Status: TaskPlanned, InstructionsHead: InstructionsHead(autoReductionPrompt), Reduction: true,
+		ExecutionContext: ExecutionContextLeadControl,
 	}
 	task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
 	return task

@@ -25,6 +25,7 @@ function loadApproval(){
     currentId:'session',currentHost:'local',submittedRequestIds:new Set(),approvalBusy:0,
     document:{createElement:tag=>new FakeNode(tag)},t:value=>value,
     setLanguageBusy(){},sessionUrl:()=>'/respond',bumpRecency(){},riskBadge:()=>null,markRecommendation(){},
+    renderMarkdown:(node,text)=>{node.renderedMarkdown=text;},
     api:async(path,body)=>{calls.push({path,body});return {};},
   };
   vm.runInNewContext(source.slice(elStart,elEnd)+'\n'+source.slice(start,end)+'\nthis.renderAcpApproval=renderAcpApproval;',context);
@@ -59,6 +60,24 @@ test('ACP permission heading is not repeated from params.title',()=>{
   assert.equal(headings.length,1);
   assert.equal(headings[0].tag,'h3');
   assert.equal(card.children[1].textContent,'ls');
+});
+
+test('ACP permission text uses the sanitized Markdown renderer',()=>{
+  const {render}=loadApproval(),source='# 修复设计缺陷\n\n- 保持上下文';
+  const card=render({id:'request-1',params:{text:source,options:[]}});
+  const body=card.children.find(node=>node.className==='approval-markdown');
+  assert.ok(body);
+  assert.equal(body.renderedMarkdown,source);
+});
+
+test('ACP structured plan renders as Markdown without a duplicate command block',()=>{
+  const {render}=loadApproval(),plan='# 修复设计缺陷\n\n- 保持上下文';
+  const card=render({id:'request-1',params:{text:plan,planContent:plan,allowedPrompts:[{prompt:'run server tests',tool:'Bash'}],command:'should not appear',options:[]}});
+  const body=card.children.find(node=>node.className==='approval-markdown');
+  const operations=card.children.find(node=>node.className==='approval-plan-operations');
+  assert.equal(body.renderedMarkdown,plan);
+  assert.equal(card.children.some(node=>node.className==='approval-command'),false);
+  assert.equal(operations.children[1].children[0].textContent,'run server tests (Bash)');
 });
 
 test('other ACP plan options keep their original response shape',async()=>{

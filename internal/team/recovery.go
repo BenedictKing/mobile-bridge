@@ -458,7 +458,7 @@ func ReconcileUnknown(run *Run, team *Team, probe Probe) []Transition {
 		if member == nil {
 			continue
 		}
-		status, errorText, ok := probe.LedgerStatus(member.SessionID, task.SubmissionID)
+		status, errorText, ok := probe.LedgerStatus(taskProviderSessionID(run, &task, member), task.SubmissionID)
 		switch {
 		case !ok, status == ledgerUnknown, status == ledgerQueued,
 			status == ledgerAccepted, status == ledgerIgnored:

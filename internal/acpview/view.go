@@ -48,6 +48,18 @@ func questionTitle(value any) bool {
 	return strings.EqualFold(title, "AskUserQuestion") || strings.EqualFold(title, "Asking user questions")
 }
 
+func permissionPlanInput(value any) *jsoncompat.Object {
+	input := obj(value)
+	if input == nil {
+		return nil
+	}
+	plan, _ := input.MustGet("plan").(string)
+	if strings.TrimSpace(plan) == "" {
+		return nil
+	}
+	return input
+}
+
 func (v *View) nextID(prefix string) string {
 	v.ordinal++
 	return fmt.Sprintf("%s-%d", prefix, v.ordinal)
@@ -262,8 +274,12 @@ func PermissionCard(params *jsoncompat.Object) (title, command string, question 
 	}
 	toolCall := obj(truthyOr(params.MustGet("toolCall"), any(jsoncompat.NewObject())))
 	title, _ = truthyOr(toolCall.MustGet("title"), "权限请求").(string)
-	command = CommandSummary(toolCall.MustGet("rawInput"))
-	question = questionTitle(title) || QuestionSummary(toolCall.MustGet("rawInput")) != ""
+	rawInput := toolCall.MustGet("rawInput")
+	command = CommandSummary(rawInput)
+	if permissionPlanInput(rawInput) != nil {
+		command = ""
+	}
+	question = questionTitle(title) || QuestionSummary(rawInput) != ""
 	return title, command, question
 }
 
@@ -293,7 +309,18 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 		entryParams.Set("question", true)
 	}
 	toolCall := obj(truthyOr(params.MustGet("toolCall"), any(jsoncompat.NewObject())))
-	if text := flattenContentText(toolCall.MustGet("content")); text != "" {
+	planInput := permissionPlanInput(toolCall.MustGet("rawInput"))
+	if planInput != nil {
+		entryParams.Set("planContent", planInput.MustGet("plan"))
+		if allowed, ok := planInput.Get("allowedPrompts"); ok {
+			entryParams.Set("allowedPrompts", jsoncompat.Clone(allowed))
+		}
+	}
+	text := flattenContentText(toolCall.MustGet("content"))
+	if text == "" && planInput != nil {
+		text, _ = planInput.MustGet("plan").(string)
+	}
+	if text != "" {
 		entryParams.Set("text", text)
 	}
 	entryParams.Set("options", options)

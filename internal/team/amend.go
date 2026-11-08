@@ -152,6 +152,11 @@ func (s *Service) CreateAmendRun(team *Team, parentRunID, runID, goal, mode, col
 	if err != nil {
 		return nil, false, err
 	}
+	if autoPlan && len(plan.Tasks) > 0 && plan.Tasks[0].MemberID == team.LeadID {
+		plan.Tasks[0].ExecutionContext = ExecutionContextLeadControl
+		plan.Tasks[0].InputHash = InputHashFor(&plan.Tasks[0], PolicyDigest(team.Policy), "")
+		plan.PlanHash = PlanHash(plan.Mode, plan.CollectPolicy, plan.Goal, plan.Tasks)
+	}
 	parent := s.store.Run(parentRunID)
 	if parent == nil {
 		return nil, false, fmt.Errorf("%w: run=%s", ErrNotFound, parentRunID)
@@ -225,6 +230,9 @@ func (s *Service) CreateAmendRun(team *Team, parentRunID, runID, goal, mode, col
 			"taskId":           task.ID,
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
+		}
+		if task.ExecutionContext != "" {
+			payload["executionContext"] = task.ExecutionContext
 		}
 		if task.Review != nil {
 			payload["review"] = *task.Review

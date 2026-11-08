@@ -1,9 +1,12 @@
 package subagents
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -55,19 +58,52 @@ func TestZcodeStoreRosterAndHistory(t *testing.T) {
 	if kind := messages.Items[1].(*jsoncompat.Object).MustGet("kind"); kind != "toolCall" {
 		t.Fatalf("second message kind=%v", kind)
 	}
-	// Completed children advance the revision but leave no timeline row.
+	// A completed child with a readable transcript remains available as a summary.
 	activity := Flatten(store, "ph-1")
-	if activity.Revision != 1791900000000 || len(activity.Rows) != 0 {
+	if activity.Revision != children[0].UpdatedAtMs || len(activity.Rows) != 1 ||
+		activity.Rows[0].Status != "completed" || !strings.Contains(activity.Rows[0].Text, "共 3 处引用") {
 		t.Fatalf("activity=%+v", activity)
 	}
 	view := jsoncompat.NewObject()
 	view.Set("turns", &jsoncompat.Array{})
 	Inject(view, activity)
-	if view.MustGet("subagentRevision") != jsoncompat.Num(1791900000000) {
+	if view.MustGet("subagentRevision") != jsoncompat.Num(int(activity.Revision)) {
 		t.Fatalf("revision=%v", view.MustGet("subagentRevision"))
 	}
-	if turns := view.MustGet("turns").(*jsoncompat.Array); len(turns.Items) != 0 {
-		t.Fatal("completed subagent row injected")
+	if turns := view.MustGet("turns").(*jsoncompat.Array); len(turns.Items) != 1 {
+		t.Fatal("completed subagent result should be injected")
+	}
+}
+
+func TestZcodeRefreshesNestedMetadataAndReadsFinalOutput(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "v2", "acp-lazy-sessions.json"),
+		`{"parent": {"zcodeSid": "sess-parent"}}`)
+	childDir := filepath.Join(root, "cli", "agents", "sess-parent", "agent_child")
+	metadataPath := filepath.Join(childDir, "metadata.json")
+	outputPath := filepath.Join(childDir, "output.txt")
+	encodedOutputPath, err := json.Marshal(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, metadataPath, `{"childSessionId":"child","description":"巡检","profileId":"Explore","status":"running","updatedAt":1000,"prompt":"检查服务配置","outputFile":`+string(encodedOutputPath)+`}`)
+	flattener := NewFlattener(NewZcodeStore(root))
+	running := flattener.Activity("parent")
+	if len(running.Rows) != 1 || running.Rows[0].Status != "running" ||
+		!strings.Contains(running.Rows[0].Text, "检查服务配置") || !strings.Contains(running.Rows[0].Text, "结果尚未写入") {
+		t.Fatalf("running activity=%+v", running)
+	}
+
+	write(t, outputPath, "部署默认值检查完成，发现两项需要修正。")
+	write(t, metadataPath, `{"childSessionId":"child","description":"巡检","profileId":"Explore","status":"completed","updatedAt":2000,"completedAt":2000,"prompt":"检查服务配置","outputFile":`+string(encodedOutputPath)+`}`)
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(metadataPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	completed := flattener.Activity("parent")
+	if completed.Revision <= running.Revision || len(completed.Rows) != 1 ||
+		completed.Rows[0].Status != "completed" || !strings.Contains(completed.Rows[0].Text, "发现两项需要修正") {
+		t.Fatalf("completed activity=%+v running=%+v", completed, running)
 	}
 }
 
@@ -153,7 +189,7 @@ func TestFlattenerCachesByRevision(t *testing.T) {
 	flattener := NewFlattener(NewZcodeStore(root))
 	first := flattener.Activity("p")
 	second := flattener.Activity("p")
-	if first.Revision != 5 || len(first.Rows) != 1 || second.Rows[0].ID != first.Rows[0].ID {
+	if first.Revision < 5 || len(first.Rows) != 1 || second.Rows[0].ID != first.Rows[0].ID {
 		t.Fatalf("activities=%+v %+v", first, second)
 	}
 }

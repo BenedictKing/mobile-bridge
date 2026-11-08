@@ -1421,6 +1421,9 @@ func TestBuildActionTaskLeadFollowUpDependsOnWorkers(t *testing.T) {
 	followUp := Action{Type: ActionTypeDelegate, SourceTaskID: "lead", Round: 1, Member: team.LeadID, Task: "合并并修复",
 		ActionKey: ActionKey(team.ID, run.ID, "lead", 1, 2)}
 	task := buildActionTask(run, team, &followUp)
+	if task.ExecutionContext != ExecutionContextLeadRun {
+		t.Fatalf("Lead 自委派的实质任务应使用 Run 专属执行上下文: %q", task.ExecutionContext)
+	}
 	if len(task.DependsOn) != 3 || task.DependsOn[0] != "lead" || task.DependsOn[1] != "lead-d1-0" || task.DependsOn[2] != "lead-d1-1" {
 		t.Fatalf("Lead 后续任务应依赖来源与两个 Worker: %+v", task.DependsOn)
 	}

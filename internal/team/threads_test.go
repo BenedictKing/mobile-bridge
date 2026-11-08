@@ -41,7 +41,83 @@ func threadEventsFromJournal(t *testing.T, journal *Journal) map[string][]int {
 }
 
 func findThreadByMember(run *Run, memberID string) *ExecutionThread {
-	return findThreadIn(run, ExecutionThreadIDFor(memberID))
+	for i := range run.Threads {
+		if run.Threads[i].MemberID == memberID {
+			return &run.Threads[i]
+		}
+	}
+	return nil
+}
+
+type fakeExecutionSessionProvisioner struct {
+	resolver *fakeResolver
+	sessions map[string]string
+	calls    int
+}
+
+func (p *fakeExecutionSessionProvisioner) EnsureExecutionSession(teamID, runID string, member *TeamMember, cwd string) (string, error) {
+	key := teamID + ":" + runID + ":" + member.ID
+	if id := p.sessions[key]; id != "" {
+		return id, nil
+	}
+	p.calls++
+	id := "s-" + member.ID + "-execution-" + runID
+	p.sessions[key] = id
+	p.resolver.setCwd(id, cwd)
+	p.resolver.setSession(id, newFakeSession(id, cwd))
+	return id, nil
+}
+
+func TestLeadControlAndSelfDelegatedExecutionUseSeparateSessions(t *testing.T) {
+	h := newDispatchHarness(t)
+	h.team.Policy.AutoDispatch = true
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatal(err)
+	}
+	provisioner := &fakeExecutionSessionProvisioner{resolver: h.resolver, sessions: map[string]string{}}
+	h.service.ExecutionSessions = provisioner
+
+	run, err := h.service.CreateConversationRun(h.team, "conversation-separation", "实现一个小功能", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.waitForSubmission(t, "s-lead", "Lead 用户输入")
+	root, ok := h.queue.firstEntry("s-lead")
+	if !ok {
+		t.Fatal("Lead 用户输入应投递到控制对话")
+	}
+	if task := findTaskIn(h.store.Run(run.ID), "lead"); task == nil || task.ExecutionContext != ExecutionContextLeadControl {
+		t.Fatalf("首条用户输入应标记为 Lead 控制任务: %+v", task)
+	}
+	h.completeSubmission("s-lead", root.submissionID, root.text,
+		`<team-actions>{"actions":[{"type":"delegate","sourceTaskId":"lead","round":1,"member":"lead","task":"实现用户要求的功能","writeLock":"exclusive"}]}</team-actions>`)
+
+	executionID := "s-lead-execution-" + run.ID
+	delegated, found := h.waitForEntry(t, executionID, "Lead 自委派执行任务")
+	if !found {
+		t.Fatal("Lead 自委派任务应进入独立执行会话")
+	}
+	fresh := h.store.Run(run.ID)
+	rootTask := findTaskIn(fresh, "lead")
+	execution := findTaskIn(fresh, "lead-d1-0")
+	if rootTask == nil || execution == nil || execution.ExecutionContext != ExecutionContextLeadRun {
+		t.Fatalf("Lead 控制/执行任务标记不完整: %+v", fresh.Tasks)
+	}
+	if execution.ResultDetail != nil {
+		t.Fatalf("尚未结算的执行任务已有结果: %+v", execution.ResultDetail)
+	}
+	if delegated.threadID != executionID {
+		t.Fatalf("派发会话=%s, want %s", delegated.threadID, executionID)
+	}
+	controlThread := findThreadIn(fresh, ExecutionThreadIDForContext("lead", ExecutionContextLeadControl))
+	executionThread := findThreadIn(fresh, ExecutionThreadIDForContext("lead", ExecutionContextLeadRun))
+	if controlThread == nil || executionThread == nil || controlThread.ProviderSessionID != "s-lead" ||
+		executionThread.ProviderSessionID != executionID || controlThread.ID == executionThread.ID {
+		t.Fatalf("Lead 两种会话未隔离: control=%+v execution=%+v", controlThread, executionThread)
+	}
+	if provisioner.calls != 1 {
+		t.Fatalf("Run 的 Lead 执行会话应只创建一次，calls=%d", provisioner.calls)
+	}
 }
 
 // 契约①：成员首派即绑定线程——每成员一条、任务携带线程归属、journal 先落
@@ -67,8 +143,8 @@ func TestExecutionThreadBoundOnFirstDispatchPerMember(t *testing.T) {
 	taskMember := map[string]string{}
 	for _, task := range fresh.Tasks {
 		taskMember[task.ID] = task.MemberID
-		if task.ExecutionThreadID != ExecutionThreadIDFor(task.MemberID) {
-			t.Fatalf("任务 %s 应携带所属线程 %s: %+v", task.ID, ExecutionThreadIDFor(task.MemberID), task)
+		if task.ExecutionThreadID != executionThreadIDForTask(&task) {
+			t.Fatalf("任务 %s 应携带所属线程 %s: %+v", task.ID, executionThreadIDForTask(&task), task)
 		}
 	}
 	boundAt := threadEventsFromJournal(t, h.journal)
@@ -85,7 +161,12 @@ func TestExecutionThreadBoundOnFirstDispatchPerMember(t *testing.T) {
 		if !ok || len(first) != 1 || first[0] > i {
 			t.Fatalf("成员 %s 的 thread_bound 应先于其首条 task_dispatching 唯一落账: bound=%v dispatch=%d", member, first, i)
 		}
-		if got := payloadString(event.Payload, "threadId"); got != ExecutionThreadIDFor(member) {
+		task := findTaskIn(fresh, payloadString(event.Payload, "taskId"))
+		wantThread := ""
+		if task != nil {
+			wantThread = executionThreadIDForTask(task)
+		}
+		if got := payloadString(event.Payload, "threadId"); got != wantThread {
 			t.Fatalf("task_dispatching 应携带 threadId，实际 %q", got)
 		}
 	}
@@ -241,7 +322,7 @@ func TestExecutionThreadSurvivesSnapshotAndJournalRebuild(t *testing.T) {
 		t.Fatalf("重建的 dev 线程不符: %+v", thread)
 	}
 	for _, task := range fromJournal.Tasks {
-		if task.ExecutionThreadID != ExecutionThreadIDFor(task.MemberID) {
+		if task.ExecutionThreadID != executionThreadIDForTask(&task) {
 			t.Fatalf("重建的任务 %s 线程归属丢失: %+v", task.ID, task)
 		}
 	}

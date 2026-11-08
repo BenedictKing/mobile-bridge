@@ -48,8 +48,9 @@ func taskUpdateEventPayload(task *Task) map[string]any {
 	return map[string]any{
 		"taskId": task.ID, "memberId": task.MemberID,
 		"instructionsHead": task.InstructionsHead, "prompt": task.Prompt,
-		"dependsOn": append([]string(nil), task.DependsOn...),
-		"writeLock": task.WriteLock, "updateId": task.UpdateID,
+		"executionContext": task.ExecutionContext,
+		"dependsOn":        append([]string(nil), task.DependsOn...),
+		"writeLock":        task.WriteLock, "updateId": task.UpdateID,
 		"updateOf": task.UpdateOf, "updateStrategy": task.UpdateStrategy,
 		"updateStatus": task.UpdateStatus,
 	}
@@ -127,6 +128,7 @@ func (s *Service) UpdateTask(teamID, runID, targetTaskID, opID, strategy, text s
 			Ordinal: len(fresh.Tasks), DependsOn: []string{targetTaskID},
 			WriteLock: target.WriteLock, WorkspaceMode: target.WorkspaceMode,
 			WorkspaceID: target.WorkspaceID, BaseRevision: target.BaseRevision,
+			ExecutionContext: target.ExecutionContext,
 			InstructionsHead: InstructionsHead(text), UpdateID: opID,
 			UpdateOf: targetTaskID, UpdateStrategy: strategy,
 		}
@@ -182,21 +184,22 @@ func (s *Service) confirmTaskInterrupt(team *Team, runID, targetTaskID string) e
 	if member == nil {
 		return errors.New("目标成员不存在，停止结果未知")
 	}
-	if sub, ok := s.queue.Submission(member.SessionID, target.SubmissionID); ok {
+	sessionID := taskProviderSessionID(run, target, member)
+	if sub, ok := s.queue.Submission(sessionID, target.SubmissionID); ok {
 		switch sub.Status {
 		case SubStatusCancelled, SubStatusFailed, SubStatusIgnored:
 			return nil
 		case SubStatusUnknown:
 			return errors.New("原任务派发结果未知，不能确认停止")
 		case SubStatusQueued:
-			if err := s.queue.CancelSubmission(member.SessionID, target.SubmissionID); err == nil {
+			if err := s.queue.CancelSubmission(sessionID, target.SubmissionID); err == nil {
 				return nil
 			}
 		}
 	} else {
 		return errors.New("无法读取原任务派发记录，停止结果未知")
 	}
-	_, session, err := s.resolver.Resolve(member.SessionID)
+	_, session, err := s.resolver.Resolve(sessionID)
 	if err != nil || session == nil {
 		return errors.New("无法连接目标成员会话，停止结果未知")
 	}

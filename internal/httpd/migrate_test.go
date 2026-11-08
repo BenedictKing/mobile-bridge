@@ -27,9 +27,11 @@ func migrationFakeAgent(t *testing.T, sessions, prefix string) (argv []string, c
 	}
 	dir := t.TempDir()
 	creates, prompts = filepath.Join(dir, "creates.txt"), filepath.Join(dir, "prompts.txt")
+	createdSessions := filepath.Join(dir, "sessions.jsonl")
 	script := `import json,sys
 CREATES = "` + creates + `"
 PROMPTS = "` + prompts + `"
+CREATED_SESSIONS = "` + createdSessions + `"
 SESSIONS = ` + sessions + `
 PREFIX = "` + prefix + `"
 def bump(path):
@@ -40,12 +42,22 @@ def bump(path):
   pass
  open(path, "w").write(str(n + 1))
  return n
+def created_sessions():
+ rows = []
+ try:
+  rows = [json.loads(line) for line in open(CREATED_SESSIONS) if line.strip()]
+ except OSError:
+  pass
+ return rows
 for line in sys.stdin:
  m=json.loads(line); method=m.get("method"); ident=m.get("id")
  if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
- elif method == "session/list": result={"sessions":SESSIONS}
+ elif method == "session/list": result={"sessions":SESSIONS+created_sessions()}
  elif method == "session/load": result={"sessionId":m.get("params",{}).get("sessionId")}
- elif method == "session/new": result={"sessionId":"%s-%d" % (PREFIX, bump(CREATES)),"modes":{"currentModeId":"build"},"configOptions":[]}
+ elif method == "session/new":
+  params=m.get("params",{}); session_id="%s-%d" % (PREFIX, bump(CREATES))
+  with open(CREATED_SESSIONS,"a") as f: f.write(json.dumps({"sessionId":session_id,"title":params.get("title",""),"cwd":params.get("cwd",""),"updatedAt":1})+"\n")
+  result={"sessionId":session_id,"modes":{"currentModeId":"build"},"configOptions":[]}
  elif method == "session/prompt": bump(PROMPTS); result={"stopReason":"end_turn"}
  else: result={}
  print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
@@ -137,9 +149,16 @@ func TestMigrateAcrossAgents(t *testing.T) {
 		}
 	}
 
-	// Migrating to kimi: no listed kimi project covers the cwd, so the
-	// directory itself becomes the project (projectCreated) and the
-	// transcript lands as the first prompt.
+	// prepare creates a target session in the source cwd. That session then makes
+	// the cwd appear in session/list, changing its displayed project key; confirm
+	// must still claim the same persisted migration rather than report a false
+	// content mismatch.
+	prepare := request(http.MethodPost, "/api/sessions/zcode-0/migrate",
+		`{"agent":"kimi","scope":"main","id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","uiLocale":"zh-CN","phase":"prepare"}`)
+	if prepare.Code != http.StatusOK || !strings.Contains(prepare.Body.String(), `"status": "prepared"`) ||
+		!strings.Contains(prepare.Body.String(), `"projectCreated": true`) {
+		t.Fatalf("migrate prepare status=%d body=%s", prepare.Code, prepare.Body.String())
+	}
 	first := request(http.MethodPost, "/api/sessions/zcode-0/migrate",
 		`{"agent":"kimi","scope":"main","id":"2aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","uiLocale":"zh-CN","instructions":"继续完成剩余测试"}`)
 	if first.Code != http.StatusOK {

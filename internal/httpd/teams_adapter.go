@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acp"
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
@@ -30,7 +32,8 @@ import (
 // NewTeamAdapters 返回 team 服务所需的队列与会话解析端口。装配发生在任何
 // ServeHTTP 之前（构造后直赋无同步的既有惯例）。
 func NewTeamAdapters(server *Server) (team.QueueAdapter, team.SessionResolver) {
-	return teamQueueAdapter{server: server}, teamSessionResolver{server: server}
+	return teamQueueAdapter{server: server}, teamSessionResolver{server: server,
+		executionSessions: &teamExecutionSessionProvisioner{server: server}}
 }
 
 // NewTeamTranscriptSource 返回成员间转发（§7）所需的会话转录提取端口。
@@ -133,7 +136,88 @@ func (a teamQueueAdapter) CancelSubmission(threadID, submissionID string) error 
 
 // teamSessionResolver 映射 resolveACP：live session > manager.Knows > 冷 List
 // 探测（server_bridge.go:81-138），不在此另写归属解析。
-type teamSessionResolver struct{ server *Server }
+type teamSessionResolver struct {
+	server            *Server
+	executionSessions *teamExecutionSessionProvisioner
+}
+
+func (r teamSessionResolver) EnsureExecutionSession(teamID, runID string, member *team.TeamMember, cwd string) (string, error) {
+	provisioner := r.executionSessions
+	if provisioner == nil {
+		provisioner = &teamExecutionSessionProvisioner{server: r.server}
+	}
+	return provisioner.EnsureExecutionSession(teamID, runID, member, cwd)
+}
+
+type teamExecutionSessionProvisioner struct {
+	server *Server
+	mu     sync.Mutex
+}
+
+func (p *teamExecutionSessionProvisioner) EnsureExecutionSession(teamID, runID string, member *team.TeamMember, cwd string) (string, error) {
+	if member == nil || teamID == "" || runID == "" || cwd == "" {
+		return "", errors.New("Lead 执行会话缺少团队、Run、成员或项目目录")
+	}
+	manager := p.server.acpAgentSet()[member.AgentKind]
+	if manager == nil {
+		return "", fmt.Errorf("Agent %s 未配置", member.AgentKind)
+	}
+	ledger := p.server.Creations
+	if ledger == nil {
+		return "", errors.New("Lead 执行会话创建账本未装配")
+	}
+	requestID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:team-execution:"+teamID+":"+runID+":"+member.ID)).String()
+	project := "team-execution:" + teamID
+	memberName := strings.TrimSpace(member.Name)
+	if memberName == "" {
+		memberName = member.ID
+	}
+	title := truncateSubText("团队执行 · "+memberName+" · "+runID, 120)
+
+	// Serialize same-process retries so one request cannot observe an id-less
+	// claim while its first session/new is still completing.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if existing := ledger.lookup(requestID); existing != nil {
+		if existing.Agent != member.AgentKind || existing.Project != project || existing.ProjectCwd != cwd || existing.Title != title {
+			return "", errors.New("Lead 执行会话创建请求与已有内容不匹配")
+		}
+		if existing.ID == "" {
+			return "", errors.New("Lead 执行会话创建结果尚不确定，请检查 Agent 会话列表后重试")
+		}
+		return existing.ID, nil
+	}
+	entry, claimed, err := ledger.begin(requestID, &creationEntry{
+		Agent: member.AgentKind, Project: project, ProjectCwd: cwd, Title: title,
+		Host: "local", At: ledger.now(), State: "creating",
+	})
+	if err != nil {
+		return "", err
+	}
+	if !claimed {
+		if entry == nil || entry.ID == "" {
+			return "", errors.New("Lead 执行会话创建结果尚不确定，请检查 Agent 会话列表后重试")
+		}
+		return entry.ID, nil
+	}
+	session, createErr := manager.Create("sess_"+uuid.NewString(), cwd, title, 60*time.Second)
+	if createErr != nil {
+		var acpErr *acp.Error
+		definite := !errors.As(createErr, &acpErr) || acpErr.Kind == acp.KindError || acpErr.Kind == acp.KindAuthRequired
+		if definite {
+			if releaseErr := ledger.release(requestID); releaseErr != nil {
+				return "", releaseErr
+			}
+		}
+		return "", createErr
+	}
+	if err := ledger.complete(requestID, session.ID); err != nil {
+		return "", err
+	}
+	(&handler{server: p.server}).inheritSessionSettings(manager, member.SessionID, session)
+	warmupMemberSession(manager, session)
+	return session.ID, nil
+}
 
 // Resolve 返回成员会话的归属（manager 为 nil 表示不属于任何 ACP Agent）；
 // session 可能为 nil（归属明确但当前打不开），err 携带打开失败原因。只读

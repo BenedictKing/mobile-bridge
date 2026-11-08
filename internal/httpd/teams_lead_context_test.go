@@ -18,12 +18,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// leadContextEnv 在集成环境上补 Creations 账本（newTeamIntegrationEnv 不装配
-// 迁移面），并建好「主控 + 单成员」团队。
+// leadContextEnv 建好「主控 + 单成员」团队。
 func leadContextEnv(t *testing.T) (*teamIntegrationEnv, string, string, string) {
 	t.Helper()
 	env := newTeamIntegrationEnv(t, t.TempDir())
-	env.server.Creations = mustLoadCreations(t, filepath.Join(env.dataDir, "creations.json"))
 	lead := env.createMemberSession(t, "req-lead", "主控会话")
 	member := env.createMemberSession(t, "req-member", "成员会话")
 	members := `[{"id":"lead-1","sessionId":"` + lead + `","role":"lead"},` +

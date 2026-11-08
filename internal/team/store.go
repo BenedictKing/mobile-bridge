@@ -559,6 +559,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 					run.Threads = append(run.Threads, ExecutionThread{
 						ID:                threadID,
 						MemberID:          payloadString(event.Payload, "memberId"),
+						ExecutionContext:  payloadString(event.Payload, "executionContext"),
 						AgentKind:         payloadString(event.Payload, "agentKind"),
 						ProviderSessionID: payloadString(event.Payload, "providerSessionId"),
 						SourceTaskID:      payloadString(event.Payload, "sourceTaskId"),
@@ -567,6 +568,9 @@ func applyJournalEventToRun(run *Run, event *Event) {
 					})
 				} else {
 					thread.ProviderSessionID = payloadString(event.Payload, "providerSessionId")
+					if context := payloadString(event.Payload, "executionContext"); context != "" {
+						thread.ExecutionContext = context
+					}
 					if kind := payloadString(event.Payload, "agentKind"); kind != "" {
 						thread.AgentKind = kind
 					}
@@ -722,6 +726,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.Status = TaskPlanned
 		task.MemberID = payloadString(event.Payload, "memberId")
 		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
+		task.ExecutionContext = payloadString(event.Payload, "executionContext")
 		task.Attachments = payloadStrings(event.Payload, "attachments")
 		if raw, exists := event.Payload["review"]; exists {
 			if review, ok := raw.(bool); ok {
