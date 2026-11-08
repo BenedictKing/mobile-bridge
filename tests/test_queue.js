@@ -60,6 +60,13 @@ test('queue reorder sends the gateway contract and rolls back failed optimistic 
   assert.equal(context.state.submissions,previous);
 });
 
+test('queue editor has a visible close icon',()=>{
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const start=source.indexOf("dialog.innerHTML='<div class=\"picker-head\""),end=source.indexOf("';",start);
+  assert.ok(start>=0&&end>start);
+  assert.match(source.slice(start,end),/aria-label="关闭">×<\/button>/);
+});
+
 test('queue drag also offers keyboard reordering',()=>{
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   assert.match(source,/ArrowUp/);

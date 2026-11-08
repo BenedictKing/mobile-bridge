@@ -36,7 +36,10 @@ const toolLabel=title=>{
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
-  if(commandRow(row))return timelineText('执行命令')+'（'+commandStateText(commandState(row))+'）';
+  if(commandRow(row)){
+    const state=commandState(row);
+    return timelineText('执行命令')+(state==='completed'||state==='failed'?'':'（'+commandStateText(state)+'）');
+  }
   let label=row.title||row.kind;
   if(toolRow(row))label=toolLabel(row.title);
   if(row.kind==='plan'&&row.entries?.length){

@@ -1412,7 +1412,7 @@ function openQueueEditor(row,target,host){
   if(!dialog){
     dialog=document.createElement('dialog');dialog.id='queue-edit-dialog';dialog.className='picker';
     dialog.setAttribute('aria-labelledby','queue-edit-heading');
-    dialog.innerHTML='<div class="picker-head"><h2 id="queue-edit-heading"></h2><button class="icon-button" type="button" aria-label="关闭"></button></div><div class="picker-body"><form><textarea rows="8" maxlength="100000" aria-label="排队消息"></textarea><p class="error" role="alert"></p><button class="primary" type="submit"></button></form></div>';
+    dialog.innerHTML='<div class="picker-head"><h2 id="queue-edit-heading"></h2><button class="icon-button" type="button" aria-label="关闭">×</button></div><div class="picker-body"><form><textarea rows="8" maxlength="100000" aria-label="排队消息"></textarea><p class="error" role="alert"></p><button class="primary" type="submit"></button></form></div>';
     document.body.append(dialog);
     dialog.querySelector('.icon-button').onclick=()=>dialog.close();
     dialog.querySelector('form').onsubmit=async event=>{
