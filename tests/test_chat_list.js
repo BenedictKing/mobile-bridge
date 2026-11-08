@@ -127,3 +127,17 @@ test('merged group shares one show-more paging budget',()=>{
   assert.equal(find(sessions,'session').length,5);
   assert.equal(find(sessions,'group-more')[0].textContent,'显示更多 · 2');
 });
+
+test('show more and show less share one row at opposite ends',()=>{
+  const listRows=Array.from({length:16},(_,index)=>({
+    id:'chat-'+index,host:'local',recency:Date.now()-index*1000,title:'会话'+index,
+    projectKey:'local|/p',projectName:'P',groupKey:'local|p1',groupName:'P',cwd:'/p',agent:'kimi',
+  }));
+  const sessions=loadList('project',{listRows,projectDirectory:[]});
+  find(sessions,'group-more')[0].onclick();
+  const controls=find(sessions,'group-pagination');
+  assert.equal(controls.length,1);
+  assert.deepEqual(Array.from(controls[0].children,button=>button.textContent),['显示更多 · 1','收起']);
+  const css=readFileSync(require.resolve('../web/style.css'),'utf8');
+  assert.match(css,/\.group-pagination\{display:flex;align-items:center;justify-content:space-between\}/);
+});
