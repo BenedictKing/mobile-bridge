@@ -7,6 +7,7 @@ package artifacts
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ const MaxAPKFile = 512 * 1024 * 1024
 // markdownPath matches image and plain markdown links, angle-bracket targets
 // included: `!?\[[^\]\n]*\]\((?:<target>|target)\)`.
 var markdownPath = regexp.MustCompile(`!?\[[^\]\n]*\]\((?:<([^>\n]+)>|([^)\n]+))\)`)
+var visualizationPath = regexp.MustCompile(`(?m)^[\t ]*\x{E200}visualize\x{E202}([^\r\n]+)\x{E201}[\t ]*\r?$`)
 
 var lineSuffix = regexp.MustCompile(`:[0-9]+$`)
 
@@ -203,6 +205,16 @@ func Collect(view *jsoncompat.Object, cwd string) map[string]Entry {
 						reference = match[2]
 					}
 					add(reference, false)
+				}
+			}
+			if text, _ := message.MustGet("text").(string); role == "assistant" && text != "" {
+				for _, match := range visualizationPath.FindAllStringSubmatch(text, -1) {
+					var payload struct {
+						Path string `json:"path"`
+					}
+					if json.Unmarshal([]byte(match[1]), &payload) == nil {
+						add(payload.Path, false)
+					}
 				}
 			}
 			addAttachmentPaths(message.MustGet("attachments"), add)

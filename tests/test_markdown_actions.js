@@ -22,10 +22,10 @@ require(path.join(web,'markdown.js'));
 
 function find(node,cls,out=[]){if(String(node.className).split(/\s+/).includes(cls))out.push(node);node.children.forEach(child=>find(child,cls,out));return out;}
 function text(node){return node.textContent+node.children.map(text).join('');}
-function render(source){
+function render(source,files=[]){
   copies.length=0;
   const node=new Node('div');
-  window.renderMarkdown(node,source,[],()=>'',{fullText:async()=>source});
+  window.renderMarkdown(node,source,files,file=>'/files/'+file.id,{fullText:async()=>source});
   return node;
 }
 const envelope='<team-actions>\n{"actions":[{"type":"delegate","member":"m1","task":"go"}]}\n</team-actions>';
@@ -55,4 +55,20 @@ test('messages without envelopes render as before',()=>{
   const node=render('# 标题\n\n- 一\n- 二\n\n`code` 与 <team-actions> 字样');
   assert.equal(find(node,'team-actions-card').length,0);
   assert.match(text(node),/<team-actions> 字样/);
+});
+
+test('Codex visualize directives render their HTML artifact preview',()=>{
+  const path='/tmp/chart.html';
+  const directive='\uE200visualize\uE202'+JSON.stringify({path,mode:'wide'})+'\uE201';
+  const node=render('前文\n'+directive+'\n后文',[{id:'file-1',reference:path,name:'chart.html'}]);
+  assert.equal(find(node,'artifact-preview').length,1);
+  assert.match(text(node),/chart\.html/);
+  assert.doesNotMatch(text(node),/visualize/);
+});
+
+test('visualize directives inside code blocks stay literal',()=>{
+  const directive='\uE200visualize\uE202{"path":"/tmp/chart.html"}\uE201';
+  const node=render('```\n'+directive+'\n```',[{id:'file-1',reference:'/tmp/chart.html',name:'chart.html'}]);
+  assert.equal(find(node,'artifact-preview').length,0);
+  assert.match(text(node),/visualize/);
 });

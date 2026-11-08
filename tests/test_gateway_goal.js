@@ -63,3 +63,25 @@ test('unknown delivery requires an explicit verified review action',async()=>{
   assert.equal(calls[0].expectedState,'outcome_unknown');
   assert.equal(calls[0].revision,7);
 });
+
+test('compact mode menu keeps per-chat selection and shows only the active mode',()=>{
+  const saved=new Map(),options={};
+  for(const value of ['default','plan','goal'])options[value]=Object.assign(new Node('option'),{hidden:false,disabled:false});
+  const select=new Node('select');
+  select.querySelector=selector=>options[/\[value="?([^\]"]+)/.exec(selector)?.[1]]||null;
+  const classList=()=>({toggle(){}});
+  const button=Object.assign(new Node('button'),{classList:classList(),contains:()=>false});
+  const label=new Node(),items=['default','plan','goal'].map(value=>Object.assign(new Node('button'),{dataset:{workMode:value},classList:classList()}));
+  const menu=Object.assign(new Node('div'),{querySelectorAll:()=>items,contains:()=>false});
+  global.document={createElement:tag=>new Node(tag),addEventListener(){}};
+  const modes=new WorkModes({select,button,label,menu,hint:new Node(),goalRoot:new Node(),goalToggle:new Node(),
+    storage:{getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value),removeItem:key=>saved.delete(key)},
+    onCancel:async()=>{},onStatus:async()=>{},onEdit:async()=>{},onContinue:async()=>{},onComplete:async()=>{},onReview:async()=>{}});
+  modes.open('compact');modes.render({host:'local',status:'idle',capabilities:['goals'],goalRuntimeAvailable:true},'send',false);
+  assert.equal(label.textContent,'模式');
+  button.onclick();assert.equal(menu.hidden,false);
+  items[1].onclick();
+  assert.equal(saved.get('work-mode:compact'),'plan');
+  assert.equal(label.textContent,'计划');
+  assert.equal(menu.hidden,true);
+});

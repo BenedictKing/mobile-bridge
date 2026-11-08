@@ -3,6 +3,7 @@ package artifacts
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -136,6 +137,19 @@ func TestCollectRelativeAndFileURLReferences(t *testing.T) {
 	entry, _ := files[ID(poster)]
 	if entry.Reference != "sub/海报.png" || !entry.Image {
 		t.Fatalf("entry kept first reference: %+v", entry)
+	}
+}
+
+func TestCollectCodexVisualizationDirective(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "chart.html")
+	writeFile(t, path, []byte("<html>chart</html>"))
+	directive := "\uE200visualize\uE202{\"path\":" + strconv.Quote(path) + ",\"mode\":\"wide\"}\uE201"
+	view := viewWithAgentText(t, "前文\n"+directive+"\n后文")
+	files := Collect(view, root)
+	entry, ok := files[ID(path)]
+	if !ok || entry.Reference != path || entry.Name != "chart.html" || entry.Image {
+		t.Fatalf("visualization entry=%+v, files=%+v", entry, files)
 	}
 }
 

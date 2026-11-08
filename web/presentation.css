@@ -491,23 +491,15 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 .approval-risk.risk-elevated,.approval-risk.file{border:1px solid var(--warning-line)}
 .approval select{background:var(--raised)}
 
-/* 输入区：桌面端下拉框按内容取宽，不再拉伸成两条长框；触屏不显示键盘快捷键。 */
-@media(min-width:721px){
-  .compose-bottom{grid-template-columns:36px auto auto minmax(0,1fr) auto}
-  .compose-bottom select{width:auto;max-width:220px}
-  .compose-actions{grid-column:5}
-}
+/* 输入区：触屏不显示键盘快捷键；手机运行中停止只留图标。 */
 @media(pointer:coarse){.send-shortcut{display:none}}
 .stop{display:inline-flex;align-items:center;justify-content:center;gap:5px}
 .stop-icon{font-size:.9em;line-height:1}
-/* 手机运行中：停止只留图标（名称在 aria-label 里），把宽度还给“发送方式 / 工作模式”。 */
 @media(max-width:720px){
   .compose-actions .stop{width:44px;padding:0}
-  .compose-bottom{grid-template-columns:44px minmax(0,4fr) minmax(0,3fr) auto}
   .stop-label{display:none}
 }
 @media(max-width:420px){
-  .compose-bottom:has(#stop:not([hidden])){grid-template-columns:44px minmax(0,1fr) minmax(76px,auto) auto;gap:3px}
   .compose-bottom:has(#stop:not([hidden])) .compose-actions{gap:3px}
   .compose-bottom:has(#stop:not([hidden])) .send-shortcut{display:none}
 }
@@ -669,3 +661,52 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
   .user-jump-item{min-height:36px}
 }
 @media(min-width:721px) and (max-width:1050px){.user-jump{right:8px;width:176px}}
+
+/* 输入区只保留正文与一行操作；低频工具在窄屏收入二级面板。 */
+.notification-button{position:relative;display:grid;place-items:center;width:40px;min-width:40px;height:40px;padding:0}
+.notification-button.active{color:var(--green)}
+.notification-dot{position:absolute;top:7px;right:7px;width:7px;height:7px;border:2px solid var(--page);border-radius:50%;background:var(--green);box-sizing:content-box}
+.composer{position:relative;padding:6px 0 max(8px,env(safe-area-inset-bottom))}
+.composer textarea{min-height:48px;height:48px;padding:10px 12px}
+.compose-bottom{position:relative;display:flex;align-items:center;gap:6px;padding-top:6px}
+.composer-options{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
+.composer-options .tool-button{min-height:36px;padding:6px 9px}
+.composer-options #model-button{flex:0 1 auto;min-width:0;max-width:240px}
+.composer-options .composer-toggle{margin-left:0}
+#composer-toggle-label{display:none}
+.mode-button{display:inline-flex;align-items:center;gap:5px}
+.mode-button.active{border-color:var(--control);background:var(--soft);color:var(--green)}
+.mode-control,.send-split{position:relative;display:flex;flex:none}
+.composer-options-button{display:none}
+.compose-actions{margin-left:auto;align-items:center}
+.send-split #send{border-radius:8px 0 0 8px}
+#send-menu-button{display:grid;place-items:center;align-self:stretch;width:34px;min-height:38px;padding:0;border:0;border-left:1px solid #ffffff38;border-radius:0 8px 8px 0;background:var(--green);color:#fff}
+.composer-menu{position:absolute;z-index:12;bottom:calc(100% + 6px);min-width:160px;padding:5px;border:1px solid var(--line);border-radius:10px;background:var(--raised);box-shadow:0 12px 36px #00000024;color:var(--text)}
+.mode-control .composer-menu{left:0}
+.send-menu{right:0}
+.composer-menu button{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:7px 10px;border:0;border-radius:7px;background:transparent;color:var(--text);text-align:left;white-space:nowrap}
+.composer-menu button:hover,.composer-menu button.active{background:var(--active)}
+.composer-menu button[aria-checked=true]::after{content:'✓';margin-left:auto;color:var(--green)}
+.composer-expand{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;min-height:40px;padding:6px;border:0;border-radius:8px;background:transparent;color:var(--muted)}
+.composer-expand:hover{background:var(--active);color:var(--text)}
+.composer-expand svg{width:18px;height:18px}
+@media(max-width:720px){
+  .chat-head .notification-button{width:44px;min-width:44px;height:44px}
+  .notification-dot{top:8px;right:8px}
+  .composer{padding-top:6px}
+  .compose-bottom{gap:6px}
+  .composer-options-button{display:grid;place-items:center;flex:none;width:44px;height:44px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted)}
+  .composer-options-button:hover,.composer-options-button[aria-expanded=true]{background:var(--active);color:var(--text)}
+  .composer-options-button svg{width:21px;height:21px}
+  .composer-options{display:none;position:absolute;z-index:11;left:0;right:0;bottom:calc(100% + 6px);padding:8px;border:1px solid var(--line);border-radius:12px;background:var(--raised);box-shadow:0 12px 36px #00000024;gap:5px}
+  .composer-options.is-open{display:grid}
+  .composer-options .tool-button,.composer-options .composer-toggle{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;max-width:none;min-height:44px;padding:9px 11px;text-align:left}
+  .composer-options .mode-control{display:grid;width:100%}
+  .composer-options .mode-control .composer-menu{position:static;width:100%;margin-top:5px;box-shadow:none}
+  #composer-toggle-label{display:inline}
+  .composer-toggle svg{width:18px;height:18px}
+  .send-split #send{min-height:44px}
+  #send-menu-button{width:36px;min-height:44px}
+  .composer-menu button{min-height:44px}
+  .mode-control .composer-menu button{min-height:40px}
+}

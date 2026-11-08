@@ -1,11 +1,18 @@
 'use strict';
 
 class WorkModes {
-  constructor({select,hint,goalRoot,goalToggle,storage=sessionStorage,onCancel,onStatus,onEdit,onContinue,onComplete,onReview,newId=()=>crypto.randomUUID()}) {
-    this.select=select;this.hint=hint;this.goalRoot=goalRoot;this.goalToggle=goalToggle;this.storage=storage;this.onCancel=onCancel;this.onStatus=onStatus;this.onEdit=onEdit;this.onContinue=onContinue;this.onComplete=onComplete;this.onReview=onReview;this.newId=newId;this.sending=false;this.editing=false;this.editText="";
+  constructor({select,hint,button,label,menu,goalRoot,goalToggle,storage=sessionStorage,onCancel,onStatus,onEdit,onContinue,onComplete,onReview,newId=()=>crypto.randomUUID()}) {
+    this.select=select;this.hint=hint;this.button=button;this.label=label;this.menu=menu;this.goalRoot=goalRoot;this.goalToggle=goalToggle;this.storage=storage;this.onCancel=onCancel;this.onStatus=onStatus;this.onEdit=onEdit;this.onContinue=onContinue;this.onComplete=onComplete;this.onReview=onReview;this.newId=newId;this.sending=false;this.editing=false;this.editText="";
     this.key=null;this.selection=null;this.view=null;this.cancelBusy=false;this.statusBusy=null;this.actionError='';
     select.onchange=()=>{this.selection=select.value;this.storage.setItem('work-mode:'+this.key,this.selection);this.actionError='';this.render();};
     goalToggle.onclick=()=>{this.storage.removeItem('hidden-goal:'+this.key);this.render();this.goalRoot.querySelector('.goal-close')?.focus();};
+    if(button&&menu){
+      const close=()=>{menu.hidden=true;button.setAttribute('aria-expanded','false');};
+      button.onclick=()=>{if(button.disabled)return;menu.hidden=!menu.hidden;button.setAttribute('aria-expanded',String(!menu.hidden));};
+      for(const item of menu.querySelectorAll('[data-work-mode]'))item.onclick=()=>{if(item.disabled)return;select.value=item.dataset.workMode;select.onchange();close();button.focus();};
+      document.addEventListener('click',event=>{if(!menu.hidden&&!menu.contains(event.target)&&!button.contains(event.target))close();});
+      document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!menu.hidden){close();button.focus();}});
+    }
   }
   open(key) {
     this.key=key;const saved=this.storage.getItem('work-mode:'+key);
@@ -55,6 +62,20 @@ class WorkModes {
     this.hint.textContent=t(sendMode==='steer'?'补充内容沿用当前任务模式':this.select.value==='plan'?'先讨论并制定计划，确认后执行。':this.select.value==='goal'?(goalSupported?'设定目标后持续执行，直到完成、暂停或取消。':goalUnavailableReason):'');
     this.hint.hidden=!this.hint.textContent;
     this.select.title=this.hint.textContent;
+    if(this.button&&this.menu){
+      const value=this.select.value;
+      this.button.disabled=this.select.disabled;
+      this.button.classList.toggle('active',value!=='default');
+      this.button.title=this.hint.textContent||t('工作模式');
+      this.label.textContent=t(value==='plan'?'计划':value==='goal'?'目标':'模式');
+      for(const item of this.menu.querySelectorAll('[data-work-mode]')){
+        const option=this.select.querySelector('[value="'+item.dataset.workMode+'"]');
+        item.hidden=!!option?.hidden;item.disabled=this.select.disabled||!!option?.disabled;
+        item.classList.toggle('active',item.dataset.workMode===value);
+        item.setAttribute('aria-checked',String(item.dataset.workMode===value));
+      }
+      if(this.select.disabled){this.menu.hidden=true;this.button.setAttribute('aria-expanded','false');}
+    }
     const goal=view?.goal,request=view?.goalSubmission;
     const goalIdentity=request?JSON.stringify(['request',request.id]):goal?JSON.stringify(['goal',goal.goalId||goal.createdAt,goal.objective]):null;
     const dismissed=!!goalIdentity&&this.storage.getItem('hidden-goal:'+this.key)===goalIdentity;

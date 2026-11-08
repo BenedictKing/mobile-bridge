@@ -40,7 +40,18 @@ if(typeof document!=='undefined')(()=>{
   const key='bridge-appearance',system=window.matchMedia('(prefers-color-scheme: dark)');
   let saved;try{saved=JSON.parse(localStorage.getItem(key));}catch{}
   let settings=ChatAppearance.normalize(saved),collapsed=false;
-  const composer=get('composer'),body=get('composer-body'),toggle=get('composer-toggle'),message=get('message');
+  const composer=get('composer'),body=get('composer-body'),toggle=get('composer-toggle'),expander=get('composer-expand'),message=get('message');
+  const options=get('composer-options'),optionsButton=get('composer-options-button'),compactMedia=window.matchMedia('(max-width:720px)');
+  function setOptionsOpen(value){
+    const open=!!value&&compactMedia.matches;options.classList.toggle('is-open',open);
+    optionsButton.setAttribute('aria-expanded',String(open));
+  }
+  optionsButton.onclick=()=>setOptionsOpen(!options.classList.contains('is-open'));
+  for(const id of ['model-button','skills-button','permission-button'])get(id).addEventListener('click',()=>setOptionsOpen(false));
+  document.querySelectorAll('#work-mode-menu [data-work-mode]').forEach(item=>item.addEventListener('click',()=>setOptionsOpen(false)));
+  document.addEventListener('click',event=>{if(options.classList.contains('is-open')&&!options.contains(event.target)&&!optionsButton.contains(event.target))setOptionsOpen(false);});
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&options.classList.contains('is-open')){setOptionsOpen(false);optionsButton.focus();}});
+  compactMedia.addEventListener('change',()=>setOptionsOpen(false));
   function preserveReading(change){
     const timeline=typeof chatTimeline==='undefined'?null:chatTimeline;
     const anchor=timeline?.capture(),bottom=timeline?.following;
@@ -78,6 +89,7 @@ if(typeof document!=='undefined')(()=>{
     const text=BridgeI18n.t(collapsed?'展开输入区':'收起输入区');
     toggle.setAttribute('aria-label',text);toggle.title=text;
     toggle.setAttribute('aria-expanded',String(!collapsed));
+    get('composer-toggle-label').textContent=text;
   }
   function updateSendHint(){
     const hint=get('send-shortcut');if(!hint)return;
@@ -91,12 +103,14 @@ if(typeof document!=='undefined')(()=>{
   }
   function setCollapsed(value){
     preserveReading(()=>{
-      if(value&&body.contains(document.activeElement))toggle.focus();
-      collapsed=value;body.hidden=value;composer.classList.toggle('is-collapsed',value);relabel();
+      const restoreFocus=value&&body.contains(document.activeElement);
+      collapsed=value;body.hidden=value;expander.hidden=!value;composer.classList.toggle('is-collapsed',value);relabel();
+      setOptionsOpen(false);if(restoreFocus)expander.focus();
     });
     if(!value)resizeMessage();
   }
   toggle.onclick=()=>setCollapsed(!collapsed);
+  expander.onclick=()=>setCollapsed(false);
   message.addEventListener('input',resizeMessage);
   const viewport=window.visualViewport;
   function syncViewport(){

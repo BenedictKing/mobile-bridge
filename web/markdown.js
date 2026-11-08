@@ -12,8 +12,30 @@
     }
     return lines;
   };
-  // 渲染与复制共用的切片：Lead 动作信封单独成卡片，其余正文走 Markdown。
-  const segments = text => typeof splitTeamActions === 'function' ? splitTeamActions(text, codeLines) : [{type:'text', text:String(text || '')}];
+  const visualizationSegments = text => {
+    const source=String(text||''),prefix='\uE200visualize\uE202';
+    if(!source.includes(prefix))return [{type:'text',text:source}];
+    const excluded=codeLines(source),parts=[];
+    let plain='';
+    const flush=()=>{if(plain){parts.push({type:'text',text:plain});plain='';}};
+    for(const [index,line] of (source.match(/[^\n]*\n|[^\n]+$/g)||[]).entries()){
+      const match=/^[\t ]*\uE200visualize\uE202(.*)\uE201[\t ]*\r?\n?$/.exec(line);
+      if(match&&!excluded.has(index)){
+        try{
+          const payload=JSON.parse(match[1]);
+          if(typeof payload.path==='string'&&payload.path){flush();parts.push({type:'visualization',path:payload.path});continue;}
+        }catch{}
+      }
+      plain+=line;
+    }
+    flush();
+    return parts.length?parts:[{type:'text',text:source}];
+  };
+  // 渲染与复制共用的切片：Lead 动作信封和 Codex 可视化单独成卡片，其余正文走 Markdown。
+  const segments = text => {
+    const parts=typeof splitTeamActions === 'function' ? splitTeamActions(text, codeLines) : [{type:'text', text:String(text || '')}];
+    return parts.flatMap(part=>part.type==='text'?visualizationSegments(part.text):[part]);
+  };
 
   // Build nodes from parsed tokens; model output never becomes executable HTML.
   window.renderMarkdown = function(node, text, files = [], fileUrl = () => '', options = {}) {
@@ -175,11 +197,17 @@
         }
       }
     }
-    // Lead 动作信封渲染成折叠卡片（team-chat.js splitTeamActions，与网关同一规则）；
-    // 其余正文照常走 Markdown。代码块序号跨片段连续，复制按钮按同一切片取全文代码块。
+    // 协议卡片不占 Markdown 代码块序号，复制按钮仍按同一切片取全文代码块。
     for (const part of segments(text)) {
       if (part.type === 'actions') body.append(renderTeamActionsCard(part, t));
-      else appendTokens(markdown.parse(part.text, {}), body);
+      else if(part.type==='visualization'){
+        const destination=target(markdown.normalizeLink(part.path));
+        if(destination?.file&&htmlArtifact(destination.file))body.append(htmlPreview(destination.file,destination.url));
+        else{
+          const unavailable=document.createElement('p');unavailable.className='muted visualization-unavailable';
+          unavailable.textContent=t('可视化文件不可用');body.append(unavailable);
+        }
+      }else appendTokens(markdown.parse(part.text, {}), body);
     }
     node.append(body);
   };
