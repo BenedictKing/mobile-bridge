@@ -261,6 +261,7 @@ func transcriptView() *jsoncompat.Object {
 		turn(message("user", "第一个问题"), message("assistant", "第一个回答")),
 		turn(message("activity", "详细的活动输出文本", [2]string{"title", "read"})),
 		turn(message("activity", "重要操作的第一行\n更多细节", [2]string{"title", "执行命令"})),
+		turn(message("activity", "搜索参数与结果", [2]string{"kind", "toolCall"}, [2]string{"title", "WebSearch"})),
 		turn(message("error", "出错了")),
 		turn(message("user", "第二个问题"), message("assistant", "第二个回答")))
 	view.Set("turns", turns)
@@ -278,13 +279,16 @@ func TestMigrationTranscriptScopes(t *testing.T) {
 		roles += entry.role + ","
 		texts += entry.text + "|"
 	}
-	// Routine read activity drops from the main scope; the multi-line
-	// command activity collapses to its first line with the title prefix.
+	// Routine read and generic tool activity drop from the main scope; the
+	// multi-line command activity collapses to its first line with the title prefix.
 	if roles != "user,assistant,activity,error,user,assistant," {
 		t.Fatalf("main roles=%s", roles)
 	}
 	if !strings.Contains(texts, "执行命令：重要操作的第一行") || !strings.Contains(texts, "出错了") {
 		t.Fatalf("main texts=%s", texts)
+	}
+	if strings.Contains(texts, "WebSearch") || strings.Contains(texts, "搜索参数与结果") {
+		t.Fatalf("main 不应保留普通工具调用: %s", texts)
 	}
 
 	latest, _ := migrationTranscript(view, "latest")
@@ -293,23 +297,27 @@ func TestMigrationTranscriptScopes(t *testing.T) {
 	}
 
 	full, _ := migrationTranscript(view, "full")
-	if len(full) != 7 {
+	if len(full) != 8 {
 		t.Fatalf("full entries=%+v", full)
 	}
 }
 
-func TestMigrationTranscriptMainKeepsLongAssistantSummary(t *testing.T) {
-	view := transcriptView()
-	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
-	turn, _ := turns.Items[len(turns.Items)-1].(*jsoncompat.Object)
-	messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
-	assistant, _ := messages.Items[len(messages.Items)-1].(*jsoncompat.Object)
-	summary := "最终总结：" + strings.Repeat("关键结论与完整上下文。", 1000)
-	assistant.Set("text", summary)
+func TestMigrationTranscriptKeepsLongAssistantSummary(t *testing.T) {
+	for _, scope := range []string{"main", "full", "latest"} {
+		t.Run(scope, func(t *testing.T) {
+			view := transcriptView()
+			turns, _ := view.MustGet("turns").(*jsoncompat.Array)
+			turn, _ := turns.Items[len(turns.Items)-1].(*jsoncompat.Object)
+			messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+			assistant, _ := messages.Items[len(messages.Items)-1].(*jsoncompat.Object)
+			summary := "最终总结：" + strings.Repeat("关键结论与完整上下文。", 2500)
+			assistant.Set("text", summary)
 
-	entries, _ := migrationTranscript(view, "main")
-	if len(entries) == 0 || entries[len(entries)-1].text != summary {
-		t.Fatalf("main 应完整保留助手长总结，实际末尾长度=%d", len(entries[len(entries)-1].text))
+			entries, _ := migrationTranscript(view, scope)
+			if len(entries) == 0 || entries[len(entries)-1].text != summary {
+				t.Fatalf("%s 应完整保留助手长总结，实际末尾长度=%d", scope, len(entries[len(entries)-1].text))
+			}
+		})
 	}
 }
 

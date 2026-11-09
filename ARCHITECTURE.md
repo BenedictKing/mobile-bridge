@@ -209,9 +209,9 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 `POST /api/sessions/<sid>/migrate`（body `{agent, scope?, project?, id, uiLocale?, instructions?}`）把当前会话的上下文搬到另一个（或同一个）Agent 的新会话。`instructions` 是最多 8000 字的可选后续指示，去除首尾空白后作为独立段落追加在注入消息末尾；缺省或空白时注入消息保持原样。`scope` 选择复制范围，默认 `main`：
 
-- `main`：主要历史。user/assistant 保留全文，activity 压缩成"标题+首行"一行，输出丢弃；上限为最近 20 条且总量 30k 字符（单条 4k 截断），超出从头部丢弃并注明。
-- `full`：完全复制历史。同样的摊平规则，预算放大到 500 条 / 90k 字符（单条 12k，总量仍低于 send 的 100k 上限）。codex 源的保存历史是分页的，`Bridge.migrate` 会先把 `history_limit` 置为 None 重读完整 rollout（读取失败直接报错，不静默截断头部）；ACP 源附接时已是完整历史，无需扩展。
-- `latest`：只复制最新提问和回答。仅保留 user/assistant 角色，从最后一条 user 消息截到结尾（无 user 时只留最后一条助手消息），预算 12 条 / 40k 字符（单条 20k，长计划不被单条上限切断）；注入消息使用独立的"最新问答"头尾文案。
+- `main`：主要历史。user/assistant 保留全文，普通工具调用与只读检查命令省略，其余 activity 压缩成"标题+首行"一行，输出丢弃；上限为最近 50 条且总量 60k 字符（非对话单条 6k 截断），超出从头部丢弃并注明。
+- `full`：完全复制历史。同样的摊平规则但保留普通工具调用，预算放大到 500 条 / 90k 字符（非对话单条 12k，总量仍低于 send 的 100k 上限）。codex 源的保存历史是分页的，`Bridge.migrate` 会先把 `history_limit` 置为 None 重读完整 rollout（读取失败直接报错，不静默截断头部）；ACP 源附接时已是完整历史，无需扩展。
+- `latest`：只复制最新提问和回答。仅保留 user/assistant 角色且不按单条长度截断，从最后一条 user 消息截到结尾（无 user 时只留最后一条助手消息），预算 12 条 / 40k 字符；注入消息使用独立的"最新问答"头尾文案。
 
 源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`；本机源匹配不到时自动以源目录在目标上创建（合成与 `AcpAdapter.projects()` 同构的 resolved 项目，key 为 `kind:sha256(cwd)[:12]`，结果带 `projectCreated: true`，目标随后列出该会话即自然收录该目录），远端源的 cwd 是远端路径、无法在本机目标上创建，仍报错并要求显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。源会话保持不变。
 

@@ -42,6 +42,10 @@ var migrationReadOnlyCommand = regexp.MustCompile(
 // isMigrationNoise drops routine inspection/tool bookkeeping from the default
 // transcript (scope "main" only).
 func isMigrationNoise(message *jsoncompat.Object) bool {
+	switch strings.ToLower(strings.TrimSpace(stringField(message, "kind"))) {
+	case "toolcall", "tool_call", "mcptoolcall", "dynamictoolcall", "function_call", "custom_tool_call":
+		return true
+	}
 	title := ""
 	for _, key := range []string{"title", "kind"} {
 		if text, ok := message.MustGet(key).(string); ok && text != "" {
@@ -116,8 +120,8 @@ type migrationEntry struct {
 
 // migrationTranscript flattens a normalized view into (role, text) entries,
 // biased to the tail: user/assistant turns keep full text, activities
-// collapse to a one-line summary, outputs drop. "main" lets long assistant
-// summaries use the total budget instead of the ordinary per-entry cap.
+// collapse to a one-line summary, outputs drop. "main" also drops routine
+// tool calls so they do not displace conversation text from the budget.
 // "latest" keeps only the final user question plus what followed.
 func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntry, bool) {
 	entries := []migrationEntry{}
@@ -192,12 +196,8 @@ func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntr
 	maxMessages, maxChars, entryChars := migrationBudgets[scope][0], migrationBudgets[scope][1], migrationBudgets[scope][2]
 	capped := make([]migrationEntry, 0, len(entries))
 	for _, entry := range entries {
-		limit := entryChars
-		if scope == "main" && entry.role == "assistant" {
-			limit = maxChars
-		}
-		if utf8.RuneCountInString(entry.text) > limit {
-			entry.text = string([]rune(entry.text)[:limit]) + "…"
+		if entry.role != "user" && entry.role != "assistant" && utf8.RuneCountInString(entry.text) > entryChars {
+			entry.text = string([]rune(entry.text)[:entryChars]) + "…"
 		}
 		capped = append(capped, entry)
 	}
