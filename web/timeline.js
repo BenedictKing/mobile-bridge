@@ -4,6 +4,8 @@ const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(s
 // 工具调用行不止一种 kind：ACP 管线的 toolCall、桌面回放的 storedToolEvent、
 // MCP 的 mcpToolCall/dynamicToolCall。折叠行为按「是否工具行」统一判定。
 const TOOL_ROW_KINDS=/^(toolCall|tool_call|storedToolEvent|mcpToolCall|dynamicToolCall)$/;
+// userIndex contains only user rows and omits role, so recognize its protocol entries by prefix too.
+const internalTeamProtocolRow=row=>(row?.role==='user'||row?.role==null)&&/^\s*\[(?:Team delegation|Team context|Team review|Team historical issue routing|Team issue routing|Team account quotas|Team background tasks)\]/i.test(String(row.text||''));
 const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecution)$/.test(row.kind)||row.toolKind==='execute');
 const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row));
 const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title==='steered');
@@ -55,8 +57,10 @@ const rowLabel=row=>{
 
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
-  constructor({url, request, renderMeta, renderText, status, onAction}) {
-    Object.assign(this,{url,request,renderMeta,renderText,status,onAction});
+  constructor({url, request, renderMeta, renderText, status, onAction, hideInternalTeamMessages=false}) {
+    Object.assign(this,{url,request,renderMeta,renderText,status,onAction,hideInternalTeamMessages});
+    if(typeof currentTeam!=='undefined'&&currentTeam)this.hideInternalTeamMessages=true;
+    this.viewportLocked=!!(typeof currentTeam!=='undefined'&&currentTeam&&typeof teamCanvas!=='undefined'&&teamCanvas?.mode==='canvas');
     this.viewport=document.getElementById('timeline');
     this.container=document.getElementById('messages');
     this.older=document.getElementById('older');
@@ -90,7 +94,9 @@ class ChatTimeline {
   atBottom(){return this.viewport.scrollHeight-this.viewport.scrollTop-this.viewport.clientHeight<110;}
   nearTop(){const nodes=[...this.container.children].filter(n=>!n.hidden);return nodes.length>0&&nodes.slice(0,11).some(n=>n.getBoundingClientRect().bottom>=this.viewport.getBoundingClientRect().top);}
   capture(accept=()=>true){const top=this.viewport.getBoundingClientRect().top;const nodes=[...this.container.children].filter(n=>!n.hidden&&!n.dataset.summary&&accept(n));const node=nodes.find(n=>n.getBoundingClientRect().bottom>top)||nodes[nodes.length-1];return node?{key:node.dataset.key,offset:node.getBoundingClientRect().top-top}:null;}
+  setViewportLocked(locked){this.viewportLocked=!!locked;if(this.viewportLocked){this.viewport.scrollTop=0;this.lastTop=0;this.anchor=null;this.following=true;}}
   rowVisible(row){
+    if(this.hideInternalTeamMessages&&internalTeamProtocolRow(row))return false;
     if(row.role==='user'||row.role==='error')return true;
     if(row.kind==='reasoning')return this.showReasoning;
     if(row.role==='activity'||row.phase==='commentary')return this.showProcess;
@@ -107,6 +113,7 @@ class ChatTimeline {
   jumpBottom(){this.viewport.scrollTop=this.viewport.scrollHeight;this.following=true;this.syncNewer();}
   restore(anchor,bottom=false){
     if(this.abort.signal.aborted)return;
+    if(this.viewportLocked){this.viewport.scrollTop=0;this.lastTop=0;this.anchor=null;this.following=true;return;}
     this.suppress=true;
     const node=anchor&&this.nodes.get(anchor.key)?.node;
     if(bottom)this.jumpBottom();
@@ -122,7 +129,7 @@ class ChatTimeline {
     const merged=new Map();
     if(this.userIndex)for(const entry of this.userIndex)merged.set(entry.key,entry);
     for(const row of ordered)if(row.role==='user')merged.set(row.key,row);
-    const rows=[...merged.values()];
+    const rows=[...merged.values()].filter(row=>!this.hideInternalTeamMessages||!internalTeamProtocolRow(row));
     this.userJump.hidden=!rows.length;this.userJumpCount.textContent=rows.length?String(rows.length):'';
     this.userJumpList.replaceChildren();this.userJumpButtons.clear();
     for(const [index,row] of rows.entries()){

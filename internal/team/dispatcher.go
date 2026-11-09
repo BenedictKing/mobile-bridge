@@ -412,10 +412,16 @@ func composeTaskDispatchMessage(team *Team, run *Run, task *Task, policy TeamPol
 func composeTaskDispatchMessageWithBriefing(team *Team, run *Run, task *Task, policy TeamPolicy, leadBriefing string) composedTaskMessage {
 	context := BuildTaskContext(run, task, policy)
 	lead := BuildLeadBriefing(team, run, task, policy)
-	if lead != "" {
+	leadTask := team != nil && run != nil && task != nil && run.AutoPlan &&
+		team.LeadID != "" && task.MemberID == team.LeadID && !task.Reduction &&
+		(task.ExecutionContext != ExecutionContextLeadRun || task.IssueClassificationOnly)
+	if lead != "" || (leadTask && leadBriefing != "") {
 		lead += leadBriefing
 	}
 	briefing := lead + BuildReviewBriefing(team, task)
+	if task.IssueClassificationOnly {
+		briefing = leadBriefing
+	}
 	if task.Reduction {
 		// 汇总任务（summarize 动作派生 / 自动收尾）注入结构化交付事实（阶段 0，
 		// docs/team-demand-queue-plan.md §6）：Lead 的自然语言摘要必须与编排器

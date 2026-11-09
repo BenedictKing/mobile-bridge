@@ -12,7 +12,7 @@ function teamQueueModeEnabled(teamID){
   return !!store&&teamID&&store.getItem('teamQueueMode:'+teamID)==='1';
 }
 function teamSubmissionFields(teamID){
-  const fields={teamMode:'team',teamId:teamID};
+  const fields={teamMode:'team',teamId:teamID,teamIssueRoutingVersion:'1'};
   if(teamQueueModeEnabled(teamID))fields.teamQueueVersion='2';
   return fields;
 }

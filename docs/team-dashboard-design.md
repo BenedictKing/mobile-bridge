@@ -93,11 +93,29 @@ Run 详情保持现有页面作为第二层工作区，沿用同一应用侧栏�
 
 ### 团队聊天画布
 
-团队聊天默认打开「画布」视图；「对话」保留原会话时间线，并在时间线上方提供返回画布入口。画布用每条真实输入作为气泡，按 Run 连接到事项卡片。卡片直接使用 Run summary 的状态、任务进度、最近回音和下一步；点击卡片展开详情，再进入既有 Run 页面查看完整任务和证据。
+团队聊天默认打开「画布」视图；「对话」保留原会话时间线，并在时间线上方提供固定的返回画布入口。画布只呈现团队输入和独立 Issue，不把每条时间线 user row、Lead 动作信封或 Run 自动转换成 Issue。
 
-气泡来源按可信度读取：`GET /api/teams/:teamId/inputs` 中的 TeamInput、Run 的原始 `goal`，以及任务 ID 为 `input-<inputId>` 的对话输入。网关生成的 `[Team delegation]`、`[Team context]`、`[Team review]` 信封不作为用户气泡。详情支持原有 Run 汇总与交付证据；未能关联到 Run 的会话消息显示为「待关联」，不推测所属事项。
+一次发送后的链路：
 
-目前服务端持久化对象是 Run 和 WorkItem，没有独立 Issue 实体；首版事项卡片以 Run 为跟踪对象。关联只使用输入账本目标或精确输入内容，不做语义相似度猜测。需要把同一 Run 内不同主题拆成独立事项时，应先完成 Lead 语义路由提案和 WorkItem 生命周期，再将画布节点从 Run 扩展到 WorkItem；当前状态不应被描述成自动完成了语义拆分。
+```text
+发送消息
+  → TeamInput 先落账，画布出现「正在关联」气泡
+  → 主控 Lead 查看已有 Issue，返回带原文区间的结构化关联提案
+  → 网关校验输入版本、来源区间完整覆盖、Issue 归属和幂等键
+  → 原子记录 Issue 新建/关联事实
+  → 同一气泡从待关联状态变为连到一个或多个 Issue
+  → Issue 汇总所关联输入的 Run/WorkItem 执行状态、最近回音和证据
+```
+
+Lead 提案可以将一个消息的不同原文区间分别关联到已有 Issue、创建新 Issue，或说明一段内容需要澄清。每段非空白原文必须且只能覆盖一次；未知 Issue ID、重叠/漏项、过期 revision 和不属于当前 Team 的目标一律拒绝，不应用部分关联。关联事实与 TeamInput 一起追加到账本 journal，重复结算按 proposal ID 幂等；解析或校验失败时进入 Lead 修复回合，达到修复上限后将归类标为失败并保留原因，不伪装成已完成关联。
+
+只有携带 `teamIssueRoutingVersion: "1"` 的新输入进入 Lead 归类；旧 journal、旧快照和旧客户端输入保持 `unclassified`，不显示为正在处理，也不根据历史 Run 标题或聊天文本猜测 Issue 关系。画布的“正在关联”状态只覆盖确实交给 Lead 处理的输入。
+
+Issue 是独立持久化实体，含稳定 ID、标题和输入来源区间；InputIssueLink 保留原始输入 ID/revision、原文起止位置及提案批次。Issue 不复制 Task 状态：当前负责人、进度、最近回音、等待原因和交付证据从关联 TeamInput 的 Run/WorkItem 投影派生。一个 Issue 可汇总多条气泡和多个 Run；一个气泡也可连到多个 Issue。点击 Issue 展示关联原话、关联 Run/WorkItem 状态和证据，再可进入既有 Run 详情。
+
+旧 Run 和旧会话只读保留，不从标题/目标文本自动猜测成新 Issue。切换后画布初始内容来自新账本 Issue；历史 Run 仍可从 Dashboard/Run 历史进入。网关生成的 `[Team delegation]`、`[Team context]`、`[Team review]` 信封不作为用户气泡。
+
+本流程依赖 Lead 语义路由提案、WorkItem 来源引用及独立 Issue 账本。当前机械输入路由只负责把 TeamInput 送入 Lead Run，不具备 Issue 语义；不得把机械 follow-up/new-task 判定当成 Issue 归类结果。
 
 ## 4. 状态与数据模型
 

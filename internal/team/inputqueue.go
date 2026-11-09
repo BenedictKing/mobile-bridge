@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,6 +56,8 @@ const (
 	EventInputWaitingInput       = "input_waiting_input"
 	EventWorkItemLinked          = "work_item_linked"
 	EventWorkItemsProposed       = "work_items_proposed"
+	EventIssueProposalApplied    = "issue_proposal_applied"
+	EventIssueAssociationFailed  = "issue_association_failed"
 	EventInputTeamPurged         = "input_team_purged"
 )
 
@@ -123,25 +126,33 @@ type WorkItem struct {
 
 // TeamInput 是一条已受理的团队输入（§3.1 最小字段）。
 type TeamInput struct {
-	ID            string     `json:"id"`
-	TeamID        string     `json:"teamId"`
-	Sequence      uint64     `json:"sequence"` // 每 Team 的接受序号（FIFO 依据）
-	Revision      int        `json:"revision"`
-	Text          string     `json:"text"`
-	AttachmentIDs []string   `json:"attachmentIds,omitempty"`
-	ContentHash   string     `json:"contentHash"`
-	AcceptedAt    time.Time  `json:"acceptedAt"`
-	QueueStatus   string     `json:"queueStatus"`
-	RouteStatus   string     `json:"routeStatus"`
-	TargetRunID   string     `json:"targetRunId,omitempty"`
-	TargetTaskID  string     `json:"targetTaskId,omitempty"`
-	ParentRunID   string     `json:"parentRunId,omitempty"`
-	Priority      bool       `json:"priority,omitempty"`
-	PolicyDigest  string     `json:"policyDigest,omitempty"`
-	Version       uint64     `json:"version"` // 乐观版本：接受=1，每次状态变更 +1
-	RunIDs        []string   `json:"runIds,omitempty"`
-	WorkItemIDs   []string   `json:"workItemIds,omitempty"`
-	WorkItems     []WorkItem `json:"workItems,omitempty"`
+	ID                     string           `json:"id"`
+	TeamID                 string           `json:"teamId"`
+	Sequence               uint64           `json:"sequence"` // 每 Team 的接受序号（FIFO 依据）
+	Revision               int              `json:"revision"`
+	Text                   string           `json:"text"`
+	AttachmentIDs          []string         `json:"attachmentIds,omitempty"`
+	ContentHash            string           `json:"contentHash"`
+	AcceptedAt             time.Time        `json:"acceptedAt"`
+	QueueStatus            string           `json:"queueStatus"`
+	RouteStatus            string           `json:"routeStatus"`
+	TargetRunID            string           `json:"targetRunId,omitempty"`
+	TargetTaskID           string           `json:"targetTaskId,omitempty"`
+	ParentRunID            string           `json:"parentRunId,omitempty"`
+	Priority               bool             `json:"priority,omitempty"`
+	PolicyDigest           string           `json:"policyDigest,omitempty"`
+	Version                uint64           `json:"version"` // 乐观版本：接受=1，每次状态变更 +1
+	RunIDs                 []string         `json:"runIds,omitempty"`
+	WorkItemIDs            []string         `json:"workItemIds,omitempty"`
+	WorkItems              []WorkItem       `json:"workItems,omitempty"`
+	AssociationStatus      string           `json:"associationStatus,omitempty"`
+	IssueRouting           bool             `json:"issueRouting,omitempty"`
+	AssociationReason      string           `json:"associationReason,omitempty"`
+	AssociationProposalID  string           `json:"associationProposalId,omitempty"`
+	IssueLinks             []IssueInputLink `json:"issueLinks,omitempty"`
+	Historical             bool             `json:"historical,omitempty"`
+	HistoricalSourceRunID  string           `json:"historicalSourceRunId,omitempty"`
+	HistoricalSourceTaskID string           `json:"historicalSourceTaskId,omitempty"`
 	// WaitingReason 是 waiting_input 停靠的原因（阶段 2：多活跃 Run、Run 收
 	// 集中等），UI/API 据此提示下一步。
 	WaitingReason string `json:"waitingReason,omitempty"`
@@ -166,6 +177,7 @@ func (i *TeamInput) Clone() *TeamInput {
 		copied.WorkItems[index].TaskIDs = append([]string(nil), i.WorkItems[index].TaskIDs...)
 		copied.WorkItems[index].DependsOnItemIDs = append([]string(nil), i.WorkItems[index].DependsOnItemIDs...)
 	}
+	copied.IssueLinks = append([]IssueInputLink(nil), i.IssueLinks...)
 	copied.Revisions = append([]InputRevision(nil), i.Revisions...)
 	for index := range copied.Revisions {
 		copied.Revisions[index].AttachmentIDs = append([]string(nil), i.Revisions[index].AttachmentIDs...)
@@ -193,6 +205,8 @@ type InputLedger struct {
 	journal      *Journal
 	order        []string // 全局插入序（分页游标的基础）
 	inputs       map[string]*TeamInput
+	issues       map[string]*Issue
+	issuesOrder  []string
 	ops          map[string]string // 操作 UUID → inputID（重复操作幂等回放）
 	teamsSeq     map[string]uint64 // 每 Team 的接受序号发生器
 }
@@ -204,6 +218,7 @@ func LoadInputLedger(snapshotPath string, journal *Journal) *InputLedger {
 		snapshotPath: snapshotPath,
 		journal:      journal,
 		inputs:       map[string]*TeamInput{},
+		issues:       map[string]*Issue{},
 		ops:          map[string]string{},
 		teamsSeq:     map[string]uint64{},
 	}
@@ -218,6 +233,22 @@ func LoadInputLedger(snapshotPath string, journal *Journal) *InputLedger {
 	if object != nil {
 		for _, key := range object.Keys() {
 			raw, _ := object.Get(key)
+			if key == "_issues" {
+				issueRows, _ := raw.(*jsoncompat.Object)
+				if issueRows != nil {
+					for _, issueID := range issueRows.Keys() {
+						issueRaw, _ := issueRows.Get(issueID)
+						var issue Issue
+						if err := json.Unmarshal(jsoncompat.EncodeCompact(issueRaw), &issue); err != nil || issue.ID != issueID || issue.TeamID == "" {
+							log.Printf("team-inputs.json Issue 条目解析失败，已跳过: key=%s", issueID)
+							continue
+						}
+						ledger.issues[issueID] = issue.Clone()
+						ledger.issuesOrder = append(ledger.issuesOrder, issueID)
+					}
+				}
+				continue
+			}
 			var input TeamInput
 			if err := json.Unmarshal(jsoncompat.EncodeCompact(raw), &input); err != nil {
 				log.Printf("team-inputs.json 条目解析失败，已跳过: key=%s err=%v", key, err)
@@ -226,6 +257,9 @@ func LoadInputLedger(snapshotPath string, journal *Journal) *InputLedger {
 			if input.ID == "" || input.ID != key {
 				log.Printf("team-inputs.json 条目缺少 id 或与键不一致，已跳过: key=%s id=%s", key, input.ID)
 				continue
+			}
+			if input.AssociationStatus == "" || (!input.IssueRouting && input.AssociationStatus == IssueAssociationPending) {
+				input.AssociationStatus = IssueAssociationUnclassified
 			}
 			ledger.inputs[key] = &input
 			ledger.order = append(ledger.order, key)
@@ -271,6 +305,11 @@ func (l *InputLedger) pendingCountLocked(teamID string) int {
 // 返回 ErrInputContentMismatch；容量（capacity>0 时）已满返回 ErrQueueFull。
 // journal 先行（input_accepted），快照随后；两者之间的崩溃窗口由重放补齐。
 func (l *InputLedger) Accept(teamID, inputID, text string, attachments []string, policyDigest string, capacity int) (*TeamInput, bool, error) {
+	return l.AcceptWithIssueRouting(teamID, inputID, text, attachments, policyDigest, capacity, false)
+}
+
+// AcceptWithIssueRouting 仅把携带 Lead 分类协议版本的输入标记为待归类。
+func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attachments []string, policyDigest string, capacity int, issueRouting bool) (*TeamInput, bool, error) {
 	if teamID == "" || inputID == "" {
 		return nil, false, errors.New("输入受理缺少团队或消息标识")
 	}
@@ -289,11 +328,17 @@ func (l *InputLedger) Accept(teamID, inputID, text string, attachments []string,
 	}
 	sequence := l.teamsSeq[teamID] + 1
 	now := time.Now()
+	associationStatus := IssueAssociationUnclassified
+	if issueRouting {
+		associationStatus = IssueAssociationPending
+	}
 	input := &TeamInput{
 		ID: inputID, TeamID: teamID, Sequence: sequence,
 		Revision: 1, Text: text, AttachmentIDs: append([]string(nil), attachments...),
 		ContentHash: hash, AcceptedAt: now, QueueStatus: InputQueued,
-		PolicyDigest: policyDigest, Version: 1,
+		AssociationStatus: associationStatus,
+		IssueRouting:      issueRouting,
+		PolicyDigest:      policyDigest, Version: 1,
 		Revisions: []InputRevision{{
 			Revision: 1, Text: text, AttachmentIDs: append([]string(nil), attachments...),
 			ContentHash: hash, CreatedAt: now,
@@ -307,6 +352,9 @@ func (l *InputLedger) Accept(teamID, inputID, text string, attachments []string,
 	if len(attachments) > 0 {
 		event.Payload["attachmentIds"] = append([]string(nil), attachments...)
 	}
+	if issueRouting {
+		event.Payload["issueRouting"] = true
+	}
 	event.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":accept"
 	if err := l.commitLocked(event, func() {
 		l.applyInputEvent(event)
@@ -314,6 +362,37 @@ func (l *InputLedger) Accept(teamID, inputID, text string, attachments []string,
 		return nil, false, err
 	}
 	return input.Clone(), false, nil
+}
+
+func (l *InputLedger) ImportHistoricalInput(teamID, inputID, text, sourceRunID, sourceTaskID string, createdAt time.Time) (*TeamInput, bool, error) {
+	if teamID == "" || inputID == "" || sourceRunID == "" || strings.TrimSpace(text) == "" {
+		return nil, false, errors.New("历史输入缺少团队、来源或正文")
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	hash := InputContentHash(text, nil)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if existing := l.inputs[inputID]; existing != nil {
+		if existing.TeamID != teamID || existing.ContentHash != hash ||
+			existing.HistoricalSourceRunID != sourceRunID || existing.HistoricalSourceTaskID != sourceTaskID {
+			return nil, false, ErrInputContentMismatch
+		}
+		return existing.Clone(), true, nil
+	}
+	sequence := l.teamsSeq[teamID] + 1
+	event := newEvent("", EventInputAccepted, "history_import", map[string]any{
+		"inputId": inputID, "teamId": teamID, "sequence": jsoncompat.Num(int(sequence)),
+		"text": text, "contentHash": hash, "issueRouting": true, "historical": true,
+		"historicalSourceRunId": sourceRunID, "historicalSourceTaskId": sourceTaskID,
+		"historicalAt": createdAt.Format(time.RFC3339Nano), "sourceRunId": sourceRunID,
+	})
+	event.IdempotencyKey = "team:" + teamID + ":history:" + sourceRunID + ":" + sourceTaskID
+	if err := l.commitLocked(event, func() { l.applyInputEvent(event) }); err != nil {
+		return nil, false, err
+	}
+	return l.inputs[inputID].Clone(), false, nil
 }
 
 // Revise 修订排队中的输入（仅 queued）：新增不可变 revision 并替换当前正文。
@@ -519,7 +598,13 @@ func (l *InputLedger) PurgeTeam(teamID string) error {
 			purged++
 		}
 	}
-	if purged == 0 {
+	issueCount := 0
+	for _, issue := range l.issues {
+		if issue != nil && issue.TeamID == teamID {
+			issueCount++
+		}
+	}
+	if purged == 0 && issueCount == 0 {
 		return nil
 	}
 	event := newEvent("", EventInputTeamPurged, "api", map[string]any{
@@ -790,6 +875,21 @@ func (l *InputLedger) saveSnapshotLocked() error {
 			object.Set(key, value)
 		}
 	}
+	issues := jsoncompat.NewObject()
+	for _, key := range l.issuesOrder {
+		if issue := l.issues[key]; issue != nil {
+			raw, err := json.Marshal(issue)
+			if err != nil {
+				return err
+			}
+			value, err := jsoncompat.Unmarshal(raw)
+			if err != nil {
+				return err
+			}
+			issues.Set(key, value)
+		}
+	}
+	object.Set("_issues", issues)
 	return atomicWriteFile(l.snapshotPath, append(jsoncompat.EncodePythonIndent2(object), '\n'))
 }
 
@@ -819,12 +919,32 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 			ID: inputID, TeamID: teamID, Sequence: sequence,
 			Revision: 1, Text: text, AttachmentIDs: attachments, ContentHash: hash,
 			AcceptedAt: now, QueueStatus: InputQueued,
-			PolicyDigest: payloadString(event.Payload, "policyDigest"), Version: 1,
+			AssociationStatus: IssueAssociationUnclassified,
+			IssueRouting:      payloadBool(event.Payload, "issueRouting"),
+			PolicyDigest:      payloadString(event.Payload, "policyDigest"), Version: 1,
 			Revisions: []InputRevision{{
 				Revision: 1, Text: text, AttachmentIDs: attachments,
 				ContentHash: hash, CreatedAt: now,
 			}},
 			UpdatedAt: now,
+		}
+		if input.IssueRouting {
+			input.AssociationStatus = IssueAssociationPending
+		}
+		if input.Historical = payloadBool(event.Payload, "historical"); input.Historical {
+			input.QueueStatus = InputRouted
+			input.RouteStatus = "historical"
+			input.HistoricalSourceRunID = payloadString(event.Payload, "historicalSourceRunId")
+			input.HistoricalSourceTaskID = payloadString(event.Payload, "historicalSourceTaskId")
+			if at := payloadString(event.Payload, "historicalAt"); at != "" {
+				if parsed, parseErr := time.Parse(time.RFC3339Nano, at); parseErr == nil {
+					input.AcceptedAt = parsed
+				}
+			}
+			if sourceRunID := payloadString(event.Payload, "sourceRunId"); sourceRunID != "" {
+				input.TargetRunID = sourceRunID
+				input.RunIDs = []string{sourceRunID}
+			}
 		}
 		l.inputs[inputID] = input
 		l.order = append(l.order, inputID)
@@ -865,6 +985,13 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		input.Text = text
 		input.AttachmentIDs = attachments
 		input.ContentHash = hash
+		input.AssociationStatus = IssueAssociationUnclassified
+		if input.IssueRouting {
+			input.AssociationStatus = IssueAssociationPending
+		}
+		input.AssociationReason = ""
+		input.AssociationProposalID = ""
+		input.IssueLinks = nil
 		input.Version++
 		input.UpdatedAt = event.CreatedAt
 		if opID := payloadString(event.Payload, "opId"); opID != "" {
@@ -1014,6 +1141,10 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		}
 		input.Version++
 		input.UpdatedAt = event.CreatedAt
+	case EventIssueProposalApplied:
+		l.applyIssueProposalEvent(event)
+	case EventIssueAssociationFailed:
+		l.applyIssueAssociationFailedEvent(event)
 	case EventInputTeamPurged:
 		teamID := payloadString(event.Payload, "teamId")
 		kept := l.order[:0]
@@ -1025,6 +1156,15 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 			kept = append(kept, key)
 		}
 		l.order = kept
+		keptIssues := l.issuesOrder[:0]
+		for _, key := range l.issuesOrder {
+			if issue := l.issues[key]; issue != nil && issue.TeamID == teamID {
+				delete(l.issues, key)
+				continue
+			}
+			keptIssues = append(keptIssues, key)
+		}
+		l.issuesOrder = keptIssues
 	default:
 		// 阶段 2 的路由事件（input_route_intent/input_routed/
 		// input_waiting_input/work_item_linked）与未知事件：只增不删的

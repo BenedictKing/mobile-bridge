@@ -395,6 +395,18 @@ type Run struct {
 	extra *jsoncompat.Object
 }
 
+func (r *Run) IsIssueClassificationOnly() bool {
+	if r == nil || !r.AutoPlan || len(r.Tasks) == 0 {
+		return false
+	}
+	for i := range r.Tasks {
+		if !r.Tasks[i].IssueClassificationOnly {
+			return false
+		}
+	}
+	return true
+}
+
 // VerifyResult 是验证闸门的执行结果（§6.4.1/§13.3.7）：退出码交 Reducer 判
 // 定（非零 → run waiting_input 可修可重跑；零 → 正常 fold），OutputHead 是
 // 合并 stdout/stderr 的有界头部（≤2048 字节，verify.go），随 Run 快照跨重启
@@ -423,21 +435,22 @@ type VerifyResult struct {
 // 或上下文合成的任何变更都不再让在途任务错认 turn。HTTP 投影不外发（§10.3
 // 有界 payload，teams.go teamRunDetail 显式剔除）。
 type Task struct {
-	ID             string   `json:"id"`
-	MemberID       string   `json:"memberId"`
-	Prompt         string   `json:"prompt"`
-	Attachments    []string `json:"attachments,omitempty"`
-	InputHash      string   `json:"inputHash"`
-	Attempt        int      `json:"attempt"`
-	SiteID         string   `json:"siteId,omitempty"`
-	Ordinal        int      `json:"ordinal,omitempty"`
-	DependsOn      []string `json:"dependsOn,omitempty"`
-	BroadcastGroup string   `json:"broadcastGroup,omitempty"`
-	WorkspaceMode  string   `json:"workspaceMode,omitempty"`
-	WorkspaceID    string   `json:"workspaceId,omitempty"`
-	BaseRevision   string   `json:"baseRevision,omitempty"`
-	WriteLock      string   `json:"writeLock,omitempty"`
-	Review         *bool    `json:"review,omitempty"`
+	ID                      string   `json:"id"`
+	MemberID                string   `json:"memberId"`
+	Prompt                  string   `json:"prompt"`
+	IssueClassificationOnly bool     `json:"issueClassificationOnly,omitempty"`
+	Attachments             []string `json:"attachments,omitempty"`
+	InputHash               string   `json:"inputHash"`
+	Attempt                 int      `json:"attempt"`
+	SiteID                  string   `json:"siteId,omitempty"`
+	Ordinal                 int      `json:"ordinal,omitempty"`
+	DependsOn               []string `json:"dependsOn,omitempty"`
+	BroadcastGroup          string   `json:"broadcastGroup,omitempty"`
+	WorkspaceMode           string   `json:"workspaceMode,omitempty"`
+	WorkspaceID             string   `json:"workspaceId,omitempty"`
+	BaseRevision            string   `json:"baseRevision,omitempty"`
+	WriteLock               string   `json:"writeLock,omitempty"`
+	Review                  *bool    `json:"review,omitempty"`
 	// ReviewOf 是审查任务声明的被审任务（阶段 5，docs/team-demand-queue-plan.md
 	// §6）：显式因果绑定，规范化后并入 DependsOn（被审任务完成才可派发审查）。
 	ReviewOf []string `json:"reviewOf,omitempty"`
@@ -628,7 +641,7 @@ var verifyResultKnownFields = map[string]bool{
 }
 
 var taskKnownFields = map[string]bool{
-	"id": true, "memberId": true, "prompt": true, "attachments": true, "inputHash": true,
+	"id": true, "memberId": true, "prompt": true, "issueClassificationOnly": true, "attachments": true, "inputHash": true,
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
 	"baseRevision": true, "writeLock": true, "review": true,
@@ -1015,6 +1028,9 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	object.Set("id", t.ID)
 	object.Set("memberId", t.MemberID)
 	object.Set("prompt", t.Prompt)
+	if t.IssueClassificationOnly {
+		object.Set("issueClassificationOnly", true)
+	}
 	if len(t.Attachments) > 0 {
 		attachments := &jsoncompat.Array{}
 		for _, id := range t.Attachments {

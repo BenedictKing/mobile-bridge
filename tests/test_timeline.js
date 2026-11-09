@@ -58,6 +58,26 @@ test('user jump lists only user messages and marks the latest at bottom',()=>{
   timeline.dispose();
 });
 
+test('team conversations hide gateway protocol rows without hiding ordinary user messages',()=>{
+  const{timeline,ids}=setup();
+  timeline.hideInternalTeamMessages=true;
+  const internal=[
+    '[Team review] review instructions',
+    '[Team context] delegated task context',
+    '[Team delegation] planner instructions',
+    '[Team historical issue routing] issue instructions',
+    '[Team account quotas] usage context',
+  ].map((text,index)=>({key:'internal-'+index,role:'user',text,order:index}));
+  const ordinary={key:'ordinary',role:'user',text:'请检查团队画布',order:1};
+  assert.ok(internal.every(row=>timeline.rowVisible(row)===false));
+  assert.equal(timeline.rowVisible(ordinary),true);
+  timeline.userIndex=[...internal.map(({key,text})=>({key,text})),ordinary];
+  timeline.renderUserJump([ordinary]);
+  assert.equal(ids['user-jump-count'].textContent,'1');
+  assert.equal(ids['user-jump-list'].children[0].dataset.key,'ordinary');
+  timeline.dispose();
+});
+
 test('user jump click scrolls to the message and scroll tracking updates the active item',()=>{
   const{timeline,ids}=setup();
   const first=addUser(timeline,ids,'u1','第一条',120),second=addUser(timeline,ids,'u2','第二条',500);

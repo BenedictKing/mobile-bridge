@@ -23,6 +23,9 @@ import (
 // 客户端兼容窗口结束后，再考虑收敛双入口）。
 const teamQueueVersionGate = "2"
 
+// 新版画布消息使用持久输入账本，即使用户没有开启可选的排队发送开关。
+const teamIssueRoutingVersionGate = "1"
+
 // queueTeamInputValidate 校验并归一一条排队输入的正文与附件（与旧入口
 // createTeamInput 同一口径），返回 (text, attachments, err)。threadID 是附件
 // 上传账本的归属会话。
@@ -47,7 +50,7 @@ func (h *handler) queueTeamInputValidate(threadID, rawGoal string, attachments [
 
 // acceptQueuedTeamInput 是两条入口（POST /inputs queueVersion:2 与主控会话
 // teamQueueVersion:2）的共用受理体：校验 → 账本 Accept（同 ID 幂等）→ 202。
-func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, rawGoal string, attachments []string) (*team.TeamInput, bool, error) {
+func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, rawGoal string, attachments []string, issueRouting bool) (*team.TeamInput, bool, error) {
 	if inputID == "" {
 		return nil, false, &teamInputError{http.StatusBadRequest, "缺少消息标识，请刷新后重试"}
 	}
@@ -56,7 +59,7 @@ func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, r
 		return nil, false, validateErr
 	}
 	capacity := teamRow.Policy.MaxPendingInputs
-	input, duplicate, err := h.server.TeamInputs.Accept(teamRow.ID, inputID, goal, attachments, team.PolicyDigest(teamRow.Policy), capacity)
+	input, duplicate, err := h.server.TeamInputs.AcceptWithIssueRouting(teamRow.ID, inputID, goal, attachments, team.PolicyDigest(teamRow.Policy), capacity, issueRouting)
 	if err != nil {
 		return nil, false, err
 	}
@@ -77,9 +80,34 @@ func (h *handler) outputQueuedTeamInput(input *team.TeamInput, duplicate bool) {
 	result.Set("id", input.ID)
 	result.Set("teamId", input.TeamID)
 	result.Set("queueStatus", input.QueueStatus)
+	result.Set("associationStatus", input.AssociationStatus)
+	result.Set("issueRouting", input.IssueRouting)
+	result.Set("sequence", jsoncompat.Num(int(input.Sequence)))
 	result.Set("revision", jsoncompat.Num(input.Revision))
+	result.Set("text", input.Text)
+	result.Set("acceptedAt", input.AcceptedAt.Format(time.RFC3339Nano))
 	result.Set("version", jsoncompat.Num(int(input.Version)))
 	result.Set("runIds", &jsoncompat.Array{})
+	if duplicate {
+		result.Set("duplicate", true)
+	}
+	h.output(http.StatusAccepted, result, contentTypeJSON, "")
+}
+
+func (h *handler) outputAcceptedTeamInput(input *team.TeamInput, duplicate bool) {
+	result := jsoncompat.NewObject()
+	result.Set("status", "accepted")
+	result.Set("id", input.ID)
+	result.Set("inputId", input.ID)
+	result.Set("teamId", input.TeamID)
+	result.Set("queueStatus", input.QueueStatus)
+	result.Set("associationStatus", input.AssociationStatus)
+	result.Set("issueRouting", input.IssueRouting)
+	result.Set("sequence", jsoncompat.Num(int(input.Sequence)))
+	result.Set("revision", jsoncompat.Num(input.Revision))
+	result.Set("text", input.Text)
+	result.Set("acceptedAt", input.AcceptedAt.Format(time.RFC3339Nano))
+	result.Set("runIds", &jsoncompat.Array{Items: []any{}})
 	if duplicate {
 		result.Set("duplicate", true)
 	}
@@ -96,6 +124,15 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 	object.Set("queueVersion", jsoncompat.Num(2))
 	object.Set("queueStatus", input.QueueStatus)
 	object.Set("routeStatus", input.RouteStatus)
+	associationStatus := input.AssociationStatus
+	if associationStatus == "" {
+		associationStatus = "unclassified"
+	}
+	object.Set("associationStatus", associationStatus)
+	object.Set("issueRouting", input.IssueRouting)
+	if input.AssociationReason != "" {
+		object.Set("associationReason", input.AssociationReason)
+	}
 	object.Set("sequence", jsoncompat.Num(int(input.Sequence)))
 	object.Set("revision", jsoncompat.Num(input.Revision))
 	object.Set("version", jsoncompat.Num(int(input.Version)))
@@ -163,6 +200,20 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 		}
 		object.Set("workItems", workItems)
 	}
+	if len(input.IssueLinks) > 0 {
+		links := &jsoncompat.Array{}
+		for _, link := range input.IssueLinks {
+			entry := jsoncompat.NewObject()
+			entry.Set("issueId", link.IssueID)
+			entry.Set("inputId", link.InputID)
+			entry.Set("revision", jsoncompat.Num(link.Revision))
+			entry.Set("sourceStart", jsoncompat.Num(link.SourceStart))
+			entry.Set("sourceEnd", jsoncompat.Num(link.SourceEnd))
+			entry.Set("sourceText", link.SourceText)
+			links.Items = append(links.Items, entry)
+		}
+		object.Set("issueLinks", links)
+	}
 	if input.WaitingReason != "" {
 		object.Set("waitingReason", input.WaitingReason)
 	}
@@ -186,6 +237,73 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 	object.Set("revisions", revisions)
 	object.Set("acceptedAt", input.AcceptedAt.Format(time.RFC3339Nano))
 	object.Set("updatedAt", input.UpdatedAt.Format(time.RFC3339Nano))
+	if input.Historical {
+		object.Set("historical", true)
+		object.Set("historicalSourceRunId", input.HistoricalSourceRunID)
+		object.Set("historicalSourceTaskId", input.HistoricalSourceTaskID)
+	}
+	return object
+}
+
+func (h *handler) teamInputProject(input *team.TeamInput) *jsoncompat.Object {
+	if input == nil {
+		return jsoncompat.NewObject()
+	}
+	object := teamQueueInputProject(input)
+	if !input.IssueRouting || input.AssociationStatus != team.IssueAssociationPending {
+		return object
+	}
+	var run *team.Run
+	var rootTask *team.Task
+	if input.Historical {
+		if candidate := h.server.TeamStore.Run(input.ID); candidate != nil && candidate.IsIssueClassificationOnly() && candidate.TeamID == input.TeamID {
+			run = candidate
+			for index := range candidate.Tasks {
+				if candidate.Tasks[index].ID == "lead" {
+					rootTask = &candidate.Tasks[index]
+					break
+				}
+			}
+		}
+	} else {
+		run, rootTask = h.findTeamInput(input.TeamID, input.ID)
+	}
+	task := rootTask
+	if run != nil && rootTask != nil {
+		leadID := ""
+		if teamRow := h.server.TeamStore.Team(input.TeamID); teamRow != nil {
+			leadID = teamRow.LeadID
+		}
+		repairPrefix := "actfix-" + rootTask.ID + "-"
+		for index := range run.Tasks {
+			candidate := &run.Tasks[index]
+			if candidate.MemberID == leadID && candidate.ExecutionContext == team.ExecutionContextLeadControl &&
+				strings.HasPrefix(candidate.ID, repairPrefix) && candidate.Ordinal > task.Ordinal {
+				task = candidate
+			}
+		}
+	}
+	failedRun := run != nil && (run.Status == team.RunWaitingInput || run.Status == team.RunPaused || teamRunTerminal(run.Status))
+	failedTask := task != nil && (task.Status == team.TaskFailed || task.Status == team.TaskStopped || task.Status == team.TaskCancelled)
+	if !failedRun && !failedTask {
+		return object
+	}
+	object.Set("associationStatus", team.IssueAssociationFailed)
+	reason := ""
+	if run != nil {
+		reason = strings.TrimSpace(run.StopReason)
+	}
+	if task != nil && task.Error != "" {
+		reason = strings.TrimSpace(task.Error)
+	}
+	if reason == "" {
+		if task != nil {
+			reason = strings.TrimSpace(task.StopReason)
+		}
+	}
+	if reason != "" {
+		object.Set("associationReason", reason)
+	}
 	return object
 }
 
@@ -248,7 +366,7 @@ func (h *handler) handleTeamInputsList(teamID string) {
 	result.Set("maxPendingInputs", jsoncompat.Num(teamRow.Policy.MaxPendingInputs))
 	inputs := &jsoncompat.Array{}
 	for _, input := range rows {
-		inputs.Items = append(inputs.Items, teamQueueInputProject(input))
+		inputs.Items = append(inputs.Items, h.teamInputProject(input))
 	}
 	result.Set("inputs", inputs)
 	if next != "" {
@@ -307,7 +425,7 @@ func (h *handler) handleTeamInputRevise(teamID, inputID string) {
 		h.failTeamInputError(reviseErr)
 		return
 	}
-	result := teamQueueInputProject(input)
+	result := h.teamInputProject(input)
 	if duplicate {
 		result.Set("duplicate", true)
 	}
@@ -360,7 +478,7 @@ func (h *handler) handleTeamInputPropose(teamID, inputID string) {
 		}
 		return
 	}
-	result := teamQueueInputProject(input)
+	result := h.teamInputProject(input)
 	if duplicate {
 		result.Set("duplicate", true)
 	}
@@ -422,7 +540,7 @@ func (h *handler) teamInputQueueOp(teamID, inputID string, op func(ledger *team.
 		h.failTeamInputError(opErr)
 		return
 	}
-	result := teamQueueInputProject(input)
+	result := h.teamInputProject(input)
 	if duplicate {
 		result.Set("duplicate", true)
 	}

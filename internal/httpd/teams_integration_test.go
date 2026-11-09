@@ -4094,22 +4094,35 @@ func TestTeamIntegration4PauseUpgradesToWaitingInput(t *testing.T) {
 		// unknown 判定要求「会话空闲且无本任务 turn」，真实在途 turn 不会
 		// 被误判为未知（去抖复核的正确性面），故本形态停在记账窗口。
 		var submissionID string
+		var workerSession string
+		var queuedEntry *submissionEntry
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) && submissionID == "" {
-			if id, _ := teamTaskOf(t, env.runDetail(t, teamID, runID), "t1")["submissionId"].(string); id != "" {
-				submissionID = id
-			} else {
+			detail := env.runDetail(t, teamID, runID)
+			if id, _ := teamTaskOf(t, detail, "t1")["submissionId"].(string); id != "" {
+				workerSession = taskExecutionSession(t, detail, "t1")
+				queuedEntry = env.server.Queue.get(workerSession, id)
+				if queuedEntry != nil {
+					submissionID = id
+				}
+			}
+			if submissionID == "" {
 				time.Sleep(120 * time.Millisecond)
 			}
 		}
-		if submissionID == "" {
-			t.Fatal("任务未在时限内完成派发记账")
+		if submissionID == "" || queuedEntry == nil {
+			t.Fatal("任务未在时限内完成队列入账")
+		}
+		if queuedEntry.Status != SubQueued {
+			t.Fatalf("unknown 注入前队列条目应 queued: %+v", queuedEntry)
 		}
 		if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); response.Code != http.StatusOK {
 			t.Fatalf("pause 失败: %d %s", response.Code, response.Body.String())
 		}
 		// 暂停中「派发结果未知」：账本转 unknown → watcher 升级。
-		env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
+		if err := env.server.Queue.setStatus(workerSession, submissionID, SubUnknown); err != nil {
+			t.Fatalf("落 unknown 失败: %v", err)
+		}
 		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 		}) {

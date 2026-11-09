@@ -777,6 +777,156 @@ func TestTeamConversationSendCreatesRunWithAttachments(t *testing.T) {
 	}
 }
 
+func TestTeamConversationIssueRoutingVersionSeparatesLegacyInputs(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	chatPath := "/api/sessions/" + env.sessionID + "/send?host=local"
+	const routedID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee01"
+	routed := fmt.Sprintf(`{"id":%q,"teamId":%q,"teamMode":"team","teamIssueRoutingVersion":"1","text":"统一团队导航","mode":"send","workMode":"default"}`, routedID, teamID)
+	response := env.request(http.MethodPost, chatPath, routed)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("启用 Issue 归类的新输入应先入账: %d %s", response.Code, response.Body.String())
+	}
+	var receipt struct {
+		InputID           string `json:"inputId"`
+		Text              string `json:"text"`
+		AssociationStatus string `json:"associationStatus"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil ||
+		receipt.InputID != routedID || receipt.Text != "统一团队导航" || receipt.AssociationStatus != team.IssueAssociationPending {
+		t.Fatalf("受理回执应足够立即显示待关联气泡: %+v err=%v body=%s", receipt, err, response.Body.String())
+	}
+	input := env.server.TeamInputs.Get(teamID, routedID)
+	if input == nil || !input.IssueRouting || input.AssociationStatus != team.IssueAssociationPending {
+		t.Fatalf("新客户端输入应处于待 Lead 归类: %+v", input)
+	}
+
+	const legacyID = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeee02"
+	legacy := fmt.Sprintf(`{"id":%q,"text":"旧客户端输入","mode":"send","workMode":"default","queueVersion":"2"}`, legacyID)
+	response = env.request(http.MethodPost, "/api/teams/"+teamID+"/inputs", legacy)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("旧队列协议仍应保持可用: %d %s", response.Code, response.Body.String())
+	}
+	input = env.server.TeamInputs.Get(teamID, legacyID)
+	if input == nil || input.IssueRouting || input.AssociationStatus != team.IssueAssociationUnclassified {
+		t.Fatalf("旧客户端输入不能伪装成正在分类: %+v", input)
+	}
+}
+
+func TestTeamIssueBackfillClassifiesHistoryWithoutReexecutingAndAllowsNewInput(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	teamRow := env.store.Team(teamID)
+	createdAt := time.Date(2026, 11, 9, 8, 0, 0, 0, time.Local)
+	oldLeadInputTask := "input-00000000-0000-4000-8000-000000000001"
+	source := &team.Run{
+		ID: "legacy-history-run", TeamID: teamID, Goal: "整理團隊畫布資訊", Mode: team.ModeSingle,
+		AutoPlan: true, Status: team.RunCompleted, PlanHash: "legacy-plan", CreatedAt: createdAt, UpdatedAt: createdAt,
+		Tasks: []team.Task{
+			{ID: "lead", MemberID: teamRow.LeadID, Prompt: "整理團隊畫布資訊", Status: team.TaskCompleted},
+			{ID: oldLeadInputTask, MemberID: "member-former-lead", Prompt: "舊對話只整理主題，不重跑任務", Status: team.TaskCompleted},
+			{ID: oldLeadInputTask + "-d1-0", MemberID: "member-worker", Prompt: "這是歷史派生任务，不应成为原话气泡", Status: team.TaskCompleted},
+		},
+	}
+	if err := env.store.SaveRun(source); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, run := range env.store.RunsByTeam(teamID) {
+			if run.Status != team.RunCompleted && run.Status != team.RunFailed && run.Status != team.RunCancelled && run.Status != team.RunStopped && run.Status != "outcome_unknown" {
+				_, _ = env.server.Teams.Cancel(run.ID)
+			}
+		}
+	})
+
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/issues/backfill", `{}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("historical backfill failed: %d %s", response.Code, response.Body.String())
+	}
+	var backfill struct {
+		Discovered int `json:"discovered"`
+		Imported   int `json:"imported"`
+		Started    int `json:"started"`
+		Pending    int `json:"pending"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &backfill); err != nil {
+		t.Fatal(err)
+	}
+	if backfill.Discovered != 2 || backfill.Imported != 2 || backfill.Started != 2 || backfill.Pending != 2 {
+		t.Fatalf("backfill counts = %+v", backfill)
+	}
+	for _, sourceTaskID := range []string{"lead", oldLeadInputTask} {
+		inputID := team.HistoricalInputID(teamID, source.ID, sourceTaskID)
+		input := env.server.TeamInputs.Get(teamID, inputID)
+		classifier := env.store.Run(inputID)
+		if input == nil || !input.Historical || input.AssociationStatus != team.IssueAssociationPending ||
+			input.QueueStatus != team.InputRouted || input.TargetRunID != source.ID {
+			t.Fatalf("historical input projection = %+v", input)
+		}
+		if classifier == nil || !classifier.IsIssueClassificationOnly() || len(classifier.Tasks) != 1 ||
+			!classifier.Tasks[0].IssueClassificationOnly || classifier.Tasks[0].Prompt != "整理历史输入的 Issue 归属" {
+			t.Fatalf("classifier run may execute historical work: %+v", classifier)
+		}
+	}
+
+	list := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs", "")
+	if list.Code != http.StatusOK || strings.Count(list.Body.String(), `"id":`) != 1 || !strings.Contains(list.Body.String(), source.ID) {
+		t.Fatalf("classification runs leaked into the user Run list: %d %s", list.Code, list.Body.String())
+	}
+
+	const nextID = "eeeeeeee-bbbb-4ccc-8ddd-eeeeeeeeee05"
+	newInput := fmt.Sprintf(`{"id":%q,"text":"新要求：优化画布上的回音","mode":"send","workMode":"default"}`, nextID)
+	response = env.postTeamInput(teamID, newInput)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("new requirement should be accepted while history is classified: %d %s", response.Code, response.Body.String())
+	}
+	newRun := env.store.Run(nextID)
+	if newRun == nil || newRun.IsIssueClassificationOnly() || newRun.ParentRunID != source.ID {
+		t.Fatalf("new request was routed into hidden classifier history: %+v", newRun)
+	}
+}
+
+func TestTeamIssueBackfillCreatesStableHistoricalSourceLinks(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	teamRow := env.store.Team(teamID)
+	createdAt := time.Date(2026, 11, 8, 12, 0, 0, 0, time.Local)
+	source := &team.Run{ID: "backfill-source", TeamID: teamID, Goal: "改善手機上的團隊畫布", Mode: team.ModeSingle,
+		AutoPlan: true, Status: team.RunCompleted, PlanHash: "plan", CreatedAt: createdAt, UpdatedAt: createdAt,
+		Tasks: []team.Task{{ID: "lead", MemberID: teamRow.LeadID, Prompt: "改善手機上的團隊畫布", Status: team.TaskCompleted}}}
+	if err := env.store.SaveRun(source); err != nil {
+		t.Fatal(err)
+	}
+	const proposalText = "改善手機上的團隊畫布"
+	inputID := team.HistoricalInputID(teamID, source.ID, "lead")
+	input, _, err := env.server.TeamInputs.ImportHistoricalInput(teamID, inputID, proposalText, source.ID, "lead", createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := &team.IssueProposal{InputID: input.ID, Revision: 1, Segments: []team.IssueProposalSegment{{
+		Action: team.IssueSegmentCreate, NewIssueTitle: "手机团队画布", SourceStart: 0, SourceEnd: len([]rune(proposalText)),
+	}}}
+	if _, _, err := env.server.TeamInputs.ApplyIssueProposal(teamID, "history-proposal", proposal); err != nil {
+		t.Fatal(err)
+	}
+	response := env.request(http.MethodPost, "/api/teams/"+teamID+"/issues/backfill", `{}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("repeated backfill failed: %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Discovered int `json:"discovered"`
+		Imported   int `json:"imported"`
+		Started    int `json:"started"`
+		Completed  int `json:"completed"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Discovered != 1 || result.Imported != 0 || result.Started != 0 || result.Completed != 1 {
+		t.Fatalf("completed history should not be re-imported or re-executed: %+v", result)
+	}
+}
+
 func TestTeamConversationLeadResolution(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	teamID, _ := env.createTeam(t)
@@ -3893,6 +4043,22 @@ func TestTeamRunLoopProjection(t *testing.T) {
 	idle := &team.Run{Status: team.RunDispatching, Tasks: []team.Task{{ID: "t1", MemberID: "lead", Status: team.TaskCompleted}}}
 	if owner := teamRunCurrentOwner(teamRow, idle); owner != nil {
 		t.Fatalf("无活动任务不得虚构负责人: %v", owner)
+	}
+	closed := &team.Run{ID: "run-closed", TeamID: teamRow.ID, Status: team.RunCompleted, Tasks: []team.Task{
+		{ID: "t1", MemberID: "lead", Status: team.TaskCompleted, Ordinal: 1},
+		{ID: "t2", MemberID: "dev", Status: team.TaskCompleted, Ordinal: 2},
+	}, Threads: []team.ExecutionThread{{ID: "thread-dev", MemberID: "dev", AgentKind: "claude", SourceTaskID: "t2"}}}
+	if owner := teamRunLastOwner(teamRow, closed); owner == nil || owner.MustGet("name") != "开发" || owner.MustGet("taskId") != "t2" {
+		t.Fatalf("终态 Run 应保留最后执行人: %v", owner)
+	} else if owner.MustGet("agentKind") != "claude" {
+		t.Fatalf("终态负责人应保留历史执行 Agent: %v", owner)
+	}
+	closedSummary := teamRunSummary(teamRow, closed, nil)
+	if _, exists := closedSummary.Get("currentOwner"); exists {
+		t.Fatalf("终态 Run 不应伪装成仍有当前执行人: %v", closedSummary)
+	}
+	if owner, exists := closedSummary.Get("lastOwner"); !exists || owner.(*jsoncompat.Object).MustGet("name") != "开发" {
+		t.Fatalf("终态 Run 摘要应携带 lastOwner: %v", closedSummary)
 	}
 
 	feed := team.NewEventFeed(run.ID, nil)

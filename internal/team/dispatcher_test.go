@@ -3945,3 +3945,20 @@ func TestAutoPlanLeadDynamicBriefingDispatchComposition(t *testing.T) {
 		t.Fatalf("普通成员不得收到 Lead 动态简报:\n%s", got)
 	}
 }
+
+func TestIssueClassificationRunUsesOnlyHistoricalIssueBriefing(t *testing.T) {
+	h := newDispatchHarness(t)
+	teamRow := h.team.Clone()
+	task := Task{ID: "lead", MemberID: teamRow.LeadID, Prompt: "整理历史输入", Status: TaskPlanned,
+		ExecutionContext: ExecutionContextLeadRun, IssueClassificationOnly: true}
+	run := &Run{ID: "history-1", TeamID: teamRow.ID, Goal: task.Prompt, AutoPlan: true, Tasks: []Task{task}}
+	message := composeTaskDispatchMessageWithBriefing(teamRow, run, &task, teamRow.Policy,
+		"[Team historical issue routing]\n只归类主题，不要重新执行。")
+	if !run.IsIssueClassificationOnly() || !strings.Contains(message.text, "只归类主题") ||
+		strings.Contains(message.text, "[Team delegation]") || strings.Contains(message.text, "[Team review]") {
+		t.Fatalf("classification task received execution workflow briefing: %s", message.text)
+	}
+	if (&Run{AutoPlan: true, Tasks: []Task{{ID: "lead"}}}).IsIssueClassificationOnly() {
+		t.Fatal("ordinary Lead task should remain a visible conversation Run")
+	}
+}

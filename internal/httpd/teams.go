@@ -130,6 +130,12 @@ func (h *handler) handleTeams(method string) {
 		h.handleTeamTaskList(teamID)
 	case len(segments) == 2 && segments[1] == "task-events" && method == http.MethodGet:
 		h.handleTeamTaskEvents(teamID)
+	case len(segments) == 2 && segments[1] == "issues" && method == http.MethodGet:
+		h.handleTeamIssuesList(teamID)
+	case len(segments) == 3 && segments[1] == "issues" && segments[2] == "backfill" && method == http.MethodPost:
+		h.handleTeamIssueBackfill(teamID)
+	case len(segments) == 3 && segments[1] == "issues" && method == http.MethodGet:
+		h.handleTeamIssueGet(teamID, segments[2])
 	case len(segments) == 2 && segments[1] == "inputs":
 		// TeamInput 长期入口（§10 阶段二）：POST 202 {inputId, routeStatus}，
 		// 同 id 幂等重放；GET 按接受序分页查看持久队列（阶段 1，
@@ -718,6 +724,9 @@ func (h *handler) handleRunList(teamID string) {
 	}
 	rows := &jsoncompat.Array{}
 	for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
+		if run.IsIssueClassificationOnly() {
+			continue
+		}
 		rows.Items = append(rows.Items, teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID)))
 	}
 	result := jsoncompat.NewObject()
@@ -777,7 +786,7 @@ func conversationTaskID(inputID string) string { return team.ConversationTaskID(
 // findTeamInput 按消息幂等键查找初始 Run 或后续任务，供两个 TeamInput 入口
 // 和 GET 投影共用。只识别主控 autoPlan 对话，显式计划 Run 不混入。
 func (h *handler) findTeamInput(teamID, inputID string) (*team.Run, *team.Task) {
-	if run := h.server.TeamStore.Run(inputID); run != nil && run.TeamID == teamID && run.AutoPlan && run.Mode == team.ModeSingle {
+	if run := h.server.TeamStore.Run(inputID); run != nil && run.TeamID == teamID && !run.IsIssueClassificationOnly() && run.AutoPlan && run.Mode == team.ModeSingle {
 		for i := range run.Tasks {
 			if run.Tasks[i].ID == "lead" {
 				return run, &run.Tasks[i]
@@ -786,7 +795,7 @@ func (h *handler) findTeamInput(teamID, inputID string) (*team.Run, *team.Task) 
 	}
 	taskID := conversationTaskID(inputID)
 	for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
-		if !run.AutoPlan || run.Mode != team.ModeSingle {
+		if run.IsIssueClassificationOnly() || !run.AutoPlan || run.Mode != team.ModeSingle {
 			continue
 		}
 		for i := range run.Tasks {
@@ -830,6 +839,13 @@ func (h *handler) createTeamInput(teamRow *team.Team, threadID, inputID, rawGoal
 		return existing, true, nil
 	}
 	runs := h.server.TeamStore.RunsByTeam(teamRow.ID)
+	conversationRuns := make([]*team.Run, 0, len(runs))
+	for _, run := range runs {
+		if !run.IsIssueClassificationOnly() {
+			conversationRuns = append(conversationRuns, run)
+		}
+	}
+	runs = conversationRuns
 	active := make([]*team.Run, 0, 1)
 	for _, run := range runs {
 		if !teamRunTerminal(run.Status) {
@@ -898,17 +914,23 @@ func (h *handler) handleTeamConversationSend(threadID string, object *jsoncompat
 	}
 	// 持久输入队列分流（阶段 1，§3.2）：teamQueueVersion:2 的会话发送先落
 	// 输入账本（202 queued），旧客户端继续走「立即给 runId」的同步路径。
-	if stringField(object, "teamQueueVersion") == teamQueueVersionGate {
+	queueMode := stringField(object, "teamQueueVersion") == teamQueueVersionGate
+	issueRouting := stringField(object, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate
+	if queueMode || issueRouting {
 		if h.server.TeamInputs == nil {
 			h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
 			return true
 		}
-		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, threadID, payload.id, payload.text, payload.attachments)
+		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, threadID, payload.id, payload.text, payload.attachments, issueRouting)
 		if acceptErr != nil {
 			h.failTeamInputError(acceptErr)
 			return true
 		}
-		h.outputQueuedTeamInput(input, duplicate)
+		if queueMode {
+			h.outputQueuedTeamInput(input, duplicate)
+		} else {
+			h.outputAcceptedTeamInput(input, duplicate)
+		}
 		return true
 	}
 	run, duplicate, createErr := h.createTeamInput(teamRow, threadID, payload.id, payload.text, payload.attachments)
@@ -968,17 +990,23 @@ func (h *handler) handleTeamInputsCreate(teamID string) {
 		h.fail(http.StatusBadRequest, errorBody("团队输入请使用普通发送方式"))
 		return
 	}
-	if stringField(body, "queueVersion") == teamQueueVersionGate {
+	queueMode := stringField(body, "queueVersion") == teamQueueVersionGate
+	issueRouting := stringField(body, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate
+	if queueMode || issueRouting {
 		if h.server.TeamInputs == nil {
 			h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
 			return
 		}
-		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, teamLeadSessionID(teamRow), payload.id, payload.text, payload.attachments)
+		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, teamLeadSessionID(teamRow), payload.id, payload.text, payload.attachments, issueRouting)
 		if acceptErr != nil {
 			h.failTeamInputError(acceptErr)
 			return
 		}
-		h.outputQueuedTeamInput(input, duplicate)
+		if queueMode {
+			h.outputQueuedTeamInput(input, duplicate)
+		} else {
+			h.outputAcceptedTeamInput(input, duplicate)
+		}
 		return
 	}
 	goal := payload.text
@@ -1018,7 +1046,7 @@ func (h *handler) handleTeamInputGet(teamID, inputID string) {
 	}
 	if h.server.TeamInputs != nil {
 		if input := h.server.TeamInputs.Get(teamID, inputID); input != nil {
-			h.output(http.StatusOK, teamQueueInputProject(input), contentTypeJSON, "")
+			h.output(http.StatusOK, h.teamInputProject(input), contentTypeJSON, "")
 			return
 		}
 	}
@@ -2702,6 +2730,42 @@ func teamMemberLabel(teamRow *team.Team, memberID string) string {
 	return memberID
 }
 
+func teamRunOwnerProject(teamRow *team.Team, run *team.Run, memberID, taskID string) *jsoncompat.Object {
+	owner := jsoncompat.NewObject()
+	owner.Set("memberId", memberID)
+	owner.Set("name", teamMemberLabel(teamRow, memberID))
+	owner.Set("taskId", taskID)
+	agentKind := ""
+	if teamRow != nil {
+		for i := range teamRow.Members {
+			if teamRow.Members[i].ID == memberID {
+				agentKind = teamRow.Members[i].AgentKind
+				break
+			}
+		}
+	}
+	if run != nil {
+		threadID := ""
+		for i := range run.Tasks {
+			if run.Tasks[i].ID == taskID {
+				threadID = run.Tasks[i].ExecutionThreadID
+				break
+			}
+		}
+		for i := range run.Threads {
+			thread := &run.Threads[i]
+			if thread.MemberID == memberID && (thread.ID == threadID || thread.SourceTaskID == taskID) {
+				agentKind = thread.AgentKind
+				break
+			}
+		}
+	}
+	if agentKind != "" {
+		owner.Set("agentKind", agentKind)
+	}
+	return owner
+}
+
 // teamRunCurrentOwner 是「谁在负责」的确定性投影（闭环契约·有着落）：首个
 // running/dispatching 任务的成员。没有活动任务时不设键——不猜测负责人。
 func teamRunCurrentOwner(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
@@ -2710,13 +2774,32 @@ func teamRunCurrentOwner(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
 		if status != team.TaskRunning && status != team.TaskDispatching {
 			continue
 		}
-		owner := jsoncompat.NewObject()
-		owner.Set("memberId", run.Tasks[i].MemberID)
-		owner.Set("name", teamMemberLabel(teamRow, run.Tasks[i].MemberID))
-		owner.Set("taskId", run.Tasks[i].ID)
-		return owner
+		return teamRunOwnerProject(teamRow, run, run.Tasks[i].MemberID, run.Tasks[i].ID)
 	}
 	return nil
+}
+
+// teamRunLastOwner 保留终态 Run 的责任归属。Task 顺序和 Ordinal 都来自已落账计划，
+// 取最新的终态任务，不把“当前执行人”伪装成已结束工作的负责人。
+func teamRunLastOwner(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
+	var last *team.Task
+	lastIndex := -1
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		switch task.Status {
+		case team.TaskCompleted, team.TaskFailed, team.TaskCancelled, team.TaskStopped, team.TaskOutcomeUnknown:
+		default:
+			continue
+		}
+		if last == nil || task.Ordinal > last.Ordinal || task.Ordinal == last.Ordinal && i > lastIndex {
+			last = task
+			lastIndex = i
+		}
+	}
+	if last == nil {
+		return nil
+	}
+	return teamRunOwnerProject(teamRow, run, last.MemberID, last.ID)
 }
 
 // teamEchoEventKinds 是能充当「最近回音」的事件白名单：状态推进、停靠、
@@ -3020,6 +3103,8 @@ func teamRunSummary(teamRow *team.Team, run *team.Run, feed *team.EventFeed) *js
 	summary.Set("version", json.Number(strconv.FormatUint(run.Version, 10)))
 	if owner := teamRunCurrentOwner(teamRow, run); owner != nil {
 		summary.Set("currentOwner", owner)
+	} else if owner := teamRunLastOwner(teamRow, run); owner != nil {
+		summary.Set("lastOwner", owner)
 	}
 	summary.Set("lastUpdate", teamRunLastUpdate(teamRow, run, feed))
 	summary.Set("nextAction", teamRunNextAction(teamRow, run))

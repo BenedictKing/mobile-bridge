@@ -7,11 +7,11 @@ const vm=require('node:vm');
 function queueHelpers(){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const start=source.indexOf('function uniqueQueueRows(rows){');
-  const end=source.indexOf('function renderQueue(rows){',start);
+  const end=source.indexOf('// waiting_input 任务卡',start);
   assert.ok(start>=0&&end>start,'queue helpers not found');
   const context={};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.unique=uniqueQueueRows;this.move=moveQueueRows;',context);
-  return{uniqueQueueRows:context.unique,moveQueueRows:context.move,context};
+  vm.runInNewContext(source.slice(start,end)+'\nthis.unique=uniqueQueueRows;this.move=moveQueueRows;this.render=renderQueue;',context);
+  return{uniqueQueueRows:context.unique,moveQueueRows:context.move,renderQueue:context.render,context};
 }
 const {uniqueQueueRows,moveQueueRows}=queueHelpers();
 
@@ -71,4 +71,21 @@ test('queue drag also offers keyboard reordering',()=>{
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   assert.match(source,/ArrowUp/);
   assert.match(source,/ArrowDown/);
+});
+
+test('unknown delivery keeps protocol text collapsed behind a details disclosure',()=>{
+  const{context,renderQueue}=queueHelpers(),queued={children:[],append(node){this.children.push(node);},replaceChildren(...nodes){this.children=nodes;}};
+  const element=(tag,className,text)=>({tagName:tag.toUpperCase(),className,textContent:text||'',children:[],append(...nodes){this.children.push(...nodes);}});
+  Object.assign(context,{
+    $:selector=>{assert.equal(selector,'queued');return queued;},
+    el:element,t:value=>value,currentId:'thread',currentHost:'local',renderQueueAttachments:()=>null,
+    bindQueueDrag(){},sessionUrl:()=>'',api:async()=>({}),toast(){},openQueueEditor(){},ignoreSubmission:async()=>({}),
+  });
+  renderQueue([{id:'uncertain',status:'unknown',text:'[Team review] internal review protocol'}]);
+  const card=queued.children[0],details=card.children.find(node=>node.tagName==='DETAILS');
+  assert.ok(details);
+  assert.equal(details.children[0].tagName,'SUMMARY');
+  assert.equal(details.children[0].textContent,'查看原文');
+  assert.equal(details.children[1].textContent,'[Team review] internal review protocol');
+  assert.equal(card.children.some(node=>node.textContent==='[Team review] internal review protocol'),false);
 });

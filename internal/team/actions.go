@@ -926,7 +926,7 @@ func actionSchemaInstruction() string {
 // 已自带协议，普通成员和显式计划不注入；内容只依赖持久配置，保证确定性。
 func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) string {
 	if team == nil || run == nil || task == nil || !run.AutoPlan ||
-		team.LeadID == "" || task.MemberID != team.LeadID || strings.HasPrefix(task.ID, actionRepairPrefix) {
+		team.LeadID == "" || task.MemberID != team.LeadID || task.IssueClassificationOnly || strings.HasPrefix(task.ID, actionRepairPrefix) {
 		return ""
 	}
 	if task.ExecutionContext == ExecutionContextLeadRun {
@@ -1145,10 +1145,24 @@ func stripActionBlocks(text string) string {
 	}
 }
 
+func stripIssueProposalBlocks(text string) string {
+	for {
+		open := strings.Index(text, issueBlockOpen)
+		if open < 0 {
+			return text
+		}
+		relative := strings.Index(text[open:], issueBlockClose)
+		if relative < 0 {
+			return text
+		}
+		text = text[:open] + text[open+relative+len(issueBlockClose):]
+	}
+}
+
 // ResultDisplayText 返回给人看的结果正文：剥离成对动作块并去首尾空白（交付
 // 摘要、阶段图预览等投影共用；动作本身由 Lead 动作列表单独展示）。
 func ResultDisplayText(text string) string {
-	return strings.TrimSpace(stripActionBlocks(text))
+	return strings.TrimSpace(stripIssueProposalBlocks(stripActionBlocks(text)))
 }
 
 // ---- 动作执行（§5.2，阶段三 actions-exec）：判定与派生构造（纯函数）----

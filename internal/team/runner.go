@@ -356,6 +356,17 @@ func (s *Service) CreateConversationRun(team *Team, runID, goal string, attachme
 }
 
 func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom, parentRunID string, attachments []string) (*Run, error) {
+	return s.createRunWithOptions(team, runID, goal, mode, collect, verifyCommand, raw, autoPlan, scheduledFrom, parentRunID, attachments, false)
+}
+
+func (s *Service) CreateIssueClassificationRun(team *Team, inputID, text string) (*Run, error) {
+	if team == nil || inputID == "" || strings.TrimSpace(text) == "" {
+		return nil, errors.New("历史输入归类任务缺少团队、输入标识或原文")
+	}
+	return s.createRunWithOptions(team, inputID, "整理历史输入的 Issue 归属", ModeSingle, "", nil, nil, true, "", "", nil, true)
+}
+
+func (s *Service) createRunWithOptions(team *Team, runID, goal, mode, collect string, verifyCommand []string, raw []PlanTaskInput, autoPlan bool, scheduledFrom, parentRunID string, attachments []string, issueClassificationOnly bool) (*Run, error) {
 	if team == nil {
 		return nil, errors.New("team 不能为 nil")
 	}
@@ -373,6 +384,10 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 	}
 	if autoPlan && scheduledFrom == "" && len(plan.Tasks) > 0 && plan.Tasks[0].MemberID == team.LeadID {
 		plan.Tasks[0].ExecutionContext = ExecutionContextLeadControl
+		if issueClassificationOnly {
+			plan.Tasks[0].ExecutionContext = ExecutionContextLeadRun
+		}
+		plan.Tasks[0].IssueClassificationOnly = issueClassificationOnly
 		plan.Tasks[0].InputHash = InputHashFor(&plan.Tasks[0], PolicyDigest(team.Policy), "")
 		plan.PlanHash = PlanHash(plan.Mode, plan.CollectPolicy, plan.Goal, plan.Tasks)
 	}
@@ -445,6 +460,9 @@ func (s *Service) createRun(team *Team, runID, goal, mode, collect string, verif
 		}
 		if task.ExecutionContext != "" {
 			payload["executionContext"] = task.ExecutionContext
+		}
+		if task.IssueClassificationOnly {
+			payload["issueClassificationOnly"] = true
 		}
 		if task.Review != nil {
 			payload["review"] = *task.Review
@@ -1281,7 +1299,9 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 			selfActive = true
 			continue
 		}
-		activeRuns++
+		if !sibling.IsIssueClassificationOnly() {
+			activeRuns++
+		}
 	}
 	if !selfActive && policy.MaxActiveRuns > 0 && activeRuns >= policy.MaxActiveRuns {
 		// 活跃 Run 准入已满：本轮不选任务（等待片节奏重试；在飞收尾后
@@ -1465,6 +1485,10 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		return
 	}
 	providerSessionID := member.SessionID
+	if task.IssueClassificationOnly && s.ExecutionSessions == nil {
+		s.failDispatch(state, runID, taskID, "历史归类要求独立 Lead 执行会话，但网关未装配执行会话端口")
+		return
+	}
 	independentExecution := task.ExecutionContext == ExecutionContextLeadRun && s.ExecutionSessions != nil
 	if independentExecution {
 		executionCwd := cwd
@@ -1597,10 +1621,17 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	// 等待期由池信号量（容量=MaxParallelTasks）兜底并发上限。
 	leadBriefing := ""
 	if run.AutoPlan && task.MemberID == team.LeadID {
-		if s.LeadBriefing != nil {
+		if s.LeadBriefing != nil && !task.IssueClassificationOnly {
 			leadBriefing = s.LeadBriefing(team)
 		}
-		leadBriefing += s.backgroundTaskBriefing(run, task.ID)
+		if !task.IssueClassificationOnly {
+			leadBriefing += s.backgroundTaskBriefing(run, task.ID)
+		}
+		if s.inputs != nil {
+			if inputID := issueInputIDForLeadTask(run, task); inputID != "" {
+				leadBriefing += s.inputs.IssueAssociationBriefing(team.ID, inputID)
+			}
+		}
 	}
 	state.mu.Lock()
 	dispatch, err := s.accountDispatchLockedWithBriefingSession(state, team, run, taskID, cwd, binding, leadBriefing, reviewHead, reviewDiff, providerSessionID)
@@ -2136,6 +2167,7 @@ func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamP
 				if run := s.store.Run(state.runID); run != nil && run.AutoPlan {
 					if task := findTaskIn(run, dispatch.taskID); task != nil &&
 						task.ExecutionContext == ExecutionContextLeadRun &&
+						!task.IssueClassificationOnly &&
 						strings.Contains(AssistantFullText(turn), actionsOpenTag) {
 						// A Lead execution task is a result-producing follow-up. If the
 						// model replays the control protocol, do not mark an empty
@@ -2631,7 +2663,7 @@ func (s *Service) settlesLeadActions(state *runState, taskID string) bool {
 	if task == nil {
 		return false
 	}
-	if task.ExecutionContext == ExecutionContextLeadRun {
+	if task.ExecutionContext == ExecutionContextLeadRun && !task.IssueClassificationOnly {
 		return false
 	}
 	team := s.store.Team(run.TeamID)
@@ -2664,7 +2696,27 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 	var actions []Action
 	var violations []string
 	if run := s.store.Run(state.runID); run != nil {
-		actions, violations = ParseLeadActions(AssistantFullText(turn), s.store.Team(run.TeamID), run, policy)
+		fullText := AssistantFullText(turn)
+		task := findTaskIn(run, dispatch.taskID)
+		if task == nil || !task.IssueClassificationOnly {
+			actions, violations = ParseLeadActions(fullText, s.store.Team(run.TeamID), run, policy)
+		}
+		if s.inputs != nil {
+			if task != nil {
+				if inputID := issueInputIDForLeadTask(run, task); inputID != "" {
+					if input := s.inputs.Get(run.TeamID, inputID); input != nil && input.IssueRouting && input.AssociationProposalID == "" {
+						proposal, issueViolations := ExtractIssueProposal(fullText)
+						if len(issueViolations) == 0 {
+							proposalID := issueProposalID(run.TeamID, inputID, input.Revision)
+							if _, _, err := s.inputs.ApplyIssueProposal(run.TeamID, proposalID, proposal); err != nil {
+								issueViolations = append(issueViolations, "Issue 提案未通过网关校验："+err.Error())
+							}
+						}
+						violations = append(violations, issueViolations...)
+					}
+				}
+			}
+		}
 	}
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -2673,6 +2725,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 	// journal.Append 不去重，防重靠这里。
 	recorded := s.recordedActionKeys(state.runID)
 	settled := false
+	failedIssueTeamID, failedIssueInputID, failedIssueReason := "", "", ""
 	err := s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
 		settled = false
 		if terminalRun(fresh.Status) {
@@ -2722,6 +2775,14 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				final = true
 				list = append(list, fmt.Sprintf("任务数已达上限 %d，无法创建修复回合", policy.MaxTasksPerRun))
 			}
+			if final && s.inputs != nil && source != nil {
+				if inputID := issueInputIDForLeadTask(fresh, source); inputID != "" {
+					if input := s.inputs.Get(fresh.TeamID, inputID); input != nil && input.IssueRouting && input.AssociationProposalID == "" {
+						failedIssueTeamID, failedIssueInputID = fresh.TeamID, input.ID
+						failedIssueReason = strings.Join(list, "；")
+					}
+				}
+			}
 			invalidPayload := map[string]any{
 				"taskId":     dispatch.taskID,
 				"attempt":    jsoncompat.Num(attempt),
@@ -2736,6 +2797,14 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 			}
 			if !final {
 				prompt := RepairPrompt(violations, attempt)
+				if s.inputs != nil && source != nil {
+					if inputID := issueInputIDForLeadTask(fresh, source); inputID != "" {
+						if source.IssueClassificationOnly {
+							prompt = IssueAssociationRepairPrompt(violations, attempt)
+						}
+						prompt += "\n" + s.inputs.IssueAssociationBriefing(fresh.TeamID, inputID)
+					}
+				}
 				ordinal := 0
 				for i := range fresh.Tasks {
 					if fresh.Tasks[i].Ordinal > ordinal {
@@ -2743,16 +2812,20 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 					}
 				}
 				repair := Task{
-					ID:               repairID,
-					MemberID:         team.LeadID,
-					Prompt:           prompt,
-					Attempt:          0,
-					Ordinal:          ordinal + 1,
-					WriteLock:        TaskWriteLockNone,
-					WorkspaceMode:    WorkspaceShared,
-					Status:           TaskPlanned,
-					InstructionsHead: InstructionsHead(prompt),
-					ExecutionContext: ExecutionContextLeadControl,
+					ID:                      repairID,
+					MemberID:                team.LeadID,
+					Prompt:                  prompt,
+					Attempt:                 0,
+					Ordinal:                 ordinal + 1,
+					WriteLock:               TaskWriteLockNone,
+					WorkspaceMode:           WorkspaceShared,
+					Status:                  TaskPlanned,
+					InstructionsHead:        InstructionsHead(prompt),
+					ExecutionContext:        ExecutionContextLeadControl,
+					IssueClassificationOnly: source.IssueClassificationOnly,
+				}
+				if repair.IssueClassificationOnly {
+					repair.ExecutionContext = ExecutionContextLeadRun
 				}
 				// 创建期确定性字段（与 planner 同口径）：修复任务无依赖，
 				// 创建期与派发期的 InputHash 相同（contextText 恒空串）。
@@ -2760,11 +2833,12 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				fresh.Tasks = append(fresh.Tasks, repair)
 				if key := actionRepairPlannedKey(fresh.TeamID, fresh.ID, repairID); !recorded[key] {
 					event := newEvent(fresh.ID, EventTaskPlanned, "runner", map[string]any{
-						"taskId":           repairID,
-						"memberId":         team.LeadID,
-						"instructionsHead": repair.InstructionsHead,
-						"executionContext": repair.ExecutionContext,
-						"round":            jsoncompat.Num(fresh.Round),
+						"taskId":                  repairID,
+						"memberId":                team.LeadID,
+						"instructionsHead":        repair.InstructionsHead,
+						"executionContext":        repair.ExecutionContext,
+						"issueClassificationOnly": repair.IssueClassificationOnly,
+						"round":                   jsoncompat.Num(fresh.Round),
 					})
 					event.IdempotencyKey = key
 					events = append(events, event)
@@ -2824,6 +2898,11 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 	if err != nil {
 		log.Printf("team run %s Lead 任务 %s 结算记账失败（watcher 继续观察整套重试）: %v", state.runID, dispatch.taskID, err)
 		return false
+	}
+	if settled && failedIssueInputID != "" {
+		if _, _, failErr := s.inputs.FailIssueAssociation(failedIssueTeamID, failedIssueInputID, failedIssueReason); failErr != nil {
+			log.Printf("team %s 输入 %s Issue 归类失败状态写入失败: %v", failedIssueTeamID, failedIssueInputID, failErr)
+		}
 	}
 	if settled {
 		// Lead 任务的 completed 不经 applyTaskTerminalLocked（动作事实原子

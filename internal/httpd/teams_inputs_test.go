@@ -172,6 +172,119 @@ func TestTeamInputGetProjection(t *testing.T) {
 	}
 }
 
+func TestIssueRoutingProjectionReportsFailedLead(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	input, _, err := env.server.TeamInputs.AcceptWithIssueRouting(teamID,
+		"cccccccc-bbbb-4ccc-8ddd-eeeeeeeeee03", "新团队输入", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	teamRow := env.store.Team(teamID)
+	run := &team.Run{
+		ID: input.ID, TeamID: teamID, Goal: input.Text, Mode: team.ModeSingle,
+		AutoPlan: true, Status: "failed", Tasks: []team.Task{{
+			ID: "lead", MemberID: teamRow.LeadID, Status: team.TaskFailed, Error: "provider unavailable",
+		}},
+	}
+	if err := env.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	project := (&handler{server: env.server}).teamInputProject(input)
+	if got := project.MustGet("associationStatus"); got != team.IssueAssociationFailed {
+		t.Fatalf("failed Lead should stop the pending Issue badge: %v", got)
+	}
+	if got := project.MustGet("associationReason"); got != "provider unavailable" {
+		t.Fatalf("failure reason should remain visible: %v", got)
+	}
+}
+
+func TestTeamIssueListProjectsPersistedInputLinks(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	input, _, err := env.server.TeamInputs.AcceptWithIssueRouting(teamID,
+		"dddddddd-bbbb-4ccc-8ddd-eeeeeeeeee04", "導航", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := &team.IssueProposal{InputID: input.ID, Revision: input.Revision, Segments: []team.IssueProposalSegment{{
+		Action: team.IssueSegmentCreate, NewIssueTitle: "團隊導航", SourceStart: 0, SourceEnd: 2,
+	}}}
+	if _, _, err := env.server.TeamInputs.ApplyIssueProposal(teamID, "issue-proposal-http", proposal); err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-issue-evidence"
+	if err := env.server.TeamInputs.MarkRoutingIntent(teamID, input.ID, "new_task", runID, "lead", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.server.TeamInputs.MarkRouted(teamID, input.ID, "new_task", runID, "lead"); err != nil {
+		t.Fatal(err)
+	}
+	run := &team.Run{ID: runID, TeamID: teamID, Goal: "实现团队导航", Status: team.RunCompleted, Tasks: []team.Task{{
+		ID: "lead", MemberID: "lead", Status: team.TaskCompleted, Result: "导航已完成，并通过只读验证。", Ordinal: 1,
+	}}}
+	if err := env.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/issues", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("Issue list failed: %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Issues []struct {
+			Title  string `json:"title"`
+			Status string `json:"status"`
+			Inputs []struct {
+				InputID    string `json:"inputId"`
+				SourceText string `json:"sourceText"`
+			} `json:"inputs"`
+			LastOwner map[string]any `json:"lastOwner"`
+			Runs      []struct {
+				Delivery map[string]any `json:"delivery"`
+			} `json:"runs"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Issues) != 1 || result.Issues[0].Title != "團隊導航" ||
+		result.Issues[0].Status != team.RunCompleted || len(result.Issues[0].Inputs) != 1 ||
+		result.Issues[0].Inputs[0].InputID != input.ID || result.Issues[0].Inputs[0].SourceText != "導航" {
+		t.Fatalf("Issue projection lost its persisted source link: %+v", result.Issues)
+	}
+	lead := env.store.Team(teamID).Members[0]
+	leadName := lead.Name
+	if leadName == "" {
+		leadName = lead.ID
+	}
+	if result.Issues[0].LastOwner["name"] != leadName || len(result.Issues[0].Runs) != 1 {
+		t.Fatalf("Issue list should keep the final executor while remaining compact: %+v", result.Issues[0])
+	}
+	if _, hasEvidenceText := result.Issues[0].Runs[0].Delivery["resultSummary"]; hasEvidenceText {
+		t.Fatalf("Issue list should not include long delivery text: %+v", result.Issues[0].Runs[0])
+	}
+	issueID := env.server.TeamInputs.ListIssues(teamID)[0].ID
+	detail := env.request(http.MethodGet, "/api/teams/"+teamID+"/issues/"+issueID, "")
+	if detail.Code != http.StatusOK {
+		t.Fatalf("Issue detail failed: %d %s", detail.Code, detail.Body.String())
+	}
+	var detailed struct {
+		Runs []struct {
+			Delivery struct {
+				ResultSummary struct {
+					Text string `json:"text"`
+				} `json:"resultSummary"`
+			} `json:"delivery"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &detailed); err != nil {
+		t.Fatal(err)
+	}
+	if len(detailed.Runs) != 1 || !strings.Contains(detailed.Runs[0].Delivery.ResultSummary.Text, "只读验证") {
+		t.Fatalf("Issue detail should include the bounded delivery summary: %+v", detailed)
+	}
+}
+
 func TestTeamInputFollowUpResumesWaitingRun(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	teamID, _ := env.createTeam(t)

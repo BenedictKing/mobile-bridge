@@ -84,6 +84,9 @@ func (s *Service) notifyRunStatusEvents(events []*Event) {
 		if kind == "" {
 			continue
 		}
+		if run := s.store.Run(event.RunID); run != nil && run.IsIssueClassificationOnly() {
+			continue
+		}
 		s.OnRunStatus(event.RunID, kind)
 	}
 }

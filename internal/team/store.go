@@ -727,6 +727,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		task.MemberID = payloadString(event.Payload, "memberId")
 		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
 		task.ExecutionContext = payloadString(event.Payload, "executionContext")
+		task.IssueClassificationOnly = payloadBool(event.Payload, "issueClassificationOnly")
 		task.Attachments = payloadStrings(event.Payload, "attachments")
 		if raw, exists := event.Payload["review"]; exists {
 			if review, ok := raw.(bool); ok {

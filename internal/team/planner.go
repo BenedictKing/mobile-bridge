@@ -447,6 +447,9 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 		entry.Set("id", task.ID)
 		entry.Set("memberId", task.MemberID)
 		entry.Set("prompt", task.Prompt)
+		if task.IssueClassificationOnly {
+			entry.Set("issueClassificationOnly", true)
+		}
 		depends := &jsoncompat.Array{}
 		for _, dep := range task.DependsOn {
 			depends.Items = append(depends.Items, dep)
@@ -490,6 +493,9 @@ func InputHashFor(task *Task, policyDigest, contextText string) string {
 	object.Set("memberId", task.MemberID)
 	object.Set("prompt", task.Prompt)
 	object.Set("executionContext", task.ExecutionContext)
+	if task.IssueClassificationOnly {
+		object.Set("issueClassificationOnly", true)
+	}
 	depends := &jsoncompat.Array{}
 	for _, dep := range task.DependsOn {
 		depends.Items = append(depends.Items, dep)

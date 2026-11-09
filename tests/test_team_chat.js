@@ -423,7 +423,7 @@ test('cancelling first team lead picker returns null without creating a team',as
 });
 
 test('team submission fields always enter autoPlan orchestration without a mode selector',()=>{
-  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1'});
+  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1'});
   const html=require('node:fs').readFileSync(require.resolve('../web/index.html'),'utf8');
   const app=require('node:fs').readFileSync(require.resolve('../web/app.js'),'utf8');
   assert.equal(html.includes('id="team-message-mode"'),false);
@@ -653,10 +653,10 @@ async function withQueueStorage(entries,run){
 
 test('submission fields opt into the persistent queue per team',async()=>{
   await withQueueStorage({'teamQueueMode:team-1':'1'},()=>{
-    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamQueueVersion:'2'});
-    assert.deepEqual(teamSubmissionFields('team-2'),{teamMode:'team',teamId:'team-2'});
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1',teamQueueVersion:'2'});
+    assert.deepEqual(teamSubmissionFields('team-2'),{teamMode:'team',teamId:'team-2',teamIssueRoutingVersion:'1'});
   });
-  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1'});
+  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1'});
 });
 
 test('queue panel lists inputs with reasons, work items and queued actions',async()=>{
@@ -732,11 +732,11 @@ test('send queue selection owns the persistent mode without a second toggle',asy
     }});
     controller.setTeams(teams);controller.open(teams[0]);await flush();
     controller.setQueueMode(true);await flush();
-    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamQueueVersion:'2'});
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1',teamQueueVersion:'2'});
     assert.equal(find(root,'team-queue-panel').length,1);
     assert.equal(find(root,'team-queue-toggle').length,0);
     controller.setQueueMode(false);
-    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1'});
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1'});
     assert.equal(find(root,'team-queue-panel').length,0);
   });
   const app=require('node:fs').readFileSync(require.resolve('../web/app.js'),'utf8');

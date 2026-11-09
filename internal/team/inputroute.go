@@ -116,7 +116,13 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded boo
 	hasIntent := (input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput) && kind != ""
 	waitReason := ""
 	if !hasIntent {
-		runs := s.store.RunsByTeam(team.ID)
+		allRuns := s.store.RunsByTeam(team.ID)
+		runs := make([]*Run, 0, len(allRuns))
+		for _, run := range allRuns {
+			if !run.IsIssueClassificationOnly() {
+				runs = append(runs, run)
+			}
+		}
 		active := make([]*Run, 0, 1)
 		for _, run := range runs {
 			if !terminalRun(run.Status) {
