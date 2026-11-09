@@ -376,18 +376,18 @@ class TeamCanvasController{
     if(!teamID)return;
     this.request('/api/teams/'+encodeURIComponent(teamID)+'/issues/'+encodeURIComponent(issue.id)).then(detail=>{
       if(this.detailRequestToken!==requestToken||this.detailIssue?.id!==issue.id)return;
-      this.detailIssue=detail;this.detailRun=(detail.runs||[])[0]||null;this.renderDetail(detail);
+      this.detailIssue=detail;this.detailRun=(detail.runs||[])[0]||null;this.renderDetail(detail,true);
     }).catch(error=>{
       if(this.detailRequestToken!==requestToken||this.detailIssue?.id!==issue.id)return;
       const body=document.getElementById('team-canvas-detail-body');
       body.append(this.detailSection('交付证据',[this.t('读取事项详情失败')+' · '+String(error.message||error)]));
     });
   }
-  renderDetail(issue){
+  renderDetail(issue,preserveScroll=false){
     document.getElementById('team-canvas-detail-id').textContent='Issue · '+this.shortID(issue.id);
     document.getElementById('team-canvas-detail-title').textContent=issue.title||this.t('团队事项');
     document.getElementById('team-canvas-detail-status').textContent=this.statusLabel(issue);
-    const body=document.getElementById('team-canvas-detail-body');body.replaceChildren();
+    const body=document.getElementById('team-canvas-detail-body'),scrollTop=preserveScroll?body.scrollTop:0;body.replaceChildren();
     body.append(this.detailSection('当前着落',[
       teamCanvasOwnerLine(issue,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind),
       this.progress(issue)?this.progress(issue).completed+'/'+this.progress(issue).total+' '+this.t('项已完成'):'进度待同步',
@@ -413,6 +413,7 @@ class TeamCanvasController{
     });
     for(const sections of runs)body.append(...sections);
     if(!runs.length)body.append(this.detailSection('交付证据',[this.t('暂无可展示的执行结果')]));
+    body.scrollTop=scrollTop;
     const openRunButton=document.getElementById('team-canvas-open-run');
     openRunButton.disabled=!this.detailRun;
     openRunButton.textContent=this.detailRun?this.t('打开 Run 详情'):this.t('暂无关联 Run');
