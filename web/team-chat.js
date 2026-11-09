@@ -563,7 +563,9 @@ class TeamLeadPicker{
 }
 
 function teamSettingsMemberLabel(member){
-  return BridgeI18n.agentLabel(member.agentKind)+' · '+(member.name&&member.name!==member.agentKind?member.name:member.agentKind);
+  const agent=BridgeI18n.agentLabel(member.agentKind),name=String(member.name||'').trim();
+  if(!name)return agent||member.agentKind;
+  return agent&&name.toLowerCase()===agent.toLowerCase()?agent:agent+' · '+name;
 }
 function teamReviewerMemberID(team){
   if(!team)return '';
