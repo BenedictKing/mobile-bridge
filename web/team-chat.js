@@ -363,7 +363,7 @@ class TeamChatController{
   }
   close(){this.open(null);}
   openSettings(){if(this.current)new TeamSettingsDialog({request:this.request,onChange:team=>{this.onChange&&this.onChange(team);}}).open(this.current);}
-  accepted(){this.refreshRun(true);this.refreshQueue();}
+  accepted(){this.refreshRun(true);this.refreshQueue();globalThis.BridgeTeamCanvas?.accepted();}
   schedule(){
     clearTimeout(this.timer);if(!this.current)return;
     // 队列模式下终局 Run 也要继续追队列（新输入排队/停靠），不因 Run 终态停泵。

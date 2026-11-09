@@ -6,6 +6,7 @@ global.teamRunStatusLabel=status=>status;
 global.teamTaskStatusLabel=status=>status;
 global.TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 global.BridgeI18n={agentLabel:kind=>kind};
+global.teamMemberAgentLabel=require('../web/team.js').teamMemberAgentLabel;
 const {splitTeamActions,renderTeamActionsCard,renderTeamDeliveryEvidence,TeamChatController,TeamSettingsDialog,TeamLeadPicker,teamSubmissionFields,teamWorkflowStages}=require('../web/team-chat.js');
 
 class FakeNode{
@@ -344,7 +345,7 @@ test('team settings shows one effective reviewer and distinguishes same-kind mem
     throw new Error('unexpected request '+path);
   }});
   await settings.open(current);
-  const expectedOptions=['kimi · kimi','zcode · zcode','mcode · mcode','kimi · kimi-2'];
+  const expectedOptions=['kimi','zcode','mcode','kimi · kimi-2'];
   for(const select of find(settings.body,'team-role-select'))assert.deepEqual(select.children.slice(-4).map(option=>option.textContent),expectedOptions);
   const labels=()=>find(settings.body,'team-member-role').map(node=>node.textContent);
   assert.deepEqual(labels(),['主控','成员 · 评审','成员','成员']);

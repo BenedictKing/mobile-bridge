@@ -91,6 +91,14 @@ Run 详情保持现有页面作为第二层工作区，沿用同一应用侧栏�
 
 聊天和 Dashboard 消费同一个 Run summary / delivery projection，避免两处给出不同负责人、进度或结论。聊天负责把回音放在对话上下文里；Dashboard 负责聚合多团队的回音并分流。
 
+### 团队聊天画布
+
+团队聊天默认打开「画布」视图；「对话」保留原会话时间线，并在时间线上方提供返回画布入口。画布用每条真实输入作为气泡，按 Run 连接到事项卡片。卡片直接使用 Run summary 的状态、任务进度、最近回音和下一步；点击卡片展开详情，再进入既有 Run 页面查看完整任务和证据。
+
+气泡来源按可信度读取：`GET /api/teams/:teamId/inputs` 中的 TeamInput、Run 的原始 `goal`，以及任务 ID 为 `input-<inputId>` 的对话输入。网关生成的 `[Team delegation]`、`[Team context]`、`[Team review]` 信封不作为用户气泡。详情支持原有 Run 汇总与交付证据；未能关联到 Run 的会话消息显示为「待关联」，不推测所属事项。
+
+目前服务端持久化对象是 Run 和 WorkItem，没有独立 Issue 实体；首版事项卡片以 Run 为跟踪对象。关联只使用输入账本目标或精确输入内容，不做语义相似度猜测。需要把同一 Run 内不同主题拆成独立事项时，应先完成 Lead 语义路由提案和 WorkItem 生命周期，再将画布节点从 Run 扩展到 WorkItem；当前状态不应被描述成自动完成了语义拆分。
+
 ## 4. 状态与数据模型
 
 Dashboard 继续消费轻量 Run summary，不在团队列表中读取任务正文。为了让承诺可信，Run summary 需要新增由服务端从 Run 快照和事件账本派生的闭环投影；不让前端猜测或为每行再拉完整 transcript。首次打开和手动刷新并行请求：

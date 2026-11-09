@@ -37,6 +37,7 @@ func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
 		"web/account.css":          "body{}",
 		"web/style.css":            "body{}",
 		"web/presentation.css":     "body{}",
+		"web/team-canvas.js":       "window.teamCanvas=true;",
 		"web/manifest.webmanifest": `{"name":"Mobile / Bridge"}`,
 		"web/icon.png":             "\x89PNG",
 	}
@@ -50,6 +51,7 @@ func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
 		"/account.css":          "text/css; charset=utf-8",
 		"/style.css":            "text/css; charset=utf-8",
 		"/presentation.css":     "text/css; charset=utf-8",
+		"/team-canvas.js":       "text/javascript; charset=utf-8",
 		"/manifest.webmanifest": "application/manifest+json",
 		"/icon.png":             "image/png",
 	}

@@ -2557,4 +2557,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout};
