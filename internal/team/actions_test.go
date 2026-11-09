@@ -1405,6 +1405,14 @@ func TestBuildLeadBriefing(t *testing.T) {
 	if got := BuildLeadBriefing(team, &Run{AutoPlan: false}, task, policy); got != "" {
 		t.Fatalf("显式计划不应注入 Lead 简报: %q", got)
 	}
+	execution := &Task{ID: "lead-d1-0", MemberID: "lead", ExecutionContext: ExecutionContextLeadRun}
+	executionBriefing := BuildLeadBriefing(team, run, execution, policy)
+	if !strings.Contains(executionBriefing, "直接完成") || !strings.Contains(executionBriefing, "不要输出 team-actions") {
+		t.Fatalf("Lead 执行任务应收到普通结果约束: %q", executionBriefing)
+	}
+	if strings.Contains(executionBriefing, actionSchemaInstruction()) {
+		t.Fatalf("Lead 执行任务不应收到委派协议: %q", executionBriefing)
+	}
 	if repair := RepairPrompt([]string{"成员无效"}, 1); !strings.Contains(repair, actionSchemaInstruction()) {
 		t.Fatal("修复提示应继续携带共享动作协议")
 	}

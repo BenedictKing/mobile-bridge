@@ -929,6 +929,9 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 		team.LeadID == "" || task.MemberID != team.LeadID || strings.HasPrefix(task.ID, actionRepairPrefix) {
 		return ""
 	}
+	if task.ExecutionContext == ExecutionContextLeadRun {
+		return "[Lead execution]\n这是已派发的 Lead 执行任务，不是团队控制回合。请直接完成 [Assigned task] 中的任务并输出普通结果正文；不要再次委派、不要输出 team-actions，也不要复述团队编排协议。"
+	}
 	var builder strings.Builder
 	builder.WriteString("[Team delegation]\n")
 	builder.WriteString("你是本次自动规划的 Lead。以下是启用成员；委派时 member 必须使用这里的真实 ID：\n")

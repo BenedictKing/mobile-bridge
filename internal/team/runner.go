@@ -2133,6 +2133,19 @@ func (s *Service) pollTask(state *runState, dispatch *taskDispatch, policy TeamP
 				return false, session, observed
 			case "completed":
 				result := ExtractResult(dispatch.sessionID, turn, policy.MaxResultChars)
+				if run := s.store.Run(state.runID); run != nil && run.AutoPlan {
+					if task := findTaskIn(run, dispatch.taskID); task != nil &&
+						task.ExecutionContext == ExecutionContextLeadRun &&
+						strings.Contains(AssistantFullText(turn), actionsOpenTag) {
+						// A Lead execution task is a result-producing follow-up. If the
+						// model replays the control protocol, do not mark an empty
+						// stripped result as completed; preserve a visible diagnostic.
+						s.failTask(state, state.runID, dispatch.taskID,
+							"Lead 执行任务返回了 team-actions，而不是结果正文；请重试该任务",
+							"lead_execution_action_block")
+						return true, session, observed
+					}
+				}
 				// 成功 settle → 桶记账（§6.3 规则 b：连续 4 次成功增长窗口）。
 				s.AIMD.OnSuccess(dispatch.bucketKey)
 				// AutoPlan Run 的 Lead 任务：completed 事实与 team-actions 动作
@@ -2616,6 +2629,9 @@ func (s *Service) settlesLeadActions(state *runState, taskID string) bool {
 	}
 	task := findTaskIn(run, taskID)
 	if task == nil {
+		return false
+	}
+	if task.ExecutionContext == ExecutionContextLeadRun {
 		return false
 	}
 	team := s.store.Team(run.TeamID)
