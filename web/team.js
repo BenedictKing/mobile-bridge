@@ -79,7 +79,7 @@ const TEAM_ATTENTION_RUN_STATUSES=new Set(['waiting_input','paused','failed','ou
 function teamRunGroup(status){
   if(TEAM_ATTENTION_RUN_STATUSES.has(status))return 'attention';
   if(TEAM_ACTIVE_RUN_STATUSES.has(status))return 'active';
-  return TEAM_TERMINAL_RUN_STATUSES.has(status)?'terminal':'other';
+  return TEAM_TERMINAL_RUN_STATUSES.has(status)?'terminal':'attention';
 }
 /* taskCounts → {total,completed}；缺 taskCounts 显示「进度待同步」，不猜 0。 */
 function teamRunProgress(run){
@@ -97,7 +97,10 @@ function teamRunProgress(run){
    不编造；都没有时不输出（卡片显示进度即可）。 */
 function teamRunEchoLine(run){
   const bits=[];
-  if(run&&run.currentOwner&&run.currentOwner.name)bits.push(run.currentOwner.name+t_safe(' 执行中'));
+  if(run&&run.currentOwner&&run.currentOwner.name){
+    const ownerState=teamRunGroup(run.status)==='active'?t_safe(' 执行中'):' · '+t_safe('负责人');
+    bits.push(run.currentOwner.name+ownerState);
+  }
   if(run&&run.lastUpdate&&run.lastUpdate.summary)bits.push(t_safe(run.lastUpdate.summary));
   if(run&&run.nextAction&&run.nextAction.label)bits.push(t_safe('下一步：')+t_safe(run.nextAction.label));
   return bits.join(' · ');
@@ -561,8 +564,8 @@ class TeamRunDialogHost{
 const teamRunDialogHost=new TeamRunDialogHost();
 
 class TeamsPanel{
-  constructor({root,request,openRun,openChat,onChange}){
-    Object.assign(this,{root,request,openRun,openChat,onChange});
+  constructor({root,request,openRun,openChat,onChange,onRender}){
+    Object.assign(this,{root,request,openRun,openChat,onChange,onRender});
     this.teams=[];this.loading=false;this.busy=false;this.error='';this.notice='';
     this.create=null;       // 新建团队表单状态
     this.renaming=null;     // 重命名中的 teamId
@@ -622,11 +625,14 @@ class TeamsPanel{
     if(this.pollTimer){clearInterval(this.pollTimer);this.pollTimer=null;}
   }
   teamRuns(teamId){return (this.runs.get(teamId)||{}).rows||[];}
-  /* 团队当前代表 Run：优先最新非终态（正在发生的事），否则最新终态。
-     rows 按创建序返回，倒序找。 */
+  /* 团队卡先展示需处理项，其次运行中项，最后才展示最近终态。 */
   teamLatestRun(teamId){
     const rows=this.teamRuns(teamId);
-    return [...rows].reverse().find(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))||rows[rows.length-1]||null;
+    const latest=[...rows].reverse();
+    return latest.find(run=>teamRunGroup(run.status)==='attention')
+      ||latest.find(run=>teamRunGroup(run.status)==='active')
+      ||latest[0]
+      ||null;
   }
   runStats(){
     const stats={teams:this.teams.length,members:0,active:0,attention:0};
@@ -667,6 +673,7 @@ class TeamsPanel{
   }
   render(){
     const t=BridgeI18n.t,root=this.root;
+    this.onRender&&this.onRender(this);
     root.replaceChildren();
     const toolbar=this.node('div',undefined,'team-toolbar');
     if(this.lastSynced)toolbar.append(this.node('span',t('同步于')+' '+this.lastSynced,'team-synced muted'));
@@ -762,17 +769,29 @@ class TeamsPanel{
     }
     rows.sort((a,b)=>b.at-a.at);
     if(rows.length){
-      const filtered=this.filter==='all'?rows:rows.filter(({run})=>teamRunGroup(run.status)===this.filter);
-      const shown=filtered.slice(0,6);
-      if(!shown.length){
-        const empty=this.node('p',t('当前筛选没有匹配的 Run。'),'muted');
-        empty.setAttribute('role','status');
-        box.append(empty);
-        return box;
+      const groupOf=run=>teamRunGroup(run.status);
+      const groups=this.filter==='all'
+        ?[['attention',t('需处理')],['active',t('运行中')],['terminal',t('最近结束')]]
+        :[[this.filter,this.filter==='attention'?t('需处理'):t('运行中')]];
+      let renderedGroup=false;
+      for(const [key,label] of groups){
+        const matching=rows.filter(({run})=>groupOf(run)===key);
+        if(!matching.length)continue;
+        renderedGroup=true;
+        const section=this.node('section',undefined,'team-activity-group');
+        const heading=this.node('h4',undefined,'team-activity-group-title');
+        heading.append(this.node('span',label));
+        heading.append(this.node('small',String(matching.length),'muted'));
+        section.append(heading);
+        const list=this.node('div',undefined,'team-activity-list');
+        for(const {team,run} of matching)list.append(this.renderActivityRow(team,run));
+        section.append(list);
+        box.append(section);
       }
-      const list=this.node('div',undefined,'team-activity-list');
-      for(const {team,run} of shown)list.append(this.renderActivityRow(team,run));
-      box.append(list);
+      if(renderedGroup)return box;
+      const empty=this.node('p',t('当前筛选没有匹配的 Run。'),'muted');
+      empty.setAttribute('role','status');
+      box.append(empty);
       return box;
     }
     // 没有 Run 数据：区分「还没拉到」与「确实没有」。
@@ -882,7 +901,7 @@ class TeamsPanel{
     // 预算策略编辑（§11.7/§9「修订预算」的手机入口）：PATCH policy.budgetUnits
     // 走既有 team PATCH 通道（version 冲突 409 的中文文案由服务端透出）。
     if(this.policyEdit===team.id)card.append(this.renderPolicyEdit(team));
-    const actions=this.node('div',undefined,'team-actions');
+    const actions=this.node('div',undefined,'team-actions team-primary-actions');
     const runsBtn=this.button(this.expanded.has(team.id)?t('收起 Run'):t('Run 记录'),()=>{
       if(this.expanded.has(team.id))this.expanded.delete(team.id);
       else{this.expanded.add(team.id);this.loadRuns(team.id);}
@@ -891,27 +910,34 @@ class TeamsPanel{
     const createRun=this.button(t('新建 Run'),()=>this.openRunCreate(team));
     const openChat=this.button(t('打开团队聊天'),()=>this.openChat&&this.openChat(team));
     openChat.classList.add('primary');
-    actions.append(openChat,runsBtn,createRun);
-    actions.append(this.button(t('预算'),()=>{
+    actions.append(openChat,createRun);
+    const management=document.createElement('details');
+    management.className='team-management';
+    const manageLabel=this.node('summary',t('团队管理'));
+    management.append(manageLabel);
+    const manageActions=this.node('div',undefined,'team-actions team-management-actions');
+    manageActions.append(runsBtn);
+    manageActions.append(this.button(t('预算'),()=>{
       if(this.policyEdit===team.id)this.policyEdit=null;
       else{this.policyEdit=team.id;this.policyBudgetValue=typeof budget==='number'?String(budget):'0';}
       this.render();
     }));
-    actions.append(this.button(this.scheduleOpen.has(team.id)?t('收起定时'):t('定时运行'),()=>{
+    manageActions.append(this.button(this.scheduleOpen.has(team.id)?t('收起定时'):t('定时运行'),()=>{
       if(this.scheduleOpen.has(team.id))this.scheduleOpen.delete(team.id);
       else{this.scheduleOpen.add(team.id);this.loadSchedule(team.id);}
       this.render();
     }));
     if(this.renaming!==team.id){
-      actions.append(this.button(t('重命名'),()=>{this.renaming=team.id;this.renameValue=team.name;this.render();}));
+      manageActions.append(this.button(t('重命名'),()=>{this.renaming=team.id;this.renameValue=team.name;this.render();}));
     }
-    actions.append(this.button(t('删除'),async()=>{
+    manageActions.append(this.button(t('删除'),async()=>{
       if(!window.confirm(t('删除团队会移除它的 Run 记录；仍有未结束的 Run 时会被拒绝。确认删除？')+'\n'+team.name))return;
       const result=await this.send('DELETE','/api/teams/'+encodeURIComponent(team.id));
       if(result)await this.notify(t('团队已删除。'));
     }));
-    if(this.busy)actions.querySelectorAll('button').forEach(b=>b.disabled=true);
-    card.append(actions);
+    if(this.busy)manageActions.querySelectorAll('button').forEach(b=>b.disabled=true);
+    management.append(manageActions);
+    card.append(actions,management);
     if(this.expanded.has(team.id))card.append(this.renderRuns(team));
     if(this.scheduleOpen.has(team.id))card.append(this.renderSchedule(team));
     return card;
@@ -2531,4 +2557,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamRunStopReasonText,teamGraphLayout};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout};

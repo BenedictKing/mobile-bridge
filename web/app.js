@@ -140,7 +140,7 @@ function renderLoginStatus(status=loginStatus){
   $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):failed?t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。'):'';
   $('login-button').disabled=loginStatus.blocked;
 }
-function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
+function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;if(typeof teamDashboardPage!=='undefined'&&teamDashboardPage)teamDashboardPage.hidden=true;if(typeof teamsPanel!=='undefined')teamsPanel?.stopPolling();document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
 async function start(){
   const auth=await api('/api/auth');BridgeConnection.configure(auth);
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();
@@ -149,8 +149,9 @@ async function enter(){
   $('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();
   if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);}catch(error){toast(error.message);}
   try{const value=await api('/api/projects');projectDirectory=value.projects||[];hiddenProjectCwds=new Set(value.hiddenCwds||[]);}catch(error){toast(error.message);}
-  const list=loadList(true).catch(e=>toast(e.message)),runRoute=typeof parseRunHash==='function'?parseRunHash():null,teamRoute=typeof parseTeamHash==='function'?parseTeamHash():null;
-  if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);
+  const list=loadList(true).catch(e=>toast(e.message)),dashboardRoute=location.hash==='#teams',runRoute=typeof parseRunHash==='function'?parseRunHash():null,teamRoute=typeof parseTeamHash==='function'?parseTeamHash():null;
+  if(dashboardRoute)openTeamDashboard({fromRoute:true});
+  else if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId,true);
   else if(teamRoute){const team=teamChat?.teamById(teamRoute.teamId);if(team)openTeamChat(team);else toast('团队不存在或已删除');}
   else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}
   await list;
@@ -512,11 +513,14 @@ $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-
    同样退不出聊天。因此从列表进详情压一条历史，详情内互跳（会话↔团队↔Run）
    仍只替换当前条目：返回一次必回列表，栈里也不会堆出中间层。 */
 let detailPushed=false; // 当前详情条目是否由本次从列表压入；popstate 退回后清零
+let teamDashboardPage=null,teamDashboardTeamList=null,teamDashboardSummary=null,teamDashboardTitle=null;
+let teamDashboardNavigation=false,teamDashboardPushed=false,teamRunReturnsToDashboard=false;
 // 只有窄屏（与 style.css 的 max-width:720px 同一断点）才是「列表 与 详情 互相
 // 独占」的手机布局；桌面和平板是两栏并排，退回列表没有意义，仍沿用只替换
 // hash 的老办法，避免浏览器后退把并排的聊天面板状态拆掉。
 const compactLayout=()=>window.matchMedia('(max-width:720px)').matches;
 function showDetailRoute(hash){
+  if(teamDashboardNavigation){history.pushState(null,'',hash);detailPushed=true;teamDashboardNavigation=false;return;}
   // 只有“列表（hash 为空）→ 详情”这一次压栈；除此之外（详情内互跳、深链
   // 落 URL 后 enter() 补开）都替换当前条目，避免返回时多退一层。
   if(!compactLayout()||location.hash||detailPushed)history.replaceState(null,'',hash);
@@ -1725,6 +1729,12 @@ startFromLink();
    打开）和 popstate（安卓返回手势、浏览器后退）。hash 变空即表示退回列表；
    popstate 之后浏览器还会补发一次 hashchange，靠各分支的可见性判断保持幂等。 */
 function routeFromLocation(){
+  teamRunReturnsToDashboard=!!history.state?.teamRunReturnToDashboard;
+  if(location.hash==='#teams'){
+    openTeamDashboard({fromRoute:true});
+    return;
+  }
+  if(teamDashboardPage&&!teamDashboardPage.hidden)hideTeamDashboard({fromRoute:true});
   if(typeof parseRunHash==='function'){
     const runRoute=parseRunHash();
     if(runRoute){
@@ -1880,6 +1890,8 @@ const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatControll
 async function openTeamChat(team){
   const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
   if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
+  const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
+  if(fromDashboard){hideTeamDashboard({fromRoute:true});teamDashboardNavigation=true;teamRunReturnsToDashboard=false;}
   $('teams-dialog').close();
   await openChat(lead.sessionId,'local',team.id);
   // 团队会话复用 Lead 会话：openChat 已按列表→详情压过栈，这里只把 hash 换成
@@ -1904,7 +1916,77 @@ function syncTeamComposer(){
   teamChat?.refreshRun();
 }
 $('team-settings-button').onclick=()=>teamChat?.openSettings();
-const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();}});
+function createTeamDashboardShell(root){
+  const page=el('section','team-dashboard-page');page.id='team-dashboard-page';page.hidden=true;
+  const rail=el('aside','team-dashboard-rail');
+  const brand=el('div','team-dashboard-brand');brand.textContent='Mobile / Bridge';
+  const navigation=el('nav','team-dashboard-nav');navigation.setAttribute('aria-label',t('团队工作台导航'));
+  const workbench=el('button','team-dashboard-nav-item active',t('团队运行'));workbench.type='button';workbench.setAttribute('aria-current','page');
+  const chats=el('button','team-dashboard-nav-item',t('聊天'));chats.type='button';chats.onclick=leaveTeamDashboard;
+  const accounts=el('button','team-dashboard-nav-item',t('账号与接入'));accounts.type='button';accounts.onclick=()=>$('accounts-button').click();
+  navigation.append(workbench,chats,accounts);
+  const teamHeading=el('h2','team-dashboard-list-heading',t('团队'));
+  teamDashboardTeamList=el('nav','team-dashboard-team-list');teamDashboardTeamList.setAttribute('aria-label',t('团队'));
+  rail.append(brand,navigation,teamHeading,teamDashboardTeamList);
+  const main=el('main','team-dashboard-main');
+  const header=el('header','team-dashboard-header');
+  const heading=el('div','team-dashboard-heading');
+  teamDashboardTitle=el('h1','',t('团队运行'));
+  teamDashboardSummary=el('p','team-dashboard-summary muted');
+  heading.append(teamDashboardTitle,teamDashboardSummary);
+  header.append(heading);
+  const content=el('div','team-dashboard-body');content.append(root);
+  main.append(header,content);page.append(rail,main);document.body.append(page);
+  return page;
+}
+function renderTeamDashboardTeams(teams=teamChat?.teams||[]){
+  if(!teamDashboardTeamList)return;
+  teamDashboardTeamList.replaceChildren();
+  for(const team of teams){
+    const item=el('button','team-dashboard-team-item');item.type='button';
+    item.setAttribute('aria-label',team.name+' · '+t('聊天'));
+    const name=el('strong','',team.name);
+    const latest=teamsPanel?.teamLatestRun(team.id);
+    const details=latest
+      ?[t(TEAM_RUN_STATUS_LABELS[latest.status]||latest.status),latest.currentOwner?.name,latest.nextAction?.label].filter(Boolean).join(' · ')
+      :((team.members||[]).length+' '+t('名成员'));
+    const meta=el('small','',details);item.append(name,meta);
+    item.onclick=()=>openTeamChat(team).catch(error=>toast(error.message));
+    teamDashboardTeamList.append(item);
+  }
+  if(!teams.length)teamDashboardTeamList.append(el('p','team-dashboard-empty muted',t('还没有团队。')));
+}
+function renderTeamDashboardSummary(panel=teamsPanel){
+  if(!panel||!teamDashboardSummary)return;
+  const stats=panel.runStats();
+  const parts=[stats.teams+' '+t('团队'),stats.active+' '+t('运行中'),stats.attention+' '+t('需处理')];
+  if(panel.lastSynced)parts.push(t('同步于')+' '+panel.lastSynced);
+  teamDashboardSummary.textContent=parts.join(' · ');
+}
+function openTeamDashboard({fromRoute=false}={}){
+  if(!teamDashboardPage)return;
+  if(fromRoute)teamDashboardPushed=!!history.state?.teamDashboard;
+  else if(location.hash!=='#teams'){
+    history.pushState({teamDashboard:true},'','#teams');teamDashboardPushed=true;
+  }
+  const wasHidden=teamDashboardPage.hidden;
+  teamDashboardPage.hidden=false;
+  renderTeamDashboardTeams();renderTeamDashboardSummary();
+  if(wasHidden){teamRunScreen?.close();$('team-run').hidden=true;openRunRoute='';teamsPanel?.refreshAll();teamsPanel?.startPolling();}
+}
+function hideTeamDashboard({fromRoute=false}={}){
+  if(!teamDashboardPage||teamDashboardPage.hidden)return;
+  teamDashboardPage.hidden=true;teamsPanel?.stopPolling();
+  if(fromRoute)teamDashboardPushed=!!history.state?.teamDashboard;
+}
+function leaveTeamDashboard(){
+  const canReturn=teamDashboardPushed;
+  hideTeamDashboard({fromRoute:true});
+  if(canReturn)history.back();
+  else if(location.hash==='#teams')history.replaceState(null,'',location.pathname+location.search);
+}
+teamDashboardPage=createTeamDashboardShell($('teams-content'));
+const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();renderTeamDashboardTeams(teams);},onRender:panel=>renderTeamDashboardSummary(panel)});
 const teamRunScreen=typeof TeamRunScreen==='undefined'?null:new TeamRunScreen({root:$('team-run'),request:teamRequest,openChat:sessionId=>openChat(sessionId,'local'),onUnauthorized:()=>showLogin(),onNavigateAway:closeTeamRunView});
 /* #run=teamId/runId 深链（阶段四通知 click 载荷契约）：与 #team=、#id~host 等
    前缀互斥，enter()/hashchange 统一按 run→聊天 的顺序分发；id 段与聊天
@@ -1927,6 +2009,7 @@ function parseRunHash(){
 function closeTeamRunView(){
   const team=teamRunScreen?.team||teamChat?.teamById(teamRunScreen?.teamId);
   teamRunScreen?.close();openRunRoute='';
+  if(teamRunReturnsToDashboard){teamRunReturnsToDashboard=false;history.back();return;}
   if(team){openTeamChat(team).catch(error=>toast(error.message));return;}
   if(detailPushed&&location.hash){history.back();return;}
   $('team-run').hidden=true;
@@ -1935,20 +2018,22 @@ function closeTeamRunView(){
   // 没有打开中的聊天时回欢迎页；聊天仍打开的场景由 openChat 负责显隐。
   if($('chat').hidden)$('welcome').hidden=false;
 }
-function openTeamRun(teamId,runId){
+function openTeamRun(teamId,runId,fromRoute=false){
   if(!teamRunScreen)return;
+  const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
   openRunRoute='#run='+encodeURIComponent(teamId)+'/'+encodeURIComponent(runId);
-  // 从列表进 Run 页压一条历史（返回手势可退回列表），深链落 URL 时只替换；
+  if(fromRoute&&history.state?.teamRunReturnToDashboard)teamRunReturnsToDashboard=true;
+  if(fromDashboard){
+    hideTeamDashboard({fromRoute:true});
+    if(!fromRoute){history.pushState({teamRunReturnToDashboard:true},'',openRunRoute);teamRunReturnsToDashboard=true;}
+  }
+  // 从工作台进 Run 压一条历史；其余列表/会话内互跳沿用现有路由行为；
   // 分享/通知 click 落 URL 的场景由 enter()/hashchange 显式解析。
-  if(location.hash!==openRunRoute)showDetailRoute(openRunRoute);
+  else if(location.hash!==openRunRoute)showDetailRoute(openRunRoute);
   $('teams-dialog').close();
   $('welcome').hidden=true;$('chat').hidden=true;$('team-run').hidden=false;
   $('app').classList.add('chat-open');
   teamRunScreen.openRun(teamId,runId);
 }
-/* 团队工作台（team-dashboard-design §5）：打开即拉团队 + 全部 Run 摘要并
-   15s 轻量轮询；关闭弹窗停止轮询，不烧后台请求。 */
-if(teamsPanel){
-  $('teams-button').onclick=()=>{$('teams-dialog').showModal();teamsPanel.refreshAll();teamsPanel.startPolling();};
-  $('teams-dialog').addEventListener('close',()=>teamsPanel.stopPolling());
-}
+/* 团队工作台独立使用 #teams 深链；Run 摘要只在工作台可见时 15s 轮询。 */
+if(teamsPanel)$('teams-button').onclick=()=>openTeamDashboard();

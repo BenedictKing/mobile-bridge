@@ -34,11 +34,47 @@ const team={id:'t1',name:'团队',leadId:'kimi',project:'codex:7015435b2c37',pro
 test('teams panel localizes member roles and shows the readable project name',()=>{
   const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
   const card=panel.renderTeam(team);
-  assert.deepEqual(find(card,'team-member').map(text),['★ Lead · kimi · Kimi','Member · workbuddy · CodeBuddy']);
+  assert.deepEqual(find(card,'team-member').map(text),['★ Lead · Kimi','Member · CodeBuddy']);
   assert.equal(text(find(card,'team-card-meta')[0]),'2 members · Project mobile-bridge');
   // 没有 cwd 时才回落内部 key。
   const bare=panel.renderTeam({...team,projectCwd:''});
   assert.match(text(find(bare,'team-card-meta')[0]),/Project codex:7015435b2c37/);
+});
+
+test('dashboard groups actionable, active and ended runs and keeps unknown states actionable',()=>{
+  const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
+  panel.teams=[team];
+  const run=(id,status,updatedAt)=>({id,teamId:team.id,goal:id,status,updatedAt,
+    taskCounts:{completed:1},currentOwner:{name:'Kimi'},nextAction:{label:'Review result'}});
+  panel.runs.set(team.id,{rows:[
+    run('ended','completed','2026-11-09T10:00:00Z'),
+    run('active','collecting','2026-11-09T11:00:00Z'),
+    run('unknown','future_status','2026-11-09T12:00:00Z'),
+    run('paused','paused','2026-11-09T09:00:00Z'),
+  ]});
+  const activity=panel.renderActivity();
+  assert.deepEqual(find(activity,'team-activity-group-title').map(text),['Needs attention2','Running1','Recently ended1']);
+  assert.deepEqual(find(activity,'team-activity-row').map(row=>row.dataset.group),['attention','attention','active','terminal']);
+  assert.equal(panel.runStats().attention,2);
+  assert.equal(panel.teamLatestRun(team.id).id,'paused','the newest attention run outranks newer active runs');
+  const unknownPanel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
+  unknownPanel.runs.set(team.id,{rows:[run('unknown','future_status','2026-11-09T12:00:00Z')]});
+  assert.equal(find(unknownPanel.renderTeam(team),'team-card-run')[0].dataset.group,'attention');
+});
+
+test('team cards keep frequent actions visible and group management controls',()=>{
+  const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
+  const card=panel.renderTeam(team);
+  assert.equal(find(card,'team-primary-actions')[0].children.length,2);
+  assert.equal(find(card,'team-management')[0].children[0].textContent,'Team management');
+  assert.equal(find(card,'team-management-actions')[0].children.length,5);
+});
+
+test('run echoes do not claim that a paused or completed run is still executing',()=>{
+  const teamUI=require('../web/team.js');
+  assert.match(teamUI.teamRunEchoLine({status:'collecting',currentOwner:{name:'Kimi'}}),/Kimi is working/);
+  assert.match(teamUI.teamRunEchoLine({status:'paused',currentOwner:{name:'Kimi'}}),/Kimi · Lead/);
+  assert.match(teamUI.teamRunEchoLine({status:'completed',currentOwner:{name:'Kimi'}}),/Kimi · Lead/);
 });
 
 test('docked stop reasons and fixed task errors render in English',()=>{
