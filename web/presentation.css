@@ -616,7 +616,7 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 #chat.team-canvas-active #team-workflow,
 #chat.team-canvas-active #newer,
 #chat.team-canvas-active #user-jump{display:none!important}
-.team-conversation-view-bar{display:flex;align-items:center;justify-content:flex-end;min-height:42px;padding:0 8px 5px}
+.team-conversation-view-bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:flex-end;min-height:42px;padding:0 8px 5px;background:var(--page)}
 .team-open-canvas{min-height:34px;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:var(--raised);color:var(--text);font-size:12px}
 .team-open-canvas:hover{background:var(--active)}
 .team-canvas{display:flex;flex:0 0 auto;flex-direction:column;width:calc(100vw - 310px);height:calc(100dvh - 270px);min-height:500px;max-height:calc(100dvh - 210px);margin:-12px calc((100% - (100vw - 310px))/2) 0;color:var(--text)}
