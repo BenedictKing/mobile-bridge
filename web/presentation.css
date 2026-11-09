@@ -97,6 +97,19 @@ main{background:var(--page);overflow:hidden}
 .icon-button:hover{background:var(--active)}
 .plain{min-height:36px;border-radius:7px;color:var(--green)}
 .plain:hover{background:var(--active)}
+.workspace-switch{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:4px 0 10px;padding:3px;border-bottom:1px solid var(--line)}
+.workspace-switch-item{position:relative;min-width:0;min-height:38px;padding:7px 10px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px;font-weight:550}
+.workspace-switch-item:hover{background:var(--active);color:var(--text)}
+.workspace-switch-item.active{background:var(--active);color:var(--text);font-weight:650}
+.workspace-switch-item.active::after{position:absolute;right:10px;bottom:-4px;left:10px;height:2px;background:var(--green);content:""}
+.team-sidebar-list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin:0 -5px;padding:0 5px}
+.team-sidebar-item{display:block;width:100%;min-width:0;padding:12px 10px;border:0;border-radius:7px;background:transparent;color:var(--text);text-align:left}
+.team-sidebar-item:hover{background:var(--active)}
+.team-sidebar-item.selected{background:var(--soft)}
+.team-sidebar-item strong,.team-sidebar-item small{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-sidebar-item strong{font-size:12px;font-weight:600}
+.team-sidebar-item small{margin-top:4px;color:var(--muted);font-size:10.5px}
+.team-sidebar-empty{margin:10px;font-size:12px}
 
 /* Session list */
 .list-heading{min-height:48px;padding:0 2px;gap:4px}
@@ -355,6 +368,8 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 }
 
 @media(max-width:720px){
+  .workspace-switch{gap:3px;margin:2px 0 8px}
+  .workspace-switch-item{min-height:42px}
   body{background:var(--page)}
   body.chat-detail>.phone-header{display:none}
   .phone-header{min-height:52px;padding:max(6px,var(--safe-area-top)) max(16px,env(safe-area-inset-right)) 6px max(16px,env(safe-area-inset-left));border-bottom:1px solid var(--line);background:var(--page)}
@@ -431,23 +446,12 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
   .team-run-actions button,.team-toolbar button,.team-actions button,.team-card-head button,.task-actions button,.team-schedule>button:not(.task-dep-chip){min-height:44px}
 }
 
-/* Team runs are a page-level workspace rather than a dialog. */
-.team-dashboard-page{position:fixed;z-index:30;inset:0;display:grid;grid-template-columns:228px minmax(0,1fr);height:100dvh;background:var(--page);color:var(--text)}
-.team-dashboard-rail{display:flex;flex-direction:column;gap:18px;min-width:0;min-height:0;padding:20px 12px;background:var(--frame);border-right:1px solid var(--line)}
-.team-dashboard-brand{padding:0 9px 14px;border-bottom:1px solid var(--line);font-size:14px;font-weight:700}
-.team-dashboard-nav{display:grid;gap:3px}
-.team-dashboard-nav-item,.team-dashboard-team-item{display:flex;align-items:center;gap:10px;width:100%;min-width:0;min-height:40px;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--muted);text-align:left}
-.team-dashboard-nav-item:hover,.team-dashboard-team-item:hover{background:var(--active);color:var(--text)}
-.team-dashboard-nav-item.active{background:var(--active);color:var(--text);font-weight:650}
-.team-dashboard-list-heading{margin:4px 9px -12px;color:var(--muted);font-size:11px;font-weight:600}
-.team-dashboard-team-list{display:grid;align-content:start;gap:3px;min-height:0;overflow-y:auto}
-.team-dashboard-team-item{display:block;min-height:52px}
-.team-dashboard-team-item strong,.team-dashboard-team-item small{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.team-dashboard-team-item strong{font-size:12px;font-weight:600;color:var(--text)}
-.team-dashboard-team-item small{margin-top:3px;font-size:10.5px;color:var(--muted)}
-.team-dashboard-empty{margin:0 9px;font-size:12px}
-.team-dashboard-main{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
-.team-dashboard-header{display:flex;align-items:center;justify-content:space-between;gap:18px;min-height:86px;padding:17px 28px;border-bottom:1px solid var(--line)}
+/* Team operations shares the chat app frame and sidebar. */
+.app{position:relative}
+#main{position:relative}
+.team-dashboard-page{position:absolute;z-index:5;inset:0;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--page);color:var(--text)}
+.team-dashboard-header{display:flex;align-items:center;gap:14px;flex:none;min-height:76px;padding:14px 28px;border-bottom:1px solid var(--line)}
+.team-dashboard-back{display:none;flex:none;width:40px;height:40px;padding:0;font-size:26px}
 .team-dashboard-heading{min-width:0}
 .team-dashboard-header h1{margin:0;font-size:21px;line-height:1.3;letter-spacing:0}
 .team-dashboard-summary{margin:4px 0 0;font-size:12px}
@@ -483,23 +487,15 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 #teams-content .team-management-actions button{min-height:36px}
 
 @media(max-width:950px){
-  .team-dashboard-page{grid-template-columns:196px minmax(0,1fr)}
   .team-dashboard-header{padding-right:20px;padding-left:20px}
   .team-dashboard-body{padding-right:20px;padding-left:20px}
   #teams-content .team-grid{grid-template-columns:1fr}
 }
 @media(max-width:720px){
-  .team-dashboard-page{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
-  .team-dashboard-rail{gap:8px;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;border-right:0;border-bottom:1px solid var(--line)}
-  .team-dashboard-brand{padding:0 4px 7px;border:0;font-size:12px}
-  .team-dashboard-nav{display:flex;gap:4px;overflow-x:auto}
-  .team-dashboard-nav-item{flex:0 0 auto;min-height:40px;padding:7px 10px;font-size:12px}
-  .team-dashboard-list-heading{display:none}
-  .team-dashboard-team-list{display:flex;gap:5px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-  .team-dashboard-team-item{flex:0 0 auto;width:min(48vw,190px);min-height:46px;padding:6px 8px;border:1px solid var(--line);background:var(--page)}
-  .team-dashboard-team-item small{max-width:100%}
-  .team-dashboard-main{min-height:0}
-  .team-dashboard-header{min-height:68px;padding:12px 16px}
+  .app.team-open aside{display:none}
+  .app.team-open main{display:block}
+  .team-dashboard-header{min-height:64px;padding:10px 16px}
+  .team-dashboard-back{display:grid;place-items:center}
   .team-dashboard-header h1{font-size:18px}
   .team-dashboard-summary{font-size:11px;line-height:1.5}
   .team-dashboard-body{padding:10px 14px calc(16px + env(safe-area-inset-bottom))}
@@ -515,7 +511,6 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
   #teams-content .team-grid{grid-template-columns:1fr}
 }
 @media(max-width:390px){
-  .team-dashboard-rail{padding-right:9px;padding-left:9px}
   .team-dashboard-body{padding-right:11px;padding-left:11px}
   .team-dashboard-header{padding-right:12px;padding-left:12px}
   #teams-content .team-toolbar button{padding-right:10px;padding-left:10px}

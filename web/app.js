@@ -147,7 +147,7 @@ async function start(){
 }
 async function enter(){
   $('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();
-  if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);}catch(error){toast(error.message);}
+  if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);renderTeamSidebarTeams(value.teams||[]);}catch(error){toast(error.message);}
   try{const value=await api('/api/projects');projectDirectory=value.projects||[];hiddenProjectCwds=new Set(value.hiddenCwds||[]);}catch(error){toast(error.message);}
   const list=loadList(true).catch(e=>toast(e.message)),dashboardRoute=location.hash==='#teams',runRoute=typeof parseRunHash==='function'?parseRunHash():null,teamRoute=typeof parseTeamHash==='function'?parseTeamHash():null;
   if(dashboardRoute)openTeamDashboard({fromRoute:true});
@@ -513,7 +513,7 @@ $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-
    同样退不出聊天。因此从列表进详情压一条历史，详情内互跳（会话↔团队↔Run）
    仍只替换当前条目：返回一次必回列表，栈里也不会堆出中间层。 */
 let detailPushed=false; // 当前详情条目是否由本次从列表压入；popstate 退回后清零
-let teamDashboardPage=null,teamDashboardTeamList=null,teamDashboardSummary=null,teamDashboardTitle=null;
+let teamDashboardPage=null,teamDashboardSummary=null,teamDashboardTitle=null;
 let teamDashboardNavigation=false,teamDashboardPushed=false,teamRunReturnsToDashboard=false;
 // 只有窄屏（与 style.css 的 max-width:720px 同一断点）才是「列表 与 详情 互相
 // 独占」的手机布局；桌面和平板是两栏并排，退回列表没有意义，仍沿用只替换
@@ -529,7 +529,7 @@ function showDetailRoute(hash){
 function closeDetailView(){
   if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();
   $('team-run').hidden=true;openRunRoute='';
-  $('app').classList.remove('chat-open');
+  $('app').classList.remove('chat-open','team-open');
   // 桌面端（无 chat-open 媒体查询）也走同一条退路：Run 页关闭后没有聊天面板
   // 可见时回欢迎页，避免主区留白。
   if($('chat').hidden)$('welcome').hidden=false;
@@ -548,13 +548,16 @@ $('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();
 // 选中消息正文即可引用评论：只读会话不给这个入口，避免往禁用输入框里塞文字。
 const selectionQuote=BridgeSelection.attach({root:$('messages'),textarea:$('message'),enabled:()=>!!currentId&&!state?.readOnly,notify:toast});
 async function openChat(id,host="local",teamId=""){
+  if(teamDashboardPage&&!teamDashboardPage.hidden)hideTeamDashboard({fromRoute:true});
   currentTeam=host==='local'?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
+  $('app').classList.remove('team-open');
+  syncWorkspaceNavigation();
   teamChat?.open(currentTeam);
   if(currentTeam)$('send-mode').value=teamQueueModeEnabled(currentTeam.id)?'queue':'send';
 // Run 页与聊天互斥：任何 openChat 路径（含 messageActions pending 早退）都要先
 // 收起 Run 页（停订阅、隐藏区块），否则两块 height:100% 的 section 叠层破版
 // 且 Run 页在后台继续轮询。
-if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';
+if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';syncWorkspaceNavigation();
 if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;autoQueueArmed=false;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;renderNotificationState();try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();showDetailRoute('#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
   window.BridgePresentation?.openChat();
   startCatalog();
@@ -1762,6 +1765,7 @@ function routeFromLocation(){
   }
   // hash 为空：从详情退回列表。认不出的 hash 一律不动（沿用原行为）。
   if(!location.hash&&$('app').classList.contains('chat-open'))closeDetailView();
+  if(!location.hash&&$('chat').hidden&&$('team-run').hidden){$('welcome').hidden=false;$('app').classList.remove('team-open');syncWorkspaceNavigation();}
 }
 window.addEventListener('popstate',()=>{detailPushed=false;routeFromLocation();});
 window.addEventListener('hashchange',()=>{
@@ -1885,7 +1889,7 @@ if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModa
 
 // Team 编排：主控聊天复用 Lead 会话；独立 Run 页继续承载高级编排。
 const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatController({root:$('team-workflow'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),onChange:team=>{
-  const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);openTeamChat(team);
+  const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);renderTeamSidebarTeams(teams);openTeamChat(team);
 }});
 async function openTeamChat(team){
   const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
@@ -1918,43 +1922,52 @@ function syncTeamComposer(){
 $('team-settings-button').onclick=()=>teamChat?.openSettings();
 function createTeamDashboardShell(root){
   const page=el('section','team-dashboard-page');page.id='team-dashboard-page';page.hidden=true;
-  const rail=el('aside','team-dashboard-rail');
-  const brand=el('div','team-dashboard-brand');brand.textContent='Mobile / Bridge';
-  const navigation=el('nav','team-dashboard-nav');navigation.setAttribute('aria-label',t('团队工作台导航'));
-  const workbench=el('button','team-dashboard-nav-item active',t('团队运行'));workbench.type='button';workbench.setAttribute('aria-current','page');
-  const chats=el('button','team-dashboard-nav-item',t('聊天'));chats.type='button';chats.onclick=leaveTeamDashboard;
-  const accounts=el('button','team-dashboard-nav-item',t('账号与接入'));accounts.type='button';accounts.onclick=()=>$('accounts-button').click();
-  navigation.append(workbench,chats,accounts);
-  const teamHeading=el('h2','team-dashboard-list-heading',t('团队'));
-  teamDashboardTeamList=el('nav','team-dashboard-team-list');teamDashboardTeamList.setAttribute('aria-label',t('团队'));
-  rail.append(brand,navigation,teamHeading,teamDashboardTeamList);
-  const main=el('main','team-dashboard-main');
   const header=el('header','team-dashboard-header');
   const heading=el('div','team-dashboard-heading');
   teamDashboardTitle=el('h1','',t('团队运行'));
   teamDashboardSummary=el('p','team-dashboard-summary muted');
   heading.append(teamDashboardTitle,teamDashboardSummary);
-  header.append(heading);
+  const back=el('button','team-dashboard-back icon-button','‹');back.type='button';
+  back.setAttribute('aria-label',t('返回聊天列表'));back.setAttribute('data-i18n-aria-label','返回聊天列表');
+  back.onclick=leaveTeamDashboard;
+  header.append(back,heading);
   const content=el('div','team-dashboard-body');content.append(root);
-  main.append(header,content);page.append(rail,main);document.body.append(page);
+  page.append(header,content);$('main').append(page);
   return page;
 }
-function renderTeamDashboardTeams(teams=teamChat?.teams||[]){
-  if(!teamDashboardTeamList)return;
-  teamDashboardTeamList.replaceChildren();
+function syncWorkspaceNavigation(){
+  const teamOpen=(!!teamDashboardPage&&!teamDashboardPage.hidden)
+    ||!!currentTeam
+    ||(!$('team-run').hidden&&!!openRunRoute);
+  const teamsButton=$('teams-button'),chatsButton=$('chats-button');
+  teamsButton?.classList.toggle('active',teamOpen);
+  chatsButton?.classList.toggle('active',!teamOpen);
+  teamsButton?.setAttribute('aria-current',teamOpen?'page':'false');
+  chatsButton?.setAttribute('aria-current',teamOpen?'false':'page');
+  const sidebarTitle=$('sidebar-title-text');
+  if(sidebarTitle)sidebarTitle.textContent=t(teamOpen?'团队':'聊天');
+  const show=(selector,visible)=>{const node=document.querySelector(selector);if(node)node.hidden=!visible;};
+  show('#new-chat',!teamOpen);show('#refresh',!teamOpen);show('#search',!teamOpen);
+  document.querySelector('.list-filters')?.toggleAttribute('hidden',teamOpen);
+  show('#sessions',!teamOpen);show('#team-sidebar-list',teamOpen);
+  if(teamOpen)renderTeamSidebarTeams();
+}
+function renderTeamSidebarTeams(teams=teamChat?.teams||[]){
+  const root=$('team-sidebar-list');if(!root)return;
+  root.replaceChildren();
   for(const team of teams){
-    const item=el('button','team-dashboard-team-item');item.type='button';
-    item.setAttribute('aria-label',team.name+' · '+t('聊天'));
-    const name=el('strong','',team.name);
+    const item=el('button','team-sidebar-item');item.type='button';
+    item.setAttribute('aria-label',team.name+' · '+t('打开团队聊天'));
     const latest=teamsPanel?.teamLatestRun(team.id);
-    const details=latest
-      ?[t(TEAM_RUN_STATUS_LABELS[latest.status]||latest.status),latest.currentOwner?.name,latest.nextAction?.label].filter(Boolean).join(' · ')
+    const summary=latest
+      ?[t(TEAM_RUN_STATUS_LABELS[latest.status]||latest.status),latest.nextAction?.label].filter(Boolean).join(' · ')
       :((team.members||[]).length+' '+t('名成员'));
-    const meta=el('small','',details);item.append(name,meta);
+    item.append(el('strong','',team.name),el('small','',summary));
+    item.classList.toggle('selected',currentTeam?.id===team.id);
     item.onclick=()=>openTeamChat(team).catch(error=>toast(error.message));
-    teamDashboardTeamList.append(item);
+    root.append(item);
   }
-  if(!teams.length)teamDashboardTeamList.append(el('p','team-dashboard-empty muted',t('还没有团队。')));
+  if(!teams.length)root.append(el('p','team-sidebar-empty muted',t('还没有团队。')));
 }
 function renderTeamDashboardSummary(panel=teamsPanel){
   if(!panel||!teamDashboardSummary)return;
@@ -1971,22 +1984,38 @@ function openTeamDashboard({fromRoute=false}={}){
   }
   const wasHidden=teamDashboardPage.hidden;
   teamDashboardPage.hidden=false;
-  renderTeamDashboardTeams();renderTeamDashboardSummary();
+  $('welcome').hidden=true;$('chat').hidden=true;$('team-run').hidden=true;
+  $('app').classList.remove('chat-open');$('app').classList.add('team-open');
+  syncWorkspaceNavigation();
+  renderTeamDashboardSummary();
   if(wasHidden){teamRunScreen?.close();$('team-run').hidden=true;openRunRoute='';teamsPanel?.refreshAll();teamsPanel?.startPolling();}
 }
 function hideTeamDashboard({fromRoute=false}={}){
   if(!teamDashboardPage||teamDashboardPage.hidden)return;
-  teamDashboardPage.hidden=true;teamsPanel?.stopPolling();
+  teamDashboardPage.hidden=true;teamsPanel?.stopPolling();$('app').classList.remove('team-open');syncWorkspaceNavigation();
   if(fromRoute)teamDashboardPushed=!!history.state?.teamDashboard;
 }
 function leaveTeamDashboard(){
   const canReturn=teamDashboardPushed;
   hideTeamDashboard({fromRoute:true});
   if(canReturn)history.back();
-  else if(location.hash==='#teams')history.replaceState(null,'',location.pathname+location.search);
+  else{
+    if(location.hash==='#teams')history.replaceState(null,'',location.pathname+location.search);
+    if($('chat').hidden&&$('team-run').hidden)$('welcome').hidden=false;
+  }
+}
+function openChatWorkspace(){
+  teamDashboardPage.hidden=true;teamsPanel?.stopPolling();
+  teamRunScreen?.close();$('team-run').hidden=true;openRunRoute='';
+  teamRunReturnsToDashboard=false;teamDashboardPushed=false;detailPushed=false;
+  $('chat').hidden=true;$('welcome').hidden=false;
+  $('app').classList.remove('chat-open','team-open');
+  currentTeam=null;teamChat?.close();
+  history.replaceState(null,'',location.pathname+location.search);
+  syncWorkspaceNavigation();
 }
 teamDashboardPage=createTeamDashboardShell($('teams-content'));
-const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();renderTeamDashboardTeams(teams);},onRender:panel=>renderTeamDashboardSummary(panel)});
+const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();renderTeamSidebarTeams(teams);},onRender:panel=>{renderTeamDashboardSummary(panel);renderTeamSidebarTeams(panel.teams);}});
 const teamRunScreen=typeof TeamRunScreen==='undefined'?null:new TeamRunScreen({root:$('team-run'),request:teamRequest,openChat:sessionId=>openChat(sessionId,'local'),onUnauthorized:()=>showLogin(),onNavigateAway:closeTeamRunView});
 /* #run=teamId/runId 深链（阶段四通知 click 载荷契约）：与 #team=、#id~host 等
    前缀互斥，enter()/hashchange 统一按 run→聊天 的顺序分发；id 段与聊天
@@ -2013,10 +2042,11 @@ function closeTeamRunView(){
   if(team){openTeamChat(team).catch(error=>toast(error.message));return;}
   if(detailPushed&&location.hash){history.back();return;}
   $('team-run').hidden=true;
-  $('app').classList.remove('chat-open');
+  $('app').classList.remove('chat-open','team-open');
   if(location.hash.startsWith('#run='))history.replaceState(null,'',location.pathname+location.search);
   // 没有打开中的聊天时回欢迎页；聊天仍打开的场景由 openChat 负责显隐。
   if($('chat').hidden)$('welcome').hidden=false;
+  syncWorkspaceNavigation();
 }
 function openTeamRun(teamId,runId,fromRoute=false){
   if(!teamRunScreen)return;
@@ -2032,8 +2062,15 @@ function openTeamRun(teamId,runId,fromRoute=false){
   else if(location.hash!==openRunRoute)showDetailRoute(openRunRoute);
   $('teams-dialog').close();
   $('welcome').hidden=true;$('chat').hidden=true;$('team-run').hidden=false;
-  $('app').classList.add('chat-open');
+  $('app').classList.remove('team-open');$('app').classList.add('chat-open');
+  syncWorkspaceNavigation();
   teamRunScreen.openRun(teamId,runId);
 }
 /* 团队工作台独立使用 #teams 深链；Run 摘要只在工作台可见时 15s 轮询。 */
-if(teamsPanel)$('teams-button').onclick=()=>openTeamDashboard();
+if(teamsPanel){
+  $('teams-button').onclick=()=>openTeamDashboard();
+  $('chats-button').onclick=()=>{
+    if(teamDashboardPage&&!teamDashboardPage.hidden){leaveTeamDashboard();return;}
+    openChatWorkspace();
+  };
+}

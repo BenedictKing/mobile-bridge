@@ -1157,6 +1157,7 @@ const en={
   "网络和运行路径在网关停止后可修改。模型、提供商和 Skill 沿用原 Codex 会话设置。": "Stop the gateway before changing network settings or program paths. Model, provider and Skills follow the original Codex chat.",
   "网络开关格式不正确": "Invalid network switch",
   "聊天": "Chats",
+  "工作区": "Workspace",
   "聊天、查看进度，以及处理待确认的操作。": "Chat, check progress and handle pending confirmations.",
   "聊天列表显示方式": "Chat list display mode",
   "聊天名称": "Chat name",
