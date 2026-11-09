@@ -25,21 +25,29 @@ import android.webkit.CookieManager;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
+import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ArrayAdapter;
+import android.widget.AdapterView;
+import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public final class MainActivity extends Activity {
     private static final String PREFS = "mobile-bridge";
     private static final String PUBLIC_URL = "public-url";
+    private static final String GATEWAYS = "gateways";
+    private static final String ACTIVE_GATEWAY = "active-gateway";
     private static final int FILE_CHOOSER = 41;
     private static final int LOCAL_NETWORK_PERMISSION = 42;
     // 与 web/presentation.css 的 --page / --text / --muted / --error / --accent 保持一致。
@@ -49,6 +57,9 @@ public final class MainActivity extends Activity {
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private android.widget.FrameLayout root;
+    private Spinner gatewaySelector;
+    private ArrayAdapter<String> gatewayAdapter;
+    private EditText nameInput;
     private EditText urlInput;
     private TextView status;
     private TextView panelError;
@@ -59,6 +70,11 @@ public final class MainActivity extends Activity {
     private DirectTransport direct;
     private ConnectivityManager.NetworkCallback networkCallback;
     private ValueCallback<Uri[]> fileCallback;
+    private final List<GatewayProfile> gateways = new ArrayList<>();
+    private String selectedGatewayId = "";
+    private String activeGatewayId = "";
+    private boolean syncingGatewaySelector;
+    private int connectionGeneration;
     private boolean dark;
     // 网页在 JS 线程读取当前线路，主线程写入；整体替换一个 JSON 串，避免读到半更新的 mode/host。
     private volatile String route = routeJson("public", "");
@@ -99,6 +115,9 @@ public final class MainActivity extends Activity {
         root.addView(scrim, new android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
+        gateways.addAll(loadGatewayProfiles());
+        activeGatewayId = preferences().getString(ACTIVE_GATEWAY, "");
+        ensureGatewaySelection();
         settingsPanel = buildSettingsPanel();
         android.widget.FrameLayout.LayoutParams panelParams = new android.widget.FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -110,8 +129,8 @@ public final class MainActivity extends Activity {
         registerBackHandler();
         requestLocalNetworkPermission();
         watchNetworks();
-        String saved = preferences().getString(PUBLIC_URL, "");
-        if (saved.isEmpty()) showSettings(null);
+        GatewayProfile active = findGateway(activeGatewayId);
+        if (active == null || active.origin.isEmpty()) showSettings(null);
         else connect();
     }
 
@@ -123,14 +142,14 @@ public final class MainActivity extends Activity {
         panel.setVisibility(View.GONE);
 
         TextView title = new TextView(this);
-        title.setText("连接电脑网关");
+        title.setText("电脑网关");
         title.setTextSize(18);
         title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         title.setTag("ink");
         panel.addView(title);
 
         TextView hint = new TextView(this);
-        hint.setText("填写网关的 HTTPS 地址（只写域名，不带路径）。同一局域网时会自动走局域网加速。");
+        hint.setText("保存多台电脑网关，随时切换。地址只写 HTTPS 域名，不带路径；同一局域网时会自动走局域网加速。");
         hint.setTextSize(13);
         hint.setLineSpacing(0, 1.3f);
         hint.setPadding(0, dp(6), 0, dp(12));
@@ -143,6 +162,39 @@ public final class MainActivity extends Activity {
         status.setTag("muted");
         status.setVisibility(View.GONE);
         panel.addView(status);
+
+        TextView gatewayLabel = new TextView(this);
+        gatewayLabel.setText("已保存的网关");
+        gatewayLabel.setTextSize(13);
+        gatewayLabel.setTag("muted");
+        panel.addView(gatewayLabel);
+
+        gatewayAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, new ArrayList<>());
+        gatewayAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        gatewaySelector = new Spinner(this);
+        gatewaySelector.setAdapter(gatewayAdapter);
+        gatewaySelector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (syncingGatewaySelector || position < 0 || position >= gateways.size()) return;
+                selectedGatewayId = gateways.get(position).id;
+                fillGatewayEditor(gateways.get(position));
+                panelError.setVisibility(View.GONE);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+                // Keep the current editor values when the spinner has no rows.
+            }
+        });
+        panel.addView(gatewaySelector, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+
+        nameInput = new EditText(this);
+        nameInput.setSingleLine(true);
+        nameInput.setHint("网关名称，例如家里 Mac");
+        nameInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        nameInput.setTag("ink");
+        panel.addView(nameInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
 
         urlInput = new EditText(this);
         urlInput.setSingleLine(true);
@@ -157,6 +209,19 @@ public final class MainActivity extends Activity {
         urlInput.setText(preferences().getString(PUBLIC_URL, ""));
         urlInput.setTag("ink");
         panel.addView(urlInput, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+
+        LinearLayout profileActions = new LinearLayout(this);
+        profileActions.setOrientation(LinearLayout.HORIZONTAL);
+        profileActions.setGravity(Gravity.END);
+        Button newGateway = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        newGateway.setText("新建");
+        newGateway.setOnClickListener(view -> newGateway());
+        profileActions.addView(newGateway, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+        Button deleteGateway = new Button(this, null, android.R.attr.borderlessButtonStyle);
+        deleteGateway.setText("删除");
+        deleteGateway.setOnClickListener(view -> deleteGateway());
+        profileActions.addView(deleteGateway, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+        panel.addView(profileActions);
 
         panelError = new TextView(this);
         panelError.setTextSize(13);
@@ -181,11 +246,151 @@ public final class MainActivity extends Activity {
         connectParams.setMarginStart(dp(8));
         actions.addView(connect, connectParams);
         panel.addView(actions);
+        refreshGatewayEditor();
         return panel;
     }
 
     private SharedPreferences preferences() {
         return getSharedPreferences(PREFS, MODE_PRIVATE);
+    }
+
+    private List<GatewayProfile> loadGatewayProfiles() {
+        List<GatewayProfile> result = new ArrayList<>();
+        String encoded = preferences().getString(GATEWAYS, "");
+        if (!encoded.isEmpty()) {
+            try {
+                JSONArray values = new JSONArray(encoded);
+                for (int i = 0; i < values.length(); i++) {
+                    GatewayProfile profile = GatewayProfile.fromJson(values.optJSONObject(i));
+                    if (profile == null) continue;
+                    if (!profile.origin.isEmpty()) {
+                        try {
+                            profile.origin = normalizeOrigin(profile.origin).toString();
+                        } catch (Exception invalid) {
+                            continue;
+                        }
+                    }
+                    result.add(profile);
+                }
+            } catch (Exception ignored) {
+                // A corrupt list must not prevent the user from adding a new gateway.
+            }
+        }
+        if (result.isEmpty()) {
+            String legacy = preferences().getString(PUBLIC_URL, "").trim();
+            if (!legacy.isEmpty()) {
+                try {
+                    result.add(new GatewayProfile("legacy", "默认网关", normalizeOrigin(legacy).toString()));
+                } catch (Exception ignored) {
+                    // Ignore the old value if it no longer meets the HTTPS-origin contract.
+                }
+            }
+        }
+        return result;
+    }
+
+    private void saveGatewayProfiles() {
+        JSONArray values = new JSONArray();
+        for (GatewayProfile profile : gateways) values.put(profile.toJson());
+        GatewayProfile active = findGateway(activeGatewayId);
+        preferences().edit()
+            .putString(GATEWAYS, values.toString())
+            .putString(ACTIVE_GATEWAY, activeGatewayId == null ? "" : activeGatewayId)
+            .putString(PUBLIC_URL, active == null ? "" : active.origin)
+            .apply();
+    }
+
+    private GatewayProfile findGateway(String id) {
+        if (id == null || id.isEmpty()) return null;
+        for (GatewayProfile profile : gateways) if (id.equals(profile.id)) return profile;
+        return null;
+    }
+
+    private void ensureGatewaySelection() {
+        if (findGateway(activeGatewayId) != null) {
+            selectedGatewayId = activeGatewayId;
+            return;
+        }
+        if (gateways.isEmpty()) {
+            selectedGatewayId = "";
+            activeGatewayId = "";
+            return;
+        }
+        selectedGatewayId = gateways.get(0).id;
+        activeGatewayId = selectedGatewayId;
+    }
+
+    private void refreshGatewayEditor() {
+        if (gatewaySelector == null) return;
+        syncingGatewaySelector = true;
+        gatewayAdapter.clear();
+        for (GatewayProfile profile : gateways) gatewayAdapter.add(profile.displayName());
+        gatewayAdapter.notifyDataSetChanged();
+        GatewayProfile selected = findGateway(selectedGatewayId);
+        int position = selected == null ? -1 : gateways.indexOf(selected);
+        if (position >= 0) {
+            gatewaySelector.setSelection(position);
+            fillGatewayEditor(selected);
+        } else {
+            nameInput.setText("");
+            urlInput.setText("");
+        }
+        syncingGatewaySelector = false;
+    }
+
+    private void fillGatewayEditor(GatewayProfile profile) {
+        nameInput.setText(profile.name == null ? "" : profile.name);
+        urlInput.setText(profile.origin == null ? "" : profile.origin);
+    }
+
+    private void newGateway() {
+        GatewayProfile profile = new GatewayProfile(UUID.randomUUID().toString(), "新网关", "");
+        gateways.add(profile);
+        selectedGatewayId = profile.id;
+        refreshGatewayEditor();
+        saveGatewayProfiles();
+        nameInput.requestFocus();
+    }
+
+    private void deleteGateway() {
+        GatewayProfile selected = findGateway(selectedGatewayId);
+        if (selected == null) return;
+        boolean wasActive = selected.id.equals(activeGatewayId);
+        clearGatewaySession(selected);
+        gateways.remove(selected);
+        selectedGatewayId = gateways.isEmpty() ? "" : gateways.get(0).id;
+        if (wasActive) {
+            connectionGeneration++;
+            activeGatewayId = "";
+            if (direct != null) {
+                direct.close();
+                direct = null;
+            }
+            webView.stopLoading();
+            webView.setVisibility(View.INVISIBLE);
+            route = routeJson("public", "");
+        }
+        saveGatewayProfiles();
+        refreshGatewayEditor();
+        showSettings(null);
+    }
+
+    private void clearGatewaySession(GatewayProfile profile) {
+        if (profile.origin == null || profile.origin.isEmpty()) return;
+        String cookie = CookieManager.getInstance().getCookie(profile.origin + "/");
+        if (cookie != null) {
+            for (String pair : cookie.split(";")) {
+                int separator = pair.indexOf('=');
+                if (separator <= 0) continue;
+                String name = pair.substring(0, separator).trim();
+                if (!name.isEmpty()) {
+                    CookieManager.getInstance().setCookie(profile.origin + "/",
+                        name + "=; Max-Age=0; Path=/");
+                }
+            }
+            CookieManager.getInstance().flush();
+        }
+        WebStorage.getInstance().deleteOrigin(profile.origin);
     }
 
     private void configureWebView() {
@@ -262,6 +467,7 @@ public final class MainActivity extends Activity {
             if ("muted".equals(child.getTag())) ((TextView) child).setTextColor(palette[2]);
         }
         urlInput.setHintTextColor(palette[2]);
+        nameInput.setHintTextColor(palette[2]);
     }
 
     private GradientDrawable rounded(int fill, int stroke, int radius) {
@@ -284,8 +490,7 @@ public final class MainActivity extends Activity {
     }
 
     private boolean canLeaveSettings() {
-        return webView.getVisibility() == View.VISIBLE
-            && !preferences().getString(PUBLIC_URL, "").isEmpty();
+        return webView.getVisibility() == View.VISIBLE && !activeGatewayId.isEmpty();
     }
 
     private void hideSettings() {
@@ -321,13 +526,28 @@ public final class MainActivity extends Activity {
             showSettings("地址格式不对：需要 https:// 开头，且只写域名，例如 https://codex.example.com");
             return;
         }
-        preferences().edit().putString(PUBLIC_URL, origin.toString()).apply();
+        GatewayProfile profile = findGateway(selectedGatewayId);
+        if (profile == null) {
+            profile = new GatewayProfile(UUID.randomUUID().toString(), "新网关", "");
+            gateways.add(profile);
+            selectedGatewayId = profile.id;
+        }
+        String name = nameInput.getText().toString().trim();
+        profile.name = name.isEmpty() ? origin.getHost() : name;
+        profile.origin = origin.toString();
+        activeGatewayId = profile.id;
+        saveGatewayProfiles();
+        refreshGatewayEditor();
         hideSettings();
+        int epoch = ++connectionGeneration;
         if (direct != null) direct.close();
         route = routeJson("public", "");
-        direct = new DirectTransport(origin, (mode, host) -> main.post(() -> showRoute(mode, host)));
+        direct = new DirectTransport(origin, (mode, host) -> main.post(() -> {
+            if (epoch == connectionGeneration) showRoute(mode, host);
+        }));
         webView.stopLoading();
         webView.setVisibility(View.VISIBLE);
+        GatewayProfile connectedProfile = profile;
         webView.setWebViewClient(new GatewayWebViewClient(origin, direct, new GatewayWebViewClient.PageListener() {
             @Override
             public void onLoaded() {
@@ -336,9 +556,10 @@ public final class MainActivity extends Activity {
 
             @Override
             public void onFailed(String reason) {
+                if (epoch != connectionGeneration) return;
                 // 不展示 WebView 自带的错误页，直接给出可修改的地址和原因。
                 webView.setVisibility(View.INVISIBLE);
-                showSettings("无法打开 " + origin.getHost() + "（" + reason + "）。请确认电脑网关在运行、地址正确。");
+                showSettings("无法打开 " + connectedProfile.name + "（" + reason + "）。请确认电脑网关在运行、地址正确。");
             }
         }));
         webView.loadUrl(origin.toString());
