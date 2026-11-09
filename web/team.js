@@ -659,7 +659,7 @@ class TeamsPanel{
     const t=BridgeI18n.t,root=this.root;
     root.replaceChildren();
     const toolbar=this.node('div',undefined,'team-toolbar');
-    if(this.lastSynced)toolbar.append(this.node('span',t('同步于 ')+this.lastSynced,'team-synced muted'));
+    if(this.lastSynced)toolbar.append(this.node('span',t('同步于')+' '+this.lastSynced,'team-synced muted'));
     const refresh=this.button(t('刷新'),async()=>{await this.refreshAll();});
     refresh.disabled=this.loading||this.busy||this._runsLoading;
     refresh.classList.toggle('spinning',!!this._runsLoading);

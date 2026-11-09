@@ -1917,7 +1917,39 @@ const en={
   "Run 已创建": "Run created",
   "团队设置已更新": "Team settings updated",
   "已加载历史消息并跳转": "Loaded older messages and jumped to the prompt",
-  "未找到该条消息，已加载可用历史": "Message not found; loaded the available history"
+  "未找到该条消息，已加载可用历史": "Message not found; loaded the available history",
+  // 团队工作台与闭环回音（team-dashboard-design）：固定 UI 词条。服务端含
+  // 成员/任务名的动态句（等待 X 完成当前任务、回音摘要）按 stopReason 先例
+  // 保持原文直出，不整句翻译。
+  "需处理": "Needs attention",
+  "运行筛选": "Run filters",
+  "全部": "All",
+  "最近活动": "Recent activity",
+  "同步于": "Synced at",
+  "当前筛选没有匹配的团队。": "No teams match this filter.",
+  "清除筛选": "Clear filter",
+  "当前筛选没有匹配的 Run。": "No runs match this filter.",
+  "正在读取 Run 摘要…": "Loading run summaries…",
+  "部分团队的 Run 读取失败，可点击「刷新」重试。": "Some teams' runs failed to load; tap Refresh to retry.",
+  "还没有 Run。从团队卡片「新建 Run」开始。": "No runs yet. Start with New Run on a team card.",
+  "进度待同步": "Progress pending",
+  " · 负责人": " · owner",
+  " 执行中": " is working",
+  "下一步：": "Next: ",
+  "打开 Run": "Open run",
+  "已受理 · Run ": "Accepted · Run ",
+  "负责人 ": "Lead ",
+  "去处理": "Resolve",
+  "等待你回答": "Waiting for your answer",
+  "查看交付结果": "Review the delivery",
+  "已结束，可创建修订 Run": "Finished; you can start a revision run",
+  "收集分支结果": "Collecting branch results",
+  "验证闸门执行中": "Verification gate running",
+  "汇总结果中": "Summarizing results",
+  "编排推进中": "Orchestrating",
+  "需要人工核查": "Needs manual review",
+  "查看失败原因": "Inspect the failure",
+  "等待继续": "Waiting to resume"
 };
 let lang='zh';
 try{lang=localStorage.getItem('bridge-language')==='en'?'en':'zh';}catch{}
