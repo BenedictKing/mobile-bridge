@@ -18,6 +18,7 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
     }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body { margin: 0; color: var(--ink); background: #e6e9e6; line-height: 1.45; }
     button { font: inherit; color: inherit; cursor: pointer; }
     button:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
@@ -55,15 +56,17 @@
     .filter { border: 1px solid var(--soft-line); background: var(--paper); padding: 5px 9px; border-radius: 3px; font-size: 12px; }
     .filter[aria-pressed="true"] { background: var(--active); border-color: var(--line); font-weight: 650; }
     .activity { border: 1px solid var(--line); }
-    .activity-row { display: grid; grid-template-columns: 105px minmax(120px, 1fr) minmax(180px, 2fr) 145px 100px; align-items: center; gap: 12px; width: 100%; text-align: left; background: var(--paper); border: 0; border-bottom: 1px solid var(--soft-line); padding: 12px 13px; }
+    .activity-row { display: grid; grid-template-columns: 105px 155px minmax(250px, 2fr) 125px 88px; align-items: center; gap: 12px; width: 100%; text-align: left; background: var(--paper); border: 0; border-bottom: 1px solid var(--soft-line); padding: 12px 13px; }
     .activity-row:last-child { border-bottom: 0; }
     .activity-row:hover { background: var(--panel); }
     .status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; }
     .status::before { content: ""; width: 7px; height: 7px; border: 1px solid var(--ink); border-radius: 50%; background: var(--paper); }
     .status.running::before { background: var(--ink); }
     .status.attention::before { background: var(--active); }
-    .activity-team { font-weight: 650; font-size: 12px; }
-    .activity-goal { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .activity-team { min-width: 0; font-weight: 650; font-size: 12px; }
+    .activity-team small,.activity-copy small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; font-weight: 400; }
+    .activity-copy { min-width: 0; font-size: 12px; }
+    .activity-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .progress { height: 7px; border: 1px solid var(--line); background: var(--panel); }
     .progress i { display: block; height: 100%; background: var(--ink); }
     .activity-time { color: var(--muted); font-size: 11px; text-align: right; }
@@ -77,6 +80,7 @@
     .member { border: 1px solid var(--soft-line); padding: 3px 7px; font-size: 11px; }
     .team-run { display: grid; grid-template-columns: 92px minmax(0, 1fr) 70px; gap: 8px; align-items: center; border-top: 1px solid var(--soft-line); padding: 9px 0; }
     .team-run strong { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .team-run strong small { display: block; text-align: left; color: var(--muted); font-size: 10px; font-weight: 400; white-space: normal; }
     .team-run small { text-align: right; }
     .team-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
     .team-actions button { border: 1px solid var(--line); background: var(--paper); padding: 7px 9px; font-size: 11px; border-radius: 3px; }
@@ -106,7 +110,7 @@
     .mobile-activity { border: 1px solid var(--line); }
     .mobile-activity button { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--soft-line); background: var(--paper); padding: 11px; }
     .mobile-activity button:last-child { border-bottom: 0; }
-    .mobile-activity small { display: block; color: var(--muted); margin-top: 3px; }
+    .mobile-activity small { display: block; color: var(--muted); margin-top: 3px; line-height: 1.45; }
     .mobile-cta { display: flex; gap: 7px; margin-top: 12px; }
     .mobile-cta button { flex: 1; min-height: 44px; border: 1px solid var(--line); background: var(--paper); }
     .mobile-cta button.primary { background: var(--ink); color: white; }
@@ -115,8 +119,9 @@
       .page { padding: 18px; }
       .workspace { grid-template-columns: 1fr; }
       .rail { display: none; }
-      .activity-row { grid-template-columns: 96px minmax(0, 1fr) 86px; }
-      .activity-row .progress, .activity-row .activity-time { grid-column: 2 / -1; text-align: left; }
+      .activity-row { grid-template-columns: 96px minmax(120px, .7fr) minmax(180px, 1.5fr) 110px; }
+      .activity-row .progress { grid-column: 3; }
+      .activity-row .activity-time { grid-column: 4; text-align: right; }
       .teams { grid-template-columns: 1fr; }
     }
     @media (max-width: 560px) {
@@ -128,10 +133,10 @@
       .kpis { grid-template-columns: repeat(2, 1fr); }
       .kpi:nth-child(2) { border-right: 0; }
       .kpi:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-      .activity-row { grid-template-columns: 1fr auto; gap: 5px; }
+      .activity-row { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 9px; }
       .activity-row .activity-team { grid-column: 1; }
       .activity-row .status { grid-column: 2; grid-row: 1; }
-      .activity-row .activity-goal { grid-column: 1 / -1; }
+      .activity-row .activity-copy { grid-column: 1 / -1; }
       .activity-row .progress { grid-column: 1 / -1; }
       .activity-row .activity-time { grid-column: 1 / -1; }
       .flow-layout { grid-template-columns: 1fr; }
@@ -184,36 +189,37 @@
         <div class="section-head">
           <h3>最近活动</h3>
           <div class="filters" role="group" aria-label="运行筛选">
-            <button class="filter" type="button" aria-pressed="true">全部 8</button>
-            <button class="filter" type="button" aria-pressed="false">运行中 2</button>
-            <button class="filter" type="button" aria-pressed="false">需处理 1</button>
+            <button class="filter" type="button" data-filter="all" aria-pressed="true">全部 8</button>
+            <button class="filter" type="button" data-filter="running" aria-pressed="false">运行中 2</button>
+            <button class="filter" type="button" data-filter="attention" aria-pressed="false">需处理 1</button>
           </div>
         </div>
         <div class="activity" aria-label="最近运行">
-          <button class="activity-row" type="button" data-open-flow="discover">
-            <span class="status running">收集中</span><span class="activity-team">mobile-bridge团队</span><span class="activity-goal">补齐团队 Dashboard 设计并验证入口流程</span><span class="progress"><i style="width:68%"></i></span><span class="activity-time">09:41 · 4/6</span>
+          <button class="activity-row" type="button" data-status="running" data-open-flow="discover">
+            <span class="status running">收集中</span><span class="activity-team">mobile-bridge团队<small>负责人 Kimi</small></span><span class="activity-copy"><strong>补齐团队 Dashboard 设计并验证入口流程</strong><small>最近回音 09:41 · ZCode 已开始布局核对</small><small>下一步：等待布局核对完成后进入评审</small></span><span class="progress"><i style="width:68%"></i></span><span class="activity-time">4/6<br>09:41</span>
           </button>
-          <button class="activity-row" type="button" data-open-flow="attention">
-            <span class="status attention">等待处理</span><span class="activity-team">fridge-master团队</span><span class="activity-goal">排查设计缺陷并准备修订 Run</span><span class="progress"><i style="width:42%"></i></span><span class="activity-time">09:18 · 2/5</span>
+          <button class="activity-row" type="button" data-status="attention" data-open-flow="attention">
+            <span class="status attention">等待处理</span><span class="activity-team">fridge-master团队<small>负责人 Kimi</small></span><span class="activity-copy"><strong>排查设计缺陷并准备修订 Run</strong><small>最近回音 09:18 · MiniMax 账号不可用</small><small>下一步：处理账号后继续派发评审任务</small></span><span class="progress"><i style="width:42%"></i></span><span class="activity-time">2/5<br>09:18</span>
           </button>
-          <button class="activity-row" type="button" data-open-flow="delivery">
-            <span class="status">已完成</span><span class="activity-team">ccx团队</span><span class="activity-goal">迁移 API 分组配置并完成验证</span><span class="progress"><i style="width:100%"></i></span><span class="activity-time">昨天 · 8/8</span>
+          <button class="activity-row" type="button" data-status="completed" data-open-flow="delivery">
+            <span class="status">已完成</span><span class="activity-team">ccx团队<small>负责人 Kimi</small></span><span class="activity-copy"><strong>迁移 API 分组配置并完成验证</strong><small>最近回音 昨天 · 验证通过，8/8 任务完成</small><small>结果：查看交付证据、实现 diff 和评审结论</small></span><span class="progress"><i style="width:100%"></i></span><span class="activity-time">8/8<br>昨天</span>
           </button>
         </div>
+        <p id="activity-empty" class="note" role="status" hidden>当前筛选没有最近活动；清除筛选查看全部团队。</p>
         <div class="section-head"><h3>团队</h3><span>按当前筛选显示</span></div>
         <div class="teams">
-          <article class="team-card">
+          <article class="team-card" data-team-status="running">
             <div class="team-card-head"><div><h4>mobile-bridge团队</h4><small>项目 mobile-bridge · 2 名成员</small></div><span class="status running">运行中</span></div>
             <p class="team-meta">负责人 Kimi · 自动派发开 · 最大并行 3 · 预算只统计</p>
             <div class="members"><span class="member">负责人 · Kimi · 可用</span><span class="member">成员 · ZCode · 可用</span></div>
-            <div class="team-run"><span class="status running">收集中</span><strong>补齐 Dashboard 设计…</strong><small>4/6</small></div>
+            <div class="team-run"><span class="status running">收集中</span><strong>补齐 Dashboard 设计…<small>回音 09:41 · ZCode 开始布局核对 · 下一步评审</small></strong><small>4/6</small></div>
             <div class="team-actions"><button class="primary" type="button" data-open-flow="discover">打开 Run</button><button type="button">打开团队聊天</button><button type="button">新建 Run</button><button type="button">更多</button></div>
           </article>
-          <article class="team-card">
+          <article class="team-card" data-team-status="attention">
             <div class="team-card-head"><div><h4>fridge-master团队</h4><small>项目 fridge-master · 5 名成员</small></div><span class="status attention">需处理</span></div>
             <p class="team-meta">负责人 Kimi · 评审 MiniMax · 自动派发开 · 最大并行 3</p>
             <div class="members"><span class="member">负责人 · Kimi · 可用</span><span class="member">评审 · MiniMax · 不可用</span><span class="member">成员 · Claude · 可用</span></div>
-            <div class="team-run"><span class="status attention">等待确认</span><strong>排查设计缺陷…</strong><small>2/5</small></div>
+            <div class="team-run"><span class="status attention">等待确认</span><strong>排查设计缺陷…<small>回音 09:18 · MiniMax 账号不可用 · 处理账号后继续</small></strong><small>2/5</small></div>
             <div class="team-actions"><button class="primary" type="button" data-open-flow="attention">处理 Run</button><button type="button">打开团队聊天</button><button type="button">预算</button><button type="button">更多</button></div>
           </article>
         </div>
@@ -231,12 +237,12 @@
         </div>
         <div class="section-head"><h3>需要你处理</h3><span>1 个 Run</span></div>
         <div class="mobile-activity">
-          <button type="button" data-open-flow="attention"><strong>fridge-master团队</strong><small>等待账号确认 · 排查设计缺陷 · 2/5</small></button>
+          <button type="button" data-open-flow="attention"><strong>fridge-master团队 · 等待处理</strong><small>负责人 Kimi · 回音 09:18：MiniMax 账号不可用</small><small>下一步：处理账号后继续派发评审 · 2/5</small></button>
         </div>
         <div class="section-head"><h3>正在运行</h3><span>2 个 Run</span></div>
         <div class="mobile-activity">
-          <button type="button" data-open-flow="discover"><strong>mobile-bridge团队</strong><small>收集中 · 补齐 Dashboard 设计 · 4/6</small></button>
-          <button type="button" data-open-flow="delivery"><strong>ccx团队</strong><small>已完成 · API 分组配置 · 查看结果</small></button>
+          <button type="button" data-open-flow="discover"><strong>mobile-bridge团队 · 收集中</strong><small>负责人 Kimi · 回音 09:41：ZCode 开始布局核对</small><small>下一步：等待布局核对完成后进入评审 · 4/6</small></button>
+          <button type="button" data-open-flow="delivery"><strong>ccx团队 · 已完成</strong><small>负责人 Kimi · 回音：验证通过，8/8 任务完成</small><small>结果：打开交付证据和实现 diff</small></button>
         </div>
         <div class="mobile-cta"><button type="button">团队聊天</button><button type="button" class="primary">新建 Run</button></div>
       </div>
@@ -253,9 +259,9 @@
         <div class="flow-screen" id="flow-screen">
           <h3>当前状态：发现运行</h3>
           <div class="flow-block"><strong>用户要完成的事</strong><span>判断团队是否有正在运行或需要处理的任务，并选择一个 Run。</span></div>
-          <div class="flow-block"><strong>页面给出的依据</strong><span>顶部 KPI → 最近活动 → 团队卡片；每个 Run 同时给出状态、目标、进度和更新时间。</span></div>
-          <div class="flow-block"><strong>主动作</strong><span>点击「打开 Run」，进入详情页；列表页不承担任务处理。</span></div>
-          <div class="decision"><strong>分流规则：</strong>运行中进入观察；需处理进入问题卡；已完成进入交付证据。</div>
+          <div class="flow-block"><strong>页面给出的依据</strong><span>顶部 KPI → 最近活动 → 团队卡片；每条 Run 显示负责人、最近回音、下一步、进度和结果入口。</span></div>
+          <div class="flow-block"><strong>主动作</strong><span>点击「打开 Run」，进入详情页；列表页虽然不承担处理，仍能说明当前落点。</span></div>
+          <div class="decision"><strong>闭环检查：</strong>谁负责、最近回了什么、下一步是什么、结果在哪里，都有明确答案。</div>
         </div>
         <div class="flow-steps" aria-label="流程说明">
           <div class="flow-step"><span class="flow-number">1</span><div><strong>发现</strong><p>打开团队工作台，先扫 KPI 和最近活动，按运行中/需处理筛选。</p></div></div>
@@ -276,21 +282,21 @@
         discover: {
           title: "当前状态：发现运行",
           goal: "判断团队是否有正在运行或需要处理的任务，并选择一个 Run。",
-          evidence: "顶部 KPI → 最近活动 → 团队卡片；每个 Run 同时给出状态、目标、进度和更新时间。",
-          action: "点击「打开 Run」，进入详情页；列表页不承担任务处理。",
+          evidence: "顶部 KPI → 最近活动 → 团队卡片；每个 Run 显示负责人、最近回音、下一步和进度。",
+          action: "点击「打开 Run」，进入详情页；列表页不承担任务处理，但必须说明当前落点。",
           decision: "运行中进入观察；需处理进入问题卡；已完成进入交付证据。"
         },
         attention: {
           title: "当前状态：处理停靠 Run",
           goal: "解决阻塞当前 Run 的账号、配置或成员提问，让剩余任务继续派发。",
-          evidence: "Run 详情顶部说明停靠原因；问题卡给出回答入口；任务卡保留结构化 error 和 failure reason。",
+          evidence: "Run 详情顶部说明停靠原因；聊天和活动行都显示负责人、最近回音、等待对象与可执行动作。",
           action: "先回答问题或处理配置，再点击「继续」；不自动重试未知结果任务。",
           decision: "回答成功进入观察；取消则结束 Run；失败任务不会被伪装为完成。"
         },
         delivery: {
           title: "当前状态：确认交付",
           goal: "确认 Agent 完成、评审和验证分别达到什么状态，并决定是否需要修订。",
-          evidence: "交付证据、统计、阶段图和任务结果分层展示；结果可跳回原会话和改动。",
+          evidence: "交付回执列出结果、评审、验证和未完成项；详情可跳回原会话和实现改动。",
           action: "阅读结果；需要修改时点击「创建修订 Run」，沿用目标和任务输入。",
           decision: "验证通过进入交付；验证失败重新验证或创建修订 Run。"
         }
@@ -313,6 +319,20 @@
         all("[data-view]").forEach((item) => item.setAttribute("aria-pressed", String(item.dataset.view === state.view)));
       }));
       all("[data-flow-tab]").forEach((button) => button.addEventListener("click", () => setFlow(button.dataset.flowTab)));
+      all("[data-filter]").forEach((button) => button.addEventListener("click", () => {
+        const filter = button.dataset.filter;
+        all("[data-filter]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+        let visibleRows = 0;
+        all(".activity-row").forEach((row) => {
+          const visible = filter === "all" || row.dataset.status === filter;
+          row.hidden = !visible;
+          if (visible) visibleRows++;
+        });
+        all(".team-card").forEach((card) => {
+          card.hidden = filter !== "all" && card.dataset.teamStatus !== filter;
+        });
+        $("#activity-empty").hidden = visibleRows > 0;
+      }));
       all("[data-open-flow]").forEach((button) => button.addEventListener("click", () => {
         setFlow(button.dataset.openFlow);
         $(".flow-panel").scrollIntoView({ behavior: "smooth", block: "start" });
