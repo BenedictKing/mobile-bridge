@@ -60,6 +60,38 @@ function teamUUID(){
 const TEAM_RUN_STATUS_LABELS={created:'已创建',dispatching:'派发中',collecting:'收集中',reducing:'验证中',completed:'已完成',waiting_input:'等待确认',paused:'已暂停',failed:'已失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'结果未知'};
 const TEAM_TASK_STATUS_LABELS={planned:'已规划',ready:'就绪',dispatching:'派发中',running:'运行中',completed:'已完成',failed:'已失败',cancelled:'已取消',outcome_unknown:'结果未知',stopped:'已停止'};
 const TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
+/* 闭环契约（docs/team-dashboard-design.md §4）：Run 状态分组与轻量摘要派生。
+   currentOwner/lastUpdate/nextAction/delivery 全部由服务端投影（teams.go
+   teamRunSummary），前端只消费不猜测；服务端整句（下一步/回音摘要）按
+   teamRunStopReasonText 同款纪律：中文照原文，其他语言交给 t() 的原文回落。 */
+const TEAM_ACTIVE_RUN_STATUSES=new Set(['created','planning','dispatching','collecting','reducing']);
+const TEAM_ATTENTION_RUN_STATUSES=new Set(['waiting_input','paused','failed','outcome_unknown']);
+function teamRunGroup(status){
+  if(TEAM_ATTENTION_RUN_STATUSES.has(status))return 'attention';
+  if(TEAM_ACTIVE_RUN_STATUSES.has(status))return 'active';
+  return TEAM_TERMINAL_RUN_STATUSES.has(status)?'terminal':'other';
+}
+/* taskCounts → {total,completed}；缺 taskCounts 显示「进度待同步」，不猜 0。 */
+function teamRunProgress(run){
+  const counts=run&&run.taskCounts;
+  if(!counts||typeof counts!=='object')return null;
+  let total=0,completed=0;
+  for(const [status,value] of Object.entries(counts)){
+    const count=Number(value)||0;
+    total+=count;
+    if(status==='completed')completed=count;
+  }
+  return total>0?{total,completed}:null;
+}
+/* 活动行/团队卡的回音短句：负责人 · 最近回音 · 下一步。缺哪段跳哪段，
+   不编造；都没有时不输出（卡片显示进度即可）。 */
+function teamRunEchoLine(run){
+  const bits=[];
+  if(run&&run.currentOwner&&run.currentOwner.name)bits.push(run.currentOwner.name+t_safe(' 执行中'));
+  if(run&&run.lastUpdate&&run.lastUpdate.summary)bits.push(t_safe(run.lastUpdate.summary));
+  if(run&&run.nextAction&&run.nextAction.label)bits.push(t_safe('下一步：')+t_safe(run.nextAction.label));
+  return bits.join(' · ');
+}
 /* 事件类型 → 任务状态；task_stopped 的 payload.status 区分 cancelled/stopped，
    旧 journal 的取消原因由下方兼容。task_cache_hit 是 amend 缓存命中：任务直接携带父 Run 结果
    完成（§6.4.1）；action、question、invalid_action_block 事件的 payload.taskId
@@ -533,6 +565,9 @@ class TeamsPanel{
     this.policyBudgetValue='';
     this.projects=null;     // 新建表单可用的项目空间（打开面板时快照）
     this.agents=[];         // 可创建团队成员会话的 ACP Agent
+    this.filter='all';      // 工作台筛选：all/active/attention（刷新不重置）
+    this.lastSynced='';     // 最近一次 Run 摘要同步时间（头部显示）
+    this.pollTimer=null;    // 打开期间 15s 轻量轮询（§5 刷新与实时性）
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
@@ -544,6 +579,59 @@ class TeamsPanel{
     catch(error){this.error=error.message;}
     finally{this.loading=false;this.render();}
     return succeeded;
+  }
+  /* 工作台打开入口（app.js teams-button）：团队 + 全部团队的 Run 摘要一次
+     拉齐；KPI、活动列表与团队卡都消费同一份轻量摘要（§3 并行读取）。 */
+  async refreshAll(){
+    if(await this.refresh())await this.loadAllRuns();
+  }
+  /* 并行拉取所有团队的 Run 摘要：单个团队失败只影响该团队的 Run 区域
+     （entry.error 就地展示），不拖垮整页。 */
+  async loadAllRuns(){
+    if(this._runsLoading)return;
+    this._runsLoading=true;
+    const teams=this.teams.slice();
+    await Promise.allSettled(teams.map(async team=>{
+      const entry=this.runs.get(team.id)||{loading:false,error:'',rows:[]};
+      entry.loading=true;this.runs.set(team.id,entry);
+      try{
+        const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs');
+        entry.rows=result.runs||[];entry.error='';
+      }catch(error){entry.error=error.message;}
+      finally{entry.loading=false;}
+    }));
+    this._runsLoading=false;
+    this.lastSynced=new Date().toLocaleTimeString(BridgeI18n.locale());
+    this.render();
+  }
+  startPolling(){
+    this.stopPolling();
+    this.pollTimer=setInterval(()=>{this.refreshAll();},15000);
+  }
+  stopPolling(){
+    if(this.pollTimer){clearInterval(this.pollTimer);this.pollTimer=null;}
+  }
+  teamRuns(teamId){return (this.runs.get(teamId)||{}).rows||[];}
+  /* 团队当前代表 Run：优先最新非终态（正在发生的事），否则最新终态。
+     rows 按创建序返回，倒序找。 */
+  teamLatestRun(teamId){
+    const rows=this.teamRuns(teamId);
+    return [...rows].reverse().find(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))||rows[rows.length-1]||null;
+  }
+  runStats(){
+    const stats={teams:this.teams.length,members:0,active:0,attention:0};
+    for(const team of this.teams)stats.members+=(team.members||[]).length;
+    for(const entry of this.runs.values())for(const run of entry.rows||[]){
+      const group=teamRunGroup(run.status);
+      if(group==='attention')stats.attention++;
+      else if(group==='active')stats.active++;
+    }
+    return stats;
+  }
+  filteredTeams(){
+    if(this.filter==='active')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run.status)==='active'));
+    if(this.filter==='attention')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run.status)==='attention'));
+    return this.teams;
   }
   async send(method,path,body){
     if(this.busy)return null;
@@ -571,8 +659,10 @@ class TeamsPanel{
     const t=BridgeI18n.t,root=this.root;
     root.replaceChildren();
     const toolbar=this.node('div',undefined,'team-toolbar');
-    const refresh=this.button(t('刷新'),async()=>{if(await this.refresh())globalThis.BridgeFeedback?.ok('团队列表已刷新');});
-    refresh.disabled=this.loading||this.busy;
+    if(this.lastSynced)toolbar.append(this.node('span',t('同步于 ')+this.lastSynced,'team-synced muted'));
+    const refresh=this.button(t('刷新'),async()=>{await this.refreshAll();});
+    refresh.disabled=this.loading||this.busy||this._runsLoading;
+    refresh.classList.toggle('spinning',!!this._runsLoading);
     const create=this.button(this.create?t('收起新建'):t('新建团队'),()=>{
       this.create=this.create?null:{name:'',project:'',autoDispatch:true,error:'',requestId:teamUUID(),attempt:'',members:[{agent:'',role:'lead',name:''}]};
       if(this.create)this.loadProjects();
@@ -585,11 +675,135 @@ class TeamsPanel{
     if(this.notice){root.append(this.node('p',this.notice,'team-notice'));this.notice='';}
     if(this.loading&&!this.teams.length){root.append(this.node('p',t('正在读取团队…'),'muted'));return;}
     if(this.create)root.append(this.renderCreateForm());
-    if(this.teams.length){
-      for(const team of this.teams)root.append(this.renderTeam(team));
-    }else if(!this.create){
-      root.append(this.node('p',t('还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
+    if(!this.teams.length){
+      if(!this.create)root.append(this.node('p',t('还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
+      return;
     }
+    const stats=this.runStats();
+    root.append(this.renderKpis(stats));
+    root.append(this.renderFilters(stats));
+    root.append(this.renderActivity());
+    const teams=this.filteredTeams();
+    const grid=this.node('div',undefined,'team-grid');
+    if(teams.length){
+      for(const team of teams)grid.append(this.renderTeam(team));
+    }else{
+      const empty=this.node('div',undefined,'team-grid-empty');
+      empty.setAttribute('role','status');
+      empty.append(this.node('p',t('当前筛选没有匹配的团队。'),'muted'));
+      const clear=this.button(t('清除筛选'),()=>{this.filter='all';this.render();});
+      empty.append(clear);
+      grid.append(empty);
+    }
+    root.append(grid);
+  }
+  /* KPI 条（§3 状态 KPI）：四个数字一屏回答「现在有没有运行中、哪里需要
+     我处理」；运行中/需处理两格可点按切筛选。 */
+  renderKpis(stats){
+    const t=BridgeI18n.t,box=this.node('div',undefined,'team-kpis');
+    const cell=(value,label,filter)=>{
+      const item=this.button('');
+      item.className='team-kpi'+(filter&&this.filter===filter?' on':'');
+      item.append(this.node('strong',String(value)));
+      item.append(this.node('span',t(label)));
+      if(filter){
+        item.setAttribute('aria-pressed',String(this.filter===filter));
+        item.onclick=()=>{this.filter=this.filter===filter?'all':filter;this.render();};
+      }
+      return item;
+    };
+    box.append(cell(stats.teams,'团队'),cell(stats.members,'成员'),
+      cell(stats.active,'运行中','active'),cell(stats.attention,'需处理','attention'));
+    return box;
+  }
+  renderFilters(stats){
+    const t=BridgeI18n.t,box=this.node('div',undefined,'team-filters');
+    box.setAttribute('role','group');
+    box.setAttribute('aria-label',t('运行筛选'));
+    const counts={all:0,active:0,attention:0};
+    for(const entry of this.runs.values())for(const run of entry.rows||[]){
+      const group=teamRunGroup(run.status);
+      if(group==='attention')counts.attention++;
+      else if(group==='active')counts.active++;
+      counts.all++;
+    }
+    const options=[['all',t('全部')],['active',t('运行中')],['attention',t('需处理')]];
+    for(const [key,label] of options){
+      const item=this.button(label+' '+counts[key]);
+      item.className='team-filter'+(this.filter===key?' on':'');
+      item.setAttribute('aria-pressed',String(this.filter===key));
+      item.onclick=()=>{this.filter=key;this.render();};
+      box.append(item);
+    }
+    return box;
+  }
+  /* 最近活动（§3）：全部团队聚合的轻量 Run 摘要，按 updatedAt 倒序 ≤6 条；
+     每行回答四个问题——谁负责/做到哪/下一步/结果在哪（点击即达）。 */
+  renderActivity(){
+    const t=BridgeI18n.t,box=this.node('section',undefined,'team-activity');
+    box.append(this.node('h3',t('最近活动')));
+    const teamById=new Map(this.teams.map(team=>[team.id,team]));
+    const rows=[];
+    for(const team of this.teams){
+      for(const run of this.teamRuns(team.id)){
+        const at=run.updatedAt?new Date(run.updatedAt).getTime():0;
+        if(Number.isFinite(at))rows.push({team,run,at});
+      }
+    }
+    rows.sort((a,b)=>b.at-a.at);
+    if(rows.length){
+      const filtered=this.filter==='all'?rows:rows.filter(({run})=>teamRunGroup(run.status)===this.filter);
+      const shown=filtered.slice(0,6);
+      if(!shown.length){
+        const empty=this.node('p',t('当前筛选没有匹配的 Run。'),'muted');
+        empty.setAttribute('role','status');
+        box.append(empty);
+        return box;
+      }
+      const list=this.node('div',undefined,'team-activity-list');
+      for(const {team,run} of shown)list.append(this.renderActivityRow(team,run));
+      box.append(list);
+      return box;
+    }
+    // 没有 Run 数据：区分「还没拉到」与「确实没有」。
+    const loading=this.teams.some(team=>(this.runs.get(team.id)||{}).loading);
+    const failed=this.teams.some(team=>((this.runs.get(team.id)||{}).error));
+    const hint=loading?t('正在读取 Run 摘要…'):failed?t('部分团队的 Run 读取失败，可点击「刷新」重试。'):t('还没有 Run。从团队卡片「新建 Run」开始。');
+    const line=this.node('p',hint,'muted');
+    line.setAttribute('role','status');
+    box.append(line);
+    return box;
+  }
+  renderActivityRow(team,run){
+    const t=BridgeI18n.t,row=this.button('');
+    row.className='team-activity-row';
+    row.dataset.group=teamRunGroup(run.status);
+    row.append(this.runBadge(run.status));
+    const main=this.node('div',undefined,'team-activity-main');
+    const title=this.node('span',run.goal||run.id,'team-activity-goal');
+    title.title=run.goal||run.id;
+    main.append(title);
+    const meta=this.node('small',undefined,'team-activity-meta muted');
+    const bits=[team.name];
+    const progress=teamRunProgress(run);
+    bits.push(progress?progress.completed+'/'+progress.total:t('进度待同步'));
+    if(run.currentOwner&&run.currentOwner.name)bits.push(run.currentOwner.name+t(' · 负责人'));
+    meta.textContent=bits.join(' · ');
+    main.append(meta);
+    row.append(main);
+    const echo=this.node('div',undefined,'team-activity-echo');
+    const line=teamRunEchoLine(run);
+    if(line)echo.append(this.node('small',line,'muted'));
+    const at=teamTimeText(run.updatedAt);
+    if(at)echo.append(this.node('small',at,'team-activity-time'));
+    row.append(echo);
+    if(run.nextAction&&run.nextAction.label){
+      const next=this.node('span',t_safe(run.nextAction.label),'team-activity-next');
+      next.dataset.kind=run.nextAction.kind||'';
+      row.append(next);
+    }
+    row.onclick=()=>this.openRun&&this.openRun(team.id,run.id);
+    return row;
   }
   renderTeam(team){
     const t=BridgeI18n.t;
@@ -620,6 +834,27 @@ class TeamsPanel{
     if(updated)parts.push(t('更新于 ')+updated);
     meta.textContent=parts.join(' · ');
     card.append(meta);
+    /* 卡片级状态行（闭环契约·有着落）：需处理 > 运行中 > 最近完成 的代表
+       Run，带负责人/最近回音/下一步，点击直达 Run 详情——卡片先回答「这个
+       团队现在谁在做什么、下一步是什么」。 */
+    const latest=this.teamLatestRun(team.id);
+    if(latest){
+      const runRow=this.button('');
+      runRow.className='team-card-run';
+      runRow.dataset.group=teamRunGroup(latest.status);
+      runRow.append(this.runBadge(latest.status));
+      const info=this.node('div',undefined,'team-card-run-info');
+      const goal=this.node('span',latest.goal||latest.id,'team-card-run-goal');
+      goal.title=latest.goal||latest.id;
+      info.append(goal);
+      const echo=teamRunEchoLine(latest);
+      if(echo)info.append(this.node('small',echo,'muted'));
+      runRow.append(info);
+      const open=this.node('span',t('打开 Run'),'team-card-run-open');
+      runRow.append(open);
+      runRow.onclick=()=>this.openRun&&this.openRun(team.id,latest.id);
+      card.append(runRow);
+    }
     const chips=this.node('div',undefined,'team-members');
     for(const m of members){
       const chip=this.node('span',undefined,'team-member'+(m.available===false?' unavailable':'')+(m.enabled===false?' disabled':''));
@@ -684,9 +919,12 @@ class TeamsPanel{
       row.className='team-run-row';
       row.append(this.runBadge(run.status));
       row.append(this.node('span',run.goal||run.id,'team-run-goal'));
+      const progress=teamRunProgress(run);
+      if(progress)row.append(this.node('small',progress.completed+'/'+progress.total,'team-run-progress muted'));
       const updated=teamTimeText(run.updatedAt);
       if(updated)row.append(this.node('small',updated,'muted'));
       if(run.stopReason)row.title=t(teamRunStatusLabel(run.status))+' · '+teamRunStopReasonText(run);
+      if(run.nextAction&&run.nextAction.label)row.title=(row.title?row.title+'\n':'')+t_safe('下一步：')+t_safe(run.nextAction.label);
       row.onclick=()=>this.openRun&&this.openRun(team.id,run.id);
       box.append(row);
     }

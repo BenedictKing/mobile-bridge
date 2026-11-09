@@ -1946,4 +1946,9 @@ function openTeamRun(teamId,runId){
   $('app').classList.add('chat-open');
   teamRunScreen.openRun(teamId,runId);
 }
-if(teamsPanel)$('teams-button').onclick=()=>{$('teams-dialog').showModal();teamsPanel.refresh();};
+/* 团队工作台（team-dashboard-design §5）：打开即拉团队 + 全部 Run 摘要并
+   15s 轻量轮询；关闭弹窗停止轮询，不烧后台请求。 */
+if(teamsPanel){
+  $('teams-button').onclick=()=>{$('teams-dialog').showModal();teamsPanel.refreshAll();teamsPanel.startPolling();};
+  $('teams-dialog').addEventListener('close',()=>teamsPanel.stopPolling());
+}

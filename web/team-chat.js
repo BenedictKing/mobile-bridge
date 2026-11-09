@@ -441,6 +441,43 @@ class TeamChatController{
     head.append(toggle);
     head.append(this.button(t_safe('详情'),()=>this.openRun&&this.openRun(team.id,run.id)));
     card.append(head);
+    /* 闭环回音（team-dashboard-design §3 聊天侧·凡事有交代/事事有回音）：
+       受理（谁接的单）、最近回音（做到哪）、下一步（在等什么/等谁）。
+       与 Dashboard 消费同一服务端投影（teams.go teamRunSummary/detail 的
+       currentOwner/lastUpdate/nextAction），两处不给出不同结论；字段缺席
+       就不显示，不编造。 */
+    const echo=this.node('div',undefined,'team-workflow-echo');
+    const leadRow=(team.members||[]).find(m=>m.id===team.leadId);
+    const receipt=this.node('div',undefined,'team-workflow-echo-row');
+    receipt.append(this.node('span',t_safe('已受理 · Run ')+String(run.id||'').slice(0,8)+(leadRow?' · '+t_safe('负责人 ')+teamWorkflowMemberLabel(leadRow):''),'team-workflow-echo-main'));
+    echo.append(receipt);
+    if(run.lastUpdate&&run.lastUpdate.summary){
+      const row=this.node('div',undefined,'team-workflow-echo-row');
+      const at=typeof teamTimeText==='function'?teamTimeText(run.lastUpdate.at):'';
+      row.append(this.node('span',t_safe(run.lastUpdate.summary),'team-workflow-echo-main'));
+      if(at)row.append(this.node('small',at,'team-workflow-echo-time'));
+      echo.append(row);
+    }
+    const next=run.nextAction;
+    if(next&&next.label){
+      const row=this.node('div',undefined,'team-workflow-echo-row');
+      const chip=this.node('span',t_safe(next.label),'team-workflow-next');
+      chip.dataset.kind=next.kind||'';
+      row.append(chip);
+      // 等待类回音把原因放在触手可及的位置：等待输入/失败/未知必须说清
+      // 等谁或出了什么问题，不解释的停靠最伤信任。
+      if(next.reason){
+        chip.title=next.reason;
+        row.append(this.node('small',next.reason,'team-workflow-next-reason'));
+      }
+      if(next.kind==='answer'||next.kind==='inspect'||next.kind==='resume'){
+        const go=this.button(t_safe('去处理'),()=>this.openRun&&this.openRun(team.id,run.id));
+        go.className='team-workflow-next-go';
+        row.append(go);
+      }
+      echo.append(row);
+    }
+    card.append(echo);
     const scroller=this.node('div',undefined,'team-workflow-scroll');
     scroller.tabIndex=0;scroller.setAttribute('aria-label',t_safe('阶段轨道，可横向滚动'));
     const stations=this.node('div',undefined,'team-workflow-stations');

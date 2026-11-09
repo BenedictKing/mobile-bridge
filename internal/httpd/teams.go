@@ -712,12 +712,13 @@ func (h *handler) handleMemberDelete(teamID, memberID string) {
 // ---- Run 管理 ----
 
 func (h *handler) handleRunList(teamID string) {
-	if h.loadTeam(teamID) == nil {
+	teamRow := h.loadTeam(teamID)
+	if teamRow == nil {
 		return
 	}
 	rows := &jsoncompat.Array{}
 	for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
-		rows.Items = append(rows.Items, teamRunSummary(run))
+		rows.Items = append(rows.Items, teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID)))
 	}
 	result := jsoncompat.NewObject()
 	result.Set("runs", rows)
@@ -2420,6 +2421,15 @@ func (r *TeamFeedRegistry) Feed(runID string) *team.EventFeed {
 	return feed
 }
 
+// Peek 只读返回已存在的事件投影，不创建、不刷 meta：Run 列表的闭环投影
+// （teamRunSummary）只需要事件缓冲派生最近回音，不应为每次列表读取批量
+// 惰性建 feed（Feed 会为每个历史 Run 建对象并重算 meta）。
+func (r *TeamFeedRegistry) Peek(runID string) *team.EventFeed {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.feeds[runID]
+}
+
 // Ingest 是 Service.OnEvent 的装配点：首条事件（run_created）即建 feed，
 // 之后按 journal 序号单调并入（EventFeed.Add 自行拒绝乱序/重复）。
 func (r *TeamFeedRegistry) Ingest(event *team.Event) {
@@ -2652,6 +2662,14 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 	workspace.Set("writeLockHeldBy", teamWriteLockHolder(run))
 	detail.Set("workspace", workspace)
 	detail.Set("delivery", teamDeliveryEvidence(h.server.TeamStore.Team(run.TeamID), run))
+	// 闭环回音投影（与 Run 列表同一派生函数，聊天与 Dashboard 消费同一份
+	// 事实）：谁负责 / 最近回音 / 下一步。
+	teamRow := h.server.TeamStore.Team(run.TeamID)
+	if owner := teamRunCurrentOwner(teamRow, run); owner != nil {
+		detail.Set("currentOwner", owner)
+	}
+	detail.Set("lastUpdate", teamRunLastUpdate(teamRow, run, h.server.TeamFeeds.Peek(run.ID)))
+	detail.Set("nextAction", teamRunNextAction(teamRow, run))
 	// 执行线程投影（阶段一执行线程契约）：threads 随 Run 快照直出，状态按
 	// Run 终态派生（线程随 Run 创建与关闭，关闭态不落盘——重建与运行期
 	// 天然一致）；任务的 executionThreadId 已随 Task 投影携带。
@@ -2669,9 +2687,320 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 	return detail
 }
 
+// teamMemberLabel 返回成员的可展示名（备注名优先，回落成员 id）。
+func teamMemberLabel(teamRow *team.Team, memberID string) string {
+	if teamRow != nil {
+		for i := range teamRow.Members {
+			if teamRow.Members[i].ID == memberID {
+				if teamRow.Members[i].Name != "" {
+					return teamRow.Members[i].Name
+				}
+				return memberID
+			}
+		}
+	}
+	return memberID
+}
+
+// teamRunCurrentOwner 是「谁在负责」的确定性投影（闭环契约·有着落）：首个
+// running/dispatching 任务的成员。没有活动任务时不设键——不猜测负责人。
+func teamRunCurrentOwner(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
+	for i := range run.Tasks {
+		status := run.Tasks[i].Status
+		if status != team.TaskRunning && status != team.TaskDispatching {
+			continue
+		}
+		owner := jsoncompat.NewObject()
+		owner.Set("memberId", run.Tasks[i].MemberID)
+		owner.Set("name", teamMemberLabel(teamRow, run.Tasks[i].MemberID))
+		owner.Set("taskId", run.Tasks[i].ID)
+		return owner
+	}
+	return nil
+}
+
+// teamEchoEventKinds 是能充当「最近回音」的事件白名单：状态推进、停靠、
+// 失败、提问、验证与终局。技术细节（限流窗口、线程绑定、幂等键 mismatch、
+// action 入账）不面向用户，不进回音。从后往前第一条命中即最近回音——
+// 序列天然归并了相邻的派发细节（running 盖过 dispatching）。
+var teamEchoEventKinds = map[string]bool{
+	team.EventRunCreated:         true,
+	team.EventTaskPlanned:        true,
+	team.EventTaskDispatching:    true,
+	team.EventTaskRunning:        true,
+	team.EventTaskCompleted:      true,
+	team.EventTaskFailed:         true,
+	team.EventTaskOutcomeUnknown: true,
+	team.EventTaskStopped:        true,
+	team.EventTaskCacheHit:       true,
+	team.EventTaskRetryScheduled: true,
+	team.EventRunStalled:         true,
+	team.EventRunVerify:          true,
+	team.EventRunWaitingInput:    true,
+	team.EventQuestionOpened:     true,
+	team.EventRunCompleted:       true,
+	team.EventRunFailed:          true,
+	team.EventRunCancelled:       true,
+	team.EventRunPaused:          true,
+	team.EventWorkspaceLost:      true,
+}
+
+// teamEchoEventText 生成事件的用户可读摘要（≤60 字符级短句；成员名内联）。
+// 只用事件 payload 与 Run 快照派生，绝不带 prompt 全文、transcript 或凭据。
+func teamEchoEventText(teamRow *team.Team, run *team.Run, event *team.Event) string {
+	taskID, _ := event.Payload["taskId"].(string)
+	memberOf := func() string {
+		for i := range run.Tasks {
+			if run.Tasks[i].ID == taskID {
+				return teamMemberLabel(teamRow, run.Tasks[i].MemberID)
+			}
+		}
+		return ""
+	}
+	switch event.Type {
+	case team.EventTaskPlanned:
+		return "已规划任务 " + taskID
+	case team.EventTaskDispatching:
+		return "正在派发 " + taskID + " · " + memberOf()
+	case team.EventTaskRunning:
+		return memberOf() + " 开始执行 " + taskID
+	case team.EventTaskCompleted:
+		return "任务 " + taskID + " 已完成"
+	case team.EventTaskFailed:
+		return "任务 " + taskID + " 执行失败"
+	case team.EventTaskOutcomeUnknown:
+		return "任务 " + taskID + " 结果未知"
+	case team.EventTaskStopped:
+		return "任务 " + taskID + " 已停靠"
+	case team.EventTaskCacheHit:
+		return "任务 " + taskID + " 复用了上次结果"
+	case team.EventTaskRetryScheduled:
+		return "任务 " + taskID + " 已安排重试"
+	case team.EventRunStalled:
+		return "运行停滞，等待成员回报"
+	case team.EventRunVerify:
+		if code, ok := event.Payload["exitCode"]; ok {
+			return "验证闸门完成，退出码 " + fmt.Sprint(code)
+		}
+		return "验证闸门执行中"
+	case team.EventRunWaitingInput:
+		if reason, ok := event.Payload["stopReason"].(string); ok && reason != "" {
+			return "等待处理：" + reason
+		}
+		return "运行等待处理"
+	case team.EventQuestionOpened:
+		if summary, ok := event.Payload["summary"].(string); ok && summary != "" {
+			return "成员提问：" + truncateSubText(summary, 40)
+		}
+		return "成员提出了问题"
+	case team.EventRunCreated:
+		return "Run 已创建，开始受理"
+	case team.EventRunCompleted:
+		return "运行已完成"
+	case team.EventRunFailed:
+		return "运行失败"
+	case team.EventRunCancelled:
+		return "运行已取消"
+	case team.EventRunPaused:
+		return "运行已暂停"
+	case team.EventWorkspaceLost:
+		return "任务工作区丢失，需人工处理"
+	}
+	return event.Type
+}
+
+// teamRunLastUpdate 是「最近回音」投影：从事件缓冲的尾部找最近一条有意义
+// 事件，产出 {kind, at, summary, taskId?}。feed 缺失（重启后未被订阅过）或
+// 缓冲内没有回音类事件时，退化为 Run 快照的 updatedAt + 状态词——回音可以
+// 粗，但不能缺席。
+func teamRunLastUpdate(teamRow *team.Team, run *team.Run, feed *team.EventFeed) *jsoncompat.Object {
+	if feed != nil {
+		events := feed.Events()
+		for i := len(events) - 1; i >= 0; i-- {
+			event := events[i]
+			if event == nil || !teamEchoEventKinds[event.Type] {
+				continue
+			}
+			update := jsoncompat.NewObject()
+			update.Set("kind", event.Type)
+			update.Set("at", event.CreatedAt.Format(time.RFC3339Nano))
+			update.Set("summary", teamEchoEventText(teamRow, run, event))
+			if taskID, _ := event.Payload["taskId"].(string); taskID != "" {
+				update.Set("taskId", taskID)
+			}
+			return update
+		}
+	}
+	update := jsoncompat.NewObject()
+	update.Set("kind", "status")
+	update.Set("at", run.UpdatedAt.Format(time.RFC3339Nano))
+	update.Set("summary", "状态："+teamRunStatusLabelText(run.Status))
+	return update
+}
+
+// teamRunStatusLabelText 是 Run 状态的中文短词（回音降级文案用；完整徽标
+// 与词条仍由前端 i18n 负责，这里只保证降级回音不是裸枚举）。
+func teamRunStatusLabelText(status string) string {
+	switch status {
+	case team.RunCreated:
+		return "已创建"
+	case team.RunPlanning:
+		return "规划中"
+	case team.RunDispatching:
+		return "派发中"
+	case team.RunCollecting:
+		return "收集中"
+	case team.RunReducing:
+		return "验证中"
+	case team.RunCompleted:
+		return "已完成"
+	case team.RunWaitingInput:
+		return "等待确认"
+	case team.RunPaused:
+		return "已暂停"
+	case team.RunFailed:
+		return "已失败"
+	case team.RunCancelled:
+		return "已取消"
+	case team.RunStopped:
+		return "已停止"
+	case team.RunOutcomeUnknown:
+		return "结果未知"
+	}
+	return status
+}
+
+// teamRunNextAction 是「下一步」的确定性投影（闭环契约·有交代）：由 Run
+// 状态与任务状态派生，规则固定，不是模型生成的承诺。等待类必须说清等谁
+// 或等什么；结果未知给人工核查，绝不显示「稍后自动完成」。
+func teamRunNextAction(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
+	action := jsoncompat.NewObject()
+	reason := run.StopReason
+	setReason := func() {
+		if reason != "" {
+			action.Set("reason", reason)
+		}
+	}
+	switch run.Status {
+	case team.RunWaitingInput:
+		action.Set("kind", "answer")
+		action.Set("label", "等待你回答")
+		setReason()
+		return action
+	case team.RunPaused:
+		action.Set("kind", "resume")
+		action.Set("label", "等待继续")
+		setReason()
+		return action
+	case team.RunFailed:
+		action.Set("kind", "inspect")
+		action.Set("label", "查看失败原因")
+		setReason()
+		return action
+	case team.RunOutcomeUnknown:
+		action.Set("kind", "inspect")
+		action.Set("label", "需要人工核查")
+		setReason()
+		return action
+	case team.RunCancelled, team.RunStopped:
+		action.Set("kind", "revise")
+		action.Set("label", "已结束，可创建修订 Run")
+		setReason()
+		return action
+	case team.RunCompleted:
+		action.Set("kind", "delivery")
+		action.Set("label", "查看交付结果")
+		return action
+	case team.RunCollecting:
+		action.Set("kind", "collect")
+		action.Set("label", "收集分支结果")
+		return action
+	case team.RunReducing:
+		action.Set("kind", "verify")
+		if len(run.VerifyCommand) > 0 {
+			action.Set("label", "验证闸门执行中")
+		} else {
+			action.Set("label", "汇总结果中")
+		}
+		return action
+	}
+	// created/planning/dispatching：有活动任务→等成员；没有→编排推进。
+	for i := range run.Tasks {
+		status := run.Tasks[i].Status
+		if status != team.TaskRunning && status != team.TaskDispatching {
+			continue
+		}
+		action.Set("kind", "await")
+		action.Set("label", "等待 "+teamMemberLabel(teamRow, run.Tasks[i].MemberID)+" 完成当前任务")
+		action.Set("actor", run.Tasks[i].MemberID)
+		return action
+	}
+	action.Set("kind", "advance")
+	action.Set("label", "编排推进中")
+	return action
+}
+
+// teamDeliveryDigest 是 Run 列表行的轻量交付投影（闭环契约·结果在哪）：
+// 只带完成度、评审裁决、验证状态与待答问题计数，不带结果正文——正文入口
+// 是 Run 详情的完整 delivery（teamDeliveryEvidence），列表行不重复承载。
+func teamDeliveryDigest(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
+	digest := jsoncompat.NewObject()
+	completed := 0
+	var reviewTask *team.Task
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		if task.Status == team.TaskCompleted {
+			completed++
+		}
+		if team.IsReviewTask(teamRow, task) {
+			reviewTask = task
+		}
+	}
+	agent := jsoncompat.NewObject()
+	agent.Set("completed", jsoncompat.Num(completed))
+	agent.Set("total", jsoncompat.Num(len(run.Tasks)))
+	digest.Set("agent", agent)
+	if reviewTask != nil {
+		review := jsoncompat.NewObject()
+		verdict := team.ReviewVerdictUnknown
+		if reviewTask.Status == team.TaskCompleted && reviewTask.ResultDetail != nil && reviewTask.ResultDetail.ReviewVerdict != "" {
+			verdict = reviewTask.ResultDetail.ReviewVerdict
+		}
+		review.Set("verdict", verdict)
+		if reviewTask.ReviewVerdictStale {
+			review.Set("stale", true)
+		}
+		digest.Set("review", review)
+	}
+	verify := jsoncompat.NewObject()
+	verify.Set("configured", len(run.VerifyCommand) > 0)
+	if run.Verify != nil {
+		status := "passed"
+		if run.Verify.ExitCode != 0 {
+			status = "failed"
+		}
+		verify.Set("status", status)
+		verify.Set("exitCode", jsoncompat.Num(run.Verify.ExitCode))
+	}
+	if verify.MustGet("configured") == true || run.Verify != nil {
+		digest.Set("verify", verify)
+	}
+	open := 0
+	for i := range run.PendingQuestions {
+		if run.PendingQuestions[i].Status == team.QuestionStatusOpen {
+			open++
+		}
+	}
+	digest.Set("pendingQuestions", jsoncompat.Num(open))
+	return digest
+}
+
 // teamRunSummary 是 Run 列表行的轻量投影（不含任务与结果本体）。mode 是
-// 阶段二新增列（single/broadcast/pipeline，§5.3）。
-func teamRunSummary(run *team.Run) *jsoncompat.Object {
+// 阶段二新增列（single/broadcast/pipeline，§5.3）；currentOwner/lastUpdate/
+// nextAction/delivery 是闭环契约（凡事有交代，件件有着落，事事有回音）的
+// 服务端派生投影——列表行不猜测、不逐行拉 Run Detail，四个答案（谁负责/
+// 做到哪/下一步/结果在哪）一次给齐。
+func teamRunSummary(teamRow *team.Team, run *team.Run, feed *team.EventFeed) *jsoncompat.Object {
 	summary := jsoncompat.NewObject()
 	summary.Set("id", run.ID)
 	summary.Set("teamId", run.TeamID)
@@ -2689,6 +3018,12 @@ func teamRunSummary(run *team.Run) *jsoncompat.Object {
 	summary.Set("createdAt", run.CreatedAt.Format(time.RFC3339Nano))
 	summary.Set("updatedAt", run.UpdatedAt.Format(time.RFC3339Nano))
 	summary.Set("version", json.Number(strconv.FormatUint(run.Version, 10)))
+	if owner := teamRunCurrentOwner(teamRow, run); owner != nil {
+		summary.Set("currentOwner", owner)
+	}
+	summary.Set("lastUpdate", teamRunLastUpdate(teamRow, run, feed))
+	summary.Set("nextAction", teamRunNextAction(teamRow, run))
+	summary.Set("delivery", teamDeliveryDigest(teamRow, run))
 	return summary
 }
 

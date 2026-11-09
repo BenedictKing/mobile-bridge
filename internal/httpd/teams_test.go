@@ -3867,3 +3867,107 @@ func TestTeamsStage4EventStreamSSE(t *testing.T) {
 		}
 	}
 }
+
+// TestTeamRunLoopProjection 校验闭环投影的确定性派生（docs/team-dashboard-
+// design.md §4）：谁负责 / 最近回音 / 下一步 / 交付摘要。规则必须可预测：
+// 等待类说清等谁，结果未知给人工核查，回音从事件尾部取且 running 盖过
+// dispatching，feed 缺席时降级到快照状态而不缺席。
+func TestTeamRunLoopProjection(t *testing.T) {
+	teamRow := &team.Team{
+		ID: "team-echo", Name: "回音团队", LeadID: "lead",
+		Members: []team.TeamMember{
+			{ID: "lead", Name: "主控", SessionID: "s1", AgentKind: "kimi", Role: team.RoleLead, Enabled: true},
+			{ID: "dev", Name: "开发", SessionID: "s2", AgentKind: "codex", Role: team.RoleMember, Enabled: true},
+		},
+	}
+	run := &team.Run{
+		ID: "run-echo", TeamID: teamRow.ID, Goal: "实现工作台",
+		Tasks: []team.Task{
+			{ID: "t1", MemberID: "lead", Status: team.TaskCompleted},
+			{ID: "t2", MemberID: "dev", Status: team.TaskRunning},
+		},
+	}
+	if owner := teamRunCurrentOwner(teamRow, run); owner == nil || owner.MustGet("name") != "开发" || owner.MustGet("taskId") != "t2" {
+		t.Fatalf("currentOwner 应是 running 任务的成员: %v", owner)
+	}
+	idle := &team.Run{Status: team.RunDispatching, Tasks: []team.Task{{ID: "t1", MemberID: "lead", Status: team.TaskCompleted}}}
+	if owner := teamRunCurrentOwner(teamRow, idle); owner != nil {
+		t.Fatalf("无活动任务不得虚构负责人: %v", owner)
+	}
+
+	feed := team.NewEventFeed(run.ID, nil)
+	feed.Add(&team.Event{RunID: run.ID, Type: team.EventTaskDispatching, Sequence: 1, Payload: map[string]any{"taskId": "t2"}, CreatedAt: time.Now()})
+	feed.Add(&team.Event{RunID: run.ID, Type: team.EventTaskRunning, Sequence: 2, Payload: map[string]any{"taskId": "t2"}, CreatedAt: time.Now()})
+	update := teamRunLastUpdate(teamRow, run, feed)
+	if update.MustGet("kind") != team.EventTaskRunning || !strings.Contains(update.MustGet("summary").(string), "开发") {
+		t.Fatalf("lastUpdate 应取尾部 running 事件并内联成员名: %v", update)
+	}
+	fallback := teamRunLastUpdate(teamRow, &team.Run{Status: team.RunWaitingInput, UpdatedAt: time.Now()}, nil)
+	if fallback.MustGet("kind") != "status" || !strings.Contains(fallback.MustGet("summary").(string), "等待确认") {
+		t.Fatalf("feed 缺席时应降级为快照状态回音: %v", fallback)
+	}
+
+	action := teamRunNextAction(teamRow, run)
+	if action.MustGet("kind") != "await" || !strings.Contains(action.MustGet("label").(string), "开发") {
+		t.Fatalf("运行中 Run 的下一步应是等待活动成员: %v", action)
+	}
+	waiting := &team.Run{Status: team.RunWaitingInput, StopReason: "任务 t2 停靠：额度不足"}
+	action = teamRunNextAction(teamRow, waiting)
+	if action.MustGet("kind") != "answer" || action.MustGet("reason") != waiting.StopReason {
+		t.Fatalf("waiting_input 的下一步应指向用户回答并带原因: %v", action)
+	}
+	action = teamRunNextAction(teamRow, &team.Run{Status: team.RunOutcomeUnknown})
+	if action.MustGet("kind") != "inspect" {
+		t.Fatalf("结果未知必须要求人工核查: %v", action)
+	}
+	action = teamRunNextAction(teamRow, &team.Run{Status: team.RunReducing, VerifyCommand: []string{"make", "check"}})
+	if action.MustGet("kind") != "verify" {
+		t.Fatalf("带闸门的 reducing 应显示验证中: %v", action)
+	}
+
+	run.Tasks[1].Status = team.TaskCompleted
+	digest := teamDeliveryDigest(teamRow, run)
+	agent := digest.MustGet("agent").(*jsoncompat.Object)
+	if agent.MustGet("completed") != jsoncompat.Num(2) || agent.MustGet("total") != jsoncompat.Num(2) {
+		t.Fatalf("交付摘要应统计完成度: %v", agent)
+	}
+	if _, exists := digest.Get("verify"); exists {
+		t.Fatalf("未配置闸门不应带 verify 维度: %v", digest)
+	}
+}
+
+// TestTeamsRunListCarriesLoopProjection 校验 GET /api/teams/:id/runs 的每行
+// 都携带闭环四要素（currentOwner 可缺——没有活动任务时不虚构），Dashboard
+// 列表不逐行拉 Run Detail。
+func TestTeamsRunListCarriesLoopProjection(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", false)
+	teamID := env.seedRunTeam(t)
+	runID := env.createRun(t, teamID, `{"goal":"投影校验","mode":"single"}`)
+	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("读取 Run 列表失败: %d %s", response.Code, response.Body.String())
+	}
+	rows, err := jsoncompat.Unmarshal(response.Body.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _ := rows.(*jsoncompat.Object).MustGet("runs").(*jsoncompat.Array)
+	var row *jsoncompat.Object
+	for _, item := range list.Items {
+		if candidate, ok := item.(*jsoncompat.Object); ok && candidate.MustGet("id") == runID {
+			row = candidate
+		}
+	}
+	if row == nil {
+		t.Fatalf("列表缺少新创建的 Run: %s", response.Body.String())
+	}
+	if _, exists := row.Get("lastUpdate"); !exists {
+		t.Fatal("Run 摘要缺少 lastUpdate（最近回音）")
+	}
+	if _, exists := row.Get("nextAction"); !exists {
+		t.Fatal("Run 摘要缺少 nextAction（下一步）")
+	}
+	if _, exists := row.Get("delivery"); !exists {
+		t.Fatal("Run 摘要缺少 delivery（结果在哪）")
+	}
+}
