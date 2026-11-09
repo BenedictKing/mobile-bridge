@@ -660,6 +660,64 @@ func TestRefreshQuotaFlow(t *testing.T) {
 	}
 }
 
+func TestRefreshQuotaAdoptsKimiCliRotation(t *testing.T) {
+	m := newTestManager(t)
+	home := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", home)
+	rotatedAccess := testKimiJWT(t, "uid-a")
+	var usageAuth atomic.Value
+	mux := http.NewServeMux()
+	mux.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+rotatedAccess {
+			t.Errorf("me auth header: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"user_id":"uid-a","nickname":"已刷新"}`))
+	})
+	mux.HandleFunc("/usages", func(w http.ResponseWriter, r *http.Request) {
+		usageAuth.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usage":{"used":2,"limit":100}}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	restoreAPI := kimiAPIBase
+	kimiAPIBase = server.URL
+	defer func() { kimiAPIBase = restoreAPI }()
+
+	if _, _, err := m.upsert("kimi", &Account{
+		UserID: "uid-a", AccessToken: "at-stale", RefreshToken: "rt-stale",
+		ExpiresAt: m.now().Add(time.Hour).Unix(), ExpiresIn: 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "credentials"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rotated := kimiCredentials{
+		AccessToken:  rotatedAccess,
+		RefreshToken: "rt-rotated",
+		TokenType:    "Bearer",
+		ExpiresAt:    m.now().Add(2 * time.Hour).Unix(),
+		ExpiresIn:    7200,
+	}
+	raw, _ := json.Marshal(rotated)
+	if err := os.WriteFile(filepath.Join(home, "credentials", "kimi-code.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	acc, err := m.RefreshQuota(context.Background(), "kimi", "u_uid-a")
+	if err != nil {
+		t.Fatalf("RefreshQuota: %v", err)
+	}
+	if acc.AccessToken != rotatedAccess || acc.RefreshToken != "rt-rotated" {
+		t.Fatalf("slot rotation was not adopted: %+v", acc)
+	}
+	if got, _ := usageAuth.Load().(string); got != "Bearer "+rotatedAccess {
+		t.Fatalf("usages used stale token: %q", got)
+	}
+}
+
 func TestRefreshQuotaRecoversReauthRequired(t *testing.T) {
 	m := newTestManager(t)
 	t.Setenv("KIMI_CODE_HOME", t.TempDir())

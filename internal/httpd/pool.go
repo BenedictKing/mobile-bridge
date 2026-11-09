@@ -113,6 +113,10 @@ func (h *handler) handlePool(write bool) {
 			h.fail(http.StatusNotFound, errorBody("未知的账号池操作"))
 			return
 		}
+		// A Kimi CLI can rotate its token chain without notifying the gateway.
+		// Reconcile that drift before rendering the management snapshot; an
+		// unchanged slot remains a pure read and does not trigger quota traffic.
+		_ = pool.RefreshCurrentSlot(h.request.Context(), kind)
 		detail, err := pool.Detail(kind)
 		if err != nil {
 			h.fail(http.StatusBadRequest, errorBody(err.Error()))

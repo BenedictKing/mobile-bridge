@@ -422,6 +422,54 @@ func readKimiCredentials() *kimiCredentials {
 	return &creds
 }
 
+// kimiSlotMatches reports whether the official CLI slot belongs to this pool
+// account. Kimi rotates access/refresh tokens during normal use, so exact token
+// equality is only a fallback; the JWT user_id is the stable identity.
+func kimiSlotMatches(acc *Account, creds *kimiCredentials) bool {
+	if acc == nil || creds == nil || creds.AccessToken == "" {
+		return false
+	}
+	if uid := kimiTokenUserID(creds.AccessToken); uid != "" && acc.UserID != "" {
+		return uid == acc.UserID
+	}
+	if creds.RefreshToken != "" && acc.RefreshToken != "" && creds.RefreshToken == acc.RefreshToken {
+		return true
+	}
+	return creds.AccessToken == acc.AccessToken
+}
+
+// kimiSlotChanged returns whether the official slot has newer credentials for
+// this account. The caller still performs the authenticated quota refresh
+// before persisting the merged snapshot.
+func kimiSlotChanged(acc *Account, creds *kimiCredentials) bool {
+	return kimiSlotMatches(acc, creds) &&
+		(acc.AccessToken != creds.AccessToken || acc.RefreshToken != creds.RefreshToken)
+}
+
+// RefreshCurrentSlot reconciles a CLI-side Kimi token rotation before a pool
+// detail is rendered. It is intentionally a no-op when the slot is unchanged,
+// so opening the management panel does not turn into a quota poll on every
+// request.
+func (m *Manager) RefreshCurrentSlot(ctx context.Context, kind string) error {
+	if kind != "kimi" {
+		return nil
+	}
+	creds := readKimiCredentials()
+	if creds == nil {
+		return nil
+	}
+	active := m.activeID(kind)
+	if active == "" {
+		return nil
+	}
+	acc, err := m.loadAccount(kind, active)
+	if err != nil || !kimiSlotChanged(acc, creds) {
+		return err
+	}
+	_, err = m.RefreshQuota(ctx, kind, active)
+	return err
+}
+
 // activeID identifies which pooled account currently occupies the official
 // slot (kimi: slot token's user_id claim with exact-token fallback; zcode:
 // slot fingerprint match; minimax: slot auth.json record token match).
@@ -634,9 +682,27 @@ func (m *Manager) RefreshQuota(ctx context.Context, kind, id string) (*Account, 
 func (m *Manager) refreshKimiQuota(ctx context.Context, acc *Account) (*Account, error) {
 	kind := "kimi"
 	slotCreds := readKimiCredentials()
-	slotIsThis := slotCreds != nil &&
-		((slotCreds.RefreshToken != "" && slotCreds.RefreshToken == acc.RefreshToken) ||
-			(acc.AccessToken != "" && slotCreds.AccessToken == acc.AccessToken))
+	slotIsThis := kimiSlotMatches(acc, slotCreds)
+	if slotIsThis {
+		// The official CLI may have renewed this account since the last pool
+		// snapshot. Adopt that pair before deciding whether another refresh is
+		// needed; otherwise the management panel can show reauth while Kimi
+		// itself is already operating normally.
+		acc.AccessToken = slotCreds.AccessToken
+		acc.RefreshToken = slotCreds.RefreshToken
+		if slotCreds.ExpiresAt > 0 {
+			acc.ExpiresAt = slotCreds.ExpiresAt
+		}
+		if slotCreds.ExpiresIn > 0 {
+			acc.ExpiresIn = slotCreds.ExpiresIn
+		}
+		if slotCreds.Scope != "" {
+			acc.Scope = slotCreds.Scope
+		}
+		if slotCreds.TokenType != "" {
+			acc.TokenType = slotCreds.TokenType
+		}
+	}
 
 	if acc.RefreshToken != "" && needsKimiRefresh(acc.ExpiresAt, acc.ExpiresIn, m.now()) {
 		tokens, refreshErr := refreshKimiToken(ctx, acc.RefreshToken, acc.DeviceID)
