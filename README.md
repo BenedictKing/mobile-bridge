@@ -47,6 +47,8 @@ macOS 检出源码后也可 `make start` 以 launchd 常驻托管（`make stop` 
 
 Android 原生容器支持热点网络下自动发现局域网网关并加速读取，无需证书或修改 DNS；构建与安装见 [Android 使用说明](docs/android.md)。
 
+iOS 原生容器复用同一套网关网页，已接入上游的多电脑、Keychain、信道、通知、下载和 Live Activity 壳；当前网关端到端支持范围与待补 API 见 [iOS 使用说明](docs/ios.md)。构建与签名也见该文档。
+
 需要外网访问时，可配置临时 HTTPS 隧道、自有服务器或 NAS 反向代理（`cloudflared` 需自行安装），详见[连接方式说明](#connections)。自定义部署或需要 Agent 协助时，使用后面的[部署 Agent 执行说明](#agent-deployment)。
 
 ### 手机阅读与显示设置

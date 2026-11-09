@@ -22,7 +22,7 @@ ACP_HOST_SOCKETS_JSON := {"$(ACP_HOST_KIND)":"$(ACP_HOST_SOCKET)"}
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build-matrix build-gateway build-gateway-package build-agent-host build-android serve \
+.PHONY: help build-matrix build-gateway build-gateway-package build-agent-host build-android build-ios serve \
 	install dev-cert start start-agent-host stop stop-agent-host restart status logs uninstall conformance \
 	test test-race check
 
@@ -48,6 +48,10 @@ build-android: ## 运行 Android JVM 测试并生成 debug APK
 	cd android && ./gradlew :app:testDebugUnitTest :app:assembleDebug
 	@cp android/app/build/outputs/apk/debug/app-debug.apk dist/mobile-bridge-android-debug.apk
 	@ls -lh dist/mobile-bridge-android-debug.apk
+
+build-ios: ## 使用 Xcode 生成未签名 iOS IPA（需 macOS + iOS SDK）
+	@mkdir -p .tmp dist
+	@python3 scripts/build-mobile-ios.py --output-dir dist
 
 # serve/start 固定从此目录取网关二进制并安装到固定路径（见 install 目标注释）。
 build-gateway-package: ## 编译 serve/start 所用网关包（固定目录名）
