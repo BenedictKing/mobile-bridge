@@ -51,6 +51,16 @@ const TEAM_FORWARD_SCOPES=[
    detail 即权威。 */
 const TEAM_ACTION_TYPE_LABELS={delegate:'委派任务',request_context:'请求上下文',summarize:'请求汇总'};
 const TEAM_ACTION_STATUS_BADGES={proposed:{cls:'planned',label:'待执行'},executed:{cls:'completed',label:'已执行'},rejected:{cls:'failed',label:'已拒绝'}};
+function teamMemberAgentLabel(member,agentFirst=false){
+  if(!member)return '';
+  const kind=String(member.agentKind||'').trim();
+  const agent=kind?BridgeI18n.agentLabel(kind):'';
+  const name=String(member.name||member.id||'').trim();
+  if(!name)return agent;
+  if(!agent)return name;
+  if(name.toLowerCase()===agent.toLowerCase()||name.toLowerCase()===kind.toLowerCase())return agent;
+  return agentFirst?agent+' · '+name:name+' · '+agent;
+}
 /* 客户端幂等键（Run 创建与成员转发）：crypto.randomUUID 不可用时降级；
    app.js 的 uuid() 属其模块内部，这里独立实现避免加载顺序耦合。 */
 function teamUUID(){
@@ -328,7 +338,7 @@ class TeamRunDialogHost{
             const memberSelect=document.createElement('select');
             const members=(state.team.members||[]).filter(m=>m.enabled!==false);
             memberSelect.append(new Option(t('请选择成员…'),''));
-            for(const member of members)memberSelect.append(new Option((member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind),member.id));
+            for(const member of members)memberSelect.append(new Option((member.id===state.team.leadId?t('负责')+' · ':'')+teamMemberAgentLabel(member),member.id));
             memberSelect.value=row.memberId||'';
             memberSelect.onchange=()=>{row.memberId=memberSelect.value;};
             memberLabel.append(memberSelect);
@@ -358,7 +368,7 @@ class TeamRunDialogHost{
             const enabled=(state.team.members||[]).filter(m=>m.enabled!==false);
             if(!enabled.length)chips.append(this.node('span',t('没有可用成员'),'muted'));
             for(const member of enabled){
-              const name=(member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind);
+              const name=(member.id===state.team.leadId?t('负责')+' · ':'')+teamMemberAgentLabel(member);
               const chip=this.button((row.memberIds.has(member.id)?'✓ ':'')+name,'');
               chip.className='task-dep-chip'+(row.memberIds.has(member.id)?' on':'');
               chip.onclick=()=>{
@@ -859,7 +869,7 @@ class TeamsPanel{
     for(const m of members){
       const chip=this.node('span',undefined,'team-member'+(m.available===false?' unavailable':'')+(m.enabled===false?' disabled':''));
       const role=t(TEAM_ROLE_LABELS[m.role||'member']||m.role);
-      chip.textContent=(m.id===team.leadId?'★ ':'')+role+' · '+(m.name||m.id)+' · '+BridgeI18n.agentLabel(m.agentKind)
+      chip.textContent=(m.id===team.leadId?'★ ':'')+role+' · '+teamMemberAgentLabel(m)
         +(m.available===false?' · '+t('不可用'):'')+(m.enabled===false?' · '+t('已停用'):'');
       chip.title=t('会话：')+(m.sessionId||'');
       chips.append(chip);
@@ -1957,7 +1967,7 @@ class TeamRunScreen{
     card.dataset.taskId=task.id; // 动作卡/问题卡的来源任务与派生任务跳转锚点
     const head=this.node('div',undefined,'task-head');
     head.append(this.node('strong',task.id));
-    head.append(this.node('span',(member?(member.name||member.id):task.memberId)+(member?' · '+BridgeI18n.agentLabel(member.agentKind):''),'task-member'));
+    head.append(this.node('span',member?teamMemberAgentLabel(member):task.memberId,'task-member'));
     head.append(this.taskBadge(task.status));
     card.append(head);
     if(task.instructionsHead)card.append(this.node('p',task.instructionsHead,'task-instructions'));
@@ -2465,7 +2475,7 @@ class TeamRunScreen{
     const target=document.createElement('select');
     target.append(new Option(t('请选择成员…'),''));
     for(const m of (this.team?.members||[]).filter(m=>m.enabled!==false)){
-      target.append(new Option((m.id===(this.team?.leadId||'')?t('负责')+' · ':'')+(m.name||m.id)+' · '+BridgeI18n.agentLabel(m.agentKind),m.id));
+      target.append(new Option((m.id===(this.team?.leadId||'')?t('负责')+' · ':'')+teamMemberAgentLabel(m),m.id));
     }
     target.value=state.target;
     target.onchange=()=>{state.target=target.value;state.id=teamUUID();};

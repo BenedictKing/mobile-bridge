@@ -563,9 +563,7 @@ class TeamLeadPicker{
 }
 
 function teamSettingsMemberLabel(member){
-  const agent=BridgeI18n.agentLabel(member.agentKind),name=String(member.name||'').trim();
-  if(!name)return agent||member.agentKind;
-  return agent&&name.toLowerCase()===agent.toLowerCase()?agent:agent+' · '+name;
+  return teamMemberAgentLabel(member,true);
 }
 function teamReviewerMemberID(team){
   if(!team)return '';
