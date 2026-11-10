@@ -39,6 +39,10 @@ var migrationReadOnlyCommand = regexp.MustCompile(
 	`(?i)^(?:rg|grep|find|fd|sed|awk|cat|head|tail|less|ls|pwd|which|command\s+-v|` +
 		`git\s+(?:status|diff|log|show)|python(?:3)?\s+-m\s+(?:pytest|unittest)\s+--collect-only)(?:\s|$)`)
 
+var migrationEncodedImagePrefixes = []string{"iVBORw0KGgo", "/9j/", "R0lGOD", "UklGR"}
+
+const migrationImageMarker = "[image attachment omitted / 图片附件未迁移]"
+
 // isMigrationNoise drops routine inspection/tool bookkeeping from the default
 // transcript (scope "main" only).
 func isMigrationNoise(message *jsoncompat.Object) bool {
@@ -54,6 +58,13 @@ func isMigrationNoise(message *jsoncompat.Object) bool {
 		}
 	}
 	text, _ := message.MustGet("text").(string)
+	// Native Claude tools use descriptive titles and kind=subagent. Only drop
+	// a simple inspection command; compound commands may also build or modify.
+	if stringField(message, "kind") == "subagent" &&
+		!strings.ContainsAny(text, ";|\n`><") && !strings.Contains(text, "&&") && !strings.Contains(text, "$(") &&
+		migrationReadOnlyCommand.MatchString(strings.TrimSpace(text)) {
+		return true
+	}
 	folded := strings.ToLower(strings.TrimSpace(text))
 	switch strings.ToLower(title) {
 	case "toolcall", "工具调用":
@@ -66,6 +77,25 @@ func isMigrationNoise(message *jsoncompat.Object) bool {
 	return migrationNoiseTitles[strings.ToLower(title)]
 }
 
+func isMigrationThought(message *jsoncompat.Object) bool {
+	title := strings.TrimSpace(stringField(message, "title"))
+	kind := strings.TrimSpace(stringField(message, "kind"))
+	return title == "思考摘要" || strings.EqualFold(kind, "agentThought") ||
+		strings.EqualFold(kind, "reasoning")
+}
+
+func migrationText(text string) string {
+	compact := strings.TrimSpace(text)
+	if len(compact) >= 4096 {
+		for _, prefix := range migrationEncodedImagePrefixes {
+			if strings.HasPrefix(compact, prefix) {
+				return migrationImageMarker
+			}
+		}
+	}
+	return text
+}
+
 type migrationTexts struct {
 	header, title, directory, truncated, sep, cont string
 	roles                                          map[string]string
@@ -75,7 +105,7 @@ type migrationTexts struct {
 var migrationTextsByLocale = map[string]migrationTexts{
 	"zh-CN": {
 		header: "【从 %s 迁移的会话】", title: "标题：", directory: "目录：",
-		truncated: "（转录过长，仅保留最近部分，已截断）",
+		truncated: "（转录过长，内容已截断）",
 		roles:     map[string]string{"user": "用户", "assistant": "助手", "activity": "操作", "error": "错误"},
 		sep:       "：", cont: "以上是从 %s 迁移过来的会话转录，请在此基础上继续。",
 		latestHeader:   "【来自 %s 的最新问答】",
@@ -84,7 +114,7 @@ var migrationTextsByLocale = map[string]migrationTexts{
 	},
 	"en-US": {
 		header: "[Session migrated from %s]", title: "Title: ", directory: "Directory: ",
-		truncated: "(Transcript truncated to the most recent messages.)",
+		truncated: "(Transcript truncated to fit the selected scope.)",
 		roles:     map[string]string{"user": "User", "assistant": "Assistant", "activity": "Activity", "error": "Error"},
 		sep:       ": ", cont: "The transcript above was migrated from %s. Please continue from this context.",
 		latestHeader:   "[Latest exchange from %s]",
@@ -124,6 +154,10 @@ type migrationEntry struct {
 // tool calls so they do not displace conversation text from the budget.
 // "latest" keeps only the final user question plus what followed.
 func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntry, bool) {
+	return migrationTranscriptBounded(view, scope, 100000)
+}
+
+func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes int) ([]migrationEntry, bool) {
 	entries := []migrationEntry{}
 	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
 	if turns != nil {
@@ -142,7 +176,13 @@ func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntr
 					continue
 				}
 				role, _ := message.MustGet("role").(string)
-				text := strings.TrimSpace(stringField(message, "text"))
+				text := strings.TrimSpace(migrationText(stringField(message, "text")))
+				if text != strings.TrimSpace(stringField(message, "text")) {
+					// An attachment belongs to its preceding question. It must not
+					// become the last user question in the latest-exchange scope.
+					entries = append(entries, migrationEntry{"activity", text})
+					continue
+				}
 				switch {
 				case role == "user" || role == "assistant":
 					if text != "" {
@@ -153,18 +193,24 @@ func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntr
 						continue
 					}
 					title := ""
-					for _, key := range []string{"title", "kind"} {
-						if candidate, ok := message.MustGet(key).(string); ok && strings.TrimSpace(candidate) != "" {
-							title = strings.TrimSpace(candidate)
-							break
+					if isMigrationThought(message) {
+						title = "思考摘要"
+					} else {
+						for _, key := range []string{"title", "kind"} {
+							if candidate, ok := message.MustGet(key).(string); ok && strings.TrimSpace(candidate) != "" {
+								title = strings.TrimSpace(candidate)
+								break
+							}
 						}
 					}
 					first := text
-					if index := strings.IndexByte(text, '\n'); index >= 0 {
-						first = text[:index]
-					}
-					if runes := []rune(first); len(runes) > 120 {
-						first = string(runes[:120])
+					if !isMigrationThought(message) {
+						if index := strings.IndexByte(text, '\n'); index >= 0 {
+							first = text[:index]
+						}
+						if runes := []rune(first); len(runes) > 120 {
+							first = string(runes[:120])
+						}
 					}
 					summary := first
 					if title != "" {
@@ -201,26 +247,106 @@ func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntr
 		}
 		capped = append(capped, entry)
 	}
-	tail := capped
-	if len(tail) > maxMessages {
-		tail = tail[len(tail)-maxMessages:]
-	}
-	dropped := len(capped) - len(tail)
+	selected := make([]bool, len(capped))
 	kept := []migrationEntry{}
-	total := 0
-	for index := len(tail) - 1; index >= 0; index-- {
-		size := utf8.RuneCountInString(tail[index].text) + 8
-		if len(kept) > 0 && total+size > maxChars {
-			break
+	total, bytesUsed := 0, 0
+	contentTruncated := false
+	add := func(index, reserve int) bool {
+		if index < 0 || index >= len(capped) || selected[index] || len(kept) >= maxMessages {
+			return false
 		}
-		kept = append(kept, tail[index])
-		total += size
+		entry := capped[index]
+		charsLeft, bytesLeft := maxChars-total-8, maxBytes-bytesUsed-16
+		if utf8.RuneCountInString(entry.text) > charsLeft || len(entry.text) > bytesLeft {
+			if reserve == 0 || charsLeft < 2 || bytesLeft < 4 {
+				return false
+			}
+			entry.text = limitMigrationText(entry.text, charsLeft/reserve, bytesLeft/reserve)
+			if entry.text == "" {
+				return false
+			}
+			capped[index] = entry
+			contentTruncated = true
+		}
+		selected[index] = true
+		kept = append(kept, entry)
+		total += utf8.RuneCountInString(entry.text) + 8
+		bytesUsed += len(entry.text) + 16
+		return true
 	}
-	dropped += len(tail) - len(kept)
-	for left, right := 0, len(kept)-1; left < right; left, right = left+1, right-1 {
-		kept[left], kept[right] = kept[right], kept[left]
+	firstTask, lastUser, lastAssistant := -1, -1, -1
+	for index, entry := range capped {
+		if entry.role == "user" {
+			lastUser = index
+			if firstTask < 0 && !strings.HasPrefix(strings.TrimSpace(entry.text), "/") {
+				firstTask = index
+			}
+		}
+		if entry.role == "assistant" {
+			lastAssistant = index
+		}
 	}
-	return kept, dropped > 0
+	if scope != "latest" {
+		// Keep the first actual task and the latest reasoning summaries alongside
+		// the recency-biased tail, so long tool-heavy sessions retain their intent.
+		if firstTask < 0 {
+			for index, entry := range capped {
+				if entry.role == "user" {
+					firstTask = index
+					break
+				}
+			}
+		}
+		add(firstTask, 3)
+	}
+	add(lastAssistant, 2)
+	add(lastUser, 1)
+	if scope != "latest" {
+		// User corrections and the final answer take priority over reasoning;
+		// otherwise a long chain of thoughts can consume every message slot.
+		for index := len(capped) - 1; index >= 0; index-- {
+			if capped[index].role == "user" || capped[index].role == "assistant" || capped[index].role == "error" || capped[index].text == migrationImageMarker {
+				add(index, 0)
+			}
+		}
+		for index := len(capped) - 1; index >= 0; index-- {
+			if capped[index].role == "activity" && strings.HasPrefix(capped[index].text, "思考摘要：") {
+				add(index, 0)
+			}
+		}
+	}
+	for index := len(capped) - 1; index >= 0; index-- {
+		add(index, 0)
+	}
+	ordered := make([]migrationEntry, 0, len(kept))
+	for index, entry := range capped {
+		if selected[index] {
+			ordered = append(ordered, entry)
+		}
+	}
+	return ordered, contentTruncated || len(kept) < len(capped)
+}
+
+// limitMigrationText preserves both the opening context and the closing result
+// while respecting Unicode character and wire-byte limits.
+func limitMigrationText(text string, maxChars, maxBytes int) string {
+	if maxChars < 1 || maxBytes < len("…") {
+		return ""
+	}
+	runes := []rune(text)
+	render := func(count int) string {
+		return string(runes[:(count+1)/2]) + "…" + string(runes[len(runes)-count/2:])
+	}
+	low, high := 0, min(len(runes)-1, maxChars-1)
+	for low < high {
+		middle := (low + high + 1) / 2
+		if len(render(middle)) <= maxBytes {
+			low = middle
+		} else {
+			high = middle - 1
+		}
+	}
+	return render(low)
 }
 
 func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, scope, instructions string) string {
@@ -228,7 +354,6 @@ func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, sco
 	if scope == "latest" {
 		texts.header, texts.cont = texts.latestHeader, texts.latestContinue
 	}
-	entries, truncated := migrationTranscript(view, scope)
 	title, _ := view.MustGet("title").(string)
 	cwd, _ := view.MustGet("cwd").(string)
 	lines := []string{
@@ -236,6 +361,12 @@ func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, sco
 		texts.title + title,
 		texts.directory + cwd,
 	}
+	footer := []string{"", sprintf(texts.cont, sourceLabel)}
+	if instructions = strings.TrimSpace(instructions); instructions != "" {
+		footer = append(footer, "", texts.instructions, instructions)
+	}
+	overhead := len(strings.Join(lines, "\n")) + len(strings.Join(footer, "\n")) + len(texts.truncated) + 4
+	entries, truncated := migrationTranscriptBounded(view, scope, 100000-overhead)
 	if truncated {
 		lines = append(lines, texts.truncated)
 	}
@@ -247,10 +378,7 @@ func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, sco
 		}
 		lines = append(lines, role+texts.sep+entry.text)
 	}
-	lines = append(lines, "", sprintf(texts.cont, sourceLabel))
-	if instructions = strings.TrimSpace(instructions); instructions != "" {
-		lines = append(lines, "", texts.instructions, instructions)
-	}
+	lines = append(lines, footer...)
 	return strings.Join(lines, "\n")
 }
 

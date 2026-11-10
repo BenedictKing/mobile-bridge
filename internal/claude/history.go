@@ -17,7 +17,7 @@ import (
 const (
 	historyMaxBytes     = 256 << 20
 	historyMaxLineBytes = 16 << 20
-	historyStaleAfter   = 15 * time.Minute
+	historyStaleAfter   = 6 * time.Minute
 )
 
 type historyReader struct {

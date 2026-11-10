@@ -2210,7 +2210,8 @@ func TestTeamIntegration2Forward(t *testing.T) {
 		t.Fatalf("重放不得产生第二条转发（t1+t2+转发共 3 条）: %d", got)
 	}
 
-	// 会话源 + scope：来源会话（sessionA）的转录按 main 裁剪。先把团队预算
+	// 会话源 + scope：Lead 的实际执行会话转录按 main 裁剪；控制会话不含执行
+	// 问答。先把团队预算
 	// 放宽（PATCH policy）——400 预算会把转录截在第一行内，看不到角色行结构；
 	// 有界性已由上方 forward#1 的 truncated 事实覆盖。t1 的问答随 t1 完成早已
 	// 落定（t2 在跑是 t1 完成的硬前提），无时序依赖。
@@ -2225,8 +2226,9 @@ func TestTeamIntegration2Forward(t *testing.T) {
 		fmt.Sprintf(`{"version":%d,"policy":{"maxContextChars":4000}}`, teamRow.Version)); patched.Code != http.StatusOK {
 		t.Fatalf("放宽策略失败: %d %s", patched.Code, patched.Body.String())
 	}
+	sourceSession := taskExecutionSession(t, env.runDetail(t, teamID, runID), "t1")
 	response = env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/forward",
-		`{"id":"`+uuid.NewString()+`","sourceSessionId":"`+sessionA+
+		`{"id":"`+uuid.NewString()+`","sourceSessionId":"`+sourceSession+
 			`","scope":"main","targetMemberId":"c","note":"请参考转录处理 FWD-TRANS"}`)
 	if response.Code != http.StatusOK {
 		t.Fatalf("会话源转发失败: %d %s", response.Code, response.Body.String())
@@ -2242,7 +2244,7 @@ func TestTeamIntegration2Forward(t *testing.T) {
 		t.Fatalf("会话源转发应落在目标成员会话: %v", records[transcriptAt].session)
 	}
 	transcript := records[transcriptAt].text
-	for _, needle := range []string{"来源会话：" + sessionA, "用户：", "助手：", "已完成：", "FWD-SRC"} {
+	for _, needle := range []string{"来源会话：" + sourceSession, "用户：", "助手：", "已完成：", "FWD-SRC"} {
 		if !strings.Contains(transcript, needle) {
 			t.Fatalf("会话源转发应携带角色化转录（含 %q）: %q", needle, transcript)
 		}

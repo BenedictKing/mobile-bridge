@@ -63,8 +63,8 @@ func TestTeamTranscriptTextPropagatesTruncation(t *testing.T) {
 	if !truncated {
 		t.Fatalf("预算收紧应传导截断标记: %q", text)
 	}
-	if !strings.Contains(text, "第二个问题") {
-		t.Fatalf("尾部偏置应保留最新内容:\n%s", text)
+	if !strings.Contains(text, "第一个问题") || !strings.Contains(text, "第二个回答") {
+		t.Fatalf("预算收紧仍应保留原始任务和最新结果:\n%s", text)
 	}
 }
 

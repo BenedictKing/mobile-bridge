@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
@@ -327,8 +328,140 @@ func TestMigrationTranscriptTailBudget(t *testing.T) {
 	migrationBudgets["main"] = [3]int{2, 100000, 6000}
 	defer func() { migrationBudgets["main"] = original }()
 	entries, truncated := migrationTranscript(view, "main")
-	if len(entries) != 2 || !truncated || entries[0].text != "第二个问题" {
+	if len(entries) != 2 || !truncated || entries[0].text != "第一个问题" || entries[1].text != "第二个回答" {
 		t.Fatalf("budgeted entries=%+v truncated=%v", entries, truncated)
+	}
+}
+
+func TestMigrationMainPreservesTaskAndThoughtAroundImageAttachment(t *testing.T) {
+	view := jsoncompat.NewObject()
+	view.Set("title", "长对话")
+	turn := jsoncompat.NewObject()
+	messages := &jsoncompat.Array{}
+	add := func(role, text string, fields ...[2]string) {
+		message := jsoncompat.NewObject()
+		message.Set("role", role)
+		message.Set("text", text)
+		for _, field := range fields {
+			message.Set(field[0], field[1])
+		}
+		messages.Items = append(messages.Items, message)
+	}
+	add("user", "/effort xhigh")
+	add("user", "请修复团队画布连线并设计旧 Issue 删除功能")
+	image := "iVBORw0KGgo" + strings.Repeat("A", 476300)
+	add("user", image)
+	thought := "用户要修复画布布局，并设计旧 Issue 删除。\n关键约束：先检查现有数据关系，再实现并验证删除语义。"
+	add("activity", thought, [2]string{"title", "思考摘要"}, [2]string{"kind", "agentThought"})
+	for index := 0; index < 45; index++ {
+		add("activity", fmt.Sprintf("go test ./internal/team/... 第 %d 轮", index), [2]string{"title", "执行命令"})
+	}
+	add("user", "继续完成最后验证")
+	add("assistant", "最终结论：验证通过，变更已完成。")
+	turn.Set("messages", messages)
+	view.Set("turns", &jsoncompat.Array{Items: []any{turn}})
+
+	entries, truncated := migrationTranscript(view, "main")
+	joined := ""
+	for _, entry := range entries {
+		joined += entry.text + "\n"
+	}
+	if !truncated || !strings.Contains(joined, "请修复团队画布连线并设计旧 Issue 删除功能") ||
+		!strings.Contains(joined, "关键约束：先检查现有数据关系") ||
+		!strings.Contains(joined, "继续完成最后验证") || !strings.Contains(joined, "验证通过") {
+		t.Fatalf("main transcript lost task, thought, or recent exchange: %s", joined)
+	}
+	if strings.Contains(joined, "iVBORw0KGgo") || !strings.Contains(joined, "图片附件未迁移") {
+		t.Fatalf("image payload should be replaced by a marker: %q", joined)
+	}
+	if len(entries) > migrationBudgets["main"][0] {
+		t.Fatalf("main transcript exceeds message budget: %d", len(entries))
+	}
+}
+
+func TestMigrationLatestKeepsQuestionBeforeEncodedImage(t *testing.T) {
+	view := transcriptView()
+	turns := view.MustGet("turns").(*jsoncompat.Array)
+	last := turns.Items[len(turns.Items)-1].(*jsoncompat.Object)
+	messages := last.MustGet("messages").(*jsoncompat.Array)
+	image := jsoncompat.NewObject()
+	image.Set("role", "user")
+	image.Set("text", "iVBORw0KGgo"+strings.Repeat("A", 5000))
+	messages.Items = append(messages.Items[:1], append([]any{image}, messages.Items[1:]...)...)
+	entries, _ := migrationTranscript(view, "latest")
+	if len(entries) != 3 || entries[0].text != "第二个问题" || entries[2].text != "第二个回答" ||
+		!strings.Contains(entries[1].text, "图片附件未迁移") {
+		t.Fatalf("latest must retain the question preceding its image: %+v", entries)
+	}
+}
+
+func TestMigrationKeepsLatestExchangeWithManyThoughts(t *testing.T) {
+	for _, scope := range []string{"main", "full"} {
+		t.Run(scope, func(t *testing.T) {
+			view := transcriptView()
+			turns := view.MustGet("turns").(*jsoncompat.Array)
+			turn := turns.Items[0].(*jsoncompat.Object)
+			messages := turn.MustGet("messages").(*jsoncompat.Array)
+			for index := 0; index < 80; index++ {
+				thought := jsoncompat.NewObject()
+				thought.Set("role", "activity")
+				thought.Set("kind", "agentThought")
+				thought.Set("text", strings.Repeat("分析细节与约束。", 200)+fmt.Sprint(index))
+				messages.Items = append(messages.Items, thought)
+			}
+			entries, truncated := migrationTranscript(view, scope)
+			joined := ""
+			for _, entry := range entries {
+				joined += entry.text + "\n"
+			}
+			if !truncated || !strings.Contains(joined, "第一个问题") || !strings.Contains(joined, "第二个问题") ||
+				!strings.Contains(joined, "第二个回答") || !strings.Contains(joined, "分析细节与约束") {
+				t.Fatalf("%s lost dialogue to reasoning: %s", scope, joined)
+			}
+		})
+	}
+}
+
+func TestMigrationMainFiltersNativeInspectionWithoutDroppingBuild(t *testing.T) {
+	for _, test := range []struct {
+		command string
+		noise   bool
+	}{
+		{"sed -n '1,80p' internal/team/reducer.go", true},
+		{"go test ./internal/team/...", false},
+		{"sed -n '1,80p' file; go test ./...", false},
+		{"cat source > destination", false},
+	} {
+		message := jsoncompat.NewObject()
+		message.Set("kind", "subagent")
+		message.Set("title", "读取事件重放 reducer")
+		message.Set("text", test.command)
+		if got := isMigrationNoise(message); got != test.noise {
+			t.Fatalf("command %q noise=%v, want %v", test.command, got, test.noise)
+		}
+	}
+}
+
+func TestMigrationMessageKeepsUnicodeAndInstructionsWithinWireLimit(t *testing.T) {
+	for _, scope := range []string{"main", "full", "latest"} {
+		t.Run(scope, func(t *testing.T) {
+			view := transcriptView()
+			turns := view.MustGet("turns").(*jsoncompat.Array)
+			turn := turns.Items[len(turns.Items)-1].(*jsoncompat.Object)
+			messages := turn.MustGet("messages").(*jsoncompat.Array)
+			messages.Items[0].(*jsoncompat.Object).Set("text", "LATEST_QUESTION："+strings.Repeat("原始任务约束。", 7000))
+			messages.Items[1].(*jsoncompat.Object).Set("text", "FINAL_ANSWER："+strings.Repeat("分析结论。", 10000)+"END_OF_RESULT")
+			instructions := strings.Repeat("后续指示。", 1500)
+			text := migrationMessage("Claude", view, "zh-CN", scope, instructions)
+			if len(text) > 100000 || !utf8.ValidString(text) || !strings.HasSuffix(text, instructions) {
+				t.Fatalf("%s invalid wire message: bytes=%d validUTF8=%v", scope, len(text), utf8.ValidString(text))
+			}
+			for _, needle := range []string{"LATEST_QUESTION", "FINAL_ANSWER", "END_OF_RESULT", "内容已截断"} {
+				if !strings.Contains(text, needle) {
+					t.Fatalf("%s message lost %q", scope, needle)
+				}
+			}
+		})
 	}
 }
 

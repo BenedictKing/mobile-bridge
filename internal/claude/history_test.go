@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
@@ -89,5 +90,34 @@ func TestTranscriptReaderSettlesInterruptedTail(t *testing.T) {
 	marker := snapshot.Turns[1].MustGet("messages").(*jsoncompat.Array)
 	if len(marker.Items) != 1 || marker.Items[0].(*jsoncompat.Object).MustGet("text") != "[Request interrupted by user]" {
 		t.Fatalf("marker turn=%v", marker)
+	}
+}
+
+func TestTranscriptReaderSettlesStaleTailAfterSixMinutes(t *testing.T) {
+	root := t.TempDir()
+	const id = "session-stale"
+	path := filepath.Join(root, "project", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"type":"user","cwd":"/work","message":{"role":"user","content":"继续实现"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-6*time.Minute - time.Second)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	read := TranscriptReader(root)
+	active, err := read(id)
+	if err != nil || active == nil || !nativeHistoryActive(active) {
+		t.Fatalf("first transcript read should retain the active tail: snapshot=%v err=%v", active, err)
+	}
+	settled, err := read(id)
+	if err != nil || settled == nil || nativeHistoryActive(settled) {
+		t.Fatalf("unchanged transcript older than six minutes should settle: snapshot=%v err=%v", settled, err)
+	}
+	if status, _ := settled.Turns[len(settled.Turns)-1].MustGet("status").(string); status != "interrupted" {
+		t.Fatalf("stale tail status=%q, want interrupted", status)
 	}
 }
