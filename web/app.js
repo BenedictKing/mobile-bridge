@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id),t=BridgeI18n.t;
-let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
+let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false;
 let currentHost='local', listRows=[], projectDirectory=[], listGeneration=0, listLoading=false, listHasMore=false;
 let chatTimeline=null;
 BridgeConnection.onchange=()=>{BridgeTransport.wake?.();chatTimeline?.refill?.();refreshActivity();};
@@ -1013,7 +1013,7 @@ async function runNativeCompact(scope,onError,instructions=''){
   if(!text||!target)return;
   compactChat.busy=true;$('compact-error').textContent='';renderCompactState();
   try{
-    const result=await api(sessionUrl(target,'send',targetHost),{id:uuid(),text,mode:'send',skills:[],workMode:'default',attachments:[],uiLocale:BridgeI18n.locale(),...(currentTeam?{teamMode:'direct'}:{})});
+    const result=await api(sessionUrl(target,'send',targetHost),{id:uuid(),text,mode:'send',skills:[],workMode:'default',attachments:[],uiLocale:BridgeI18n.locale(),...(currentTeam?{teamMode:'direct',teamId:currentTeam.id,teamMaintenance:'compact'}:{})});
     if(result.status==='unknown')throw Error(t('压缩请求可能已送达，请检查聊天记录后再重试。'));
     bumpRecency(target,targetHost);
     if(currentId===target&&currentHost===targetHost)$('chat-details-dialog').close();

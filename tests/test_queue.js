@@ -89,3 +89,23 @@ test('unknown delivery keeps protocol text collapsed behind a details disclosure
   assert.equal(details.children[1].textContent,'[Team review] internal review protocol');
   assert.equal(card.children.some(node=>node.textContent==='[Team review] internal review protocol'),false);
 });
+
+
+test('queued messages keep the immediate-send gateway action',async()=>{
+  const{context,renderQueue}=queueHelpers(),calls=[];
+  const queued={children:[],append(node){this.children.push(node);},replaceChildren(...nodes){this.children=nodes;}};
+  const element=(tag,className,text)=>({tagName:tag.toUpperCase(),className,textContent:text||'',dataset:{},children:[],setAttribute(){},append(...nodes){this.children.push(...nodes);}});
+  Object.assign(context,{
+    $:selector=>{assert.equal(selector,'queued');return queued;},
+    el:element,t:value=>value,currentId:'thread',currentHost:'local',state:{submissions:[]},renderQueueAttachments:()=>null,
+    bindQueueDrag(){},sessionUrl:()=>'/queue',api:async(path,body)=>{calls.push({path,body});return{status:'accepted'};},toast(){},openQueueEditor(){},
+  });
+  renderQueue([{id:'queued-1',status:'queued',text:'立即处理',editable:false}]);
+  const actions=queued.children[0].children.find(node=>node.className==='queue-actions');
+  assert.equal(actions.children[0].textContent,'立即发送');
+  await actions.children[0].onclick();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].path,'/queue');
+  assert.equal(calls[0].body.id,'queued-1');
+  assert.equal(calls[0].body.action,'send');
+});

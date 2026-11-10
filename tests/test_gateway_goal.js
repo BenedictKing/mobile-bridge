@@ -158,7 +158,6 @@ test('bare /goal only selects Goal and active replies reject the command',async(
 });
 
 
-
 test('Goal starts collapsed and expands to its objective and controls',()=>{
   const {modes,root}=setup(),details=root.firstElementChild;
   assert.equal(details.tag,'details');
@@ -191,4 +190,17 @@ test('pending goal creation cannot be dismissed before confirmation',()=>{
   assert.equal(root.children.some(node=>node.className==='goal-close'),false);
   modes.render({...modes.view,goal:null,goalSubmission:{id:'request-1',status:'unknown'}},'send',false);
   assert.equal(root.children.some(node=>node.className==='goal-close'),true);
+});
+
+test('running composer sends through the queue without a send-mode menu',async()=>{
+  const {nodes,calls}=goalComposer({active:true});
+  nodes.message.value='继续处理';
+  await nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].body.mode,'queue');
+  assert.equal(nodes['send-mode'].value,'queue');
+  const html=readFileSync(require.resolve('../web/index.html'),'utf8');
+  assert.equal(html.includes('id="send-menu-button"'),false);
+  assert.equal(html.includes('id="send-mode-menu"'),false);
+  assert.match(html,/<span id="send-label">发送<\/span>/);
 });
