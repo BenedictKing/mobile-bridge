@@ -139,12 +139,23 @@ class TeamCanvasController{
     this.summary=document.getElementById('team-canvas-summary');
     this.error=document.getElementById('team-canvas-error');
     this.zoomLabel=document.getElementById('team-canvas-zoom');
+    this.boardRoot=document.getElementById('team-project-board');this.view='canvas';this.boardPanel=null;
+    this.touchPoints=new Map();this.pinch=null;
     this.bindControls();
   }
   t(value){return typeof BridgeI18n!=='undefined'?BridgeI18n.t(value):value;}
   node(tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
   button(text,className,action){const button=this.node('button',text,className);button.type='button';if(action)button.addEventListener('click',action);return button;}
   bindControls(){
+    const views=['canvas','board'];
+    for(const [index,view] of views.entries()){
+      const tab=document.getElementById('team-view-'+view);
+      tab.addEventListener('click',()=>this.setView(view));
+      tab.addEventListener('keydown',event=>{
+        const target={ArrowRight:views[(index+1)%2],ArrowLeft:views[(index+1)%2],Home:'canvas',End:'board'}[event.key];
+        if(!target)return;event.preventDefault();this.setView(target);document.getElementById('team-view-'+target).focus();
+      });
+    }
     document.getElementById('team-canvas-refresh').addEventListener('click',()=>this.refresh(true));
     document.getElementById('team-canvas-fit').addEventListener('click',()=>this.fitAll());
     document.getElementById('team-canvas-zoom-out').addEventListener('click',()=>this.zoomAt(this.transform.scale/1.2));
@@ -163,6 +174,10 @@ class TeamCanvasController{
     document.getElementById('team-canvas-open-run').addEventListener('click',()=>{
       const target=this.detailRun;if(target&&this.openRun)this.openRun(this.current.id,target.id);
     });
+    this.viewport.addEventListener('pointerdown',event=>this.startTouch(event),{capture:true});
+    this.viewport.addEventListener('pointermove',event=>this.moveTouch(event),{capture:true,passive:false});
+    this.viewport.addEventListener('pointerup',event=>this.endTouch(event),{capture:true});
+    this.viewport.addEventListener('pointercancel',event=>this.endTouch(event),{capture:true});
     this.viewport.addEventListener('pointerdown',event=>this.startPan(event));
     this.viewport.addEventListener('pointermove',event=>this.movePointer(event));
     this.viewport.addEventListener('pointerup',event=>this.endPointer(event));
@@ -177,16 +192,36 @@ class TeamCanvasController{
   }
   open(team){
     clearInterval(this.pollTimer);
+    this.resetTouch();
+    this.boardPanel?.stopPolling();this.boardPanel=null;this.boardRoot.replaceChildren();
     this.generation++;this.current=team||null;this.inputs=[];this.issues=[];this.lastRecords=null;this.positions.clear();this.userInteracted=false;this.focusedIssueID=null;this.transform={x:0,y:0,scale:1};this.refreshToken=null;this.refreshQueued=false;this.closeDetail();
     this.nodes.replaceChildren();this.wires.replaceChildren();this.summary.textContent='';
     if(!team){this.root.hidden=true;document.getElementById('chat').classList.remove('team-canvas-active');return;}
     this.root.hidden=false;
     document.getElementById('chat').classList.add('team-canvas-active');
     if(this.viewport.closest('.timeline'))this.viewport.closest('.timeline').scrollTop=0;
-    this.refresh();
+    const boardContent=this.node('div');this.boardRoot.append(boardContent);
+    this.boardPanel=new TeamsPanel({root:boardContent,request:this.request,teamId:team.id,
+      openRun:(teamID,runID)=>this.openRun?.(teamID,runID)});
+    let view='canvas';try{view=localStorage.getItem('team-view:'+team.id)||view;}catch{}
+    this.setView(view,false);
     this.pollTimer=setInterval(()=>this.refresh(),5000);
   }
   close(){this.open(null);}
+  setView(view,persist=true){
+    this.resetTouch();
+    this.view=view==='board'?'board':'canvas';
+    const board=this.view==='board';
+    this.closeDetail();this.viewport.hidden=board;this.boardRoot.hidden=!board;this.summary.hidden=board;
+    for(const key of ['canvas','board']){
+      const tab=document.getElementById('team-view-'+key),selected=this.view===key;
+      tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;
+    }
+    for(const id of ['team-canvas-fit','team-canvas-zoom-out','team-canvas-zoom-in','team-canvas-zoom'])document.getElementById(id).hidden=board;
+    if(persist&&this.current)try{localStorage.setItem('team-view:'+this.current.id,this.view);}catch{}
+    if(board)this.boardPanel?.refreshAll();
+    else{this.render();this.refresh(true);}
+  }
   accepted(input){
     if(input?.inputId&&this.current?.id===input.teamId){
       const existing=this.inputs.findIndex(row=>(row.inputId||row.id)===input.inputId);
@@ -205,6 +240,8 @@ class TeamCanvasController{
   }
   async refresh(force=false){
     const team=this.current;if(!team)return;
+    if(this.root?.closest?.('[hidden]'))return;
+    if(this.view==='board'){await this.boardPanel?.refreshAll();return;}
     if(this.refreshToken){if(force)this.refreshQueued=true;return;}
     const token={};this.refreshToken=token;const generation=this.generation;this.error.textContent='';
     try{
@@ -256,7 +293,7 @@ class TeamCanvasController{
     return{bubbles,issues};
   }
   render(){
-    if(this.root.hidden)return;
+    if(this.root.hidden||this.view==='board')return;
     this.nodes.replaceChildren();this.wires.replaceChildren();
     const {bubbles,issues}=this.buildGroups();
     const pending=bubbles.filter(({input})=>input.associationStatus==='pending').length;
@@ -544,6 +581,44 @@ class TeamCanvasController{
     if(event.button!==0||event.target.closest('.team-canvas-node,.team-canvas-detail,.team-canvas-toolbar,.team-canvas-foot'))return;
     this.drag={type:'pan',pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,x:this.transform.x,y:this.transform.y,moved:false};
     this.viewport.setPointerCapture(event.pointerId);this.viewport.classList.add('dragging');
+  }
+  resetTouch(){
+    for(const id of this.touchPoints?.keys()||[])if(this.viewport.hasPointerCapture?.(id))this.viewport.releasePointerCapture(id);
+    this.touchPoints?.clear();this.pinch=null;this.touchPinched=false;this.drag=null;this.viewport.classList?.remove('dragging');
+  }
+  startTouch(event){
+    if(event.pointerType!=='touch'||event.target.closest('.team-canvas-detail'))return;
+    this.touchPoints.set(event.pointerId,{x:event.clientX,y:event.clientY});
+    if(this.touchPoints.size<2)return;
+    if(!this.pinch)this.beginPinch();
+    // 从卡片拖拽接管到画布，避免另一根手指移动卡片或触发点击。
+    this.drag=null;this.touchPinched=true;this.viewport.classList.remove('dragging');this.userInteracted=true;
+    for(const id of this.touchPoints.keys())this.viewport.setPointerCapture(id);
+    this.suppressClickUntil=Date.now()+350;event.preventDefault();event.stopPropagation();
+  }
+  beginPinch(){
+    const [a,b]=[...this.touchPoints.values()],rect=this.viewport.getBoundingClientRect();
+    const x=(a.x+b.x)/2-rect.left,y=(a.y+b.y)/2-rect.top;
+    this.pinch={distance:Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),scale:this.transform.scale,
+      worldX:(x-this.transform.x)/this.transform.scale,worldY:(y-this.transform.y)/this.transform.scale};
+  }
+  moveTouch(event){
+    if(!this.touchPoints.has(event.pointerId))return;
+    this.touchPoints.set(event.pointerId,{x:event.clientX,y:event.clientY});
+    if(!this.pinch)return;
+    const [a,b]=[...this.touchPoints.values()],rect=this.viewport.getBoundingClientRect(),pinch=this.pinch;
+    const scale=Math.max(.08,Math.min(1.6,pinch.scale*Math.hypot(a.x-b.x,a.y-b.y)/pinch.distance));
+    this.transform={scale,x:(a.x+b.x)/2-rect.left-pinch.worldX*scale,y:(a.y+b.y)/2-rect.top-pinch.worldY*scale};
+    this.applyTransform();this.suppressClickUntil=Date.now()+350;event.preventDefault();event.stopPropagation();
+  }
+  endTouch(event){
+    if(!this.touchPoints.delete(event.pointerId))return;
+    if(this.viewport.hasPointerCapture(event.pointerId))this.viewport.releasePointerCapture(event.pointerId);
+    if(!this.touchPinched)return;
+    this.suppressClickUntil=Date.now()+350;
+    if(this.touchPoints.size>=2)this.beginPinch();else this.pinch=null;
+    if(!this.touchPoints.size)this.touchPinched=false;
+    event.stopPropagation();
   }
   bindNodeDrag(node,getData){
     node.addEventListener('pointerdown',event=>{

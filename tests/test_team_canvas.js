@@ -4,6 +4,67 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
 
+function touchController(){
+  const captured=new Set();
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+    touchPoints:new Map(),pinch:null,positions:new Map(),transform:{x:20,y:30,scale:.5},
+    viewport:{getBoundingClientRect:()=>({left:10,top:20,width:390,height:600}),
+      setPointerCapture:id=>captured.add(id),hasPointerCapture:id=>captured.has(id),releasePointerCapture:id=>captured.delete(id),classList:{add(){},remove(){}}},
+    applyTransform(){},
+  });
+  const event=(id,x,y)=>({pointerId:id,pointerType:'touch',clientX:x,clientY:y,button:0,
+    target:{closest:()=>null},preventDefault(){this.prevented=true;},stopPropagation(){this.stopped=true;}});
+  return{controller,event,captured};
+}
+
+test('pinch zoom anchors the midpoint, supports two-finger pan and never moves a card',()=>{
+  const{controller:c,event,captured}=touchController();
+  c.startTouch(event(1,110,220));c.drag={type:'node',pointerId:1};
+  const second=event(2,210,220);c.startTouch(second);
+  assert.equal(c.drag,null);assert.equal(second.stopped,true);assert.deepEqual([...captured],[1,2]);
+  c.moveTouch(event(1,60,220));c.moveTouch(event(2,260,220));
+  assert.equal(c.transform.scale,1);
+  assert.equal((150-c.transform.x)/c.transform.scale,260,'两指中点下的画布坐标不能漂移');
+  assert.equal((200-c.transform.y)/c.transform.scale,340);
+  c.moveTouch(event(1,90,260));c.moveTouch(event(2,290,260));
+  assert.deepEqual(c.transform,{scale:1,x:-80,y:-100},'双指同向移动平移画布');
+  assert.equal(c.positions.size,0);assert.equal(c.userInteracted,true);
+  c.moveTouch(event(1,-1000,260));c.moveTouch(event(2,1000,260));assert.equal(c.transform.scale,1.6);
+  c.moveTouch(event(1,999,260));assert.equal(c.transform.scale,.08);
+  c.endTouch(event(1,999,260));c.suppressClickUntil=0;c.endTouch(event(2,1000,260));
+  assert.equal(c.pinch,null);assert.equal(c.touchPoints.size,0);assert.ok(c.suppressClickUntil>Date.now(),'抬手不能误开事项或 Run');
+});
+
+test('single-touch pan still works and view changes clear captured pinch pointers',()=>{
+  const{controller:c,event,captured}=touchController();
+  const first=event(1,100,200);c.startTouch(first);c.startPan(first);
+  const move=event(1,130,240);c.moveTouch(move);c.movePointer(move);
+  assert.deepEqual(c.transform,{x:50,y:70,scale:.5});
+  c.endTouch(move);c.endPointer(move);assert.equal(c.drag,null);
+  c.startTouch(event(3,100,200));c.startTouch(event(4,200,200));
+  c.resetTouch();assert.equal(c.touchPoints.size,0);assert.equal(captured.size,0);assert.equal(c.pinch,null);
+  const detail=event(5,100,200);detail.target.closest=()=>({});c.startTouch(detail);
+  assert.equal(c.touchPoints.size,0,'详情面板滚动不应变成画布缩放');
+});
+
+test('team view switching preserves canvas state and persists per team',()=>{
+  const previousDocument=global.document,previousStorage=global.localStorage;
+  const elements={};global.document={getElementById:id=>elements[id]||(elements[id]={setAttribute(name,value){this[name]=value;}})};
+  const saved=[];global.localStorage={setItem:(...args)=>saved.push(args)};
+  let boards=0,canvases=0,refreshes=0;
+  const transform={x:20,y:45,scale:.8},positions=new Map([['m:input',{x:50,y:60}]]);
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team-1'},viewport:{},boardRoot:{},summary:{},transform,positions,
+    closeDetail(){},render(){canvases++;},refresh(){refreshes++;},boardPanel:{refreshAll(){boards++;}}});
+  try{
+    controller.setView('board');assert.equal(boards,1);assert.equal(controller.viewport.hidden,true);assert.equal(controller.boardRoot.hidden,false);
+    assert.equal(elements['team-view-board']['aria-selected'],'true');assert.equal(elements['team-view-canvas'].tabIndex,-1);
+    assert.equal(elements['team-canvas-fit'].hidden,true);assert.equal(canvases,0);
+    controller.setView('canvas');assert.equal(canvases,1);assert.equal(refreshes,1);assert.equal(controller.boardRoot.hidden,true);
+    assert.equal(controller.transform,transform);assert.equal(controller.positions,positions);
+    assert.deepEqual(saved,[['team-view:team-1','board'],['team-view:team-1','canvas']]);
+  }finally{global.document=previousDocument;global.localStorage=previousStorage;}
+});
+
 test('standalone message deletion uses its version and refreshes only after success',async()=>{
   const previousWindow=global.window;global.window={confirm:()=>true};
   try{

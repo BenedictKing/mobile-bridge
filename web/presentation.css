@@ -462,40 +462,40 @@ main{background:var(--page);overflow:hidden}
 .team-dashboard-header h1{margin:0;font-size:21px;line-height:1.3;letter-spacing:0}
 .team-dashboard-summary{margin:4px 0 0;font-size:12px}
 .team-dashboard-body{min-width:0;min-height:0;flex:1;overflow-y:auto;padding:14px 28px 28px;overscroll-behavior:contain}
-#teams-content{width:100%;max-width:1320px;margin:0 auto}
-#teams-content>.team-toolbar{justify-content:flex-end;margin:0 0 10px}
-#teams-content .team-kpis{gap:0;margin:10px 0 18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
-#teams-content .team-kpi{min-height:74px;padding:11px 15px;border:0;border-right:1px solid var(--line);border-radius:0;background:transparent}
-#teams-content .team-kpi:last-child{border-right:0}
-#teams-content .team-kpi.on{background:var(--active)}
-#teams-content .team-kpi strong{font-size:22px}
-#teams-content .team-filters{gap:4px}
-#teams-content .team-filter{min-height:36px;border-radius:7px}
-#teams-content .team-activity{margin:14px 0 22px}
-#teams-content .team-activity h3{margin:0 0 8px;font-size:15px}
+:is(#teams-content,.team-project-board){width:100%;max-width:1320px;margin:0 auto}
+:is(#teams-content,.team-project-board)>.team-toolbar{justify-content:flex-end;margin:0 0 10px}
+:is(#teams-content,.team-project-board) .team-kpis{gap:0;margin:10px 0 18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+:is(#teams-content,.team-project-board) .team-kpi{min-height:74px;padding:11px 15px;border:0;border-right:1px solid var(--line);border-radius:0;background:transparent}
+:is(#teams-content,.team-project-board) .team-kpi:last-child{border-right:0}
+:is(#teams-content,.team-project-board) .team-kpi.on{background:var(--active)}
+:is(#teams-content,.team-project-board) .team-kpi strong{font-size:22px}
+:is(#teams-content,.team-project-board) .team-filters{gap:4px}
+:is(#teams-content,.team-project-board) .team-filter{min-height:36px;border-radius:7px}
+:is(#teams-content,.team-project-board) .team-activity{margin:14px 0 22px}
+:is(#teams-content,.team-project-board) .team-activity h3{margin:0 0 8px;font-size:15px}
 .team-activity-group{margin-top:12px}
 .team-activity-group-title{display:flex;align-items:center;gap:8px;margin:0 0 6px;font-size:12px;font-weight:650}
 .team-activity-group-title small{font-size:11px;font-weight:400}
-#teams-content .team-activity-list{gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-#teams-content .team-activity-row{grid-template-areas:"badge main next" "badge echo next";border:0;border-bottom:1px solid var(--line);border-left:3px solid var(--line);border-radius:0;background:var(--page);padding:10px 12px}
-#teams-content .team-activity-row:last-child{border-bottom:0}
-#teams-content .team-activity-row:hover{background:var(--surface)}
-#teams-content .team-activity-row[data-group="attention"]{border-left-color:var(--error)}
-#teams-content .team-activity-row[data-group="active"]{border-left-color:var(--green)}
-#teams-content .team-grid{gap:10px;margin:18px 0}
-#teams-content .team-card{border-radius:8px;padding:13px}
-#teams-content .team-primary-actions{margin-top:10px}
-#teams-content .team-primary-actions button{min-height:38px}
-#teams-content .team-primary-actions button.primary{flex:1}
-#teams-content .team-management{margin-top:9px;border-top:1px solid var(--line);padding-top:7px}
-#teams-content .team-management>summary{width:max-content;padding:5px 2px;color:var(--muted);font-size:11px;cursor:pointer}
-#teams-content .team-management-actions{margin:5px 0 0}
-#teams-content .team-management-actions button{min-height:36px}
+:is(#teams-content,.team-project-board) .team-activity-list{gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+:is(#teams-content,.team-project-board) .team-activity-row{grid-template-areas:"badge main next" "badge echo next";border:0;border-bottom:1px solid var(--line);border-left:3px solid var(--line);border-radius:0;background:var(--page);padding:10px 12px}
+:is(#teams-content,.team-project-board) .team-activity-row:last-child{border-bottom:0}
+:is(#teams-content,.team-project-board) .team-activity-row:hover{background:var(--surface)}
+:is(#teams-content,.team-project-board) .team-activity-row[data-group="attention"]{border-left-color:var(--error)}
+:is(#teams-content,.team-project-board) .team-activity-row[data-group="active"]{border-left-color:var(--green)}
+:is(#teams-content,.team-project-board) .team-grid{gap:10px;margin:18px 0}
+:is(#teams-content,.team-project-board) .team-card{border-radius:8px;padding:13px}
+:is(#teams-content,.team-project-board) .team-primary-actions{margin-top:10px}
+:is(#teams-content,.team-project-board) .team-primary-actions button{min-height:38px}
+:is(#teams-content,.team-project-board) .team-primary-actions button.primary{flex:1}
+:is(#teams-content,.team-project-board) .team-management{margin-top:9px;border-top:1px solid var(--line);padding-top:7px}
+:is(#teams-content,.team-project-board) .team-management>summary{width:max-content;padding:5px 2px;color:var(--muted);font-size:11px;cursor:pointer}
+:is(#teams-content,.team-project-board) .team-management-actions{margin:5px 0 0}
+:is(#teams-content,.team-project-board) .team-management-actions button{min-height:36px}
 
 @media(max-width:950px){
   .team-dashboard-header{padding-right:20px;padding-left:20px}
   .team-dashboard-body{padding-right:20px;padding-left:20px}
-  #teams-content .team-grid{grid-template-columns:1fr}
+  :is(#teams-content,.team-project-board) .team-grid{grid-template-columns:1fr}
 }
 @media(max-width:720px){
   .app.team-open aside{display:none}
@@ -505,22 +505,22 @@ main{background:var(--page);overflow:hidden}
   .team-dashboard-header h1{font-size:18px}
   .team-dashboard-summary{font-size:11px;line-height:1.5}
   .team-dashboard-body{padding:10px 14px calc(16px + env(safe-area-inset-bottom))}
-  #teams-content>.team-toolbar{justify-content:flex-end;margin-bottom:8px}
-  #teams-content .team-kpis{margin:8px 0 14px}
-  #teams-content .team-kpi{min-height:64px;padding:9px 11px;border-bottom:1px solid var(--line)}
-  #teams-content .team-kpi:nth-child(2){border-right:0}
-  #teams-content .team-kpi:nth-child(n+3){border-bottom:0}
-  #teams-content .team-activity-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"main badge" "echo echo" "next next";gap:5px 8px;padding:10px}
-  #teams-content .team-activity-row>.team-badge{justify-self:end;margin:0}
-  #teams-content .team-activity-next{justify-self:start;max-width:100%;white-space:normal}
-  #teams-content .team-activity-echo{flex-wrap:wrap}
-  #teams-content .team-grid{grid-template-columns:1fr}
+  :is(#teams-content,.team-project-board)>.team-toolbar{justify-content:flex-end;margin-bottom:8px}
+  :is(#teams-content,.team-project-board) .team-kpis{margin:8px 0 14px}
+  :is(#teams-content,.team-project-board) .team-kpi{min-height:64px;padding:9px 11px;border-bottom:1px solid var(--line)}
+  :is(#teams-content,.team-project-board) .team-kpi:nth-child(2){border-right:0}
+  :is(#teams-content,.team-project-board) .team-kpi:nth-child(n+3){border-bottom:0}
+  :is(#teams-content,.team-project-board) .team-activity-row{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"main badge" "echo echo" "next next";gap:5px 8px;padding:10px}
+  :is(#teams-content,.team-project-board) .team-activity-row>.team-badge{justify-self:end;margin:0}
+  :is(#teams-content,.team-project-board) .team-activity-next{justify-self:start;max-width:100%;white-space:normal}
+  :is(#teams-content,.team-project-board) .team-activity-echo{flex-wrap:wrap}
+  :is(#teams-content,.team-project-board) .team-grid{grid-template-columns:1fr}
 }
 @media(max-width:390px){
   .team-dashboard-body{padding-right:11px;padding-left:11px}
   .team-dashboard-header{padding-right:12px;padding-left:12px}
-  #teams-content .team-toolbar button{padding-right:10px;padding-left:10px}
-  #teams-content .team-kpi{padding-right:8px;padding-left:8px}
+  :is(#teams-content,.team-project-board) .team-toolbar button{padding-right:10px;padding-left:10px}
+  :is(#teams-content,.team-project-board) .team-kpi{padding-right:8px;padding-left:8px}
 }
 
 @media(max-width:370px){
@@ -629,6 +629,10 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-heading{display:flex;align-items:baseline;gap:12px;min-width:0}
 .team-canvas-heading>strong{font-size:14px;white-space:nowrap}
 .team-canvas-heading>.muted{min-width:0;font-size:11px;white-space:nowrap}
+.team-view-tabs{display:flex;flex:none;gap:2px;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.team-view-tabs>button{min-height:30px;padding:4px 11px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:12px;white-space:nowrap}
+.team-view-tabs>button[aria-selected=true]{background:var(--active);color:var(--text);font-weight:650}
+.team-project-board{flex:1;min-height:0;min-width:0;overflow-y:auto;overscroll-behavior:contain;padding:10px 18px 20px;background:var(--page)}
 .team-canvas-actions{display:flex;align-items:center;gap:5px;flex:none}
 .team-canvas-tool{display:grid;place-items:center;flex:none;width:34px;height:34px;min-width:34px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--raised);color:var(--text);font-size:17px;line-height:1}
 .team-canvas-tool:hover{background:var(--active)}
@@ -706,6 +710,9 @@ main{background:var(--page);overflow:hidden}
   .team-canvas{width:calc(100% + 32px);height:calc(100dvh - 320px);min-height:440px;max-height:calc(100dvh - 280px);margin:-5px -16px 0}
   .team-canvas-toolbar{min-height:50px;padding:5px 8px;gap:6px}
   .team-canvas-heading{display:block;flex:1;min-width:0}
+  .team-view-tabs{width:max-content;margin-bottom:3px;padding:2px}
+  .team-view-tabs>button{min-height:30px;padding:3px 9px}
+  .team-project-board{padding:8px 12px 16px}
   .team-canvas-heading>strong{display:block;font-size:12px}
   .team-canvas-heading>.muted{display:block;overflow:hidden;text-overflow:ellipsis;font-size:9px}
   .team-canvas-actions{gap:2px}

@@ -32,6 +32,23 @@ const team={id:'t1',name:'团队',leadId:'kimi',project:'codex:7015435b2c37',pro
   {id:'buddy',name:'workbuddy',role:'member',agentKind:'workbuddy'},
 ]};
 
+test('project board loads only its team runs and preserves filtering during refresh',async()=>{
+  const root=new FakeNode('div'),calls=[],opened=[];
+  const panel=new TeamsPanel({root,teamId:'t1',openRun:(...args)=>opened.push(args),request:async url=>{
+    calls.push(url);
+    return url==='/api/teams'?{teams:[team,{...team,id:'t2',name:'别的团队'}]}:{runs:[{id:'r1',goal:'本项目任务',status:'waiting_input',updatedAt:'2026-11-10T00:00:00Z',taskCounts:{completed:1}}]};
+  }});
+  await panel.refreshAll();
+  assert.deepEqual(calls,['/api/teams','/api/teams/t1/runs']);
+  assert.equal(find(root,'team-card').length,0,'项目看板不重复呈现团队卡片和跨团队管理');
+  assert.ok(!text(root).includes('New team'));
+  assert.ok(!text(root).includes('别的团队'));
+  assert.equal(text(find(root,'team-kpi')[0]),'1Runs');
+  find(root,'team-activity-row')[0].onclick();assert.deepEqual(opened,[['t1','r1']]);
+  panel.filter='active';await panel.refreshAll();assert.equal(panel.filter,'active');
+  assert.equal(find(root,'team-activity-row').length,0,'筛选不能混入其他状态或团队');
+});
+
 test('task source chat opens the execution session with its originating Run',()=>{
   const opened=[];
   const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({}),openChat:(id,source)=>opened.push({id,source})});

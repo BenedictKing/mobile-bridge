@@ -564,8 +564,8 @@ class TeamRunDialogHost{
 const teamRunDialogHost=new TeamRunDialogHost();
 
 class TeamsPanel{
-  constructor({root,request,openRun,openChat,onChange,onRender}){
-    Object.assign(this,{root,request,openRun,openChat,onChange,onRender});
+  constructor({root,request,openRun,openChat,onChange,onRender,teamId=null}){
+    Object.assign(this,{root,request,openRun,openChat,onChange,onRender,teamId});
     this.teams=[];this.loading=false;this.busy=false;this.error='';this.notice='';
     this.create=null;       // 新建团队表单状态
     this.renaming=null;     // 重命名中的 teamId
@@ -588,7 +588,7 @@ class TeamsPanel{
   async refresh(){
     if(this.loading)return false;
     this.loading=true;this.error='';this.render();let succeeded=false;
-    try{const value=await this.request('/api/teams');this.teams=value.teams||[];this.onChange&&this.onChange(this.teams);succeeded=true;}
+    try{const value=await this.request('/api/teams');this.teams=(value.teams||[]).filter(team=>!this.teamId||team.id===this.teamId);this.onChange&&this.onChange(this.teams);succeeded=true;}
     catch(error){this.error=error.message;}
     finally{this.loading=false;this.render();}
     return succeeded;
@@ -686,20 +686,21 @@ class TeamsPanel{
       this.render();
     });
     create.disabled=this.busy;
-    toolbar.append(refresh,create);
+    if(!this.teamId)toolbar.append(refresh,create);
     root.append(toolbar);
     if(this.error)root.append(this.node('p',this.error,'error'));
     if(this.notice){root.append(this.node('p',this.notice,'team-notice'));this.notice='';}
     if(this.loading&&!this.teams.length){root.append(this.node('p',t('正在读取团队…'),'muted'));return;}
     if(this.create)root.append(this.renderCreateForm());
     if(!this.teams.length){
-      if(!this.create)root.append(this.node('p',t('还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
+      if(!this.create)root.append(this.node('p',t(this.teamId?'团队不存在或已删除':'还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
       return;
     }
     const stats=this.runStats();
     root.append(this.renderKpis(stats));
     root.append(this.renderFilters(stats));
     root.append(this.renderActivity());
+    if(this.teamId)return;
     const teams=this.filteredTeams();
     const grid=this.node('div',undefined,'team-grid');
     if(teams.length){
@@ -729,7 +730,8 @@ class TeamsPanel{
       }
       return item;
     };
-    box.append(cell(stats.teams,'团队'),cell(stats.members,'成员'),
+    const totalRuns=[...this.runs.values()].reduce((sum,entry)=>sum+(entry.rows||[]).length,0);
+    box.append(cell(this.teamId?totalRuns:stats.teams,this.teamId?'Run 记录':'团队'),cell(stats.members,'成员'),
       cell(stats.active,'运行中','active'),cell(stats.attention,'需处理','attention'));
     return box;
   }
@@ -797,7 +799,7 @@ class TeamsPanel{
     // 没有 Run 数据：区分「还没拉到」与「确实没有」。
     const loading=this.teams.some(team=>(this.runs.get(team.id)||{}).loading);
     const failed=this.teams.some(team=>((this.runs.get(team.id)||{}).error));
-    const hint=loading?t('正在读取 Run 摘要…'):failed?t('部分团队的 Run 读取失败，可点击「刷新」重试。'):t('还没有 Run。从团队卡片「新建 Run」开始。');
+    const hint=loading?t('正在读取 Run 摘要…'):failed?t('部分团队的 Run 读取失败，可点击「刷新」重试。'):t(this.teamId?'还没有 Run。发送一条团队消息开始。':'还没有 Run。从团队卡片「新建 Run」开始。');
     const line=this.node('p',hint,'muted');
     line.setAttribute('role','status');
     box.append(line);
