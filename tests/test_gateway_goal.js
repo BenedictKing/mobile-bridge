@@ -6,12 +6,13 @@ const vm=require('node:vm');
 const {WorkModes}=require('../web/modes.js');
 
 class Node {
-  constructor(tag='div') {this.tag=tag;this.children=[];this.hidden=false;this.disabled=false;this.value='';this.textContent='';this.open=false;}
+  constructor(tag='div') {this.tag=tag;this.children=[];this.hidden=false;this.disabled=false;this.value='';this.textContent='';this.open=false;this.dataset={};this.attributes={};this.classList={toggle(){}};}
   append(...children){this.children.push(...children);}
   replaceChildren(...children){this.children=[...children];}
   get firstElementChild(){return this.children[0];}
   querySelector(){return this.option||null;}
-  setAttribute(){}
+  querySelectorAll(){return this.items||[];}
+  setAttribute(name,value){this.attributes[name]=value;}
   focus(){}
 }
 
@@ -19,15 +20,17 @@ function setup(provider='gateway'){
   const values=new Map(),calls=[];
   const storage={getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)};
   const select=new Node('select');select.option=new Node('option');
-  const root=new Node(),toggle=new Node('button'),hint=new Node();
+  const items=['default','plan','goal'].map(workMode=>Object.assign(new Node('button'),{dataset:{workMode}}));
+  const control=new Node('div');control.items=items;
+  const root=new Node(),toggle=new Node('button');
   global.document={createElement:tag=>new Node(tag)};
   global.BridgeI18n={t:value=>value,locale:()=>"zh-CN"};
-  const modes=new WorkModes({select,hint,goalRoot:root,goalToggle:toggle,storage,newId:()=>"op-1",
+  const modes=new WorkModes({select,control,goalRoot:root,goalToggle:toggle,storage,newId:()=>"op-1",
     onStatus:async payload=>calls.push(payload),onCancel:async()=>{},onEdit:async()=>{},onContinue:async()=>{},onComplete:async()=>{},onReview:async payload=>calls.push(payload)});
   modes.open('chat');
   modes.render({host:'local',status:'idle',capabilities:['goals'],goalRuntimeAvailable:true,
     goal:{provider,goalId:'goal-1',objective:'整理仓库',status:'waiting_review',revision:7,autoStepsUsed:1,autoStepsLimit:5}},'send',false);
-  return {modes,root,calls,select};
+  return {modes,root,calls,select,items};
 }
 
 test('gateway Goal actions carry state and revision for CAS',async()=>{
@@ -73,26 +76,17 @@ test('running replies explain why Goal cannot be selected',()=>{
   assert.equal(select.option.title,'当前回复结束后可开启目标模式');
 });
 
-test('compact mode menu keeps per-chat selection and shows only the active mode',()=>{
-  const saved=new Map(),options={};
-  for(const value of ['default','plan','goal'])options[value]=Object.assign(new Node('option'),{hidden:false,disabled:false});
-  const select=new Node('select');
-  select.querySelector=selector=>options[/\[value="?([^\]"]+)/.exec(selector)?.[1]]||null;
-  const classList=()=>({toggle(){}});
-  const button=Object.assign(new Node('button'),{classList:classList(),contains:()=>false});
-  const label=new Node(),items=['default','plan','goal'].map(value=>Object.assign(new Node('button'),{dataset:{workMode:value},classList:classList()}));
-  const menu=Object.assign(new Node('div'),{querySelectorAll:()=>items,contains:()=>false});
-  global.document={createElement:tag=>new Node(tag),addEventListener(){}};
-  const modes=new WorkModes({select,button,label,menu,hint:new Node(),goalRoot:new Node(),goalToggle:new Node(),
-    storage:{getItem:key=>saved.get(key)||null,setItem:(key,value)=>saved.set(key,value),removeItem:key=>saved.delete(key)},
-    onCancel:async()=>{},onStatus:async()=>{},onEdit:async()=>{},onContinue:async()=>{},onComplete:async()=>{},onReview:async()=>{}});
-  modes.open('compact');modes.render({host:'local',status:'idle',capabilities:['goals'],goalRuntimeAvailable:true},'send',false);
-  assert.equal(label.textContent,'模式');
-  button.onclick();assert.equal(menu.hidden,false);
+test('segmented mode control keeps selection and exposes gateway Goal on remote hosts without helper copy',()=>{
+  const {modes,select,items}=setup();
+  modes.render({host:'ssh',status:'idle',capabilities:['goals'],goalRuntimeAvailable:true},'send',false);
+  assert.equal(items[2].hidden,false);
+  assert.equal(items[2].disabled,false);
   items[1].onclick();
-  assert.equal(saved.get('work-mode:compact'),'plan');
-  assert.equal(label.textContent,'计划');
-  assert.equal(menu.hidden,true);
+  assert.equal(modes.storage.getItem('work-mode:chat'),'plan');
+  assert.equal(select.value,'plan');
+  assert.equal(items[1].attributes['aria-pressed'],'true');
+  assert.equal(items[1].title,'');
+  assert.equal(items[2].title,'');
 });
 
 function goalCommandSuggestions(view){

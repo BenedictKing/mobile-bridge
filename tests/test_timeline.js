@@ -106,13 +106,26 @@ test('user jump floats at the top right on phones and large screens',()=>{
   assert.doesNotMatch(css,/\.user-jump\{display:none\}/);
 });
 
-test('composer tools and work mode use distinct icons',()=>{
+test('composer tools and work modes use separate, labeled controls',()=>{
   const html=readFileSync(require.resolve('../web/index.html'),'utf8');
+  const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   const tools=html.match(/<button id="composer-options-button"[\s\S]*?<\/button>/)[0];
-  const mode=html.match(/<button id="work-mode-button"[\s\S]*?<\/button>/)[0];
+  const mode=html.match(/<div id="work-mode-button"[\s\S]*?<\/div>\s*<\/div>/)[0];
   assert.match(tools,/<rect x="4" y="4"/);
-  assert.match(mode,/M4 7h16M4 17h16/);
-  assert.notEqual(tools.match(/<svg[\s\S]*?<\/svg>/)[0],mode.match(/<svg[\s\S]*?<\/svg>/)[0]);
+  assert.match(mode,/role="group" aria-label="工作模式"/);
+  for(const workMode of ['default','plan','goal'])assert.match(mode,new RegExp('data-work-mode="'+workMode+'"'));
+  assert.match(mode,/class="mode-label-full" data-i18n="普通模式">普通模式/);
+  assert.match(mode,/class="mode-label-short" data-i18n="普通">普通/);
+  assert.match(mode,/class="mode-label-full" data-i18n="计划模式">计划模式/);
+  assert.match(mode,/class="mode-label-short" data-i18n="计划">计划/);
+  assert.match(mode,/class="mode-label-full" data-i18n="目标模式">目标模式/);
+  assert.match(mode,/class="mode-label-short" data-i18n="目标">目标/);
+  assert.doesNotMatch(mode,/\stitle=/);
+  assert.doesNotMatch(mode,/<svg/);
+  assert.doesNotMatch(html,/id="mode-hint"/);
+  assert.match(css,/\.mode-label-short\{display:none\}/);
+  assert.match(css,/@media\(max-width:720px\)\{[\s\S]*?\.mode-label-full\{display:none\}[\s\S]*?\.mode-label-short\{display:inline\}/);
+  assert.doesNotMatch(css,/mode-hint/);
 });
 
 test('user jump lists prompts from the meta index beyond the loaded window',()=>{

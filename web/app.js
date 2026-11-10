@@ -39,7 +39,7 @@ async function goalAction(action,payload) {
   if(result.goal?.pendingControl){toast('控制请求已记录，等待派发结果确认');return;}
   toast(action==='cancel'?'目标已关闭':action==='edit'?'目标已修改，保持暂停':action==='complete'?'目标已完成':action==='continue'?'已人工继续一轮':action==='review'?'已进入人工复核':payload.status==='paused'?'目标已暂停':'目标已恢复');
 }
-const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),button:$('work-mode-button'),label:$('work-mode-label'),menu:$('work-mode-menu'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
+const workModes=new WorkModes({select:$('work-mode'),control:$('work-mode-button'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
   onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload),
   onContinue:payload=>goalAction('continue',payload),onComplete:payload=>goalAction('complete',payload),onReview:payload=>goalAction('review',payload)});
 const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});

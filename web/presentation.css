@@ -272,7 +272,6 @@ main{background:var(--page);overflow:hidden}
 .attachment-remove{border:0;background:none;color:var(--muted);padding:5px;font-size:18px;min-width:32px;min-height:32px}
 
 /* Goal and plan content */
-#mode-hint{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .goal-state{position:relative;flex:none;margin:6px max(24px,calc((100% - 780px)/2));padding:10px 42px 10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13px;max-height:25dvh;overflow:auto}
 .goal-state summary{cursor:pointer;color:var(--green);font-weight:600}
 .goal-state p{white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0;line-height:1.5}
@@ -879,19 +878,18 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
 .composer-options #model-button{flex:0 1 auto;min-width:0;max-width:240px}
 .composer-options .composer-toggle{margin-left:0}
 #composer-toggle-label{display:none}
-.mode-button{display:inline-flex;align-items:center;justify-content:center;width:36px;padding:6px}
-.mode-button.active{border-color:var(--control);background:var(--soft);color:var(--green)}
-.mode-control,.send-split{position:relative;display:flex;flex:none}
+.mode-control{min-width:0;flex:0 1 auto}
+.mode-segmented{display:flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+.mode-option{min-width:0;min-height:32px;padding:5px 8px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
+.mode-option:hover:not(:disabled){background:var(--active);color:var(--text)}
+.mode-option.active,.mode-option[aria-pressed=true]{background:var(--raised);color:var(--green);box-shadow:0 1px 3px #0000001c}
+.mode-option:disabled{opacity:.52;cursor:not-allowed}
+.mode-option[hidden]{display:none}
+.mode-label-short{display:none}
+.send-split{position:relative;display:flex;flex:none}
 .composer-options-button{display:none}
 .compose-actions{margin-left:auto;align-items:center}
-.send-split #send{border-radius:8px 0 0 8px}
-#send-menu-button{display:grid;place-items:center;align-self:stretch;width:34px;min-height:38px;padding:0;border:0;border-left:1px solid #ffffff38;border-radius:0 8px 8px 0;background:var(--green);color:#fff}
-.composer-menu{position:absolute;z-index:12;bottom:calc(100% + 6px);min-width:160px;padding:5px;border:1px solid var(--line);border-radius:10px;background:var(--raised);box-shadow:0 12px 36px #00000024;color:var(--text)}
-.mode-control .composer-menu{left:0}
-.send-menu{right:0}
-.composer-menu button{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:7px 10px;border:0;border-radius:7px;background:transparent;color:var(--text);text-align:left;white-space:nowrap}
-.composer-menu button:hover,.composer-menu button.active{background:var(--active)}
-.composer-menu button[aria-checked=true]::after{content:'✓';margin-left:auto;color:var(--green)}
+.send-split #send{border-radius:8px}
 .composer-expand{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;min-height:40px;padding:6px;border:0;border-radius:8px;background:transparent;color:var(--muted)}
 .composer-expand:hover{background:var(--active);color:var(--text)}
 .composer-expand svg{width:18px;height:18px}
@@ -906,12 +904,12 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
   .composer-options{display:none;position:absolute;z-index:11;left:0;right:0;bottom:calc(100% + 6px);padding:8px;border:1px solid var(--line);border-radius:12px;background:var(--raised);box-shadow:0 12px 36px #00000024;gap:5px}
   .composer-options.is-open{display:grid}
   .composer-options .tool-button,.composer-options .composer-toggle{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;max-width:none;min-height:44px;padding:9px 11px;text-align:left}
-  .composer-options .mode-control{display:grid;width:100%}
-  .composer-options .mode-control .composer-menu{position:static;width:100%;margin-top:5px;box-shadow:none}
+  .mode-control{flex:1 1 0}
+  .mode-segmented{width:100%;height:44px}
+  .mode-option{flex:1 1 0;height:38px;min-height:38px;padding:5px 3px;font-size:11px}
+  .mode-label-full{display:none}
+  .mode-label-short{display:inline}
   #composer-toggle-label{display:inline}
   .composer-toggle svg{width:18px;height:18px}
   .send-split #send{min-height:44px}
-  #send-menu-button{width:36px;min-height:44px}
-  .composer-menu button{min-height:44px}
-  .mode-control .composer-menu button{min-height:40px}
 }
