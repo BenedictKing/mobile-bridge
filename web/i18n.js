@@ -992,6 +992,7 @@ const en={
   "当前 Run 已停靠。取消该 Run 并切换为空白主控？未完成任务将停止，原会话和 Run 历史会保留。": "This run is parked. Cancel it and switch to a fresh lead session? Unfinished tasks will stop; the original session and run history will remain.",
   "团队 Run 仍在执行，请等待完成或在 Run 详情中取消后重试": "A team run is still active. Wait for it to finish or cancel it in Run details before retrying.",
   "团队仍有未结束的 Run，请先完成或取消后再操作主控上下文": "A team run is still open. Finish or cancel it before changing the lead session.",
+  "请先打开此团队的主控聊天": "Open this team's lead chat first",
   "旧 Run 已取消，但空白主控创建失败：": "The old run was cancelled, but creating a fresh lead session failed: ",
   "压缩请求可能已送达，请检查聊天记录后再重试。": "The compaction request may have been delivered. Check the chat before retrying.",
   "返回": "Back",

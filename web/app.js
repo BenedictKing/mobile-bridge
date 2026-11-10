@@ -558,7 +558,7 @@ async function openChat(id,host="local",teamId=""){
 // 收起 Run 页（停订阅、隐藏区块），否则两块 height:100% 的 section 叠层破版
 // 且 Run 页在后台继续轮询。
 if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';syncWorkspaceNavigation();
-if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;autoQueueArmed=false;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;renderNotificationState();try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();showDetailRoute('#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
+if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;renderNotificationState();try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();showDetailRoute('#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
 teamCanvas?.open(currentTeam);
 if(currentTeam)chatTimeline?.setViewportLocked(teamCanvas?.mode==='canvas');
   window.BridgePresentation?.openChat();
@@ -1890,6 +1890,25 @@ if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModa
 // Team 编排：主控聊天复用 Lead 会话；独立 Run 页继续承载高级编排。
 const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatController({root:$('team-workflow'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),onChange:team=>{
   const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);renderTeamSidebarTeams(teams);openTeamChat(team);
+},onCompactLead:async(team,closeSettings)=>{
+  if(currentTeam?.id!==team.id){toast('请先打开此团队的主控聊天');return;}
+  try{
+    const {runs,pendingInputs}=await teamContextState(team.id);
+    if(runs.some(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))){toast('团队仍有未结束的 Run，结束或取消后再压缩主控上下文');return;}
+    if(pendingInputs>0){toast('团队仍有待路由或等待处理的输入，处理后再压缩主控上下文');return;}
+    const fallback=resolveDefaultCompact();
+    compactMethod=fallback.kind;compactScope=fallback.scope;
+    $('compact-instructions').value='';$('compact-error').textContent='';renderCompactState();
+    closeSettings?.();$('chat-details-dialog').showModal();
+  }catch(error){toast(error.message);}
+},onResetLead:async(team,closeSettings)=>{
+  const lead=(team.members||[]).find(member=>member.id===team.leadId);
+  if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
+  closeSettings?.();
+  try{
+    const result=await newTeamLeadContext(team,lead.sessionId);
+    if(result&&currentTeam?.id===team.id&&currentId!==result.sessionId)await openChat(result.sessionId,'local',team.id);
+  }catch(error){toast(error.message);}
 }});
 const teamCanvas=typeof TeamCanvasController==='undefined'?null:new TeamCanvasController({root:$('team-canvas'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),notify:toast});
 globalThis.BridgeTeamCanvas=teamCanvas;
@@ -1908,7 +1927,6 @@ function syncTeamComposer(){
   const enabled=!!currentTeam;
   // 团队消息统一进入 autoPlan，由 Lead 决定直接回答或委派成员。
   $('team-settings-button').hidden=!enabled;
-  $('team-lead-hint').hidden=!enabled;
   if(enabled)$('skills-button').hidden=true;
   if(enabled)$('work-mode-button').hidden=true;
   $('send-mode').querySelector('option[value="steer"]').disabled=enabled;
