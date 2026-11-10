@@ -51,7 +51,7 @@ test('native Goal actions keep their existing request shape',async()=>{
 
 test('waiting-review Goal offers manual decision controls',()=>{
   const {root}=setup();
-  const actions=root.children.find(node=>node.className==='goal-actions');
+  const actions=root.firstElementChild.children.find(node=>node.className==='goal-actions');
   assert.ok(actions);
   assert.ok(actions.children.some(node=>node.textContent==='人工继续一轮'));
   assert.ok(actions.children.some(node=>node.textContent==='标记完成'));
@@ -60,7 +60,7 @@ test('waiting-review Goal offers manual decision controls',()=>{
 test('unknown delivery requires an explicit verified review action',async()=>{
   const {modes,root,calls}=setup();
   modes.render({...modes.view,goal:{...modes.view.goal,status:'outcome_unknown'}},'send',false);
-  const actions=root.children.find(node=>node.className==='goal-actions');
+  const actions=root.firstElementChild.children.find(node=>node.className==='goal-actions');
   const review=actions.children.find(node=>node.textContent==='已核实，进入复核');
   assert.ok(review);
   await review.onclick();
@@ -155,4 +155,40 @@ test('bare /goal only selects Goal and active replies reject the command',async(
   await active.nodes.composer.onsubmit({preventDefault(){}});
   assert.equal(active.calls.length,0);
   assert.equal(active.nodes['send-error'].textContent,'当前回复结束后可开启目标模式');
+});
+
+
+
+test('Goal starts collapsed and expands to its objective and controls',()=>{
+  const {modes,root}=setup(),details=root.firstElementChild;
+  assert.equal(details.tag,'details');
+  assert.equal(details.open,false);
+  assert.equal(root.children.some(node=>node.className==='goal-actions'),false);
+  assert.equal(details.children[1].className,'goal-objective');
+  assert.equal(details.children[1].textContent,'整理仓库');
+  assert.ok(details.children.some(node=>node.className==='goal-actions'));
+  details.open=true;
+  modes.render(modes.view,'send',false);
+  assert.equal(root.firstElementChild.open,true);
+  assert.equal(root.firstElementChild.children[1].textContent,'整理仓库');
+});
+
+test('Goal status cannot be dismissed until it reaches a terminal state',()=>{
+  const {modes,root}=setup();
+  for(const status of ['active','dispatching','evaluating','waiting_input','waiting_review','outcome_unknown','paused','blocked','usageLimited','budgetLimited']){
+    modes.render({...modes.view,goal:{...modes.view.goal,status}},'send',false);
+    assert.equal(root.children.some(node=>node.className==='goal-close'),false,status);
+  }
+  for(const status of ['completed','cancelled','complete']){
+    modes.render({...modes.view,goal:{...modes.view.goal,status}},'send',false);
+    assert.equal(root.children.some(node=>node.className==='goal-close'),true,status);
+  }
+});
+
+test('pending goal creation cannot be dismissed before confirmation',()=>{
+  const {modes,root}=setup();
+  modes.render({...modes.view,goal:null,goalSubmission:{id:'request-1',status:'pending'}},'send',false);
+  assert.equal(root.children.some(node=>node.className==='goal-close'),false);
+  modes.render({...modes.view,goal:null,goalSubmission:{id:'request-1',status:'unknown'}},'send',false);
+  assert.equal(root.children.some(node=>node.className==='goal-close'),true);
 });

@@ -72,28 +72,29 @@ class WorkModes {
     this.goalRoot.replaceChildren();this.goalRoot.hidden=!goalIdentity||dismissed;
     const node=(tag,text,cls)=>{const el=document.createElement(tag);el.textContent=text;if(cls)el.className=cls;return el;};
     const button=(text,cls,onclick,disabled)=>{const el=node('button',text,cls);el.type='button';el.disabled=!!disabled;el.onclick=onclick;return el;};
+    let goalDetails=null;
     if(goal){
       const labels={active:'目标进行中',dispatching:'目标正在派发',evaluating:'目标正在评估',waiting_input:'目标等待回答',waiting_review:'目标等待复核',outcome_unknown:'目标派发结果未知',completed:'目标已完成',cancelled:'目标已取消',paused:'目标已暂停',blocked:'目标等待处理',usageLimited:'目标已达到用量限制',budgetLimited:'目标已达到预算限制',complete:'目标已完成'};
-      const details=document.createElement('details');details.open=expanded;
-      details.append(node('summary',t(labels[goal.status]||'目标状态')));
-      details.append(node('p',goal.objective));
+      goalDetails=document.createElement('details');goalDetails.open=expanded;
+      goalDetails.append(node('summary',t(labels[goal.status]||'目标状态')));
+      goalDetails.append(node('p',goal.objective,'goal-objective'));
       if(goal.provider==='gateway'){
-        details.append(node('p',t('剩余自动轮数：')+Math.max(0,goal.autoStepsLimit-goal.autoStepsUsed),'muted'));
-        if(goal.stopReason)details.append(node('p',goal.stopReason,'muted'));
-        if(goal.status==='outcome_unknown')details.append(node('p',t('请核实上一轮是否已送达；网关不会自动重发。'),'muted'));
-        details.append(node('p',t('目标和最近输出摘要会发送给已配置的 Jev 服务。'),'muted'));
+        goalDetails.append(node('p',t('剩余自动轮数：')+Math.max(0,goal.autoStepsLimit-goal.autoStepsUsed),'muted'));
+        if(goal.stopReason)goalDetails.append(node('p',goal.stopReason,'muted'));
+        if(goal.status==='outcome_unknown')goalDetails.append(node('p',t('请核实上一轮是否已送达；网关不会自动重发。'),'muted'));
+        goalDetails.append(node('p',t('目标和最近输出摘要会发送给已配置的 Jev 服务。'),'muted'));
       }
-      if(Number.isFinite(goal.tokensUsed))details.append(node('p',t('已用 Token：')+goal.tokensUsed.toLocaleString()+(Number.isFinite(goal.tokenBudget)?' / '+goal.tokenBudget.toLocaleString():''),'muted'));
-      this.goalRoot.append(details);
+      if(Number.isFinite(goal.tokensUsed))goalDetails.append(node('p',t('已用 Token：')+goal.tokensUsed.toLocaleString()+(Number.isFinite(goal.tokenBudget)?' / '+goal.tokenBudget.toLocaleString():''),'muted'));
+      this.goalRoot.append(goalDetails);
     }
     if(request){
       const labels={pending:'正在开启原生目标…',unknown:'目标请求送达结果尚未确认，请查看会话。',unconfirmed:'尚未确认目标已开启，请刷新或查看 Codex。'};
       this.goalRoot.append(node('p',t(labels[request.status]||labels.unknown),'goal-pending'));
     }
-    if(this.actionError)this.goalRoot.append(node('p',this.actionError,'error'));
+    if(this.actionError)(goalDetails||this.goalRoot).append(node('p',this.actionError,'error'));
     if(goal&&goalSupported){
       const actions=node('div','','goal-actions');
-      this.goalRoot.append(actions);
+      goalDetails.append(actions);
       if(['active','blocked','waiting_input','waiting_review','evaluating','dispatching','usageLimited','budgetLimited'].includes(goal.status)){
         actions.append(button(this.statusBusy==='paused'?t('正在暂停目标…'):t('暂停目标'),'goal-status secondary',()=>this.setStatus('paused'),this.busy()));
       }
@@ -107,15 +108,15 @@ class WorkModes {
       if(goal.provider==='gateway'&&goal.status==='outcome_unknown')actions.append(button(t('已核实，进入复核'),'goal-review secondary',()=>this.review(),this.busy()));
       if(goal.status==='paused')actions.append(button(t('修改目标'),'goal-edit secondary',()=>{this.editing=true;this.editText=goal.objective;this.render();this.goalRoot.querySelector('.goal-editor')?.focus();},this.busy()));
       if(!['complete','completed','cancelled'].includes(goal.status))actions.append(button(this.cancelBusy?t('正在关闭目标…'):t('关闭目标'),'goal-cancel secondary',()=>this.cancel(),this.busy()));
-      this.goalRoot.append(node('p',t('暂停或关闭目标不会停止当前回复；如需立即停止，请点击“停止”。'),'muted'));
-      if(goal.status==='active')this.goalRoot.append(node('p',t('修改目标前请先暂停。'),'muted'));
       if(this.editing&&goal.status==='paused'){
         const input=node('textarea','', 'goal-editor');input.value=this.editText;input.maxLength=4000;input.rows=3;input.disabled=this.busy();input.setAttribute('aria-label',t('目标内容'));input.oninput=()=>{this.editText=input.value;};
-        this.goalRoot.append(input,node('p',t('修改目标内容会重置用量统计，保存后保持暂停。'),'muted'));
-        this.goalRoot.append(button(t('保存目标'),'goal-save primary',()=>this.saveEdit(),this.busy()),button(t('放弃修改'),'secondary',()=>{this.editing=false;this.render();},this.busy()));
+        goalDetails.append(input,node('p',t('修改目标内容会重置用量统计，保存后保持暂停。'),'muted'));
+        goalDetails.append(button(t('保存目标'),'goal-save primary',()=>this.saveEdit(),this.busy()),button(t('放弃修改'),'secondary',()=>{this.editing=false;this.render();},this.busy()));
       }
     }
-    if(goalIdentity){
+    const terminalGoal=goal&&['complete','completed','cancelled'].includes(goal.status);
+    const dismissibleGoal=terminalGoal||(!goal&&request&&['unknown','unconfirmed'].includes(request.status));
+    if(goalIdentity&&dismissibleGoal){
       const close=node('button','×','goal-close');close.type='button';close.title=t('隐藏目标栏');close.setAttribute('aria-label',close.title);
       close.onclick=()=>{this.storage.setItem('hidden-goal:'+this.key,goalIdentity);this.render();this.goalToggle.focus();};
       this.goalRoot.append(close);

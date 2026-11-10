@@ -206,16 +206,20 @@ test('hidden projects stay out of reloaded local lists without hiding remote pat
   assert.deepEqual(Array.from(context.listRows,row=>row.id),['visible','remote']);
 });
 
-test('working status and scroll hints float above the timeline instead of consuming flow',()=>{
+test('working status sits top left and Goal sits bottom left above the timeline',()=>{
   const html=readFileSync(require.resolve('../web/index.html'),'utf8');
   const shell=html.match(/<div class="timeline-shell">[\s\S]*?<details id="user-jump"/)[0];
   assert(shell.indexOf('id="timeline"')<shell.indexOf('class="timeline-overlay"'));
   assert(shell.indexOf('class="timeline-overlay"')<shell.indexOf('id="working"'));
   assert(shell.indexOf('id="working"')<shell.indexOf('id="newer"'));
+  assert(shell.indexOf('id="newer"')<shell.indexOf('id="goal-state"'));
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   assert.match(css,/\.timeline-shell\{position:relative;flex:1;min-height:0\}/);
-  assert.match(css,/\.timeline-overlay\{position:absolute;z-index:3;[^}]*display:flex;[^}]*justify-content:space-between/);
+  assert.match(css,/\.timeline-overlay\{position:absolute;z-index:3;inset:0;[^}]*display:grid/);
   assert.match(css,/\.timeline-overlay\{[^}]*padding:8px 24px/);
   assert.match(css,/\.timeline-overlay\{padding-left:[^}]*padding-bottom:8px\}/);
-  assert.match(css,/\.timeline-overlay \.newer\{[^}]*margin:0 0 0 auto;[^}]*pointer-events:auto/);
+  assert.match(css,/\.timeline-overlay \.working\{grid-area:1\/1/);
+  assert.match(css,/\.timeline-overlay \.goal-state\{grid-area:3\/1;[^}]*pointer-events:auto/);
+  assert.match(css,/\.timeline-overlay \.newer\{grid-area:3\/2;[^}]*pointer-events:auto/);
+  assert.match(css,/\.goal-state:not\(:has\(details\[open\]\)\) \.goal-close\{top:50%;translate:0 -50%\}/);
 });

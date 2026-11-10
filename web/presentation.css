@@ -276,6 +276,7 @@ main{background:var(--page);overflow:hidden}
 .goal-state summary{cursor:pointer;color:var(--green);font-weight:600}
 .goal-state p{white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0;line-height:1.5}
 .goal-close{position:absolute;top:3px;right:4px;width:36px;height:36px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:20px;line-height:1;cursor:pointer}
+.goal-state:not(:has(details[open])) .goal-close{top:50%;translate:0 -50%}
 .goal-pending{color:var(--muted)}
 .goal-state:has(.goal-editor){max-height:45dvh}
 .goal-editor{display:block;width:100%;box-sizing:border-box;resize:vertical;min-height:5rem;margin:.5rem 0;padding:.6rem;font:inherit;color:inherit;background:var(--raised);border:1px solid var(--control);border-radius:8px}
