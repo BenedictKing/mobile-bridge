@@ -95,7 +95,22 @@ test('compact mode menu keeps per-chat selection and shows only the active mode'
   assert.equal(menu.hidden,true);
 });
 
-function goalComposer({active=false}={}){
+function goalCommandSuggestions(view){
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const start=source.indexOf('const COMPACT_PREF_LABELS='),end=source.indexOf('// parseCompactCommand',start);
+  const context={window:{},currentTeam:null,state:view,t:value=>value};
+  vm.runInNewContext(source.slice(start,end),context);
+  return context.composerCommandRows('goal');
+}
+
+test('/goal suggestion follows gateway capability for remote sessions',()=>{
+  const view={host:'ssh',capabilities:['goals'],goalRuntimeAvailable:true};
+  assert.ok(goalCommandSuggestions(view).some(row=>row.token==='/goal '));
+  assert.equal(goalCommandSuggestions({...view,goalRuntimeAvailable:false}).some(row=>row.token==='/goal '),false);
+  assert.equal(goalCommandSuggestions({...view,capabilities:[]}).some(row=>row.token==='/goal '),false);
+});
+
+function goalComposer({active=false,host='local'}={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const goalStart=source.indexOf('function parseGoalCommand'),goalEnd=source.indexOf('function compactInstructions',goalStart);
   const submitStart=source.indexOf("$('composer').onsubmit="),submitEnd=source.indexOf("$('message').onkeydown",submitStart);
@@ -104,11 +119,11 @@ function goalComposer({active=false}={}){
   const values=new Map(),calls=[];
   const context={
     $:id=>nodes[id],t:value=>value,BridgeI18n:{locale:()=> 'zh-CN'},window:{BridgePresentation:{resizeMessage(){}}},
-    sending:false,currentId:'chat',currentHost:'local',currentTeam:null,state:{status:active?'active':'idle'},
-    closeSkillSuggestions(){},attachments:{ready:()=>true,ids:()=>[],setLocked(){},clear(){}},
+    sending:false,currentId:'chat',currentHost:host,currentTeam:null,state:{host,status:active?'active':'idle',capabilities:['goals'],goalRuntimeAvailable:true},
+    closeSkillSuggestions(){},parseCompactCommand:()=>null,parseMigrateCommand:()=>null,attachments:{ready:()=>true,ids:()=>[],setLocked(){},clear(){}},
     invalidSkills:new Set(),selectedSkills:new Set(),sessionStorage:{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},
     workModes:{selection:null,value:()=>nodes['work-mode'].value,render(){},submitted(){}},
-    chatKey:()=> 'local|chat',sessionUrl:()=> '/api/sessions/chat/send?host=local',uuid:()=> 'request-1',
+    chatKey:()=> host+'|chat',sessionUrl:()=> '/api/sessions/chat/send?host='+host,uuid:()=> 'request-1',
     api:async(path,body)=>{calls.push({path,body});return{status:'accepted'};},bumpRecency(){},renderSkillPills(){},renderQueue(){},toast(){},saveDraft(){},syncSendButton(){},
   };
   vm.runInNewContext(source.slice(goalStart,goalEnd)+'\n'+source.slice(submitStart,submitEnd),context);
@@ -125,6 +140,15 @@ test('/goal submits its objective through the real composer path',async()=>{
   assert.equal(calls[0].body.mode,'send');
   assert.equal(nodes.message.value,'');
   assert.equal(context.workModes.selection,'goal');
+});
+
+test('/goal submits on remote hosts when the gateway advertises Goal fallback',async()=>{
+  const {nodes,calls}=goalComposer({host:'ssh'});
+  nodes.message.value='/goal 完成远端任务';
+  await nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].path,'/api/sessions/chat/send?host=ssh');
+  assert.equal(calls[0].body.workMode,'goal');
 });
 
 test('bare /goal only selects Goal and active replies reject the command',async()=>{
