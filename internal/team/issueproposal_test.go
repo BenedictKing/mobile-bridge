@@ -230,6 +230,38 @@ func TestIssueDeleteRemovesLinkedInputsAndReplays(t *testing.T) {
 	}
 }
 
+func TestIssueDeletePreventsHistoricalReimport(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := OpenJournal(filepath.Join(dir, "inputs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	snapshot := filepath.Join(dir, "inputs.json")
+	ledger := LoadInputLedger(snapshot, journal)
+	input, _, err := ledger.ImportHistoricalInput("team", "history-input", "旧事项", "old-run", "lead", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = ledger.ApplyIssueProposal("team", "proposal", &IssueProposal{InputID: input.ID, Revision: input.Revision,
+		Segments: []IssueProposalSegment{{Action: IssueSegmentCreate, NewIssueTitle: "旧事项", SourceStart: 0, SourceEnd: 3}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := ledger.ListIssues("team")[0]
+	if count, err := ledger.DeleteIssue("team", issue.ID); err != nil || count != 1 {
+		t.Fatalf("delete: %d %v", count, err)
+	}
+	for _, restored := range []*InputLedger{ledger, LoadInputLedger(snapshot, journal), LoadInputLedger(snapshot, nil), LoadInputLedger(filepath.Join(dir, "missing.json"), journal)} {
+		if restored.GetIssue("team", issue.ID) != nil || restored.Get("team", input.ID) != nil {
+			t.Fatal("deleted history reappeared")
+		}
+		if row, duplicate, err := restored.ImportHistoricalInput("team", input.ID, input.Text, "old-run", "lead", time.Now()); err != nil || !duplicate || row != nil {
+			t.Fatalf("reimport restored a deleted issue input: %+v %v %v", row, duplicate, err)
+		}
+	}
+}
+
 func TestExtractIssueProposalSupportsTeamActionsAndRejectsMultipleBlocks(t *testing.T) {
 	valid := "<team-issues>{\"inputId\":\"input-1\",\"revision\":1,\"segments\":[{\"action\":\"ignore\",\"sourceStart\":0,\"sourceEnd\":4}]}</team-issues>\n" +
 		"<team-actions>{\"actions\":[]}</team-actions>"

@@ -425,6 +425,10 @@ class TeamCanvasController{
     this.applyFocus();
   }
   shortID(id){return String(id||'').replace(/-/g,'').slice(0,8).toUpperCase();}
+  activeRuns(issue){
+    const terminal=typeof TEAM_TERMINAL_RUN_STATUSES!=='undefined'?TEAM_TERMINAL_RUN_STATUSES:new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
+    return [...new Map((issue.runs||[]).filter(run=>run.id&&!terminal.has(run.status)).map(run=>[run.id,run])).values()];
+  }
   applyFocus(){
     const id=this.focusedIssueID;
     this.nodes.querySelectorAll('.team-canvas-related').forEach(item=>item.classList.remove('team-canvas-related'));
@@ -459,6 +463,7 @@ class TeamCanvasController{
     this.applyTransform();
   }
   openDetail(issue,trigger){
+    document.getElementById('team-canvas-detail-error').textContent='';
     this.detailIssue=issue;this.detailRun=(issue.runs||[])[0]||null;this.detailTrigger=trigger;this.detail.hidden=false;this.detail.classList.add('open');
     this.detail.setAttribute('aria-modal',String(window.matchMedia('(max-width:720px)').matches));
     this.focusItem(issue.id);
@@ -523,24 +528,47 @@ class TeamCanvasController{
     const openRunButton=document.getElementById('team-canvas-open-run');
     openRunButton.disabled=!this.detailRun;
     openRunButton.textContent=this.detailRun?this.t('打开 Run 详情'):this.t('暂无关联 Run');
+    if(!this.deletingIssue)document.getElementById('team-canvas-delete-issue').textContent=this.t(this.activeRuns(issue).length?'取消 Run 并删除':'删除事项与对话');
   }
   async deleteIssue(){
     const issue=this.detailIssue,team=this.current;
     if(!issue||!team||this.deletingIssue)return;
-    const prompt=this.t('删除此事项及其关联对话？这些对话与其他事项的关联也会移除；Run 执行记录保留。确认删除？');
-    if(!window.confirm(prompt+'\n'+(issue.title||this.t('团队事项'))))return;
-    const button=document.getElementById('team-canvas-delete-issue');
-    this.deletingIssue=true;button.disabled=true;button.textContent=this.t('正在删除…');
+    const button=document.getElementById('team-canvas-delete-issue'),errorBox=document.getElementById('team-canvas-detail-error');
+    const path='/api/teams/'+encodeURIComponent(team.id)+'/issues/'+encodeURIComponent(issue.id);
+    this.deletingIssue=true;button.disabled=true;button.textContent=this.t('正在读取…');errorBox.textContent='';
+    let cancelled=0;
     try{
-      await this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues/'+encodeURIComponent(issue.id),{method:'DELETE',body:{}});
+      // 确认前重读关联，不能按打开详情时的旧状态静默取消新增 Run。
+      const latest=await this.request(path);
+      if(this.current?.id!==team.id||this.detailIssue?.id!==issue.id)return;
+      const runs=this.activeRuns(latest);
+      const prompt=this.t(runs.length
+        ?'将先取消以下未结束的 Run，再删除此事项及关联对话。这些 Run 关联的其他事项也会停止执行；已有文件改动不会回退，执行记录保留。确认取消并删除？'
+        :'删除此事项及其关联对话？这些对话与其他事项的关联也会移除；Run 执行记录保留。确认删除？');
+      const runLines=runs.map(run=>'Run '+this.shortID(run.id)+' · '+this.statusLabel(run)+' · '+(run.goal||run.id));
+      if(!window.confirm([prompt,latest.title||issue.title||this.t('团队事项'),...runLines].join('\n')))return;
+      button.textContent=this.t(runs.length?'正在取消并删除…':'正在删除…');
+      for(const run of runs){
+        const runPath='/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(run.id);
+        try{await this.request(runPath+'/cancel',{method:'POST',body:{}});cancelled++;}
+        catch(error){
+          if(error.status!==409)throw error;
+          const current=await this.request(runPath);
+          if(this.activeRuns({runs:[current]}).length)throw error;
+        }
+      }
+      await this.request(path,{method:'DELETE',body:{}});
       if(this.current?.id!==team.id)return;
       if(this.detailIssue?.id===issue.id)this.closeDetail();
       this.notify?.(this.t('事项及关联对话已删除'));
       await this.refresh(true);
     }catch(error){
-      if(this.current?.id===team.id)this.error.textContent=this.t(error.message||'删除事项失败');
+      const message=(cancelled?this.t('关联 Run 已取消，但事项尚未删除：'):'')+this.t(error.message||'删除事项失败');
+      if(this.current?.id===team.id&&this.detailIssue?.id===issue.id)errorBox.textContent=message;
+      else this.notify?.(message);
     }finally{
-      this.deletingIssue=false;button.disabled=false;button.textContent=this.t('删除事项与对话');
+      this.deletingIssue=false;button.disabled=false;
+      button.textContent=this.t(this.detailIssue&&this.activeRuns(this.detailIssue).length?'取消 Run 并删除':'删除事项与对话');
     }
   }
   detailSection(title,rows){

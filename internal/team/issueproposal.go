@@ -393,6 +393,7 @@ func (l *InputLedger) applyIssueDeletedEvent(event *Event) {
 	}
 	deletedInputs := map[string]bool{}
 	for _, inputID := range payloadStrings(event.Payload, "inputIds") {
+		l.deleted[inputID] = teamID
 		input := l.inputs[inputID]
 		if input == nil || input.TeamID != teamID {
 			continue

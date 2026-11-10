@@ -297,14 +297,15 @@ test('issue details select the relationship and link back using original message
 test('issue deletion confirms, calls DELETE and refreshes the canvas',async()=>{
   const previousDocument=global.document,previousWindow=global.window;
   const button={disabled:false,textContent:''};
-  global.document={getElementById:id=>id==='team-canvas-delete-issue'?button:null};
+  const errorBox={textContent:''};
+  global.document={getElementById:id=>id==='team-canvas-delete-issue'?button:errorBox};
   global.window={confirm:()=>true};
   try{
     let closed=0,refreshed=0,request;
     const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
       current:{id:'team-1'},detailIssue:{id:'issue-1',title:'旧事项'},error:{textContent:''},
       closeDetail:()=>{closed++;},refresh:async()=>{refreshed++;},
-      request:async(path,options)=>{request={path,options};return{ok:true};},
+      request:async(path,options)=>{if(!options)return{id:'issue-1',title:'旧事项',runs:[]};request={path,options};return{ok:true};},
     });
     await controller.deleteIssue();
     assert.equal(request.path,'/api/teams/team-1/issues/issue-1');
@@ -313,6 +314,64 @@ test('issue deletion confirms, calls DELETE and refreshes the canvas',async()=>{
     assert.equal(refreshed,1);
     assert.equal(button.disabled,false);
     assert.equal(button.textContent,'删除事项与对话');
+  }finally{global.document=previousDocument;global.window=previousWindow;}
+});
+
+test('deleting a parked issue confirms cancellation, cancels only unfinished linked runs, then deletes',async()=>{
+  const previousDocument=global.document,previousWindow=global.window;
+  const button={},errorBox={textContent:''},calls=[],prompts=[];
+  global.document={getElementById:id=>id==='team-canvas-delete-issue'?button:errorBox};
+  global.window={confirm:message=>{prompts.push(message);return true;}};
+  const runs=[{id:'finished',status:'completed'},{id:'waiting',status:'waiting_input',goal:'等待确认'},
+    {id:'waiting',status:'waiting_input'},{id:'running',status:'dispatching',goal:'执行中'}];
+  const issue={id:'issue',title:'事项',runs:[]}; // 打开详情时还没有未完成 Run。
+  let closed=0,refreshed=0;
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team'},detailIssue:issue,
+    closeDetail(){closed++;},refresh:async()=>{refreshed++;},
+    request:async(path,options)=>{calls.push([path,options?.method||'GET']);return{...issue,runs};}});
+  try{
+    await controller.deleteIssue();
+    assert.deepEqual(calls,[['/api/teams/team/issues/issue','GET'],['/api/teams/team/runs/waiting/cancel','POST'],
+      ['/api/teams/team/runs/running/cancel','POST'],['/api/teams/team/issues/issue','DELETE']]);
+    assert.match(prompts[0],/取消以下未结束的 Run/);assert.match(prompts[0],/WAITING/);assert.match(prompts[0],/RUNNING/);
+    assert.equal(closed,1);assert.equal(refreshed,1);assert.equal(errorBox.textContent,'');assert.equal(button.disabled,false);
+    calls.length=0;global.window.confirm=()=>false;await controller.deleteIssue();
+    assert.deepEqual(calls,[['/api/teams/team/issues/issue','GET']],'取消确认时不能更改 Run 或事项');
+  }finally{global.document=previousDocument;global.window=previousWindow;}
+});
+
+test('delete failure stays in the detail and never deletes after a cancellation failure',async()=>{
+  const previousDocument=global.document,previousWindow=global.window;
+  const button={},errorBox={textContent:''},issue={id:'issue',runs:[{id:'run',status:'waiting_input'}]},calls=[];
+  global.document={getElementById:id=>id==='team-canvas-delete-issue'?button:errorBox};global.window={confirm:()=>true};
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team'},detailIssue:issue,
+    request:async(path,options)=>{calls.push(options?.method||'GET');if(!options)return issue;throw Error('取消失败');}});
+  try{
+    await controller.deleteIssue();assert.deepEqual(calls,['GET','POST']);assert.equal(errorBox.textContent,'取消失败');
+    assert.equal(button.disabled,false);assert.equal(controller.deletingIssue,false);
+    controller.request=async(path,options)=>{if(!options)return issue;if(options.method==='DELETE')throw Error('删除失败');return{};};
+    await controller.deleteIssue();assert.match(errorBox.textContent,/关联 Run 已取消，但事项尚未删除：删除失败/);
+    assert.equal(button.disabled,false);
+    controller.request=async(path,options)=>{if(!options)return{...issue,runs:[]};throw Error('后台有新任务');};
+    await controller.deleteIssue();assert.equal(errorBox.textContent,'后台有新任务','错误直接显示在详情内');
+  }finally{global.document=previousDocument;global.window=previousWindow;}
+});
+
+test('a linked run finishing during delete confirmation does not block deletion or cancel an active replacement',async()=>{
+  const previousDocument=global.document,previousWindow=global.window;
+  const button={},errorBox={},issue={id:'issue',runs:[{id:'run',status:'waiting_input'}]},calls=[];
+  global.document={getElementById:id=>id==='team-canvas-delete-issue'?button:errorBox};global.window={confirm:()=>true};
+  let status='completed';
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team'},detailIssue:issue,
+    closeDetail(){},refresh:async()=>{},request:async(path,options)=>{
+      calls.push([path,options?.method||'GET']);
+      if(path.endsWith('/cancel'))throw Object.assign(Error('状态已改变'),{status:409});
+      if(path.endsWith('/runs/run'))return{id:'run',status};return issue;
+    }});
+  try{
+    await controller.deleteIssue();assert.equal(calls.at(-1)[1],'DELETE');
+    calls.length=0;status='dispatching';await controller.deleteIssue();
+    assert.ok(!calls.some(row=>row[1]==='DELETE'));assert.equal(errorBox.textContent,'状态已改变');
   }finally{global.document=previousDocument;global.window=previousWindow;}
 });
 

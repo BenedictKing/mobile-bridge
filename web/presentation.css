@@ -705,6 +705,8 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-detail-footer button{min-height:40px}
 .team-canvas-detail-footer .primary{flex:1}
 .team-canvas-detail-footer .team-canvas-delete{flex:none;color:var(--error)}
+.team-canvas-detail-error{flex:none;margin:0;padding:10px 17px;border-top:1px solid var(--line);font-size:12px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.team-canvas-detail-error:empty{display:none}
 @media(max-width:950px){.team-canvas-toolbar{padding-right:9px;padding-left:9px}.team-canvas-actions{gap:3px}}
 @media(max-width:720px){
   .team-canvas{width:calc(100% + 32px);height:calc(100dvh - 320px);min-height:440px;max-height:calc(100dvh - 280px);margin:-5px -16px 0}

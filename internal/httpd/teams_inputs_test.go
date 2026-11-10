@@ -326,7 +326,7 @@ func TestTeamIssueDeleteRejectsActiveRun(t *testing.T) {
 	if err := env.server.TeamInputs.MarkRouted(teamID, input.ID, "new_task", runID, "lead"); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.store.SaveRun(&team.Run{ID: runID, TeamID: teamID, Status: team.RunDispatching}); err != nil {
+	if err := env.store.SaveRun(&team.Run{ID: runID, TeamID: teamID, Status: team.RunWaitingInput}); err != nil {
 		t.Fatal(err)
 	}
 	issueID := env.server.TeamInputs.ListIssues(teamID)[0].ID
@@ -336,6 +336,21 @@ func TestTeamIssueDeleteRejectsActiveRun(t *testing.T) {
 	}
 	if env.server.TeamInputs.GetIssue(teamID, issueID) == nil || env.server.TeamInputs.Get(teamID, input.ID) == nil {
 		t.Fatal("active Issue or its input was deleted")
+	}
+	// 与界面相同：明确取消等待中的 Run，再删除事项；执行记录保留。
+	cancelled := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/cancel", `{}`)
+	if cancelled.Code != http.StatusOK {
+		t.Fatalf("cancel parked Run: %d %s", cancelled.Code, cancelled.Body.String())
+	}
+	deleted := env.request(http.MethodDelete, "/api/teams/"+teamID+"/issues/"+issueID, `{}`)
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete after cancellation: %d %s", deleted.Code, deleted.Body.String())
+	}
+	if env.server.TeamInputs.GetIssue(teamID, issueID) != nil || env.server.TeamInputs.Get(teamID, input.ID) != nil {
+		t.Fatal("cancelled Issue or input still visible")
+	}
+	if run := env.store.Run(runID); run == nil || run.Status != team.RunCancelled {
+		t.Fatalf("cancelled Run history must remain: %+v", run)
 	}
 }
 
