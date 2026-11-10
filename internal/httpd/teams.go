@@ -1145,6 +1145,11 @@ func (h *handler) handleRunCreate(teamID string) {
 		h.fail(http.StatusBadRequest, errorBody(err.Error()))
 		return
 	}
+	// 与 CreateRun 的首个主控任务归一化保持一致，网络重试才能比对同一计划。
+	if len(inputs) == 0 && len(plan.Tasks) > 0 && plan.Tasks[0].MemberID == teamRow.LeadID {
+		plan.Tasks[0].ExecutionContext = team.ExecutionContextLeadControl
+		plan.PlanHash = team.PlanHash(plan.Mode, plan.CollectPolicy, plan.Goal, plan.Tasks)
+	}
 	// isolated_worktree 任务依赖注册表端口（§6.4 + §16 默认决策 6）：未装配
 	// 时创建即降级报错（409），而不是让 Run 起跑后在首个派发上确定性失败。
 	for i := range plan.Tasks {

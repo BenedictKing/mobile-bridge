@@ -8,10 +8,8 @@ package httpd
 // actionsrepair 修复剧本三个分支）。覆盖：
 //
 //  1. §12 验收主线：autoPlan single Run 的 Lead 回复合法 delegate（reviewer/
-//     tester，另加一条给 Lead 的第二轮载体 delegate——实现里 summarize 动作
-//     只能来自后续 Lead 任务回复的再解析，单块内的 summarize 会在同一次
-//     passActions 里立即执行、依赖只含根任务，拿不到两份 delegate 结果）→
-//     派生任务按序执行 → summarize 派生任务收到两来源摘要 → Run 完成；
+//     tester，另加一条 Lead 独立执行任务直接汇总）→ 派生任务按序执行 →
+//     自动收尾将两来源结果交回 Lead 主控 → Run 完成；
 //  2. §13.2:10 非法动作闭环：invalid_action_block + 修复指令回送 Lead 会话 →
 //     修复后执行；连续 3 次修复失败 final 收场、无第 4 条修复消息、Run 不因
 //     动作失败而失败；宽容 JSON（单引号/尾逗号）一次通过；修复 ID 超长
@@ -215,14 +213,8 @@ func (e *teamIntegrationEnv) amend(t *testing.T, teamID, runID, body string) (ma
 
 // ---- 用例 1：§12 验收主线——autoPlan Run 的 delegate×2 → 按序执行 → 摘要交回 Lead ----
 
-// TestTeamPhase3AutoPlanDelegatesAndSummarize：空计划（autoPlan）single Run，
-// Lead 首条回复带三条合法 delegate（reviewer / tester / lead——第三条是第二轮
-// 载体：其回复经同一 completed 分支再解析产生 summarize 动作；实现里 summarize
-// 的依赖取执行时刻的全部已完成任务，单块内混排会在 delegate 完成前执行、拿
-// 不到两份结果）。断言：两条成员 delegate 的 action_proposed 与根任务
-// task_completed 同批落账（journal 序号连续）；派生任务按写锁序串行执行；
-// summarize 派生任务（round 2）收到两份 delegate 结果（prompts.log）；Run
-// 完成且 Round 推进到 2；完成后驱动若干节拍无重复派发/重复 action_proposed。
+// TestTeamPhase3AutoPlanDelegatesAndSummarize 验证主控分派两名成员，随后由 Lead
+// 独立执行任务直接汇总两份结果，不在执行回合再次输出编排动作。
 func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 	env := newTeamIntegrationEnv(t, t.TempDir())
 	sessionLead := env.createMemberSession(t, "lead-sess", "主线 Lead")
@@ -230,7 +222,7 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 	sessionTest := env.createMemberSession(t, "test-sess", "测试成员")
 	// maxParallelTasks=1：ReadyTasks 单 pass 会同时放行多条无依赖派生任务，
 	// 派发池对写锁的竞争跨会话不定序；并发 1 使派生任务严格按 ordinal 串行
-	//（R→T→载体→summarize），summarize 的依赖集（执行时刻的全部已完成任务）
+	//（R→T→Lead 执行→自动收尾），汇总的依赖集（执行时刻的全部已完成任务）
 	// 才确定性包含两份 delegate 结果。
 	response := env.request(http.MethodPost, "/api/teams", `{"name":"阶段三主线团队","policy":{"autoDispatch":true,"maxParallelTasks":1},
 		"members":[{"id":"lead","sessionId":"`+sessionLead+`","role":"lead"},
@@ -251,10 +243,8 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 		"<team-actions>\n{\"actions\":[\n"+
 			`{"type":"delegate","sourceTaskId":"lead","round":1,"member":"reviewer","task":"审阅主线产出 PH3-REVIEW"},`+"\n"+
 			`{"type":"delegate","sourceTaskId":"lead","round":1,"member":"tester","task":"测试主线产出 PH3-TEST"},`+"\n"+
-			`{"type":"delegate","sourceTaskId":"lead","round":1,"member":"lead","task":"REPLYACTIONS:SUMM 两份产出到齐后请输出最终汇总"}`+"\n"+
+			`{"type":"delegate","sourceTaskId":"lead","round":1,"member":"lead","task":"两份产出到齐后请输出最终汇总 PH3-SUMMARY"}`+"\n"+
 			"]}\n</team-actions>")
-	writeAgentScriptFile(t, env.dataDir, "actions-SUMM.txt",
-		"<team-actions>\n{\"actions\":[{\"type\":\"summarize\",\"sourceTaskId\":\"lead-d1-2\",\"round\":2}]}\n</team-actions>")
 
 	runID := env.createRun(t, teamID, `{"goal":"REPLYACTIONS:MAIN 验收主线：分派审阅与测试后汇总","mode":"single"}`)
 	if !env.drive(t, 20*time.Second, func() bool {
@@ -267,22 +257,22 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 	if detail["autoPlan"] != true {
 		t.Fatalf("空计划 Run 应 autoPlan=true: %v", detail["autoPlan"])
 	}
-	if round := detail["round"]; round != float64(2) {
-		t.Fatalf("round-2 summarize 执行后 Run.Round 应推进到 2: %v", round)
+	if round := detail["round"]; round != float64(1) {
+		t.Fatalf("直接汇总不应额外推进轮次: %v", round)
 	}
 	// 派生任务齐备且全部完成（根 + reviewer/tester/lead 三 delegate + summarize）。
-	for _, taskID := range []string{"lead", "lead-d1-0", "lead-d1-1", "lead-d1-2", "lead-d1-2-s2-0"} {
+	for _, taskID := range []string{"lead", "lead-d1-0", "lead-d1-1", "lead-d1-2", "lead-auto-reduce"} {
 		if task := teamTaskOf(t, detail, taskID); task["status"] != "completed" {
 			t.Fatalf("任务 %s 应 completed: %v", taskID, task["status"])
 		}
 	}
 	if got := len(detail["tasks"].([]any)); got != 5 {
-		t.Fatalf("应恰有 5 个任务（根+3 delegate+summarize）: %d", got)
+		t.Fatalf("应恰有 5 个任务（根+3 delegate+自动汇总）: %d", got)
 	}
-	// 动作全部 executed（两条成员 delegate + 载体 delegate + summarize）。
+	// 动作全部 executed（两条成员 delegate + Lead 执行 delegate）。
 	actions := phase3Actions(t, detail)
-	if len(actions) != 4 {
-		t.Fatalf("应恰有 4 条动作: %v", actions)
+	if len(actions) != 3 {
+		t.Fatalf("应恰有 3 条动作: %v", actions)
 	}
 	for _, action := range actions {
 		if action["status"] != "executed" {
@@ -320,8 +310,8 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 			t.Fatalf("action_proposed 应与 task_completed 同批连续: completed=%d propose=%v", completedSeq, proposeSeqs)
 		}
 	}
-	if count := teamEventCount(events, team.EventActionProposed); count != 4 {
-		t.Fatalf("全程应恰 4 条 action_proposed（3+summarize 1）: %d", count)
+	if count := teamEventCount(events, team.EventActionProposed); count != 3 {
+		t.Fatalf("全程应恰 3 条 action_proposed: %d", count)
 	}
 	// 派生任务的 task_planned 携带 actionKey（重建据此置 executed）。
 	plannedWithKey := 0
@@ -330,8 +320,8 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 			plannedWithKey++
 		}
 	}
-	if plannedWithKey != 4 {
-		t.Fatalf("4 条派生任务的 task_planned 都应带 actionKey: %d", plannedWithKey)
+	if plannedWithKey != 3 {
+		t.Fatalf("3 条派生任务的 task_planned 都应带 actionKey: %d", plannedWithKey)
 	}
 
 	// 提示词严格串行（写锁互斥）：根 → reviewer → tester → lead 载体 → summarize。
@@ -346,11 +336,10 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 	}
 	revAt := promptIndex(records, "PH3-REVIEW")
 	testAt := promptIndex(records, "PH3-TEST")
-	sumCarrierAt := promptIndex(records, "REPLYACTIONS:SUMM")
-	summAt := promptIndex(records, "请汇总上述全部已完成任务的结果")
-	if revAt != 1 || testAt != 2 || sumCarrierAt != 3 || summAt != 4 {
-		t.Fatalf("派发顺序应为 根→reviewer→tester→载体→summarize: rev=%d test=%d carrier=%d summ=%d",
-			revAt, testAt, sumCarrierAt, summAt)
+	summAt := promptIndex(records, "PH3-SUMMARY")
+	if revAt != 1 || testAt != 2 || summAt != 3 {
+		t.Fatalf("派发顺序应为 根→reviewer→tester→Lead 汇总: rev=%d test=%d summ=%d",
+			revAt, testAt, summAt)
 	}
 	if records[revAt].session != sessionRev || records[testAt].session != sessionTest {
 		t.Fatalf("delegate 应落在目标成员会话: %v", records)
@@ -360,16 +349,19 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 			t.Fatalf("普通成员任务不得携带 Lead 简报:\n%s", records[index].text)
 		}
 	}
-	// summarize 收到两来源摘要（§12「摘要交回 Lead」）。
+	// Lead 执行任务收到两来源摘要，自动收尾回到主控。
 	summarizeText := records[summAt].text
-	for _, needle := range []string{"[Team delegation]", "[Team context]", "来源任务：lead-d1-0", "PH3-REVIEW",
+	for _, needle := range []string{"[Lead execution]", "[Team context]", "来源任务：lead-d1-0", "PH3-REVIEW",
 		"来源任务：lead-d1-1", "PH3-TEST", "[Assigned task]"} {
 		if !strings.Contains(summarizeText, needle) {
 			t.Fatalf("summarize 派发文本应含 %q:\n%s", needle, summarizeText)
 		}
 	}
-	if records[summAt].session != sessionLead {
-		t.Fatalf("summarize 应交回 Lead 会话: %v", records[summAt].session)
+	if records[summAt].session != taskExecutionSession(t, detail, "lead-d1-2") {
+		t.Fatalf("汇总应进入 Lead 执行会话: %v", records[summAt].session)
+	}
+	if !strings.Contains(records[4].text, "请汇总本次团队执行成果") || records[4].session != sessionLead {
+		t.Fatalf("自动收尾应交回 Lead 主控会话: %v", records[4])
 	}
 
 	// 重复驱动不重派、不重复提案（重复 ActionKey 不再建任务的可观测面）。
@@ -1107,7 +1099,7 @@ func TestTeamPhase3AmendCacheImport(t *testing.T) {
 			t.Fatalf("缓存导入应只含 t1/t2: %v", entry)
 		}
 		if entry["parentTaskId"] != taskID || entry["inputHash"] == "" ||
-			entry["sessionId"] != sessionLead || entry["turnId"] == "" {
+			entry["sessionId"] != taskExecutionSession(t, env.runDetail(t, teamID, runID), taskID) || entry["turnId"] == "" {
 			t.Fatalf("缓存导入应携带溯源引用: %v", entry)
 		}
 	}
@@ -1133,8 +1125,8 @@ func TestTeamPhase3AmendCacheImport(t *testing.T) {
 		t.Fatalf("前缀缓存零重发、末任务恰执行一次: %d ≠ %d", len(records), promptsBefore+1)
 	}
 	amendAt := promptIndex(records, "PH3-AM3B")
-	if amendAt < 0 || records[amendAt].session != sessionLead {
-		t.Fatalf("修订末任务的提示词应到达 Lead 会话: %v", records)
+	if amendAt < 0 || records[amendAt].session != taskExecutionSession(t, env.runDetail(t, teamID, amendID), "t3") {
+		t.Fatalf("修订末任务的提示词应到达独立执行会话: %v", records)
 	}
 	// 增量恰一条且是修订末任务（上下文携带 t1/t2 结果属正常注入——缓存
 	// 零重发由「增量恰 1 条」与下方 cachedFrom 断言共同保证）。

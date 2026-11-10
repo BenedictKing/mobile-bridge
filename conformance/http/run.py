@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""HTTP differential capture harness (plan doc P0).
+"""HTTP contract capture harness (plan doc P0).
 
-Boots the Python gateway in-process with a stub bridge, replays a fixed
-request sequence and records normalized responses (status, key headers,
-masked body) into golden.jsonl. The Python gateway is the oracle; a later Go
-implementation must reproduce the golden byte-for-byte.
+Replays fixed requests against an isolated Go gateway with a stub bridge.
+The Python boot path is retained only for historical checkouts; Python has
+been retired. Review contract differences before explicitly accepting them.
 
-  python3 conformance/http/run.py            # rewrite golden.jsonl
-  python3 conformance/http/run.py --verify   # diff a fresh run against it
+  python3 conformance/http/run.py --target go --verify
+  python3 conformance/http/run.py --target go --update
 
 Volatile values (instance ids, csrf tokens, session cookies, server/date
 headers) are masked; everything else must be stable across runs.
@@ -86,6 +85,8 @@ MASKS = [
     (re.compile(r'"csrf": ?"[A-Za-z0-9_-]+"'), '"csrf": "<CSRF>"'),
     (re.compile(r'"instanceId": ?"[^"]*"'), '"instanceId": "<INSTANCE>"'),
     (re.compile(r'"token": ?"[A-Za-z0-9_-]+"'), '"token": "<TOKEN>"'),
+    (re.compile(r'codex_mobile_session_[a-f0-9]+'), 'codex_mobile_session_<INSTANCE>'),
+    (re.compile(r'"streamId": ?"[a-f0-9]+"'), '"streamId": "<STREAM>"'),
 ]
 HEADER_MASKS = re.compile(r'^(session|token|csrf)=.*?(;|$)')
 
@@ -150,6 +151,7 @@ def normalize_headers(headers, gzip_body=False):
             continue
         if lowered == 'set-cookie':
             value = re.sub(r'^([^=;]+)=[^;]*(;.*)?$', r'\1=<TOKEN>\2', value)
+            value = mask(value)
         kept.append(f'{name}: {value}')
     return sorted(kept)
 
@@ -260,6 +262,7 @@ def capture():
 def capture_go():
     import os
     import subprocess
+    import tempfile
     binary = ROOT / 'dist' / 'gateway-go'
     subprocess.run(['go', 'build', '-o', str(binary), './cmd/gateway'],
                    cwd=ROOT, check=True)
@@ -268,7 +271,8 @@ def capture_go():
     probe.bind(('127.0.0.1', 0))
     port = probe.getsockname()[1]
     probe.close()
-    environment = dict(os.environ, GATEWAY_PORT=str(port),
+    data_dir = tempfile.TemporaryDirectory(prefix='mobile-bridge-conformance-')
+    environment = dict(os.environ, GATEWAY_PORT=str(port), GATEWAY_DATA_DIR=data_dir.name,
                        GATEWAY_AUTH=json.dumps({'username': USERNAME, **record}),
                        GATEWAY_DISABLE_STORE='1', GATEWAY_DISABLE_IPC='1')
     process = subprocess.Popen([str(binary)], env=environment,
@@ -292,11 +296,13 @@ def capture_go():
     finally:
         process.terminate()
         process.wait(timeout=5)
+        data_dir.cleanup()
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--verify', action='store_true')
+    parser.add_argument('--update', action='store_true', help='explicitly accept reviewed Go contract changes')
     parser.add_argument('--target', choices=('python', 'go'), default='python')
     arguments = parser.parse_args()
     golden_path = Path(__file__).resolve().parent / 'golden.jsonl'
@@ -313,7 +319,7 @@ def main():
                 print(f'MISMATCH line {index} ({name}):\n  want: {wanted[:400]}\n'
                       f'   got: {produced[:400]}', file=sys.stderr)
         sys.exit(1)
-    if arguments.target != 'python':
+    if arguments.target != 'python' and not arguments.update:
         sys.exit('golden.jsonl may only be rewritten from the Python oracle (no --target go)')
     golden_path.write_text(payload, encoding='utf-8')
     print(f'wrote {len(lines)} golden responses to {golden_path}')
