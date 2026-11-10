@@ -1523,8 +1523,6 @@ const en={
   "标准速度": "Standard speed",
   "视图形式": "View",
   "聊天列表": "Chat list",
-  "显示会话运行和完成标识": "Show running and completed chat indicators",
-  "绿点表示运行中，蓝点表示完成未查看；进入会话后清除完成标识。": "Green means running; blue means completed and unread. Open the chat to clear the completion indicator.",
   "团队": "Teams",
   "团队运行": "Team operations",
   "团队工作台导航": "Team workspace navigation",

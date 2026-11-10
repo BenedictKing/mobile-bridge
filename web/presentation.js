@@ -1,7 +1,7 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#38450f',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',defaultCompact:'main',showReasoning:true,showProcess:true,showActivity:true,showAccounts:true};
+  const defaults={theme:'system',accent:'#38450f',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',defaultCompact:'main',showReasoning:true,showProcess:true,showAccounts:true};
   const compactLevels=['bare','full','main','latest','gateway','gateway-full','gateway-latest'];
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
@@ -14,8 +14,7 @@ const ChatAppearance=(()=>{
       defaultCompact:compactLevels.includes(value.defaultCompact)?value.defaultCompact:defaults.defaultCompact,
       showReasoning:typeof value.showReasoning==='boolean'?value.showReasoning:defaults.showReasoning,
       showProcess:typeof value.showProcess==='boolean'?value.showProcess:defaults.showProcess,
-      showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts,
-      showActivity:typeof value.showActivity==='boolean'?value.showActivity:defaults.showActivity};
+      showAccounts:typeof value.showAccounts==='boolean'?value.showAccounts:defaults.showAccounts};
   }
   function luminance(hex){
     const rgb=hex.match(/[0-9a-f]{2}/gi).map(v=>parseInt(v,16)/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4);
@@ -63,7 +62,6 @@ if(typeof document!=='undefined')(()=>{
     const dark=settings.theme==='dark'||settings.theme==='system'&&system.matches;
     const colors=ChatAppearance.colors(settings.accent,dark);
     root.dataset.theme=dark?'dark':'light';root.dataset.density=settings.density;
-    root.dataset.showActivity=String(settings.showActivity);
     root.dataset.showAccounts=String(settings.showAccounts);
     root.dataset.enterMode=settings.enterMode;
     get('appearance-accounts').checked=settings.showAccounts;
@@ -79,7 +77,7 @@ if(typeof document!=='undefined')(()=>{
     try{window.MobileBridgeNative?.setTheme(dark);}catch{}
     for(const [id,value] of Object.entries({theme:settings.theme,accent:settings.accent,font:settings.fontSize,code:settings.codeSize,density:settings.density}))get('appearance-'+id).value=value;
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';
-    get('appearance-activity').checked=settings.showActivity;get('appearance-reasoning').checked=settings.showReasoning;get('appearance-process').checked=settings.showProcess;
+    get('appearance-reasoning').checked=settings.showReasoning;get('appearance-process').checked=settings.showProcess;
     get('appearance-enter-mode').value=settings.enterMode;updateSendHint();
     if(get('appearance-compact'))get('appearance-compact').value=settings.defaultCompact;
     document.querySelectorAll('[data-accent]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.accent===settings.accent.toLowerCase())));
@@ -135,7 +133,6 @@ if(typeof document!=='undefined')(()=>{
   get('appearance-enter-mode').onchange=()=>change({enterMode:get('appearance-enter-mode').value});
   if(get('appearance-compact'))get('appearance-compact').onchange=()=>change({defaultCompact:get('appearance-compact').value});
   get('appearance-reasoning').onchange=()=>change({showReasoning:get('appearance-reasoning').checked});
-  get('appearance-activity').onchange=()=>change({showActivity:get('appearance-activity').checked});
   get('appearance-process').onchange=()=>change({showProcess:get('appearance-process').checked});
   document.querySelectorAll('[data-accent]').forEach(button=>button.onclick=()=>change({accent:button.dataset.accent}));
   get('appearance-accounts').onchange=()=>change({showAccounts:get('appearance-accounts').checked});

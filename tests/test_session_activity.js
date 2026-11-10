@@ -88,3 +88,12 @@ test('terminal turn badges use the gateway unread state without browser storage'
     assert.equal(activity.indicator(key),null);
   }
 });
+
+test('session activity stays visible without an appearance toggle',()=>{
+  const appearance=require('../web/presentation.js');
+  assert.equal(appearance.normalize({showActivity:false}).showActivity,undefined);
+  const html=readFileSync(require.resolve('../web/index.html'),'utf8');
+  assert.doesNotMatch(html,/appearance-activity|显示会话运行和完成标识/);
+  const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
+  assert.doesNotMatch(css,/data-show-activity=false/);
+});
