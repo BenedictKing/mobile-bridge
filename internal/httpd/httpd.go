@@ -426,6 +426,7 @@ type staticRoute struct {
 var staticRoutes = map[string]staticRoute{
 	"/":                           {"index.html", "text/html; charset=utf-8"},
 	"/i18n.js":                    {"i18n.js", "text/javascript; charset=utf-8"},
+	"/icons.js":                   {"icons.js", "text/javascript; charset=utf-8"},
 	"/app.js":                     {"app.js", "text/javascript; charset=utf-8"},
 	"/modes.js":                   {"modes.js", "text/javascript; charset=utf-8"},
 	"/attachments.js":             {"attachments.js", "text/javascript; charset=utf-8"},
