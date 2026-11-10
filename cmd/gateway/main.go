@@ -1275,6 +1275,9 @@ func recordTeamRunNotification(ledger *notifications.RunNotificationLedger, stor
 func backfillTeamRunNotifications(ledger *notifications.RunNotificationLedger, store *team.Store, now time.Time) {
 	candidates := []notifications.RunBackfillCandidate{}
 	for _, run := range store.Runs() {
+		if run.IsIssueClassificationOnly() {
+			continue
+		}
 		kind := team.RunNotificationKindOfStatus(run.Status)
 		if kind == "" {
 			continue
