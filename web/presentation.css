@@ -780,8 +780,6 @@ body:not(:has(#app:not([hidden]))) .gateway-entry{display:none}
 .gateway-actions .plain{min-height:40px;justify-content:flex-start;text-align:left;padding:8px 2px;color:var(--muted)}
 .gateway-actions .plain:hover{color:var(--text)}
 #gateway-note:empty{display:none}
-/* 一切正常时不占位：断开、连接中、运行中、只读才在标题栏写状态 */
-.status.idle{display:none}
 /* 空列表：说明原因并给出下一步，而不是一句灰字 */
 .list-empty{display:grid;gap:8px;justify-items:start;padding:44px 10px 0}
 .list-empty strong{font-size:15px;font-weight:600}

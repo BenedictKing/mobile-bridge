@@ -1785,8 +1785,7 @@ class TeamRunScreen{
     if(detail.scheduledFrom)statusLine.append(this.node('span',t('定时触发'),'team-badge b-ready'));
     if(detail.stopReason){const reason=this.node('span',teamRunStopReasonText(detail),'team-stop-reason');reason.title=detail.stopReason;statusLine.append(reason);}
     if(this.reconnecting){
-      // 断线提示 chip：transport 重试期间置位，成功帧到达自清（对照聊天页
-      // #status 的 offline 样式，但 Run 页 DOM 无 #status，就地展示）。
+      // 断线提示 chip：transport 重试期间置位，成功帧到达自清，Run 页就地展示。
       statusLine.append(this.node('span',t('连接中断，重连中…'),'status offline'));
     }
     const verifyBadge=this.renderVerifyBadge();
