@@ -395,6 +395,25 @@ func TestMigrationLatestKeepsQuestionBeforeEncodedImage(t *testing.T) {
 	}
 }
 
+func TestMigrationLatestSkipsClaudeLocalCommandRecords(t *testing.T) {
+	view := transcriptView()
+	turns := view.MustGet("turns").(*jsoncompat.Array)
+	last := turns.Items[len(turns.Items)-1].(*jsoncompat.Object)
+	messages := last.MustGet("messages").(*jsoncompat.Array)
+	for _, text := range []string{"<command-name>/model</command-name>", "<local-command-stdout>Set model to Opus</local-command-stdout>"} {
+		message := jsoncompat.NewObject()
+		message.Set("role", "user")
+		message.Set("text", text)
+		messages.Items = append(messages.Items, message)
+	}
+	for _, scope := range []string{"main", "full", "latest"} {
+		entries, _ := migrationTranscript(view, scope)
+		if len(entries) < 2 || entries[len(entries)-2].text != "第二个问题" || entries[len(entries)-1].text != "第二个回答" {
+			t.Fatalf("%s should end at the latest model exchange, not local CLI records: %+v", scope, entries)
+		}
+	}
+}
+
 func TestMigrationKeepsLatestExchangeWithManyThoughts(t *testing.T) {
 	for _, scope := range []string{"main", "full"} {
 		t.Run(scope, func(t *testing.T) {

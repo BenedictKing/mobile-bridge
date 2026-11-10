@@ -177,6 +177,11 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 				}
 				role, _ := message.MustGet("role").(string)
 				text := strings.TrimSpace(migrationText(stringField(message, "text")))
+				if role == "user" && (strings.HasPrefix(text, "<command-name>") || strings.HasPrefix(text, "<local-command-stdout>")) {
+					// Claude persists local CLI commands as user records even though
+					// they are not prompts sent to the model.
+					continue
+				}
 				if text != strings.TrimSpace(stringField(message, "text")) {
 					// An attachment belongs to its preceding question. It must not
 					// become the last user question in the latest-exchange scope.
