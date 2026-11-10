@@ -117,7 +117,7 @@ class WorkModes {
     const terminalGoal=goal&&['complete','completed','cancelled'].includes(goal.status);
     const dismissibleGoal=terminalGoal||(!goal&&request&&['unknown','unconfirmed'].includes(request.status));
     if(goalIdentity&&dismissibleGoal){
-      const close=node('button','×','goal-close');close.type='button';close.title=t('隐藏目标栏');close.setAttribute('aria-label',close.title);
+      const close=node('button',null,'goal-close');close.append(BridgeIcons.close());close.type='button';close.title=t('隐藏目标栏');close.setAttribute('aria-label',close.title);
       close.onclick=()=>{this.storage.setItem('hidden-goal:'+this.key,goalIdentity);this.render();this.goalToggle.focus();};
       this.goalRoot.append(close);
     }

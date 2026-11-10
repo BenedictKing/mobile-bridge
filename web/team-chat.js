@@ -267,7 +267,7 @@ class TeamChatController{
     const dialog=document.createElement('dialog');dialog.className='picker team-queue-edit';
     const head=this.node('div',undefined,'picker-head');
     head.append(this.node('h2',t_safe('编辑排队输入')));
-    const close=this.node('button','×','icon-button');close.type='button';close.setAttribute('aria-label',t_safe('关闭'));
+    const close=this.node('button',null,'icon-button');close.type='button';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));
     close.onclick=()=>dialog.close();head.append(close);
     const body=this.node('div',undefined,'picker-body');
     const editor=document.createElement('textarea');editor.value=input.text||'';editor.rows=6;
@@ -542,7 +542,7 @@ class TeamLeadPicker{
     const dialog=document.createElement('dialog');dialog.className='picker team-lead-picker';
     const head=this.node('div',undefined,'picker-head');
     head.append(this.node('h2',t_safe('选择主控 Agent')));
-    const close=this.node('button','×','icon-button');close.type='button';close.setAttribute('aria-label',t_safe('关闭'));close.onclick=()=>dialog.close();head.append(close);
+    const close=this.node('button',null,'icon-button');close.type='button';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));close.onclick=()=>dialog.close();head.append(close);
     this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);this._dialog=dialog;return dialog;
   }
   async open(project){
@@ -576,8 +576,8 @@ class TeamSettingsDialog{
   dialog(){
     if(this._dialog)return this._dialog;
     const dialog=document.createElement('dialog');dialog.className='picker team-settings-dialog';
-    const head=this.node('div','', 'picker-head'),title=this.node('h2',t_safe('团队设置')),close=this.button('×',()=>dialog.close());
-    close.className='icon-button';close.setAttribute('aria-label',t_safe('关闭'));head.append(title,close);
+    const head=this.node('div','', 'picker-head'),title=this.node('h2',t_safe('团队设置')),close=this.button(null,()=>dialog.close());
+    close.className='icon-button';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));head.append(title,close);
     this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);this._dialog=dialog;return dialog;
   }
   async open(team){
@@ -644,7 +644,8 @@ class TeamSettingsDialog{
       const chipFor=tag=>{
         const chip=this.node('span',undefined,'team-tag-chip');
         chip.append(this.node('span',tag,'team-tag-chip-text'));
-        const remove=this.button('×',()=>{this.draftTags.set(member.id,draftTags().filter(item=>item!==tag));chip.remove();syncSave();});
+        const remove=this.button(null,()=>{this.draftTags.set(member.id,draftTags().filter(item=>item!==tag));chip.remove();syncSave();});
+        remove.append(BridgeIcons.close());
         remove.className='team-tag-chip-remove';remove.disabled=this.busy;
         remove.setAttribute('aria-label',t_safe('移除标签')+'：'+tag);
         chip.append(remove);return chip;

@@ -1,5 +1,13 @@
 'use strict';
 
+// API 对象的字段顺序不稳定；数组元素顺序仍参与比较。
+function teamCanvasDataEqual(left,right){
+  if(left===right)return true;
+  if(!left||!right||typeof left!=='object'||typeof right!=='object'||Array.isArray(left)!==Array.isArray(right))return false;
+  const keys=Object.keys(left);
+  return keys.length===Object.keys(right).length&&keys.every(key=>Object.prototype.hasOwnProperty.call(right,key)&&teamCanvasDataEqual(left[key],right[key]));
+}
+
 function teamCanvasAssociations(inputs,issues){
   const inputByID=new Map((inputs||[]).map(input=>[input.inputId||input.id,input]));
   const associations={};
@@ -84,10 +92,9 @@ class TeamCanvasController{
   constructor({root,request,openRun,notify}){
     Object.assign(this,{root,request,openRun,notify});
     this.current=null;this.inputs=[];this.issues=[];
-    this.positions=new Map();this.mode='canvas';this.generation=0;this.pollTimer=null;this.refreshToken=null;
+    this.positions=new Map();this.generation=0;this.pollTimer=null;this.refreshToken=null;
     this.transform={x:0,y:0,scale:1};this.drag=null;this.detailIssue=null;this.detailRun=null;this.detailRequestToken=null;this.focusedIssueID=null;
     this.viewport=document.getElementById('team-canvas-viewport');
-    this.conversationBar=document.getElementById('team-conversation-view-bar');
     this.world=document.getElementById('team-canvas-world');
     this.nodes=document.getElementById('team-canvas-nodes');
     this.wires=document.getElementById('team-canvas-wires');
@@ -101,15 +108,12 @@ class TeamCanvasController{
   node(tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node;}
   button(text,className,action){const button=this.node('button',text,className);button.type='button';if(action)button.addEventListener('click',action);return button;}
   bindControls(){
-    document.querySelectorAll('[data-team-view]').forEach(button=>button.addEventListener('click',()=>this.setMode(button.dataset.teamView)));
-    document.getElementById('team-open-canvas').addEventListener('click',()=>this.setMode('canvas'));
     document.getElementById('team-canvas-refresh').addEventListener('click',()=>this.refresh(true));
-    document.getElementById('team-canvas-backfill').addEventListener('click',()=>this.backfillHistory());
-    document.getElementById('team-canvas-delete-issue').addEventListener('click',()=>this.deleteIssue());
     document.getElementById('team-canvas-fit').addEventListener('click',()=>this.fitAll());
     document.getElementById('team-canvas-zoom-out').addEventListener('click',()=>this.zoomAt(this.transform.scale/1.2));
     document.getElementById('team-canvas-zoom-in').addEventListener('click',()=>this.zoomAt(this.transform.scale*1.2));
     document.getElementById('team-canvas-detail-close').addEventListener('click',()=>this.closeDetail());
+    document.getElementById('team-canvas-delete-issue').addEventListener('click',()=>this.deleteIssue());
     document.getElementById('team-canvas-open-run').addEventListener('click',()=>{
       const target=this.detailRun;if(target&&this.openRun)this.openRun(this.current.id,target.id);
     });
@@ -127,13 +131,12 @@ class TeamCanvasController{
   }
   open(team){
     clearInterval(this.pollTimer);
-    this.generation++;this.current=team||null;this.inputs=[];this.issues=[];this.lastRecords=null;this.historyBackfill=null;this.backfillBusy=false;this.positions.clear();this.userInteracted=false;this.focusedIssueID=null;this.transform={x:0,y:0,scale:1};this.refreshToken=null;this.refreshQueued=false;this.closeDetail();
+    this.generation++;this.current=team||null;this.inputs=[];this.issues=[];this.lastRecords=null;this.positions.clear();this.userInteracted=false;this.focusedIssueID=null;this.transform={x:0,y:0,scale:1};this.refreshToken=null;this.refreshQueued=false;this.closeDetail();
     this.nodes.replaceChildren();this.wires.replaceChildren();this.summary.textContent='';
-    if(!team){this.root.hidden=true;this.conversationBar.hidden=true;document.getElementById('chat').classList.remove('team-canvas-active');return;}
-    this.mode=this.savedMode(team.id);this.root.hidden=this.mode!=='canvas';
-    document.getElementById('chat').classList.toggle('team-canvas-active',this.mode==='canvas');
-    if(this.mode==='canvas'&&this.viewport.closest('.timeline'))this.viewport.closest('.timeline').scrollTop=0;
-    this.syncModeButtons();
+    if(!team){this.root.hidden=true;document.getElementById('chat').classList.remove('team-canvas-active');return;}
+    this.root.hidden=false;
+    document.getElementById('chat').classList.add('team-canvas-active');
+    if(this.viewport.closest('.timeline'))this.viewport.closest('.timeline').scrollTop=0;
     this.refresh();
     this.pollTimer=setInterval(()=>this.refresh(),5000);
   }
@@ -148,48 +151,11 @@ class TeamCanvasController{
     }
     this.refresh(true);
   }
-  async backfillHistory(){
-    if(!this.current||this.backfillBusy)return;
-    const button=document.getElementById('team-canvas-backfill');
-    const team=this.current;this.backfillBusy=true;button.disabled=true;
-    try{
-      const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues/backfill',{
-        method:'POST',body:{},
-      });
-      if(this.current?.id!==team.id)return;
-      this.historyBackfill={active:Number(result.pending||0)>0,pending:Number(result.pending||0),started:Number(result.started||0),failed:Number(result.failed||0)};
-      this.notify?.(result.pending
-        ?result.pending+' '+this.t('条历史消息待整理')+' · '+this.t('整理期间可以继续发送新要求')
-        :result.failed?this.t('历史对话已检查')+' · '+result.failed+' '+this.t('条需要处理'):this.t('历史整理完成'));
-      await this.refresh(true);
-    }catch(error){
-      if(this.current?.id===team.id)this.error.textContent=this.t(error.message||'整理历史对话失败');
-    }finally{this.backfillBusy=false;button.disabled=false;}
-  }
-  savedMode(teamID){try{return localStorage.getItem('team-chat-view:'+teamID)==='conversation'?'conversation':'canvas';}catch{return'canvas';}}
-  setMode(mode){
-    if(!this.current||!['canvas','conversation'].includes(mode))return;
-    this.mode=mode;try{localStorage.setItem('team-chat-view:'+this.current.id,mode);}catch{}
-    if(typeof chatTimeline!=='undefined')chatTimeline?.setViewportLocked(mode==='canvas');
-    this.root.hidden=mode!=='canvas';
-    document.getElementById('chat').classList.toggle('team-canvas-active',mode==='canvas');
-    this.syncModeButtons();
-    if(mode==='canvas'){
-      this.userInteracted=false;
-      if(this.viewport.closest('.timeline'))this.viewport.closest('.timeline').scrollTop=0;
-      requestAnimationFrame(()=>{if(!this.userInteracted)this.fitAll(false,true);});
-      this.refresh();
-    }
-  }
   afterHistoryRead(){
-    if(!this.current||this.mode!=='canvas')return;
+    if(!this.current)return;
     if(typeof chatTimeline!=='undefined')chatTimeline?.setViewportLocked(true);
     if(this.viewport.closest('.timeline'))this.viewport.closest('.timeline').scrollTop=0;
     requestAnimationFrame(()=>{if(!this.userInteracted)this.fitAll(false,true);});
-  }
-  syncModeButtons(){
-    document.querySelectorAll('[data-team-view]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.teamView===this.mode)));
-    this.conversationBar.hidden=!this.current||this.mode!=='conversation';
   }
   async refresh(force=false){
     const team=this.current;if(!team)return;
@@ -204,12 +170,12 @@ class TeamCanvasController{
       let changed=!this.lastRecords;
       if(issueResult.status==='fulfilled'){
         const issues=Array.isArray(issueResult.value.issues)?issueResult.value.issues:[];
-        if(JSON.stringify(issues)!==JSON.stringify(this.issues)){this.issues=issues;changed=true;}
+        if(!teamCanvasDataEqual(issues,this.issues)){this.issues=issues;changed=true;}
       }else this.error.textContent=this.t(issueResult.reason?.message||'读取 Issue 失败');
       if(inputResult.status==='fulfilled'){
-        if(JSON.stringify(inputResult.value)!==JSON.stringify(this.inputs)){this.inputs=inputResult.value;changed=true;}
+        if(!teamCanvasDataEqual(inputResult.value,this.inputs)){this.inputs=inputResult.value;changed=true;}
       }else this.error.textContent=this.t(inputResult.reason?.message||'读取输入失败');
-      if(generation===this.generation&&this.current?.id===team.id){if(changed)this.render();this.checkHistoryBackfill();}
+      if(generation===this.generation&&this.current?.id===team.id&&changed)this.render();
     }catch(error){if(generation===this.generation)this.error.textContent=this.t(error.message||'画布刷新失败');}
     finally{if(this.refreshToken===token)this.refreshToken=null;if(this.refreshQueued){this.refreshQueued=false;queueMicrotask(()=>this.refresh(true));}}
   }
@@ -243,24 +209,12 @@ class TeamCanvasController{
     const issues=this.issues.map(issue=>({issue,bubbles:(issue.inputs||[]).map(source=>inputByID.get(source.inputId)).filter(Boolean)}));
     return{bubbles,issues};
   }
-  checkHistoryBackfill(){
-    if(!this.historyBackfill?.active)return;
-    const historical=this.inputs.filter(input=>input.historical),pending=historical.filter(input=>input.associationStatus==='pending').length;
-    this.historyBackfill.pending=pending;
-    if(pending===0){
-      this.historyBackfill.active=false;
-      const failed=historical.filter(input=>input.associationStatus==='failed').length;
-      const clarification=historical.filter(input=>input.associationStatus==='clarification').length;
-      this.notify?.(this.t('历史整理完成')+' · '+(historical.length-failed)+' '+this.t('条已处理')+' · '+clarification+' '+this.t('条需澄清')+' · '+failed+' '+this.t('条失败'));
-    }
-  }
   render(){
-    if(this.root.hidden||this.mode!=='canvas')return;
+    if(this.root.hidden)return;
     this.nodes.replaceChildren();this.wires.replaceChildren();
     const {bubbles,issues}=this.buildGroups();
     const pending=bubbles.filter(({input})=>input.associationStatus==='pending').length;
     const summary=[bubbles.length+' '+this.t('条气泡'),issues.length+' '+this.t('个事项'),pending+' '+this.t('待关联')];
-    if(this.historyBackfill?.active)summary.push(this.t('正在整理历史')+' · '+this.historyBackfill.pending);
     this.summary.textContent=summary.join(' · ');
     const bubbleRecords=bubbles.map(record=>{
       const node=this.renderMessage(record);node.style.width='320px';this.nodes.append(node);return{...record,node};
@@ -277,7 +231,6 @@ class TeamCanvasController{
     const runHint=teamCanvasInputRunID(input,issueIDs)?' · '+this.t('查看 Run'):'';
     if(input.associationStatus==='clarification')return this.t('需要澄清')+(issueIDs.length?' · '+issueIDs.length+' '+this.t('个事项'):runHint);
     if(issueIDs.length)return this.t('已关联')+' · '+issueIDs.length+' '+this.t('个事项');
-    if(input.historical&&input.associationStatus==='pending')return this.t('历史整理中');
     const labels={pending:'正在关联',clarification:'需要澄清',ignored:'无需建项',failed:'关联失败',unclassified:'历史输入未归类'};
     return this.t(labels[input.associationStatus]||'关系待同步')+runHint;
   }
@@ -390,30 +343,10 @@ class TeamCanvasController{
     const p=node._canvasPosition;if(p){const rect=this.viewport.getBoundingClientRect();this.transform.x=rect.width/2-(p.x+node.offsetWidth/2)*this.transform.scale;this.transform.y=rect.height/2-(p.y+node.offsetHeight/2)*this.transform.scale;this.applyTransform();}
   }
   focusMessage(id){
-    if(this.mode!=='canvas')return;
     const node=this.nodes.querySelector(`[data-input-id="${CSS.escape(id)}"]`),p=node?._canvasPosition;
     if(!p)return;
     const rect=this.viewport.getBoundingClientRect();
     this.transform.scale=Math.max(this.transform.scale,Math.min(.72,(rect.width-48)/this.canvasWidth));
-  async deleteIssue(){
-    const issue=this.detailIssue,team=this.current;
-    if(!issue||!team||this.deletingIssue)return;
-    const prompt=this.t('删除此事项及其关联对话？这些对话与其他事项的关联也会移除；Run 执行记录保留。确认删除？');
-    if(!window.confirm(prompt+'\n'+(issue.title||this.t('团队事项'))))return;
-    const button=document.getElementById('team-canvas-delete-issue');
-    this.deletingIssue=true;button.disabled=true;button.textContent=this.t('正在删除…');
-    try{
-      await this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues/'+encodeURIComponent(issue.id),{method:'DELETE',body:{}});
-      if(this.current?.id!==team.id)return;
-      if(this.detailIssue?.id===issue.id)this.closeDetail();
-      this.notify?.(this.t('事项及关联对话已删除'));
-      await this.refresh(true);
-    }catch(error){
-      if(this.current?.id===team.id)this.error.textContent=this.t(error.message||'删除事项失败');
-    }finally{
-      this.deletingIssue=false;button.disabled=false;button.textContent=this.t('删除事项与对话');
-    }
-  }
     this.transform.x=rect.width/2-(p.x+node.offsetWidth/2)*this.transform.scale;
     this.transform.y=rect.height/2-(p.y+node.offsetHeight/2)*this.transform.scale;
     this.userInteracted=true;
@@ -469,6 +402,25 @@ class TeamCanvasController{
     const openRunButton=document.getElementById('team-canvas-open-run');
     openRunButton.disabled=!this.detailRun;
     openRunButton.textContent=this.detailRun?this.t('打开 Run 详情'):this.t('暂无关联 Run');
+  }
+  async deleteIssue(){
+    const issue=this.detailIssue,team=this.current;
+    if(!issue||!team||this.deletingIssue)return;
+    const prompt=this.t('删除此事项及其关联对话？这些对话与其他事项的关联也会移除；Run 执行记录保留。确认删除？');
+    if(!window.confirm(prompt+'\n'+(issue.title||this.t('团队事项'))))return;
+    const button=document.getElementById('team-canvas-delete-issue');
+    this.deletingIssue=true;button.disabled=true;button.textContent=this.t('正在删除…');
+    try{
+      await this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues/'+encodeURIComponent(issue.id),{method:'DELETE',body:{}});
+      if(this.current?.id!==team.id)return;
+      if(this.detailIssue?.id===issue.id)this.closeDetail();
+      this.notify?.(this.t('事项及关联对话已删除'));
+      await this.refresh(true);
+    }catch(error){
+      if(this.current?.id===team.id)this.error.textContent=this.t(error.message||'删除事项失败');
+    }finally{
+      this.deletingIssue=false;button.disabled=false;button.textContent=this.t('删除事项与对话');
+    }
   }
   detailSection(title,rows){
     const section=this.node('section',undefined,'team-canvas-detail-section');section.append(this.node('h3',this.t(title)));

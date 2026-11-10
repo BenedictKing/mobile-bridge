@@ -238,13 +238,15 @@ function renderList(){
         const summary=el('summary');
         summary.append(el('span','group-name',groupName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
         if(removable){
-          const remove=el('button','group-action group-remove','×');
+          const remove=el('button','group-action group-remove');
           remove.type='button';remove.title=t('从列表移除项目');remove.setAttribute('aria-label',t('从列表移除项目'));
+          remove.append(BridgeIcons.close());
           remove.onclick=event=>{event.preventDefault();event.stopPropagation();return removeProjectGroup(removable,remove,groupKey);};
           summary.append(remove);
         }
-        const add=el('button','group-action group-add','＋');
+        const add=el('button','group-action group-add');
         add.type='button';add.title=t('在此项目新建聊天');add.setAttribute('aria-label',t('在此项目新建聊天'));
+        add.append(BridgeIcons.plus());
         add.onclick=event=>{event.preventDefault();event.stopPropagation();openNewChat(chat);};
         summary.append(add);
         details.append(summary);
@@ -560,7 +562,7 @@ async function openChat(id,host="local",teamId=""){
 if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';syncWorkspaceNavigation();
 if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;renderNotificationState();try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();showDetailRoute('#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{if(text==='unauthorized')showLogin();}});
 teamCanvas?.open(currentTeam);
-if(currentTeam)chatTimeline?.setViewportLocked(teamCanvas?.mode==='canvas');
+if(currentTeam)chatTimeline?.setViewportLocked(true);
   window.BridgePresentation?.openChat();
   startCatalog();
   const reading=timeline.start();

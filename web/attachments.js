@@ -112,7 +112,7 @@ class ChatAttachments {
         const retry=node('button',t('重试'),'plain');retry.type='button';retry.disabled=this.locked;
         retry.onclick=()=>{row.status='pending';this.uploadPending(this.key,this.rows);};card.append(retry);
       }
-      const remove=node('button','×','attachment-remove');remove.type='button';remove.disabled=this.locked;remove.setAttribute('aria-label',t('移除附件')+' '+row.name);
+      const remove=node('button',null,'attachment-remove');remove.append(BridgeIcons.close());remove.type='button';remove.disabled=this.locked;remove.setAttribute('aria-label',t('移除附件')+' '+row.name);
       remove.onclick=()=>{this.rows.splice(this.rows.indexOf(row),1);this.error='';this.save(this.key,this.rows);this.render();};card.append(remove);this.root.append(card);
     }
     this.root.hidden=!this.rows.length&&!this.error;this.onChange?.();

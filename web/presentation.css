@@ -93,7 +93,7 @@ aside{background:var(--frame);border-right:0;padding:8px 14px 0}
 main{background:var(--page);overflow:hidden}
 .appearance-button{display:grid;place-items:center;min-width:40px;width:40px;height:40px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:21px}
 .appearance-button:hover,.composer-toggle:hover{background:var(--active)}
-.icon-button{border-radius:8px;color:var(--muted)}
+.icon-button{border-radius:8px;color:var(--muted);display:grid;place-items:center}
 .icon-button:hover{background:var(--active)}
 .plain{min-height:36px;border-radius:7px;color:var(--green)}
 .plain:hover{background:var(--active)}
@@ -269,13 +269,13 @@ main{background:var(--page);overflow:hidden}
 .attachment-info{min-width:0;display:grid;gap:3px}
 .attachment-info strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .attachment-info small{font-size:12px;color:var(--muted)}
-.attachment-remove{border:0;background:none;color:var(--muted);padding:5px;font-size:18px;min-width:32px;min-height:32px}
+.attachment-remove{border:0;background:none;color:var(--muted);padding:5px;min-width:32px;min-height:32px;display:grid;place-items:center}
 
 /* Goal and plan content */
 .goal-state{position:relative;flex:none;margin:6px max(24px,calc((100% - 780px)/2));padding:10px 42px 10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);font-size:13px;max-height:25dvh;overflow:auto}
 .goal-state summary{cursor:pointer;color:var(--green);font-weight:600}
 .goal-state p{white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0;line-height:1.5}
-.goal-close{position:absolute;top:3px;right:4px;width:36px;height:36px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);font-size:20px;line-height:1;cursor:pointer}
+.goal-close{position:absolute;top:3px;right:4px;width:36px;height:36px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--muted);display:grid;place-items:center;cursor:pointer}
 .goal-state:not(:has(details[open])) .goal-close{top:50%;translate:0 -50%}
 .goal-pending{color:var(--muted)}
 .goal-state:has(.goal-editor){max-height:45dvh}
@@ -620,9 +620,6 @@ main{background:var(--page);overflow:hidden}
 #chat.team-canvas-active #newer,
 #chat.team-canvas-active #user-jump{display:none!important}
 #chat.team-canvas-active #timeline{overflow:hidden}
-.team-conversation-view-bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:flex-end;min-height:42px;padding:0 8px 5px;background:var(--page)}
-.team-open-canvas{min-height:34px;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:var(--raised);color:var(--text);font-size:12px}
-.team-open-canvas:hover{background:var(--active)}
 .team-canvas{display:flex;flex:0 0 auto;flex-direction:column;width:calc(100vw - 310px);height:calc(100dvh - 270px);min-height:500px;max-height:calc(100dvh - 210px);margin:-12px calc((100% - (100vw - 310px))/2) 0;color:var(--text)}
 .team-canvas[hidden]{display:none!important}
 .team-canvas-toolbar{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;padding:6px 14px 7px;border-bottom:1px solid var(--line);background:var(--page)}
@@ -630,9 +627,6 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-heading>strong{font-size:14px;white-space:nowrap}
 .team-canvas-heading>.muted{min-width:0;font-size:11px;white-space:nowrap}
 .team-canvas-actions{display:flex;align-items:center;gap:5px;flex:none}
-.team-canvas-mode{display:flex;align-items:center;gap:2px;margin-right:5px;padding:2px;border:1px solid var(--line);border-radius:7px;background:var(--raised)}
-.team-canvas-mode button{min-height:30px;padding:4px 9px;border:0;border-radius:5px;background:transparent;color:var(--muted);font-size:11px;white-space:nowrap}
-.team-canvas-mode button[aria-pressed=true]{background:var(--active);color:var(--text);font-weight:600}
 .team-canvas-tool{display:grid;place-items:center;flex:none;width:34px;height:34px;min-width:34px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--raised);color:var(--text);font-size:17px;line-height:1}
 .team-canvas-tool:hover{background:var(--active)}
 .team-canvas-zoom{min-width:39px;color:var(--muted);font-size:10px;text-align:center;font-variant-numeric:tabular-nums}
@@ -698,7 +692,7 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-detail-footer button{min-height:40px}
 .team-canvas-detail-footer .primary{flex:1}
 .team-canvas-detail-footer .team-canvas-delete{flex:none;color:var(--error)}
-@media(max-width:950px){.team-canvas-toolbar{padding-right:9px;padding-left:9px}.team-canvas-actions{gap:3px}.team-canvas-mode{margin-right:1px}}
+@media(max-width:950px){.team-canvas-toolbar{padding-right:9px;padding-left:9px}.team-canvas-actions{gap:3px}}
 @media(max-width:720px){
   .team-canvas{width:calc(100% + 32px);height:calc(100dvh - 320px);min-height:440px;max-height:calc(100dvh - 280px);margin:-5px -16px 0}
   .team-canvas-toolbar{min-height:50px;padding:5px 8px;gap:6px}
@@ -706,7 +700,6 @@ main{background:var(--page);overflow:hidden}
   .team-canvas-heading>strong{display:block;font-size:12px}
   .team-canvas-heading>.muted{display:block;overflow:hidden;text-overflow:ellipsis;font-size:9px}
   .team-canvas-actions{gap:2px}
-  .team-canvas-mode button{min-height:32px;padding:4px 7px;font-size:10px}
   .team-canvas-tool{width:32px;height:36px;min-width:32px}
   .team-canvas-actions #team-canvas-zoom-out,.team-canvas-actions #team-canvas-zoom-in{display:none}
   .team-canvas-zoom{min-width:34px;font-size:9px}
@@ -725,7 +718,6 @@ main{background:var(--page);overflow:hidden}
   .team-canvas{width:calc(100% + 32px);margin-right:-16px;margin-left:-16px}
   .team-canvas-toolbar{padding-right:5px;padding-left:7px}
   .team-canvas-tool{width:30px;min-width:30px}
-  .team-canvas-mode button{padding-right:5px;padding-left:5px}
 }
 @media(prefers-reduced-motion:reduce){.team-canvas-detail{transition:none}}
 .pool-section>h3{margin:0 0 12px;font-size:15px}
@@ -797,8 +789,6 @@ body:not(:has(#app:not([hidden]))) .gateway-entry{display:none}
 .settings-disclosure-summary{min-height:44px;padding:10px 0;font-size:14px;font-weight:650;cursor:pointer}
 .settings-disclosure-summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:4px}
 .settings-disclosure-body{padding-top:4px;clear:both}
-.settings-disclosure-body>.settings-subsection:first-child{margin-top:0;padding-top:0;border-top:0}
-.settings-disclosure-body>.settings-subsection:last-child{margin-bottom:0}
 .settings-disclosure-body>.appearance-grid{clear:both}
 .phone-header{min-height:48px;padding-top:6px;padding-bottom:6px}
 .phone-header .wordmark,.phone-header .light{font-size:14px;letter-spacing:0}
@@ -882,8 +872,8 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
 .mode-control{min-width:0;flex:0 1 auto}
 .mode-segmented{display:flex;align-items:center;gap:2px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
 .mode-option{min-width:0;min-height:32px;padding:5px 8px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}
-.mode-option:hover:not(:disabled){background:var(--active);color:var(--text)}
-.mode-option.active,.mode-option[aria-pressed=true]{background:var(--raised);color:var(--green);box-shadow:0 1px 3px #0000001c}
+.mode-option:hover:not(:disabled):not(.active):not([aria-pressed=true]){background:var(--active);color:var(--text)}
+.mode-option.active,.mode-option[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);font-weight:550}
 .mode-option:disabled{opacity:.52;cursor:not-allowed}
 .mode-option[hidden]{display:none}
 .mode-label-short{display:none}

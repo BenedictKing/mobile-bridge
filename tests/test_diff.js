@@ -19,6 +19,7 @@ function loadDiff() {
   const context = {
     window: {},
     document: {createElement: tag => new FakeNode(tag)},
+    BridgeIcons: {close: () => new FakeNode('svg')},
   };
   vm.runInNewContext(readFileSync(require.resolve('../web/diff.js'), 'utf8'), context);
   return context.window.BridgeDiff;

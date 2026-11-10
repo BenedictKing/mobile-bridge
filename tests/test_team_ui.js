@@ -21,6 +21,7 @@ class FakeNode{
   get classList(){const node=this;return{add(name){node.className+=(node.className?' ':'')+name;},remove(){},toggle(){},contains(name){return node.className.split(/\s+/).includes(name);}};}
 }
 global.document={createElement:tag=>new FakeNode(tag),createElementNS:(namespace,tag)=>new FakeNode(tag),body:new FakeNode('body'),querySelectorAll:()=>[]};
+global.BridgeIcons=require('../web/icons.js');
 global.dagre=require('../web/vendor/dagre.min.js');
 const {TeamsPanel,TeamRunScreen,teamRunStopReasonText,teamGraphLayout}=require('../web/team.js');
 function find(node,cls){const rows=[];const visit=current=>{if(String(current.className).split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}

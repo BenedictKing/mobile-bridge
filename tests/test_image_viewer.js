@@ -20,8 +20,10 @@ global.document={
   body:new Node('body'),
   listeners:{},
   createElement:tag=>new Node(tag),
+  createElementNS:(ns,tag)=>new Node(tag),
   addEventListener(kind,handler){(this.listeners[kind]??=[]).push(handler);},
 };
+global.BridgeIcons=require('../web/icons.js');
 require(path.join(__dirname,'..','web','image-viewer.js'));
 
 function openPreview(){

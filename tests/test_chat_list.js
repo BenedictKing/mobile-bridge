@@ -26,6 +26,7 @@ function loadList(listMode,overrides={}){
     listQuery:'',currentId:null,currentHost:'local',currentTeam:null,teamChat:null,
     $:id=>{assert.equal(id,'sessions');return sessions;},
     document:{createElement:tag=>new FakeNode(tag)},localStorage:{getItem:()=>null,setItem(){}},
+    BridgeIcons:{close:()=>new FakeNode('svg'),plus:()=>new FakeNode('svg')},
     t:value=>value,BridgeI18n:{agentLabel:value=>value,agentTag:value=>value},
     dateText:()=> '刚刚',renderActivity(){},openNewChat(){},openChat:async()=>{},
     hiddenProjectCwds:new Set(),newChatProjects:[],projectCwdKey:project=>String(project?.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'')||'/',
@@ -123,7 +124,7 @@ test('project group remove calls the gateway and clears the merged group and pin
     teamRequest:async(path,options)=>{calls.push({path,options});return{status:'hidden'};},
   });
   const remove=find(sessions,'group-remove')[0];
-  assert.equal(remove.textContent,'×');assert.equal(remove.title,'从列表移除项目');
+  assert.equal(remove.children[0].tag,'svg');assert.equal(remove.title,'从列表移除项目');
   await remove.onclick({preventDefault(){},stopPropagation(){}});
   assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/projects/acp%3Ap?cwd=%2Fp');assert.equal(calls[0].options.method,'DELETE');
   assert.equal(find(sessions,'project-group').length,0);

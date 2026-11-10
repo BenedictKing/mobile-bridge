@@ -38,3 +38,5 @@ android/local.properties
 .cache/
 .taste-skill/
 .workbuddy/
+
+.oil-ui/

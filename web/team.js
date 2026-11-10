@@ -179,7 +179,7 @@ class TeamRunDialogHost{
     const head=document.createElement('div');head.className='picker-head';
     const heading=document.createElement('h2');heading.id='team-run-dialog-heading';
     const close=document.createElement('button');
-    close.type='button';close.className='icon-button';close.textContent='×';
+    close.type='button';close.className='icon-button';close.append(BridgeIcons.close());
     close.setAttribute('aria-label',t_safe('关闭'));
     close.setAttribute('data-i18n-aria-label','关闭');
     close.onclick=()=>{dialog.runState=null;dialog.close();};
@@ -2438,7 +2438,7 @@ class TeamRunScreen{
     const head=document.createElement('div');head.className='picker-head';
     const heading=document.createElement('h2');heading.id='team-forward-dialog-heading';
     const close=document.createElement('button');
-    close.type='button';close.className='icon-button';close.textContent='×';
+    close.type='button';close.className='icon-button';close.append(BridgeIcons.close());
     close.setAttribute('aria-label',t_safe('关闭'));
     close.setAttribute('data-i18n-aria-label','关闭');
     close.onclick=()=>{dialog.forwardState=null;dialog.close();};

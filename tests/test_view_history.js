@@ -130,7 +130,7 @@ test('an unknown hash does not close an open detail either',()=>{
   assert.deepEqual(nav.calls,[]);
 });
 
-test('run back returns to its team on a desktop deep link',()=>{
+test('run back returns to its team on a desktop deep link or its originating dashboard',()=>{
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const start=source.indexOf('function closeTeamRunView(){');
   const end=source.indexOf('function openTeamRun(',start);
@@ -142,7 +142,7 @@ test('run back returns to its team on a desktop deep link',()=>{
     teamChat:{teamById(){return null;}},
     openRunRoute:'#run=t1/r1',
     openTeamChat:async value=>{opened.push(value);},
-    toast(){},detailPushed:false,
+    toast(){},detailPushed:false,teamRunReturnsToDashboard:false,
     location:{hash:'#run=t1/r1',pathname:'/',search:''},
     history:{back(){calls.push(['back']);},replaceState(){calls.push(['replace']);}},
   };
@@ -151,4 +151,10 @@ test('run back returns to its team on a desktop deep link',()=>{
   assert.deepEqual(opened,[team]);
   assert.deepEqual(calls,[['close']],'must not pop history or clear back to the home page');
   assert.equal(context.openRunRoute,'');
+  calls.length=0;opened.length=0;
+  context.teamRunReturnsToDashboard=true;
+  context.closeRun();
+  assert.deepEqual(opened,[],'dashboard entry must return through browser history');
+  assert.deepEqual(calls,[['close'],['back']]);
+  assert.equal(context.teamRunReturnsToDashboard,false);
 });

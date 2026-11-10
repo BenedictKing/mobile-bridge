@@ -25,7 +25,8 @@ class FakeNode{
   }
 }
 global.Option=class{constructor(text,value){this.textContent=text;this.value=value;this.className='';this.children=[];}};
-global.document={createElement:tag=>new FakeNode(tag),body:new FakeNode('body')};
+global.document={createElement:tag=>new FakeNode(tag),createElementNS:(ns,tag)=>new FakeNode(tag),body:new FakeNode('body')};
+global.BridgeIcons=require('../web/icons.js');
 function find(node,cls){const rows=[];const visit=current=>{if(current.className.split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}
 function text(node){return node.textContent+node.children.map(text).join('');}
 function flush(){return new Promise(resolve=>setImmediate(resolve));}

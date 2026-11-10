@@ -23,8 +23,9 @@ function setup(provider='gateway'){
   const items=['default','plan','goal'].map(workMode=>Object.assign(new Node('button'),{dataset:{workMode}}));
   const control=new Node('div');control.items=items;
   const root=new Node(),toggle=new Node('button');
-  global.document={createElement:tag=>new Node(tag)};
+  global.document={createElement:tag=>new Node(tag),createElementNS:(ns,tag)=>new Node(tag)};
   global.BridgeI18n={t:value=>value,locale:()=>"zh-CN"};
+  global.BridgeIcons=require('../web/icons.js');
   const modes=new WorkModes({select,control,goalRoot:root,goalToggle:toggle,storage,newId:()=>"op-1",
     onStatus:async payload=>calls.push(payload),onCancel:async()=>{},onEdit:async()=>{},onContinue:async()=>{},onComplete:async()=>{},onReview:async payload=>calls.push(payload)});
   modes.open('chat');

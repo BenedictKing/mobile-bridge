@@ -60,7 +60,7 @@ class ChatTimeline {
   constructor({url, request, renderMeta, renderText, status, onAction, hideInternalTeamMessages=false}) {
     Object.assign(this,{url,request,renderMeta,renderText,status,onAction,hideInternalTeamMessages});
     if(typeof currentTeam!=='undefined'&&currentTeam)this.hideInternalTeamMessages=true;
-    this.viewportLocked=!!(typeof currentTeam!=='undefined'&&currentTeam&&typeof teamCanvas!=='undefined'&&teamCanvas?.mode==='canvas');
+    this.viewportLocked=!!(typeof currentTeam!=='undefined'&&currentTeam&&typeof teamCanvas!=='undefined'&&teamCanvas);
     this.viewport=document.getElementById('timeline');
     this.container=document.getElementById('messages');
     this.older=document.getElementById('older');

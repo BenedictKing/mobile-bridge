@@ -174,7 +174,7 @@ window.BridgeDiff = (() => {
     const close = document.createElement('button');
     close.type = 'button';
     close.className = 'icon-button';
-    close.textContent = '×';
+    close.append(BridgeIcons.close());
     close.setAttribute('aria-label', t('关闭'));
     close.onclick = () => dialog.close();
     head.append(titleNode, close);
