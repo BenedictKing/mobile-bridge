@@ -2,7 +2,7 @@
 
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasIssueLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
+const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
 
 test('canvas uses persisted issue links and ignores stale revisions',()=>{
   const associations=teamCanvasAssociations(
@@ -64,22 +64,90 @@ test('canvas wires reference rendered bubble nodes and omit missing source recor
   const one={input:{inputId:'input-1'},node:{style:{left:'0px'}}};
   const two={input:{inputId:'input-2'},node:{style:{left:'1px'}}};
   const records=teamCanvasLinkedRecords([one,two],[
-    {issue:{id:'issue-1'},bubbles:[{input:{inputId:'input-2'}},{input:{inputId:'missing'}}]},
+    {issue:{id:'issue-1'},bubbles:[{input:{inputId:'input-2'}},{input:{inputId:'input-2'}},{input:{inputId:'missing'}}]},
   ]);
   assert.deepEqual(records[0].bubbles,[two]);
   assert.equal(records[0].bubbles[0].node.style.left,'1px');
 });
 
-test('desktop issue cards anchor near linked bubbles without overlapping',()=>{
-  const bubble=(id,y)=>({input:{inputId:id},node:{offsetHeight:80,_canvasPosition:{y}}});
-  const issue=(id,inputID)=>({issue:{id},bubbles:[{input:{inputId:inputID}}],node:{offsetHeight:140}});
-  const bubbles=[bubble('input-1',28),bubble('input-2',160),bubble('input-3',292)];
-  const issues=[issue('issue-late','input-3'),issue('issue-early','input-1'),issue('issue-orphan','missing')];
-  const positions=new Map(teamCanvasIssueLayout(bubbles,issues).map(({record,y})=>[record.issue.id,y]));
-  assert.equal(positions.get('issue-early'),28);
-  assert.equal(positions.get('issue-late'),262);
-  assert.equal(positions.get('issue-orphan'),424);
-  assert.ok(positions.get('issue-early')<positions.get('issue-late'),'关联顺序应优先于 Issue 创建顺序');
+const bubbleRecord=(id,height=96)=>({input:{inputId:id},node:{style:{},offsetHeight:height}});
+const issueRecord=(id,ids,height=220)=>({issue:{id},bubbles:ids.map(inputId=>({input:{inputId}})),node:{style:{},offsetHeight:height}});
+function assertLayoutBounds(plan){
+  const boxes=plan.positions.map(p=>({...p,width:parseFloat(p.record.node.style.width),height:p.record.node.offsetHeight}));
+  assert.equal(new Set(boxes.map(p=>p.key)).size,boxes.length,'节点不可重复');
+  for(let index=0;index<boxes.length;index++){
+    const a=boxes[index];
+    assert.ok(a.x>=0&&a.y>=0&&a.x+a.width<=plan.width+.01&&a.y+a.height<=plan.height+.01,'节点应在画布范围内');
+    for(const b of boxes.slice(index+1))assert.ok(a.x+a.width<=b.x+.01||b.x+b.width<=a.x+.01||a.y+a.height<=b.y+.01||b.y+b.height<=a.y+.01,'节点不可重叠：'+a.key+' / '+b.key);
+  }
+}
+
+test('joint layout aligns every message with its taller issue instead of accumulating drift',()=>{
+  const bubbles=Array.from({length:20},(_,i)=>bubbleRecord('input-'+i));
+  const issues=bubbles.map((b,i)=>issueRecord('issue-'+i,[b.input.inputId],180+i*8)).reverse();
+  const plan=teamCanvasLayout(bubbles,issues,{width:940});
+  for(const bubble of bubbles){
+    const left=plan.positions.find(p=>p.record===bubble),right=plan.positions.find(p=>p.key==='i:issue-'+bubbles.indexOf(bubble));
+    assert.equal(left.y+bubble.node.offsetHeight/2,right.y+right.record.node.offsetHeight/2);
+  }
+  assertLayoutBounds(plan);
+});
+
+test('connected messages and issues form one group without duplicating shared nodes',()=>{
+  const bubbles=['one','two','three','four'].map(id=>bubbleRecord(id));
+  const issues=[issueRecord('shared',['one','three','three']),issueRecord('split',['three','four']),issueRecord('orphan',['missing'])];
+  const groups=teamCanvasGroups(bubbles,issues);
+  assert.deepEqual(groups.map(g=>g.bubbles.map(b=>b.input.inputId)),[['one','three','four'],['two'],[]]);
+  assert.deepEqual(groups.map(g=>g.issues.map(i=>i.issue.id)),[['shared','split'],[],['orphan']]);
+  const plan=teamCanvasLayout(bubbles,issues,{width:1480});
+  assert.equal(plan.positions.length,7);
+  assertLayoutBounds(plan);
+});
+
+test('wide layouts place independent pairs side by side and fan-out issues in multiple columns',()=>{
+  const bubbles=Array.from({length:6},(_,i)=>bubbleRecord('input-'+i));
+  const issues=bubbles.map((b,i)=>issueRecord('issue-'+i,[b.input.inputId]));
+  const narrow=teamCanvasLayout(bubbles,issues,{width:940}),wide=teamCanvasLayout(bubbles,issues,{width:1480});
+  assert.ok(wide.height<narrow.height*.65,'宽屏应减少纵向堆叠');
+  assert.ok(wide.positions.some(p=>p.x>wide.width/2),'应使用右半屏');
+  assertLayoutBounds(wide);
+  const fanOut=Array.from({length:7},(_,i)=>issueRecord('fan-'+i,['input-0']));
+  const grid=teamCanvasLayout([bubbles[0]],fanOut,{width:2100});
+  const cards=grid.positions.filter(p=>p.key.startsWith('i:'));
+  assert.equal(new Set(cards.map(p=>p.x)).size,3);
+  assert.ok(cards.every(p=>p.grid&&parseFloat(p.record.node.style.width)>=300));
+  assertLayoutBounds(grid);
+});
+
+test('mobile groups keep messages beside their own context in reading order',()=>{
+  const bubbles=[bubbleRecord('one'),bubbleRecord('two')],issues=[issueRecord('first',['one']),issueRecord('second',['two'])];
+  const plan=teamCanvasLayout(bubbles,issues,{width:390,mobile:true});
+  assert.deepEqual(plan.positions.map(p=>p.key),['m:one','i:first','m:two','i:second']);
+  assert.ok(plan.positions.every(p=>p.x===16));
+  assertLayoutBounds(plan);
+});
+
+test('mobile controller fits full-width cards without shrinking or losing drag overrides',()=>{
+  const previousWindow=global.window;
+  global.window={matchMedia:()=>({matches:true})};
+  try{
+    const bubbles=[bubbleRecord('one')],issues=[issueRecord('first',['one'])];
+    for(const record of [...bubbles,...issues])Object.defineProperty(record.node,'offsetWidth',{get(){return parseFloat(this.style.width);}});
+    const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+      viewport:{clientWidth:390,getBoundingClientRect:()=>({width:390,height:500})},positions:new Map(),
+      world:{style:{}},wires:{setAttribute(){}},zoomLabel:{},
+    });
+    controller.layout(bubbles,issues);
+    controller.fitAll(false,true);
+    assert.equal(controller.canvasWidth,390);
+    assert.equal(controller.transform.scale,1,'默认按可读宽度显示');
+    controller.positions.set('m:one',{x:12,y:40});
+    controller.layout(bubbles,issues);
+    assert.equal(bubbles[0].node._canvasPosition.x,12);
+    assert.equal(bubbles[0].node._canvasPosition.y,40);
+    controller.fitAll();
+    assert.ok(controller.transform.scale<1,'仍可切换完整总览');
+  }finally{global.window=previousWindow;}
 });
 
 test('fit all respects tall canvas bounds and centers the complete layout',()=>{

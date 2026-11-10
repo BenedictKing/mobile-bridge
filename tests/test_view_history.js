@@ -30,8 +30,8 @@ function loadNav({compact=true}={}){
   const context={
     location:{hash:'',pathname:'/',search:''},
     history:{
-      pushState(state,title,url){calls.push(['push',url]);context.location.hash=url.startsWith('#')?url:'';},
-      replaceState(state,title,url){calls.push(['replace',url]);context.location.hash=url.startsWith('#')?url:'';},
+      pushState(state,title,url){calls.push(['push',url]);this.state=state;context.location.hash=url.startsWith('#')?url:'';},
+      replaceState(state,title,url){calls.push(['replace',url]);this.state=state;context.location.hash=url.startsWith('#')?url:'';},
       back(){calls.push(['back']);},
     },
     $:id=>nodes[id]||new FakeNode(),
@@ -73,6 +73,22 @@ test('a deep link landing replaces instead of stacking',()=>{
   nav.location.hash='#team-t1';
   nav.show('#chat-1~local');
   assert.deepEqual(nav.calls,[['replace','#chat-1~local']]);
+});
+
+test('Run source conversations preserve their return entry across reload routing',async()=>{
+  const nav=loadNav({compact:false}),source={teamId:'t1',runId:'r1',taskId:'task-1'};
+  nav.location.hash='#run=t1/r1';
+  nav.openChat=async id=>{nav.show('#'+id+'~local');};
+  await nav.openRunConversation('session-1',source);
+  assert.deepEqual(nav.calls,[['push','#session-1~local'],['replace','#session-1~local']]);
+  assert.equal(nav.history.state.chatRunOrigin.runId,'r1');
+  assert.equal(nav.chatRunSource('session-1','local').taskId,'task-1');
+  assert.equal(nav.chatRunSource('session-2','local'),null);
+  assert.equal(nav.chatRunSource('session-1','remote'),null);
+  nav.reset();nav.leave();
+  assert.deepEqual(nav.calls,[['back']],'从执行对话应返回 Run，不能直接退回列表');
+  nav.show('#unrelated~local');
+  assert.equal(nav.history.state,null,'切换其他对话后不应保留错误的 Run 来源');
 });
 
 test('the wide two-column layout keeps replacing instead of pushing',()=>{

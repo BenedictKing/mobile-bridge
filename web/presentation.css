@@ -146,6 +146,9 @@ main{background:var(--page);overflow:hidden}
 .welcome h1{font-size:24px;line-height:32px;letter-spacing:-.02em}
 .welcome p{font-size:14px;max-width:360px}
 .chat-head{padding:8px 24px;min-height:60px;gap:10px;border-bottom:1px solid var(--line)}
+.chat-run-origin{display:flex;align-items:center;gap:12px;flex:none;padding:4px 16px;border-bottom:1px solid var(--line);font-size:12px}
+.chat-run-origin[hidden]{display:none}
+.chat-run-origin>.muted{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chat-title-button{display:block;width:100%;min-width:0;min-height:40px;border:0;border-radius:7px;background:none;padding:8px 4px;text-align:left;color:var(--text)}
 .chat-title-button:hover{background:var(--surface)}
 #chat-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:16px;line-height:24px;font-weight:650;letter-spacing:0;margin:0}
@@ -173,12 +176,12 @@ main{background:var(--page);overflow:hidden}
    content-visibility:hidden 隐藏：只覆写子元素的 display 已经不起作用，
    三行预览会整块看不见、还留下同样高的空白。这里把该伪元素显式放开。 */
 .activity::details-content{content-visibility:visible}
-/* 工具调用和子 Agent 折叠态只显示标题，展开后才显示具体内容；data-tool 由
+/* 工具调用、文件变更和子 Agent 折叠态只显示标题，展开后才显示具体内容；data-tool 由
    timeline.js 按统一规则打上，覆盖各管线的工具行 kind（toolCall/storedToolEvent/mcp…）。
    data-command 独立标识 commandExecution/execute，失败状态在折叠标题保留。
    其他 activity（思考摘要、计划）保留三行预览。 */
-.activity[data-tool]:not([open]) .activity-body,.activity[data-command]:not([open]) .activity-body,.activity[data-kind=subagent]:not([open]) .activity-body{display:none}
-.activity:not([data-tool]):not([data-command]):not([data-kind=subagent]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
+.activity[data-tool]:not([open]) .activity-body,.activity[data-command]:not([open]) .activity-body,.activity[data-kind=fileChange]:not([open]) .activity-body,.activity[data-kind=subagent]:not([open]) .activity-body{display:none}
+.activity:not([data-tool]):not([data-command]):not([data-kind=fileChange]):not([data-kind=subagent]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
 .activity[data-command][data-command-status=failed]>summary{color:var(--error)}
 .activity[data-command]>summary{overflow-wrap:anywhere}
 .activity summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -704,9 +707,7 @@ main{background:var(--page);overflow:hidden}
   .team-canvas-actions #team-canvas-zoom-out,.team-canvas-actions #team-canvas-zoom-in{display:none}
   .team-canvas-zoom{min-width:34px;font-size:9px}
   .team-canvas-viewport{min-height:360px}
-  .team-canvas-node{max-width:calc(100vw - 48px)}
-  .team-canvas-message{width:calc(100vw - 56px)!important}
-  .team-canvas-issue,.team-canvas-pending{width:calc(100vw - 56px)!important}
+  .team-canvas-node{max-width:calc(100vw - 32px)}
   .team-canvas-detail{top:0;right:0;bottom:0;left:0;width:100%;border-left:0;transform:translateX(102%)}
   .team-canvas-detail.open{transform:translateX(0)}
   .team-canvas-detail-head{padding:13px 14px 11px}

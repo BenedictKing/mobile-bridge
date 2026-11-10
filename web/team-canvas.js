@@ -26,7 +26,7 @@ function teamCanvasAssociations(inputs,issues){
 function teamCanvasLinkedRecords(bubbleRecords,issueRecords){
   const byInputID=new Map(bubbleRecords.map(record=>[record.input.inputId||record.input.id,record]));
   return issueRecords.map(record=>({...record,bubbles:record.bubbles
-    .map(bubble=>byInputID.get(bubble.input.inputId||bubble.input.id)).filter(Boolean)}));
+    .map(bubble=>byInputID.get(bubble.input.inputId||bubble.input.id)).filter((bubble,index,rows)=>bubble&&rows.indexOf(bubble)===index)}));
 }
 
 function teamCanvasInputRunID(input,issueIDs){
@@ -41,26 +41,63 @@ function teamCanvasFitTransform(viewportWidth,viewportHeight,canvasWidth,canvasH
   return{scale,x:(viewportWidth-canvasWidth*scale)/2,y:(viewportHeight-canvasHeight*scale)/2};
 }
 
-function teamCanvasIssueLayout(bubbleRecords,issueRecords,top=28,gap=22){
-  const bubbles=new Map(bubbleRecords.map(record=>[record.input.inputId||record.input.id,record]));
-  const rows=issueRecords.map((record,index)=>{
-    const linked=(record.bubbles||[]).map(bubble=>bubbles.get(bubble.input.inputId||bubble.input.id)).filter(Boolean);
-    const height=record.node.offsetHeight;
-    let desired=null;
-    if(linked.length){
-      const center=linked.reduce((sum,bubble)=>sum+bubble.node._canvasPosition.y+bubble.node.offsetHeight/2,0)/linked.length;
-      desired=center-height/2;
+// 以关联关系分组，同一输入或事项只出现一次；组和组内气泡按原始输入顺序排列。
+function teamCanvasGroups(bubbleRecords,issueRecords){
+  const linked=teamCanvasLinkedRecords(bubbleRecords,issueRecords),byBubble=new Map(bubbleRecords.map(record=>[record,[]]));
+  for(const issue of linked)for(const bubble of issue.bubbles)byBubble.get(bubble).push(issue);
+  const seenBubbles=new Set(),seenIssues=new Set(),groups=[];
+  for(const first of bubbleRecords){
+    if(seenBubbles.has(first))continue;
+    const group={bubbles:[],issues:[]},queue=[first];seenBubbles.add(first);
+    for(let index=0;index<queue.length;index++){
+      const bubble=queue[index];group.bubbles.push(bubble);
+      for(const issue of byBubble.get(bubble)){
+        if(seenIssues.has(issue))continue;
+        seenIssues.add(issue);group.issues.push(issue);
+        for(const source of issue.bubbles)if(!seenBubbles.has(source)){seenBubbles.add(source);queue.push(source);}
+      }
     }
-    return{record,index,height,desired,y:top};
-  });
-  const linked=rows.filter(row=>row.desired!==null).sort((a,b)=>a.desired-b.desired||a.index-b.index);
-  let cursor=top;
-  for(const row of linked){row.y=Math.max(row.desired,cursor);cursor=row.y+row.height+gap;}
-  for(let index=linked.length-2;index>=0;index--)linked[index].y=Math.min(linked[index].y,linked[index+1].y-linked[index].height-gap);
-  if(linked.length&&linked[0].y<top){const shift=top-linked[0].y;for(const row of linked)row.y+=shift;}
-  cursor=linked.length?linked[linked.length-1].y+linked[linked.length-1].height+gap:top;
-  for(const row of rows.filter(row=>row.desired===null)){row.y=cursor;cursor+=row.height+gap;}
-  return rows.map(({record,y})=>({record,y}));
+    group.bubbles.sort((a,b)=>bubbleRecords.indexOf(a)-bubbleRecords.indexOf(b));
+    group.issues.sort((a,b)=>Math.min(...a.bubbles.map(source=>bubbleRecords.indexOf(source)))-Math.min(...b.bubbles.map(source=>bubbleRecords.indexOf(source)))||linked.indexOf(a)-linked.indexOf(b));
+    groups.push(group);
+  }
+  const orphans=linked.filter(issue=>!seenIssues.has(issue));
+  if(orphans.length)groups.push({bubbles:[],issues:orphans});
+  return groups;
+}
+
+function teamCanvasLayout(bubbleRecords,issueRecords,{width=940,mobile=false}={}){
+  width=Math.max(mobile?280:700,width);
+  const padding=mobile?16:24,gap=32,inner=width-padding*2;
+  const lanes=mobile?1:Math.max(1,Math.min(3,Math.floor((inner+gap)/(640+gap))));
+  const laneWidth=(inner-gap*(lanes-1))/lanes,positions=[];
+  let cursor=padding,rowHeight=0,lane=0;
+  for(const group of teamCanvasGroups(bubbleRecords,issueRecords)){
+    const full=group.issues.length>1||group.bubbles.length>2;
+    if(full&&lane){cursor+=rowHeight+gap;rowHeight=0;lane=0;}
+    const groupWidth=full?inner:laneWidth,x=padding+lane*(laneWidth+gap);
+    const bubbleWidth=mobile||!group.issues.length?groupWidth:Math.min(320,Math.max(240,groupWidth*.28));
+    const issueX=mobile||!group.bubbles.length?0:bubbleWidth+64;
+    const available=groupWidth-issueX,columns=mobile?1:Math.max(1,Math.min(group.issues.length,3,Math.floor((available+22)/322)));
+    const issueWidth=(available-22*(columns-1))/columns;
+    for(const record of group.bubbles)record.node.style.width=bubbleWidth+'px';
+    for(const record of group.issues)record.node.style.width=issueWidth+'px';
+    const bubbleHeight=group.bubbles.reduce((sum,record)=>sum+record.node.offsetHeight+14,0)-(group.bubbles.length?14:0);
+    const issueRows=[];
+    for(let index=0;index<group.issues.length;index+=columns){const records=group.issues.slice(index,index+columns);issueRows.push({records,height:Math.max(...records.map(record=>record.node.offsetHeight))});}
+    const issueHeight=issueRows.reduce((sum,row)=>sum+row.height+28,0)-(issueRows.length?28:0);
+    const height=mobile?bubbleHeight+issueHeight+(bubbleHeight&&issueHeight?28:0):Math.max(bubbleHeight,issueHeight);
+    let y=cursor+(mobile?0:(height-bubbleHeight)/2);
+    for(const record of group.bubbles){positions.push({record,key:'m:'+(record.input.inputId||record.input.id),x,y});y+=record.node.offsetHeight+14;}
+    y=cursor+(mobile?bubbleHeight+(bubbleHeight&&issueHeight?28:0):(height-issueHeight)/2);
+    for(const row of issueRows){
+      row.records.forEach((record,column)=>positions.push({record,key:'i:'+record.issue.id,x:x+issueX+column*(issueWidth+22),y,grid:columns>1,busX:x+issueX-28}));
+      y+=row.height+28;
+    }
+    rowHeight=Math.max(rowHeight,height);lane+=full?lanes:1;
+    if(lane>=lanes){cursor+=rowHeight+gap;rowHeight=0;lane=0;}
+  }
+  return{positions,width,height:Math.max(600,cursor+rowHeight+padding)};
 }
 
 function teamCanvasOwnerLine(item,t=value=>value,agentLabel=value=>value){
@@ -113,6 +150,15 @@ class TeamCanvasController{
     document.getElementById('team-canvas-zoom-out').addEventListener('click',()=>this.zoomAt(this.transform.scale/1.2));
     document.getElementById('team-canvas-zoom-in').addEventListener('click',()=>this.zoomAt(this.transform.scale*1.2));
     document.getElementById('team-canvas-detail-close').addEventListener('click',()=>this.closeDetail());
+    this.detail.addEventListener('keydown',event=>{
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();this.closeDetail();}
+      else if(event.key==='Tab'&&this.detail.getAttribute('aria-modal')==='true'){
+        const targets=[...this.detail.querySelectorAll('button:not(:disabled),a[href],[tabindex="0"]')].filter(node=>node.offsetWidth&&node.offsetHeight);
+        const first=targets[0],last=targets[targets.length-1];
+        if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
+        else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
+      }
+    });
     document.getElementById('team-canvas-delete-issue').addEventListener('click',()=>this.deleteIssue());
     document.getElementById('team-canvas-open-run').addEventListener('click',()=>{
       const target=this.detailRun;if(target&&this.openRun)this.openRun(this.current.id,target.id);
@@ -206,7 +252,7 @@ class TeamCanvasController{
     const inputs=[...this.inputs].sort((a,b)=>Number(a.sequence||0)-Number(b.sequence||0));
     const bubbles=inputs.map((input,index)=>({input,index:index+1,issueIDs:associations[input.inputId||input.id]||[]}));
     const inputByID=new Map(bubbles.map(row=>[row.input.inputId||row.input.id,row]));
-    const issues=this.issues.map(issue=>({issue,bubbles:(issue.inputs||[]).map(source=>inputByID.get(source.inputId)).filter(Boolean)}));
+    const issues=this.issues.map(issue=>({issue,bubbles:(issue.inputs||[]).map(source=>inputByID.get(source.inputId)).filter(record=>record&&record.issueIDs.includes(issue.id))}));
     return{bubbles,issues};
   }
   render(){
@@ -223,7 +269,7 @@ class TeamCanvasController{
       const node=this.renderIssue(record.issue);node.style.width='360px';this.nodes.append(node);
       return{...record,node};
     });
-    this.lastRecords={bubbles:bubbleRecords,issues:teamCanvasLinkedRecords(bubbleRecords,issueRecords)};this.layout(bubbleRecords,issueRecords);
+    this.lastRecords={bubbles:bubbleRecords,issues:teamCanvasLinkedRecords(bubbleRecords,issueRecords)};this.layout(bubbleRecords,this.lastRecords.issues);
     this.renderWires(this.lastRecords);
     if(!this.userInteracted)requestAnimationFrame(()=>{if(!this.userInteracted)this.fitAll(false,true);});
   }
@@ -287,25 +333,15 @@ class TeamCanvasController{
   layout(bubbleRecords,issueRecords){
     const mobile=window.matchMedia('(max-width:720px)').matches;
     if(this.mobileLayout!==undefined&&this.mobileLayout!==mobile)this.positions.clear();
-    let width=mobile?380:940,height=0;
-    const setPosition=(node,key,x,y)=>{
+    const plan=teamCanvasLayout(bubbleRecords,issueRecords,{width:this.viewport.clientWidth||940,mobile});
+    let {width,height}=plan;
+    for(const {record,key,grid,busX,...position} of plan.positions){
+      const node=record.node;let {x,y}=position;
       const override=this.positions.get(key);if(override){x=override.x;y=override.y;}
       node.style.left=x+'px';node.style.top=y+'px';node._canvasPosition={x,y,key};
-      const box={x,y,width:node.offsetWidth,height:node.offsetHeight};return box;
-    };
-    if(mobile){
-      let y=28;
-      for(const record of bubbleRecords){
-        const box=setPosition(record.node,'m:'+record.input.inputId,18,y);y+=box.height+12;
-      }
-      y+=18;
-      for(const record of issueRecords){const box=setPosition(record.node,'i:'+record.issue.id,18,y);y+=box.height+24;}
-      height=Math.max(600,y+30);
-    }else{
-      let bubbleY=28,issueY=28;
-      for(const record of bubbleRecords){const box=setPosition(record.node,'m:'+record.input.inputId,24,bubbleY);bubbleY+=box.height+14;}
-      for(const {record,y} of teamCanvasIssueLayout(bubbleRecords,issueRecords)){const box=setPosition(record.node,'i:'+record.issue.id,460,y);issueY=Math.max(issueY,box.y+box.height+22);}
-      height=Math.max(620,bubbleY,issueY)+24;
+      node._canvasGrid=grid;node._canvasBusX=busX;
+      const padding=mobile?16:24;
+      width=Math.max(width,x+node.offsetWidth+padding);height=Math.max(height,y+node.offsetHeight+padding);
     }
     this.world.style.width=width+'px';this.world.style.height=height+'px';
     this.wires.setAttribute('viewBox',`0 0 ${width} ${height}`);this.wires.setAttribute('width',width);this.wires.setAttribute('height',height);
@@ -321,6 +357,12 @@ class TeamCanvasController{
         const source=bubble.node,target=record.node,path=document.createElementNS('http://www.w3.org/2000/svg','path');
         let d;
         if(this.mobileLayout){const sx=parseFloat(source.style.left)+source.offsetWidth/2,sy=parseFloat(source.style.top)+source.offsetHeight,tx=parseFloat(target.style.left)+target.offsetWidth/2,ty=parseFloat(target.style.top),mid=(sy+ty)/2;d=`M ${sx} ${sy} C ${sx} ${mid}, ${tx} ${mid}, ${tx} ${ty}`;}
+        else if(target._canvasGrid){
+          // 多列卡片从行间通道接入顶部，避免连线穿过前一列卡片。
+          const sx=parseFloat(source.style.left)+source.offsetWidth,sy=parseFloat(source.style.top)+source.offsetHeight/2;
+          const tx=parseFloat(target.style.left)+target.offsetWidth/2,ty=parseFloat(target.style.top),bus=target._canvasBusX,lane=ty-12;
+          d=`M ${sx} ${sy} C ${bus} ${sy}, ${bus} ${lane}, ${bus} ${lane} L ${tx-6} ${lane} Q ${tx} ${lane}, ${tx} ${lane+6} L ${tx} ${ty}`;
+        }
         else{const sx=parseFloat(source.style.left)+source.offsetWidth,sy=parseFloat(source.style.top)+source.offsetHeight/2,tx=parseFloat(target.style.left),ty=parseFloat(target.style.top)+target.offsetHeight/2,mid=(sx+tx)/2;d=`M ${sx} ${sy} C ${mid} ${sy}, ${mid} ${ty}, ${tx} ${ty}`;}
         path.setAttribute('d',d);path.setAttribute('class','team-canvas-wire');path.setAttribute('marker-end','url(#team-canvas-arrow)');path.dataset.target=record.issue.id;this.wires.append(path);
       }
@@ -357,6 +399,7 @@ class TeamCanvasController{
     this.detail.setAttribute('aria-modal',String(window.matchMedia('(max-width:720px)').matches));
     const requestToken={};this.detailRequestToken=requestToken;
     this.renderDetail(issue);
+    document.getElementById('team-canvas-detail-close').focus({preventScroll:true});
     const teamID=this.current?.id;
     if(!teamID)return;
     this.request('/api/teams/'+encodeURIComponent(teamID)+'/issues/'+encodeURIComponent(issue.id)).then(detail=>{
@@ -391,6 +434,10 @@ class TeamCanvasController{
       if(run.nextAction?.label)parts.push(this.t('下一步')+' · '+run.nextAction.label);
       if(run.lastUpdate?.summary)parts.push(this.t('最近回音')+' · '+run.lastUpdate.summary);
       const sections=[this.detailSection('Run · '+this.shortID(run.id),parts)];
+      if(this.openRun){
+        const teamID=this.current.id;
+        sections[0].append(this.button(this.t('打开 Run 详情'),'plain',()=>this.openRun(teamID,run.id)));
+      }
       const evidence=teamCanvasDeliveryRows(run,value=>this.t(value));
       const result=run.delivery?.resultSummary||{};
       sections.push(this.detailSection('交付证据',evidence.length?evidence:[this.t(result.truncated?'内容已截断':'暂无可展示的执行结果')]));
@@ -436,10 +483,10 @@ class TeamCanvasController{
     const rect=this.viewport.getBoundingClientRect();if(!rect.width||!rect.height||!this.canvasWidth||!this.canvasHeight)return;
     const fit=teamCanvasFitTransform(rect.width,rect.height,this.canvasWidth,this.canvasHeight,readable?.9:1);
     if(!fit)return;
-    if(readable&&fit.scale<.72){
-      fit.scale=Math.min(.72,(rect.width-48)/this.canvasWidth);
+    if(readable){
+      fit.scale=Math.min(1,rect.width/this.canvasWidth);
       fit.x=(rect.width-this.canvasWidth*fit.scale)/2;
-      fit.y=18;
+      fit.y=0;
     }
     this.transform=fit;
     if(userInitiated)this.userInteracted=true;
@@ -492,4 +539,4 @@ class TeamCanvasController{
   }
 }
 
-if(typeof module!=='undefined'&&module.exports)module.exports={TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasIssueLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows};
+if(typeof module!=='undefined'&&module.exports)module.exports={TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows};

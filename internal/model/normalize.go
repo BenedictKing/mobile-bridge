@@ -37,6 +37,25 @@ func fieldsFor(method string) []string {
 // tool-call pairing, opening injection, and the view metadata header.
 func NormalizeState(state *jsoncompat.Object, connected bool) *jsoncompat.Object {
 	turns := OrderedTurns(state)
+	// Desktop optimistic turns can outlive their userMessage replay (including
+	// inputs accepted into an already-running turn). Match submission identity,
+	// never text: two deliberate sends with identical content must stay visible.
+	replayedInputs := map[string]bool{}
+	for _, turnValue := range turns.Items {
+		turn := obj(turnValue)
+		if turn == nil {
+			continue
+		}
+		for _, itemValue := range ItemsArray(turn.MustGet("items")).Items {
+			item := obj(itemValue)
+			if item == nil || (item.MustGet("type") != "userMessage" && item.MustGet("type") != "steeringUserMessage") {
+				continue
+			}
+			if requestID := RequestID(item); jsoncompat.Truthy(requestID) {
+				replayedInputs[valueKey(requestID)] = true
+			}
+		}
+	}
 	result := &jsoncompat.Array{}
 	for ordinal, turnValue := range turns.Items {
 		turn := obj(turnValue)
@@ -102,16 +121,35 @@ func NormalizeState(state *jsoncompat.Object, connected bool) *jsoncompat.Object
 			if params != nil {
 				opening = getDefault(params, "input", &jsoncompat.Array{})
 			}
-			if openingText := TextContent(opening); openingText != "" {
-				turnID := any(jsoncompat.Num(ordinal))
-				if value, ok := turn.Get("turnId"); ok {
-					turnID = value
+			var requestID any
+			if params != nil {
+				requestID = RequestID(params)
+			}
+			replayed := jsoncompat.Truthy(requestID) && replayedInputs[valueKey(requestID)]
+			if replayed && len(messages.Items) == 0 && !jsoncompat.Truthy(turn.MustGet("turnId")) {
+				continue
+			}
+			if openingText := TextContent(opening); !replayed && openingText != "" {
+				turnID := turn.MustGet("turnId")
+				if !jsoncompat.Truthy(turnID) && jsoncompat.Truthy(requestID) {
+					turnID = requestID
+				} else if turnID == nil {
+					turnID = jsoncompat.Num(ordinal)
 				}
 				openingRow := jsoncompat.NewObject()
 				openingRow.Set("id", "opening-"+jsoncompat.PyStr(turnID))
 				openingRow.Set("role", "user")
 				openingRow.Set("kind", "userMessage")
 				openingRow.Set("text", openingText)
+				if jsoncompat.Truthy(requestID) {
+					openingRow.Set("requestId", jsoncompat.PyStr(requestID))
+				}
+				openingItem := jsoncompat.NewObject()
+				openingItem.Set("type", "userMessage")
+				openingItem.Set("content", opening)
+				if attachments := NormalizeItem(openingItem).MustGet("attachments"); attachments != nil {
+					openingRow.Set("attachments", attachments)
+				}
 				messages.Items = append([]any{openingRow}, messages.Items...)
 			}
 		}

@@ -32,6 +32,18 @@ const team={id:'t1',name:'团队',leadId:'kimi',project:'codex:7015435b2c37',pro
   {id:'buddy',name:'workbuddy',role:'member',agentKind:'workbuddy'},
 ]};
 
+test('task source chat opens the execution session with its originating Run',()=>{
+  const opened=[];
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({}),openChat:(id,source)=>opened.push({id,source})});
+  screen.team=team;screen.teamId='t1';screen.runId='r1';
+  screen.detail={id:'r1',status:'completed',tasks:[],threads:[{id:'thread-1',providerSessionId:'execution-1'}]};
+  const task={id:'task-1',memberId:'kimi',status:'completed',executionThreadId:'thread-1'};
+  const card=screen.renderTask(task);
+  const button=find(card,'task-actions')[0].children.find(n=>n.textContent==='Open source chat');
+  assert.ok(button);button.onclick();
+  assert.deepEqual(opened,[{id:'execution-1',source:{teamId:'t1',runId:'r1',taskId:'task-1'}}]);
+});
+
 test('teams panel localizes member roles and shows the readable project name',()=>{
   const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
   const card=panel.renderTeam(team);

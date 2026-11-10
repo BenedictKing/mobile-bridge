@@ -26,14 +26,14 @@ class FakeNode{
   getBoundingClientRect(){return this.rect;}
 }
 
-function setup(){
+function setup(options={}){
   const ids={};
   for(const id of ['timeline','messages','older','newer','user-jump','user-jump-list','user-jump-count'])ids[id]=new FakeNode(id==='user-jump'?'details':'div');
   ids['user-jump'].hidden=true;
   global.document={documentElement:new FakeNode(),getElementById:id=>ids[id],createElement:tag=>new FakeNode(tag)};
   global.ResizeObserver=class{observe(){}disconnect(){}};
   global.requestAnimationFrame=callback=>{callback();return 1;};
-  const timeline=new ChatTimeline({url:action=>action,request:async()=>({}),renderMeta(){},renderText(){},status(){}});
+  const timeline=new ChatTimeline({url:action=>action,request:async()=>({}),renderMeta(){},renderText(){},status(){},...options});
   return{timeline,ids};
 }
 
@@ -55,6 +55,51 @@ test('user jump lists only user messages and marks the latest at bottom',()=>{
   assert.equal(ids['user-jump-list'].children[0].children[1].textContent,'第一条 需要换行的消息');
   assert.equal(ids['user-jump-list'].children[1].attributes['aria-current'],'location');
   assert.equal(ids['user-jump-list'].scrollTop,ids['user-jump-list'].scrollHeight);
+  timeline.dispose();
+});
+
+test('Run source navigation loads older history and targets its original turn',async()=>{
+  const{timeline,ids}=setup();
+  const newer=addUser(timeline,ids,'newer','其他任务',500);newer.turnId='other-turn';
+  timeline.hasMore=true;
+  let pages=0;
+  timeline.loadOlder=async()=>{pages++;const target=addUser(timeline,ids,'original','本任务',300);target.turnId='source-turn';timeline.hasMore=false;};
+  assert.equal(await timeline.jumpToTurn('source-turn'),true);
+  assert.equal(pages,1);
+  assert.equal(ids.timeline.scrollTop,188);
+  assert.equal(timeline.following,false);
+  timeline.dispose();
+});
+
+test('Run source turn navigation waits for cold history to become available',()=>{
+  const{timeline,ids}=setup({initialTurnId:'source-turn'}),jumped=[];
+  ids.messages.insertBefore=node=>ids.messages.children.push(node);
+  timeline.fillRecent=()=>{};
+  timeline.jumpToTurn=id=>jumped.push(id);
+  const page={epoch:'e',sequence:1,rows:[],files:[],meta:{loadingHistory:true},hasMore:false};
+  timeline.apply(page,true);
+  assert.deepEqual(jumped,[],'空历史占位不能消耗任务定位请求');
+  timeline.apply({...page,sequence:2,meta:{loadingHistory:false},rows:[{key:'original',role:'user',text:'本任务',turnId:'source-turn',order:0}]});
+  assert.deepEqual(jumped,['source-turn']);
+  timeline.apply({...page,sequence:3,meta:{loadingHistory:false}});
+  assert.deepEqual(jumped,['source-turn'],'后续更新不能把用户拉回原位置');
+  timeline.dispose();
+});
+
+test('Run source navigation loads the beginning of a partially visible turn',async()=>{
+  const{timeline,ids}=setup(),jumped=[];
+  const later=addUser(timeline,ids,'later','任务进行中的补充',500);
+  Object.assign(later,{turnId:'source-turn',order:30});
+  timeline.hasMore=true;
+  timeline.jumpToUser=async key=>jumped.push(key);
+  timeline.loadOlder=async()=>{
+    const first=addUser(timeline,ids,'first','原始任务',300);
+    Object.assign(first,{turnId:'source-turn',order:10});
+    const prior=addUser(timeline,ids,'prior','上一回合',100);
+    Object.assign(prior,{turnId:'prior-turn',order:0});
+  };
+  assert.equal(await timeline.jumpToTurn('source-turn'),true);
+  assert.deepEqual(jumped,['first'],'不能把当前加载到的后续补充误当成原始任务');
   timeline.dispose();
 });
 

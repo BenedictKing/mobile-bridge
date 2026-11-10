@@ -3483,8 +3483,8 @@ func TestTeamIntegration4ScheduledTriggerEndToEnd(t *testing.T) {
 		t.Fatalf("触发完成后 pendingTriggerId 应清空: %v", scheduleView)
 	}
 	if records := readTeamPrompts(t, dataDir); len(records) != 1 ||
-		!strings.Contains(records[0].text, "SCHED-E2E") || records[0].session != sessionA {
-		t.Fatalf("定时任务应恰好派发一次到成员会话: %v", records)
+		!strings.Contains(records[0].text, "SCHED-E2E") || records[0].session != taskExecutionSession(t, detail, "st1") {
+		t.Fatalf("定时任务应恰好派发一次到任务执行会话: %v", records)
 	}
 	// 稳定性窗口：几个 sweep 周期内不二发（NextDue 已推进到下个周期）。
 	env.drive(t, 1300*time.Millisecond, func() bool { return false })
@@ -3522,6 +3522,10 @@ func TestTeamIntegration4ScheduledTriggerCrashWindows(t *testing.T) {
 		}
 		if err := os.WriteFile(filepath.Join(dataDir, "sessions.txt"),
 			[]byte(crashSession+"\x00"+dataDir+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// 原会话已占用 km-team-1；新任务会话不能复用同一个原生 ID。
+		if err := os.WriteFile(filepath.Join(dataDir, "counter.txt"), []byte("1"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -3616,6 +3620,9 @@ func TestTeamIntegration4ScheduledTriggerCrashWindows(t *testing.T) {
 			schedule.NextDue = time.Now().Add(time.Hour)
 		})
 		env := reopenTeamIntegrationEnv(t, dataDir)
+		if _, err := env.manager.List(15 * time.Second); err != nil {
+			t.Fatalf("session/list 预热失败: %v", err)
+		}
 		env.attachScheduler(t)
 		if !awaitCond(t, teamIntegrationWait, func() bool {
 			return len(env.teamRunsList(t, crashTeam)) == 1
@@ -3703,7 +3710,8 @@ func TestTeamIntegration4ScheduledRunRestartRecovery(t *testing.T) {
 	}) {
 		t.Fatal("重启后任务未在时限内派发")
 	}
-	releaseAgentTurn(t, dataDir, "sr", sessionA)
+	workerSession := taskExecutionSession(t, env2.runDetail(t, teamID, runID), "st1")
+	releaseAgentTurn(t, dataDir, "sr", workerSession)
 	if !env2.drive(t, 20*time.Second, func() bool {
 		return env2.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
@@ -3713,7 +3721,7 @@ func TestTeamIntegration4ScheduledRunRestartRecovery(t *testing.T) {
 	if len(records) != 1 || !strings.Contains(records[0].text, "SCHED-RESTART") {
 		t.Fatalf("重启恢复零重复：应恰好一条提示词: %v", records)
 	}
-	entry := env2.server.Queue.get(sessionA, submissionID)
+	entry := env2.server.Queue.get(workerSession, submissionID)
 	if entry == nil || entry.Status != SubAccepted {
 		t.Fatalf("恢复派发的条目应 accepted: %+v", entry)
 	}
@@ -3758,7 +3766,10 @@ func TestTeamIntegration4UnknownOutcomeReconcilerNeverResends(t *testing.T) {
 	if submissionID == "" {
 		t.Fatal("任务未在时限内完成派发记账")
 	}
-	env.server.Queue.setStatus(sessionA, submissionID, SubUnknown)
+	workerSession := taskExecutionSession(t, env.runDetail(t, teamID, runID), "t1")
+	if err := env.server.Queue.setStatus(workerSession, submissionID, SubUnknown); err != nil {
+		t.Fatalf("落 unknown 失败: %v", err)
+	}
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 	}) {
@@ -3801,7 +3812,7 @@ func TestTeamIntegration4UnknownOutcomeReconcilerNeverResends(t *testing.T) {
 	if detail["status"] != "waiting_input" || teamTaskOf(t, detail, "t1")["status"] != "outcome_unknown" {
 		t.Fatalf("重启后对账不得改 run 状态/转 ready: %v", detail)
 	}
-	entry := env2.server.Queue.get(sessionA, submissionID)
+	entry := env2.server.Queue.get(workerSession, submissionID)
 	if entry == nil || entry.Status != SubUnknown {
 		t.Fatalf("账本应保持 unknown: %+v", entry)
 	}
@@ -3956,7 +3967,7 @@ func TestTeamIntegration4PauseResumeLifecycle(t *testing.T) {
 	}
 
 	// 暂停期间在途收尾：放行 t1 → completed，Run 仍 paused 不折叠。
-	releaseAgentTurn(t, dataDir, "pl", sessionA)
+	releaseAgentTurn(t, dataDir, "pl", taskExecutionSession(t, env.runDetail(t, teamID, runID), "t1"))
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return detail["status"] == "paused" && teamTaskOf(t, detail, "t1")["status"] == "completed"
@@ -3985,6 +3996,9 @@ func TestTeamIntegration4PauseResumeLifecycle(t *testing.T) {
 
 	// 重启保持 paused：同 dataDir 重装配 + RecoverAll + 派发巡检，t2 仍零派发。
 	env2 := reopenTeamIntegrationEnv(t, dataDir)
+	if _, err := env2.manager.List(15 * time.Second); err != nil {
+		t.Fatalf("session/list 预热失败: %v", err)
+	}
 	if status := env2.runDetail(t, teamID, runID)["status"]; status != "paused" {
 		t.Fatalf("重启后应保持 paused: %v", status)
 	}
@@ -4031,7 +4045,7 @@ func TestTeamIntegration4PauseCorruptRebuildStaysPaused(t *testing.T) {
 	if response := env.request(http.MethodPost, "/api/teams/"+teamID+"/runs/"+runID+"/pause", `{}`); response.Code != http.StatusOK {
 		t.Fatalf("pause 失败: %d %s", response.Code, response.Body.String())
 	}
-	releaseAgentTurn(t, dataDir, "pr", sessionA)
+	releaseAgentTurn(t, dataDir, "pr", taskExecutionSession(t, env.runDetail(t, teamID, runID), "t1"))
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return detail["status"] == "paused" && teamTaskOf(t, detail, "t1")["status"] == "completed"
@@ -4167,7 +4181,7 @@ func TestTeamIntegration4PauseUpgradesToWaitingInput(t *testing.T) {
 		}
 		// 放行闸门：在途 turn 以 quota 错误收尾 → watcher 停靠 → 从 paused
 		// 升级 waiting_input。
-		releaseAgentTurn(t, dataDir, "pq", sessionA)
+		releaseAgentTurn(t, dataDir, "pq", taskExecutionSession(t, env.runDetail(t, teamID, runID), "t1"))
 		if !env.drive(t, teamIntegrationWait, func() bool {
 			return env.runDetail(t, teamID, runID)["status"] == "waiting_input"
 		}) {
@@ -4475,7 +4489,7 @@ func TestTeamIntegration4StallNotifiesWithoutStopping(t *testing.T) {
 	}
 
 	// 放行 → 任务完成 → Run 正常终局（成功即恢复；不再报第二条 stall）。
-	releaseAgentTurn(t, dataDir, "sw", sessionA)
+	releaseAgentTurn(t, dataDir, "sw", taskExecutionSession(t, detail, "t1"))
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {
@@ -4784,7 +4798,7 @@ func TestTeamIntegration4RunGraph(t *testing.T) {
 	}) {
 		t.Fatal("广播分支未在时限内并行在途")
 	}
-	releaseAgentTurn(t, dataDir, "gg", sessionA)
+	releaseAgentTurn(t, dataDir, "gg", taskExecutionSession(t, env.runDetail(t, teamID, runID), "grp-lead"))
 	if !awaitCond(t, teamIntegrationWait, func() bool {
 		detail := env.runDetail(t, teamID, runID)
 		return teamTaskOf(t, detail, "grp-lead")["status"] == "completed" &&
@@ -4828,7 +4842,7 @@ func TestTeamIntegration4RunGraph(t *testing.T) {
 	}
 
 	// 终态：跑完 → 三节点 completed、分层行序 prep→grp→fin、结果摘要就位。
-	releaseAgentTurn(t, dataDir, "gg", sessionB)
+	releaseAgentTurn(t, dataDir, "gg", taskExecutionSession(t, env.runDetail(t, teamID, runID), "grp-dev"))
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {

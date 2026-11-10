@@ -1947,6 +1947,8 @@ const en={
   "放大": "Zoom in",
   "加载更早气泡": "Load older bubbles",
   "打开 Run 详情": "Open run details",
+  "返回 Run": "Back to run",
+  "未找到对应任务回合，已打开原会话": "The task turn was not found. The source chat is open.",
   "查看 Run": "View run",
   "需要澄清": "Needs clarification",
   "已关联": "Linked",

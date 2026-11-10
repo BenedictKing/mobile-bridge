@@ -2038,11 +2038,10 @@ class TeamRunScreen{
     const sessionId=result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null);
     if(sessionId){
       const open=this.button(t('打开原会话'),()=>{
-        // 直接衔接 openChat：openChat 自己会停订阅并隐藏 Run 区块。不走 leave()，
-        // 因为 leave() 会先把 Run 的历史条目退栈，紧接着的 openChat 再压入会话，
-        // 退回列表的那一步会落空。
+        // 不先 leave() 退栈；由会话入口记录来源 Run 和结果回合，提供准确的返回路径。
+        const source={teamId:this.teamId,runId:this.runId,taskId:task.id,...(result?.turnId?{turnId:result.turnId}:{})};
         this.close();
-        this.openChat&&this.openChat(sessionId);
+        this.openChat&&this.openChat(sessionId,source);
       });
       actions.append(open);
     }

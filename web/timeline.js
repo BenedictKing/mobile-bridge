@@ -57,7 +57,7 @@ const rowLabel=row=>{
 
 // History and live changes share stable keys, but never share a request queue.
 class ChatTimeline {
-  constructor({url, request, renderMeta, renderText, status, onAction, hideInternalTeamMessages=false}) {
+  constructor({url, request, renderMeta, renderText, status, onAction, hideInternalTeamMessages=false,initialTurnId=null}) {
     Object.assign(this,{url,request,renderMeta,renderText,status,onAction,hideInternalTeamMessages});
     if(typeof currentTeam!=='undefined'&&currentTeam)this.hideInternalTeamMessages=true;
     this.viewportLocked=!!(typeof currentTeam!=='undefined'&&currentTeam&&typeof teamCanvas!=='undefined'&&teamCanvas);
@@ -71,6 +71,7 @@ class ChatTimeline {
     this.userJumpCount=document.getElementById('user-jump-count');
     this.userJumpButtons=new Map();
     this.userIndex=null;
+    this.initialTurnId=initialTurnId;
     this.abort=new AbortController();this.rows=new Map();this.nodes=new Map();this.details=new Map();
     this.files=new Map();this.sequence=-1;this.epoch='';this.before=null;this.hasMore=false;
     this.busy=false;this.generation=0;this.windowRevision=0;this.following=true;this.lastTop=0;this.retryCount=0;
@@ -154,6 +155,22 @@ class ChatTimeline {
     this.syncNewer();
     this.updateUserJumpActive(false,key);
     requestAnimationFrame(()=>this.suppress=false);
+  }
+  async jumpToTurn(turnId){
+    for(let pages=0;pages<=24&&!this.abort.signal.aborted;pages++){
+      const ordered=[...this.rows.values()].map(entry=>entry.row).sort((a,b)=>a.order-b.order);
+      const rows=ordered.filter(row=>row.turnId===turnId&&this.rowVisible(row));
+      const target=rows.find(row=>row.role==='user')||rows[0];
+      // A page may begin halfway through this turn. Load its beginning before
+      // choosing the prompt, otherwise a later steer or tool row wins.
+      if(target&&(!this.hasMore||ordered[0]?.turnId!==turnId)){await this.jumpToUser(target.key);return true;}
+      if(!this.hasMore||pages===24)break;
+      while(this.busy&&!this.abort.signal.aborted)await this.pause(40);
+      if(this.abort.signal.aborted)return false;
+      await this.loadOlder(100);
+    }
+    if(!this.abort.signal.aborted)globalThis.BridgeFeedback?.ok('未找到对应任务回合，已打开原会话');
+    return false;
   }
   // Jumping to a prompt older than the loaded window pages history up until
   // the row exists, bounded so a huge chat cannot page forever.
@@ -257,6 +274,10 @@ class ChatTimeline {
     this.renderUserJump([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order),bottom);
     if(!history&&!bottom&&(changed||page.meta.requests?.length)){this.newer.textContent=page.meta.requests?.length?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
     if(reset)requestAnimationFrame(()=>this.fillRecent());
+    if(this.initialTurnId&&this.rows.size&&!page.meta?.loadingHistory){
+      const turnId=this.initialTurnId;this.initialTurnId=null;
+      requestAnimationFrame(()=>this.jumpToTurn(turnId));
+    }
   }
   // Pure-append delta frames: patch the streamed rows' text in place instead
   // of re-reading whole rows. The server only sends a delta when every changed
