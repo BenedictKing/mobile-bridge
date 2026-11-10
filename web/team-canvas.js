@@ -63,7 +63,7 @@ class TeamCanvasController{
     Object.assign(this,{root,request,openRun,notify});
     this.current=null;this.inputs=[];this.issues=[];
     this.positions=new Map();this.mode='canvas';this.generation=0;this.pollTimer=null;this.refreshToken=null;
-    this.transform={x:0,y:0,scale:1};this.drag=null;this.detailIssue=null;this.detailRun=null;this.detailRequestToken=null;
+    this.transform={x:0,y:0,scale:1};this.drag=null;this.detailIssue=null;this.detailRun=null;this.detailRequestToken=null;this.focusedIssueID=null;
     this.viewport=document.getElementById('team-canvas-viewport');
     this.conversationBar=document.getElementById('team-conversation-view-bar');
     this.world=document.getElementById('team-canvas-world');
@@ -98,13 +98,13 @@ class TeamCanvasController{
       if(event.target.closest('.team-canvas-detail'))return;
       event.preventDefault();
       if(event.ctrlKey||event.metaKey)this.zoomAt(this.transform.scale*(event.deltaY<0?1.08:.92),event.clientX,event.clientY);
-      else{this.transform.x-=event.deltaX;this.transform.y-=event.deltaY;this.applyTransform();}
+      else{this.transform.x-=event.deltaX;this.transform.y-=event.deltaY;this.userInteracted=true;this.applyTransform();}
     },{passive:false});
     window.addEventListener('resize',()=>{if(this.root.hidden)return;this.render();});
   }
   open(team){
     clearInterval(this.pollTimer);
-    this.generation++;this.current=team||null;this.inputs=[];this.issues=[];this.historyBackfill=null;this.backfillBusy=false;this.positions.clear();this.userInteracted=false;this.transform={x:0,y:0,scale:1};this.refreshToken=null;this.refreshQueued=false;this.closeDetail();
+    this.generation++;this.current=team||null;this.inputs=[];this.issues=[];this.lastRecords=null;this.historyBackfill=null;this.backfillBusy=false;this.positions.clear();this.userInteracted=false;this.focusedIssueID=null;this.transform={x:0,y:0,scale:1};this.refreshToken=null;this.refreshQueued=false;this.closeDetail();
     this.nodes.replaceChildren();this.wires.replaceChildren();this.summary.textContent='';
     if(!team){this.root.hidden=true;this.conversationBar.hidden=true;document.getElementById('chat').classList.remove('team-canvas-active');return;}
     this.mode=this.savedMode(team.id);this.root.hidden=this.mode!=='canvas';
@@ -178,11 +178,15 @@ class TeamCanvasController{
         this.loadInputs(team.id,generation),
       ]);
       if(generation!==this.generation||this.current?.id!==team.id)return;
-      if(issueResult.status==='fulfilled')this.issues=Array.isArray(issueResult.value.issues)?issueResult.value.issues:[];
-      else this.error.textContent=this.t(issueResult.reason?.message||'读取 Issue 失败');
-      if(inputResult.status==='fulfilled')this.inputs=inputResult.value;
-      else this.error.textContent=this.t(inputResult.reason?.message||'读取输入失败');
-      if(generation===this.generation&&this.current?.id===team.id){this.render();this.checkHistoryBackfill();}
+      let changed=!this.lastRecords;
+      if(issueResult.status==='fulfilled'){
+        const issues=Array.isArray(issueResult.value.issues)?issueResult.value.issues:[];
+        if(JSON.stringify(issues)!==JSON.stringify(this.issues)){this.issues=issues;changed=true;}
+      }else this.error.textContent=this.t(issueResult.reason?.message||'读取 Issue 失败');
+      if(inputResult.status==='fulfilled'){
+        if(JSON.stringify(inputResult.value)!==JSON.stringify(this.inputs)){this.inputs=inputResult.value;changed=true;}
+      }else this.error.textContent=this.t(inputResult.reason?.message||'读取输入失败');
+      if(generation===this.generation&&this.current?.id===team.id){if(changed)this.render();this.checkHistoryBackfill();}
     }catch(error){if(generation===this.generation)this.error.textContent=this.t(error.message||'画布刷新失败');}
     finally{if(this.refreshToken===token)this.refreshToken=null;if(this.refreshQueued){this.refreshQueued=false;queueMicrotask(()=>this.refresh(true));}}
   }
@@ -345,15 +349,21 @@ class TeamCanvasController{
         path.setAttribute('d',d);path.setAttribute('class','team-canvas-wire');path.setAttribute('marker-end','url(#team-canvas-arrow)');path.dataset.target=record.issue.id;this.wires.append(path);
       }
     }
+    this.applyFocus();
   }
   shortID(id){return String(id||'').replace(/-/g,'').slice(0,8).toUpperCase();}
+  applyFocus(){
+    const id=this.focusedIssueID;
+    this.nodes.querySelectorAll('.team-canvas-related').forEach(item=>item.classList.remove('team-canvas-related'));
+    this.wires.querySelectorAll('[data-target]').forEach(path=>path.classList.toggle('team-canvas-related',!!id&&path.dataset.target===id));
+    if(!id)return;
+    this.nodes.querySelector(`[data-issue-id="${CSS.escape(id)}"]`)?.classList.add('team-canvas-related');
+    const linkedIDs=new Set((this.lastRecords?.issues||[]).find(row=>row.issue.id===id)?.bubbles.map(row=>row.input.inputId||row.input.id)||[]);
+    for(const inputID of linkedIDs)this.nodes.querySelector(`[data-input-id="${CSS.escape(inputID)}"]`)?.classList.add('team-canvas-related');
+  }
   focusItem(id){
     const node=this.nodes.querySelector(`[data-issue-id="${CSS.escape(id)}"]`);if(!node)return;
-    this.nodes.querySelectorAll('.team-canvas-related').forEach(item=>item.classList.remove('team-canvas-related'));
-    node.classList.add('team-canvas-related');
-    const linkedIDs=new Set((this.lastRecords?.issues||[]).find(row=>row.issue.id===id)?.bubbles.map(row=>row.input.inputId)||[]);
-    for(const inputID of linkedIDs)this.nodes.querySelector(`[data-input-id="${CSS.escape(inputID)}"]`)?.classList.add('team-canvas-related');
-    this.wires.querySelectorAll('[data-target]').forEach(path=>path.classList.toggle('team-canvas-related',path.dataset.target===id));
+    this.focusedIssueID=id;this.applyFocus();this.userInteracted=true;
     const p=node._canvasPosition;if(p){const rect=this.viewport.getBoundingClientRect();this.transform.x=rect.width/2-(p.x+node.offsetWidth/2)*this.transform.scale;this.transform.y=rect.height/2-(p.y+node.offsetHeight/2)*this.transform.scale;this.applyTransform();}
   }
   focusMessage(id){

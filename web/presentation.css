@@ -674,7 +674,7 @@ html[data-show-activity=false] .session-indicator,html[data-show-activity=false]
 .team-canvas-pending{min-height:108px;padding:11px 12px;border:1px dashed #b5ab91;border-radius:8px;background:#faf9f4;color:var(--text)}
 .team-canvas-pending-title{margin-bottom:5px;font-size:12px;font-weight:650}
 .team-canvas-pending-copy{margin:0;color:var(--muted);font-size:11px;line-height:1.5}
-.team-canvas-related{outline:2px solid var(--green);outline-offset:3px}
+.team-canvas-node.team-canvas-related{outline:2px solid var(--green);outline-offset:3px}
 .team-canvas-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:30px;padding:1px 14px;background:var(--page)}
 .team-canvas-foot .error{margin:0;font-size:11px}
 .team-canvas-foot .plain{padding:5px 2px;color:var(--muted);font-size:11px}

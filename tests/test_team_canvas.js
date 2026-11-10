@@ -2,7 +2,7 @@
 
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
+const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
 
 test('canvas uses persisted issue links and ignores stale revisions',()=>{
   const associations=teamCanvasAssociations(
@@ -78,4 +78,24 @@ test('fit all respects tall canvas bounds and centers the complete layout',()=>{
   assert.ok(fit.x>=0&&right<=viewport.width);
   assert.ok(fit.y>=0&&bottom<=viewport.height);
   assert.equal(teamCanvasFitTransform(0,600,940,1600),null);
+});
+
+test('polling redraws only when team canvas data changes',async()=>{
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+    current:{id:'team-1'},generation:1,inputs:[],issues:[],error:{textContent:''},refreshToken:null,refreshQueued:false,
+  });
+  let inputs=[],issues=[],renders=0;
+  controller.request=async url=>url.endsWith('/issues')?{issues}:{inputs};
+  controller.render=()=>{renders++;controller.lastRecords={};};controller.checkHistoryBackfill=()=>{};
+  await controller.refresh();
+  assert.equal(renders,1,'空团队也要完成首次渲染');
+  inputs=[];issues=[];
+  await controller.refresh();
+  assert.equal(renders,1,'相同数据不应重建画布');
+  issues=[{id:'issue-1',title:'画布',status:'completed'}];
+  await controller.refresh();
+  assert.equal(renders,2,'事项变化应触发重绘');
+  inputs=[{inputId:'input-1',text:'修复选中状态',associationStatus:'pending'}];
+  await controller.refresh();
+  assert.equal(renders,3,'输入变化应触发重绘');
 });
