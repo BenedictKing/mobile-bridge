@@ -176,6 +176,61 @@ test('fit all respects tall canvas bounds and centers the complete layout',()=>{
   assert.ok(fit.x>=0&&right<=viewport.width);
   assert.ok(fit.y>=0&&bottom<=viewport.height);
   assert.equal(teamCanvasFitTransform(0,600,940,1600),null);
+  assert.equal(teamCanvasFitTransform(40,600,940,1600),null,'面板挤占后空间不足不能产生负缩放');
+});
+
+test('selecting an issue frames its linked messages and wires beside the desktop detail',()=>{
+  const previousCSS=global.CSS;global.CSS={escape:id=>id};
+  const node=(x,y,width,height)=>({_canvasPosition:{x,y},offsetWidth:width,offsetHeight:height,
+    classList:{names:new Set(),add(name){this.names.add(name);},remove(name){this.names.delete(name);}}});
+  const first=node(24,100,240,96),last=node(24,1000,240,120),issue=node(328,400,360,220),other=node(1100,20,360,220);
+  const nodes={'[data-issue-id="issue"]':issue,'[data-input-id="first"]':first,'[data-input-id="last"]':last};
+  const wire={dataset:{target:'issue'},classList:{toggle(name,on){this.active=on;}}};
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+    nodes:{querySelector:key=>nodes[key],querySelectorAll:()=>[first,last,issue,other]},
+    wires:{querySelectorAll:()=>[wire]},detail:{hidden:false,offsetWidth:410},
+    viewport:{getBoundingClientRect:()=>({width:1200,height:650})},mobileLayout:false,
+    transform:{scale:.2,x:0,y:0},applyTransform(){},
+    lastRecords:{issues:[{issue:{id:'issue'},bubbles:[{input:{inputId:'first'},node:first},{input:{inputId:'last'},node:last}]}]},
+  });
+  try{
+    controller.focusItem('issue');
+    const {scale,x,y}=controller.transform;
+    for(const item of [first,last,issue]){
+      const p=item._canvasPosition;
+      assert.ok(x+p.x*scale>=24-1e-6&&x+(p.x+item.offsetWidth)*scale<=1200-410-24+1e-6,'节点不能被详情面板遮住');
+      assert.ok(y+p.y*scale>=24-1e-6&&y+(p.y+item.offsetHeight)*scale<=650-24+1e-6,'拖动过的关联消息也应完整可见');
+      assert.ok(item.classList.names.has('team-canvas-related'));
+    }
+    assert.equal(controller.focusedIssueID,'issue');assert.equal(wire.classList.active,true);
+    assert.equal(other.classList.names.has('team-canvas-related'),false);
+    assert.ok(scale>.2,'从总览选中时应放大关联内容');
+    const before={...controller.transform};controller.focusItem('missing');
+    assert.deepEqual(controller.transform,before,'不存在的事项不能移动画布');
+    controller.mobileLayout=true;controller.viewport.getBoundingClientRect=()=>({width:390,height:500});
+    controller.focusItem('issue');assert.ok(controller.transform.scale>0,'手机详情覆盖画布，不应减去全屏面板宽度');
+  }finally{global.CSS=previousCSS;}
+});
+
+test('issue details select the relationship and link back using original message numbers',async()=>{
+  const previousDocument=global.document,previousWindow=global.window;
+  const node=()=>({children:[],listeners:{},classList:{add(){},remove(){}},append(...items){this.children.push(...items);},replaceChildren(){this.children=[];},addEventListener(type,fn){this.listeners[type]=fn;},setAttribute(){},focus(){}});
+  const elements={};global.document={createElement:node,getElementById:id=>elements[id]||(elements[id]=node())};
+  global.window={matchMedia:()=>({matches:true})};
+  const selected=[],jumped=[],issue={id:'issue',title:'事项',inputs:[{inputId:'input',sourceText:'片段1'},{inputId:'input',sourceText:'片段2'}]};
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+    current:{id:'team'},detail:node(),renderDetail:TeamCanvasController.prototype.renderDetail,
+    focusItem:id=>selected.push(id),focusMessage:id=>jumped.push(id),request:async()=>issue,
+    lastRecords:{issues:[{issue,bubbles:[{input:{inputId:'input',sequence:7,text:'原始消息'},index:1}]}]},
+  });
+  try{
+    controller.openDetail(issue,node());await Promise.resolve();
+    assert.deepEqual(selected,['issue'],'打开详情必须同步选择关联节点');
+    const section=elements['team-canvas-detail-body'].children.find(n=>n.children[0]?.textContent==='关联原话');
+    assert.equal(section.children.length,2,'同一消息的多个片段只提供一个定位入口');
+    const source=section.children[1];assert.equal(source.textContent,'#07 · 原始消息');
+    source.listeners.click();assert.deepEqual(jumped,['input']);assert.equal(controller.detail.hidden,true,'手机点击原话应关闭遮挡画布的详情');
+  }finally{global.document=previousDocument;global.window=previousWindow;}
 });
 
 test('issue deletion confirms, calls DELETE and refreshes the canvas',async()=>{

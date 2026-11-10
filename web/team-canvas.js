@@ -36,7 +36,7 @@ function teamCanvasInputRunID(input,issueIDs){
 }
 
 function teamCanvasFitTransform(viewportWidth,viewportHeight,canvasWidth,canvasHeight,maxScale=1){
-  if(viewportWidth<=0||viewportHeight<=0||canvasWidth<=0||canvasHeight<=0)return null;
+  if(viewportWidth<=48||viewportHeight<=48||canvasWidth<=0||canvasHeight<=0)return null;
   const scale=Math.min(maxScale,(viewportWidth-48)/canvasWidth,(viewportHeight-48)/canvasHeight);
   return{scale,x:(viewportWidth-canvasWidth*scale)/2,y:(viewportHeight-canvasHeight*scale)/2};
 }
@@ -400,7 +400,16 @@ class TeamCanvasController{
   focusItem(id){
     const node=this.nodes.querySelector(`[data-issue-id="${CSS.escape(id)}"]`);if(!node)return;
     this.focusedIssueID=id;this.applyFocus();this.userInteracted=true;
-    const p=node._canvasPosition;if(p){const rect=this.viewport.getBoundingClientRect();this.transform.x=rect.width/2-(p.x+node.offsetWidth/2)*this.transform.scale;this.transform.y=rect.height/2-(p.y+node.offsetHeight/2)*this.transform.scale;this.applyTransform();}
+    const related=[node,...((this.lastRecords?.issues||[]).find(row=>row.issue.id===id)?.bubbles||[]).map(row=>row.node)];
+    const boxes=related.filter(item=>item?._canvasPosition).map(item=>({...item._canvasPosition,width:item.offsetWidth,height:item.offsetHeight}));
+    if(!boxes.length)return;
+    const left=Math.min(...boxes.map(box=>box.x)),top=Math.min(...boxes.map(box=>box.y));
+    const width=Math.max(...boxes.map(box=>box.x+box.width))-left,height=Math.max(...boxes.map(box=>box.y+box.height))-top;
+    const rect=this.viewport.getBoundingClientRect();
+    // 桌面详情占据右侧，关联节点应完整落在剩余画布；手机全屏详情关闭后再看画布。
+    const detailWidth=!this.mobileLayout&&!this.detail.hidden?this.detail.offsetWidth:0;
+    const fit=teamCanvasFitTransform(rect.width-detailWidth,rect.height,width,height);
+    if(fit){this.transform={scale:fit.scale,x:fit.x-left*fit.scale,y:fit.y-top*fit.scale};this.applyTransform();}
   }
   focusMessage(id){
     const node=this.nodes.querySelector(`[data-input-id="${CSS.escape(id)}"]`),p=node?._canvasPosition;
@@ -415,6 +424,7 @@ class TeamCanvasController{
   openDetail(issue,trigger){
     this.detailIssue=issue;this.detailRun=(issue.runs||[])[0]||null;this.detailTrigger=trigger;this.detail.hidden=false;this.detail.classList.add('open');
     this.detail.setAttribute('aria-modal',String(window.matchMedia('(max-width:720px)').matches));
+    this.focusItem(issue.id);
     const requestToken={};this.detailRequestToken=requestToken;
     this.renderDetail(issue);
     document.getElementById('team-canvas-detail-close').focus({preventScroll:true});
@@ -443,8 +453,17 @@ class TeamCanvasController{
       issue.lastUpdate?.summary||this.t('暂无最近回音'),
       issue.lastUpdate?.at?new Date(issue.lastUpdate.at).toLocaleString(BridgeI18n.locale()):'',
     ].filter(Boolean)));
-    const sources=(issue.inputs||[]).map((input,index)=>'#'+String(index+1).padStart(2,'0')+' · '+input.sourceText);
-    if(sources.length)body.append(this.detailSection('关联原话',sources));
+    const sources=(this.lastRecords?.issues||[]).find(row=>row.issue.id===issue.id)?.bubbles||[];
+    if(sources.length){
+      const section=this.detailSection('关联原话',[]);
+      for(const {input,index} of sources){
+        const label='#'+String(input.sequence||index).padStart(2,'0')+' · '+(input.text||this.t('附件消息'));
+        section.append(this.button(label,'plain team-canvas-source',()=>{
+          this.closeDetail();this.focusMessage(input.inputId||input.id);
+        }));
+      }
+      body.append(section);
+    }
     const runs=(issue.runs||[]).map(run=>{
       const progress=this.progress(run),parts=[this.statusLabel(run)];
       if(progress)parts.push(progress.completed+'/'+progress.total+' '+this.t('项已完成'));

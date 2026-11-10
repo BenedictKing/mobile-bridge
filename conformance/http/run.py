@@ -159,6 +159,14 @@ def normalize_headers(headers, gzip_body=False):
 def mask(text):
     for pattern, replacement in MASKS:
         text = pattern.sub(replacement, text)
+    # The notification checkpoint is emitted from a Go map. Field order is
+    # incidental; retain its fields and values while making capture stable.
+    if '"notificationRead"' in text:
+        body = json.loads(text)
+        checkpoint = body.get('notificationRead')
+        if isinstance(checkpoint, dict):
+            body['notificationRead'] = dict(sorted(checkpoint.items()))
+            text = json.dumps(body, ensure_ascii=False)
     return text
 
 
