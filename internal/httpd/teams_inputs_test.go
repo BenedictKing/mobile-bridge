@@ -283,6 +283,60 @@ func TestTeamIssueListProjectsPersistedInputLinks(t *testing.T) {
 	if len(detailed.Runs) != 1 || !strings.Contains(detailed.Runs[0].Delivery.ResultSummary.Text, "只读验证") {
 		t.Fatalf("Issue detail should include the bounded delivery summary: %+v", detailed)
 	}
+	deleted := env.request(http.MethodDelete, "/api/teams/"+teamID+"/issues/"+issueID, `{}`)
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("Issue delete failed: %d %s", deleted.Code, deleted.Body.String())
+	}
+	var deleteResult struct {
+		DeletedInputs int `json:"deletedInputs"`
+	}
+	if err := json.Unmarshal(deleted.Body.Bytes(), &deleteResult); err != nil || deleteResult.DeletedInputs != 1 {
+		t.Fatalf("Issue delete result = %s, err=%v", deleted.Body.String(), err)
+	}
+	if env.server.TeamInputs.GetIssue(teamID, issueID) != nil || env.server.TeamInputs.Get(teamID, input.ID) != nil {
+		t.Fatal("deleted Issue or its source input remains in the ledger")
+	}
+	if env.store.Run(runID) == nil {
+		t.Fatal("deleting an Issue must retain its Run execution record")
+	}
+	missing := env.request(http.MethodGet, "/api/teams/"+teamID+"/issues/"+issueID, "")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("deleted Issue detail status = %d", missing.Code)
+	}
+}
+
+func TestTeamIssueDeleteRejectsActiveRun(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	input, _, err := env.server.TeamInputs.AcceptWithIssueRouting(teamID,
+		"dddddddd-bbbb-4ccc-8ddd-eeeeeeeeee05", "進行中的事項", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := &team.IssueProposal{InputID: input.ID, Revision: input.Revision, Segments: []team.IssueProposalSegment{{
+		Action: team.IssueSegmentCreate, NewIssueTitle: "進行中的事項", SourceStart: 0, SourceEnd: 6,
+	}}}
+	if _, _, err := env.server.TeamInputs.ApplyIssueProposal(teamID, "issue-proposal-active", proposal); err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-issue-active"
+	if err := env.server.TeamInputs.MarkRoutingIntent(teamID, input.ID, "new_task", runID, "lead", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.server.TeamInputs.MarkRouted(teamID, input.ID, "new_task", runID, "lead"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.SaveRun(&team.Run{ID: runID, TeamID: teamID, Status: team.RunDispatching}); err != nil {
+		t.Fatal(err)
+	}
+	issueID := env.server.TeamInputs.ListIssues(teamID)[0].ID
+	response := env.request(http.MethodDelete, "/api/teams/"+teamID+"/issues/"+issueID, `{}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("active Issue delete status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if env.server.TeamInputs.GetIssue(teamID, issueID) == nil || env.server.TeamInputs.Get(teamID, input.ID) == nil {
+		t.Fatal("active Issue or its input was deleted")
+	}
 }
 
 func TestTeamInputFollowUpResumesWaitingRun(t *testing.T) {

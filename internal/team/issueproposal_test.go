@@ -165,6 +165,71 @@ func TestHistoricalInputImportIsStableAndNeverQueuedForExecution(t *testing.T) {
 	}
 }
 
+func TestIssueDeleteRemovesLinkedInputsAndReplays(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := OpenJournal(filepath.Join(dir, "team-inputs.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Close()
+	snapshot := filepath.Join(dir, "team-inputs.json")
+	ledger := LoadInputLedger(snapshot, journal)
+	first, _, err := ledger.AcceptWithIssueRouting("team-1", "input-1", "甲乙", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = ledger.ApplyIssueProposal("team-1", "proposal-1", &IssueProposal{InputID: first.ID, Revision: first.Revision, Segments: []IssueProposalSegment{
+		{Action: IssueSegmentCreate, NewIssueTitle: "甲事项", SourceStart: 0, SourceEnd: 1},
+		{Action: IssueSegmentCreate, NewIssueTitle: "乙事项", SourceStart: 1, SourceEnd: 2},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := ledger.AcceptWithIssueRouting("team-1", "input-2", "乙续", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var target *Issue
+	for _, issue := range ledger.ListIssues("team-1") {
+		if issue.Title == "乙事项" {
+			target = issue
+		}
+	}
+	if target == nil {
+		t.Fatal("target Issue was not created")
+	}
+	_, _, err = ledger.ApplyIssueProposal("team-1", "proposal-2", &IssueProposal{InputID: second.ID, Revision: second.Revision, Segments: []IssueProposalSegment{
+		{Action: IssueSegmentLink, IssueID: target.ID, SourceStart: 0, SourceEnd: 2},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.DeleteIssue("team-1", target.ID); err == nil {
+		t.Fatal("deleting an Issue with queued inputs should be rejected")
+	}
+	for _, inputID := range []string{first.ID, second.ID} {
+		input := ledger.Get("team-1", inputID)
+		if _, _, err := ledger.Cancel("team-1", inputID, "cancel-"+inputID, input.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := ledger.DeleteIssue("team-1", target.ID)
+	if err != nil || deleted != 2 {
+		t.Fatalf("delete Issue: deleted=%d err=%v", deleted, err)
+	}
+	restored := LoadInputLedger(snapshot, journal)
+	if restored.GetIssue("team-1", target.ID) != nil || restored.Get("team-1", first.ID) != nil || restored.Get("team-1", second.ID) != nil {
+		t.Fatal("deleted Issue or linked inputs returned after replay")
+	}
+	issues := restored.ListIssues("team-1")
+	if len(issues) != 1 || issues[0].Title != "甲事项" || len(issues[0].Links) != 0 {
+		t.Fatalf("other Issue should remain without stale input links: %+v", issues)
+	}
+	if _, err := restored.DeleteIssue("team-1", target.ID); err == nil {
+		t.Fatal("deleting a missing Issue should fail")
+	}
+}
+
 func TestExtractIssueProposalSupportsTeamActionsAndRejectsMultipleBlocks(t *testing.T) {
 	valid := "<team-issues>{\"inputId\":\"input-1\",\"revision\":1,\"segments\":[{\"action\":\"ignore\",\"sourceStart\":0,\"sourceEnd\":4}]}</team-issues>\n" +
 		"<team-actions>{\"actions\":[]}</team-actions>"

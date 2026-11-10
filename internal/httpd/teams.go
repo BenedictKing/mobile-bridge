@@ -134,8 +134,15 @@ func (h *handler) handleTeams(method string) {
 		h.handleTeamIssuesList(teamID)
 	case len(segments) == 3 && segments[1] == "issues" && segments[2] == "backfill" && method == http.MethodPost:
 		h.handleTeamIssueBackfill(teamID)
-	case len(segments) == 3 && segments[1] == "issues" && method == http.MethodGet:
-		h.handleTeamIssueGet(teamID, segments[2])
+	case len(segments) == 3 && segments[1] == "issues":
+		switch method {
+		case http.MethodGet:
+			h.handleTeamIssueGet(teamID, segments[2])
+		case http.MethodDelete:
+			h.handleTeamIssueDelete(teamID, segments[2])
+		default:
+			h.fail(http.StatusNotFound, errorBody("页面不存在"))
+		}
 	case len(segments) == 2 && segments[1] == "inputs":
 		// TeamInput 长期入口（§10 阶段二）：POST 202 {inputId, routeStatus}，
 		// 同 id 幂等重放；GET 按接受序分页查看持久队列（阶段 1，

@@ -58,6 +58,7 @@ const (
 	EventWorkItemsProposed       = "work_items_proposed"
 	EventIssueProposalApplied    = "issue_proposal_applied"
 	EventIssueAssociationFailed  = "issue_association_failed"
+	EventIssueDeleted            = "issue_deleted"
 	EventInputTeamPurged         = "input_team_purged"
 )
 
@@ -1145,6 +1146,8 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		l.applyIssueProposalEvent(event)
 	case EventIssueAssociationFailed:
 		l.applyIssueAssociationFailedEvent(event)
+	case EventIssueDeleted:
+		l.applyIssueDeletedEvent(event)
 	case EventInputTeamPurged:
 		teamID := payloadString(event.Payload, "teamId")
 		kept := l.order[:0]

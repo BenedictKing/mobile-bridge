@@ -33,6 +33,28 @@ function teamCanvasFitTransform(viewportWidth,viewportHeight,canvasWidth,canvasH
   return{scale,x:(viewportWidth-canvasWidth*scale)/2,y:(viewportHeight-canvasHeight*scale)/2};
 }
 
+function teamCanvasIssueLayout(bubbleRecords,issueRecords,top=28,gap=22){
+  const bubbles=new Map(bubbleRecords.map(record=>[record.input.inputId||record.input.id,record]));
+  const rows=issueRecords.map((record,index)=>{
+    const linked=(record.bubbles||[]).map(bubble=>bubbles.get(bubble.input.inputId||bubble.input.id)).filter(Boolean);
+    const height=record.node.offsetHeight;
+    let desired=null;
+    if(linked.length){
+      const center=linked.reduce((sum,bubble)=>sum+bubble.node._canvasPosition.y+bubble.node.offsetHeight/2,0)/linked.length;
+      desired=center-height/2;
+    }
+    return{record,index,height,desired,y:top};
+  });
+  const linked=rows.filter(row=>row.desired!==null).sort((a,b)=>a.desired-b.desired||a.index-b.index);
+  let cursor=top;
+  for(const row of linked){row.y=Math.max(row.desired,cursor);cursor=row.y+row.height+gap;}
+  for(let index=linked.length-2;index>=0;index--)linked[index].y=Math.min(linked[index].y,linked[index+1].y-linked[index].height-gap);
+  if(linked.length&&linked[0].y<top){const shift=top-linked[0].y;for(const row of linked)row.y+=shift;}
+  cursor=linked.length?linked[linked.length-1].y+linked[linked.length-1].height+gap:top;
+  for(const row of rows.filter(row=>row.desired===null)){row.y=cursor;cursor+=row.height+gap;}
+  return rows.map(({record,y})=>({record,y}));
+}
+
 function teamCanvasOwnerLine(item,t=value=>value,agentLabel=value=>value){
   const displayName=owner=>{
     let kind=owner?.agentKind||'';
@@ -83,6 +105,7 @@ class TeamCanvasController{
     document.getElementById('team-open-canvas').addEventListener('click',()=>this.setMode('canvas'));
     document.getElementById('team-canvas-refresh').addEventListener('click',()=>this.refresh(true));
     document.getElementById('team-canvas-backfill').addEventListener('click',()=>this.backfillHistory());
+    document.getElementById('team-canvas-delete-issue').addEventListener('click',()=>this.deleteIssue());
     document.getElementById('team-canvas-fit').addEventListener('click',()=>this.fitAll());
     document.getElementById('team-canvas-zoom-out').addEventListener('click',()=>this.zoomAt(this.transform.scale/1.2));
     document.getElementById('team-canvas-zoom-in').addEventListener('click',()=>this.zoomAt(this.transform.scale*1.2));
@@ -328,7 +351,7 @@ class TeamCanvasController{
     }else{
       let bubbleY=28,issueY=28;
       for(const record of bubbleRecords){const box=setPosition(record.node,'m:'+record.input.inputId,24,bubbleY);bubbleY+=box.height+14;}
-      for(const record of issueRecords){const box=setPosition(record.node,'i:'+record.issue.id,460,issueY);issueY+=box.height+22;}
+      for(const {record,y} of teamCanvasIssueLayout(bubbleRecords,issueRecords)){const box=setPosition(record.node,'i:'+record.issue.id,460,y);issueY=Math.max(issueY,box.y+box.height+22);}
       height=Math.max(620,bubbleY,issueY)+24;
     }
     this.world.style.width=width+'px';this.world.style.height=height+'px';
@@ -372,6 +395,25 @@ class TeamCanvasController{
     if(!p)return;
     const rect=this.viewport.getBoundingClientRect();
     this.transform.scale=Math.max(this.transform.scale,Math.min(.72,(rect.width-48)/this.canvasWidth));
+  async deleteIssue(){
+    const issue=this.detailIssue,team=this.current;
+    if(!issue||!team||this.deletingIssue)return;
+    const prompt=this.t('删除此事项及其关联对话？这些对话与其他事项的关联也会移除；Run 执行记录保留。确认删除？');
+    if(!window.confirm(prompt+'\n'+(issue.title||this.t('团队事项'))))return;
+    const button=document.getElementById('team-canvas-delete-issue');
+    this.deletingIssue=true;button.disabled=true;button.textContent=this.t('正在删除…');
+    try{
+      await this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues/'+encodeURIComponent(issue.id),{method:'DELETE',body:{}});
+      if(this.current?.id!==team.id)return;
+      if(this.detailIssue?.id===issue.id)this.closeDetail();
+      this.notify?.(this.t('事项及关联对话已删除'));
+      await this.refresh(true);
+    }catch(error){
+      if(this.current?.id===team.id)this.error.textContent=this.t(error.message||'删除事项失败');
+    }finally{
+      this.deletingIssue=false;button.disabled=false;button.textContent=this.t('删除事项与对话');
+    }
+  }
     this.transform.x=rect.width/2-(p.x+node.offsetWidth/2)*this.transform.scale;
     this.transform.y=rect.height/2-(p.y+node.offsetHeight/2)*this.transform.scale;
     this.userInteracted=true;
@@ -498,4 +540,4 @@ class TeamCanvasController{
   }
 }
 
-if(typeof module!=='undefined'&&module.exports)module.exports={TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasOwnerLine,teamCanvasDeliveryRows};
+if(typeof module!=='undefined'&&module.exports)module.exports={TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasIssueLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows};

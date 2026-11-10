@@ -320,6 +320,78 @@ func appendIssueInputLink(links []IssueInputLink, link IssueInputLink) []IssueIn
 	return append(links, link)
 }
 
+// DeleteIssue 删除 Issue 及其来源输入投影；journal 与 Run 执行记录保留。
+func (l *InputLedger) DeleteIssue(teamID, issueID string) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	issue := l.issues[issueID]
+	if issue == nil || issue.TeamID != teamID {
+		return 0, ErrNotFound
+	}
+	inputIDs := []string{}
+	seen := map[string]bool{}
+	for _, link := range issue.Links {
+		if seen[link.InputID] {
+			continue
+		}
+		seen[link.InputID] = true
+		input := l.inputs[link.InputID]
+		if input == nil || input.TeamID != teamID {
+			continue
+		}
+		switch input.QueueStatus {
+		case InputQueued, InputRouting, InputWaitingInput:
+			return 0, fmt.Errorf("%w：事项仍有待路由对话", ErrInputNotQueued)
+		}
+		inputIDs = append(inputIDs, link.InputID)
+	}
+	event := newEvent("", EventIssueDeleted, "api", map[string]any{
+		"teamId": teamID, "issueId": issueID, "inputIds": inputIDs,
+	})
+	event.IdempotencyKey = "team:" + teamID + ":issue:" + issueID + ":deleted"
+	if err := l.commitLocked(event, func() { l.applyInputEvent(event) }); err != nil {
+		return 0, err
+	}
+	return len(inputIDs), nil
+}
+
+func (l *InputLedger) applyIssueDeletedEvent(event *Event) {
+	teamID := payloadString(event.Payload, "teamId")
+	issueID := payloadString(event.Payload, "issueId")
+	if teamID == "" || issueID == "" {
+		return
+	}
+	deletedInputs := map[string]bool{}
+	for _, inputID := range payloadStrings(event.Payload, "inputIds") {
+		input := l.inputs[inputID]
+		if input == nil || input.TeamID != teamID {
+			continue
+		}
+		delete(l.inputs, inputID)
+		deletedInputs[inputID] = true
+	}
+	for _, issue := range l.issues {
+		if issue == nil || issue.TeamID != teamID {
+			continue
+		}
+		links := issue.Links[:0]
+		for _, link := range issue.Links {
+			if link.IssueID != issueID && !deletedInputs[link.InputID] {
+				links = append(links, link)
+			}
+		}
+		if len(links) != len(issue.Links) {
+			issue.Links = links
+			issue.UpdatedAt = event.CreatedAt
+		}
+	}
+	if issue := l.issues[issueID]; issue != nil && issue.TeamID == teamID {
+		delete(l.issues, issueID)
+	}
+	l.order = removeMissing(l.order, l.inputs)
+	l.issuesOrder = removeMissing(l.issuesOrder, l.issues)
+}
+
 func (l *InputLedger) GetIssue(teamID, issueID string) *Issue {
 	l.mu.Lock()
 	defer l.mu.Unlock()

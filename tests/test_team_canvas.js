@@ -2,7 +2,7 @@
 
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
+const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasIssueLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
 
 test('canvas uses persisted issue links and ignores stale revisions',()=>{
   const associations=teamCanvasAssociations(
@@ -70,6 +70,18 @@ test('canvas wires reference rendered bubble nodes and omit missing source recor
   assert.equal(records[0].bubbles[0].node.style.left,'1px');
 });
 
+test('desktop issue cards anchor near linked bubbles without overlapping',()=>{
+  const bubble=(id,y)=>({input:{inputId:id},node:{offsetHeight:80,_canvasPosition:{y}}});
+  const issue=(id,inputID)=>({issue:{id},bubbles:[{input:{inputId:inputID}}],node:{offsetHeight:140}});
+  const bubbles=[bubble('input-1',28),bubble('input-2',160),bubble('input-3',292)];
+  const issues=[issue('issue-late','input-3'),issue('issue-early','input-1'),issue('issue-orphan','missing')];
+  const positions=new Map(teamCanvasIssueLayout(bubbles,issues).map(({record,y})=>[record.issue.id,y]));
+  assert.equal(positions.get('issue-early'),28);
+  assert.equal(positions.get('issue-late'),262);
+  assert.equal(positions.get('issue-orphan'),424);
+  assert.ok(positions.get('issue-early')<positions.get('issue-late'),'关联顺序应优先于 Issue 创建顺序');
+});
+
 test('fit all respects tall canvas bounds and centers the complete layout',()=>{
   const viewport={width:1000,height:600},canvas={width:940,height:1600};
   const fit=teamCanvasFitTransform(viewport.width,viewport.height,canvas.width,canvas.height);
@@ -78,6 +90,28 @@ test('fit all respects tall canvas bounds and centers the complete layout',()=>{
   assert.ok(fit.x>=0&&right<=viewport.width);
   assert.ok(fit.y>=0&&bottom<=viewport.height);
   assert.equal(teamCanvasFitTransform(0,600,940,1600),null);
+});
+
+test('issue deletion confirms, calls DELETE and refreshes the canvas',async()=>{
+  const previousDocument=global.document,previousWindow=global.window;
+  const button={disabled:false,textContent:''};
+  global.document={getElementById:id=>id==='team-canvas-delete-issue'?button:null};
+  global.window={confirm:()=>true};
+  try{
+    let closed=0,refreshed=0,request;
+    const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+      current:{id:'team-1'},detailIssue:{id:'issue-1',title:'旧事项'},error:{textContent:''},
+      closeDetail:()=>{closed++;},refresh:async()=>{refreshed++;},
+      request:async(path,options)=>{request={path,options};return{ok:true};},
+    });
+    await controller.deleteIssue();
+    assert.equal(request.path,'/api/teams/team-1/issues/issue-1');
+    assert.equal(request.options.method,'DELETE');
+    assert.equal(closed,1);
+    assert.equal(refreshed,1);
+    assert.equal(button.disabled,false);
+    assert.equal(button.textContent,'删除事项与对话');
+  }finally{global.document=previousDocument;global.window=previousWindow;}
 });
 
 test('polling redraws only when team canvas data changes',async()=>{

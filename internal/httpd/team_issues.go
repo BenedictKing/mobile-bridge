@@ -182,6 +182,53 @@ func (h *handler) handleTeamIssueGet(teamID, issueID string) {
 	h.output(http.StatusOK, h.teamIssueProject(issue, true), contentTypeJSON, "")
 }
 
+func (h *handler) handleTeamIssueDelete(teamID, issueID string) {
+	if h.loadTeam(teamID) == nil {
+		return
+	}
+	if h.server.TeamInputs == nil {
+		h.fail(http.StatusConflict, errorBody("当前网关未启用团队 Issue 账本"))
+		return
+	}
+	issue := h.server.TeamInputs.GetIssue(teamID, issueID)
+	if issue == nil {
+		h.fail(http.StatusNotFound, errorBody("Issue 不存在"))
+		return
+	}
+	runIDs := map[string]bool{}
+	for _, link := range issue.Links {
+		input := h.server.TeamInputs.Get(teamID, link.InputID)
+		if input == nil {
+			continue
+		}
+		for _, runID := range append(append([]string{}, input.RunIDs...), input.TargetRunID) {
+			runIDs[runID] = true
+		}
+		for _, workItem := range input.WorkItems {
+			runIDs[workItem.RunID] = true
+		}
+		if classifier := h.server.TeamStore.Run(input.ID); classifier != nil && classifier.IsIssueClassificationOnly() && !teamRunTerminal(classifier.Status) {
+			h.fail(http.StatusConflict, errorBody("事项仍在归类，请等待结束后再删除"))
+			return
+		}
+	}
+	for runID := range runIDs {
+		if run := h.server.TeamStore.Run(runID); run != nil && !teamRunTerminal(run.Status) {
+			h.fail(http.StatusConflict, errorBody("事项仍有未结束的 Run，请先取消或等待结束"))
+			return
+		}
+	}
+	deleted, err := h.server.TeamInputs.DeleteIssue(teamID, issueID)
+	if err != nil {
+		h.failTeamInputError(err)
+		return
+	}
+	result := jsoncompat.NewObject()
+	result.Set("ok", true)
+	result.Set("deletedInputs", jsoncompat.Num(deleted))
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
 func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jsoncompat.Object {
 	result := jsoncompat.NewObject()
 	result.Set("id", issue.ID)

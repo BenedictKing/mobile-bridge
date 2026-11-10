@@ -694,8 +694,10 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-task p{grid-column:1/-1;margin:0;color:var(--muted);font-size:11px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
 .team-canvas-task-error{color:var(--error)!important}
 .team-canvas-detail-loading{padding:15px 0;color:var(--muted);font-size:12px}
-.team-canvas-detail-footer{padding:11px 17px max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--line)}
+.team-canvas-detail-footer{display:flex;align-items:center;gap:10px;padding:11px 17px max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--line)}
 .team-canvas-detail-footer button{min-height:40px}
+.team-canvas-detail-footer .primary{flex:1}
+.team-canvas-detail-footer .team-canvas-delete{flex:none;color:var(--error)}
 @media(max-width:950px){.team-canvas-toolbar{padding-right:9px;padding-left:9px}.team-canvas-actions{gap:3px}.team-canvas-mode{margin-right:1px}}
 @media(max-width:720px){
   .team-canvas{width:calc(100% + 32px);height:calc(100dvh - 320px);min-height:440px;max-height:calc(100dvh - 280px);margin:-5px -16px 0}
@@ -717,7 +719,7 @@ main{background:var(--page);overflow:hidden}
   .team-canvas-detail-head{padding:13px 14px 11px}
   .team-canvas-detail-body{padding-right:14px;padding-left:14px}
   .team-canvas-detail-footer{padding-right:14px;padding-left:14px}
-  .team-canvas-detail-footer button{width:100%;min-height:44px}
+  .team-canvas-detail-footer button{width:auto;min-height:44px}
 }
 @media(max-width:390px){
   .team-canvas{width:calc(100% + 32px);margin-right:-16px;margin-left:-16px}
