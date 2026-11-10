@@ -169,6 +169,7 @@ class MigrateControl {
     try{
       const extra=options.model?{model:options.model,effort:options.effort||''}:{};
       const instructions=String(options.instructions||'').trim();if(instructions)extra.instructions=instructions;
+      if(options.teamMaintenance==='compact'&&options.teamId){extra.teamMaintenance='compact';extra.teamId=options.teamId;}
       const body=this.body(kind,scope,options.id||this.newId(),extra);
       const result=await this.request(body);
       this.prepared=null;  // The target session is now a real migration.

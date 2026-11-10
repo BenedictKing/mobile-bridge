@@ -17,23 +17,16 @@ function extract({team=false,defaultCompact}={}){
 }
 const same=(actual,expected)=>assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected);
 
-test('parseTeamCommand handles /new exactly and passes compaction instructions',()=>{
+test('team chat leaves maintenance and slash commands to TeamInput routing',()=>{
   const {parseTeamCommand}=extract({team:true});
-  same(parseTeamCommand('/new'),{kind:'new'});
-  same(parseTeamCommand('  /new \n'),{kind:'new'});
-  // /new 带附加文字仍是普通团队消息；压缩命令的附加文字是后续指示。
+  assert.equal(parseTeamCommand('/new'),null);
+  assert.equal(parseTeamCommand('  /new \n'),null);
+  assert.equal(parseTeamCommand('/compress'),null);
+  assert.equal(parseTeamCommand('/compress main 继续实现'),null);
+  assert.equal(parseTeamCommand('/migrate kimi'),null);
   assert.equal(parseTeamCommand('/new 现在'),null);
-  same(parseTeamCommand('/compress main 立刻'),{kind:'native',scope:'main',instructions:'立刻'});
-  same(parseTeamCommand('/compress gateway full 继续补测试\n并修复失败项'),{kind:'gateway',scope:'full',instructions:'继续补测试\n并修复失败项'});
-  same(parseTeamCommand('/compress 接着实现'),{kind:'native',scope:'main',instructions:'接着实现'});
   assert.equal(parseTeamCommand('普通消息'),null);
   assert.equal(parseTeamCommand(''),null);
-  // /compact 是 /compress 的等价写法；裸命令执行默认档。
-  same(parseTeamCommand('/compress'),{kind:'native',scope:'main'});
-  same(parseTeamCommand('/compress bare'),{kind:'native',scope:'bare'});
-  same(parseTeamCommand('/compress gateway'),{kind:'gateway',scope:'main'});
-  same(parseTeamCommand('/compact gateway full'),{kind:'gateway',scope:'full'});
-  same(parseTeamCommand('/compress gateway latest'),{kind:'gateway',scope:'latest'});
 });
 
 test('bare /compress follows the configured default level',()=>{
@@ -80,11 +73,10 @@ test('migrate command parses long and shorthand targets with multiline instructi
   flow.state={agent:'kimi',agents:[{kind:'kimi'},{kind:'zcode'},{kind:'codex'}]};
   same(flow.parsePlainCommand('/migrate zcode'),{kind:'migrate',agent:'zcode',scope:'main'});
   same(flow.parsePlainCommand('/migrate zcode full 继续补测试\n并修复失败项'),{kind:'migrate',agent:'zcode',scope:'full',instructions:'继续补测试\n并修复失败项'});
-  same(flow.parseTeamCommand('/migrate codex latest'),{kind:'migrate',agent:'codex',scope:'latest'});
   same(flow.parsePlainCommand('/migrate'),{kind:'migrate',agent:'',scope:'main'});
   same(flow.parsePlainCommand('/zcode'),{kind:'migrate',agent:'zcode',scope:'main'});
   same(flow.parsePlainCommand('/zcode latest 继续补测试'),{kind:'migrate',agent:'zcode',scope:'latest',instructions:'继续补测试'});
-  same(flow.parseTeamCommand('/codex main 接着实现'),{kind:'migrate',agent:'codex',scope:'main',instructions:'接着实现'});
+  same(flow.parsePlainCommand('/codex main 接着实现'),{kind:'migrate',agent:'codex',scope:'main',instructions:'接着实现'});
   same(flow.parsePlainCommand('/kimi full 压缩后继续'),{kind:'migrate',agent:'kimi',scope:'full',instructions:'压缩后继续'});
   assert.equal(flow.parsePlainCommand('/unknown 普通消息'),null);
 });
@@ -121,16 +113,13 @@ test('migrate command validates the target and delegates with instructions',asyn
 
 test('command suggestions follow the chat mode',()=>{
   const team=extract({team:true}),plain=extract({team:false});
-  // 十行：当前 Agent、/new、默认档、原生 bare/full/main/latest、网关 main/full/latest。
   const teamRows=team.composerCommandRows(''),plainRows=plain.composerCommandRows('');
-  assert.equal(teamRows.length,10);
+  assert.equal(teamRows.length,0);
   assert.equal(plainRows.length,10);
-  assert.equal(teamRows[0].token,'/new');
-  assert.match(teamRows[0].label,/更换空白主控/);
   assert.equal(plainRows[0].token,'/new');
   assert.match(plainRows[0].label,/新建会话/);
   // 默认档行展示当前生效档位。
-  const customized=extract({team:true,defaultCompact:'gateway-full'}).composerCommandRows('')[2];
+  const customized=extract({defaultCompact:'gateway-full'}).composerCommandRows('')[2];
   assert.equal(customized.token,'/compress');
   assert.match(customized.description,/网关 · 完整/);
   // 网关三档齐全，描述按模式区分「换绑主控/并打开」。
@@ -138,7 +127,7 @@ test('command suggestions follow the chat mode',()=>{
   assert.equal(gateways.length,3);
   assert.match(gateways.find(row=>row.token==='/compress gateway full').label,/完整/);
   assert.match(gateways[0].description,/并打开/);
-  assert.match(team.composerCommandRows('gateway')[0].description,/换绑主控/);
+  assert.equal(team.composerCommandRows('gateway').length,0);
   // 前缀与别名过滤。
   assert.equal(plain.composerCommandRows('compress').length,8);
   assert.equal(plain.composerCommandRows('compact').length,8);
@@ -150,8 +139,8 @@ test('command suggestions follow the chat mode',()=>{
 
 function extractNewContext({runs=[],confirm=true,cancelError}={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
-  const start=source.indexOf('async function newTeamLeadContext(');
-  const end=source.indexOf('// 命令面板：',start);
+  const start=source.indexOf('async function teamContextState(');
+  const end=source.indexOf('// 命令面板只服务普通会话',start);
   assert.ok(start>=0&&end>start,'team /new flow not found in app.js');
   const calls=[];
   const context={
@@ -164,6 +153,7 @@ function extractNewContext({runs=[],confirm=true,cancelError}={}){
     teamRequest:async(path,options)=>{
       calls.push(['request',path,options]);
       if(path.endsWith('/runs'))return{runs};
+      if(path.endsWith('/inputs?limit=1'))return{pendingCount:0};
       if(cancelError)throw cancelError;
       return{status:'cancelled'};
     },
@@ -176,26 +166,40 @@ function extractNewContext({runs=[],confirm=true,cancelError}={}){
 test('team /new cancels a confirmed parked run before switching lead',async()=>{
   const flow=extractNewContext({runs:[{id:'run-1',status:'waiting_input',version:7}]});
   assert.equal((await flow.run()).sessionId,'fresh');
-  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm','request','refresh','new','reset']);
-  assert.deepEqual(JSON.parse(JSON.stringify(flow.calls[2])),['request','/api/teams/team/runs/run-1/cancel-parked',{method:'POST',body:{version:7}}]);
-  assert.deepEqual(flow.calls[5],['reset','team',['run-1']]);
-  assert.match(flow.calls[1][1],/取消该 Run/);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','request','confirm','request','refresh','new','reset']);
+  assert.deepEqual(JSON.parse(JSON.stringify(flow.calls[3])),['request','/api/teams/team/runs/run-1/cancel-parked',{method:'POST',body:{version:7}}]);
+  assert.deepEqual(flow.calls[6],['reset','team',['run-1']]);
+  assert.match(flow.calls[2][1],/取消该 Run/);
 });
 
 test('team /new keeps a parked run when confirmation is declined',async()=>{
   const flow=extractNewContext({runs:[{id:'run-1',status:'paused',version:4}],confirm:false});
   assert.equal(await flow.run(),null);
-  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm']);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','request','confirm']);
 });
 
 test('team /new refuses an active run without cancelling it',async()=>{
   const flow=extractNewContext({runs:[{id:'run-1',status:'dispatching',version:3}]});
   await assert.rejects(flow.run(),/仍在执行/);
-  assert.deepEqual(flow.calls.map(call=>call[0]),['request']);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','request']);
+});
+
+test('team /new cannot cancel a parked run while TeamInputs are pending',async()=>{
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const start=source.indexOf('async function teamContextState('),end=source.indexOf('// 命令面板只服务普通会话',start),calls=[];
+  const context={
+    t:value=>value,encodeURIComponent,TEAM_TERMINAL_RUN_STATUSES:new Set(['completed','failed','cancelled','stopped','outcome_unknown']),
+    window:{confirm:()=>{calls.push(['confirm']);return true;}},
+    teamRequest:async path=>{calls.push(['request',path]);return path.endsWith('/runs')?{runs:[{id:'run-1',status:'paused',version:2}]}:{pendingCount:1};},
+    teamChat:{refreshRun(){calls.push(['refresh']);}},leadContextAction:async()=>{calls.push(['new']);},
+  };
+  vm.runInNewContext(source.slice(start,end)+'\nthis.newTeamLeadContext=newTeamLeadContext;',context);
+  await assert.rejects(context.newTeamLeadContext({id:'team'},'lead'),/待路由或等待处理/);
+  assert.deepEqual(calls.map(call=>call[0]),['request','request']);
 });
 
 test('team /new does not switch lead when parked cancellation fails',async()=>{
   const flow=extractNewContext({runs:[{id:'run-1',status:'waiting_input',version:7}],cancelError:Error('版本冲突')});
   await assert.rejects(flow.run(),/版本冲突/);
-  assert.deepEqual(flow.calls.map(call=>call[0]),['request','confirm','request']);
+  assert.deepEqual(flow.calls.map(call=>call[0]),['request','request','confirm','request']);
 });

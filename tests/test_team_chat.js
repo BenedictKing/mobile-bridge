@@ -126,6 +126,24 @@ test('team settings lists enabled agents without project history and adds with o
   assert.equal(changed.members.length,3);
 });
 
+test('team settings owns lead compaction and reset actions',async()=>{
+  const team={...teams[0],version:2};
+  const actions=[];
+  const settings=new TeamSettingsDialog({request:async path=>{
+    if(path==='/api/teams/team-1')return team;
+    throw new Error('unexpected request '+path);
+  },onCompactLead:(current,close)=>{actions.push(['compact',current.id]);close();},onResetLead:(current,close)=>{actions.push(['reset',current.id]);close();}});
+  await settings.open(team);
+  assert.deepEqual(find(settings.body,'team-context-compact').map(button=>button.textContent),['压缩主控上下文']);
+  assert.deepEqual(find(settings.body,'team-context-reset').map(button=>button.textContent),['重置主控会话']);
+  find(settings.body,'team-context-compact')[0].onclick();
+  assert.equal(settings._dialog.open,false);
+  await settings.open(team);
+  find(settings.body,'team-context-reset')[0].onclick();
+  assert.deepEqual(actions,[['compact','team-1'],['reset','team-1']]);
+  assert.equal(settings._dialog.open,false);
+});
+
 test('team settings renders capability tags as capsules removable before save',async()=>{
   const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端','React']:[]}))};
   const patches=[];

@@ -159,6 +159,14 @@ test('gateway compaction keeps its operation type and rejects duplicate submissi
   assert.equal(control.busy,false);
 });
 
+test('team gateway compaction carries its maintenance guard through migration',async()=>{
+  const requests=[];
+  const {control,root}=loadControl({request:async body=>{requests.push(body);return {sent:true};}});
+  await control.migrate('claude','main','compact',{instructions:'压缩后继续',teamMaintenance:'compact',teamId:'team-1'});
+  assert.equal(requests[0].teamMaintenance,'compact');
+  assert.equal(requests[0].teamId,'team-1');
+});
+
 test('chat details keep migration before and outside the compaction section',()=>{
   const html=readFileSync(require.resolve('../web/index.html'),'utf8');
   const compact=html.match(/<section id="compact-control"[\s\S]*?<\/section>/)[0];

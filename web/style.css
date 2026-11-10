@@ -368,6 +368,9 @@
 .team-settings-dialog{width:min(94vw,620px)}
 .team-settings-section{margin-bottom:16px}
 .team-settings-section h3{font-size:12px;margin-bottom:8px}
+.team-context-actions{display:flex;flex-wrap:wrap;gap:8px}
+.team-context-actions button{min-height:40px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text)}
+.team-context-actions .team-context-compact{background:var(--soft);color:var(--green)}
 .team-role-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .picker .team-role-card{display:block;margin:0;border:1px solid var(--line);border-radius:10px;background:var(--surface);padding:12px}
 .team-role-label{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}
@@ -420,7 +423,6 @@
 .selection-bar{position:fixed;z-index:20;display:flex;padding:3px;border:1px solid var(--line);border-radius:999px;background:var(--raised);box-shadow:0 8px 24px #0000001f;user-select:none;-webkit-user-select:none;touch-action:manipulation}
 .selection-bar button{border:0;background:none;color:var(--green);font-size:13px;font-weight:600;line-height:1.1;padding:9px 15px;border-radius:999px;white-space:nowrap}
 .selection-bar button:hover,.selection-bar button:active{background:var(--soft)}
-.team-lead-hint{margin:0 0 8px;font-size:12px;line-height:1.6;color:var(--muted)}
 
 /* 团队输入队列面板：逐输入状态/等待原因/目标 Run 与排队态操作。 */
 .team-queue-panel{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:11px 16px 12px;margin:0 0 14px;max-width:760px}

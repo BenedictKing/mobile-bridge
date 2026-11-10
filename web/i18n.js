@@ -955,7 +955,6 @@ const en={
   "网关创建压缩新会话并换绑主控": "The gateway builds a compacted session and rebinds the lead",
   "没有匹配的命令": "No matching command",
   "请先移除附件后再压缩": "Remove attachments before compacting",
-  "团队模式：输入 /new 换空白主控，/compress 压缩主控上下文。": "Team mode: type /new for a fresh lead session, /compress to compact the lead context.",
   "在当前会话由 Agent 执行原生压缩。": "Compact in the current session using the agent's native command.",
   "按所选范围在当前 Agent 创建转录压缩的新会话，源会话保持不变。": "Create a new session in the current agent with the selected transcript scope. The source session stays unchanged.",
   "选择目标 Agent": "Choose target agent",

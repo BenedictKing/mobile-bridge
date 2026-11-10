@@ -878,6 +878,21 @@ func (h *handler) handleTeamConversationSend(threadID string, object *jsoncompat
 		return false
 	}
 	if teamMode := stringField(object, "teamMode"); teamMode == "direct" {
+		if stringField(object, "teamMaintenance") == "compact" {
+			teamRow, resolveErr := h.teamConversation(threadID, stringField(object, "teamId"))
+			if resolveErr != nil {
+				h.fail(http.StatusConflict, errorBody(resolveErr.Error()))
+				return true
+			}
+			if teamRow == nil {
+				h.fail(http.StatusConflict, errorBody("找不到主控所属团队，请刷新后重试"))
+				return true
+			}
+			if guardErr := h.leadContextGuard(teamRow, threadID); guardErr != nil {
+				h.fail(http.StatusConflict, errorBody(guardErr.Error()))
+				return true
+			}
+		}
 		return false
 	} else if teamMode != "" && teamMode != "team" {
 		h.fail(http.StatusBadRequest, errorBody("团队消息模式无效"))

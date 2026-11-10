@@ -349,6 +349,26 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 	body := value.(*jsoncompat.Object)
+	if stringField(body, "teamMaintenance") == "compact" {
+		teamID := stringField(body, "teamId")
+		if teamID == "" || h.server.TeamStore == nil {
+			h.fail(http.StatusConflict, errorBody("缺少主控所属团队，请刷新后重试"))
+			return
+		}
+		teamRow, resolveErr := h.teamConversation(threadID, teamID)
+		if resolveErr != nil {
+			h.fail(http.StatusConflict, errorBody(resolveErr.Error()))
+			return
+		}
+		if teamRow == nil {
+			h.fail(http.StatusConflict, errorBody("找不到主控所属团队，请刷新后重试"))
+			return
+		}
+		if guardErr := h.leadContextGuard(teamRow, threadID); guardErr != nil {
+			h.fail(http.StatusConflict, errorBody(guardErr.Error()))
+			return
+		}
+	}
 	requestID := stringField(body, "id")
 	if _, parseErr := uuid.Parse(requestID); parseErr != nil {
 		h.fail(http.StatusBadRequest, errorBody("迁移请求标识无效"))

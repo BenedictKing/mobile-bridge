@@ -150,6 +150,9 @@ func (h *handler) leadContextGuard(teamRow *team.Team, expectedSessionID string)
 			return errors.New("团队仍有未结束的 Run，请先完成或取消后再操作主控上下文")
 		}
 	}
+	if h.server.TeamInputs != nil && h.server.TeamInputs.PendingCount(teamRow.ID) > 0 {
+		return errors.New("团队仍有待路由或等待处理的输入，请处理后再操作主控上下文")
+	}
 	if h.server.Queue != nil {
 		for _, entry := range h.server.Queue.threadEntries(expectedSessionID) {
 			if entry.Status == SubQueued || entry.Status == SubUnknown {

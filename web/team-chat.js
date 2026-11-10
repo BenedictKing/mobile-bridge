@@ -1,9 +1,9 @@
 'use strict';
 
-// 团队输入队列（docs/team-demand-queue-plan.md §3.2/§7，阶段 4）：发送方式
-// 中的「排队发送」就是按 Team 保存的开关；选择后会话发送带
-// teamQueueVersion:2，先落持久账本（202 queued，不给 runId），路由结果由
-// 队列面板追；普通发送保持「立即给 runId」的同步契约。
+// 团队输入队列（docs/team-demand-queue-plan.md §3.2/§7，阶段 4）：运行中
+// 发送自动按 Team 开启排队并带 teamQueueVersion:2，先落持久账本
+// （202 queued，不给 runId），路由结果由队列面板追；空闲发送保持
+// 「立即给 runId」的同步契约。
 function teamQueueStorage(){
   try{return globalThis.localStorage;}catch{return null;}
 }
@@ -205,8 +205,8 @@ function teamWorkflowMemberLabel(member,task){
 }
 
 class TeamChatController{
-  constructor({root,request,openRun,onChange}){
-    Object.assign(this,{root,request,openRun,onChange});
+  constructor({root,request,openRun,onChange,onCompactLead,onResetLead}){
+    Object.assign(this,{root,request,openRun,onChange,onCompactLead,onResetLead});
     this.teams=[];this.current=null;this.run=null;this.team=null;
     this.pending=false;this.queued=false;this.lastFetch=0;this.generation=0;this.compact=false;
     this.queue=null;this.queueError='';this.queueExpanded=false;this.excludedRuns=new Map();
@@ -290,8 +290,7 @@ class TeamChatController{
     dialog.addEventListener('close',()=>dialog.remove(),{once:true});
     dialog.showModal();
   }
-  // renderQueuePanel 只在发送区选择「排队发送」后展示队列内容与操作；
-  // 开关本身由发送方式菜单统一承载。
+  // 团队运行期间展示输入队列，提供立即发送、编辑与删除操作。
   renderQueuePanel(){
     if(!this.queueMode())return;
     const team=this.team,root=this.root;
@@ -362,7 +361,7 @@ class TeamChatController{
     this.render();if(this.current){this.refreshRun(true);this.refreshQueue();}
   }
   close(){this.open(null);}
-  openSettings(){if(this.current)new TeamSettingsDialog({request:this.request,onChange:team=>{this.onChange&&this.onChange(team);}}).open(this.current);}
+  openSettings(){if(this.current)new TeamSettingsDialog({request:this.request,onChange:team=>{this.onChange&&this.onChange(team);},onCompactLead:this.onCompactLead,onResetLead:this.onResetLead}).open(this.current);}
   accepted(){this.refreshRun(true);this.refreshQueue();globalThis.BridgeTeamCanvas?.accepted();}
   schedule(){
     clearTimeout(this.timer);if(!this.current)return;
@@ -571,7 +570,7 @@ function teamReviewerMemberID(team){
   return (team.members||[]).find(member=>member.enabled&&member.role==='reviewer')?.id||'';
 }
 class TeamSettingsDialog{
-  constructor({request,onChange}){this.request=request;this.onChange=onChange;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';this.draftTags=new Map();this.draftText=new Map();}
+  constructor({request,onChange,onCompactLead,onResetLead}){this.request=request;this.onChange=onChange;this.onCompactLead=onCompactLead;this.onResetLead=onResetLead;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';this.draftTags=new Map();this.draftText=new Map();}
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
   button(text,fn){const node=this.node('button',text);node.type='button';node.onclick=fn;return node;}
   dialog(){
@@ -611,6 +610,14 @@ class TeamSettingsDialog{
     reviewerSelect.value=reviewerID;
     reviewerSelect.onchange=()=>this.changeReviewer(reviewerSelect.value);
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
+    const context=this.node('section',undefined,'team-settings-section team-context-section');
+    context.append(this.node('h3',t_safe('主控上下文')));
+    const actions=this.node('div',undefined,'team-context-actions');
+    const compact=this.button(t_safe('压缩主控上下文'),()=>this.onCompactLead?.(team,()=>this.dialog().close()));
+    compact.className='team-context-compact';compact.disabled=this.busy;
+    const reset=this.button(t_safe('重置主控会话'),()=>this.onResetLead?.(team,()=>this.dialog().close()));
+    reset.className='team-context-reset';reset.disabled=this.busy;
+    actions.append(compact,reset);context.append(actions);this.body.append(context);
     const memberSection=this.node('section',undefined,'team-settings-section');
     memberSection.append(this.node('h3',t_safe('成员')));
     memberSection.append(this.node('p',t_safe('空格、逗号或回车生成胶囊；多词标签用双引号。点 × 移除，保存后生效；主控制定工作流时会参考。'),'muted team-settings-tags-hint'));
