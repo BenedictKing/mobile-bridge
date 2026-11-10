@@ -49,6 +49,7 @@ type Auth struct {
 	Now        func() float64
 	NewToken   func() string
 	mu         sync.Mutex
+	cookieName string                        // per-data-dir cookie namespace (mobile.go)
 	sessions   map[string]*jsoncompat.Object // sha256(token) -> session
 	failures   map[string]int
 	blockedIP  map[string]bool
@@ -222,8 +223,20 @@ func (a *Auth) newSessionLocked(address, userAgent string, remember any, client 
 	token := a.NewToken()
 	session := jsoncompat.NewObject()
 	session.Set("csrf", a.NewToken())
-	session.Set("expires", json.Number(numberText(now+float64(hours)*3600)))
-	session.Set("persistent", !isFalse(remember))
+	expires := now + float64(hours)*3600
+	persistent := !isFalse(remember)
+	// Trusted mobile clients never expire (Python's trustedDevice sessions);
+	// MobileClient only selects the lifetime, never an identity claim.
+	if MobileClient(userAgent) {
+		expires = 0
+		persistent = true
+		session.Set("trustedDevice", true)
+	}
+	session.Set("expires", json.Number(numberText(expires)))
+	session.Set("persistent", persistent)
+	if MobileClient(userAgent) {
+		session.Set("remembered", false)
+	}
 	session.Set("created", json.Number(numberText(now)))
 	session.Set("lastSeen", json.Number(numberText(now)))
 	session.Set("userAgent", truncateRunes(userAgent, 512))
@@ -273,6 +286,11 @@ func (a *Auth) GetForClient(token string, client *jsoncompat.Object, userAgent s
 	lastSeen, _ := session.MustGet("lastSeen").(json.Number)
 	seen, _ := strconv.ParseFloat(lastSeen.String(), 64)
 	changed := now-seen >= 60
+	// A mobile shell presenting a still-valid non-mobile session upgrades it to
+	// a never-expiring trusted-device session (Python's get() migration).
+	if applyMobileLifetime(session, userAgent, now) {
+		changed = true
+	}
 	if client != nil {
 		ip, _ := client.MustGet("ip").(string)
 		currentIP, _ := session.MustGet("ip").(string)
@@ -308,10 +326,22 @@ func (a *Auth) Logout(token string) {
 	}
 }
 
+// LogoutKey drops the session stored under a key (route-scoped cookies log
+// out their parent session).
+func (a *Auth) LogoutKey(key string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, existed := a.sessions[key]; existed {
+		delete(a.sessions, key)
+		a.persistLocked()
+	}
+}
+
 // CookieValue mirrors httpd's cookie(): the Set-Cookie header value for a
-// session token, or a clearing cookie when token is empty.
+// session token, or a clearing cookie when token is empty. The cookie name is
+// the gateway instance's namespaced name (mobile.go).
 func (a *Auth) CookieValue(token string) string {
-	cookie := CookieName + "=" + token + "; Path=/; HttpOnly; SameSite=Strict"
+	cookie := a.CookieName() + "=" + token + "; Path=/; HttpOnly; SameSite=Strict"
 	if token == "" {
 		return cookie + "; Max-Age=0"
 	}

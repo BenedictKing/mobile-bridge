@@ -74,6 +74,9 @@ type Array struct{ Items []any }
 // Num wraps an integer as a number value.
 func Num(i int) json.Number { return json.Number(strconv.Itoa(i)) }
 
+// Num64 is Num for int64 values (cursors, sequence numbers).
+func Num64(value int64) json.Number { return json.Number(strconv.FormatInt(value, 10)) }
+
 // Unmarshal decodes JSON into an ordered Value tree. Object key order follows
 // the document; duplicate keys keep their first position and last value, as
 // Python's dict does.

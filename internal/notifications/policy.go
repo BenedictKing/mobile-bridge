@@ -12,6 +12,10 @@ type PolicyManager struct{ DataDir string }
 
 func NewPolicyManager(dataDir string) *PolicyManager { return &PolicyManager{DataDir: dataDir} }
 func (m *PolicyManager) path() string                { return filepath.Join(m.DataDir, "notification-policies.json") }
+
+// Snapshot exposes the merged policy document (defaults overlaid with the
+// stored file) for read-side filters like the mobile inbox.
+func (m *PolicyManager) Snapshot() *jsoncompat.Object { return m.read() }
 func (m *PolicyManager) read() *jsoncompat.Object {
 	raw, err := os.ReadFile(m.path())
 	if err != nil {

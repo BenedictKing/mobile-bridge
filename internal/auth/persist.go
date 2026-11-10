@@ -16,8 +16,9 @@ import (
 )
 
 // EnablePersistence binds the auth state to <dataDir>/auth-sessions.json and
-// loads whatever survives: policy, failure counts, auto blocks, and sessions
-// when the identity (the auth config fingerprint) still matches.
+// loads whatever survives: the cookie namespace, policy, failure counts, auto
+// blocks, and sessions when the identity (the auth config fingerprint) still
+// matches.
 func (a *Auth) EnablePersistence(dataDir string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -68,6 +69,12 @@ func (a *Auth) loadLocked() {
 	if policy, ok := root.MustGet("policy").(*jsoncompat.Object); ok {
 		a.policy = policy
 	}
+	// The cookie namespace belongs to the data directory: a restart (or a
+	// policy change) keeps the same name so companion bindings survive.
+	if saved, _ := root.MustGet("cookieName").(string); ValidCookieName(saved) {
+		a.cookieName = saved
+	}
+	a.initCookieNameLocked()
 	if failures, ok := root.MustGet("failures").(*jsoncompat.Object); ok {
 		for _, address := range failures.Keys() {
 			if number, ok := failures.MustGet(address).(json.Number); ok {
@@ -113,6 +120,8 @@ func (a *Auth) persistLocked() {
 	}
 	root := jsoncompat.NewObject()
 	root.Set("identity", a.identity)
+	a.initCookieNameLocked()
+	root.Set("cookieName", a.cookieName)
 	root.Set("policy", a.defaultPolicyLocked())
 	sessions := jsoncompat.NewObject()
 	keys := make([]string, 0, len(a.sessions))

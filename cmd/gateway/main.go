@@ -1011,6 +1011,14 @@ func runGateway(args []string) {
 	server.TeamWorkspaceRegistry = teamWorkspaces
 	server.Teams.Workspaces = teamWorkspaces
 	server.Teams.OnEvent = server.TeamFeeds.Ingest
+	// 手机伴侣后端（docs/ios.md 的下一阶段）：通知收件箱 feed（长轮询数据
+	// 面）+ 原生推送注册表。事件源复用团队 Run 通知漏斗——OnRunStatus 同时
+	// 落 ntfy/Bark 账本与收件箱 feed，不另建平行扫描。
+	mobileFeed := notifications.NewMobileEvents(dataDir)
+	server.Mobile = mobileFeed
+	server.MobilePush = notifications.NewMobilePush(dataDir, mobileFeed)
+	server.MobilePush.SessionValidator(func(key string) bool { return server.Auth.SessionValidKey(key) })
+	server.ComputerName, _ = os.Hostname()
 	// Run 通知（编排计划 §12 阶段四工作项 3/5，§6.3/§9）：完成/失败/取消/
 	// 停止/waiting_input 事件经 ntfy/Bark 推送（click deep link），stall 只
 	// 通知不停止。OnRunStatus 在 run 状态事件落账点同步回调（notify.go 的
@@ -1019,6 +1027,7 @@ func runGateway(args []string) {
 	runNotifyLedger := notifications.NewRunNotificationLedger(dataDir)
 	server.Teams.OnRunStatus = func(runID, kind string) {
 		recordTeamRunNotification(runNotifyLedger, teamStore, runID, kind, time.Now())
+		appendTeamRunMobileEvent(mobileFeed, teamStore, runID, kind, time.Now())
 	}
 	if err := server.TeamFeeds.PrimeFromJournal(); err != nil {
 		log.Printf("team 事件投影预热失败: %v", err)
@@ -1066,6 +1075,11 @@ func runGateway(args []string) {
 		log.Fatalf("control file: %v", controlErr)
 	}
 	outcomeWorker := notifications.NewOutcomeLedger(dataDir).StartPublisher(time.Minute, notifications.NewPublisher(nil), nil)
+	// 推送 drain：每设备独立游标与退避；慢/离线设备只推迟自己（每设备
+	// next/attempts 记账，互不持有锁等待）。收件箱开关关闭时整轮跳过。
+	pushStop, pushDone := server.MobilePush.StartWorker(time.Minute,
+		func() bool { return notifications.MobileInboxEnabled(dataDir) },
+		nil)
 	server.StartDiscovery()
 	go server.PreloadRecentSessions()
 	httpServer := &http.Server{Handler: server}
@@ -1117,6 +1131,9 @@ func runGateway(args []string) {
 	if err := runNotifyLedger.SetWatermark(time.Now()); err != nil {
 		log.Printf("team run 通知水位更新失败: %v", err)
 	}
+	close(pushStop)
+	<-pushDone
+	mobileFeed.Close()
 	poolPoller.Stop()
 	if quickTunnel != nil {
 		quickTunnel.Close()
@@ -1263,6 +1280,47 @@ func recordTeamRunNotification(ledger *notifications.RunNotificationLedger, stor
 	}
 	if err := ledger.Record(runID, run.TeamID, kind, title, body, at); err != nil {
 		log.Printf("team run %s 通知记账失败（%s，下轮补发扫描兜底）: %v", runID, kind, err)
+	}
+}
+
+// appendTeamRunMobileEvent 把团队 Run 状态事件投影进手机收件箱 feed：
+// 与 recordTeamRunNotification 同一漏斗（OnRunStatus），ntfy/Bark 账本之外
+// 的第三目的地。深链指向主控成员会话（threadId=主控 SessionID）；幂等键
+// 与 Run 账本同形（runID+kind），漏斗重放不会重复入箱。kind 映射上游收件
+// 约定：waiting_input→request（等待确认），failed/stall→attention，
+// completed/cancelled/stopped→completion。
+func appendTeamRunMobileEvent(feed *notifications.MobileEvents, store *team.Store, runID, kind string, at time.Time) {
+	run := store.Run(runID)
+	if run == nil {
+		return
+	}
+	title, body := team.RunNotificationText(run, kind)
+	if title == "" {
+		return
+	}
+	inboxKind := "completion"
+	switch kind {
+	case notifications.RunNotifyWaitingInput:
+		inboxKind = "request"
+	case notifications.RunNotifyFailed, notifications.RunNotifyStall:
+		inboxKind = "attention"
+	}
+	provider, thread := "codex", ""
+	if group := store.Team(run.TeamID); group != nil {
+		for index := range group.Members {
+			member := &group.Members[index]
+			if member.ID == group.LeadID && member.Enabled {
+				provider, thread = member.AgentKind, member.SessionID
+				break
+			}
+		}
+	}
+	if thread == "" {
+		// 没有可用主控会话时退回 run 标识：事件仍可读，只是深链不可用。
+		thread = runID
+	}
+	if err := feed.Append([]string{"run", runID, kind}, thread, "local", title, body, inboxKind, provider); err != nil {
+		log.Printf("team run %s 收件箱写入失败（%s）: %v", runID, kind, err)
 	}
 }
 

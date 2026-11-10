@@ -98,23 +98,27 @@ type Server struct {
 	AllowHost        func(string) bool
 	AllowOrigin      func(string) bool
 	NativeCandidates func() []string
-	Bridge           SessionBridge
-	Store            *store.SessionStore
-	Codex            *codex.Bridge
-	CodexHome        string
-	SecureHosts      map[string]bool // netloc of trusted HTTPS origins (secure_hosts)
-	DirectByPublic   map[string]string
-	PublicByDirect   map[string]string
-	directGrants     *directGrantStore
-	Uploads          *uploads.Manager
-	ACP              *acpruntime.Manager
-	ACPAgents        map[string]*acpruntime.Manager
-	NotificationDir  string
-	Jev              *jev.Settings
-	Conventions      *conventions.Settings
-	Account          *account.Manager
-	Pool             *accpool.Manager
-	Goal             *goal.Manager
+	ComputerName     string
+	// Mobile 是手机伴侣收件箱（/api/mobile/events 数据面）；main.go 装配。
+	Mobile          *notifications.MobileEvents
+	MobilePush      *notifications.MobilePush
+	Bridge          SessionBridge
+	Store           *store.SessionStore
+	Codex           *codex.Bridge
+	CodexHome       string
+	SecureHosts     map[string]bool // netloc of trusted HTTPS origins (secure_hosts)
+	DirectByPublic  map[string]string
+	PublicByDirect  map[string]string
+	directGrants    *directGrantStore
+	Uploads         *uploads.Manager
+	ACP             *acpruntime.Manager
+	ACPAgents       map[string]*acpruntime.Manager
+	NotificationDir string
+	Jev             *jev.Settings
+	Conventions     *conventions.Settings
+	Account         *account.Manager
+	Pool            *accpool.Manager
+	Goal            *goal.Manager
 	// Team 编排（docs/team-orchestration-plan.md §10）：服务、账本与每 Run
 	// 事件投影由 main.go 装配（构造后直赋，必须在任何 ServeHTTP 之前完成）。
 	Teams     *team.Service
@@ -378,27 +382,19 @@ func unauthenticatedBody() *jsoncompat.Object {
 }
 
 func (h *handler) cookieToken() string {
-	cookie, err := h.request.Cookie(auth.CookieName)
-	if err != nil {
-		return ""
+	if cookie, err := h.request.Cookie(h.server.Auth.CookieName()); err == nil && cookie.Value != "" {
+		return cookie.Value
 	}
-	return cookie.Value
+	// Sessions issued before the per-directory cookie namespace stay usable
+	// until their next renewal re-issues under the namespaced name.
+	if cookie, err := h.request.Cookie(auth.CookieName); err == nil && cookie.Value != "" {
+		return cookie.Value
+	}
+	return ""
 }
 
 func (h *handler) session(write bool) *jsoncompat.Object {
-	session := h.server.Auth.GetForClient(h.cookieToken(), h.client(), h.request.UserAgent())
-	if session == nil {
-		h.fail(http.StatusUnauthorized, unauthenticatedBody())
-		return nil
-	}
-	if write {
-		expected, _ := session.MustGet("csrf").(string)
-		if h.request.Header.Get("X-CSRF-Token") != expected {
-			h.fail(http.StatusForbidden, errorBody("登录验证已失效，请刷新页面"))
-			return nil
-		}
-	}
-	return session
+	return h.sessionValue(write)
 }
 
 func (h *handler) checkRequest(write bool) bool {
@@ -495,7 +491,7 @@ func (h *handler) handleMethod(write bool) {
 		body := jsoncompat.NewObject()
 		body.Set("service", "codex-mobile-bridge")
 		body.Set("instanceId", h.server.InstanceID)
-		body.Set("notifications", false)
+		body.Set("notifications", h.server.Mobile != nil)
 		h.output(http.StatusOK, body, contentTypeJSON, "")
 		return
 	}
@@ -534,6 +530,28 @@ func (h *handler) handleMethod(write bool) {
 	switch {
 	case !write && path == "/api/auth":
 		h.handleAuth()
+	case !write && path == "/api/connection/prove":
+		// Anonymous ownership proof: no session, IP policy still applies.
+		h.handleConnectionProve()
+	case path == "/api/connection/routes":
+		h.handleConnectionRoutes(write)
+	case !write && path == "/api/mobile/events":
+		if h.sessionValue(false) == nil {
+			return
+		}
+		h.handleMobileEvents()
+	case write && path == "/api/mobile/events/read":
+		if h.sessionValue(true) == nil {
+			return
+		}
+		h.handleMobileEventsRead()
+	case path == "/api/mobile/push":
+		if h.sessionValue(write) == nil {
+			return
+		}
+		h.handleMobilePush(write)
+	case !write && path == "/mobile-channel":
+		h.handleMobileChannel()
 	case write && path == "/api/login":
 		h.handleLogin()
 	case write && path == "/api/direct/grant":
@@ -547,7 +565,11 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
-		h.server.Auth.Logout(h.cookieToken())
+		if _, sessionKey, viaRoute := h.routeSessionKey(); viaRoute && sessionKey != "" {
+			h.server.Auth.LogoutKey(sessionKey)
+		} else if token, _, _ := h.routeSessionKey(); token != "" && !strings.HasPrefix(token, "cmbroute1_") {
+			h.server.Auth.Logout(token)
+		}
 		result := jsoncompat.NewObject()
 		result.Set("ok", true)
 		h.output(http.StatusOK, result, contentTypeJSON, h.cookieValue(""))
@@ -559,6 +581,13 @@ func (h *handler) handleMethod(write bool) {
 		if err != nil {
 			h.fail(http.StatusConflict, errorBody(err.Error()))
 			return
+		}
+		if h.server.Mobile != nil {
+			checkpoint := jsoncompat.NewObject()
+			for key, value := range h.server.Mobile.Checkpoint() {
+				checkpoint.Set(key, value)
+			}
+			result.Set("notificationRead", checkpoint)
 		}
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case write && path == "/api/sessions":
@@ -983,9 +1012,19 @@ func (h *handler) handleMethod(write bool) {
 				h.fail(http.StatusBadRequest, errorBody(saveErr.Error()))
 				return
 			}
+			// 手机收件箱开关不经 parity defaults：有效布尔时单独覆盖落盘。
+			if enabled, ok := value.(*jsoncompat.Object).MustGet("mobileEnabled").(bool); ok {
+				if err := notifications.SetMobileInboxEnabled(h.server.NotificationDir, enabled); err != nil {
+					h.fail(http.StatusBadRequest, errorBody(err.Error()))
+					return
+				}
+			}
+			result.Set("mobileEnabled", notifications.MobileInboxEnabled(h.server.NotificationDir))
 			h.output(http.StatusOK, result, contentTypeJSON, "")
 		} else {
-			h.output(http.StatusOK, notifications.ReadSettings(h.server.NotificationDir), contentTypeJSON, "")
+			settings := notifications.ReadSettings(h.server.NotificationDir)
+			settings.Set("mobileEnabled", notifications.MobileInboxEnabled(h.server.NotificationDir))
+			h.output(http.StatusOK, settings, contentTypeJSON, "")
 		}
 	case write && path == "/api/jev/trial":
 		if h.session(write) == nil {
@@ -1493,15 +1532,27 @@ func hashProject(cwd string) string {
 }
 
 func (h *handler) handleAuth() {
-	token := h.cookieToken()
-	session := h.server.Auth.GetForClient(token, h.client(), h.request.UserAgent())
+	token, sessionKey, viaRoute := h.routeSessionKey()
+	session := h.authenticatedSession(token, sessionKey, viaRoute)
 	address, _ := h.client().MustGet("ip").(string)
 	body := jsoncompat.NewObject()
 	body.Set("authenticated", session != nil)
+	body.Set("cookieName", h.server.Auth.CookieName())
 	if session != nil {
 		body.Set("csrf", session.MustGet("csrf"))
+		if trusted, ok := session.MustGet("trustedDevice").(bool); ok {
+			body.Set("trustedDevice", trusted)
+		} else {
+			body.Set("trustedDevice", false)
+		}
 	} else {
 		body.Set("csrf", nil)
+		body.Set("trustedDevice", false)
+	}
+	if session != nil && auth.MobileClient(h.request.UserAgent()) {
+		if routes := h.mobileRoutes(sessionKey, token, viaRoute); routes != nil {
+			body.Set("mobileRoutes", routes)
+		}
 	}
 	body.Set("loginStatus", h.server.Auth.LoginStatus(address))
 	body.Set("instanceId", h.server.InstanceID)
@@ -1581,6 +1632,21 @@ func (h *handler) client() *jsoncompat.Object {
 // cookieValue mirrors httpd.py's cookie(): the Secure attribute rides along
 // when the Host is an HTTPS tunnel origin. A direct session is intentionally
 // cross-origin from the public page, so its HostOnly cookie uses SameSite=None.
+// authenticatedSession resolves the request's session across both cookie
+// forms (root login and route-scoped).
+func (h *handler) authenticatedSession(token, sessionKey string, viaRoute bool) *jsoncompat.Object {
+	if token == "" {
+		return nil
+	}
+	if viaRoute {
+		if sessionKey == "" {
+			return nil
+		}
+		return h.server.Auth.GetSessionByKey(sessionKey, h.client(), h.request.UserAgent())
+	}
+	return h.server.Auth.GetForClient(token, h.client(), h.request.UserAgent())
+}
+
 func (h *handler) cookieValue(token string) string {
 	value := h.server.Auth.CookieValueForHost(token, h.server.SecureHosts[h.request.Host])
 	if h.directPublicOrigin() != "" {
