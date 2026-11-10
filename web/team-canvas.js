@@ -295,7 +295,7 @@ class TeamCanvasController{
     head.append(this.node('span',relation,'team-canvas-message-relation'));
     button.title=input.text||this.t('附件消息');
     button.append(head,this.node('p',input.text||this.t('附件消息'),'team-canvas-message-text'));
-    if(input.associationReason)button.append(this.node('span',input.associationReason,'team-canvas-message-relation'));
+    if(input.associationReason)button.append(this.node('span',input.associationReason,'team-canvas-message-reason'));
     button.setAttribute('aria-label','#'+index+' · '+(input.text||this.t('附件消息'))+' · '+relation);
     card.addEventListener('click',()=>{
       if(Date.now()<(this.suppressClickUntil||0))return;

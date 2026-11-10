@@ -654,6 +654,7 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-message-index{flex:none;color:var(--green);font-variant-numeric:tabular-nums;font-weight:700}
 .team-canvas-message-time{flex:none;color:var(--muted);font-size:9px;font-variant-numeric:tabular-nums}
 .team-canvas-message-relation{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-canvas-message-reason{display:block;margin-top:6px;white-space:normal;overflow-wrap:anywhere;font-size:12px;line-height:1.6;color:var(--muted)}
 .team-canvas-message-text{display:-webkit-box;max-height:12em;margin:0;font-size:13px;line-height:1.6;overflow-wrap:anywhere;-webkit-box-orient:vertical;-webkit-line-clamp:7;overflow:hidden}
 .team-canvas-issue{min-height:172px;padding:0;border:1px solid #aebbb2;border-radius:8px;background:#fff;color:var(--text)}
 .team-canvas-issue:hover{border-color:var(--green);box-shadow:0 5px 18px #26352d1c}
