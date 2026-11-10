@@ -4,6 +4,24 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
 
+test('standalone message deletion uses its version and refreshes only after success',async()=>{
+  const previousWindow=global.window;global.window={confirm:()=>true};
+  try{
+    const calls=[],button={disabled:false};
+    const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team'},error:{},
+      request:async(...args)=>{calls.push(args);assert.equal(button.disabled,true);},
+      refresh:async()=>calls.push('refresh'),notify:message=>calls.push(message)});
+    await controller.deleteInput({inputId:'input',text:'继续',version:7},button);
+    assert.deepEqual(calls,[['/api/teams/team/inputs/input',{method:'DELETE',body:{version:7}}],'消息已删除','refresh']);
+    assert.equal(button.disabled,false);
+    calls.length=0;global.window.confirm=()=>false;
+    await controller.deleteInput({inputId:'input'},button);assert.equal(calls.length,0);
+    global.window.confirm=()=>true;controller.request=async()=>{throw Error('仍有未结束的 Run');};
+    await controller.deleteInput({inputId:'input'},button);
+    assert.equal(controller.error.textContent,'仍有未结束的 Run');assert.equal(calls.length,0);assert.equal(button.disabled,false);
+  }finally{global.window=previousWindow;}
+});
+
 test('canvas uses persisted issue links and ignores stale revisions',()=>{
   const associations=teamCanvasAssociations(
     [

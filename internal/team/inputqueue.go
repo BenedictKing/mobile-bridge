@@ -59,6 +59,7 @@ const (
 	EventIssueProposalApplied    = "issue_proposal_applied"
 	EventIssueAssociationFailed  = "issue_association_failed"
 	EventIssueDeleted            = "issue_deleted"
+	EventInputDeleted            = "input_deleted"
 	EventInputTeamPurged         = "input_team_purged"
 )
 
@@ -210,6 +211,7 @@ type InputLedger struct {
 	issuesOrder  []string
 	ops          map[string]string // 操作 UUID → inputID（重复操作幂等回放）
 	teamsSeq     map[string]uint64 // 每 Team 的接受序号发生器
+	deleted      map[string]string // inputID → teamID，防止历史导入恢复已删除气泡
 }
 
 // LoadInputLedger 打开输入账本：读快照（损坏时隔离原件、按空投影启动），
@@ -222,6 +224,7 @@ func LoadInputLedger(snapshotPath string, journal *Journal) *InputLedger {
 		issues:       map[string]*Issue{},
 		ops:          map[string]string{},
 		teamsSeq:     map[string]uint64{},
+		deleted:      map[string]string{},
 	}
 	object, ok := readLedgerObject(snapshotPath, "team-inputs.json")
 	if !ok {
@@ -234,6 +237,16 @@ func LoadInputLedger(snapshotPath string, journal *Journal) *InputLedger {
 	if object != nil {
 		for _, key := range object.Keys() {
 			raw, _ := object.Get(key)
+			if key == "_deletedInputs" {
+				if rows, ok := raw.(*jsoncompat.Object); ok {
+					for _, id := range rows.Keys() {
+						if owner, ok := rows.MustGet(id).(string); ok {
+							ledger.deleted[id] = owner
+						}
+					}
+				}
+				continue
+			}
 			if key == "_issues" {
 				issueRows, _ := raw.(*jsoncompat.Object)
 				if issueRows != nil {
@@ -317,6 +330,9 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 	hash := InputContentHash(text, attachments)
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.deleted[inputID] != "" {
+		return nil, false, ErrNotFound
+	}
 	if existing := l.inputs[inputID]; existing != nil {
 		if existing.TeamID != teamID || existing.ContentHash != hash {
 			return nil, false, ErrInputContentMismatch
@@ -375,6 +391,9 @@ func (l *InputLedger) ImportHistoricalInput(teamID, inputID, text, sourceRunID, 
 	hash := InputContentHash(text, nil)
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.deleted[inputID] == teamID {
+		return nil, true, nil
+	}
 	if existing := l.inputs[inputID]; existing != nil {
 		if existing.TeamID != teamID || existing.ContentHash != hash ||
 			existing.HistoricalSourceRunID != sourceRunID || existing.HistoricalSourceTaskID != sourceTaskID {
@@ -891,6 +910,11 @@ func (l *InputLedger) saveSnapshotLocked() error {
 		}
 	}
 	object.Set("_issues", issues)
+	deleted := jsoncompat.NewObject()
+	for id, teamID := range l.deleted {
+		deleted.Set(id, teamID)
+	}
+	object.Set("_deletedInputs", deleted)
 	return atomicWriteFile(l.snapshotPath, append(jsoncompat.EncodePythonIndent2(object), '\n'))
 }
 
@@ -906,6 +930,12 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		inputID := payloadString(event.Payload, "inputId")
 		teamID := payloadString(event.Payload, "teamId")
 		if inputID == "" || teamID == "" {
+			return
+		}
+		if sequence := uint64(payloadInt(event.Payload, "sequence")); sequence > l.teamsSeq[teamID] {
+			l.teamsSeq[teamID] = sequence
+		}
+		if l.deleted[inputID] == teamID {
 			return
 		}
 		if existing := l.inputs[inputID]; existing != nil {
@@ -1148,6 +1178,15 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		l.applyIssueAssociationFailedEvent(event)
 	case EventIssueDeleted:
 		l.applyIssueDeletedEvent(event)
+	case EventInputDeleted:
+		id, teamID := payloadString(event.Payload, "inputId"), payloadString(event.Payload, "teamId")
+		if id != "" && teamID != "" {
+			l.deleted[id] = teamID
+			if input := l.inputs[id]; input != nil && input.TeamID == teamID {
+				delete(l.inputs, id)
+			}
+			l.order = removeMissing(l.order, l.inputs)
+		}
 	case EventInputTeamPurged:
 		teamID := payloadString(event.Payload, "teamId")
 		kept := l.order[:0]

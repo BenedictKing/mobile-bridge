@@ -646,6 +646,9 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-node{position:absolute;display:block;pointer-events:auto;text-align:left;white-space:normal;overflow-wrap:anywhere;box-shadow:0 3px 12px #26352d12;cursor:grab;touch-action:none;user-select:none}
 .team-canvas-node:active{cursor:grabbing}
 .team-canvas-message{min-height:96px;padding:10px 12px;border:1px solid #cdd6cf;border-radius:8px;background:#fff;color:var(--text)}
+.team-canvas-message-main{display:block;width:100%;padding:0;border:0;border-radius:0;background:none;color:inherit;text-align:left;cursor:pointer}
+.team-canvas-message-main:hover{background:none}
+.team-canvas-delete-input{display:block;margin:8px 0 0 auto;min-height:32px;font-size:11px;color:var(--muted)}
 .team-canvas-message:hover{border-color:#899990;box-shadow:0 5px 16px #26352d1c}
 .team-canvas-message-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;color:var(--muted);font-size:10px}
 .team-canvas-message-index{flex:none;color:var(--green);font-variant-numeric:tabular-nums;font-weight:700}

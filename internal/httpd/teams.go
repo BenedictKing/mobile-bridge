@@ -162,6 +162,8 @@ func (h *handler) handleTeams(method string) {
 			h.handleTeamInputGet(teamID, inputID)
 		case http.MethodPatch:
 			h.handleTeamInputRevise(teamID, inputID)
+		case http.MethodDelete:
+			h.handleTeamInputDelete(teamID, inputID)
 		default:
 			h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		}

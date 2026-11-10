@@ -91,6 +91,9 @@ func (h *handler) handleTeamIssueBackfill(teamID string) {
 		if !duplicate {
 			imported++
 		}
+		if input == nil {
+			continue
+		} // 已删除的历史气泡不重新导入或归类。
 		switch input.AssociationStatus {
 		case team.IssueAssociationLinked, team.IssueAssociationClarification, team.IssueAssociationIgnored:
 			completed++

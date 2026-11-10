@@ -283,7 +283,8 @@ class TeamCanvasController{
   renderMessage(record){
     const {input,index,issueIDs}=record,id=input.inputId||input.id;
     const linkedRunID=teamCanvasInputRunID(input,issueIDs);
-    const button=this.button('', 'team-canvas-node team-canvas-message');button.dataset.inputId=id;
+    const card=this.node('div',undefined,'team-canvas-node team-canvas-message');card.dataset.inputId=id;
+    const button=this.button('', 'team-canvas-message-main');card.append(button);
     const head=this.node('div',undefined,'team-canvas-message-head');
     head.append(this.node('span',String(input.sequence||index).padStart(2,'0'),'team-canvas-message-index'));
     if(input.acceptedAt){
@@ -296,13 +297,30 @@ class TeamCanvasController{
     button.append(head,this.node('p',input.text||this.t('附件消息'),'team-canvas-message-text'));
     if(input.associationReason)button.append(this.node('span',input.associationReason,'team-canvas-message-relation'));
     button.setAttribute('aria-label','#'+index+' · '+(input.text||this.t('附件消息'))+' · '+relation);
-    button.addEventListener('click',()=>{
+    card.addEventListener('click',()=>{
       if(Date.now()<(this.suppressClickUntil||0))return;
       if(issueIDs.length){for(const issueID of issueIDs)this.focusItem(issueID);}
       else if(linkedRunID&&this.openRun)this.openRun(this.current.id,linkedRunID);
     });
-    this.bindNodeDrag(button,()=>({key:'m:'+id,record}));
-    return button;
+    if(!issueIDs.length){
+      const remove=this.button(this.t('删除消息'),'plain team-canvas-delete-input',event=>{event.stopPropagation();this.deleteInput(input,remove);});
+      remove.setAttribute('aria-label',this.t('删除消息')+' #'+String(input.sequence||index).padStart(2,'0'));
+      remove.addEventListener('pointerdown',event=>event.stopPropagation());
+      card.append(remove);
+    }
+    this.bindNodeDrag(card,()=>({key:'m:'+id,record}));
+    return card;
+  }
+  async deleteInput(input,button){
+    const team=this.current;if(!team||button.disabled)return;
+    if(!window.confirm(this.t('删除这条消息？Run 执行记录保留。')+'\n'+(input.text||this.t('附件消息'))))return;
+    button.disabled=true;
+    try{
+      await this.request('/api/teams/'+encodeURIComponent(team.id)+'/inputs/'+encodeURIComponent(input.inputId||input.id),{method:'DELETE',body:{version:input.version}});
+      if(this.current?.id!==team.id)return;
+      this.notify?.(this.t('消息已删除'));await this.refresh(true);
+    }catch(error){if(this.current?.id===team.id)this.error.textContent=error.message||this.t('删除消息失败');}
+    finally{button.disabled=false;}
   }
   renderIssue(issue){
     const button=this.button('', 'team-canvas-node team-canvas-issue');button.dataset.issueId=issue.id;

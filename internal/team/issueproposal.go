@@ -320,6 +320,36 @@ func appendIssueInputLink(links []IssueInputLink, link IssueInputLink) []IssueIn
 	return append(links, link)
 }
 
+// DeleteInput 只删除已经离开路由队列且没有关联事项的输入投影。
+// 删除事实随 journal 和快照持久化，执行记录保持原样。
+func (l *InputLedger) DeleteInput(teamID, inputID string, version uint64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	input := l.inputs[inputID]
+	if input == nil || input.TeamID != teamID {
+		return ErrNotFound
+	}
+	if input.Version != version {
+		return ErrVersionConflict
+	}
+	if input.QueueStatus == InputQueued || input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput {
+		return fmt.Errorf("%w：消息仍在等待路由，请先取消或等待结束", ErrInputNotQueued)
+	}
+	for _, issue := range l.issues {
+		if issue.TeamID != teamID {
+			continue
+		}
+		for _, link := range issue.Links {
+			if link.InputID == inputID {
+				return fmt.Errorf("%w：消息已关联事项，请从事项详情删除", ErrInputNotQueued)
+			}
+		}
+	}
+	event := newEvent("", EventInputDeleted, "api", map[string]any{"teamId": teamID, "inputId": inputID})
+	event.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":deleted"
+	return l.commitLocked(event, func() { l.applyInputEvent(event) })
+}
+
 // DeleteIssue 删除 Issue 及其来源输入投影；journal 与 Run 执行记录保留。
 func (l *InputLedger) DeleteIssue(teamID, issueID string) (int, error) {
 	l.mu.Lock()

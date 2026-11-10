@@ -26,6 +26,48 @@ const teamQueueVersionGate = "2"
 // 新版画布消息使用持久输入账本，即使用户没有开启可选的排队发送开关。
 const teamIssueRoutingVersionGate = "1"
 
+func (h *handler) handleTeamInputDelete(teamID, inputID string) {
+	if h.loadTeam(teamID) == nil {
+		return
+	}
+	if h.server.TeamInputs == nil {
+		h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
+		return
+	}
+	value, err := h.readJSON()
+	if err != nil {
+		h.fail(http.StatusBadRequest, errorBody(err.Error()))
+		return
+	}
+	version, ok := bodyVersion(value.(*jsoncompat.Object))
+	if !ok {
+		h.fail(http.StatusBadRequest, errorBody("缺少期望版本，请刷新后重试"))
+		return
+	}
+	input := h.server.TeamInputs.Get(teamID, inputID)
+	if input == nil {
+		h.fail(http.StatusNotFound, errorBody("消息不存在"))
+		return
+	}
+	runIDs := append(append([]string{}, input.RunIDs...), input.TargetRunID, input.ID)
+	for _, item := range input.WorkItems {
+		runIDs = append(runIDs, item.RunID)
+	}
+	for _, id := range runIDs {
+		if run := h.server.TeamStore.Run(id); run != nil && !teamRunTerminal(run.Status) {
+			h.fail(http.StatusConflict, errorBody("消息仍有未结束的 Run，请先取消或等待结束"))
+			return
+		}
+	}
+	if err := h.server.TeamInputs.DeleteInput(teamID, inputID, version); err != nil {
+		h.failTeamInputError(err)
+		return
+	}
+	result := jsoncompat.NewObject()
+	result.Set("ok", true)
+	h.output(http.StatusOK, result, contentTypeJSON, "")
+}
+
 // queueTeamInputValidate 校验并归一一条排队输入的正文与附件（与旧入口
 // createTeamInput 同一口径），返回 (text, attachments, err)。threadID 是附件
 // 上传账本的归属会话。
