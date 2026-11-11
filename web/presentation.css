@@ -621,6 +621,7 @@ main{background:var(--page);overflow:hidden}
 #chat.team-canvas-active #history,
 #chat.team-canvas-active #older,
 #chat.team-canvas-active #team-workflow,
+#chat.team-canvas-active #working,
 #chat.team-canvas-active #newer,
 #chat.team-canvas-active #user-jump{display:none!important}
 #chat.team-canvas-active #timeline{overflow:hidden}
