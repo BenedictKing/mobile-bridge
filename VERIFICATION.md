@@ -1,3 +1,11 @@
+## Codex 异步提问网页提交（2026-11-11）
+
+- 根因：`bridge/requestUserInputAsync` 已投影为可答卡片，`Bridge.Respond` 却缺少发送分支，点击提交会报“此类请求请在桌面 App 中处理”。
+- 按已安装桌面应用的协议，答案以绑定原问题 ID、原文与答案的 `send_user_message_question_reply` 用户消息提交；活跃回合用 steer，结束回合启动后续回合。原生 user input、permissions 与 MCP elicitation 的 IPC 参数同时修正为嵌套 `response`。
+- 发送前复核问题仍有效，并在数据目录 `codex-question-replies.json` 持久保存请求身份、答案哈希和收据；同一问题并发或重启后重复提交不会再次发送。发送结果未知时保留占用并要求核查，落盘失败时禁止发送。身份验证类请求继续仅在桌面处理。
+- ego-browser 在隔离端口 18803 连接模拟桌面 Unix IPC，真实点击选择与提交后出现“已发送回应”，问题卡消失，答案进入时间线；模拟 owner 恰好收到一次 steer，收据为 accepted。记录位于 `.local/async-reply-qa/`，未向真实会话发送测试答案。
+- 自动化：240 项前端测试、`go test ./internal/codex ./internal/model ./internal/ipc ./internal/httpd` 与对应静态检查通过；Unix IPC 测试覆盖活跃/结束回合、无效/过期答案、并发、结果未知、持久收据和原生 RPC 参数。主网关 8787 未重启，需用户重启加载新构建。
+
 ## 桌面浏览器审批审查与思考摘要渲染（2026-11-11）
 
 - 真实 8787 的 `/timeline.js` 仍为旧构建，不含审批审查和 Markdown 思考适配；静态文件由 Go `embed` 固化，刷新浏览器不能更新旧进程中的资源。

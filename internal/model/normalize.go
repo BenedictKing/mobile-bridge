@@ -511,7 +511,7 @@ func AsyncRequests(state *jsoncompat.Object) *jsoncompat.Array {
 			kind, _ := item.MustGet("type").(string)
 			itemStatus, _ := item.MustGet("status").(string)
 			if kind == "userMessage" ||
-				(kind == "steeringUserMessage" && itemStatus == "accepted") {
+				(kind == "steeringUserMessage" && (itemStatus == "accepted" || item.MustGet("steerAcknowledged") == true)) {
 				content := getDefault(item, "content", getDefault(item, "input",
 					&jsoncompat.Array{}))
 				for _, reply := range QuestionReplies(TextContent(content)) {

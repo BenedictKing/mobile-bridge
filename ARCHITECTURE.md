@@ -161,6 +161,8 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 
 当前 Go 网关通过 `internal/codex` 与原桌面 App 的 IPC owner 控制 Codex 会话，通过 `internal/acpruntime` / `internal/acp` 控制 ACP 会话。`internal/acpagents` 根据 Agent kind 装配命令、能力和方言；会话可由网关直接启动子进程，也可经 `internal/acphost` 的独立 Agent Host 持有。`internal/httpd` 按会话归属路由读写，规范化视图交给网页时间线。下方历史段落中的 `bridge/*.py` 路径不参与现行网关执行。
 
+Codex 提问分两种协议：原生反向请求通过对应 follower RPC 的嵌套 `response` 回答；`agentMessage.questions` 则投影为 `bridge/requestUserInputAsync`，答案以 `send_user_message_question_reply` 用户消息绑定原问题身份，运行中 steer、结束后启动后续回合。异步答复在外部发送前持久保存 pending 收据，同一问题的并发/重复提交复用收据；重启后的未决记录按结果未知处理，不自动重发。身份验证类原生请求仅允许在桌面处理。
+
 ### 历史 Python Adapter 记录（已退役）
 
 Codex 与 ACP 两类 Agent 的控制面完全不同。Codex 由桌面 App 宿主：网关只读其 SQLite 会话库做发现，运行控制走桌面 App 暴露的原生 IPC（`bridge/ipc.py` 帧协议），任务存续依赖桌面 App 进程。Kimi（`kimi`）、MiniMax（`mcode`）、Claude（`claude`，经 `@agentclientprotocol/claude-agent-acp` 包装层）、DeepSeek（`dsh`，经 `@openma/deepseek-harness-acp` 包装层）、ZCode（`zcode`，经 `zcode-acp-server` 包装层）与 WorkBuddy（`workbuddy`，`codebuddy --acp`，握手超时 60s 以容纳技能目录冷启动）是 CLI 型 Agent，没有桌面宿主：网关在进程内直接 spawn 它们的 ACP 子进程，会话发现、历史、发送、审批、中断全部走 ACP JSON-RPC。`GATEWAY_AGENTS`（或 `MOBILE_BRIDGE_AGENTS`）环境变量决定注册哪些后端，默认 `auto` 自动探测本机已安装的 Agent。

@@ -5,6 +5,7 @@ package codex
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,10 +35,13 @@ type Bridge struct {
 	sessions   map[string]*Session
 	// AutoApprove, when set, evaluates one pending approval request and may
 	// answer it natively; the session/request identifiers feed the audit log.
-	AutoApprove func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
-	autoPending map[string]bool
-	catalogOnce sync.Once
-	catalog     *Catalog
+	AutoApprove        func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
+	autoPending        map[string]bool
+	asyncReplies       map[string]*asyncReply
+	AsyncReplyPath     string
+	asyncRepliesLoaded bool
+	catalogOnce        sync.Once
+	catalog            *Catalog
 }
 
 func New(home, endpoint string) *Bridge {
@@ -570,6 +574,11 @@ func (b *Bridge) UpdateSettings(id, modelName, effort string, fastMode *bool) (*
 }
 
 func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object) (*jsoncompat.Object, error) {
+	if strings.HasPrefix(requestID, "async:") {
+		if result, err, found := b.existingAsyncReply(id, requestID, response); found {
+			return result, err
+		}
+	}
 	state, _, _, _ := b.Snapshot(id)
 	if state == nil {
 		return nil, errors.New("请先在桌面 App 打开此聊天")
@@ -590,6 +599,12 @@ func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object) (*js
 		return nil, errors.New("请求已过期，请刷新聊天")
 	}
 	method, _ := pending.MustGet("method").(string)
+	if supported, _ := pending.MustGet("supported").(bool); !supported {
+		return nil, errors.New("此类请求请在桌面 App 中处理")
+	}
+	if method == "bridge/requestUserInputAsync" {
+		return b.respondAsyncQuestion(id, requestID, pending, response)
+	}
 	mapping := map[string]string{
 		"item/commandExecution/requestApproval": "thread-follower-command-approval-decision",
 		"item/fileChange/requestApproval":       "thread-follower-file-approval-decision",
@@ -604,9 +619,13 @@ func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object) (*js
 	}
 	payload := jsoncompat.NewObject()
 	payload.Set("requestId", requestID)
-	for _, key := range response.Keys() {
-		value, _ := response.Get(key)
-		payload.Set(key, value)
+	if method == "item/permissions/requestApproval" || method == "item/tool/requestUserInput" || method == "tool/requestUserInput" || method == "mcpServer/elicitation/request" {
+		payload.Set("response", response)
+	} else {
+		for _, key := range response.Keys() {
+			value, _ := response.Get(key)
+			payload.Set(key, value)
+		}
 	}
 	return b.Call(id, operation, payload, 30*time.Second)
 }
