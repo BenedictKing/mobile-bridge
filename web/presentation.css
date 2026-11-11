@@ -954,6 +954,15 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
 
 /* 实时 Run 复用事项详情，不新增第三栏；宽屏只压缩 stage，覆盖式详情保持原布局。 */
 .team-canvas-stage{position:absolute;inset:0;overflow:hidden}
+.team-canvas{position:relative}
+.team-issue-board-grid{display:grid;grid-template-columns:repeat(5,minmax(210px,1fr));gap:12px;align-items:start;min-width:0}
+.team-issue-board-column{min-width:0;padding:10px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.team-issue-board-column>h3{font-size:12px;margin:0 0 12px}
+.team-issue-board-card.team-canvas-node{position:relative;width:100%;margin-bottom:10px;cursor:pointer;touch-action:pan-y}
+.issue-board-view>.team-canvas-detail{z-index:6}
+.team-issue-run-history{margin-top:14px}
+.team-issue-run-history>summary{cursor:pointer;font-size:12px;font-weight:600;padding:10px 0}
+@media(max-width:720px){.team-issue-board-grid{grid-template-columns:1fr}.team-issue-board-column:has(>p:only-of-type):not(:has(.team-issue-board-card)){display:none}}
 .team-canvas-current-run{width:auto;min-width:0;max-width:160px;padding:0 10px;overflow:hidden;text-overflow:ellipsis;font-size:11px;white-space:nowrap}
 .team-canvas-current-run[data-status=waiting_input],.team-canvas-current-run[data-status=failed],.team-canvas-current-run[data-status=outcome_unknown]{border-color:var(--error)}
 .team-live-panel{padding:13px 0;border-bottom:1px solid var(--line)}

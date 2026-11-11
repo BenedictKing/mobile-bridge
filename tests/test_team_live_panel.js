@@ -36,6 +36,21 @@ function installDOM(t){
 
 function nodeText(node){return node.textContent+node.children.map(nodeText).join('');}
 
+test('issue board groups the same items as canvas and removes deleted items after refresh',async t=>{
+  const{root}=installDOM(t),{TeamCanvasController}=require('../web/team-canvas.js');
+  let issues=[{id:'a',title:'Implement',status:'in_progress'},{id:'b',title:'Review',status:'waiting'},{id:'c',title:'Delivered',status:'resolved'}];
+  const calls=[],controller=new TeamCanvasController({root,request:async path=>{calls.push(path);return path.endsWith('/issues')?{issues}:{inputs:[]};}});
+  controller.current={id:'team'};controller.view='board';controller.summary={};controller.boardRoot=document.createElement('div');
+  controller.renderIssue=issue=>{const card=document.createElement('button');card.dataset.issueId=issue.id;return card;};
+  await controller.refresh(true);
+  assert.equal(controller.issues.length,3);assert.equal(controller.boardRoot.querySelectorAll('button').length,3);
+  const columns=controller.boardRoot.querySelectorAll('section');
+  assert.equal(columns.find(n=>n.dataset.stage==='waiting').querySelector('button').dataset.issueId,'b');
+  issues=issues.filter(issue=>issue.id!=='b');await controller.refresh(true);
+  assert.deepEqual(controller.boardRoot.querySelectorAll('button').map(n=>n.dataset.issueId),['a','c']);
+  assert.ok(calls.every(path=>!path.endsWith('/runs')),'看板不得从历史 Run 重建已删除事项');
+});
+
 test('member state prioritizes a failed task while preserving other running work',()=>{
   const member={id:'dev',role:'member'};
   const run={tasks:[

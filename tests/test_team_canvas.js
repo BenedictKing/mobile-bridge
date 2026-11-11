@@ -60,13 +60,13 @@ test('team view switching preserves canvas state and persists per team',()=>{
   const saved=[];global.localStorage={setItem:(...args)=>saved.push(args)};
   let boards=0,canvases=0,refreshes=0;
   const transform={x:20,y:45,scale:.8},positions=new Map([['m:input',{x:50,y:60}]]);
-  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team-1'},viewport:{},boardRoot:{},summary:{},transform,positions,
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team-1'},root:{classList:{toggle(){}},append(){}},detail:{},viewport:{append(){}},boardRoot:{},summary:{},transform,positions,
     closeDetail(){},render(){canvases++;},refresh(){refreshes++;},boardPanel:{refreshAll(){boards++;}}});
   try{
-    controller.setView('board');assert.equal(boards,1);assert.equal(controller.viewport.hidden,true);assert.equal(controller.boardRoot.hidden,false);
+    controller.setView('board');assert.equal(boards,0);assert.equal(controller.viewport.hidden,true);assert.equal(controller.boardRoot.hidden,false);
     assert.equal(elements['team-view-board']['aria-selected'],'true');assert.equal(elements['team-view-canvas'].tabIndex,-1);
-    assert.equal(elements['team-canvas-fit'].hidden,true);assert.equal(canvases,0);
-    controller.setView('canvas');assert.equal(canvases,1);assert.equal(refreshes,1);assert.equal(controller.boardRoot.hidden,true);
+    assert.equal(elements['team-canvas-fit'].hidden,true);assert.equal(canvases,1);
+    controller.setView('canvas');assert.equal(canvases,2);assert.equal(refreshes,2);assert.equal(controller.boardRoot.hidden,true);
     assert.equal(controller.transform,transform);assert.equal(controller.positions,positions);
     assert.deepEqual(saved,[['team-view:team-1','board'],['team-view:team-1','canvas']]);
   }finally{global.document=previousDocument;global.localStorage=previousStorage;}

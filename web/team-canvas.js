@@ -278,9 +278,6 @@ class TeamCanvasController{
     this.root.hidden=false;
     document.getElementById('chat').classList.add('team-canvas-active');
     if(this.viewport.closest('.timeline'))this.viewport.closest('.timeline').scrollTop=0;
-    const boardContent=this.node('div');this.boardRoot.append(boardContent);
-    this.boardPanel=new TeamsPanel({root:boardContent,request:this.request,teamId:team.id,
-      openRun:(teamID,runID)=>this.openRun?.(teamID,runID)});
     let view='canvas';try{view=localStorage.getItem('team-view:'+team.id)||view;}catch{}
     this.setView(view,false);
     // setView 会清理旧详情；恢复必须在它之后，成员会话期间仍保留来源。
@@ -300,8 +297,9 @@ class TeamCanvasController{
     }
     for(const id of ['team-canvas-fit','team-canvas-zoom-out','team-canvas-zoom-in','team-canvas-zoom','team-canvas-current-run'])document.getElementById(id).hidden=board;
     if(persist&&this.current)try{localStorage.setItem('team-view:'+this.current.id,this.view);}catch{}
-    if(board)this.boardPanel?.refreshAll();
-    else{this.render();this.refresh(true);}
+    this.root.classList.toggle('issue-board-view',board);
+    (board?this.root:this.viewport).append(this.detail);
+    this.render();this.refresh(true);
   }
   accepted(input){
     if(input?.inputId&&this.current?.id===input.teamId){
@@ -322,7 +320,6 @@ class TeamCanvasController{
   async refresh(force=false){
     const team=this.current;if(!team)return;
     if(this.root?.closest?.('[hidden]'))return;
-    if(this.view==='board'){await this.boardPanel?.refreshAll();return;}
     if(this.refreshToken){if(force)this.refreshQueued=true;return;}
     const token={};this.refreshToken=token;const generation=this.generation;this.error.textContent='';
     try{
@@ -394,7 +391,8 @@ class TeamCanvasController{
     return{bubbles,issues};
   }
   render(){
-    if(this.root.hidden||this.view==='board')return;
+    if(this.root.hidden)return;
+    if(this.view==='board'){this.renderBoard();return;}
     this.nodes.replaceChildren();this.wires.replaceChildren();
     const {bubbles,issues}=this.buildGroups();
     const pending=bubbles.filter(({input})=>input.associationStatus==='pending').length;
@@ -410,6 +408,23 @@ class TeamCanvasController{
     this.lastRecords={bubbles:bubbleRecords,issues:teamCanvasLinkedRecords(bubbleRecords,issueRecords)};this.layout(bubbleRecords,this.lastRecords.issues);
     this.renderWires(this.lastRecords);
     if(!this.userInteracted)requestAnimationFrame(()=>{if(!this.userInteracted)this.fitAll(false,true);});
+  }
+  renderBoard(){
+    const scroll=this.boardRoot.scrollTop;
+    this.boardRoot.replaceChildren();
+    const stages=[['open','待处理'],['in_progress','处理中'],['waiting','等待处理'],['resolved','已解决'],['closed','已关闭']];
+    const columns=new Map(stages.map(([id,label])=>[id,{label,items:[]}]));
+    for(const issue of this.issues){const stage=columns.has(issue.status)?issue.status:'waiting';columns.get(stage).items.push(issue);}
+    this.boardRoot.append(this.node('p',this.issues.length+' '+this.t('个事项'),'muted team-issue-board-summary'));
+    const grid=this.node('div',undefined,'team-issue-board-grid');
+    for(const [id,column] of columns){
+      const section=this.node('section',undefined,'team-issue-board-column');section.dataset.stage=id;
+      section.append(this.node('h3',this.t(column.label)+' · '+column.items.length));
+      if(!column.items.length)section.append(this.node('p',this.t('暂无事项'),'muted'));
+      for(const issue of column.items){const card=this.renderIssue(issue);card.classList.add('team-issue-board-card');section.append(card);}
+      grid.append(section);
+    }
+    this.boardRoot.append(grid);this.boardRoot.scrollTop=scroll;
   }
   associationLabel(input,issueIDs){
     const runHint=teamCanvasInputRunID(input,issueIDs)?' · '+this.t('查看 Run'):'';
@@ -502,7 +517,7 @@ class TeamCanvasController{
     button.append(meta,this.node('span',this.t('查看事项详情'),'team-canvas-open-hint'));
     button.setAttribute('aria-label',this.shortID(issue.id)+' '+(issue.title||'')+' · '+this.statusLabel(issue)+' · '+this.t('查看事项详情'));
     button.addEventListener('click',()=>{if(Date.now()>=(this.suppressClickUntil||0))this.openDetail(issue,button);});
-    this.bindNodeDrag(button,()=>({key:'i:'+issue.id,issue}));
+    if(this.view!=='board')this.bindNodeDrag(button,()=>({key:'i:'+issue.id,issue}));
     return button;
   }
   layout(bubbleRecords,issueRecords){
@@ -634,28 +649,29 @@ class TeamCanvasController{
       for(const {input,index} of sources){
         const label='#'+String(input.sequence||index).padStart(2,'0')+' · '+(input.text||this.t('附件消息'));
         section.append(this.button(label,'plain team-canvas-source',()=>{
-          this.closeDetail();this.focusMessage(input.inputId||input.id);
+          this.closeDetail();if(this.view==='board')this.setView('canvas');this.focusMessage(input.inputId||input.id);
         }));
       }
       body.append(section);
     }
+    const history=this.node('details',undefined,'team-issue-run-history');
+    history.append(this.node('summary',this.t('执行历史')+' · '+(issue.runs||[]).length));
     const runs=(issue.runs||[]).map(run=>{
-      const live=run.id===this.detailRun?.id,sections=[];
-      if(!live){
-        const progress=this.progress(run),parts=[this.statusLabel(run)];
-        if(progress)parts.push(this.t('Agent 任务')+' '+progress.completed+'/'+progress.total+' '+this.t('正常结束'));
-        const owner=teamCanvasOwnerLine(run,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind);if(owner)parts.push(owner);
-        if(run.nextAction?.label)parts.push(this.t('下一步')+' · '+run.nextAction.label);
-        if(run.lastUpdate?.summary)parts.push(this.t('最近回音')+' · '+run.lastUpdate.summary);
-        sections.push(this.detailSection('Run · '+this.shortID(run.id),parts));
-        if(this.openRun){const teamID=this.current.id;sections[0].append(this.button(this.t('打开 Run 详情'),'plain',()=>this.openRun(teamID,run.id)));}
-      }
+      const sections=[];
+      const progress=this.progress(run),parts=[this.statusLabel(run)];
+      if(progress)parts.push(this.t('Agent 任务')+' '+progress.completed+'/'+progress.total+' '+this.t('正常结束'));
+      const owner=teamCanvasOwnerLine(run,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind);if(owner)parts.push(owner);
+      if(run.nextAction?.label)parts.push(this.t('下一步')+' · '+run.nextAction.label);
+      if(run.lastUpdate?.summary)parts.push(this.t('最近回音')+' · '+run.lastUpdate.summary);
+      sections.push(this.detailSection('Run · '+this.shortID(run.id),parts));
+      if(this.openRun){const teamID=this.current.id;sections[0].append(this.button(this.t('打开 Run 详情'),'plain',()=>this.openRun(teamID,run.id)));}
       const evidence=teamCanvasDeliveryRows(run,value=>this.t(value));
       const result=run.delivery?.resultSummary||{};
       sections.push(this.detailSection('交付证据',evidence.length?evidence:[this.t(result.truncated?'内容已截断':'暂无可展示的执行结果')]));
       return sections;
     });
-    for(const sections of runs)body.append(...sections);
+    for(const sections of runs)history.append(...sections);
+    if(runs.length)body.append(history);
     if(!runs.length)body.append(this.detailSection('交付证据',[this.t('暂无可展示的执行结果')]));
     body.scrollTop=scrollTop;
     const openRunButton=document.getElementById('team-canvas-open-run');
