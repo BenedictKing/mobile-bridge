@@ -292,6 +292,28 @@ func (h *handler) teamInputProject(input *team.TeamInput) *jsoncompat.Object {
 		return jsoncompat.NewObject()
 	}
 	object := teamQueueInputProject(input)
+	// 仅投影公开附件元数据；本地路径不能进入客户端。
+	if h.server.Uploads != nil && h.server.TeamStore != nil {
+		if row := h.server.TeamStore.Team(input.TeamID); row != nil {
+			threadID := teamLeadSessionID(row)
+			attachments := &jsoncompat.Array{}
+			for _, id := range input.AttachmentIDs {
+				metadata, err := h.server.Uploads.Get(threadID, id)
+				if err != nil {
+					continue
+				}
+				attachment := jsoncompat.NewObject()
+				for _, key := range []string{"id", "name", "size", "image", "thumb", "thumbWidth", "thumbHeight"} {
+					if value, ok := metadata.Get(key); ok {
+						attachment.Set(key, value)
+					}
+				}
+				attachment.Set("sessionId", threadID)
+				attachments.Items = append(attachments.Items, attachment)
+			}
+			object.Set("attachments", attachments)
+		}
+	}
 	if !input.IssueRouting || input.AssociationStatus != team.IssueAssociationPending {
 		return object
 	}

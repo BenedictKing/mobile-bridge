@@ -301,3 +301,29 @@ test('command CSS hides all body preview and keeps non-command activities unchan
   assert.equal(thought.dataset.tool,undefined);
   timeline.dispose();
 });
+
+test('reasoning uses the Markdown renderer while command output stays literal',()=>{
+  const calls=[];
+  const{timeline}=setup({renderText:(body,text)=>calls.push({body,text})});
+  const row={key:'md-thought',role:'activity',kind:'reasoning',text:'## Plan\n\n- **Check** `code`'};
+  timeline.renderRow(row,false);
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].body.tagName,'DIV');
+  assert.equal(calls[0].text,row.text);
+  timeline.renderRow({key:'cmd',role:'activity',kind:'commandExecution',text:'**literal**'},false);
+  assert.equal(calls.length,1);
+  timeline.dispose();
+});
+
+test('automatic approval reviews have readable labels and keep untrusted content literal',()=>{
+  const{timeline}=setup();
+  const node=timeline.renderRow({key:'approval',role:'activity',kind:'automaticApprovalReview',title:'automaticApprovalReview',
+    text:JSON.stringify({id:'internal',type:'automaticApprovalReview',status:'completed',review:{decision:'allow',reason:'<img src=x onerror=alert(1)>'}})},false);
+  assert.equal(node.children[0].textContent,'自动审批审查');
+  const body=node.children[1];
+  assert.match(body.textContent,/审批决定：allow/);
+  assert.match(body.textContent,/原因：<img src=x onerror=alert\(1\)>/);
+  assert.doesNotMatch(body.textContent,/automaticApprovalReview|internal/);
+  assert.equal(body.children.length,0,'审查内容不能当作 HTML 执行');
+  timeline.dispose();
+});

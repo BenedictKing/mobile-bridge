@@ -332,9 +332,26 @@ class TeamCanvasController{
     head.append(this.node('span',relation,'team-canvas-message-relation'));
     button.title=input.text||this.t('附件消息');
     button.append(head,this.node('p',input.text||this.t('附件消息'),'team-canvas-message-text'));
+    if(input.attachments?.length){
+      const attachments=this.node('div',undefined,'timeline-attachments');
+      for(const item of input.attachments){
+        if(!item.image||!item.sessionId||!item.id)continue;
+        const source=BridgeConnection.url(sessionUrl(item.sessionId,'uploads/'+encodeURIComponent(item.id)+'/preview',this.current.host||'local'));
+        const original=source+'&variant=original';
+        const link=this.node('a');link.href=original;link.target='_blank';link.rel='noopener';
+        link.dataset.imagePreview=original;link.dataset.imageName=item.name||this.t('图片附件');
+        link.addEventListener('pointerdown',event=>event.stopPropagation());
+        const image=this.node('img',undefined,'attachment-image');image.src=source;
+        image.alt=item.name||this.t('图片附件');image.loading='lazy';image.decoding='async';
+        image.onerror=()=>{link.replaceChildren(this.node('span',image.alt));};
+        link.append(image);attachments.append(link);
+      }
+      card.append(attachments);
+    }
     if(input.associationReason)button.append(this.node('span',input.associationReason,'team-canvas-message-reason'));
     button.setAttribute('aria-label','#'+index+' · '+(input.text||this.t('附件消息'))+' · '+relation);
-    card.addEventListener('click',()=>{
+    card.addEventListener('click',event=>{
+      if(event.target.closest('[data-image-preview]'))return;
       if(Date.now()<(this.suppressClickUntil||0))return;
       if(issueIDs.length){for(const issueID of issueIDs)this.focusItem(issueID);}
       else if(linkedRunID&&this.openRun)this.openRun(this.current.id,linkedRunID);

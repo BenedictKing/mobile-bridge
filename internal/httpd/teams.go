@@ -1281,6 +1281,13 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 		// 运行中状态刷新（§12 阶段四工作项 2 的手动入口；周期 reconciler
 		// 走同一 Service.RefreshRun）：只改任务事实绝不改 run 状态。
 		h.handleRunRefresh(teamID, runID)
+	case "recheck":
+		run, err := h.server.Teams.RecheckRun(runID)
+		if err != nil {
+			h.failTeamError(err)
+			return
+		}
+		h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
 	case "forward":
 		// 成员间显式转发（§7 阶段二工作项 4）。
 		h.handleRunForward(teamID, runID)

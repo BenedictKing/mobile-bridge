@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 )
@@ -21,6 +22,25 @@ import (
 func (e *teamTestEnv) postTeamInput(teamID, body string) *httptest.ResponseRecorder {
 	target := "/api/teams/" + teamID + "/inputs"
 	return e.request(http.MethodPost, target, body)
+}
+
+func TestTeamInputProjectsPublicImageMetadata(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	env.server.Uploads = uploads.New(env.dataDir)
+	const id = "8aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if _, err := env.server.Uploads.Put(env.sessionID, id, "photo.png", []byte("\x89PNG\r\n\x1a\nimage")); err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{server: env.server}
+	row := h.teamInputProject(&team.TeamInput{ID: "input", TeamID: teamID, AttachmentIDs: []string{id}})
+	text := string(jsoncompat.EncodeCompact(row))
+	if !strings.Contains(text, `"image":"image/png"`) || !strings.Contains(text, `"sessionId":"`+env.sessionID+`"`) {
+		t.Fatalf("附件应包含 MIME 与会话: %s", text)
+	}
+	if strings.Contains(text, "localPath") || strings.Contains(text, env.dataDir) {
+		t.Fatalf("不得泄漏本地附件路径: %s", text)
+	}
 }
 
 func TestTeamInputsCreateAcceptedAndIdempotent(t *testing.T) {

@@ -1920,6 +1920,10 @@ class TeamRunScreen{
     const box=this.node('div',undefined,'team-run-actions');
     const status=this.detail.status;
     const stopReason=this.detail.stopReason||'';
+    if((status==='outcome_unknown'||status==='waiting_input')&&(this.detail.tasks||[]).some(task=>task.status==='outcome_unknown')){
+      box.append(this.node('span',t('先打开原会话核查，再重新读取完成结果；不会重发任务。'),'muted team-resume-hint'));
+      box.append(this.button(t('核查原会话结果'),()=>this.postAction('recheck')));
+    }
     if(status==='waiting_input'){
       const hint=this.resumeHint();
       if(hint)box.append(this.node('span',hint,'muted team-resume-hint'));
@@ -1974,6 +1978,7 @@ class TeamRunScreen{
       if(teamId!==this.teamId||runId!==this.runId||generation!==this.generation)return;
       this.detail=detail;this.meta=null;
       this.actionNotice=({resume:BridgeI18n.t('已继续运行'),pause:BridgeI18n.t('已暂停运行'),cancel:BridgeI18n.t('已取消运行')})[action]||BridgeI18n.t('操作已完成');
+      if(action==='recheck')this.actionNotice=BridgeI18n.t((detail.tasks||[]).some(task=>task.status==='outcome_unknown')?'仍有任务缺少可确认的完成回合，请打开原会话核查或创建修订 Run。':'已核查原会话结果，请检查任务并继续运行。');
       // 暂停/继续/取消会改变图节点状态与统计口径：动作成功后补拉一次补充视图
       //（404 静默回退，旧网关不报错）。
       this.loadGraph();

@@ -2,6 +2,19 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"自动审批审查":"Automatic approval review",
+"审批决定":"Approval decision",
+"审查依据":"Review rationale",
+"风险等级":"Risk level",
+"风险":"Risk",
+"审查结果":"Review result",
+"评估":"Assessment",
+"用户授权":"User authorization",
+"审批审查已记录":"Approval review recorded",
+"先打开原会话核查，再重新读取完成结果；不会重发任务。":"Check the original chat, then recheck its completed result. The task will not be resent.",
+"核查原会话结果":"Recheck original chat result",
+"仍有任务缺少可确认的完成回合，请打开原会话核查或创建修订 Run。":"Some tasks still lack a confirmed completed turn. Inspect the original chat or create a revised Run.",
+"已核查原会话结果，请检查任务并继续运行。":"Original chat results checked. Review the tasks and continue the Run.",
 "网关":"Gateway",
 "当前网关":"Current gateway",
 "手机与电脑在同一局域网时直连加速；不在同一网络时走这个地址的公网连接。":"On the same network the phone connects to your computer directly for speed; otherwise it uses this address over the internet.",

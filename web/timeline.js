@@ -9,6 +9,23 @@ const internalTeamProtocolRow=row=>(row?.role==='user'||row?.role==null)&&/^\s*\
 const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecution)$/.test(row.kind)||row.toolKind==='execute');
 const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row));
 const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title==='steered');
+const approvalReviewRow=row=>row.role==='activity'&&(row.kind==='automaticApprovalReview'||row.title==='automaticApprovalReview');
+// 兼容旧网关把未知事件序列化为 JSON 的历史投影；只生成文本节点。
+const approvalReviewText=text=>{
+  let value;try{value=JSON.parse(text);}catch{return text;}
+  if(!value||typeof value!=='object'||Array.isArray(value))return text;
+  const labels={status:'状态',decision:'审批决定',reason:'原因',rationale:'审查依据',summary:'摘要',riskLevel:'风险等级',risk:'风险',command:'命令',review:'审查结果',assessment:'评估',action:'操作',userAuthorization:'用户授权'};
+  const lines=[];
+  const visit=(object,depth=0)=>{
+    for(const [key,item] of Object.entries(object)){
+      if(item==null||['type','id','turnId','itemId','targetItemId'].includes(key))continue;
+      const label=timelineText(labels[key]||key),prefix='  '.repeat(depth);
+      if(typeof item==='object'){lines.push(prefix+label+'：');visit(item,depth+1);}
+      else lines.push(prefix+label+'：'+String(item));
+    }
+  };
+  visit(value);return lines.join('\n')||timelineText('审批审查已记录');
+};
 const commandState=row=>{
   const status=String(row.status||'');
   if(/^(cancelled|canceled|interrupted|stopped)$/.test(status))return'cancelled';
@@ -38,6 +55,7 @@ const toolLabel=title=>{
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
+  if(approvalReviewRow(row))return timelineText('自动审批审查');
   if(commandRow(row)){
     const state=commandState(row);
     return timelineText('执行命令')+(state==='completed'||state==='failed'?'':'（'+commandStateText(state)+'）');
@@ -351,8 +369,9 @@ class ChatTimeline {
       node.append(heading);
     }
     if(steered)return node;
-    const body=document.createElement(activity&&!planEntries?'pre':'div');
-    body.className=activity?(planEntries?'activity-body plan-body':'activity-body'):'message-body';
+    const reasoning=activity&&row.kind==='reasoning';
+    const body=document.createElement(activity&&!planEntries&&!reasoning?'pre':'div');
+    body.className=activity?(planEntries?'activity-body plan-body':reasoning?'activity-body message-body reasoning-body':'activity-body'):'message-body';
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
     const cached=this.details.get(row.key);
     if(cached&&cached.version!==row.version)this.details.delete(row.key);
@@ -374,7 +393,8 @@ class ChatTimeline {
         }
         body.append(list);body.hidden=false;more.hidden=true;
       }else{
-        if(activity)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
+        if(approvalReviewRow(row))body.textContent=approvalReviewText(text);
+        else if(activity&&!reasoning)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
         if(activity)body.hidden=!text;
         more.hidden=detail?detail.next===null:!row.truncated;
         more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
