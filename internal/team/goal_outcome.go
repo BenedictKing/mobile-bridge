@@ -81,23 +81,25 @@ type GoalResultRef struct {
 }
 
 type GoalOutcome struct {
-	SchemaVersion int            `json:"schemaVersion"`
-	Scope         GoalScope      `json:"scope"`
-	Status        string         `json:"status"`
-	Label         string         `json:"label"`
-	Reason        string         `json:"reason"`
-	Contract      GoalContract   `json:"contract"`
-	EvidenceHash  string         `json:"evidenceHash"`
-	Result        *GoalResultRef `json:"result,omitempty"`
-	AssessedBy    string         `json:"assessedBy,omitempty"`
-	AssessedAt    time.Time      `json:"assessedAt,omitempty"`
-	CanConfirm    bool           `json:"canConfirm"`
-	Closed        bool           `json:"closed,omitempty"`
+	SchemaVersion   int            `json:"schemaVersion"`
+	ExecutionStatus string         `json:"executionStatus"`
+	Scope           GoalScope      `json:"scope"`
+	Status          string         `json:"status"`
+	Label           string         `json:"label"`
+	Reason          string         `json:"reason"`
+	Contract        GoalContract   `json:"contract"`
+	EvidenceHash    string         `json:"evidenceHash"`
+	Result          *GoalResultRef `json:"result,omitempty"`
+	AssessedBy      string         `json:"assessedBy,omitempty"`
+	AssessedAt      time.Time      `json:"assessedAt,omitempty"`
+	CanConfirm      bool           `json:"canConfirm"`
+	Closed          bool           `json:"closed,omitempty"`
 }
 
 var GoalOutcomeLabels = map[string]string{
 	"unassessed": "尚未评估", "pending_verification": "待验证", "pending_confirmation": "结果待确认",
 	"partial": "部分达成", "unsatisfied": "未达成", "satisfied": "目标已达成",
+	"cancelled": "已取消",
 }
 
 func goalHash(value any) string {
@@ -188,10 +190,24 @@ func FinalGoalResult(run *Run) *GoalResultRef {
 }
 
 func DefaultGoalContract(scope GoalScope) GoalContract {
-	return GoalContract{Revision: 1, DeliverableKind: "unspecified",
+	return GoalContract{Revision: 1, DeliverableKind: "result",
 		Criteria: []GoalCriterion{{ID: "original", Text: scope.Text, State: "unknown"}},
-		Verify:   GoalCheck{Requirement: "unspecified", Status: "not_configured"},
-		Review:   GoalCheck{Requirement: "unspecified", Status: "not_configured"}}
+		Verify:   GoalCheck{Requirement: "auto", Status: "not_configured"},
+		Review:   GoalCheck{Requirement: "auto", Status: "not_configured"}}
+}
+
+// 旧记录中未填写的配置按自动处理；显式约定和原始完成条件保持不变。
+func automaticGoalContract(contract GoalContract) GoalContract {
+	if contract.DeliverableKind == "" || contract.DeliverableKind == "unspecified" {
+		contract.DeliverableKind = "result"
+	}
+	if contract.Verify.Requirement == "" || contract.Verify.Requirement == "unspecified" {
+		contract.Verify.Requirement = "auto"
+	}
+	if contract.Review.Requirement == "" || contract.Review.Requirement == "unspecified" {
+		contract.Review.Requirement = "auto"
+	}
+	return contract
 }
 
 // 同一被审任务集合的新审查可取代旧审查；不同分支的失败不能被另一条通过覆盖。
@@ -219,7 +235,7 @@ func goalReviewTasks(run *Run, teamRow *Team) []*Task {
 func goalCheckEvidence(run *Run, teamRow *Team, contract GoalContract) (GoalCheck, GoalCheck) {
 	verify, review := contract.Verify, contract.Review
 	verify.Status, review.Status = "not_configured", "not_configured"
-	if len(run.VerifyCommand) > 0 {
+	if len(run.VerifyCommand) > 0 || run.Verify != nil {
 		verify.Requirement = "required" // 既有验证约定不能通过确认界面降级。
 		verify.Status = "pending"
 	}
@@ -262,14 +278,22 @@ func goalCheckEvidence(run *Run, teamRow *Team, contract GoalContract) (GoalChec
 
 // EvaluateGoal 是所有 API 和界面共用的纯判定。缺记录的旧 Run 保守投影，绝不补造通过事实。
 func EvaluateGoal(run *Run, teamRow *Team, scope GoalScope) GoalOutcome {
-	out := GoalOutcome{SchemaVersion: 1, Scope: scope, Status: "unassessed", Reason: "执行进度不代表目标达成，请明确完成条件。",
+	out := GoalOutcome{SchemaVersion: 1, ExecutionStatus: run.Status, Scope: scope, Status: "unassessed", Reason: "尚无可查看的最终结果。",
 		Contract: DefaultGoalContract(scope), EvidenceHash: GoalEvidenceHash(run), Result: FinalGoalResult(run)}
 	record := run.Goals[scope.ID]
 	if record != nil && record.Scope.Hash == scope.Hash {
 		out.Contract = record.Contract
 		out.Contract.Criteria = append([]GoalCriterion(nil), record.Contract.Criteria...)
 	}
+	out.Contract = automaticGoalContract(out.Contract)
 	out.Contract.Verify, out.Contract.Review = goalCheckEvidence(run, teamRow, out.Contract)
+	if run.Status == RunCancelled {
+		out.Status, out.Label, out.Reason = "cancelled", GoalOutcomeLabels["cancelled"], "本次执行已取消，已有结果保留。"
+		if run.StopReason != "" {
+			out.Reason = run.StopReason
+		}
+		return out
+	}
 	blocked := run.Status != RunCompleted
 	for _, task := range run.Tasks {
 		if task.Status == TaskOutcomeUnknown {
@@ -290,8 +314,7 @@ func EvaluateGoal(run *Run, teamRow *Team, scope GoalScope) GoalOutcome {
 			blocked = true
 		}
 	}
-	out.CanConfirm = !blocked && out.Result != nil && out.Contract.DeliverableKind != "unspecified" &&
-		out.Contract.Verify.Requirement != "unspecified" && out.Contract.Review.Requirement != "unspecified"
+	out.CanConfirm = !blocked && out.Result != nil
 	if record != nil && record.Scope.Hash == scope.Hash && record.EvidenceHash == out.EvidenceHash {
 		out.AssessedBy, out.AssessedAt, out.Closed = record.AssessedBy, record.AssessedAt, record.Closed
 		if record.AssessedBy == "user" {
@@ -308,7 +331,7 @@ func EvaluateGoal(run *Run, teamRow *Team, scope GoalScope) GoalOutcome {
 			}
 			if met > 0 && unmet+unknown > 0 {
 				out.Status, out.Reason = "partial", record.Reason
-			} else if unmet > 0 && unknown == 0 {
+			} else if unmet > 0 {
 				out.Status, out.Reason = "unsatisfied", record.Reason
 			} else if met > 0 && unknown+unmet == 0 && out.CanConfirm {
 				out.Status, out.Reason = "satisfied", record.Reason
@@ -372,7 +395,7 @@ func decodeGoalRecord(value any) *GoalRecord {
 
 func validateGoalContract(contract GoalContract, scope GoalScope) error {
 	switch contract.DeliverableKind {
-	case "answer", "investigation", "change", "operation":
+	case "result", "answer", "investigation", "change", "operation":
 	default:
 		return fmt.Errorf("请选择交付类型")
 	}
@@ -390,7 +413,7 @@ func validateGoalContract(contract GoalContract, scope GoalScope) error {
 		if len([]rune(check.Reason)) > 2000 {
 			return fmt.Errorf("检查原因不能超过 2000 字")
 		}
-		if check.Requirement != "required" && check.Requirement != "not_required" {
+		if check.Requirement != "auto" && check.Requirement != "required" && check.Requirement != "not_required" {
 			return fmt.Errorf("请明确验证和审查要求")
 		}
 		if check.Requirement == "not_required" && strings.TrimSpace(check.Reason) == "" {

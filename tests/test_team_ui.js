@@ -58,6 +58,51 @@ test('goal assessment preserves drafts and retries the same operation without lo
 function find(node,cls){const rows=[];const visit=current=>{if(String(current.className).split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}
 function text(node){return node.textContent+node.children.map(text).join('');}
 
+function feedbackOutcome(overrides={}){
+  return{scope:{id:'run',hash:'scope'},evidenceHash:'evidence',executionStatus:'completed',status:'pending_confirmation',label:'结果待确认',reason:'查看结果',canConfirm:true,
+    result:{text:'回答已经给出'},contract:{revision:1,deliverableKind:'result',verify:{requirement:'auto',status:'not_configured'},review:{requirement:'auto',status:'not_configured'},criteria:[{id:'original',text:'说明 Git 回撤机制',state:'unknown'}]},...overrides};
+}
+
+test('result confirmation requires no acceptance setup or written explanation',async()=>{
+  const{renderTeamGoalReview}=require('../web/team.js'),sent=[],outcome=feedbackOutcome();
+  const panel=renderTeamGoalReview(outcome,{runVersion:4,drafts:new Map(),submit:async body=>sent.push(body)});
+  const settings=find(panel,'team-goal-contract')[0];assert.equal(settings.open,false,'高级条件默认收起');
+  const confirm=panel.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met');
+  assert.equal(confirm.disabled,false);await confirm.listeners.click();
+  assert.equal(sent.length,1);assert.equal(sent[0].action,'assess');assert.equal(sent[0].reason,'');
+  assert.deepEqual(sent[0].states,{original:'met'});assert.equal(sent[0].contract,undefined);
+  assert.ok(!text(panel).includes('Choose a deliverable type'));assert.ok(!text(panel).includes('Choose a check requirement'));
+});
+
+test('cancelled, failed and running executions show only their existing results',()=>{
+  const{renderTeamGoalReview}=require('../web/team.js');
+  for(const executionStatus of ['cancelled','failed','dispatching']){
+    const panel=renderTeamGoalReview(feedbackOutcome({executionStatus}),{runVersion:1,drafts:new Map()});
+    assert.equal(panel.querySelectorAll('select').length,0);assert.equal(panel.querySelectorAll('textarea').length,0);assert.equal(panel.querySelectorAll('button').length,0);
+    assert.match(text(panel),/回答已经给出/,'保留已有结果');assert.ok(!text(panel).includes('Result needs confirmation'));
+  }
+  const empty=renderTeamGoalReview(feedbackOutcome({executionStatus:'cancelled',result:null}),{drafts:new Map()});assert.equal(empty.hidden,true);
+});
+
+test('problem feedback preserves the original scope and needs only a concrete note',async()=>{
+  const{renderTeamGoalReview}=require('../web/team.js'),drafts=new Map(),sent=[];
+  const panel=renderTeamGoalReview(feedbackOutcome(),{runVersion:7,drafts,submit:async body=>sent.push(body)});
+  const feedback=panel.querySelectorAll('button').find(button=>button.textContent==='Report a problem');
+  await feedback.listeners.click();assert.equal(sent.length,0);assert.match(text(panel),/Describe what still needs/);
+  [...drafts.values()][0].reason='缺少未提交文件的回撤说明';await feedback.listeners.click();
+  assert.equal(sent[0].scopeHash,'scope');assert.deepEqual(sent[0].states,{original:'unmet'});assert.equal(sent[0].reason,'缺少未提交文件的回撤说明');
+});
+
+test('missing required evidence disables confirmation while allowing feedback',async()=>{
+  const{renderTeamGoalReview}=require('../web/team.js'),sent=[];
+  const panel=renderTeamGoalReview(feedbackOutcome({canConfirm:false,status:'pending_verification'}),{drafts:new Map(),submit:async body=>sent.push(body)});
+  const confirm=panel.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met');
+  assert.equal(confirm.disabled,true);await confirm.listeners.click();assert.equal(sent.length,0);
+  assert.equal(panel.querySelectorAll('button').find(button=>button.textContent==='Report a problem').disabled,false);
+  const satisfied=renderTeamGoalReview(feedbackOutcome({status:'satisfied'}),{drafts:new Map()});
+  assert.equal(satisfied.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met').hidden,true,'已确认后不重复要求确认');
+});
+
 const team={id:'t1',name:'团队',leadId:'kimi',project:'codex:7015435b2c37',projectCwd:'/Users/me/mobile-bridge/',policy:{},members:[
   {id:'kimi',name:'kimi',role:'lead',agentKind:'kimi'},
   {id:'buddy',name:'workbuddy',role:'member',agentKind:'workbuddy'},

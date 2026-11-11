@@ -3,6 +3,7 @@ package httpd
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,5 +116,44 @@ func TestRunGoalReviewScopesAndIssueResolution(t *testing.T) {
 	post(confirm, http.StatusConflict)
 	if env.queue.enqueueCount() != 0 {
 		t.Fatal("确认不得派发任务")
+	}
+}
+
+func TestRunGoalFeedbackNeedsNoSeparateContractDefinition(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	run := &team.Run{ID: "direct-feedback", TeamID: teamID, Goal: "解释 Git 回撤机制", Status: team.RunCompleted,
+		Tasks: []team.Task{{ID: "answer", Status: team.TaskCompleted, Result: "已说明已提交和未提交文件的回撤方式。"}}}
+	if err := env.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/teams/" + teamID + "/runs/" + run.ID
+	response := env.request(http.MethodGet, base, "")
+	var detail struct {
+		Version      uint64             `json:"version"`
+		GoalOutcomes []team.GoalOutcome `json:"goalOutcomes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil || len(detail.GoalOutcomes) != 1 {
+		t.Fatalf("detail: %s %v", response.Body.String(), err)
+	}
+	goal := detail.GoalOutcomes[0]
+	if !goal.CanConfirm || goal.Contract.DeliverableKind != "result" || goal.ExecutionStatus != team.RunCompleted {
+		t.Fatalf("默认应允许查看结果后直接确认: %+v", goal)
+	}
+	payload, _ := json.Marshal(map[string]any{"id": uuid.NewString(), "action": "assess", "version": detail.Version,
+		"goalRevision": goal.Contract.Revision, "scopeId": goal.Scope.ID, "scopeHash": goal.Scope.Hash, "evidenceHash": goal.EvidenceHash,
+		"states": map[string]string{"original": "met"}})
+	response = env.request(http.MethodPost, base+"/goal-review", string(payload))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status": "satisfied"`) {
+		t.Fatalf("无需先填表或输入说明: %d %s", response.Code, response.Body.String())
+	}
+	fresh := env.store.Run(run.ID)
+	fresh.Status = team.RunCancelled
+	if err := env.store.SaveRun(fresh); err != nil {
+		t.Fatal(err)
+	}
+	response = env.request(http.MethodGet, base, "")
+	if !strings.Contains(response.Body.String(), `"executionStatus": "cancelled"`) || !strings.Contains(response.Body.String(), `"status": "cancelled"`) {
+		t.Fatalf("取消执行不应仍提示尚未评估: %s", response.Body.String())
 	}
 }

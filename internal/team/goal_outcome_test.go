@@ -32,13 +32,59 @@ func answerContract(scope GoalScope) *GoalContract {
 func TestCompletedExecutionNeverImpliesSatisfiedGoal(t *testing.T) {
 	run := goalRun()
 	scope := RunGoalScope(run)
-	if out := EvaluateGoal(run, testTeam(), scope); out.Status != "pending_confirmation" || out.CanConfirm {
+	if out := EvaluateGoal(run, testTeam(), scope); out.Status != "pending_confirmation" || !out.CanConfirm {
 		t.Fatalf("执行结束不能自行证明目标达成: %+v", out)
 	}
 	run.Tasks[0].Result = ""
 	run.Tasks[0].ResultDetail = nil
 	if out := EvaluateGoal(run, testTeam(), scope); out.Status != "unassessed" || out.Result != nil {
 		t.Fatalf("空结果不能交付: %+v", out)
+	}
+}
+
+func TestGoalCanBeConfirmedWithoutDefiningAnAcceptanceForm(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := goalRun()
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	run = h.store.Run(run.ID)
+	scope := RunGoalScope(run)
+	request := goalRequest(run, scope, "assess")
+	request.Reason = ""
+	request.States = map[string]string{"original": "met"}
+	fresh, err := h.service.ReviewGoal(run.ID, scope, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := EvaluateGoal(fresh, h.team, scope)
+	if out.Status != "satisfied" || out.AssessedBy != "user" || out.Contract.Criteria[0].Text != scope.Text {
+		t.Fatalf("直接确认必须保留原始要求和用户判断: %+v", out)
+	}
+	if out.Contract.DeliverableKind != "result" || out.Contract.Verify.Requirement != "auto" || out.Contract.Review.Requirement != "auto" {
+		t.Fatalf("默认配置应跟随执行事实，无需用户填写: %+v", out.Contract)
+	}
+	duplicate, err := h.service.ReviewGoal(run.ID, scope, request)
+	if err != nil || duplicate.Version != fresh.Version || len(h.queue.calls) != 0 {
+		t.Fatalf("直接确认仍须幂等，且不得派发任务: %v", err)
+	}
+	request.ID = uuid.NewString()
+	if _, err := h.service.ReviewGoal(run.ID, scope, request); !errors.Is(err, ErrVersionConflict) {
+		t.Fatalf("旧页面确认仍应拒绝: %v", err)
+	}
+}
+
+func TestAutomaticGoalSettingsRetainLegacyCriteriaAndRequiredChecks(t *testing.T) {
+	run := goalRun()
+	scope := RunGoalScope(run)
+	contract := DefaultGoalContract(scope)
+	contract.DeliverableKind, contract.Verify.Requirement = "unspecified", "unspecified"
+	contract.Review.Requirement = "required"
+	contract.Criteria = append(contract.Criteria, GoalCriterion{ID: "extra", Text: "保留额外要求", State: "unknown"})
+	run.Goals = map[string]*GoalRecord{scope.ID: {Scope: scope, Contract: contract}}
+	out := EvaluateGoal(run, testTeam(), scope)
+	if out.Contract.DeliverableKind != "result" || out.Contract.Verify.Requirement != "auto" || out.Contract.Review.Requirement != "required" || len(out.Contract.Criteria) != 2 || out.CanConfirm {
+		t.Fatalf("兼容旧记录不能抹去明确约定或自动确认: %+v", out)
 	}
 }
 
@@ -145,6 +191,43 @@ func TestGoalAssessmentRejectsMissingChecksAndStaleEvidence(t *testing.T) {
 	changed := h.store.Run(run.ID)
 	if out := EvaluateGoal(changed, h.team, scope); out.AssessedBy != "" || out.Contract.Criteria[0].State != "unknown" {
 		t.Fatalf("旧确认不能套用新结果: %+v", out)
+	}
+}
+
+func TestAutomaticGoalChecksDoNotWaiveFailedOrMissingVerification(t *testing.T) {
+	run := goalRun()
+	run.VerifyCommand = []string{"make", "test"}
+	for _, verify := range []*VerifyResult{nil, {ExitCode: 1}, {ExitCode: 0}} {
+		run.Verify = verify
+		out := EvaluateGoal(run, testTeam(), RunGoalScope(run))
+		if out.CanConfirm || out.Status != "pending_verification" || out.Contract.Verify.Requirement != "required" {
+			t.Fatalf("自动配置不能跳过未执行、失败或缺少版本身份的验证: %+v", out)
+		}
+	}
+	run.VerifyCommand = nil
+	run.Verify = &VerifyResult{ExitCode: 1}
+	if out := EvaluateGoal(run, testTeam(), RunGoalScope(run)); out.CanConfirm || out.Contract.Verify.Status != "failed" {
+		t.Fatalf("已有失败证据不能因命令缺失而被忽略: %+v", out)
+	}
+}
+
+func TestCancelledRunHasNoPendingGoalAssessment(t *testing.T) {
+	h := newDispatchHarness(t)
+	run := goalRun()
+	run.Status, run.StopReason = RunCancelled, "用户取消运行"
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	run = h.store.Run(run.ID)
+	scope := RunGoalScope(run)
+	out := EvaluateGoal(run, h.team, scope)
+	if out.Status != "cancelled" || out.CanConfirm || out.Result == nil || out.ExecutionStatus != RunCancelled {
+		t.Fatalf("取消只保留已有结果，不要求填写验收: %+v", out)
+	}
+	request := goalRequest(run, scope, "assess")
+	request.States = map[string]string{"original": "unmet"}
+	if _, err := h.service.ReviewGoal(run.ID, scope, request); !errors.Is(err, ErrGoalReviewInvalid) {
+		t.Fatalf("取消的 Run 不应接受新的结果评估: %v", err)
 	}
 }
 

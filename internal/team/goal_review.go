@@ -104,6 +104,10 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 			decisionErr = ErrVersionConflict
 			return nil, false
 		}
+		if run.Status == RunCancelled && request.Action != "close" {
+			decisionErr = goalInvalid("本次执行已取消，无需评估结果")
+			return nil, false
+		}
 		current := run.Goals[scope.ID]
 		record := cloneGoalRecord(current)
 		if record == nil || record.Scope.Hash != scope.Hash {
@@ -116,13 +120,14 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 			decisionErr = ErrVersionConflict
 			return nil, false
 		}
+		record.Contract = automaticGoalContract(record.Contract)
 		switch request.Action {
 		case "define":
-			if len(run.VerifyCommand) > 0 && request.Contract.Verify.Requirement != "required" {
+			if (len(run.VerifyCommand) > 0 || run.Verify != nil) && request.Contract.Verify.Requirement == "not_required" {
 				decisionErr = goalInvalid("本轮已配置验证闸门，必须保留验证要求")
 				return nil, false
 			}
-			if len(goalReviewTasks(run, s.store.Team(run.TeamID))) > 0 && request.Contract.Review.Requirement != "required" {
+			if len(goalReviewTasks(run, s.store.Team(run.TeamID))) > 0 && request.Contract.Review.Requirement == "not_required" {
 				decisionErr = goalInvalid("本轮已安排审查，必须保留审查要求")
 				return nil, false
 			}
@@ -171,14 +176,18 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 				allMet = allMet && value == "met"
 			}
 			if allMet && !EvaluateGoal(run, s.store.Team(run.TeamID), scope).CanConfirm {
-				decisionErr = goalInvalid("交付类型、结果或必要检查尚未就绪，不能确认目标达成")
+				decisionErr = goalInvalid("结果或必要检查尚未就绪，不能确认目标达成")
 				return nil, false
 			}
-			if strings.TrimSpace(request.Reason) == "" {
-				decisionErr = goalInvalid("请记录确认或反馈说明")
+			reason := strings.TrimSpace(request.Reason)
+			if reason == "" && !allMet {
+				decisionErr = goalInvalid("请说明结果还有哪些问题")
 				return nil, false
 			}
-			record.AssessedBy, record.AssessedAt, record.EvidenceHash, record.Reason, record.Closed = "user", time.Now(), GoalEvidenceHash(run), request.Reason, false
+			if reason == "" {
+				reason = "用户确认结果符合要求"
+			}
+			record.AssessedBy, record.AssessedAt, record.EvidenceHash, record.Reason, record.Closed = "user", time.Now(), GoalEvidenceHash(run), reason, false
 		case "close":
 			if !terminalRun(run.Status) {
 				decisionErr = goalInvalid("请先停止执行，再关闭目标追踪")

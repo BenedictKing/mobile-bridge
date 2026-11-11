@@ -109,7 +109,7 @@ func aggregateGoals(outcomes []team.GoalOutcome) team.GoalOutcome {
 	out := team.GoalOutcome{SchemaVersion: 1, Status: "satisfied", Reason: "全部原始目标已确认满足。"}
 	out.Closed = true
 	met := 0
-	priority := map[string]int{"satisfied": 0, "partial": 1, "unsatisfied": 2, "pending_confirmation": 3, "unassessed": 4, "pending_verification": 5}
+	priority := map[string]int{"satisfied": 0, "partial": 1, "unsatisfied": 2, "pending_confirmation": 3, "unassessed": 4, "pending_verification": 5, "cancelled": 6}
 	for _, goal := range outcomes {
 		out.Closed = out.Closed && goal.Closed
 		if goal.Status == "satisfied" {
