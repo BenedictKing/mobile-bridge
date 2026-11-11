@@ -495,7 +495,10 @@ class TeamCanvasController{
     if(issue.lastUpdate?.summary)bits.push(this.t('最近回音')+' · '+issue.lastUpdate.summary);
     if(issue.nextAction?.label)bits.push(this.t('下一步')+' · '+issue.nextAction.label);
     const meta=this.node('div',undefined,'team-canvas-issue-meta');
-    for(const bit of bits)meta.append(this.node('span',bit));
+    for(const bit of bits){
+      const recent=issue.lastUpdate?.summary&&bit===this.t('最近回音')+' · '+issue.lastUpdate.summary;
+      meta.append(this.node('span',bit,recent?'team-canvas-recent-update':undefined));
+    }
     button.append(meta,this.node('span',this.t('查看事项详情'),'team-canvas-open-hint'));
     button.setAttribute('aria-label',this.shortID(issue.id)+' '+(issue.title||'')+' · '+this.statusLabel(issue)+' · '+this.t('查看事项详情'));
     button.addEventListener('click',()=>{if(Date.now()>=(this.suppressClickUntil||0))this.openDetail(issue,button);});

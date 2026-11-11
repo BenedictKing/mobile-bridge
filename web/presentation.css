@@ -737,6 +737,22 @@ main{background:var(--page);overflow:hidden}
   .team-canvas-zoom{min-width:34px;font-size:9px}
   .team-canvas-viewport{min-height:360px}
   .team-canvas-node{max-width:calc(100vw - 32px)}
+  .team-canvas-message{min-height:0;padding:8px 10px}
+  .team-canvas-message-head{margin-bottom:5px;font-size:9px;gap:6px}
+  .team-canvas-message-text{font-size:12px;line-height:1.5;-webkit-line-clamp:3;max-height:4.5em}
+  .team-canvas-message-reason{font-size:10px;line-height:1.4;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden}
+  .team-canvas-message .timeline-attachments{margin-top:6px;gap:5px;flex-wrap:nowrap;overflow:hidden}
+  .team-canvas-message .attachment-image{width:56px;height:44px}
+  .team-canvas-issue{min-height:0}
+  .team-canvas-issue-head{padding:6px 9px}
+  .team-canvas-issue-title{padding:7px 9px 0;font-size:12px;line-height:1.4;-webkit-line-clamp:2}
+  .team-canvas-progress{padding:5px 9px 0}
+  .team-canvas-progress-head{font-size:9px;margin-bottom:3px}
+  .team-canvas-progress-track{height:3px}
+  .team-canvas-issue-meta{gap:3px;padding:5px 9px;font-size:10px}
+  .team-canvas-issue-meta span{-webkit-line-clamp:1}
+  .team-canvas-issue-meta .team-canvas-recent-update{display:none}
+  .team-canvas-open-hint{padding:5px 9px;font-size:9px}
   .team-canvas-detail{top:0;right:0;bottom:0;left:0;width:100%;border-left:0;transform:translateX(102%)}
   .team-canvas-detail.open{transform:translateX(0)}
   .team-canvas-detail-head{padding:13px 14px 11px}
