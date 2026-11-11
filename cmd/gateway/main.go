@@ -856,7 +856,7 @@ func runGateway(args []string) {
 		manager.NativeMeta = claude.MetaReader(claudeRoot)
 		manager.NativeList = func() []*jsoncompat.Object { return claude.ListSessions(claudeRoot) }
 		manager.NativeListExclusive = true
-		manager.NativeTranscript = claude.TranscriptReader(claudeRoot)
+		manager.NativeTranscript = claude.TranscriptReader(claudeRoot, filepath.Join(dataDir, "agent-media"))
 	}
 	if manager := server.ACPAgents["opencode"]; manager != nil && !scriptedMode {
 		if source, err := opencode.OpenSource(opencode.DBPath(os.Getenv, home)); err == nil {

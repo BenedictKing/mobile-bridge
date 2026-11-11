@@ -553,7 +553,8 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		// once stripped they carry no text and must not leave a blank bubble.
 		// The turn close above still applies to empty chunks.
 		text := Text(update.MustGet("content"))
-		if text == "" {
+		attachments := ContentAttachments(update.MustGet("content"))
+		if text == "" && len(attachments) == 0 {
 			break
 		}
 		if turn == nil {
@@ -564,6 +565,9 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		message.Set("kind", "userMessage")
 		message.Set("role", "user")
 		message.Set("text", text)
+		for _, attachment := range attachments {
+			appendAttachment(message, attachment)
+		}
 		messages(turn).Items = append(messages(turn).Items, message)
 	case "agent_message_chunk":
 		if text := Text(update.MustGet("content")); text != "" {
@@ -576,7 +580,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		// Non-text blocks (persisted images, local resource links) become
 		// row attachments the phone can preview; without this they used to
 		// vanish entirely because Text() only reads the text field.
-		if attachment := blockAttachment(obj(update.MustGet("content"))); attachment != nil {
+		for _, attachment := range ContentAttachments(update.MustGet("content")) {
 			message := v.assistantMessage(v.assistantTurn(), "agentMessage",
 				"assistant", update.MustGet("messageId"),
 				func(m *jsoncompat.Object) { m.Set("phase", "final") })
@@ -590,7 +594,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			previous, _ := message.MustGet("text").(string)
 			message.Set("text", previous+text)
 		}
-		if attachment := blockAttachment(obj(update.MustGet("content"))); attachment != nil {
+		for _, attachment := range ContentAttachments(update.MustGet("content")) {
 			message := v.assistantMessage(v.assistantTurn(), "agentThought",
 				"activity", update.MustGet("messageId"),
 				func(m *jsoncompat.Object) { m.Set("title", "思考摘要") })
@@ -857,7 +861,7 @@ func flattenContentText(content any) string {
 	kept := &jsoncompat.Array{}
 	for _, item := range list.Items {
 		block := obj(item)
-		if blockAttachment(block) != nil || diffBlock(block) != nil {
+		if blockAttachment(block) != nil || diffBlock(block) != nil || (block != nil && block.MustGet("type") == "image") {
 			continue
 		}
 		kept.Items = append(kept.Items, item)
@@ -868,15 +872,34 @@ func flattenContentText(content any) string {
 // appendContentAttachments extracts previewable non-text blocks from a
 // tool_call content array onto the tool row's message.
 func appendContentAttachments(message *jsoncompat.Object, content any) {
-	list := arr(content)
-	if list == nil {
-		return
+	for _, attachment := range ContentAttachments(content) {
+		appendAttachment(message, attachment)
 	}
-	for _, item := range list.Items {
-		if attachment := blockAttachment(obj(item)); attachment != nil {
-			appendAttachment(message, attachment)
+}
+
+// ContentAttachments extracts local image/resource references from content
+// blocks, including migration wrappers used in live and native history.
+func ContentAttachments(content any) []*jsoncompat.Object {
+	var result []*jsoncompat.Object
+	switch value := content.(type) {
+	case *jsoncompat.Array:
+		for _, item := range value.Items {
+			result = append(result, ContentAttachments(item)...)
+		}
+	case *jsoncompat.Object:
+		if attachment := blockAttachment(value); attachment != nil {
+			return []*jsoncompat.Object{attachment}
+		}
+		if kind, _ := value.MustGet("type").(string); kind == "image" || kind == "resource_link" {
+			return nil
+		}
+		for _, key := range []string{"content", "message", "data"} {
+			if nested, ok := value.Get(key); ok {
+				result = append(result, ContentAttachments(nested)...)
+			}
 		}
 	}
+	return result
 }
 
 // blockAttachment converts one non-text content block into a row attachment:

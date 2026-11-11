@@ -1,10 +1,41 @@
 package acpview
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
+
+func TestImageDataIsNeverFlattenedIntoText(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"image","data":"iVBORw0KGgoAAA","mimeType":"image/png"}`,
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAA"}}`,
+		`{"content":[{"type":"text","text":"看这张图"},{"type":"image","data":"iVBORw0KGgoAAA"}]}`,
+	} {
+		content := notification(t, raw)
+		if text := Text(content); strings.Contains(text, "iVBOR") {
+			t.Fatalf("图片编码不能当作文字: %q", text)
+		}
+	}
+	if text := Text(notification(t, `{"data":"普通迁移文本"}`)); text != "普通迁移文本" {
+		t.Fatalf("普通 data 包装应保持可读: %q", text)
+	}
+}
+
+func TestReplayedUserImageChunkBecomesAnAttachment(t *testing.T) {
+	view := NewView("sess-1", nil, "/work", func() float64 { return 0 })
+	view.OnUpdate(notification(t, `{"sessionUpdate":"user_message_chunk","content":{"type":"image","path":"/tmp/history.png","data":"must-not-render"}}`))
+	message := snapshotMessage(t, view, "userMessage")
+	if message.MustGet("text") != "" || len(attachmentsOf(message)) != 1 || attachmentsOf(message)[0].MustGet("path") != "/tmp/history.png" {
+		t.Fatalf("图片应为附件而不是文本: %s", jsoncompat.EncodeCompact(message))
+	}
+	view.OnUpdate(notification(t, `{"sessionUpdate":"agent_message_chunk","messageId":"wrapped-image","content":{"content":[{"type":"text","text":"结果"},{"type":"image","path":"/tmp/result.png"}]}}`))
+	message = snapshotMessage(t, view, "agentMessage")
+	if message.MustGet("text") != "结果" || len(attachmentsOf(message)) != 1 {
+		t.Fatalf("包装后的文字和图片必须同时保留: %s", jsoncompat.EncodeCompact(message))
+	}
+}
 
 func notification(t *testing.T, raw string) *jsoncompat.Object {
 	t.Helper()

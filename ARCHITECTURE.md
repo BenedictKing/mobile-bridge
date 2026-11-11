@@ -150,6 +150,7 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 | `internal/acpgoal`、`internal/httpd/acp_goal.go` | ACP 网关托管 Goal 的持久状态机、Jev 评估与有界派发 |
 | `internal/account`、`internal/accpool` | Codex 接入切换与 ACP 账号池 |
 | `internal/notifications`、`internal/tunnel` | 通知对账、Quick Tunnel 与 SSH 转发 |
+| `internal/agentmedia` | ACP 实时与 Claude 原生历史的内联图片落盘、内容去重和编码剥离 |
 | `internal/uploads`、`web/`、`android/` | 附件、网页与 Android WebView |
 | `deploy/nas/` | NAS HTTPS 反代教程及可选 Docker 入口 |
 
@@ -162,6 +163,8 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 当前 Go 网关通过 `internal/codex` 与原桌面 App 的 IPC owner 控制 Codex 会话，通过 `internal/acpruntime` / `internal/acp` 控制 ACP 会话。`internal/acpagents` 根据 Agent kind 装配命令、能力和方言；会话可由网关直接启动子进程，也可经 `internal/acphost` 的独立 Agent Host 持有。`internal/httpd` 按会话归属路由读写，规范化视图交给网页时间线。下方历史段落中的 `bridge/*.py` 路径不参与现行网关执行。
 
 Codex 提问分两种协议：原生反向请求通过对应 follower RPC 的嵌套 `response` 回答；`agentMessage.questions` 则投影为 `bridge/requestUserInputAsync`，答案以 `send_user_message_question_reply` 用户消息绑定原问题身份，运行中 steer、结束后启动后续回合。异步答复在外部发送前持久保存 pending 收据，同一问题的并发/重复提交复用收据；重启后的未决记录按结果未知处理，不自动重发。身份验证类原生请求仅允许在桌面处理。
+
+ACP 的内联图片 `data` 与 Claude 历史的 `source.data` 共用 `internal/agentmedia`，在进入视图前保存为有大小上限、按会话隔离且按内容去重的本地文件。图片块不参与文字提取；用户、助手和工具消息通过附件 ID 接入既有预览与放大界面，编码和文件路径不进入网页消息流。Claude 原始历史只读，媒体文件保存在网关数据目录；会话列表扫描不写媒体文件。
 
 ### 历史 Python Adapter 记录（已退役）
 

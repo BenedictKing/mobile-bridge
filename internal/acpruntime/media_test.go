@@ -6,10 +6,38 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
+
+func TestPrepareMediaCoversUserReplayAndNestedImageSources(t *testing.T) {
+	session := &Session{ID: "user-replay", mediaDir: t.TempDir()}
+	png := []byte("\x89PNG\r\n\x1a\nreplayed-user-image")
+	encoded := base64.StdEncoding.EncodeToString(png)
+	for _, content := range []string{
+		`{"type":"image","data":"` + encoded + `","mimeType":"image/png"}`,
+		`{"content":[{"type":"text","text":"[Image #2]"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + encoded + `"}}]}`,
+		`{"type":"image","data":"data:image/png;base64,` + encoded + `"}`,
+	} {
+		update := mediaUpdate(t, `{"sessionUpdate":"user_message_chunk","content":`+content+`}`)
+		session.prepareMedia(update)
+		if raw := string(jsoncompat.EncodeCompact(update)); strings.Contains(raw, encoded) {
+			t.Fatal("处理后的更新仍含图片编码")
+		}
+		view := acpview.NewView("user-replay", nil, "/work", func() float64 { return 0 })
+		view.OnUpdate(update)
+		turns := view.Snapshot().MustGet("turns").(*jsoncompat.Array)
+		message := turns.Items[0].(*jsoncompat.Object).MustGet("messages").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+		attachment := message.MustGet("attachments").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+		path, _ := attachment.MustGet("path").(string)
+		if raw, err := os.ReadFile(path); err != nil || string(raw) != string(png) {
+			t.Fatalf("图片附件未正确落盘: %v", err)
+		}
+	}
+}
 
 func mediaUpdate(t *testing.T, raw string) *jsoncompat.Object {
 	t.Helper()

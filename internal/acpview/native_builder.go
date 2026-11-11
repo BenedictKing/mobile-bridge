@@ -20,14 +20,14 @@ func NewNativeBuilder(sessionID string) *NativeBuilder {
 	return &NativeBuilder{view: NewView(sessionID, nil, nil, func() float64 { return 0 })}
 }
 
-func (b *NativeBuilder) User(text string) {
-	if text == "" {
+func (b *NativeBuilder) User(text string, attachments ...*jsoncompat.Object) {
+	if text == "" && len(attachments) == 0 {
 		return
 	}
 	if b.hasTurn {
 		b.view.EndTurn("end_turn")
 	}
-	b.view.BeginTurn(text)
+	b.view.BeginTurn(text, attachments...)
 	b.hasTurn = true
 	b.awaiting = true
 }
@@ -36,13 +36,21 @@ func (b *NativeBuilder) Agent(text string) {
 	if text == "" {
 		return
 	}
+	content := jsoncompat.NewObject()
+	content.Set("type", "text")
+	content.Set("text", text)
+	b.AgentContent(content)
+}
+
+// AgentContent preserves image attachments in native assistant messages.
+func (b *NativeBuilder) AgentContent(content any) {
+	if Text(content) == "" && len(ContentAttachments(content)) == 0 {
+		return
+	}
 	b.agent++
 	update := jsoncompat.NewObject()
 	update.Set("sessionUpdate", "agent_message_chunk")
 	update.Set("messageId", fmt.Sprintf("native-agent-%d", b.agent))
-	content := jsoncompat.NewObject()
-	content.Set("type", "text")
-	content.Set("text", text)
 	update.Set("content", content)
 	b.view.OnUpdate(update)
 	b.hasTurn = true
@@ -92,10 +100,14 @@ func (b *NativeBuilder) ToolResult(id string, content any, failed bool) {
 	} else {
 		update.Set("status", "completed")
 	}
-	block := jsoncompat.NewObject()
-	block.Set("type", "text")
-	block.Set("text", Text(content))
-	update.Set("content", &jsoncompat.Array{Items: []any{block}})
+	if list, ok := content.(*jsoncompat.Array); ok {
+		update.Set("content", list)
+	} else {
+		block := jsoncompat.NewObject()
+		block.Set("type", "text")
+		block.Set("text", Text(content))
+		update.Set("content", &jsoncompat.Array{Items: []any{block}})
+	}
 	b.view.OnUpdate(update)
 }
 

@@ -363,6 +363,11 @@ func Text(content any) string {
 		}
 		return strings.Join(parts, "\n")
 	case *jsoncompat.Object:
+		// Binary payloads are attachments, not migration text wrappers. In
+		// particular, recursing into an image's data would expose its base64.
+		if kind, _ := typed.MustGet("type").(string); kind == "image" || kind == "audio" || kind == "resource" || kind == "resource_link" {
+			return ""
+		}
 		if text, ok := typed.MustGet("text").(string); ok && text != "" {
 			return textutil.StripInternalReminders(text)
 		}

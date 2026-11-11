@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
+	"github.com/BenedictKing/mobile-bridge/internal/agentmedia"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
@@ -25,13 +26,17 @@ type historyReader struct {
 	mu         sync.Mutex
 	signatures map[string][2]int64
 	pending    map[string]bool
+	mediaDir   string
 }
 
 // TranscriptReader loads Claude's persisted main-chain events without starting
 // claude-agent-acp. A nil snapshot means the file is unchanged or has no turns.
-func TranscriptReader(root string) func(string) (*acpview.NativeSnapshot, error) {
+func TranscriptReader(root string, mediaDirs ...string) func(string) (*acpview.NativeSnapshot, error) {
 	reader := &historyReader{index: &transcriptIndex{root: root},
 		signatures: map[string][2]int64{}, pending: map[string]bool{}}
+	if len(mediaDirs) > 0 {
+		reader.mediaDir = mediaDirs[0]
+	}
 	return reader.load
 }
 
@@ -56,7 +61,7 @@ func (r *historyReader) load(sessionID string) (*acpview.NativeSnapshot, error) 
 		}
 		stale = true
 	}
-	snapshot, _, err := readHistory(path, stale)
+	snapshot, _, err := readHistory(path, stale, r.mediaDir)
 	if err != nil || snapshot == nil {
 		return nil, err
 	}
@@ -77,7 +82,7 @@ func ListSessions(root string) []*jsoncompat.Object {
 		if err != nil {
 			continue
 		}
-		snapshot, cwd, err := readHistory(path, time.Since(info.ModTime()) >= historyStaleAfter)
+		snapshot, cwd, err := readHistory(path, time.Since(info.ModTime()) >= historyStaleAfter, "")
 		if err != nil || snapshot == nil || cwd == "" {
 			continue
 		}
@@ -93,7 +98,7 @@ func ListSessions(root string) []*jsoncompat.Object {
 	return result
 }
 
-func readHistory(path string, stale bool) (*acpview.NativeSnapshot, string, error) {
+func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnapshot, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, "", nil
@@ -128,6 +133,7 @@ func readHistory(path string, stale bool) (*acpview.NativeSnapshot, string, erro
 			continue
 		}
 		content := message.MustGet("content")
+		agentmedia.PersistImages(content, mediaDir, sessionID)
 		titleText := ""
 		switch kind {
 		case "user":
@@ -177,7 +183,17 @@ func applyClaudeUser(builder *acpview.NativeBuilder, content any) string {
 	if hasToolResult {
 		return ""
 	}
-	return foldUserText(builder, acpview.Text(blocks))
+	text := acpview.Text(blocks)
+	attachments := acpview.ContentAttachments(blocks)
+	if text == "" && len(attachments) == 0 {
+		for _, item := range blocks.Items {
+			if block, _ := item.(*jsoncompat.Object); block != nil && block.MustGet("type") == "image" {
+				text = "[图片]"
+				break
+			}
+		}
+	}
+	return foldUserText(builder, text, attachments...)
 }
 
 // foldUserText handles one user-side text. Claude Code echoes a user
@@ -186,14 +202,14 @@ func applyClaudeUser(builder *acpview.NativeBuilder, content any) string {
 // leaves a forever-inProgress turn that keeps the phone read-only. The
 // interrupted turn settles as interrupted and the marker itself renders as a
 // closed turn instead.
-func foldUserText(builder *acpview.NativeBuilder, text string) string {
+func foldUserText(builder *acpview.NativeBuilder, text string, attachments ...*jsoncompat.Object) string {
 	if strings.HasPrefix(text, "[Request interrupted by user") {
 		builder.End("cancelled")
 		builder.User(text)
 		builder.End("cancelled")
 		return ""
 	}
-	builder.User(text)
+	builder.User(text, attachments...)
 	return text
 }
 
@@ -217,6 +233,8 @@ func applyClaudeAssistant(builder *acpview.NativeBuilder, message *jsoncompat.Ob
 		case "thinking":
 			text, _ := block.MustGet("thinking").(string)
 			builder.Thought(text)
+		case "image":
+			builder.AgentContent(block)
 		case "tool_use", "server_tool_use", "mcp_tool_use":
 			id, _ := block.MustGet("id").(string)
 			name, _ := block.MustGet("name").(string)
