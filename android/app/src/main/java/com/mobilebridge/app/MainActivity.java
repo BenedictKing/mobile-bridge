@@ -1,15 +1,19 @@
 package com.mobilebridge.app;
 
+import android.Manifest;
 import android.app.Activity;
+import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.content.res.Configuration;
@@ -22,6 +26,7 @@ import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.webkit.JavascriptInterface;
 import android.webkit.CookieManager;
+import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -34,6 +39,7 @@ import android.widget.ArrayAdapter;
 import android.widget.AdapterView;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -50,6 +56,7 @@ public final class MainActivity extends Activity {
     private static final String ACTIVE_GATEWAY = "active-gateway";
     private static final int FILE_CHOOSER = 41;
     private static final int LOCAL_NETWORK_PERMISSION = 42;
+    private static final int DOWNLOAD_PERMISSION = 43;
     // 与 web/presentation.css 的 --page / --text / --muted / --error / --accent 保持一致。
     private static final int ACCENT = 0xff4664ed;
     private static final int[] LIGHT = {0xffffffff, 0xff20242c, 0xff626975, 0xffb43838, 0xffe3e6ec};
@@ -70,6 +77,7 @@ public final class MainActivity extends Activity {
     private DirectTransport direct;
     private ConnectivityManager.NetworkCallback networkCallback;
     private ValueCallback<Uri[]> fileCallback;
+    private DownloadManager.Request pendingDownload;
     private final List<GatewayProfile> gateways = new ArrayList<>();
     private String selectedGatewayId = "";
     private String activeGatewayId = "";
@@ -418,6 +426,52 @@ public final class MainActivity extends Activity {
                 return true;
             }
         });
+        webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) ->
+            startDownload(url, userAgent, contentDisposition, mimeType));
+    }
+
+    private void startDownload(String url, String userAgent, String contentDisposition, String mimeType) {
+        GatewayProfile active = findGateway(activeGatewayId);
+        URI target;
+        try {
+            if (active == null) throw new IllegalArgumentException("No active gateway");
+            target = URI.create(url);
+            if (!DownloadPolicy.allows(URI.create(active.origin), target)) {
+                throw new IllegalArgumentException("Download is not a gateway artifact");
+            }
+        } catch (Exception invalid) {
+            Toast.makeText(this, "无法下载：附件地址无效", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
+        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(target.toString()))
+            .setTitle(name)
+            .setDescription("来自 " + active.displayName())
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+        if (mimeType != null && !mimeType.isEmpty()) request.setMimeType(mimeType);
+        if (userAgent != null && !userAgent.isEmpty()) request.addRequestHeader("User-Agent", userAgent);
+        // 系统下载器独立于 WebView，必须显式携带当前网关的登录 Cookie。
+        String cookie = CookieManager.getInstance().getCookie(active.origin + "/");
+        if (cookie != null && !cookie.isEmpty()) request.addRequestHeader("Cookie", cookie);
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            pendingDownload = request;
+            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, DOWNLOAD_PERMISSION);
+            return;
+        }
+        enqueueDownload(request);
+    }
+
+    private void enqueueDownload(DownloadManager.Request request) {
+        try {
+            DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            if (manager == null) throw new IllegalStateException("Download service unavailable");
+            manager.enqueue(request);
+            Toast.makeText(this, "已开始下载，完成后可在系统下载记录中打开", Toast.LENGTH_LONG).show();
+        } catch (Exception error) {
+            Toast.makeText(this, "下载失败，请检查系统下载服务和存储空间后重试", Toast.LENGTH_LONG).show();
+        }
     }
 
     private final class NativeBridge {
@@ -634,6 +688,20 @@ public final class MainActivity extends Activity {
         }
         fileCallback.onReceiveValue(files.toArray(new Uri[0]));
         fileCallback = null;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != DOWNLOAD_PERMISSION) return;
+        DownloadManager.Request request = pendingDownload;
+        pendingDownload = null;
+        if (request == null) return;
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            enqueueDownload(request);
+        } else {
+            Toast.makeText(this, "需要存储权限才能保存下载文件", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
