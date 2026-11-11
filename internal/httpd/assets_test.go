@@ -3,12 +3,15 @@ package httpd
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	mobilebridge "github.com/BenedictKing/mobile-bridge"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 )
 
@@ -38,6 +41,7 @@ func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
 		"web/style.css":            "body{}",
 		"web/presentation.css":     "body{}",
 		"web/team-canvas.js":       "window.teamCanvas=true;",
+		"web/team-live-panel.js":   "window.teamLivePanel=true;",
 		"web/icons.js":             "const BridgeIcons={};",
 		"web/manifest.webmanifest": `{"name":"Mobile / Bridge"}`,
 		"web/icon.png":             "\x89PNG",
@@ -53,6 +57,7 @@ func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
 		"/style.css":            "text/css; charset=utf-8",
 		"/presentation.css":     "text/css; charset=utf-8",
 		"/team-canvas.js":       "text/javascript; charset=utf-8",
+		"/team-live-panel.js":   "text/javascript; charset=utf-8",
 		"/icons.js":             "text/javascript; charset=utf-8",
 		"/manifest.webmanifest": "application/manifest+json",
 		"/icon.png":             "image/png",
@@ -65,6 +70,37 @@ func TestLoginShellAssetsAreServedBeforeAuthentication(t *testing.T) {
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != contentType {
 			t.Fatalf("%s status=%d type=%q", path, response.Code, response.Header().Get("Content-Type"))
 		}
+	}
+}
+
+func TestEmbeddedLoginShellReferencesAreServed(t *testing.T) {
+	index, err := mobilebridge.WebFS.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(auth.NewAuth(auth.Config{Mode: "password"}), mobilebridge.WebFS, 8790, "instance")
+	references := regexp.MustCompile(`<(?:script|link)\b[^>]*(?:src|href)="([^"]+)"`).FindAllSubmatch(index, -1)
+	if len(references) == 0 {
+		t.Fatal("login shell must reference its assets")
+	}
+	for _, reference := range references {
+		target := string(reference[1])
+		t.Run(target, func(t *testing.T) {
+			assetURL, err := url.Parse(target)
+			if err != nil || assetURL.IsAbs() || !strings.HasPrefix(assetURL.Path, "/") {
+				t.Fatalf("unexpected shell asset %q", target)
+			}
+			request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790"+target, nil)
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			expected, err := mobilebridge.WebFS.ReadFile("web" + assetURL.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != http.StatusOK || response.Body.String() != string(expected) {
+				t.Fatalf("shell asset %s status=%d, must serve embedded bytes before login", target, response.Code)
+			}
+		})
 	}
 }
 
