@@ -350,7 +350,7 @@ func (l *InputLedger) DeleteInput(teamID, inputID string, version uint64) error 
 	return l.commitLocked(event, func() { l.applyInputEvent(event) })
 }
 
-// DeleteIssue 删除 Issue 及其来源输入投影；journal 与 Run 执行记录保留。
+// DeleteIssue 只连带删除独占输入；共享原话及其余事项关联保留。
 func (l *InputLedger) DeleteIssue(teamID, issueID string) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -367,6 +367,24 @@ func (l *InputLedger) DeleteIssue(teamID, issueID string) (int, error) {
 		seen[link.InputID] = true
 		input := l.inputs[link.InputID]
 		if input == nil || input.TeamID != teamID {
+			continue
+		}
+		shared := false
+		for otherID, other := range l.issues {
+			if otherID == issueID || other.TeamID != teamID {
+				continue
+			}
+			for _, otherLink := range other.Links {
+				if otherLink.InputID == link.InputID {
+					shared = true
+					break
+				}
+			}
+			if shared {
+				break
+			}
+		}
+		if shared {
 			continue
 		}
 		switch input.QueueStatus {

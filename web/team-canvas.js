@@ -675,9 +675,12 @@ class TeamCanvasController{
       const latest=await this.request(path);
       if(this.current?.id!==team.id||this.detailIssue?.id!==issue.id)return;
       const runs=this.activeRuns(latest);
+      const runIDs=new Set(runs.map(run=>run.id));
+      const sharedRun=(this.issues||[]).some(other=>other.id!==issue.id&&(other.runs||[]).some(run=>runIDs.has(run.id)));
+      if(sharedRun)throw Error(this.t('此事项与其他事项共享运行中的 Run，请等待执行结束后再删除，避免中断其他事项。'));
       const prompt=this.t(runs.length
-        ?'将先取消以下未结束的 Run，再删除此事项及关联对话。这些 Run 关联的其他事项也会停止执行；已有文件改动不会回退，执行记录保留。确认取消并删除？'
-        :'删除此事项及其关联对话？这些对话与其他事项的关联也会移除；Run 执行记录保留。确认删除？');
+        ?'将先取消以下未结束的 Run，再删除此事项及独占对话。共享对话保留，但这些 Run 关联的其他事项也会停止执行；已有文件改动不会回退，执行记录保留。确认取消并删除？'
+        :'删除此事项及只关联此事项的对话？共享对话及其余关联保留；Run 执行记录保留。确认删除？');
       const runLines=runs.map(run=>'Run '+this.shortID(run.id)+' · '+this.statusLabel(run)+' · '+(run.goal||run.id));
       if(!window.confirm([prompt,latest.title||issue.title||this.t('团队事项'),...runLines].join('\n')))return;
       button.textContent=this.t(runs.length?'正在取消并删除…':'正在删除…');

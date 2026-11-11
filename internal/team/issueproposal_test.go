@@ -214,15 +214,15 @@ func TestIssueDeleteRemovesLinkedInputsAndReplays(t *testing.T) {
 		}
 	}
 	deleted, err := ledger.DeleteIssue("team-1", target.ID)
-	if err != nil || deleted != 2 {
+	if err != nil || deleted != 1 {
 		t.Fatalf("delete Issue: deleted=%d err=%v", deleted, err)
 	}
 	restored := LoadInputLedger(snapshot, journal)
-	if restored.GetIssue("team-1", target.ID) != nil || restored.Get("team-1", first.ID) != nil || restored.Get("team-1", second.ID) != nil {
+	if restored.GetIssue("team-1", target.ID) != nil || restored.Get("team-1", first.ID) == nil || restored.Get("team-1", second.ID) != nil {
 		t.Fatal("deleted Issue or linked inputs returned after replay")
 	}
 	issues := restored.ListIssues("team-1")
-	if len(issues) != 1 || issues[0].Title != "甲事项" || len(issues[0].Links) != 0 {
+	if len(issues) != 1 || issues[0].Title != "甲事项" || len(issues[0].Links) != 1 {
 		t.Fatalf("other Issue should remain without stale input links: %+v", issues)
 	}
 	if _, err := restored.DeleteIssue("team-1", target.ID); err == nil {

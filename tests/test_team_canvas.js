@@ -347,6 +347,18 @@ test('deleting a parked issue confirms cancellation, cancels only unfinished lin
   }finally{global.document=previousDocument;global.window=previousWindow;}
 });
 
+test('deleting one issue never cancels a run shared with another issue',async()=>{
+  const previousDocument=global.document,previousWindow=global.window;
+  const button={},errorBox={},calls=[],run={id:'shared',status:'running'};
+  global.document={getElementById:id=>id==='team-canvas-delete-issue'?button:errorBox};
+  global.window={confirm:()=>{throw Error('shared cancellation must not be offered');}};
+  const issue={id:'one',runs:[run]};
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{current:{id:'team'},detailIssue:issue,issues:[issue,{id:'two',runs:[run]}],
+    request:async(path,options)=>{calls.push(options?.method||'GET');return issue;}});
+  try{await controller.deleteIssue();assert.deepEqual(calls,['GET']);assert.match(errorBox.textContent,/共享运行中的 Run/);}
+  finally{global.document=previousDocument;global.window=previousWindow;}
+});
+
 test('delete failure stays in the detail and never deletes after a cancellation failure',async()=>{
   const previousDocument=global.document,previousWindow=global.window;
   const button={},errorBox={textContent:''},issue={id:'issue',runs:[{id:'run',status:'waiting_input'}]},calls=[];

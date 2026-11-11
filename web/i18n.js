@@ -2,6 +2,9 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"此事项与其他事项共享运行中的 Run，请等待执行结束后再删除，避免中断其他事项。":"This item shares an active run with other items. Wait until it finishes before deleting to avoid interrupting them.",
+"将先取消以下未结束的 Run，再删除此事项及独占对话。共享对话保留，但这些 Run 关联的其他事项也会停止执行；已有文件改动不会回退，执行记录保留。确认取消并删除？":"Cancel the listed unfinished runs and delete this item and its exclusive messages? Shared messages are kept, but other items linked to those runs will stop. File changes and execution records remain.",
+"删除此事项及只关联此事项的对话？共享对话及其余关联保留；Run 执行记录保留。确认删除？":"Delete this item and messages linked only to it? Shared messages, their other links, and run records are kept.",
 "低":"Low",
 "中":"Medium",
 "高":"High",
