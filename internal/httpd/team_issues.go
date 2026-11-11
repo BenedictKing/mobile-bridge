@@ -185,6 +185,27 @@ func (h *handler) handleTeamIssueGet(teamID, issueID string) {
 	h.output(http.StatusOK, h.teamIssueProject(issue, true), contentTypeJSON, "")
 }
 
+func (h *handler) teamIssueRunIDs(issue *team.Issue) map[string]bool {
+	runIDs := map[string]bool{}
+	for _, link := range issue.Links {
+		input := h.server.TeamInputs.Get(issue.TeamID, link.InputID)
+		if input == nil {
+			continue
+		}
+		for _, runID := range append(append([]string{}, input.RunIDs...), input.TargetRunID) {
+			if runID != "" {
+				runIDs[runID] = true
+			}
+		}
+		for _, workItem := range input.WorkItems {
+			if workItem.RunID != "" {
+				runIDs[workItem.RunID] = true
+			}
+		}
+	}
+	return runIDs
+}
+
 func (h *handler) handleTeamIssueDelete(teamID, issueID string) {
 	if h.loadTeam(teamID) == nil {
 		return
@@ -198,22 +219,51 @@ func (h *handler) handleTeamIssueDelete(teamID, issueID string) {
 		h.fail(http.StatusNotFound, errorBody("Issue 不存在"))
 		return
 	}
-	runIDs := map[string]bool{}
+	runIDs := h.teamIssueRunIDs(issue)
 	for _, link := range issue.Links {
 		input := h.server.TeamInputs.Get(teamID, link.InputID)
 		if input == nil {
 			continue
 		}
-		for _, runID := range append(append([]string{}, input.RunIDs...), input.TargetRunID) {
-			runIDs[runID] = true
-		}
-		for _, workItem := range input.WorkItems {
-			runIDs[workItem.RunID] = true
-		}
 		if classifier := h.server.TeamStore.Run(input.ID); classifier != nil && classifier.IsIssueClassificationOnly() && !teamRunTerminal(classifier.Status) {
 			h.fail(http.StatusConflict, errorBody("事项仍在归类，请等待结束后再删除"))
 			return
 		}
+	}
+	shared := map[string]*team.Issue{}
+	for _, other := range h.server.TeamInputs.ListIssues(teamID) {
+		if other.ID == issueID {
+			continue
+		}
+		otherRunIDs := h.teamIssueRunIDs(other)
+		for runID := range runIDs {
+			if shared[other.ID] != nil || !otherRunIDs[runID] {
+				continue
+			}
+			if run := h.server.TeamStore.Run(runID); run != nil && !teamRunTerminal(run.Status) {
+				shared[other.ID] = other
+			}
+		}
+	}
+	if len(shared) > 0 {
+		ids := make([]string, 0, len(shared))
+		for id := range shared {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		titles := make([]string, 0, len(ids))
+		rows := &jsoncompat.Array{}
+		for _, id := range ids {
+			titles = append(titles, shared[id].Title)
+			row := jsoncompat.NewObject()
+			row.Set("id", id)
+			row.Set("title", shared[id].Title)
+			rows.Items = append(rows.Items, row)
+		}
+		body := errorBody("事项与其他事项共享未结束的 Run，请等待执行结束后再删除：" + strings.Join(titles, "、"))
+		body.Set("sharedIssues", rows)
+		h.fail(http.StatusConflict, body)
+		return
 	}
 	for runID := range runIDs {
 		if run := h.server.TeamStore.Run(runID); run != nil && !teamRunTerminal(run.Status) {

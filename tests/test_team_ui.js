@@ -137,6 +137,15 @@ test('task source chat opens the execution session with its originating Run',()=
   assert.deepEqual(opened,[{id:'execution-1',source:{teamId:'t1',runId:'r1',taskId:'task-1'}}]);
 });
 
+test('self review is visibly labelled as non-independent',()=>{
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
+  screen.team=team;screen.detail={id:'r1',status:'completed',tasks:[],workspace:{}};
+  const card=screen.renderTask({id:'review',memberId:'buddy',status:'completed',reviewIndependence:false});
+  assert.match(text(card),/Non-independent review/);
+  const independent=screen.renderTask({id:'review-independent',memberId:'buddy',status:'completed',reviewIndependence:true});
+  assert.doesNotMatch(text(independent),/Non-independent review/);
+});
+
 test('teams panel localizes member roles and shows the readable project name',()=>{
   const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
   const card=panel.renderTeam(team);
@@ -250,6 +259,10 @@ test('run page shows delivery evidence without accept or discard',()=>{
   assert.doesNotMatch(text(box),/Accept|Discard|review the result/);
   assert.equal(find(box,'team-delivery-actions').length,0);
   assert.equal(typeof screen.setDelivery,'undefined');
+  screen.detail.delivery={agent:{completed:1,total:1},review:{verdict:'passed',reviewIndependence:false},verify:{configured:true,status:'unknown'},pendingQuestions:0};
+  const warnings=screen.renderDelivery();
+  assert.match(text(warnings),/Review: Passed · Non-independent review/);
+  assert.match(text(warnings),/Verification: Unknown outcome/);
 });
 
 test('run page shows a labeled back button that leaves the run',()=>{

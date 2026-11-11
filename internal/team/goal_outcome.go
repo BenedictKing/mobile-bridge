@@ -241,7 +241,13 @@ func goalCheckEvidence(run *Run, teamRow *Team, contract GoalContract) (GoalChec
 	}
 	if run.Verify != nil {
 		verify.Status = "passed"
-		if run.Verify.ExitCode != 0 {
+		if run.Verify.ExitCode == -1 {
+			verify.Status = "unknown"
+			verify.Reason = strings.TrimSpace(run.Verify.OutputHead)
+			if verify.Reason == "" {
+				verify.Reason = "验证命令未给出退出码，请检查工作目录、命令启动环境和超时设置"
+			}
+		} else if run.Verify.ExitCode != 0 {
 			verify.Status = "failed"
 		}
 		if verify.Requirement == "required" && verify.Status == "passed" && (run.Verify.HeadRevision == "" || run.Verify.DiffHash == "") {

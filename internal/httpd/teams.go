@@ -2622,6 +2622,9 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 			reviewOf.Items = append(reviewOf.Items, toAnySlice(reviewTask.ReviewOf)...)
 			review.Set("reviewOf", reviewOf)
 		}
+		if independence := team.ReviewIndependence(run, teamRow, reviewTask); independence != nil {
+			review.Set("reviewIndependence", *independence)
+		}
 		if reviewTask.HeadRevision != "" {
 			review.Set("headRevision", reviewTask.HeadRevision)
 		}
@@ -2643,6 +2646,8 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 		verify.Set("exitCode", jsoncompat.Num(run.Verify.ExitCode))
 		if run.Verify.ExitCode == 0 {
 			verify.Set("status", "passed")
+		} else if run.Verify.ExitCode == -1 {
+			verify.Set("status", "unknown")
 		} else {
 			verify.Set("status", "failed")
 		}
@@ -2686,12 +2691,15 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 	if detail == nil {
 		return jsoncompat.NewObject()
 	}
+	teamRow := h.server.TeamStore.Team(run.TeamID)
 	if tasks, ok := detail.MustGet("tasks").(*jsoncompat.Array); ok {
 		var sourceSessions map[string]string
-		for _, task := range run.Tasks {
-			if task.Status == team.TaskOutcomeUnknown && task.DispatchSessionID == "" && h.server.Teams != nil {
+		tasksByID := make(map[string]*team.Task, len(run.Tasks))
+		for i := range run.Tasks {
+			task := &run.Tasks[i]
+			tasksByID[task.ID] = task
+			if task.Status == team.TaskOutcomeUnknown && task.DispatchSessionID == "" && h.server.Teams != nil && sourceSessions == nil {
 				sourceSessions, _ = h.server.Teams.DispatchSessions(run)
-				break
 			}
 		}
 		for _, item := range tasks.Items {
@@ -2699,7 +2707,13 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 			if !isObject {
 				continue
 			}
-			if source := sourceSessions[stringField(task, "id")]; source != "" {
+			taskID := stringField(task, "id")
+			if model := tasksByID[taskID]; model != nil {
+				if independence := team.ReviewIndependence(run, teamRow, model); independence != nil {
+					task.Set("reviewIndependence", *independence)
+				}
+			}
+			if source := sourceSessions[taskID]; source != "" {
 				task.Set("dispatchSessionId", source)
 			}
 			if rawDetail, hasDetail := task.Get("resultDetail"); hasDetail {
@@ -2725,11 +2739,10 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 	workspace := jsoncompat.NewObject()
 	workspace.Set("writeLockHeldBy", teamWriteLockHolder(run))
 	detail.Set("workspace", workspace)
-	detail.Set("delivery", teamDeliveryEvidence(h.server.TeamStore.Team(run.TeamID), run))
+	detail.Set("delivery", teamDeliveryEvidence(teamRow, run))
 	detail.Delete("goals") // 内部操作指纹只落账本，不进入展示 API。
 	// 闭环回音投影（与 Run 列表同一派生函数，聊天与 Dashboard 消费同一份
 	// 事实）：谁负责 / 最近回音 / 下一步。
-	teamRow := h.server.TeamStore.Team(run.TeamID)
 	if owner := teamRunCurrentOwner(teamRow, run); owner != nil {
 		detail.Set("currentOwner", owner)
 	}

@@ -92,8 +92,8 @@ function renderTeamDeliveryEvidence(container,delivery,make){
   const agent=delivery.agent,review=delivery.review,verify=delivery.verify;
   // stale（阶段 5）：审查后又有新写入——旧裁决不再充当当前版本的证据，
   // 独立文案展示，绝不与「已通过」混同。
-  const reviewText=!review?null:(review.stale?t_safe('已过期（改动后未重审）'):(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知')));
-  const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待验证')));
+  const reviewText=!review?null:(review.stale?t_safe('已过期（改动后未重审）'):(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知')))+(review.reviewIndependence===false?' · '+t_safe('非独立审查'):'');
+  const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):verify.status==='unknown'?t_safe('结果未知'):t_safe('待验证')));
   const dims=[
     t_safe('Agent 任务')+t_safe('：')+(agent?agent.completed+'/'+agent.total+' '+t_safe('正常结束'):'—'),
     t_safe('审查')+t_safe('：')+(reviewText||t_safe('未参与')),

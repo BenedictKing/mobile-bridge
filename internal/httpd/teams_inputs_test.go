@@ -374,6 +374,60 @@ func TestTeamIssueDeleteRejectsActiveRun(t *testing.T) {
 	}
 }
 
+func TestTeamIssueDeleteRejectsSharedActiveRun(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	input, _, err := env.server.TeamInputs.AcceptWithIssueRouting(teamID,
+		"dddddddd-bbbb-4ccc-8ddd-eeeeeeeeee06", "甲乙", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = env.server.TeamInputs.ApplyIssueProposal(teamID, "issue-proposal-shared", &team.IssueProposal{
+		InputID: input.ID, Revision: input.Revision, Segments: []team.IssueProposalSegment{
+			{Action: team.IssueSegmentCreate, NewIssueTitle: "甲事项", SourceStart: 0, SourceEnd: 1},
+			{Action: team.IssueSegmentCreate, NewIssueTitle: "乙事项", SourceStart: 1, SourceEnd: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runID = "run-issue-shared"
+	if err := env.server.TeamInputs.MarkRoutingIntent(teamID, input.ID, "new_task", runID, "lead", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.server.TeamInputs.MarkRouted(teamID, input.ID, "new_task", runID, "lead"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.SaveRun(&team.Run{ID: runID, TeamID: teamID, Status: team.RunWaitingInput}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = env.server.Teams.Cancel(runID) })
+	issues := env.server.TeamInputs.ListIssues(teamID)
+	if len(issues) != 2 {
+		t.Fatalf("shared input should create two Issues: %+v", issues)
+	}
+	response := env.request(http.MethodDelete, "/api/teams/"+teamID+"/issues/"+issues[0].ID, `{}`)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("shared active Issue delete status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Error        string `json:"error"`
+		SharedIssues []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		} `json:"sharedIssues"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.SharedIssues) != 1 || body.SharedIssues[0].ID != issues[1].ID || body.SharedIssues[0].Title != issues[1].Title {
+		t.Fatalf("shared Issue conflict should identify the other Issue: %s", response.Body.String())
+	}
+	if len(env.server.TeamInputs.ListIssues(teamID)) != 2 || env.server.TeamInputs.Get(teamID, input.ID) == nil {
+		t.Fatal("shared active Issue delete must not change the ledger")
+	}
+}
+
 func TestTeamInputFollowUpResumesWaitingRun(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	teamID, _ := env.createTeam(t)

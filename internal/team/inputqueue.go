@@ -1016,13 +1016,15 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		input.Text = text
 		input.AttachmentIDs = attachments
 		input.ContentHash = hash
-		input.AssociationStatus = IssueAssociationUnclassified
-		if input.IssueRouting {
-			input.AssociationStatus = IssueAssociationPending
+		// 已完成归类的修订保留提案与链接；待归类或失败输入仍可借修订重试。
+		if input.AssociationProposalID == "" {
+			input.AssociationStatus = IssueAssociationUnclassified
+			if input.IssueRouting {
+				input.AssociationStatus = IssueAssociationPending
+			}
+			input.AssociationReason = ""
+			input.IssueLinks = nil
 		}
-		input.AssociationReason = ""
-		input.AssociationProposalID = ""
-		input.IssueLinks = nil
 		input.Version++
 		input.UpdatedAt = event.CreatedAt
 		if opID := payloadString(event.Payload, "opId"); opID != "" {

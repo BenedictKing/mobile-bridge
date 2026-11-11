@@ -132,14 +132,14 @@ test('closed issue retains the last executor',()=>{
 test('issue detail shows bounded delivery, review and verification evidence',()=>{
   const rows=teamCanvasDeliveryRows({delivery:{
     resultSummary:{text:'导航已完成，验证通过。',truncated:true},
-    review:{verdict:'passed'},
+    review:{verdict:'passed',reviewIndependence:false},
     verify:{configured:true,status:'passed',exitCode:0},
     pendingQuestions:1,
     workspaces:[{workspaceId:'ws-1'}],
   }});
   assert.deepEqual(rows,[
     '导航已完成，验证通过。 · 内容已截断',
-    '评审结果 · passed',
+    '评审结果 · passed · 非独立审查',
     '验证结果 · passed · 退出码 0',
     '待回答问题 · 1',
     '工作区 · ws-1',

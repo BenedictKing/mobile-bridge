@@ -14,6 +14,7 @@ const en={
 "审查中":"Reviewing",
 "审查已结束":"Review ended",
 "审查失败":"Review failed",
+"非独立审查":"Non-independent review",
 "展开查看审查依据":"Expand to view the review rationale",
 "目标追踪已关闭，可查看已有结果":"Goal tracking is closed; view the existing result",
 "执行结束":"Execution ended",

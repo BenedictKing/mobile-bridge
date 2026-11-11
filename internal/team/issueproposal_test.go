@@ -58,6 +58,39 @@ func TestIssueProposalPersistsBubbleLinksAndReplays(t *testing.T) {
 	}
 }
 
+func TestClassifiedInputRevisionPreservesAssociation(t *testing.T) {
+	ledger, snapshot, journalPath := newInputLedgerFixture(t)
+	input, _, err := ledger.AcceptWithIssueRouting("team-1", "input-revision", "甲乙", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposalID := "proposal-revision"
+	linked, _, err := ledger.ApplyIssueProposal("team-1", proposalID, &IssueProposal{InputID: input.ID, Revision: input.Revision, Segments: []IssueProposalSegment{
+		{Action: IssueSegmentCreate, NewIssueTitle: "甲事项", SourceStart: 0, SourceEnd: 1},
+		{Action: IssueSegmentIgnore, SourceStart: 1, SourceEnd: 2},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revised, _, err := ledger.Revise("team-1", input.ID, "revise-classified", "甲丙", nil, linked.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revised.AssociationProposalID != proposalID || revised.AssociationStatus != IssueAssociationLinked ||
+		len(revised.IssueLinks) != 1 || revised.IssueLinks[0].Revision != input.Revision {
+		t.Fatalf("classified revision lost its association: %+v", revised)
+	}
+	reopened, err := OpenJournal(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restored := LoadInputLedger(snapshot, reopened).Get("team-1", input.ID)
+	if restored == nil || restored.AssociationProposalID != proposalID || len(restored.IssueLinks) != 1 {
+		t.Fatalf("snapshot+journal replay lost classified revision association: %+v", restored)
+	}
+}
+
 func TestIssueProposalRejectsGapsOverlapAndUnknownIssue(t *testing.T) {
 	ledger := LoadInputLedger(filepath.Join(t.TempDir(), "team-inputs.json"), nil)
 	input, _, err := ledger.AcceptWithIssueRouting("team-1", "input-1", "修复导航并保留筛选", nil, "policy", 64, true)

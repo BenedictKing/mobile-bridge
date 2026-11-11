@@ -24,12 +24,13 @@ type deliveryEvidenceView struct {
 		Truncated bool   `json:"truncated"`
 	} `json:"resultSummary"`
 	Review *struct {
-		TaskID       string   `json:"taskId"`
-		Verdict      string   `json:"verdict"`
-		Stale        bool     `json:"stale"`
-		ReviewOf     []string `json:"reviewOf"`
-		HeadRevision string   `json:"headRevision"`
-		DiffHash     string   `json:"diffHash"`
+		TaskID             string   `json:"taskId"`
+		Verdict            string   `json:"verdict"`
+		Stale              bool     `json:"stale"`
+		ReviewOf           []string `json:"reviewOf"`
+		ReviewIndependence *bool    `json:"reviewIndependence"`
+		HeadRevision       string   `json:"headRevision"`
+		DiffHash           string   `json:"diffHash"`
 	} `json:"review"`
 	Verify struct {
 		Configured bool   `json:"configured"`
@@ -110,6 +111,62 @@ func TestRunDetailDeliveryEvidenceDimensions(t *testing.T) {
 	}
 	if len(evidence.Workspaces) != 1 || evidence.Workspaces[0].WorkspaceID != "ws-1" || evidence.Workspaces[0].TaskID != "iso" {
 		t.Fatalf("worktree 引用不符: %+v", evidence.Workspaces)
+	}
+}
+
+func TestRunDetailMarksSelfReviewAndVerificationEnvironmentFailure(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	teamRow := env.store.Team(teamID)
+	teamRow.ReviewerID = "rev"
+	teamRow.Members = append(teamRow.Members, team.TeamMember{
+		ID: "rev", SessionID: "sess-rev", AgentKind: "zcode", Role: team.RoleReviewer, Enabled: true,
+	})
+	if err := env.store.SaveTeam(teamRow); err != nil {
+		t.Fatal(err)
+	}
+	execution, review := false, true
+	run := &team.Run{
+		ID: "run-self-review", TeamID: teamID, Goal: "标识自审", Status: team.RunCompleted,
+		VerifyCommand: []string{"make", "test"},
+		Verify:        &team.VerifyResult{ExitCode: -1, OutputHead: "验证命令未执行"},
+		Tasks: []team.Task{
+			{ID: "impl-self", MemberID: "rev", Review: &execution, Status: team.TaskCompleted, Result: "实现", Ordinal: 0},
+			{ID: "impl-other", MemberID: "lead", Review: &execution, Status: team.TaskCompleted, Result: "其他实现", Ordinal: 1},
+			{ID: "review-independent", MemberID: "rev", Review: &review, ReviewOf: []string{"impl-other"}, Status: team.TaskCompleted, Result: "独立审查", Ordinal: 2},
+			{ID: "review-self", MemberID: "rev", Review: &review, ReviewOf: []string{"impl-self"}, Status: team.TaskCompleted, Result: "自审", Ordinal: 3},
+		},
+	}
+	if err := env.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/runs/"+run.ID, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("读取 Run 详情失败: %d %s", response.Code, response.Body.String())
+	}
+	var detail struct {
+		Tasks []struct {
+			ID                 string `json:"id"`
+			ReviewIndependence *bool  `json:"reviewIndependence"`
+		} `json:"tasks"`
+		Delivery deliveryEvidenceView `json:"delivery"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	independence := map[string]*bool{}
+	for _, task := range detail.Tasks {
+		independence[task.ID] = task.ReviewIndependence
+	}
+	if independence["review-independent"] == nil || !*independence["review-independent"] ||
+		independence["review-self"] == nil || *independence["review-self"] {
+		t.Fatalf("审查独立性投影不符: %+v", detail.Tasks)
+	}
+	if detail.Delivery.Review == nil || detail.Delivery.Review.ReviewIndependence == nil || *detail.Delivery.Review.ReviewIndependence {
+		t.Fatalf("交付证据应标识最新审查为自审: %+v", detail.Delivery.Review)
+	}
+	if detail.Delivery.Verify.Status != "unknown" {
+		t.Fatalf("环境失败应在交付证据中标记 unknown: %+v", detail.Delivery.Verify)
 	}
 }
 

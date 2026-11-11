@@ -115,7 +115,7 @@ function teamCanvasOwnerLine(item,t=value=>value,agentLabel=value=>value){
 function teamCanvasDeliveryRows(run,t=value=>value){
   const delivery=run?.delivery||{},result=delivery.resultSummary||{},rows=[];
   if(result.text)rows.push(result.text+(result.truncated?' · '+t('内容已截断'):''));
-  if(delivery.review)rows.push(t('评审结果')+' · '+t(delivery.review.verdict||'状态待同步')+(delivery.review.stale?' · '+t('评审结果已过期'):''));
+  if(delivery.review)rows.push(t('评审结果')+' · '+t(delivery.review.verdict||'状态待同步')+(delivery.review.stale?' · '+t('评审结果已过期'):'')+(delivery.review.reviewIndependence===false?' · '+t('非独立审查'):''));
   if(delivery.verify){
     const label=delivery.verify.configured===false?t('未配置'):t(delivery.verify.status||'待验证');
     rows.push(t('验证结果')+' · '+label+(delivery.verify.exitCode!==undefined?' · '+t('退出码')+' '+delivery.verify.exitCode:''));

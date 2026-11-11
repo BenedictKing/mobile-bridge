@@ -2113,6 +2113,7 @@ class TeamRunScreen{
     if(task.baseRevision)metaBits.push(t('基线：')+String(task.baseRevision).slice(0,12));
     if(task.cachedFrom)metaBits.push(t('缓存复用：')+task.cachedFrom);
     if(task.executionThreadId)metaBits.push(t('执行线程：')+task.executionThreadId);
+    if(task.reviewIndependence===false)metaBits.push(t('非独立审查'));
     if(this.detail.workspace?.writeLockHeldBy===task.id)metaBits.push(t('持有项目写锁'));
     if(metaBits.length)card.append(this.node('p',metaBits.join(' · '),'muted task-meta'));
     // 停靠类 outcome 已由下方「停靠原因」按结构化码本地化，服务端整句不再重复展示。

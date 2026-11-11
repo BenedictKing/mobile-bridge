@@ -57,6 +57,24 @@ func IsReviewTask(team *Team, task *Task) bool {
 	return reviewer != "" && reviewer != team.LeadID && task.MemberID == reviewer
 }
 
+// ReviewIndependence 报告审查者是否独立于全部被审任务；引用缺失时不作判断。
+func ReviewIndependence(run *Run, teamRow *Team, task *Task) *bool {
+	if !IsReviewTask(teamRow, task) || len(task.ReviewOf) == 0 {
+		return nil
+	}
+	independent := true
+	for _, taskID := range task.ReviewOf {
+		reviewed := findTaskIn(run, taskID)
+		if reviewed == nil {
+			return nil
+		}
+		if reviewed.MemberID == task.MemberID {
+			independent = false
+		}
+	}
+	return &independent
+}
+
 // planInputIsReview 判定计划条目是否承担审查语义（IsReviewTask 的创建期
 // 口径）：review=true 显式；未声明时默认评审成员承接的条目按审查兼容。
 func planInputIsReview(team *Team, input PlanTaskInput) bool {

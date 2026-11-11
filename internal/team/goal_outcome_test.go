@@ -211,6 +211,24 @@ func TestAutomaticGoalChecksDoNotWaiveFailedOrMissingVerification(t *testing.T) 
 	}
 }
 
+func TestVerificationEnvironmentFailureIsUnknown(t *testing.T) {
+	run := goalRun()
+	run.VerifyCommand = []string{"make", "test"}
+	run.Verify = &VerifyResult{ExitCode: -1, OutputHead: "无法解析 Lead 会话的工作目录，验证命令未执行"}
+	out := EvaluateGoal(run, testTeam(), RunGoalScope(run))
+	if out.Contract.Verify.Status != "unknown" || out.Contract.Verify.Reason != run.Verify.OutputHead || out.CanConfirm {
+		t.Fatalf("环境失败应保留原因并标记 unknown: %+v", out.Contract.Verify)
+	}
+	run.Verify.OutputHead = ""
+	if check, _ := goalCheckEvidence(run, testTeam(), DefaultGoalContract(RunGoalScope(run))); check.Status != "unknown" || check.Reason == "" {
+		t.Fatalf("无输出的环境失败也应说明检查方向: %+v", check)
+	}
+	run.Verify.ExitCode = 1
+	if check, _ := goalCheckEvidence(run, testTeam(), DefaultGoalContract(RunGoalScope(run))); check.Status != "failed" {
+		t.Fatalf("命令明确返回非零退出码仍是代码失败: %+v", check)
+	}
+}
+
 func TestCancelledRunHasNoPendingGoalAssessment(t *testing.T) {
 	h := newDispatchHarness(t)
 	run := goalRun()
