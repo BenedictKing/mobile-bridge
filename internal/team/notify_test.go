@@ -136,11 +136,11 @@ func TestRunNotificationTextComposition(t *testing.T) {
 	}
 	// 标题：goal 截 60 rune。
 	title, body := RunNotificationText(run, notifications.RunNotifyCompleted)
-	if !strings.HasPrefix(title, "运行完成：") || len([]rune(title)) != len([]rune("运行完成："))+60 {
+	if !strings.HasPrefix(title, "本轮执行结束：") || len([]rune(title)) != len([]rune("本轮执行结束："))+60 {
 		t.Fatalf("标题应含 goal 前 60 rune: %q", title)
 	}
 	// 正文：任务计数 + 前 3 个已完成结果（换行压平、200 rune 截断加省略号）。
-	if !strings.Contains(body, "任务 6 个：完成 4、失败 1、在途 1") {
+	if !strings.Contains(body, "任务 6 个：Agent 任务正常结束 4、失败 1、在途 1") {
 		t.Fatalf("任务计数行不符: %q", body)
 	}
 	for _, want := range []string{"- a：第一项结果", "- b：第二行1 第二行2"} {

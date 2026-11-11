@@ -3882,7 +3882,7 @@ func TestTeamIntegration4MobileRecoveryViaNotification(t *testing.T) {
 	if err := ledger.Reconcile(time.Now(), notifications.NewPublisher(nil)); err != nil {
 		t.Fatalf("通知补发失败: %v", err)
 	}
-	waiting := fake.findByTitle("需要你的输入")
+	waiting := fake.findByTitle("处理成员额度后继续")
 	if len(waiting) != 1 {
 		t.Fatalf("waiting_input 通知应恰好一条: %+v", fake.all())
 	}
@@ -3915,7 +3915,7 @@ func TestTeamIntegration4MobileRecoveryViaNotification(t *testing.T) {
 	if err := ledger.Reconcile(time.Now(), notifications.NewPublisher(nil)); err != nil {
 		t.Fatalf("通知补发失败: %v", err)
 	}
-	completed := fake.findByTitle("运行完成")
+	completed := fake.findByTitle("本轮执行结束")
 	if len(completed) != 1 {
 		t.Fatalf("完成通知应恰好一条: %+v", fake.all())
 	}
@@ -4286,8 +4286,8 @@ func TestTeamIntegration4RunNotificationPayloads(t *testing.T) {
 		}
 		return posts[0]
 	}
-	donePost := assertNotification("运行完成", doneRun)
-	if !strings.Contains(donePost.Message, "NOTIF-OK") || !strings.Contains(donePost.Message, "完成 1") {
+	donePost := assertNotification("本轮执行结束", doneRun)
+	if !strings.Contains(donePost.Message, "NOTIF-OK") || !strings.Contains(donePost.Message, "Agent 任务正常结束 1") {
 		t.Fatalf("完成通知正文应含结果摘要与计数: %+v", donePost)
 	}
 	failedPost := assertNotification("运行失败", failedRun)
@@ -4302,7 +4302,7 @@ func TestTeamIntegration4RunNotificationPayloads(t *testing.T) {
 	if !strings.Contains(failedPost.Message, "失败 1") {
 		t.Fatalf("失败通知正文应含任务计数: %q", failedPost.Message)
 	}
-	assertNotification("需要你的输入", parkedRun)
+	assertNotification("处理成员额度后继续", parkedRun)
 }
 
 // TestTeamIntegration4RunNotificationBackfillAndBackoff：发送失败按指数退避

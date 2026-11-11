@@ -484,7 +484,7 @@ test('delivery card renders the four evidence dimensions separately',async()=>{
   const dims=find(root,'team-delivery-dim');
   assert.equal(dims.length,4);
   assert.match(dims[3].textContent,/待回答问题：1/);
-  assert.match(dims[0].textContent,/Agent：2\/3 已完成/);
+  assert.match(dims[0].textContent,/Agent 任务：2\/3 正常结束/);
   assert.match(dims[1].textContent,/审查：已通过/);
   assert.match(dims[2].textContent,/验证：未通过/);
   assert.match(text(find(root,'team-delivery-summary')[0]),/接口已实现/);
@@ -564,7 +564,7 @@ test('workflow outcome never reports a run with failed tasks as completed',()=>{
   // Run 的 completed 只表示编排走完，任务里有失败就必须说「部分失败」。
   assert.deepEqual(teamWorkflowOutcome({status:'completed'},failed),{label:'部分失败',tone:'bad'});
   assert.deepEqual(teamWorkflowOutcome({status:'completed'},{total:3,failed:0,stopped:0}),
-    {label:'已完成',tone:'ok'});
+    {label:'执行结束，结果待确认',tone:'warn'});
   assert.deepEqual(teamWorkflowOutcome({status:'failed'},{total:3,failed:2}),{label:'已失败',tone:'bad'});
   assert.deepEqual(teamWorkflowOutcome({status:'stopped'},{total:3,failed:0}),{label:'已停止',tone:'idle'});
   assert.deepEqual(teamWorkflowOutcome({status:'collecting'},{total:3,failed:0}),{label:'collecting',tone:'warn'});

@@ -3878,7 +3878,7 @@ func TestTeamsRunMetaStage4NoNewKeys(t *testing.T) {
 		return keys
 	}
 	// 进行中 Run：phase2/3 键集（mode 直出 single；无 verifyCommand 无 verify）。
-	want := []string{"collectPolicy", "mode", "pendingQuestions", "runId", "status", "stopReason", "taskCounts", "teamId", "workspace"}
+	want := []string{"collectPolicy", "goalVersion", "mode", "pendingQuestions", "runId", "status", "stopReason", "taskCounts", "teamId", "workspace"}
 	env.waitForRunStatus(t, teamID, runID, "dispatching")
 	if got := metaKeys(nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("meta 键集漂移: got %v want %v", got, want)
@@ -4069,7 +4069,7 @@ func TestTeamRunLoopProjection(t *testing.T) {
 		t.Fatalf("lastUpdate 应取尾部 running 事件并内联成员名: %v", update)
 	}
 	fallback := teamRunLastUpdate(teamRow, &team.Run{Status: team.RunWaitingInput, UpdatedAt: time.Now()}, nil)
-	if fallback.MustGet("kind") != "status" || !strings.Contains(fallback.MustGet("summary").(string), "等待确认") {
+	if fallback.MustGet("kind") != "status" || !strings.Contains(fallback.MustGet("summary").(string), "等待处理") {
 		t.Fatalf("feed 缺席时应降级为快照状态回音: %v", fallback)
 	}
 
@@ -4079,8 +4079,8 @@ func TestTeamRunLoopProjection(t *testing.T) {
 	}
 	waiting := &team.Run{Status: team.RunWaitingInput, StopReason: "任务 t2 停靠：额度不足"}
 	action = teamRunNextAction(teamRow, waiting)
-	if action.MustGet("kind") != "answer" || action.MustGet("reason") != waiting.StopReason {
-		t.Fatalf("waiting_input 的下一步应指向用户回答并带原因: %v", action)
+	if action.MustGet("kind") != "inspect" || action.MustGet("reasonCode") != "blocked" || action.MustGet("reason") != waiting.StopReason {
+		t.Fatalf("未分类的等待应要求查看阻塞原因，不得误称需要用户回答: %v", action)
 	}
 	action = teamRunNextAction(teamRow, &team.Run{Status: team.RunOutcomeUnknown})
 	if action.MustGet("kind") != "inspect" {

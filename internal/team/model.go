@@ -374,9 +374,10 @@ type Run struct {
 	// applyJournalEventToRun，单调取高），journal 事实+快照双载体不漂移。
 	// 四处同步纪律：runKnownFields / jsonObject Set / Clone（值拷贝天然覆盖）
 	// / applyJournalEventToRun。
-	BudgetCeiling  int      `json:"budgetCeiling,omitempty"`
-	Tasks          []Task   `json:"tasks"`
-	PendingActions []Action `json:"pendingActions,omitempty"`
+	BudgetCeiling  int                    `json:"budgetCeiling,omitempty"`
+	Tasks          []Task                 `json:"tasks"`
+	Goals          map[string]*GoalRecord `json:"goals,omitempty"`
+	PendingActions []Action               `json:"pendingActions,omitempty"`
 	// PendingQuestions 是成员主动提问的登记表（§5.4）：detail 顶层直出
 	//（teamRunDetail 自动携带），绝不进 changes meta（meta 逐键变更触发整页
 	// 重渲染契约，teams.go teamRunMeta）。
@@ -468,6 +469,7 @@ type Task struct {
 	// ExecutionThreadID 是本任务所属的执行线程（阶段一契约）：派发时随
 	// task_dispatching 落账；结算侧按它防旧线程/旧 attempt 的迟到事件。
 	ExecutionThreadID string `json:"executionThreadId,omitempty"`
+	DispatchSessionID string `json:"dispatchSessionId,omitempty"`
 	// ExecutionContext 明确 Lead 任务属于控制聊天还是 Run 专属执行聊天。
 	// 空值保留旧快照语义：复用成员绑定会话。
 	ExecutionContext string      `json:"executionContext,omitempty"`
@@ -631,6 +633,7 @@ var runKnownFields = map[string]bool{
 	"stopReason": true, "round": true, "planHash": true, "parentRunId": true,
 	"scheduledFrom": true, "budgetCeiling": true,
 	"tasks": true, "pendingActions": true, "pendingQuestions": true,
+	"goals":         true,
 	"threads":       true,
 	"verifyCommand": true, "verify": true,
 	"createdAt": true, "updatedAt": true, "version": true,
@@ -646,7 +649,8 @@ var taskKnownFields = map[string]bool{
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
 	"baseRevision": true, "writeLock": true, "review": true,
 	"status": true, "submissionId": true, "executionThreadId": true, "executionContext": true,
-	"result": true, "resultDetail": true,
+	"dispatchSessionId": true,
+	"result":            true, "resultDetail": true,
 	"cachedFrom": true,
 	"error":      true, "outcome": true, "stopReason": true, "instructionsHead": true,
 	"sentText": true, "reduction": true, "triageFor": true,
@@ -836,6 +840,13 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 		tasks.Items = append(tasks.Items, r.Tasks[i].jsonObject())
 	}
 	object.Set("tasks", tasks)
+	if len(r.Goals) > 0 {
+		goals := jsoncompat.NewObject()
+		for _, id := range sortedGoalIDs(r.Goals) {
+			goals.Set(id, goValue(goalPayload(r.Goals[id])))
+		}
+		object.Set("goals", goals)
+	}
 	if len(r.PendingActions) > 0 {
 		actions := &jsoncompat.Array{}
 		for i := range r.PendingActions {
@@ -976,6 +987,12 @@ func (r *Run) Clone() *Run {
 		return nil
 	}
 	copied := *r
+	if r.Goals != nil {
+		copied.Goals = make(map[string]*GoalRecord, len(r.Goals))
+		for id, record := range r.Goals {
+			copied.Goals[id] = cloneGoalRecord(record)
+		}
+	}
 	copied.Tasks = nil
 	if len(r.Tasks) > 0 {
 		copied.Tasks = make([]Task, len(r.Tasks))
@@ -1098,6 +1115,9 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	// 任务失去线程归属——迟到事件防护与 UI 原会话跳转都依赖它。
 	if t.ExecutionThreadID != "" {
 		object.Set("executionThreadId", t.ExecutionThreadID)
+	}
+	if t.DispatchSessionID != "" {
+		object.Set("dispatchSessionId", t.DispatchSessionID)
 	}
 	if t.ExecutionContext != "" {
 		object.Set("executionContext", t.ExecutionContext)

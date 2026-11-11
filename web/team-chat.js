@@ -95,7 +95,7 @@ function renderTeamDeliveryEvidence(container,delivery,make){
   const reviewText=!review?null:(review.stale?t_safe('已过期（改动后未重审）'):(review.verdict==='passed'?t_safe('已通过'):review.verdict==='failed'?t_safe('未通过'):t_safe('结果未知')));
   const verifyText=!verify?null:(verify.configured===false?t_safe('未配置'):(verify.status==='passed'?t_safe('已通过'):verify.status==='failed'?t_safe('未通过'):t_safe('待验证')));
   const dims=[
-    t_safe('Agent')+t_safe('：')+(agent?agent.completed+'/'+agent.total+' '+t_safe('已完成'):'—'),
+    t_safe('Agent 任务')+t_safe('：')+(agent?agent.completed+'/'+agent.total+' '+t_safe('正常结束'):'—'),
     t_safe('审查')+t_safe('：')+(reviewText||t_safe('未参与')),
     t_safe('验证')+t_safe('：')+(verifyText||t_safe('未配置'))
   ];
@@ -187,11 +187,12 @@ function teamWorkflowOutcome(run,counts){
   if(status==='failed')return{label:'已失败',tone:'bad'};
   if(status==='cancelled')return{label:'已取消',tone:'idle'};
   if(status==='stopped')return{label:'已停止',tone:'idle'};
-  if(status==='waiting_input')return{label:'等待确认',tone:'warn'};
+  if(status==='waiting_input')return{label:'等待处理',tone:'warn'};
   if(failed&&(terminal||!status))return{label:'部分失败',tone:'bad'};
   if(status==='created')return{label:'已创建',tone:'idle'};
   if(!terminal)return{label:teamRunStatusLabel(status),tone:'warn'};
-  return{label:'已完成',tone:'ok'};
+  if(run?.outcome)return{label:run.outcome.label||'结果待确认',tone:run.outcome.status==='satisfied'?'ok':'warn'};
+  return{label:'执行结束，结果待确认',tone:'warn'};
 }
 
 // teamWorkflowMemberLabel 避免「kimi · Kimi」这种同一句话写两遍：

@@ -298,31 +298,22 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 		}
 	}
 	sort.SliceStable(linkedRuns, func(i, j int) bool {
-		return linkedRuns[i].UpdatedAt.After(linkedRuns[j].UpdatedAt)
+		return linkedRuns[i].CreatedAt.After(linkedRuns[j].CreatedAt)
 	})
 
 	runs := &jsoncompat.Array{}
 	counts := map[string]int{}
-	hasActive, hasAttention, hasFailed, allCompleted := false, false, false, len(linkedRuns) > 0
-	for _, run := range linkedRuns {
+	for index, run := range linkedRuns {
 		summary := teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID))
+		h.decorateRunGoals(run, summary, false)
 		if includeDelivery {
 			summary.Set("delivery", teamDeliveryEvidence(teamRow, run))
 		}
 		runs.Items = append(runs.Items, summary)
-		for _, task := range run.Tasks {
-			counts[task.Status]++
-		}
-		switch run.Status {
-		case "created", "planning", "dispatching", "collecting", "reducing":
-			hasActive = true
-		case "waiting_input", "paused":
-			hasAttention = true
-		case "failed", "outcome_unknown":
-			hasFailed = true
-		}
-		if run.Status != "completed" {
-			allCompleted = false
+		if index == 0 {
+			for _, task := range run.Tasks {
+				counts[task.Status]++
+			}
 		}
 	}
 	result.Set("runs", runs)
@@ -338,22 +329,32 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 	result.Set("taskCounts", taskCounts)
 	result.Set("progress", progress)
 
-	status := "linking"
-	switch {
-	case clarification:
-		status = "clarification"
-	case hasAttention:
-		status = "waiting_input"
-	case hasActive:
-		status = "running"
-	case hasFailed:
-		status = "failed"
-	case allCompleted:
-		status = "completed"
-	case len(linkedRuns) > 0:
-		status = linkedRuns[0].Status
+	result.Set("status", "open")
+	// 事项的解决状态取决于当前目标与最新一轮的有效判定，历史失败不永久拖住修订。
+	if len(linkedRuns) > 0 {
+		latestRun := linkedRuns[0]
+		outcome := h.goalOutcome(latestRun, h.issueGoalScope(issue))
+		result.Set("outcome", goalObject(outcome))
+		result.Set("executionStatus", latestRun.Status)
+		result.Set("reviewRunId", latestRun.ID)
+		result.Set("reviewRunVersion", jsoncompat.Num(int(latestRun.Version)))
+		businessStatus := "open"
+		switch {
+		case outcome.Closed:
+			businessStatus = "closed"
+		case clarification:
+			businessStatus = "waiting"
+		case latestRun.Status == team.RunWaitingInput || latestRun.Status == team.RunPaused || latestRun.Status == team.RunOutcomeUnknown || latestRun.Status == team.RunFailed:
+			businessStatus = "waiting"
+		case !team.RunTerminal(latestRun.Status):
+			businessStatus = "in_progress"
+		case outcome.Status == "satisfied":
+			businessStatus = "resolved"
+		case latestRun.Status == team.RunCompleted:
+			businessStatus = "waiting"
+		}
+		result.Set("status", businessStatus)
 	}
-	result.Set("status", status)
 	if len(linkedRuns) > 0 {
 		latest := teamRunSummary(teamRow, linkedRuns[0], h.server.TeamFeeds.Peek(linkedRuns[0].ID))
 		if owner, exists := latest.Get("currentOwner"); exists {
@@ -366,6 +367,9 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 		}
 		if next, exists := latest.Get("nextAction"); exists {
 			result.Set("nextAction", next)
+		}
+		if linkedRuns[0].Status == team.RunCompleted {
+			result.Set("nextAction", goalNextAction(h.goalOutcome(linkedRuns[0], h.issueGoalScope(issue))))
 		}
 	}
 	return result

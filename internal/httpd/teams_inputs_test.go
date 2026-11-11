@@ -268,7 +268,7 @@ func TestTeamIssueListProjectsPersistedInputLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(result.Issues) != 1 || result.Issues[0].Title != "團隊導航" ||
-		result.Issues[0].Status != team.RunCompleted || len(result.Issues[0].Inputs) != 1 ||
+		result.Issues[0].Status != "waiting" || len(result.Issues[0].Inputs) != 1 ||
 		result.Issues[0].Inputs[0].InputID != input.ID || result.Issues[0].Inputs[0].SourceText != "導航" {
 		t.Fatalf("Issue projection lost its persisted source link: %+v", result.Issues)
 	}

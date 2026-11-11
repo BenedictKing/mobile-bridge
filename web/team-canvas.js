@@ -164,7 +164,7 @@ class TeamCanvasController{
     this.detail.addEventListener('keydown',event=>{
       if(event.key==='Escape'){event.preventDefault();event.stopPropagation();this.closeDetail();}
       else if(event.key==='Tab'&&this.detail.getAttribute('aria-modal')==='true'){
-        const targets=[...this.detail.querySelectorAll('button:not(:disabled),a[href],[tabindex="0"]')].filter(node=>node.offsetWidth&&node.offsetHeight);
+        const targets=[...this.detail.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[tabindex="0"]')].filter(node=>node.offsetWidth&&node.offsetHeight);
         const first=targets[0],last=targets[targets.length-1];
         if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
         else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
@@ -258,7 +258,18 @@ class TeamCanvasController{
       if(inputResult.status==='fulfilled'){
         if(!teamCanvasDataEqual(inputResult.value,this.inputs)){this.inputs=inputResult.value;changed=true;}
       }else this.error.textContent=this.t(inputResult.reason?.message||'读取输入失败');
-      if(generation===this.generation&&this.current?.id===team.id&&changed)this.render();
+      if(generation===this.generation&&this.current?.id===team.id&&changed){
+        this.render();
+        const latest=this.issues.find(issue=>issue.id===this.detailIssue?.id);
+        if(latest&&latest.reviewRunVersion!==this.detailIssue.reviewRunVersion&&!this.detailRefreshing){
+          this.detailRefreshing=true;const issueID=latest.id,requestToken=this.detailRequestToken;
+          this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues/'+encodeURIComponent(issueID)).then(detail=>{
+            if(this.generation!==generation||this.detailIssue?.id!==issueID||this.detailRequestToken!==requestToken)return;
+            if(detail.reviewRunVersion<this.detailIssue.reviewRunVersion)return;
+            this.detailIssue=detail;this.detailRun=(detail.runs||[])[0]||null;this.renderDetail(detail,true);
+          }).catch(error=>{if(this.detailIssue?.id===issueID)document.getElementById('team-canvas-detail-error').textContent=error.message;}).finally(()=>{this.detailRefreshing=false;});
+        }
+      }
     }catch(error){if(generation===this.generation)this.error.textContent=this.t(error.message||'画布刷新失败');}
     finally{if(this.refreshToken===token)this.refreshToken=null;if(this.refreshQueued){this.refreshQueued=false;queueMicrotask(()=>this.refresh(true));}}
   }
@@ -274,6 +285,15 @@ class TeamCanvasController{
     return rows;
   }
   statusLabel(issue){
+    const business={open:'待处理',in_progress:'处理中',waiting:'等待处理',resolved:'已解决',closed:'已关闭'};
+    if(business[issue.status]){
+      if(issue.status==='waiting'){
+        if(issue.executionStatus==='outcome_unknown')return this.t('执行结果待核查');
+        if(issue.executionStatus==='failed')return this.t('执行失败');
+        if(issue.outcome?.label)return this.t(issue.outcome.label);
+      }
+      return this.t(business[issue.status]);
+    }
     const labels=typeof TEAM_RUN_STATUS_LABELS!=='undefined'?TEAM_RUN_STATUS_LABELS:{};
     const statusLabels={linking:'等待执行路由',clarification:'需要澄清'};
     return this.t(statusLabels[issue.status]||labels[issue.status]||issue.status||'状态待同步');
@@ -377,7 +397,7 @@ class TeamCanvasController{
     finally{button.disabled=false;}
   }
   renderIssue(issue){
-    const button=this.button('', 'team-canvas-node team-canvas-issue');button.dataset.issueId=issue.id;
+    const button=this.button('', 'team-canvas-node team-canvas-issue');button.dataset.issueId=issue.id;button.dataset.status=issue.status;
     const head=this.node('div',undefined,'team-canvas-issue-head');
     head.append(this.node('span',this.t('事项')+' · '+this.shortID(issue.id),'team-canvas-issue-id'));
     head.append(this.node('span',this.statusLabel(issue),'team-canvas-status'));button.append(head);
@@ -386,8 +406,7 @@ class TeamCanvasController{
     if(progress){
       const progressBox=this.node('div',undefined,'team-canvas-progress');
       const progressHead=this.node('div',undefined,'team-canvas-progress-head');
-      progressHead.append(this.node('strong',progress.completed+'/'+progress.total+' '+this.t('项已完成')));
-      progressHead.append(this.node('span',progress.percent+'%'));
+      progressHead.append(this.node('strong',this.t('Agent 任务')+' '+progress.completed+'/'+progress.total+' '+this.t('正常结束')));
       const track=this.node('div',undefined,'team-canvas-progress-track'),fill=this.node('span',undefined,'team-canvas-progress-fill');fill.style.width=progress.percent+'%';track.append(fill);progressBox.append(progressHead,track);button.append(progressBox);
     }else button.append(this.node('p',this.t('进度待同步'),'team-canvas-issue-muted'));
     const bits=[];
@@ -505,9 +524,22 @@ class TeamCanvasController{
     const body=document.getElementById('team-canvas-detail-body'),scrollTop=preserveScroll?body.scrollTop:0;body.replaceChildren();
     body.append(this.detailSection('当前着落',[
       teamCanvasOwnerLine(issue,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind),
-      this.progress(issue)?this.progress(issue).completed+'/'+this.progress(issue).total+' '+this.t('项已完成'):'进度待同步',
+      this.progress(issue)?this.t('Agent 任务')+' '+this.progress(issue).completed+'/'+this.progress(issue).total+' '+this.t('正常结束'):'进度待同步',
       issue.nextAction?.label?this.t('下一步')+' · '+issue.nextAction.label:'',
     ].filter(Boolean)));
+    if(issue.outcome&&issue.reviewRunId&&typeof renderTeamGoalReview==='function'){
+      this.goalDrafts=this.goalDrafts||new Map();
+      const teamID=this.current.id,issueID=issue.id;
+      body.append(renderTeamGoalReview(issue.outcome,{runVersion:issue.reviewRunVersion,drafts:this.goalDrafts,
+        submit:payload=>this.request('/api/teams/'+encodeURIComponent(teamID)+'/runs/'+encodeURIComponent(issue.reviewRunId)+'/goal-review',{method:'POST',body:payload}),
+        updated:async()=>{
+          if(this.current?.id!==teamID||this.detailIssue?.id!==issueID)return;
+          try{const fresh=await this.request('/api/teams/'+encodeURIComponent(teamID)+'/issues/'+encodeURIComponent(issueID));
+            if(this.current?.id!==teamID||this.detailIssue?.id!==issueID)return;
+            this.detailIssue=fresh;this.renderDetail(fresh,true);await this.refresh(true);
+          }catch(error){document.getElementById('team-canvas-detail-error').textContent=error.message;}
+        }}));
+    }
     body.append(this.detailSection('最近回音',[
       issue.lastUpdate?.summary||this.t('暂无最近回音'),
       issue.lastUpdate?.at?new Date(issue.lastUpdate.at).toLocaleString(BridgeI18n.locale()):'',
@@ -525,7 +557,7 @@ class TeamCanvasController{
     }
     const runs=(issue.runs||[]).map(run=>{
       const progress=this.progress(run),parts=[this.statusLabel(run)];
-      if(progress)parts.push(progress.completed+'/'+progress.total+' '+this.t('项已完成'));
+      if(progress)parts.push(this.t('Agent 任务')+' '+progress.completed+'/'+progress.total+' '+this.t('正常结束'));
       const owner=teamCanvasOwnerLine(run,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind);if(owner)parts.push(owner);
       if(run.nextAction?.label)parts.push(this.t('下一步')+' · '+run.nextAction.label);
       if(run.lastUpdate?.summary)parts.push(this.t('最近回音')+' · '+run.lastUpdate.summary);

@@ -736,7 +736,9 @@ func (h *handler) handleRunList(teamID string) {
 		if run.IsIssueClassificationOnly() {
 			continue
 		}
-		rows.Items = append(rows.Items, teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID)))
+		summary := teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID))
+		h.decorateRunGoals(run, summary, false)
+		rows.Items = append(rows.Items, summary)
 	}
 	result := jsoncompat.NewObject()
 	result.Set("runs", rows)
@@ -1288,6 +1290,8 @@ func (h *handler) handleRunAction(method, teamID, runID, action string) {
 			return
 		}
 		h.output(http.StatusOK, h.teamRunDetail(run), contentTypeJSON, "")
+	case "goal-review":
+		h.handleRunGoalReview(teamID, runID)
 	case "forward":
 		// 成员间显式转发（§7 阶段二工作项 4）。
 		h.handleRunForward(teamID, runID)
@@ -2543,7 +2547,7 @@ func (h *handler) teamProject(teamRow *team.Team) *jsoncompat.Object {
 
 // teamDeliveryEvidence 组装交付证据投影（§8 阶段三）：「Agent 已完成、
 // Review 已通过、验证已通过」分别落位，不能用 Agent 的完成替代审查或验证。
-// 没有用户验收：成果直接落在工作区，有问题由用户继续反馈。全部由 Run 快照
+// 目标确认只记录判定，成果仍直接落在工作区。全部由 Run 快照
 // 派生（零 I/O）：
 //   - agent：任务完成度（completed/total）；
 //   - resultSummary：逐任务结果头的有界摘要（超限置 truncated）；
@@ -2558,7 +2562,6 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 	evidence := jsoncompat.NewObject()
 	evidence.Set("runId", run.ID)
 	completed := 0
-	heads := make([]string, 0, len(run.Tasks))
 	truncated := false
 	var reviewTask *team.Task
 	taskIDs := &jsoncompat.Array{}
@@ -2568,22 +2571,6 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 		taskIDs.Items = append(taskIDs.Items, task.ID)
 		if task.Status == team.TaskCompleted {
 			completed++
-			resultText := task.Result
-			if task.ResultDetail != nil {
-				resultText = firstNonEmpty(task.Result, task.ResultDetail.Result)
-			}
-			// 逐任务头去 Markdown 标记、折成一行再截到 120 字：截了就置 truncated，前端
-			// 才会标「（已截断）」。摘要是纯文本，截断会劈开 ** 成对标记。
-			display := strings.Join(strings.Fields(deliveryPlainText(team.ResultDisplayText(resultText))), " ")
-			if len([]rune(display)) > 120 {
-				truncated = true
-			}
-			if head := truncateSubText(display, 120); head != "" {
-				heads = append(heads, task.ID+"："+head)
-			}
-		}
-		if task.ResultDetail != nil && task.ResultDetail.Truncated {
-			truncated = true
 		}
 		if team.IsReviewTask(teamRow, task) {
 			reviewTask = task // Ordinal 递增遍历，留最后一个评审任务
@@ -2604,12 +2591,15 @@ func teamDeliveryEvidence(teamRow *team.Team, run *team.Run) *jsoncompat.Object 
 	agent.Set("total", jsoncompat.Num(len(run.Tasks)))
 	evidence.Set("agent", agent)
 	summary := jsoncompat.NewObject()
-	if text := strings.Join(heads, "\n"); text != "" {
+	if final := team.FinalGoalResult(run); final != nil {
+		text := strings.Join(strings.Fields(deliveryPlainText(final.Text)), " ")
+		truncated = final.Truncated
 		if len([]rune(text)) > 1200 {
 			text = string([]rune(text)[:1200])
 			truncated = true
 		}
 		summary.Set("text", text)
+		summary.Set("taskId", final.TaskID)
 	}
 	summary.Set("truncated", truncated)
 	evidence.Set("resultSummary", summary)
@@ -2697,10 +2687,20 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 		return jsoncompat.NewObject()
 	}
 	if tasks, ok := detail.MustGet("tasks").(*jsoncompat.Array); ok {
+		var sourceSessions map[string]string
+		for _, task := range run.Tasks {
+			if task.Status == team.TaskOutcomeUnknown && task.DispatchSessionID == "" && h.server.Teams != nil {
+				sourceSessions, _ = h.server.Teams.DispatchSessions(run)
+				break
+			}
+		}
 		for _, item := range tasks.Items {
 			task, isObject := item.(*jsoncompat.Object)
 			if !isObject {
 				continue
+			}
+			if source := sourceSessions[stringField(task, "id")]; source != "" {
+				task.Set("dispatchSessionId", source)
 			}
 			if rawDetail, hasDetail := task.Get("resultDetail"); hasDetail {
 				if detailObject, isObject := rawDetail.(*jsoncompat.Object); isObject {
@@ -2726,6 +2726,7 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 	workspace.Set("writeLockHeldBy", teamWriteLockHolder(run))
 	detail.Set("workspace", workspace)
 	detail.Set("delivery", teamDeliveryEvidence(h.server.TeamStore.Team(run.TeamID), run))
+	detail.Delete("goals") // 内部操作指纹只落账本，不进入展示 API。
 	// 闭环回音投影（与 Run 列表同一派生函数，聊天与 Dashboard 消费同一份
 	// 事实）：谁负责 / 最近回音 / 下一步。
 	teamRow := h.server.TeamStore.Team(run.TeamID)
@@ -2748,6 +2749,7 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 			}
 		}
 	}
+	h.decorateRunGoals(run, detail, true)
 	return detail
 }
 
@@ -2915,7 +2917,7 @@ func teamEchoEventText(teamRow *team.Team, run *team.Run, event *team.Event) str
 	case team.EventRunCreated:
 		return "Run 已创建，开始受理"
 	case team.EventRunCompleted:
-		return "运行已完成"
+		return "本轮执行已结束，目标结果待核对"
 	case team.EventRunFailed:
 		return "运行失败"
 	case team.EventRunCancelled:
@@ -2962,29 +2964,29 @@ func teamRunLastUpdate(teamRow *team.Team, run *team.Run, feed *team.EventFeed) 
 func teamRunStatusLabelText(status string) string {
 	switch status {
 	case team.RunCreated:
-		return "已创建"
+		return "已受理"
 	case team.RunPlanning:
 		return "规划中"
 	case team.RunDispatching:
-		return "派发中"
+		return "执行中"
 	case team.RunCollecting:
-		return "收集中"
+		return "收集结果中"
 	case team.RunReducing:
-		return "验证中"
+		return "收口中"
 	case team.RunCompleted:
-		return "已完成"
+		return "执行结束"
 	case team.RunWaitingInput:
-		return "等待确认"
+		return "等待处理"
 	case team.RunPaused:
 		return "已暂停"
 	case team.RunFailed:
-		return "已失败"
+		return "执行失败"
 	case team.RunCancelled:
 		return "已取消"
 	case team.RunStopped:
 		return "已停止"
 	case team.RunOutcomeUnknown:
-		return "结果未知"
+		return "执行结果待核查"
 	}
 	return status
 }
@@ -3002,10 +3004,7 @@ func teamRunNextAction(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
 	}
 	switch run.Status {
 	case team.RunWaitingInput:
-		action.Set("kind", "answer")
-		action.Set("label", "等待你回答")
-		setReason()
-		return action
+		return goalObject(team.RunWaitingAction(run)).(*jsoncompat.Object)
 	case team.RunPaused:
 		action.Set("kind", "resume")
 		action.Set("label", "等待继续")
@@ -3028,7 +3027,7 @@ func teamRunNextAction(teamRow *team.Team, run *team.Run) *jsoncompat.Object {
 		return action
 	case team.RunCompleted:
 		action.Set("kind", "delivery")
-		action.Set("label", "查看交付结果")
+		action.Set("label", "查看结果并确认是否满足要求")
 		return action
 	case team.RunCollecting:
 		action.Set("kind", "collect")
@@ -3171,6 +3170,13 @@ func teamRunMeta(run *team.Run) *jsoncompat.Object {
 	meta.Set("status", run.Status)
 	meta.Set("stopReason", run.StopReason)
 	meta.Set("taskCounts", teamTaskCounts(run))
+	goalVersion := 0
+	for _, goal := range run.Goals {
+		if goal != nil {
+			goalVersion += len(goal.Operations)
+		}
+	}
+	meta.Set("goalVersion", jsoncompat.Num(goalVersion))
 	open := 0
 	for i := range run.PendingQuestions {
 		if run.PendingQuestions[i].Status == team.QuestionStatusOpen {

@@ -14,7 +14,7 @@ class FakeNode{
   prepend(...nodes){this.children.unshift(...nodes);}
   replaceChildren(...nodes){this.children=[...nodes];}
   setAttribute(name,value){this.attributes[name]=value;if(name==='class')this.className=value;}
-  addEventListener(){}
+  addEventListener(name,handler){this.listeners=this.listeners||{};this.listeners[name]=handler;}
   querySelector(){return null;}
   querySelectorAll(selector){const rows=[];const visit=current=>{for(const child of current.children||[]){if(selector==='*'||child.tag===selector)rows.push(child);visit(child);}};visit(this);return rows;}
   get childNodes(){return this.children;}
@@ -24,6 +24,37 @@ global.document={createElement:tag=>new FakeNode(tag),createElementNS:(namespace
 global.BridgeIcons=require('../web/icons.js');
 global.dagre=require('../web/vendor/dagre.min.js');
 const {TeamsPanel,TeamRunScreen,teamRunStopReasonText,teamGraphLayout}=require('../web/team.js');
+
+test('completed execution with an unconfirmed goal remains actionable',()=>{
+  const {teamRunGroup}=require('../web/team.js');
+  assert.equal(teamRunGroup({status:'completed',outcome:{status:'pending_confirmation'}}),'attention');
+  assert.equal(teamRunGroup({status:'completed',outcome:{status:'satisfied'}}),'terminal');
+  assert.equal(teamRunGroup({status:'completed',outcome:{status:'unsatisfied',closed:true}}),'terminal');
+  const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
+  const row=panel.renderActivityRow({id:'team',name:'Team'},{id:'run',status:'completed',outcome:{status:'partial',label:'部分达成'}});
+  assert.equal(row.dataset.group,'attention');
+  assert.match(text(row),/Execution ended/);assert.match(text(row),/Partially satisfied/);
+});
+
+test('goal assessment preserves drafts and retries the same operation without losing the original scope',async()=>{
+  const {renderTeamGoalReview}=require('../web/team.js');
+  const outcome={scope:{id:'issue-a',hash:'original-source'},evidenceHash:'evidence-1',status:'pending_confirmation',label:'结果待确认',reason:'待核对',canConfirm:true,
+    contract:{revision:2,deliverableKind:'answer',verify:{requirement:'not_required',reason:'咨询',status:'not_configured'},review:{requirement:'not_required',reason:'人工核对',status:'not_configured'},criteria:[{id:'original',text:'原始用户问题',state:'unknown'}]}};
+  const drafts=new Map(),sent=[];let updates=0;
+  const options={runVersion:8,drafts,submit:async body=>{sent.push(body);if(sent.length===1)throw Error('Network failed');return{version:9};},updated:()=>updates++};
+  const panel=renderTeamGoalReview(outcome,options);
+  const state=[...drafts.values()][0];state.reason='已核对答案';state.states.original='met';
+  const record=panel.querySelectorAll('button').find(n=>n.textContent==='Record assessment');
+  await record.listeners.click();
+  assert.equal(updates,0);assert.match(text(panel),/Network failed/);
+  await record.listeners.click();
+  assert.equal(updates,1);assert.equal(sent[0].id,sent[1].id,'请求结果未知时重试必须复用操作 ID');
+  assert.equal(sent[1].scopeId,'issue-a');assert.equal(sent[1].scopeHash,'original-source');assert.deepEqual(sent[1].states,{original:'met'});
+  renderTeamGoalReview(outcome,options);
+  assert.equal([...drafts.values()][0].reason,'已核对答案','轮询重绘保留输入');
+  renderTeamGoalReview({...outcome,evidenceHash:'evidence-2'},options);
+  assert.equal([...drafts.values()][0].states.original,'unknown','结果变化后必须重新核对');
+});
 function find(node,cls){const rows=[];const visit=current=>{if(String(current.className).split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}
 function text(node){return node.textContent+node.children.map(text).join('');}
 
@@ -170,7 +201,7 @@ test('run page shows delivery evidence without accept or discard',()=>{
   screen.detail={id:'r1',teamId:'t1',status:'completed',version:2,tasks:[],
     delivery:{agent:{completed:1,total:1},verify:{configured:false},pendingQuestions:0}};
   const box=screen.renderDelivery();
-  assert.match(text(box),/Agent: 1\/1 Completed/);
+  assert.match(text(box),/Agent tasks: 1\/1 finished normally/);
   assert.doesNotMatch(text(box),/Accept|Discard|review the result/);
   assert.equal(find(box,'team-delivery-actions').length,0);
   assert.equal(typeof screen.setDelivery,'undefined');
@@ -262,9 +293,9 @@ test('task_stopped projects cancelled without waiting for a detail refetch',()=>
   assert.equal(screen.detail.tasks[0].status,'cancelled');
 });
 
-test('the reducing run state names the verification gate',()=>{
+test('the reducing run state describes finalization separately from check results',()=>{
   const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
-  assert.equal(screen.runBadge('reducing').textContent,'Verifying');
+  assert.equal(screen.runBadge('reducing').textContent,'Finalizing');
 });
 
 test('closing a run invalidates its pending initial read',async()=>{

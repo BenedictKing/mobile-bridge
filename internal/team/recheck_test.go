@@ -3,12 +3,15 @@ package team
 import "testing"
 
 func TestRecheckUnknownRequiresMatchingCompletedTurn(t *testing.T) {
-	for _, scenario := range []string{"completed", "unrelated", "running", "cancelled"} {
+	for _, scenario := range []string{"completed", "unrelated", "running", "cancelled", "ambiguous"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newDispatchHarness(t)
 			run := &Run{ID: "recheck", TeamID: h.team.ID, Status: RunOutcomeUnknown,
 				Tasks: []Task{{ID: "dev-task", MemberID: "dev", Status: TaskOutcomeUnknown, SubmissionID: "sub", SentText: "original prompt"}}}
 			if err := h.store.SaveRun(run); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.journal.Append(dispatchEvent(run.ID, "dev-task", "s-dev", "sub", "hash", 1)); err != nil {
 				t.Fatal(err)
 			}
 			text := "original prompt"
@@ -22,6 +25,16 @@ func TestRecheckUnknownRequiresMatchingCompletedTurn(t *testing.T) {
 				drive = turnInterrupted(text)
 			}
 			h.resolver.setSession("s-dev", newFakeSession("s-dev", "", drive))
+			if scenario == "ambiguous" {
+				h.resolver.setSession("s-dev", newFakeSession("s-dev", "", drive, turnCompleted(text, "another identical prompt result")))
+			}
+			// 成员与线程后来换绑，即使新会话也有同文回合，仍必须核查原派发会话。
+			run = h.store.Run(run.ID)
+			run.Threads = []ExecutionThread{{ID: ExecutionThreadIDFor("dev"), MemberID: "dev", ProviderSessionID: "replacement"}}
+			if err := h.store.SaveRun(run); err != nil {
+				t.Fatal(err)
+			}
+			h.resolver.setSession("replacement", newFakeSession("replacement", "", turnCompleted("original prompt", "wrong replacement result")))
 			fresh, err := h.service.RecheckRun(run.ID)
 			if err != nil {
 				t.Fatal(err)

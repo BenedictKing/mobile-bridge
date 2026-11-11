@@ -132,6 +132,8 @@ flowchart TD
 
 ## 5. Run 状态
 
+`completed` 表示本轮执行结束，不能直接推导事项已解决。2026-11-11 起，目标条件、检查证据及逐项确认由独立 `Run.goals` / `goal_reviewed` 事实描述；画布、看板与详情同时展示执行状态和目标结论。完整定义见 [Run 执行状态与目标达成契约](team-run-outcome-contract.md)。目标待确认不占用 Agent 在途槽位，也不重开终态 Run。
+
 ```mermaid
 stateDiagram-v2
     [*] --> created: CreateRun

@@ -653,6 +653,16 @@ main{background:var(--page);overflow:hidden}
 .team-canvas-message{min-height:96px;padding:10px 12px;border:1px solid #cdd6cf;border-radius:8px;background:#fff;color:var(--text)}
 .team-canvas-message-main{display:block;width:100%;padding:0;border:0;border-radius:0;background:none;color:inherit;text-align:left;cursor:pointer}
 .team-canvas-message-main:hover{background:none}
+.team-goal-review{margin:12px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--raised);min-width:0}
+.team-run-badges{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.team-goal-review h3{margin:0 0 8px;font-size:15px}
+.team-goal-review details{margin:12px 0}
+.team-goal-review summary{cursor:pointer;font-weight:600}
+.team-goal-review fieldset{margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:6px;min-width:0}
+.team-goal-field{display:flex;flex-direction:column;gap:5px;margin:10px 0;font-size:12px;overflow-wrap:anywhere}
+.team-goal-field select,.team-goal-field textarea{width:100%;min-width:0;font:inherit}
+.team-goal-result .message-body{max-height:420px;overflow:auto;overflow-wrap:anywhere}
+.team-canvas-issue:not([data-status=resolved]) .team-canvas-progress-fill{background:var(--muted)}
 .team-canvas-message .timeline-attachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .team-canvas-message .attachment-image{display:block;width:112px;height:88px;object-fit:cover;border-radius:6px}
 .team-canvas-delete-input{display:block;margin:8px 0 0 auto;min-height:32px;font-size:11px;color:var(--muted)}

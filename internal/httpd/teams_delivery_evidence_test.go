@@ -99,8 +99,8 @@ func TestRunDetailDeliveryEvidenceDimensions(t *testing.T) {
 	if !evidence.Verify.Configured || evidence.Verify.Status != "passed" || evidence.Verify.ExitCode != 0 {
 		t.Fatalf("验证闸门应已通过: %+v", evidence.Verify)
 	}
-	if !strings.Contains(evidence.ResultSummary.Text, "接口完成") || !strings.Contains(evidence.ResultSummary.Text, "审查通过") {
-		t.Fatalf("结果摘要应含各任务结果头: %q", evidence.ResultSummary.Text)
+	if !strings.Contains(evidence.ResultSummary.Text, "接口完成") || !strings.Contains(evidence.ResultSummary.Text, "分支产出") {
+		t.Fatalf("无独立收口时结果摘要应保留全部执行产物: %q", evidence.ResultSummary.Text)
 	}
 	if evidence.ResultSummary.Truncated {
 		t.Fatal("短结果不应截断")
@@ -169,7 +169,7 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	if strings.Contains(actionEvidence.ResultSummary.Text, "team-actions") || strings.Contains(actionEvidence.ResultSummary.Text, "lead：") {
 		t.Fatalf("动作信封不应进入结果摘要: %q", actionEvidence.ResultSummary.Text)
 	}
-	if actionEvidence.ResultSummary.Text != "lead-d1-0：汇总如下" {
+	if actionEvidence.ResultSummary.Text != "汇总如下" {
 		t.Fatalf("混排结果应只留正文: %q", actionEvidence.ResultSummary.Text)
 	}
 	if actionEvidence.ResultSummary.Truncated {
@@ -185,20 +185,20 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	if err := env.store.SaveRun(markdownRun); err != nil {
 		t.Fatal(err)
 	}
-	if got := fetchDeliveryEvidence(t, env, teamID, markdownRun.ID).ResultSummary.Text; got != "impl：结论 结论：TEAM_OK。 改动：web/app.js 遗留：无" {
+	if got := fetchDeliveryEvidence(t, env, teamID, markdownRun.ID).ResultSummary.Text; got != "结论 结论：TEAM_OK。 改动：web/app.js 遗留：无" {
 		t.Fatalf("摘要应是去 Markdown 标记的单行纯文本: %q", got)
 	}
 
-	// 单任务结果超过 120 字：逐任务头被截，摘要必须标 truncated。
+	// 单任务结果超过 1200 字：摘要被截，必须标 truncated。
 	longRun := &team.Run{
 		ID: "run-ev-long", TeamID: teamID, Goal: "长结果", Status: team.RunCompleted,
-		Tasks: []team.Task{{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Result: strings.Repeat("长", 130), Ordinal: 0}},
+		Tasks: []team.Task{{ID: "impl", MemberID: "lead", Status: team.TaskCompleted, Result: strings.Repeat("长", 1300), Ordinal: 0}},
 	}
 	if err := env.store.SaveRun(longRun); err != nil {
 		t.Fatal(err)
 	}
 	if long := fetchDeliveryEvidence(t, env, teamID, longRun.ID); !long.ResultSummary.Truncated {
-		t.Fatalf("逐任务头被截时摘要应标 truncated: %+v", long.ResultSummary)
+		t.Fatalf("最终结果摘要被截时应标 truncated: %+v", long.ResultSummary)
 	}
 
 	// 评审任务 completed：无裁决标记 → unknown（Agent 完成不替代 Review 通过）；
@@ -249,8 +249,8 @@ func TestRunDetailDeliveryEvidenceFailuresAndAbsence(t *testing.T) {
 	// 截断：结果引用标记 truncated 时摘要置 truncated。
 	bareRun2 := &team.Run{
 		ID: "run-ev-trunc", TeamID: bareTeam, Goal: "截断", Status: team.RunCompleted,
-		Tasks: []team.Task{{ID: "big", MemberID: "lead", Status: team.TaskCompleted, Result: strings.Repeat("长", 200), Ordinal: 0,
-			ResultDetail: &team.TaskResult{Result: strings.Repeat("长", 200), Truncated: true}}},
+		Tasks: []team.Task{{ID: "big", MemberID: "lead", Status: team.TaskCompleted, Result: strings.Repeat("长", 1300), Ordinal: 0,
+			ResultDetail: &team.TaskResult{Result: strings.Repeat("长", 1300), Truncated: true}}},
 	}
 	if err := env.store.SaveRun(bareRun2); err != nil {
 		t.Fatal(err)

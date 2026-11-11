@@ -56,6 +56,9 @@ func executionThreadIDForTask(task *Task) string {
 }
 
 func taskProviderSessionID(run *Run, task *Task, member *TeamMember) string {
+	if task != nil && task.DispatchSessionID != "" && task.Status != TaskReady && task.Status != TaskPlanned {
+		return task.DispatchSessionID
+	}
 	if member == nil {
 		return ""
 	}
@@ -292,6 +295,7 @@ func (s *Service) accountDispatchLockedWithBriefingSession(state *runState, team
 		applied = true
 		current.Status = TaskDispatching
 		current.SubmissionID = submissionID
+		current.DispatchSessionID = providerSessionID
 		current.InputHash = inputHash
 		current.Attempt = attempt
 		current.Outcome = "" // 新 attempt 无失败分类（停靠重飞在此清 Outcome）

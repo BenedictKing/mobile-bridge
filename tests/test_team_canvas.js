@@ -4,6 +4,13 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
 
+test('issue labels distinguish unconfirmed goals, resolution and execution problems',()=>{
+  const c=Object.assign(Object.create(TeamCanvasController.prototype),{t:value=>value});
+  assert.equal(c.statusLabel({status:'waiting',executionStatus:'completed',outcome:{label:'结果待确认'}}),'结果待确认');
+  assert.equal(c.statusLabel({status:'resolved'}),'已解决');
+  assert.equal(c.statusLabel({status:'waiting',executionStatus:'outcome_unknown',outcome:{label:'尚未评估'}}),'执行结果待核查');
+});
+
 function touchController(){
   const captured=new Set();
   const controller=Object.assign(Object.create(TeamCanvasController.prototype),{

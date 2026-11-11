@@ -186,7 +186,7 @@ func RunNotificationText(run *Run, kind string) (string, string) {
 	goal := truncateRunes(strings.TrimSpace(run.Goal), notifyGoalRunes)
 	switch kind {
 	case notifications.RunNotifyCompleted:
-		return notifyTitle("运行完成", goal), notifyBody(run, true)
+		return notifyTitle("本轮执行结束", goal), "目标结果尚未确认，请查看最终结果。\n" + notifyBody(run, true)
 	case notifications.RunNotifyFailed:
 		return notifyTitle("运行失败", goal), notifyBody(run, true)
 	case notifications.RunNotifyCancelled:
@@ -194,7 +194,7 @@ func RunNotificationText(run *Run, kind string) (string, string) {
 	case notifications.RunNotifyStopped:
 		return notifyTitle("运行已停止", goal), notifyBody(run, true)
 	case notifications.RunNotifyWaitingInput:
-		return notifyTitle("需要你的输入", goal), notifyBody(run, false)
+		return notifyTitle(RunWaitingAction(run).Label, goal), notifyBody(run, false)
 	case notifications.RunNotifyStall:
 		return notifyTitle("运行疑似停滞", goal),
 			"已超过 20 分钟没有任务成功完成；运行未停止，继续等待任务推进。"
@@ -238,7 +238,7 @@ func notifyTaskCounts(run *Run) string {
 	}
 	segments := []string{}
 	for _, pair := range [...][2]string{
-		{TaskCompleted, "完成"}, {TaskFailed, "失败"}, {TaskStopped, "停靠"},
+		{TaskCompleted, "Agent 任务正常结束"}, {TaskFailed, "失败"}, {TaskStopped, "停靠"},
 		{TaskCancelled, "取消"}, {TaskOutcomeUnknown, "结果未知"},
 	} {
 		if counts[pair[0]] > 0 {
@@ -258,6 +258,15 @@ func notifyTaskCounts(run *Run) string {
 // notifyResultLines 输出前 3 个已完成任务的结果摘要行（快照序；结果截 200
 // rune，截断加省略号标记，换行压成空格——通知正文单行可读）。
 func notifyResultLines(run *Run) []string {
+	if run.Status == RunCompleted {
+		if result := FinalGoalResult(run); result != nil {
+			text := strings.Join(strings.Fields(result.Text), " ")
+			if len([]rune(text)) > 600 {
+				text = truncateRunes(text, 600) + "…"
+			}
+			return []string{"最终结果：" + text}
+		}
+	}
 	lines := []string{}
 	for i := range run.Tasks {
 		if len(lines) >= notifyResultTasks {

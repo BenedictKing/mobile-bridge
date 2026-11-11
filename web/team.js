@@ -67,7 +67,7 @@ function teamUUID(){
   if(typeof crypto!=='undefined'&&typeof crypto.randomUUID==='function')return crypto.randomUUID();
   return Date.now().toString(16)+'-'+Math.random().toString(16).slice(2)+'-'+Math.random().toString(16).slice(2,10);
 }
-const TEAM_RUN_STATUS_LABELS={created:'已创建',dispatching:'派发中',collecting:'收集中',reducing:'验证中',completed:'已完成',waiting_input:'等待确认',paused:'已暂停',failed:'已失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'结果未知'};
+const TEAM_RUN_STATUS_LABELS={created:'已受理',dispatching:'执行中',collecting:'收集结果中',reducing:'收口中',completed:'执行结束',waiting_input:'等待处理',paused:'已暂停',failed:'执行失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'执行结果待核查'};
 const TEAM_TASK_STATUS_LABELS={planned:'已规划',ready:'就绪',dispatching:'派发中',running:'运行中',completed:'已完成',failed:'已失败',cancelled:'已取消',outcome_unknown:'结果未知',stopped:'已停止'};
 const TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
 /* 闭环契约（docs/team-dashboard-design.md §4）：Run 状态分组与轻量摘要派生。
@@ -77,6 +77,10 @@ const TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stop
 const TEAM_ACTIVE_RUN_STATUSES=new Set(['created','planning','dispatching','collecting','reducing']);
 const TEAM_ATTENTION_RUN_STATUSES=new Set(['waiting_input','paused','failed','outcome_unknown']);
 function teamRunGroup(status){
+  if(status&&typeof status==='object'){
+    const run=status;status=run.status;
+    if(status==='completed'&&run.outcome&&!run.outcome.closed&&run.outcome.status!=='satisfied')return 'attention';
+  }
   if(TEAM_ATTENTION_RUN_STATUSES.has(status))return 'attention';
   if(TEAM_ACTIVE_RUN_STATUSES.has(status))return 'active';
   return TEAM_TERMINAL_RUN_STATUSES.has(status)?'terminal':'attention';
@@ -98,7 +102,7 @@ function teamRunProgress(run){
 function teamRunEchoLine(run){
   const bits=[];
   if(run&&run.currentOwner&&run.currentOwner.name){
-    const ownerState=teamRunGroup(run.status)==='active'?t_safe(' 执行中'):' · '+t_safe('负责人');
+    const ownerState=teamRunGroup(run)==='active'?t_safe(' 执行中'):' · '+t_safe('负责人');
     bits.push(run.currentOwner.name+ownerState);
   }
   if(run&&run.lastUpdate&&run.lastUpdate.summary)bits.push(t_safe(run.lastUpdate.summary));
@@ -113,6 +117,76 @@ const TEAM_EVENT_TASK_STATUS={task_dispatching:'dispatching',task_running:'runni
 
 function teamRunStatusLabel(status){return TEAM_RUN_STATUS_LABELS[status]||status;}
 function teamTaskStatusLabel(status){return TEAM_TASK_STATUS_LABELS[status]||status;}
+
+// Run 与事项共用的目标核对入口；草稿留在控制器内，轮询重绘不会丢失用户输入。
+function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated}){
+  const t=BridgeI18n.t,node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
+  const box=node('section',undefined,'team-goal-review');
+  box.append(node('h3',t(outcome.label||'目标结果')),node('p',outcome.reason||'','muted'));
+  const key=outcome.scope.id+'|'+outcome.scope.hash+'|'+outcome.contract.revision;
+  let state=drafts.get(key);
+  if(!state||state.evidenceHash!==outcome.evidenceHash){
+    const c=outcome.contract;
+    state={evidenceHash:outcome.evidenceHash,kind:c.deliverableKind,verify:c.verify.requirement,verifyReason:c.verify.reason||'',review:c.review.requirement,reviewReason:c.review.reason||'',extra:'',reason:'',states:Object.fromEntries(c.criteria.map(item=>[item.id,item.state])),busy:false};
+    drafts.set(key,state);
+  }
+  if(outcome.result?.text){
+    const result=node('details',undefined,'team-goal-result');result.open=true;
+    result.append(node('summary',t('最终结果')));
+    const body=node('div',undefined,'message-body');
+    if(typeof renderMarkdown==='function')renderMarkdown(body,outcome.result.text,[],()=>'',{});
+    else body.textContent=outcome.result.text;
+    result.append(body);
+    if(outcome.result.truncated)result.append(node('p',t('结果摘要已截断，请在来源任务查看完整内容。'),'muted'));
+    box.append(result);
+  }
+  const controls=[],error=node('p',state.error||'','error'),notice=node('p','','muted');
+  const field=(label,control,translate=true)=>{const wrap=node('label',undefined,'team-goal-field');wrap.append(node('span',translate?t(label):label),control);controls.push(control);return wrap;};
+  const select=(name,options,value,update)=>{const el=node('select');el.name=name;for(const [id,label] of options){const option=node('option',t(label));option.value=id;el.append(option);}el.value=value;el.addEventListener('change',()=>update(el.value));return el;};
+  const textArea=(value,update)=>{const el=node('textarea');el.rows=2;el.value=value;el.addEventListener('input',()=>update(el.value));return el;};
+  const settings=node('details',undefined,'team-goal-contract');settings.open=outcome.contract.deliverableKind==='unspecified';
+  settings.append(node('summary',t('交付类型与完成条件')));
+  settings.append(field('交付类型',select('deliverableKind',[['unspecified','请选择交付类型'],['answer','咨询回答'],['investigation','调查分析'],['change','实现修改'],['operation','操作执行']],state.kind,value=>state.kind=value)));
+  const requirements=[['unspecified','请选择检查要求'],['required','必须通过'],['not_required','本次不需要']];
+  settings.append(field('验证要求',select('verifyRequirement',requirements,state.verify,value=>state.verify=value)));
+  settings.append(field('验证不适用的原因',textArea(state.verifyReason,value=>state.verifyReason=value)));
+  settings.append(field('审查要求',select('reviewRequirement',requirements,state.review,value=>state.review=value)));
+  settings.append(field('审查不适用的原因',textArea(state.reviewReason,value=>state.reviewReason=value)));
+  settings.append(field('补充完成条件（每行一项）',textArea(state.extra,value=>state.extra=value)));
+  const act=async(action)=>{
+    if(state.busy)return;
+    const payload={action,version:runVersion,goalRevision:outcome.contract.revision,scopeId:outcome.scope.id,scopeHash:outcome.scope.hash,evidenceHash:outcome.evidenceHash,reason:state.reason};
+    if(action==='define'){
+      const criteria=outcome.contract.criteria.map(c=>({...c,state:'unknown'}));
+      const additions=state.extra.split('\n').map(s=>s.trim()).filter(Boolean);
+      for(const text of additions)criteria.push({id:'extra-'+(criteria.length+1),text,state:'unknown'});
+      payload.contract={deliverableKind:state.kind,criteria,verify:{requirement:state.verify,reason:state.verifyReason},review:{requirement:state.review,reason:state.reviewReason}};
+    }else if(action==='assess')payload.states=state.states;
+    const signature=JSON.stringify(payload);
+    if(state.pendingSignature!==signature){state.pendingSignature=signature;state.operationID=typeof uuid==='function'?uuid():crypto.randomUUID();}
+    payload.id=state.operationID;
+    state.busy=true;error.textContent='';notice.textContent=t('正在处理…');for(const el of controls)el.disabled=true;
+    try{const result=await submit(payload);state.busy=false;state.error='';updated?.(result);}
+    catch(failure){state.error=failure.message||String(failure);error.textContent=state.error;notice.textContent='';}
+    finally{state.busy=false;for(const el of controls)el.disabled=false;}
+  };
+  const button=(label,action)=>{const el=node('button',t(label));el.type='button';el.addEventListener('click',()=>act(action));controls.push(el);return el;};
+  settings.append(button('保存完成条件','define'));box.append(settings);
+  const checks=node('fieldset');checks.append(node('legend',t('逐项核对原始要求')));
+  for(const criterion of outcome.contract.criteria){
+    checks.append(field(criterion.text,select('criterion-'+criterion.id,[['unknown','待确认'],['met','满足'],['unmet','不满足']],state.states[criterion.id]||'unknown',value=>state.states[criterion.id]=value),false));
+  }
+  box.append(checks);
+  const evidence=node('p',undefined,'muted');
+  const labels={passed:'已通过',failed:'未通过',pending:'待执行',stale:'证据已过期',unknown:'未取得结论',not_configured:'未配置'};
+  const checkLabel=check=>check.requirement==='not_required'?t('本次不需要')+' · '+check.reason:t(labels[check.status]||'未配置');
+  evidence.textContent=t('验证')+' · '+checkLabel(outcome.contract.verify)+' / '+t('审查')+' · '+checkLabel(outcome.contract.review);box.append(evidence);
+  if(!outcome.canConfirm)box.append(node('p',t('完善完成条件和必要证据后才能确认全部达成；仍可记录未满足项。'),'muted'));
+  box.append(field('确认、反馈或关闭说明',textArea(state.reason,value=>state.reason=value)));
+  const actions=node('div',undefined,'team-run-actions');actions.append(button('记录核对结论','assess'),button('关闭目标追踪','close'));box.append(actions,notice,error);
+  for(const el of controls)el.disabled=!!state.busy;
+  return box;
+}
 // 状态徽标：label 同时写进 data-i18n，切语言时 BridgeI18n.apply 可热刷新。
 function teamStatusBadge(status,labels){
   const label=(labels&&labels[status])||status;
@@ -585,6 +659,11 @@ class TeamsPanel{
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
   runBadge(status){return teamStatusBadge(status,TEAM_RUN_STATUS_LABELS);}
+  runBadges(run){
+    const badges=this.node('div',undefined,'team-run-badges');badges.append(this.runBadge(run.status));
+    if(run.outcome)badges.append(this.node('span',BridgeI18n.t(run.outcome.label||'尚未评估'),'team-badge '+(run.outcome.status==='satisfied'?'b-completed':'b-waiting_input')));
+    return badges;
+  }
   async refresh(){
     if(this.loading)return false;
     this.loading=true;this.error='';this.render();let succeeded=false;
@@ -629,8 +708,8 @@ class TeamsPanel{
   teamLatestRun(teamId){
     const rows=this.teamRuns(teamId);
     const latest=[...rows].reverse();
-    return latest.find(run=>teamRunGroup(run.status)==='attention')
-      ||latest.find(run=>teamRunGroup(run.status)==='active')
+    return latest.find(run=>teamRunGroup(run)==='attention')
+      ||latest.find(run=>teamRunGroup(run)==='active')
       ||latest[0]
       ||null;
   }
@@ -638,15 +717,15 @@ class TeamsPanel{
     const stats={teams:this.teams.length,members:0,active:0,attention:0};
     for(const team of this.teams)stats.members+=(team.members||[]).length;
     for(const entry of this.runs.values())for(const run of entry.rows||[]){
-      const group=teamRunGroup(run.status);
+      const group=teamRunGroup(run);
       if(group==='attention')stats.attention++;
       else if(group==='active')stats.active++;
     }
     return stats;
   }
   filteredTeams(){
-    if(this.filter==='active')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run.status)==='active'));
-    if(this.filter==='attention')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run.status)==='attention'));
+    if(this.filter==='active')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run)==='active'));
+    if(this.filter==='attention')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run)==='attention'));
     return this.teams;
   }
   async send(method,path,body){
@@ -741,7 +820,7 @@ class TeamsPanel{
     box.setAttribute('aria-label',t('运行筛选'));
     const counts={all:0,active:0,attention:0};
     for(const entry of this.runs.values())for(const run of entry.rows||[]){
-      const group=teamRunGroup(run.status);
+      const group=teamRunGroup(run);
       if(group==='attention')counts.attention++;
       else if(group==='active')counts.active++;
       counts.all++;
@@ -771,7 +850,7 @@ class TeamsPanel{
     }
     rows.sort((a,b)=>b.at-a.at);
     if(rows.length){
-      const groupOf=run=>teamRunGroup(run.status);
+      const groupOf=run=>teamRunGroup(run);
       const groups=this.filter==='all'
         ?[['attention',t('需处理')],['active',t('运行中')],['terminal',t('最近结束')]]
         :[[this.filter,this.filter==='attention'?t('需处理'):t('运行中')]];
@@ -808,8 +887,8 @@ class TeamsPanel{
   renderActivityRow(team,run){
     const t=BridgeI18n.t,row=this.button('');
     row.className='team-activity-row';
-    row.dataset.group=teamRunGroup(run.status);
-    row.append(this.runBadge(run.status));
+    row.dataset.group=teamRunGroup(run);
+    row.append(this.runBadges(run));
     const main=this.node('div',undefined,'team-activity-main');
     const title=this.node('span',run.goal||run.id,'team-activity-goal');
     title.title=run.goal||run.id;
@@ -872,8 +951,8 @@ class TeamsPanel{
     if(latest){
       const runRow=this.button('');
       runRow.className='team-card-run';
-      runRow.dataset.group=teamRunGroup(latest.status);
-      runRow.append(this.runBadge(latest.status));
+      runRow.dataset.group=teamRunGroup(latest);
+      runRow.append(this.runBadges(latest));
       const info=this.node('div',undefined,'team-card-run-info');
       const goal=this.node('span',latest.goal||latest.id,'team-card-run-goal');
       goal.title=latest.goal||latest.id;
@@ -955,7 +1034,7 @@ class TeamsPanel{
     for(const run of [...entry.rows].reverse()){
       const row=this.button('');
       row.className='team-run-row';
-      row.append(this.runBadge(run.status));
+      row.append(this.runBadges(run));
       row.append(this.node('span',run.goal||run.id,'team-run-goal'));
       const progress=teamRunProgress(run);
       if(progress)row.append(this.node('small',progress.completed+'/'+progress.total,'team-run-progress muted'));
@@ -1289,6 +1368,7 @@ class TeamRunScreen{
     this.diffOpen=new Set();   // 已展开「查看改动」的 taskId
     this.actionNotice='';      // 动作成功提示（转发等），随下一次动作/打开清空
     this.questionState=new Map(); // questionId -> {busy,error,draft}：decision 卡本地态（帧重渲染不丢已填内容与错误）
+    this.goalDrafts=new Map();
     this.taskCleanup=new Map();   // taskId -> {busy,error,done}：工作区清理的就地反馈（错误照 forwardDialog 内联风格）
     this.taskActionKeys=new Map();// taskId -> actionKey：派生任务落地凭据（task_planned 载荷；Run detail 的任务对象不携带该字段）
     this.stats=null;         // /stats 快照：{loading,error,data}（进页拉一次+手动刷新）
@@ -1439,6 +1519,7 @@ class TeamRunScreen{
     if(TEAM_TERMINAL_RUN_STATUSES.has(status)){
       // 只在转入终态后补读一次完整 RunDetail；后续空帧不再重读。
       if(!this.terminalSynced){this.terminalSynced=true;this.scheduleRefetch(0);}
+      else if(rows.some(event=>event?.type==='goal_reviewed'))this.scheduleRefetch(0);
     }else{
       this.terminalSynced=false;
       if(rows.length)this.scheduleRefetch(400);
@@ -1784,6 +1865,7 @@ class TeamRunScreen{
     info.append(this.node('h1',detail.goal||detail.id));
     const statusLine=this.node('p',undefined,'team-run-status');
     statusLine.append(this.runBadge(detail.status));
+    if(detail.outcome)statusLine.append(this.node('span',t(detail.outcome.label),'team-badge '+(detail.outcome.status==='satisfied'?'b-completed':'b-waiting_input')));
     if(detail.scheduledFrom)statusLine.append(this.node('span',t('定时触发'),'team-badge b-ready'));
     if(detail.stopReason){const reason=this.node('span',teamRunStopReasonText(detail),'team-stop-reason');reason.title=detail.stopReason;statusLine.append(reason);}
     if(this.reconnecting){
@@ -1797,6 +1879,12 @@ class TeamRunScreen{
     head.append(back,info,this.renderActions());
     root.append(head);
     const body=this.node('div',undefined,'team-run-body');
+    for(const outcome of detail.goalOutcomes||[]){
+      const generation=this.generation,url=this.runUrl('goal-review');
+      body.append(renderTeamGoalReview(outcome,{runVersion:detail.version,drafts:this.goalDrafts,
+        submit:body=>this.request(url,{method:'POST',body}),
+        updated:result=>{if(this.generation!==generation)return;this.detail=result;this.meta=null;this.render();}}));
+    }
     if(this.stalled){
       // stall 顶部提示条（§6.3「20 分钟无成功只通知不停止」）：事件到达展示，
       // 后续任何任务事件推进即由 applyFrame 撤下；sinceMs 为当时已停时长。
@@ -2042,7 +2130,7 @@ class TeamRunScreen{
     // 成员绑定会话（阶段一执行线程契约：任务经线程派发，线程绑定是跳转的
     // 权威来源；旧网关无线程投影时退回成员会话）。
     const thread=(this.detail?.threads||[]).find(th=>th.id===task.executionThreadId);
-    const sessionId=result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null);
+    const sessionId=result?.sessionId||task.dispatchSessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null);
     if(sessionId){
       const open=this.button(t('打开原会话'),()=>{
         // 不先 leave() 退栈；由会话入口记录来源 Run 和结果回合，提供准确的返回路径。
@@ -2562,4 +2650,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout,renderTeamGoalReview,teamRunGroup};

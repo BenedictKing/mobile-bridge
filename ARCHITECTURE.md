@@ -2,6 +2,8 @@
 
 当前 Go 网关的总体结构及关键状态见 [项目级运行图册](docs/system-runtime-diagrams.md)；团队编排的组件、执行/恢复流程与持久状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)。两份图册均与规划文档中的后续能力分开。
 
+团队执行状态与用户目标达成分别判定，具体见 [Run 执行状态与目标达成契约](docs/team-run-outcome-contract.md)。`goal_reviewed` 随 Run journal 保存按事项范围的完成条件、证据绑定和用户判断；Task.completed / Run.completed 仅表示执行事实，事项 resolved 需要当前目标的有效确认。
+
 ## 目标与执行边界
 
 手机网页控制 Codex App 聊天，并可在已保存项目中新建空聊天。网关不拥有模型执行器，不替换已有聊天。已有聊天的执行与审批操作绑定 `hostId + conversationId + ownerClientId`，由 App 中相应 owner 执行。重命名是独立的元数据操作，使用所选主机的短期官方运行时调用 `thread/name/set`，不加载执行任务、不调用 `turn/start`，也不改变 provider、认证或审批策略。

@@ -547,6 +547,13 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	run.UpdatedAt = event.CreatedAt
 	if !isTaskScopedEvent(event.Type) && event.Type != EventTaskPlanned && event.Type != EventTaskUpdateIntent {
 		switch event.Type {
+		case EventGoalReviewed:
+			if record := decodeGoalRecord(event.Payload["goal"]); record != nil {
+				if run.Goals == nil {
+					run.Goals = map[string]*GoalRecord{}
+				}
+				run.Goals[record.Scope.ID] = record
+			}
 		case EventRunWaitingInput:
 			run.Status = RunWaitingInput
 		case EventThreadBound:
@@ -767,6 +774,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		applyTaskUpdateFields(task, event)
 	case EventTaskDispatching:
 		task.Status = TaskDispatching
+		task.DispatchSessionID = payloadString(event.Payload, "sessionId")
 		task.SubmissionID = payloadString(event.Payload, "submissionId")
 		task.ExecutionThreadID = payloadString(event.Payload, "threadId")
 		task.InputHash = payloadString(event.Payload, "inputHash")
