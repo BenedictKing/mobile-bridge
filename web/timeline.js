@@ -9,19 +9,29 @@ const internalTeamProtocolRow=row=>(row?.role==='user'||row?.role==null)&&/^\s*\
 const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecution)$/.test(row.kind)||row.toolKind==='execute');
 const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row));
 const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title==='steered');
+const reasoningRow=row=>row.role==='activity'&&(row.kind==='reasoning'||row.kind==='agentThought');
 const approvalReviewRow=row=>row.role==='activity'&&(row.kind==='automaticApprovalReview'||row.title==='automaticApprovalReview');
+const approvalReviewStatus=status=>timelineText({approved:'已批准',allow:'已批准',denied:'已拒绝',rejected:'已拒绝',deny:'已拒绝',inProgress:'审查中',pending:'审查中',completed:'审查已结束',failed:'审查失败',interrupted:'已中断',cancelled:'已取消'}[status]||'状态待同步');
 // 兼容旧网关把未知事件序列化为 JSON 的历史投影；只生成文本节点。
-const approvalReviewText=text=>{
-  let value;try{value=JSON.parse(text);}catch{return text;}
+const approvalReviewText=(text,row)=>{
+  let value;try{value=JSON.parse(text);}catch{
+    if(/^\s*[\[{]/.test(String(text||'')))return timelineText('审批状态')+'：'+approvalReviewStatus(row.status)+'\n'+timelineText('展开查看审查依据');
+    return text;
+  }
   if(!value||typeof value!=='object'||Array.isArray(value))return text;
-  const labels={status:'状态',decision:'审批决定',reason:'原因',rationale:'审查依据',summary:'摘要',riskLevel:'风险等级',risk:'风险',command:'命令',review:'审查结果',assessment:'评估',action:'操作',userAuthorization:'用户授权'};
+  const labels={status:'审批状态',decision:'审批决定',reason:'原因',rationale:'审查依据',summary:'摘要',riskLevel:'风险等级',risk:'风险',command:'命令',review:'审查结果',assessment:'评估',action:'操作',userAuthorization:'用户授权',cwd:'工作目录'};
   const lines=[];
   const visit=(object,depth=0)=>{
-    for(const [key,item] of Object.entries(object)){
-      if(item==null||['type','id','turnId','itemId','targetItemId'].includes(key))continue;
+    for(const key of Object.keys(labels)){
+      const item=object[key];
+      if(item==null||!Object.prototype.hasOwnProperty.call(labels,key))continue;
       const label=timelineText(labels[key]||key),prefix='  '.repeat(depth);
       if(typeof item==='object'){lines.push(prefix+label+'：');visit(item,depth+1);}
-      else lines.push(prefix+label+'：'+String(item));
+      else{
+        const level={low:'低',medium:'中',high:'高',unknown:'未知'};
+        const value=key==='status'||key==='decision'?approvalReviewStatus(item):['riskLevel','risk','userAuthorization'].includes(key)&&level[item]?timelineText(level[item]):String(item);
+        lines.push(prefix+label+'：'+value);
+      }
     }
   };
   visit(value);return lines.join('\n')||timelineText('审批审查已记录');
@@ -55,7 +65,8 @@ const toolLabel=title=>{
 const rowLabel=row=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
-  if(approvalReviewRow(row))return timelineText('自动审批审查');
+  if(approvalReviewRow(row))return timelineText('自动审批审查')+(row.status?' · '+approvalReviewStatus(row.status):'');
+  if(reasoningRow(row))return timelineText('思考摘要');
   if(commandRow(row)){
     const state=commandState(row);
     return timelineText('执行命令')+(state==='completed'||state==='failed'?'':'（'+commandStateText(state)+'）');
@@ -117,7 +128,7 @@ class ChatTimeline {
   rowVisible(row){
     if(this.hideInternalTeamMessages&&internalTeamProtocolRow(row))return false;
     if(row.role==='user'||row.role==='error')return true;
-    if(row.kind==='reasoning')return this.showReasoning;
+    if(reasoningRow(row))return this.showReasoning;
     if(row.role==='activity'||row.phase==='commentary')return this.showProcess;
     return true;
   }
@@ -369,7 +380,7 @@ class ChatTimeline {
       node.append(heading);
     }
     if(steered)return node;
-    const reasoning=activity&&row.kind==='reasoning';
+    const reasoning=reasoningRow(row);
     const body=document.createElement(activity&&!planEntries&&!reasoning?'pre':'div');
     body.className=activity?(planEntries?'activity-body plan-body':reasoning?'activity-body message-body reasoning-body':'activity-body'):'message-body';
     const more=document.createElement('button');more.className='plain detail-more';more.type='button';
@@ -393,7 +404,7 @@ class ChatTimeline {
         }
         body.append(list);body.hidden=false;more.hidden=true;
       }else{
-        if(approvalReviewRow(row))body.textContent=approvalReviewText(text);
+        if(approvalReviewRow(row))body.textContent=approvalReviewText(text,row);
         else if(activity&&!reasoning)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
         if(activity)body.hidden=!text;
         more.hidden=detail?detail.next===null:!row.truncated;

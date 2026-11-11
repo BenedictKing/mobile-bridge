@@ -1,3 +1,11 @@
+## 桌面浏览器审批审查与思考摘要渲染（2026-11-11）
+
+- 真实 8787 的 `/timeline.js` 仍为旧构建，不含审批审查和 Markdown 思考适配；静态文件由 Go `embed` 固化，刷新浏览器不能更新旧进程中的资源。
+- 实际 `automaticApprovalReview` 在旧后端退回原始 JSON，时间线 180 字预览几乎全是内部 ID。完整 JSON 的渲染测试未覆盖该路径。本次改为在 NormalizeItem 生成可读状态、风险、授权、依据和命令，再使用既有预览预算；前端兼容旧网关的截断 JSON，预览不再回显协议字段。
+- `reasoning` 与 ACP `agentThought` 共用 Markdown 和思考可见性开关；reasoning 的字符串与 text 对象摘要均保留 Markdown。
+- 隔离新构建端口 18801，真实审批事件经实际 model → timeline 投影后进行桌面宽度浏览器验证：折叠预览可读、展开恢复完整依据、思考标题/列表/强调/代码/引用正常、思考开关同时隐藏两种来源。
+- 测试：`go test ./internal/model ./internal/timeline ./internal/codex`、240 项前端测试通过。证据位于 `.local/desktop-render-qa/`；主网关未重启，需用户重启加载新构建后刷新页面。
+
 ## Run 执行与目标达成分离验证（2026-11-11）
 
 - 使用 CCX Lean Run `11600089…` 的本地副本，在 `.local/goal-validation` 和端口 18799 启动隔离网关；原 8787 网关与原 Run 数据未改写。

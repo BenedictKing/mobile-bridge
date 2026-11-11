@@ -404,13 +404,29 @@ func NormalizeItem(item *jsoncompat.Object) *jsoncompat.Object {
 			attachment.Set("name", pyBaseName(path))
 			row.Set("attachments", &jsoncompat.Array{Items: []any{attachment}})
 		}
-	case "reasoning":
+	case "automaticApprovalReview":
+		row.Set("role", "activity")
+		row.Set("title", "自动审批审查")
+		row.Set("text", approvalReviewText(item))
+	case "reasoning", "agentThought":
 		row.Set("role", "activity")
 		row.Set("title", "思考摘要")
 		summary := []string{}
 		for _, part := range orEmptyArray(item.MustGet("summary")).Items {
-			text, _ := part.(string)
-			summary = append(summary, text)
+			text, ok := part.(string)
+			if !ok {
+				if block := obj(part); block != nil {
+					text, _ = block.MustGet("text").(string)
+				}
+			}
+			if text != "" {
+				summary = append(summary, text)
+			}
+		}
+		if len(summary) == 0 {
+			if text, ok := item.MustGet("text").(string); ok {
+				summary = append(summary, text)
+			}
 		}
 		row.Set("text", strings.Join(summary, "\n"))
 	case "commandExecution":

@@ -2,6 +2,14 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"低":"Low",
+"中":"Medium",
+"高":"High",
+"审批状态":"Approval status",
+"审查中":"Reviewing",
+"审查已结束":"Review ended",
+"审查失败":"Review failed",
+"展开查看审查依据":"Expand to view the review rationale",
 "目标追踪已关闭，可查看已有结果":"Goal tracking is closed; view the existing result",
 "执行结束":"Execution ended",
 "执行中":"Executing",

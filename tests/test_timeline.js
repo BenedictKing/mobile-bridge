@@ -321,9 +321,52 @@ test('automatic approval reviews have readable labels and keep untrusted content
     text:JSON.stringify({id:'internal',type:'automaticApprovalReview',status:'completed',review:{decision:'allow',reason:'<img src=x onerror=alert(1)>'}})},false);
   assert.equal(node.children[0].textContent,'自动审批审查');
   const body=node.children[1];
-  assert.match(body.textContent,/审批决定：allow/);
+  assert.match(body.textContent,/审批决定：已批准/);
   assert.match(body.textContent,/原因：<img src=x onerror=alert\(1\)>/);
   assert.doesNotMatch(body.textContent,/automaticApprovalReview|internal/);
   assert.equal(body.children.length,0,'审查内容不能当作 HTML 执行');
+  timeline.dispose();
+});
+
+test('ACP agentThought uses Markdown and obeys the thinking visibility setting',()=>{
+  const painted=[];
+  const{timeline}=setup({renderText:(body,text)=>painted.push({body,text})});
+  const row={key:'acp-thought',role:'activity',kind:'agentThought',title:'思考摘要',text:'### 检查\n- **条件** `code`'};
+  const node=timeline.renderRow(row,false);
+  assert.equal(painted.length,1);assert.equal(painted[0].body.tagName,'DIV');
+  assert.equal(painted[0].text,row.text);assert.match(painted[0].body.className,/reasoning-body/);
+  timeline.showProcess=true;timeline.showReasoning=false;
+  assert.equal(timeline.rowVisible(row),false,'思考开关应覆盖 ACP 的 agentThought');
+  timeline.showReasoning=true;assert.equal(timeline.rowVisible(row),true);
+  assert.equal(node.children[0].textContent,'思考摘要');
+  timeline.dispose();
+});
+
+test('truncated legacy approval JSON stays readable and expands to full rationale',async()=>{
+  const{timeline}=setup();
+  const full=JSON.stringify({type:'automaticApprovalReview',id:'automatic-approval-review:'+('i'.repeat(150)),targetItemId:'internal-target',startedAtMs:123,
+    status:'approved',riskLevel:'low',rationale:'已核对目标和范围。',action:{type:'command',source:'unifiedExec',command:'kill -INT 123',cwd:'/workspace'}});
+  const row={key:'review-preview',version:'v1',role:'activity',kind:'automaticApprovalReview',title:'automaticApprovalReview',status:'approved',truncated:true,text:full.slice(0,180)};
+  timeline.rows.set(row.key,{row,sequence:1});
+  const node=timeline.renderRow(row,false);node.isConnected=true;
+  assert.equal(node.children[0].textContent,'自动审批审查 · 已批准');
+  const body=node.children[1];
+  assert.match(body.textContent,/审批状态：已批准/);assert.match(body.textContent,/展开查看审查依据/);
+  assert.doesNotMatch(body.textContent,/automaticApprovalReview|internal-target|\{/);
+  timeline.read=async()=>({version:'v1',text:full,offset:0,next:null});
+  await node.children[2].onclick();
+  assert.match(body.textContent,/审查依据：已核对目标和范围。/);
+  assert.match(body.textContent,/命令：kill -INT 123/);
+  assert.doesNotMatch(body.textContent,/startedAtMs|internal-target|unifiedExec/);
+  timeline.dispose();
+});
+
+test('normalized approval text keeps its readable preview without pretending the command succeeded',()=>{
+  const{timeline}=setup();
+  const node=timeline.renderRow({key:'normalized',role:'activity',kind:'automaticApprovalReview',status:'approved',title:'自动审批审查',
+    text:'审批状态：已批准\n风险等级：低\n审查依据：检查已授权。',truncated:true},false);
+  assert.equal(node.children[0].textContent,'自动审批审查 · 已批准');
+  assert.equal(node.children[0].children.length,0,'审批通过不能当作执行命令成功');
+  assert.match(node.children[1].textContent,/风险等级：低/);
   timeline.dispose();
 });
