@@ -63,15 +63,16 @@
     .selection-detail{border:1px solid var(--line);background:var(--paper);padding:10px;margin-top:9px;min-height:105px}.selection-detail h4{margin-bottom:3px;font-size:12px}.selection-detail p{margin:3px 0;color:var(--muted);font-size:11px}
     .selection-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.selection-actions button,.full-run-button{border:1px solid var(--line);background:var(--paper);padding:6px 8px;font-size:11px}.full-run-button{width:100%;margin-top:12px;background:#333;color:#fff;border-color:#333}
     .run-detail,.session-view{display:none;min-width:0;min-height:0;overflow:auto;padding:20px;background:var(--paper)}.run-open .run-detail,.session-open .session-view{display:block}
-    .run-open .chat-pane,.run-open .live-panel,.session-open .chat-pane,.session-open .live-panel{display:none}.run-detail h2,.session-view h2{margin:13px 0 4px;font-size:20px}
+    .run-open .chat-pane,.session-open .chat-pane{display:none}.run-detail h2,.session-view h2{margin:13px 0 4px;font-size:20px}
     .run-detail-grid{display:grid;grid-template-columns:minmax(250px,.8fr) minmax(300px,1.2fr);gap:16px;margin-top:18px}.run-outline{border:1px solid var(--line);padding:12px;background:var(--panel)}
     .run-outline ol{padding-left:20px;margin-bottom:0}.run-outline li{margin:8px 0}.task-card{border:1px solid #888;padding:14px;background:var(--paper)}.task-card.focused{outline:3px solid #555;outline-offset:3px}.task-card h3{margin-bottom:6px}.task-card pre{white-space:pre-wrap;background:var(--panel);padding:10px;font:11px/1.5 ui-monospace,monospace}
     .origin-bar{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding-bottom:10px}.session-message{max-width:620px;border:1px solid var(--line);padding:12px;margin:16px 0;background:var(--panel)}
     .notes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:16px}.note-card{border-top:2px solid #777;background:var(--paper);padding:12px}.note-card h3{margin-bottom:5px;font-size:13px}.note-card p{margin:0;color:var(--muted);font-size:12px}
+    .drawer .shell{grid-template-columns:160px minmax(0,1fr)}.drawer .live-panel{position:absolute;z-index:5;top:0;right:0;bottom:0;width:min(390px,100%)}.drawer .run-detail-grid{grid-template-columns:1fr}
     .device.mobile{max-width:390px;margin:auto}.mobile .shell,.mobile .shell.no-panel,.mobile .shell.run-open,.mobile .shell.session-open{display:block;position:relative;height:100%}.mobile .sidebar{display:none}.mobile .chat-pane{height:100%}.mobile .timeline{padding:15px}.mobile .message.user{margin-left:0}.mobile .composer{padding:10px 12px 68px}
     .mobile .mobile-run-summary{position:absolute;z-index:4;right:10px;bottom:10px;left:10px;display:block;border:1px solid #777;background:var(--paper);padding:10px 12px;text-align:left}.mobile-run-summary strong,.mobile-run-summary small{display:block}.mobile-run-summary small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
-    .mobile .live-panel{display:none;position:absolute;z-index:5;right:0;bottom:0;left:0;height:75%;border-top:2px solid #666;border-left:0;background:var(--paper)}.mobile .panel-open .live-panel{display:flex}.mobile .graph-canvas{width:340px;max-width:none}.mobile .graph-scroll{overflow-x:auto}.mobile .run-detail,.mobile .session-view{height:100%;padding:15px}.mobile .run-detail-grid{grid-template-columns:1fr}
-    @media(max-width:1100px) and (min-width:721px){.shell{grid-template-columns:160px minmax(320px,1fr) 350px}.review-head,main{padding-left:14px;padding-right:14px}}
+    .mobile .live-panel{position:absolute;z-index:5;right:0;bottom:0;left:0;height:75%;border-top:2px solid #666;border-left:0;background:var(--paper)}.mobile .graph-canvas{width:340px;max-width:none}.mobile .graph-scroll{overflow-x:auto}.mobile .run-detail,.mobile .session-view{height:100%;padding:15px}.mobile .run-detail-grid{grid-template-columns:1fr}
+    @media(max-width:1100px) and (min-width:721px){.review-head,main{padding-left:14px;padding-right:14px}}
     @media(max-width:720px){.review-head{padding:18px 12px 12px;align-items:flex-start;flex-direction:column}.review-head h1{font-size:21px}main{padding:0 8px 20px}.notes{grid-template-columns:1fr}.device{height:760px}.run-detail-grid{grid-template-columns:1fr}}
     @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
   </style>
@@ -98,7 +99,7 @@
           <div class="composer"><div class="composer-input">继续给团队发消息…</div><button class="plain-button" type="button" disabled>发送</button></div>
           <button class="mobile-run-summary" type="button" data-open-panel><strong>当前 Run · <span data-run-label>运行中</span> · <span data-run-count>2/6</span></strong><small data-inline-next>等待 ZCode 完成前端实现；随后进入集成修复。</small></button>
         </section>
-        <aside class="live-panel" aria-label="当前 Run 实时面板">
+        <aside id="live-panel" class="live-panel" aria-label="当前 Run 实时面板" hidden>
           <header class="panel-head"><div><h2>当前 Run · <span data-run-label>运行中</span></h2><p>最近回音 09:41 · 数据与聊天摘要一致</p></div><button id="close-panel" class="icon-button" type="button" aria-label="收起实时面板">×</button></header>
           <div class="panel-scroll">
             <p class="run-goal">检查首页布局并修复移动端溢出</p><span class="run-sub">Run #run-042 · <span data-run-count>2/6 任务</span></span>
@@ -136,7 +137,10 @@
   <script>
     const device=document.getElementById('device'),shell=document.getElementById('shell');
     const $all=selector=>[...document.querySelectorAll(selector)];
-    const state={view:'desktop',scenario:'running',panelOpen:true,pinned:{kind:'task',id:'front'},hover:null,focus:null,screen:'chat',returnScreen:'chat'};
+    const state={view:'desktop',scenario:'running',panelOpen:true,pinned:{kind:'task',id:'front'},hover:null,focus:null,screen:'chat',returnScreen:'chat',sessionTask:null,runTask:null};
+    const panel=document.getElementById('live-panel'),screenFocus=new Map();
+    const mobileWidth=window.matchMedia('(max-width:720px)'),drawerWidth=window.matchMedia('(max-width:1100px)');
+    let panelTrigger=null;
     const tasks={
       lead:{title:'理解目标',member:'lead',owner:'Kimi',deps:[],session:'负责人 · Kimi'},
       front:{title:'前端实现',member:'zcode',owner:'ZCode',deps:['lead'],session:'前端实现 · ZCode'},
@@ -175,11 +179,12 @@
     }
     function updateSelectionDetail(selection,ids){
       const scenario=scenarios[state.scenario];
+      document.querySelector('.selection-detail [data-selection-session]').disabled=!selection;
       if(!selection){
         document.querySelector('[data-selection-title]').textContent='选择成员或任务';
         document.querySelector('[data-selection-owner]').textContent='聚焦任务可临时预览，点击后固定选择。';
         document.querySelector('[data-selection-waiting]').textContent='这里显示未满足前置。';document.querySelector('[data-selection-unlock]').textContent='这里显示完成后解锁的下游。';
-        document.querySelector('[data-locate-task]').hidden=true;state.sessionTask='front';return;
+        document.querySelector('[data-locate-task]').hidden=true;state.sessionTask=null;return;
       }
       if(selection.kind==='member'){
         const first=tasks[ids[0]],label=first.session;document.querySelector('[data-selection-title]').textContent=label;
@@ -206,46 +211,68 @@
       for(const [member,status] of Object.entries(scenario.members))document.querySelector('[data-member-status="'+member+'"]').textContent=status;
       updateGraph();
     }
-    function setPanel(open){
-      state.panelOpen=open;shell.classList.toggle('no-panel',!open&&state.view==='desktop');shell.classList.toggle('panel-open',open&&state.view==='mobile');
-      $all('[data-open-panel]').forEach(button=>button.setAttribute('aria-expanded',String(open)));
-      if(open)document.getElementById('close-panel').focus({preventScroll:true});
+    function isDrawer(){return state.view==='mobile'||drawerWidth.matches;}
+    function syncPanel(){
+      const visible=state.screen==='chat'&&state.panelOpen,drawer=isDrawer();
+      panel.hidden=!visible;device.classList.toggle('drawer',state.view==='desktop'&&drawer);
+      shell.classList.toggle('no-panel',!visible||drawer);shell.classList.toggle('panel-open',visible&&drawer);
+      if(drawer){panel.setAttribute('role','dialog');panel.setAttribute('aria-modal','false');}
+      else{panel.removeAttribute('role');panel.removeAttribute('aria-modal');}
+      $all('[data-open-panel]').forEach(button=>{button.setAttribute('aria-expanded',String(visible));button.setAttribute('aria-controls',panel.id);});
+    }
+    function setPanel(open,trigger){
+      if(open&&trigger)panelTrigger=trigger;
+      state.panelOpen=open;syncPanel();
+      const fallback=document.querySelector(state.view==='mobile'?'.mobile-run-summary':'.chat-head [data-open-panel]');
+      const target=open?document.getElementById('close-panel'):(panelTrigger?.checkVisibility()?panelTrigger:fallback);
+      target.focus({preventScroll:true});
     }
     function setView(view){
       state.view=view;device.classList.toggle('mobile',view==='mobile');
       $all('[data-view]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.view===view)));
-      setPanel(view==='desktop');
+      state.panelOpen=!isDrawer();syncPanel();
+      if(panel.hidden&&panel.contains(document.activeElement))document.querySelector(view==='mobile'?'.mobile-run-summary':'.chat-head [data-open-panel]').focus({preventScroll:true});
     }
-    function showScreen(screen){
-      state.screen=screen;shell.classList.toggle('run-open',screen==='run');shell.classList.toggle('session-open',screen==='session');
+    function showScreen(screen,taskId){
+      if(screen!==state.screen)screenFocus.set(state.screen,document.activeElement);
+      state.screen=screen;shell.classList.toggle('run-open',screen==='run');shell.classList.toggle('session-open',screen==='session');syncPanel();
       if(screen==='run'){
-        const id=state.sessionTask||'front',task=tasks[id];document.querySelector('[data-full-task-title]').textContent=task.title;
+        const id=taskId||state.runTask||Object.keys(tasks)[0],task=tasks[id];state.runTask=id;document.querySelector('[data-full-task-title]').textContent=task.title;
         document.querySelector('[data-full-task-meta]').textContent=task.owner+' · '+scenarios[state.scenario].status[id]+' · task-'+id;
         document.getElementById('full-task-card').scrollIntoView({block:'nearest'});
       }
+      const previous=screenFocus.get(screen),fallback=document.querySelector(screen==='session'?'[data-session-back]':screen==='run'?'[data-back-chat]':state.panelOpen?'#close-panel':'.chat-head [data-open-panel]');
+      (previous?.checkVisibility()&&!previous.disabled?previous:fallback).focus({preventScroll:true});
     }
-    function openSession(){
-      const id=state.sessionTask||'front',task=tasks[id];state.returnScreen=state.screen;
+    function openSession(id){
+      const task=tasks[id];if(!task)return;state.returnScreen=state.screen;
       document.querySelector('[data-session-title]').textContent=task.session;document.querySelector('[data-session-task]').textContent=task.title;showScreen('session');
     }
     $all('[data-view]').forEach(button=>button.addEventListener('click',()=>setView(button.dataset.view)));
     $all('[data-scenario]').forEach(button=>button.addEventListener('click',()=>setScenario(button.dataset.scenario)));
-    $all('[data-open-panel]').forEach(button=>button.addEventListener('click',()=>setPanel(true)));
+    $all('[data-open-panel]').forEach(button=>button.addEventListener('click',()=>setPanel(true,button)));
     document.getElementById('close-panel').addEventListener('click',()=>setPanel(false));
     $all('[data-member]').forEach(button=>button.addEventListener('click',()=>{state.pinned={kind:'member',id:button.dataset.member};state.hover=null;state.focus=null;updateGraph();}));
-    $all('[data-session]').forEach(button=>button.addEventListener('click',()=>{state.pinned={kind:'member',id:button.dataset.session};state.sessionTask=memberTasks[button.dataset.session][0];updateGraph();openSession();}));
+    $all('[data-session]').forEach(button=>button.addEventListener('click',()=>{state.pinned={kind:'member',id:button.dataset.session};state.hover=null;state.focus=null;updateGraph();openSession(state.sessionTask);}));
     $all('[data-task]').forEach(node=>{
-      node.addEventListener('click',()=>{state.pinned={kind:'task',id:node.dataset.task};state.hover=null;state.focus=null;updateGraph();});
+      node.addEventListener('click',()=>{const id=node.dataset.task;state.pinned=state.pinned?.kind==='task'&&state.pinned.id===id?null:{kind:'task',id};state.hover=null;state.focus=null;updateGraph();});
       node.addEventListener('mouseenter',()=>{state.hover=node.dataset.task;updateGraph();});node.addEventListener('mouseleave',()=>{state.hover=null;updateGraph();});
       node.addEventListener('focus',()=>{state.focus=node.dataset.task;updateGraph();});node.addEventListener('blur',()=>{state.focus=null;updateGraph();});
     });
-    $all('[data-locate-task]').forEach(button=>button.addEventListener('click',()=>showScreen('run')));
-    $all('[data-full-run]').forEach(button=>button.addEventListener('click',()=>showScreen('run')));
+    $all('[data-locate-task]').forEach(button=>button.addEventListener('click',()=>{if(state.sessionTask)showScreen('run',state.sessionTask);}));
+    $all('[data-full-run]').forEach(button=>button.addEventListener('click',()=>showScreen('run',state.sessionTask||Object.keys(tasks)[0])));
     $all('[data-back-chat]').forEach(button=>button.addEventListener('click',()=>showScreen('chat')));
-    $all('[data-selection-session]').forEach(button=>button.addEventListener('click',openSession));
+    $all('[data-selection-session]').forEach(button=>button.addEventListener('click',()=>openSession(state.screen==='run'?state.runTask:state.sessionTask)));
     document.querySelector('[data-session-back]').addEventListener('click',()=>showScreen(state.returnScreen));
-    document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;if(state.screen==='session')showScreen(state.returnScreen);else if(state.screen==='run')showScreen('chat');else{state.hover=null;state.focus=null;state.pinned=null;updateGraph();}});
-    setScenario('running');setView(window.matchMedia('(max-width:720px)').matches?'mobile':'desktop');updateGraph();
+    document.addEventListener('keydown',event=>{
+      if(event.key!=='Escape')return;event.preventDefault();
+      if(state.screen==='session')showScreen(state.returnScreen);
+      else if(state.screen==='run')showScreen('chat');
+      else{state.hover=null;state.focus=null;state.pinned=null;updateGraph();if(state.panelOpen&&isDrawer())setPanel(false);}
+    });
+    const resizeView=()=>setView(mobileWidth.matches?'mobile':'desktop');
+    mobileWidth.addEventListener('change',resizeView);drawerWidth.addEventListener('change',resizeView);
+    setScenario('running');resizeView();updateGraph();
   </script>
 </body>
 </html>
