@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>团队实时 Run 面板 · 结构线框</title>
+  <style>
+    :root{
+      color-scheme:light;--ink:#252525;--muted:#686868;--line:#b9b9b9;--soft-line:#dedede;
+      --paper:#fff;--panel:#f1f1f1;--page:#e7e7e7;--active:#d7d7d7;--dim:#f6f6f6;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;
+    }
+    *{box-sizing:border-box}[hidden]{display:none!important}
+    body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 var(--font,system-ui)}
+    button{font:inherit;color:inherit;cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}
+    button:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:3px solid #444;outline-offset:3px}
+    h1,h2,h3,h4,p{margin-top:0}.muted{color:var(--muted)}
+    .review-head{max-width:1440px;margin:auto;padding:24px 24px 14px;display:flex;align-items:end;justify-content:space-between;gap:20px}
+    .review-head h1{margin-bottom:5px;font-size:24px}.review-head p{margin-bottom:0;color:var(--muted);font-size:13px}
+    .eyebrow{font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+    .toolbar{display:flex;gap:6px;flex-wrap:wrap}.toolbar button,.flow button{border:1px solid var(--line);background:var(--paper);padding:7px 11px;border-radius:3px}
+    button[aria-pressed=true],button[aria-selected=true]{background:var(--active);font-weight:650;border-color:#777}
+    main{max-width:1440px;margin:auto;padding:0 24px 30px}.flow{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+    .review-note{border:1px dashed #999;background:var(--paper);padding:9px 12px;margin-bottom:12px;color:var(--muted);font-size:12px}
+    .device{position:relative;height:780px;border:2px solid #777;background:var(--paper);overflow:hidden}
+    .shell{display:grid;grid-template-columns:190px minmax(360px,1fr) 390px;height:100%;min-width:0}
+    .shell.no-panel{grid-template-columns:190px minmax(0,1fr)}.shell.run-open,.shell.session-open{grid-template-columns:190px minmax(0,1fr)}
+    .sidebar{min-width:0;border-right:1px solid var(--line);background:var(--panel);padding:15px 11px}
+    .sidebar h2{font-size:16px}.side-label{margin:18px 7px 6px;color:var(--muted);font-size:10px;letter-spacing:.08em}
+    .side-item{display:block;width:100%;border:0;border-bottom:1px solid var(--soft-line);background:transparent;padding:10px 8px;text-align:left}
+    .side-item.active{background:var(--active)}.side-item strong,.side-item small{display:block}.side-item small{color:var(--muted);font-size:11px}
+    .chat-pane{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--paper)}
+    .chat-head{display:flex;align-items:center;gap:10px;min-height:66px;padding:12px 17px;border-bottom:1px solid var(--line)}
+    .chat-head>div{flex:1;min-width:0}.chat-head h2{margin:0;font-size:17px}.chat-head p{margin:2px 0 0;color:var(--muted);font-size:11px}
+    .plain-button{border:1px solid var(--line);background:var(--paper);padding:7px 10px;border-radius:3px;white-space:nowrap}
+    .timeline{flex:1;min-height:0;overflow:auto;padding:22px}.message{max-width:650px;margin-bottom:20px}.message.user{margin-left:7%;border:1px solid var(--line);background:var(--panel);padding:12px}
+    .who{display:block;margin-bottom:5px;color:var(--muted);font-size:11px}.image-placeholder{display:grid;place-items:center;height:82px;margin-top:9px;border:1px dashed #999;background:#e4e4e4;color:var(--muted)}
+    .workflow-summary{max-width:650px;border:1px solid #999;background:#f7f7f7;padding:12px;margin-bottom:18px}
+    .summary-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.summary-head strong{flex:1}.summary-head button{padding:5px 8px;border:1px solid var(--line);background:var(--paper);font-size:11px}
+    .summary-meta{color:var(--muted);font-size:11px}.mini-progress{height:7px;border:1px solid #999;background:var(--paper);margin:10px 0}.mini-progress i{display:block;height:100%;background:#555}
+    .next-inline{border-left:3px solid #777;padding:7px 10px;background:var(--panel);font-size:12px}
+    .composer{display:flex;gap:8px;padding:13px 17px;border-top:1px solid var(--line)}.composer-input{flex:1;border:1px solid #999;padding:10px;color:var(--muted)}
+    .mobile-run-summary{display:none}
+    .live-panel{display:flex;flex-direction:column;min-width:0;min-height:0;border-left:1px solid var(--line);background:#fafafa}
+    .panel-head{display:flex;align-items:flex-start;gap:10px;padding:14px;border-bottom:1px solid var(--line);background:var(--paper)}
+    .panel-head>div{flex:1}.panel-head h2{margin:0;font-size:15px}.panel-head p{margin:3px 0 0;font-size:11px;color:var(--muted)}
+    .icon-button{width:32px;height:32px;border:1px solid var(--line);background:var(--paper);border-radius:3px}
+    .panel-scroll{flex:1;min-height:0;overflow:auto;padding:13px}.run-goal{margin-bottom:4px;font-size:14px;font-weight:650}.run-sub{color:var(--muted);font-size:11px}
+    .next-action{border:1px solid #888;background:var(--panel);padding:10px;margin:12px 0}.next-action strong{display:block;font-size:11px}.next-action p{margin:3px 0 0;font-size:12px}
+    .panel-section{margin-top:15px}.section-title{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:7px}.section-title h3{margin:0;font-size:12px}.section-title span{color:var(--muted);font-size:10px}
+  </style>
+  <style>
+    .member-list{border:1px solid var(--line);background:var(--paper)}.member-row{display:grid;grid-template-columns:minmax(0,1fr) auto;border-bottom:1px solid var(--soft-line)}
+    .member-row:last-child{border-bottom:0}.member-row.selected{outline:2px solid #555;outline-offset:-2px;background:var(--active)}
+    .member-select{min-width:0;border:0;background:transparent;padding:9px 10px;text-align:left}.member-select strong,.member-select small{display:block}.member-select strong{font-size:12px}.member-select small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:10px}
+    .member-status{display:inline-block;margin-left:5px;border:1px solid #999;padding:0 4px;font-size:9px;font-weight:400}.member-session{align-self:center;margin-right:7px;border:1px solid var(--line);background:var(--paper);padding:5px 7px;font-size:10px}
+    .graph-legend{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:9px}.graph-canvas{position:relative;width:340px;max-width:100%;height:310px;margin:auto;border:1px solid var(--soft-line);background:#f5f5f5;overflow:hidden}
+    .graph-edges{position:absolute;inset:0;width:100%;height:100%}.graph-edges path{fill:none;stroke:#888;stroke-width:1.4}.graph-edges path.downstream{stroke-dasharray:5 4}.graph-edges path.related{stroke:#222;stroke-width:2.5}.graph-edges path.dimmed{opacity:.14}
+    .graph-node{position:absolute;width:130px;min-height:48px;border:1px solid #888;background:var(--paper);padding:6px 8px;text-align:left;border-radius:2px}.graph-node strong,.graph-node small{display:block}.graph-node strong{font-size:11px}.graph-node small{color:var(--muted);font-size:9px}
+    .graph-node.selected{border:3px solid #222;padding:4px 6px}.graph-node.related{background:#e2e2e2}.graph-node.downstream{border-style:dashed}.graph-node.dimmed{opacity:.35}
+    .graph-node[data-task=lead]{left:105px;top:10px}.graph-node[data-task=front]{left:15px;top:82px}.graph-node[data-task=visual]{left:195px;top:82px}
+    .graph-node[data-task=integrate]{left:105px;top:161px}.graph-node[data-task=review]{left:105px;top:239px}
+    .selection-detail{border:1px solid var(--line);background:var(--paper);padding:10px;margin-top:9px;min-height:105px}.selection-detail h4{margin-bottom:3px;font-size:12px}.selection-detail p{margin:3px 0;color:var(--muted);font-size:11px}
+    .selection-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.selection-actions button,.full-run-button{border:1px solid var(--line);background:var(--paper);padding:6px 8px;font-size:11px}.full-run-button{width:100%;margin-top:12px;background:#333;color:#fff;border-color:#333}
+    .run-detail,.session-view{display:none;min-width:0;min-height:0;overflow:auto;padding:20px;background:var(--paper)}.run-open .run-detail,.session-open .session-view{display:block}
+    .run-open .chat-pane,.run-open .live-panel,.session-open .chat-pane,.session-open .live-panel{display:none}.run-detail h2,.session-view h2{margin:13px 0 4px;font-size:20px}
+    .run-detail-grid{display:grid;grid-template-columns:minmax(250px,.8fr) minmax(300px,1.2fr);gap:16px;margin-top:18px}.run-outline{border:1px solid var(--line);padding:12px;background:var(--panel)}
+    .run-outline ol{padding-left:20px;margin-bottom:0}.run-outline li{margin:8px 0}.task-card{border:1px solid #888;padding:14px;background:var(--paper)}.task-card.focused{outline:3px solid #555;outline-offset:3px}.task-card h3{margin-bottom:6px}.task-card pre{white-space:pre-wrap;background:var(--panel);padding:10px;font:11px/1.5 ui-monospace,monospace}
+    .origin-bar{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding-bottom:10px}.session-message{max-width:620px;border:1px solid var(--line);padding:12px;margin:16px 0;background:var(--panel)}
+    .notes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:16px}.note-card{border-top:2px solid #777;background:var(--paper);padding:12px}.note-card h3{margin-bottom:5px;font-size:13px}.note-card p{margin:0;color:var(--muted);font-size:12px}
+    .device.mobile{max-width:390px;margin:auto}.mobile .shell,.mobile .shell.no-panel,.mobile .shell.run-open,.mobile .shell.session-open{display:block;position:relative;height:100%}.mobile .sidebar{display:none}.mobile .chat-pane{height:100%}.mobile .timeline{padding:15px}.mobile .message.user{margin-left:0}.mobile .composer{padding:10px 12px 68px}
+    .mobile .mobile-run-summary{position:absolute;z-index:4;right:10px;bottom:10px;left:10px;display:block;border:1px solid #777;background:var(--paper);padding:10px 12px;text-align:left}.mobile-run-summary strong,.mobile-run-summary small{display:block}.mobile-run-summary small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+    .mobile .live-panel{display:none;position:absolute;z-index:5;right:0;bottom:0;left:0;height:75%;border-top:2px solid #666;border-left:0;background:var(--paper)}.mobile .panel-open .live-panel{display:flex}.mobile .graph-canvas{width:340px;max-width:none}.mobile .graph-scroll{overflow-x:auto}.mobile .run-detail,.mobile .session-view{height:100%;padding:15px}.mobile .run-detail-grid{grid-template-columns:1fr}
+    @media(max-width:1100px) and (min-width:721px){.shell{grid-template-columns:160px minmax(320px,1fr) 350px}.review-head,main{padding-left:14px;padding-right:14px}}
+    @media(max-width:720px){.review-head{padding:18px 12px 12px;align-items:flex-start;flex-direction:column}.review-head h1{font-size:21px}main{padding:0 8px 20px}.notes{grid-template-columns:1fr}.device{height:760px}.run-detail-grid{grid-template-columns:1fr}}
+    @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+  </style>
+</head>
+<body>
+  <header class="review-head">
+    <div><p class="eyebrow">Mobile Bridge / Structure wireframe</p><h1>团队实时 Run 面板</h1><p>评审常驻面板、实时成员与任务图联动；灰度样式不代表最终视觉。</p></div>
+    <div class="toolbar" role="group" aria-label="线框宽度"><button type="button" data-view="desktop" aria-pressed="true">桌面</button><button type="button" data-view="mobile" aria-pressed="false">手机</button></div>
+  </header>
+  <main>
+    <nav class="flow" aria-label="运行场景"><button type="button" data-scenario="running" aria-pressed="true">运行中</button><button type="button" data-scenario="attention" aria-pressed="false">等待处理</button><button type="button" data-scenario="done" aria-pressed="false">已交付</button></nav>
+    <p class="review-note"><strong>可评审路径：</strong>选择成员或任务 → 查看等待与解锁 → 定位完整 Run → 返回；也可打开成员会话。按 Escape 清除图中选择。</p>
+    <section id="device" class="device" aria-label="团队实时 Run 面板线框">
+      <div id="shell" class="shell">
+        <aside class="sidebar" aria-label="项目会话列表"><h2>聊天</h2><div class="side-label">MOBILE-BRIDGE</div><button class="side-item active" type="button"><strong>食材团队</strong><small>团队 · 4 名成员</small></button><div class="side-item"><strong>首页改版</strong><small>普通聊天</small></div><div class="side-label">成员会话</div><div class="side-item"><strong>前端实现 · ZCode</strong><small>执行会话</small></div><div class="side-item"><strong>视觉核对 · Kimi</strong><small>执行会话</small></div></aside>
+        <section class="chat-pane" aria-label="团队主控聊天">
+          <header class="chat-head"><div><h2>食材团队</h2><p>mobile-bridge · 主控 Kimi</p></div><button class="plain-button" type="button" data-open-panel>当前 Run</button><button class="plain-button" type="button" disabled>团队设置</button></header>
+          <div class="timeline">
+            <div class="message user"><span class="who">你</span>请按这张截图检查首页布局，并修复移动端溢出问题。<div class="image-placeholder">图片占位 · homepage.png</div></div>
+            <div class="message"><span class="who">团队负责人</span>我先核对目标，再让前端和视觉成员并行检查，最后统一集成并评审。</div>
+            <section class="workflow-summary" aria-label="聊天内 Workflow 摘要"><div class="summary-head"><strong>Workflow · <span data-run-label>运行中</span></strong><span class="summary-meta" data-run-count>2/6 任务</span><button type="button" data-open-panel>展开实时面板</button><button type="button" data-full-run>详情</button></div><div class="mini-progress" aria-label="任务进度"><i data-progress style="width:33%"></i></div><div class="next-inline" data-inline-next>等待 ZCode 完成前端实现；随后进入集成修复。</div></section>
+            <div class="message"><span class="who">团队负责人 · 09:41</span><span data-run-echo>目标核对已完成。前端和视觉检查正在并行推进，下一步是汇总差异并修复。</span></div>
+          </div>
+          <div class="composer"><div class="composer-input">继续给团队发消息…</div><button class="plain-button" type="button" disabled>发送</button></div>
+          <button class="mobile-run-summary" type="button" data-open-panel><strong>当前 Run · <span data-run-label>运行中</span> · <span data-run-count>2/6</span></strong><small data-inline-next>等待 ZCode 完成前端实现；随后进入集成修复。</small></button>
+        </section>
+        <aside class="live-panel" aria-label="当前 Run 实时面板">
+          <header class="panel-head"><div><h2>当前 Run · <span data-run-label>运行中</span></h2><p>最近回音 09:41 · 数据与聊天摘要一致</p></div><button id="close-panel" class="icon-button" type="button" aria-label="收起实时面板">×</button></header>
+          <div class="panel-scroll">
+            <p class="run-goal">检查首页布局并修复移动端溢出</p><span class="run-sub">Run #run-042 · <span data-run-count>2/6 任务</span></span>
+            <div class="mini-progress"><i data-progress style="width:33%"></i></div>
+            <section class="next-action"><strong>下一步</strong><p data-next-action>等待 ZCode 完成前端实现；随后进入集成修复。</p></section>
+            <section class="panel-section" aria-labelledby="roster-title"><div class="section-title"><h3 id="roster-title">成员</h3><span>状态来自当前 Run</span></div>
+              <div class="member-list">
+                <div class="member-row" data-member-row="lead"><button class="member-select" type="button" data-member="lead" aria-pressed="false"><strong>负责人 · Kimi <span class="member-status" data-member-status="lead">已完成</span></strong><small>理解目标与任务拆解</small></button><button class="member-session" type="button" data-session="lead">会话</button></div>
+                <div class="member-row" data-member-row="zcode"><button class="member-select" type="button" data-member="zcode" aria-pressed="false"><strong>前端实现 · ZCode <span class="member-status" data-member-status="zcode">运行中</span></strong><small>修复首页与移动端溢出 · 另有 1 项</small></button><button class="member-session" type="button" data-session="zcode">会话</button></div>
+                <div class="member-row" data-member-row="kimi"><button class="member-select" type="button" data-member="kimi" aria-pressed="false"><strong>视觉核对 · Kimi <span class="member-status" data-member-status="kimi">运行中</span></strong><small>核对响应式断点与截图</small></button><button class="member-session" type="button" data-session="kimi">会话</button></div>
+                <div class="member-row" data-member-row="reviewer"><button class="member-select" type="button" data-member="reviewer" aria-pressed="false"><strong>独立评审 · Claude <span class="member-status" data-member-status="reviewer">等待依赖</span></strong><small>等待集成修复完成</small></button><button class="member-session" type="button" data-session="reviewer">会话</button></div>
+              </div>
+            </section>
+            <section class="panel-section" aria-labelledby="graph-title"><div class="section-title"><h3 id="graph-title">任务关系</h3><span>点击固定 · 聚焦预览</span></div><div class="graph-legend"><span>粗框：选中</span><span>实线：上游</span><span>虚线：下游</span></div>
+              <div class="graph-scroll" tabindex="0" aria-label="任务关系图，可横向滚动"><div class="graph-canvas">
+                <svg class="graph-edges" viewBox="0 0 340 310" aria-hidden="true"><path data-from="lead" data-to="front" d="M150 58 L80 82"/><path data-from="lead" data-to="visual" d="M190 58 L260 82"/><path data-from="front" data-to="integrate" d="M95 130 L145 161"/><path data-from="visual" data-to="integrate" d="M245 130 L195 161"/><path data-from="integrate" data-to="review" d="M170 213 L170 239"/></svg>
+                <button class="graph-node" type="button" data-task="lead" aria-pressed="false"><strong>理解目标</strong><small>Kimi · <span data-task-status>已完成</span></small></button>
+                <button class="graph-node" type="button" data-task="front" aria-pressed="false"><strong>前端实现</strong><small>ZCode · <span data-task-status>运行中</span></small></button>
+                <button class="graph-node" type="button" data-task="visual" aria-pressed="false"><strong>视觉核对</strong><small>Kimi · <span data-task-status>运行中</span></small></button>
+                <button class="graph-node" type="button" data-task="integrate" aria-pressed="false"><strong>集成修复</strong><small>ZCode · <span data-task-status>等待依赖</span></small></button>
+                <button class="graph-node" type="button" data-task="review" aria-pressed="false"><strong>独立评审</strong><small>Claude · <span data-task-status>等待依赖</span></small></button>
+              </div></div>
+              <section class="selection-detail" aria-live="polite" aria-atomic="true"><h4 data-selection-title>前端实现</h4><p data-selection-owner>负责人：ZCode · 运行中</p><p data-selection-waiting>前置已满足</p><p data-selection-unlock>完成后解锁：集成修复</p><div class="selection-actions"><button type="button" data-locate-task>定位任务</button><button type="button" data-selection-session>打开会话</button></div></section>
+            </section>
+            <button class="full-run-button" type="button" data-full-run>打开完整 Run</button>
+          </div>
+        </aside>
+        <section class="run-detail" aria-label="完整 Run 详情"><button class="plain-button" type="button" data-back-chat>‹ 返回团队聊天</button><h2>检查首页布局并修复移动端溢出</h2><p class="muted">Run #run-042 · <span data-run-label>运行中</span> · 完整任务、证据、Diff 与统计</p><div class="next-action"><strong>当前着落</strong><p data-next-action>等待 ZCode 完成前端实现；随后进入集成修复。</p></div><div class="run-detail-grid"><div class="run-outline"><strong>阶段与任务</strong><ol><li>理解目标 · 已完成</li><li>前端实现 / 视觉核对 · 并行</li><li>集成修复 · 等待依赖</li><li>独立评审 · 等待依赖</li></ol><p class="muted">此处保留现有 Dagre 阶段图，线框省略重复图形。</p></div><article id="full-task-card" class="task-card focused"><h3 data-full-task-title>前端实现</h3><p data-full-task-meta>ZCode · 运行中 · task-front</p><p>任务说明：核对首页布局，修复窄屏横向溢出，并保留现有交互。</p><pre>结果与证据区域
+原会话 / 查看改动 / 工作区信息</pre><button class="plain-button" type="button" data-selection-session>打开原会话</button></article></div></section>
+        <section class="session-view" aria-label="成员执行会话"><div class="origin-bar"><button class="plain-button" type="button" data-session-back>‹ 返回</button><span class="muted">来源：当前 Run · <span data-session-task>前端实现</span></span></div><h2 data-session-title>前端实现 · ZCode</h2><p class="muted">真实成员执行会话 · 保留 Run 与任务来源</p><div class="session-message"><span class="who">成员</span>已定位到窄屏溢出来自任务卡最小宽度，正在检查桌面布局是否受影响。</div><div class="session-message"><span class="who">工具结果占位</span>这里展示真实工具调用、结果和文件改动；线框不模拟执行。</div></section>
+      </div>
+    </section>
+    <section class="notes" aria-label="线框评审边界"><article class="note-card"><h3>一级摘要保持轻量</h3><p>聊天内只保留结论、进度和下一步；完整成员与图由二级面板承接，不重复塞入时间线。</p></article><article class="note-card"><h3>选择不等于跳转</h3><p>成员主按钮负责高亮任务，“会话”是独立动作；任务图只高亮，不过滤或重排节点。</p></article><article class="note-card"><h3>手机主动展开</h3><p>手机默认显示底部摘要，点击后打开 75% 高抽屉；完整 Run 和成员会话仍可独占页面。</p></article></section>
+  </main>
+  <script>
+    const device=document.getElementById('device'),shell=document.getElementById('shell');
+    const $all=selector=>[...document.querySelectorAll(selector)];
+    const state={view:'desktop',scenario:'running',panelOpen:true,pinned:{kind:'task',id:'front'},hover:null,focus:null,screen:'chat',returnScreen:'chat'};
+    const tasks={
+      lead:{title:'理解目标',member:'lead',owner:'Kimi',deps:[],session:'负责人 · Kimi'},
+      front:{title:'前端实现',member:'zcode',owner:'ZCode',deps:['lead'],session:'前端实现 · ZCode'},
+      visual:{title:'视觉核对',member:'kimi',owner:'Kimi',deps:['lead'],session:'视觉核对 · Kimi'},
+      integrate:{title:'集成修复',member:'zcode',owner:'ZCode',deps:['front','visual'],session:'前端实现 · ZCode'},
+      review:{title:'独立评审',member:'reviewer',owner:'Claude',deps:['integrate'],session:'独立评审 · Claude'}
+    };
+    const memberTasks={lead:['lead'],zcode:['front','integrate'],kimi:['visual'],reviewer:['review']};
+    const scenarios={
+      running:{label:'运行中',count:'2/6 任务',shortCount:'2/6',progress:33,next:'等待 ZCode 完成前端实现；随后进入集成修复。',echo:'目标核对已完成。前端和视觉检查正在并行推进，下一步是汇总差异并修复。',status:{lead:'已完成',front:'运行中',visual:'运行中',integrate:'等待依赖',review:'等待依赖'},members:{lead:'已完成',zcode:'运行中',kimi:'运行中',reviewer:'等待依赖'}},
+      attention:{label:'等待处理',count:'2/6 任务',shortCount:'2/6',progress:33,next:'前端成员账号认证失败；处理账号后可从当前任务继续。',echo:'前端实现已停靠，已有结果保留。视觉核对完成，集成与评审等待前端恢复。',status:{lead:'已完成',front:'已停止',visual:'已完成',integrate:'等待依赖',review:'等待依赖'},members:{lead:'已完成',zcode:'需处理',kimi:'已完成',reviewer:'等待依赖'}},
+      done:{label:'已完成',count:'6/6 任务',shortCount:'6/6',progress:100,next:'交付证据已就绪：查看结果、Diff 和验证。',echo:'首页布局与移动端溢出问题已修复。独立评审通过，验证命令通过。',status:{lead:'已完成',front:'已完成',visual:'已完成',integrate:'已完成',review:'已完成'},members:{lead:'已完成',zcode:'已完成',kimi:'已完成',reviewer:'已完成'}}
+    };
+    function relations(ids){
+      const selected=new Set(ids),upstream=new Set(),downstream=new Set();
+      const visitUp=(id,visited=new Set())=>{if(visited.has(id))return;visited.add(id);for(const dep of tasks[id]?.deps||[]){upstream.add(dep);visitUp(dep,visited);}};
+      const visitDown=(id,visited=new Set())=>{if(visited.has(id))return;visited.add(id);for(const [candidate,task] of Object.entries(tasks))if(task.deps.includes(id)){downstream.add(candidate);visitDown(candidate,visited);}};
+      ids.forEach(id=>{visitUp(id);visitDown(id);});ids.forEach(id=>{upstream.delete(id);downstream.delete(id);});
+      return{selected,upstream,downstream,related:new Set([...selected,...upstream,...downstream])};
+    }
+    function effectiveSelection(){const preview=state.focus||state.hover;return preview?{kind:'task',id:preview}:state.pinned;}
+    function selectedTaskIds(selection){return selection.kind==='task'?[selection.id]:memberTasks[selection.id]||[];}
+    function updateGraph(){
+      const selection=effectiveSelection(),ids=selection?selectedTaskIds(selection):[],graph=relations(ids);
+      $all('[data-task]').forEach(node=>{
+        const id=node.dataset.task,related=selection&&graph.related.has(id);node.classList.remove('selected','related','upstream','downstream','dimmed');
+        if(selection&&graph.selected.has(id))node.classList.add('selected');else if(selection&&graph.upstream.has(id))node.classList.add('related','upstream');else if(selection&&graph.downstream.has(id))node.classList.add('related','downstream');
+        if(selection&&!related)node.classList.add('dimmed');node.setAttribute('aria-pressed',String(!state.focus&&!state.hover&&state.pinned?.kind==='task'&&state.pinned.id===id));
+      });
+      $all('[data-from]').forEach(edge=>{
+        const from=edge.dataset.from,to=edge.dataset.to,related=selection&&graph.related.has(from)&&graph.related.has(to);edge.classList.remove('related','downstream','dimmed');
+        if(related){edge.classList.add('related');if(graph.downstream.has(to))edge.classList.add('downstream');}else if(selection)edge.classList.add('dimmed');
+      });
+      $all('[data-member-row]').forEach(row=>{const selected=!state.focus&&!state.hover&&state.pinned?.kind==='member'&&state.pinned.id===row.dataset.memberRow;row.classList.toggle('selected',selected);row.querySelector('[data-member]').setAttribute('aria-pressed',String(selected));});
+      updateSelectionDetail(selection,ids);
+    }
+    function updateSelectionDetail(selection,ids){
+      const scenario=scenarios[state.scenario];
+      if(!selection){
+        document.querySelector('[data-selection-title]').textContent='选择成员或任务';
+        document.querySelector('[data-selection-owner]').textContent='聚焦任务可临时预览，点击后固定选择。';
+        document.querySelector('[data-selection-waiting]').textContent='这里显示未满足前置。';document.querySelector('[data-selection-unlock]').textContent='这里显示完成后解锁的下游。';
+        document.querySelector('[data-locate-task]').hidden=true;state.sessionTask='front';return;
+      }
+      if(selection.kind==='member'){
+        const first=tasks[ids[0]],label=first.session;document.querySelector('[data-selection-title]').textContent=label;
+        document.querySelector('[data-selection-owner]').textContent='当前状态：'+scenario.members[selection.id]+' · '+ids.length+' 项关联任务';
+        document.querySelector('[data-selection-waiting]').textContent='任务：'+ids.map(id=>tasks[id].title).join('、');
+        document.querySelector('[data-selection-unlock]').textContent='选择图中任务可继续查看前置与下游。';
+        document.querySelector('[data-locate-task]').hidden=true;state.sessionTask=ids[0];return;
+      }
+      const task=tasks[selection.id],waiting=task.deps.filter(id=>scenario.status[id]!=='已完成');
+      const downstream=Object.entries(tasks).filter(([,item])=>item.deps.includes(selection.id)).map(([id])=>id);
+      document.querySelector('[data-selection-title]').textContent=task.title;
+      document.querySelector('[data-selection-owner]').textContent='负责人：'+task.owner+' · '+scenario.status[selection.id];
+      document.querySelector('[data-selection-waiting]').textContent=task.deps.length?(waiting.length?'等待：'+waiting.map(id=>tasks[id].title).join('、'):'前置已满足'):'没有前置任务';
+      document.querySelector('[data-selection-unlock]').textContent=downstream.length?'完成后解锁：'+downstream.map(id=>tasks[id].title).join('、'):'没有下游任务';
+      document.querySelector('[data-locate-task]').hidden=false;state.sessionTask=selection.id;
+    }
+    function setScenario(id){
+      state.scenario=id;const scenario=scenarios[id];
+      $all('[data-scenario]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.scenario===id)));
+      $all('[data-run-label]').forEach(node=>node.textContent=scenario.label);$all('[data-run-count]').forEach((node,index)=>node.textContent=index%2?scenario.shortCount:scenario.count);
+      $all('[data-progress]').forEach(node=>node.style.width=scenario.progress+'%');$all('[data-inline-next],[data-next-action]').forEach(node=>node.textContent=scenario.next);
+      $all('[data-run-echo]').forEach(node=>node.textContent=scenario.echo);
+      $all('[data-task]').forEach(node=>node.querySelector('[data-task-status]').textContent=scenario.status[node.dataset.task]);
+      for(const [member,status] of Object.entries(scenario.members))document.querySelector('[data-member-status="'+member+'"]').textContent=status;
+      updateGraph();
+    }
+    function setPanel(open){
+      state.panelOpen=open;shell.classList.toggle('no-panel',!open&&state.view==='desktop');shell.classList.toggle('panel-open',open&&state.view==='mobile');
+      $all('[data-open-panel]').forEach(button=>button.setAttribute('aria-expanded',String(open)));
+      if(open)document.getElementById('close-panel').focus({preventScroll:true});
+    }
+    function setView(view){
+      state.view=view;device.classList.toggle('mobile',view==='mobile');
+      $all('[data-view]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.view===view)));
+      setPanel(view==='desktop');
+    }
+    function showScreen(screen){
+      state.screen=screen;shell.classList.toggle('run-open',screen==='run');shell.classList.toggle('session-open',screen==='session');
+      if(screen==='run'){
+        const id=state.sessionTask||'front',task=tasks[id];document.querySelector('[data-full-task-title]').textContent=task.title;
+        document.querySelector('[data-full-task-meta]').textContent=task.owner+' · '+scenarios[state.scenario].status[id]+' · task-'+id;
+        document.getElementById('full-task-card').scrollIntoView({block:'nearest'});
+      }
+    }
+    function openSession(){
+      const id=state.sessionTask||'front',task=tasks[id];state.returnScreen=state.screen;
+      document.querySelector('[data-session-title]').textContent=task.session;document.querySelector('[data-session-task]').textContent=task.title;showScreen('session');
+    }
+    $all('[data-view]').forEach(button=>button.addEventListener('click',()=>setView(button.dataset.view)));
+    $all('[data-scenario]').forEach(button=>button.addEventListener('click',()=>setScenario(button.dataset.scenario)));
+    $all('[data-open-panel]').forEach(button=>button.addEventListener('click',()=>setPanel(true)));
+    document.getElementById('close-panel').addEventListener('click',()=>setPanel(false));
+    $all('[data-member]').forEach(button=>button.addEventListener('click',()=>{state.pinned={kind:'member',id:button.dataset.member};state.hover=null;state.focus=null;updateGraph();}));
+    $all('[data-session]').forEach(button=>button.addEventListener('click',()=>{state.pinned={kind:'member',id:button.dataset.session};state.sessionTask=memberTasks[button.dataset.session][0];updateGraph();openSession();}));
+    $all('[data-task]').forEach(node=>{
+      node.addEventListener('click',()=>{state.pinned={kind:'task',id:node.dataset.task};state.hover=null;state.focus=null;updateGraph();});
+      node.addEventListener('mouseenter',()=>{state.hover=node.dataset.task;updateGraph();});node.addEventListener('mouseleave',()=>{state.hover=null;updateGraph();});
+      node.addEventListener('focus',()=>{state.focus=node.dataset.task;updateGraph();});node.addEventListener('blur',()=>{state.focus=null;updateGraph();});
+    });
+    $all('[data-locate-task]').forEach(button=>button.addEventListener('click',()=>showScreen('run')));
+    $all('[data-full-run]').forEach(button=>button.addEventListener('click',()=>showScreen('run')));
+    $all('[data-back-chat]').forEach(button=>button.addEventListener('click',()=>showScreen('chat')));
+    $all('[data-selection-session]').forEach(button=>button.addEventListener('click',openSession));
+    document.querySelector('[data-session-back]').addEventListener('click',()=>showScreen(state.returnScreen));
+    document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;if(state.screen==='session')showScreen(state.returnScreen);else if(state.screen==='run')showScreen('chat');else{state.hover=null;state.focus=null;state.pinned=null;updateGraph();}});
+    setScenario('running');setView(window.matchMedia('(max-width:720px)').matches?'mobile':'desktop');updateGraph();
+  </script>
+</body>
+</html>
