@@ -267,6 +267,8 @@ created → dispatching ────────→ completed
 
 Run 没有用户验收状态（2026-10-31 移除 `deliveryStatus`）。成员直接写工作区，“接受”不会让改动生效，“丢弃”也不会回滚文件，这样的验收只是一个标签。完成的 Run 只展示交付证据，用户认为有问题时在团队聊天继续反馈，或通过 amend 修订。旧快照中的 `deliveryStatus` 读入即丢弃，旧 journal 中的 `run_delivery_updated` 事件在重建时忽略。
 
+2026-11-11 状态语义修订草案见 [Run 执行状态与目标达成契约](team-run-outcome-contract.md)：当前 completed 仅证明本轮执行结束，Task 全部结束不能证明用户目标达成，也不能自动关闭事项。草案定义独立目标条件、证据判定和用户确认；尚未实施，上述现行状态机保持不变。
+
 上图是当前主路径示意；`planning`、`collecting` 常量保留兼容，但当前执行流不进入。`waiting_input` 也可在用户继续后直接折叠到终态。验证闸门失败停在 `waiting_input`，用户继续后重验；`paused`/`waiting_input` 期间在途任务仍会结算，但 Run 不自动折叠。
 
 ## 5. 编排协议
