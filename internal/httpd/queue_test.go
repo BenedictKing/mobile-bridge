@@ -15,6 +15,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/team"
 )
 
 // queueAgent is a python ACP agent whose prompts are recorded; a prompt
@@ -228,6 +229,46 @@ func TestSubmissionsLedgerTransitions(t *testing.T) {
 	// The queued "带附件" entry keeps its thread dispatchable after a reload.
 	if got := reloaded.queuedThreads(); len(got) != 1 || got[0] != "thread-1" {
 		t.Fatalf("queuedThreads=%v", got)
+	}
+}
+
+func TestInternalTaskSubmissionsAreMarkedAndExcludedFromPhoneQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "submissions.json")
+	ledger := mustLoadSubmissions(t, path)
+	entry, _, err := ledger.enqueue("thread-1", "7aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "内部审查", "queue", "", nil, nil, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ledger.get("thread-1", entry.ID).InternalTask {
+		t.Fatal("internal origin must be saved atomically")
+	}
+	rows := ledger.meta("thread-1")
+	if len(rows.Items) != 1 {
+		t.Fatalf("ledger should retain internal row for reconciliation: %d", len(rows.Items))
+	}
+	row := rows.Items[0].(*jsoncompat.Object)
+	if internal, _ := row.MustGet("internalTask").(bool); !internal {
+		t.Fatalf("internal marker missing: %v", row)
+	}
+	legacy, _, err := ledger.enqueue("thread-1", "8aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "历史审查", "send", "", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, _, err := ledger.enqueue("thread-1", "9aaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", "[Team review] 用户自己输入的内容", "send", "", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := team.LoadStore(filepath.Join(t.TempDir(), "teams.json"), filepath.Join(t.TempDir(), "runs.json"))
+	if err := store.SaveRun(&team.Run{ID: "old-run", TeamID: "team", Tasks: []team.Task{{ID: "review", SubmissionID: legacy.ID, Status: team.TaskOutcomeUnknown}}}); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Queue: mustLoadSubmissions(t, path), TeamStore: store}
+	visible := server.queueMetaExcludingActivations("thread-1")
+	if len(visible.Items) != 1 || visible.Items[0].(*jsoncompat.Object).MustGet("id") != user.ID {
+		t.Fatalf("only user submission should remain visible: %+v", visible)
+	}
+	if server.Queue.get("thread-1", legacy.ID).Status != SubUnknown || store.Run("old-run").Tasks[0].Status != team.TaskOutcomeUnknown {
+		t.Fatal("filtering must not change unknown delivery facts")
 	}
 }
 

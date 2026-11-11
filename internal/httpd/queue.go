@@ -61,6 +61,7 @@ type submissionEntry struct {
 	CreatedAt       float64  `json:"createdAt"`
 	QueueOrder      int      `json:"queueOrder,omitempty"`
 	QueueAttempts   int      `json:"queueAttempts,omitempty"`
+	InternalTask    bool     `json:"internalTask,omitempty"`
 }
 
 // submissions is the durable ledger: key "threadID:submissionID" -> entry,
@@ -282,6 +283,9 @@ func (q *submissions) meta(threadID string) *jsoncompat.Array {
 		row.Set("text", entry.Text)
 		row.Set("status", entry.Status)
 		row.Set("editable", true)
+		if entry.InternalTask {
+			row.Set("internalTask", true)
+		}
 		if len(entry.AttachmentNames) > 0 {
 			names := &jsoncompat.Array{}
 			for _, name := range entry.AttachmentNames {
@@ -907,7 +911,7 @@ func (q *submissions) threadEntries(threadID string) []*submissionEntry {
 // enqueue validates and records one send; a same-id same-content retry
 // returns the prior entry with duplicate=true (Python send's idempotency).
 func (q *submissions) enqueue(threadID, submissionID, text, mode, workMode string,
-	skills, attachments, attachmentNames []string) (*submissionEntry, bool, error) {
+	skills, attachments, attachmentNames []string, internalTask ...bool) (*submissionEntry, bool, error) {
 	if err := validateSubmissionInput(submissionID, text, mode); err != nil {
 		return nil, false, err
 	}
@@ -928,6 +932,7 @@ func (q *submissions) enqueue(threadID, submissionID, text, mode, workMode strin
 		Text: text, Mode: mode, Skills: skills, WorkMode: workMode,
 		Attachments: attachments, AttachmentNames: attachmentNames,
 		Status: SubQueued, CreatedAt: float64(time.Now().UnixMilli()) / 1000}
+	entry.InternalTask = len(internalTask) > 0 && internalTask[0]
 	lastOrder := 0
 	for _, existing := range q.entries {
 		if existing.QueueOrder > lastOrder {

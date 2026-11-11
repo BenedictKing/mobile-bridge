@@ -99,7 +99,7 @@ func (a teamQueueAdapter) Enqueue(threadID, submissionID, text string, attachmen
 	}
 	names := (&handler{server: a.server}).resolveAttachmentNames(threadID, attachments)
 	entry, duplicate, err := a.server.Queue.enqueue(threadID, submissionID, text,
-		"queue", "", nil, attachments, names)
+		"queue", "", nil, attachments, names, true)
 	if err != nil {
 		return "", false, err
 	}

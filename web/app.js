@@ -1375,6 +1375,7 @@ function renderQueue(rows){
   $('queued').replaceChildren();
   const target=currentId,host=currentHost;
   for(const row of uniqueQueueRows(rows)){
+    if(row.internalTask)continue;
     const card=el('div','queue-card');
     if(row.status==='waiting_input'&&row.input){
       renderWaitingInput(card,row,target,host);

@@ -908,12 +908,22 @@ func (s *Server) queueMetaExcludingActivations(threadID string) *jsoncompat.Arra
 	for _, id := range s.goalActivationIDs(threadID) {
 		hidden[id] = true
 	}
-	if len(hidden) == 0 {
-		return rows
+	// 旧账本没有来源字段，按真实任务派发 ID 识别；不依赖提示词前缀猜测。
+	if s.TeamStore != nil {
+		for _, run := range s.TeamStore.Runs() {
+			for _, task := range run.Tasks {
+				if task.SubmissionID != "" {
+					hidden[task.SubmissionID] = true
+				}
+			}
+		}
 	}
 	visible := &jsoncompat.Array{}
 	for _, item := range rows.Items {
 		if row, ok := item.(*jsoncompat.Object); ok {
+			if internal, _ := row.MustGet("internalTask").(bool); internal {
+				continue
+			}
 			if id, _ := row.MustGet("id").(string); hidden[id] {
 				continue
 			}
