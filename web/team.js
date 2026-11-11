@@ -117,6 +117,11 @@ const TEAM_EVENT_TASK_STATUS={task_dispatching:'dispatching',task_running:'runni
 
 function teamRunStatusLabel(status){return TEAM_RUN_STATUS_LABELS[status]||status;}
 function teamTaskStatusLabel(status){return TEAM_TASK_STATUS_LABELS[status]||status;}
+function teamTaskSessionId(task,detail,member){
+  if(!task)return member?.sessionId||'';
+  const thread=(detail?.threads||[]).find(row=>row.id===task.executionThreadId);
+  return task.result?.sessionId||task.dispatchSessionId||thread?.providerSessionId||member?.sessionId||'';
+}
 
 // Run 与事项共用的目标核对入口；草稿留在控制器内，轮询重绘不会丢失用户输入。
 function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated}){
@@ -2126,11 +2131,8 @@ class TeamRunScreen{
       card.append(box);
     }
     const actions=this.node('div',undefined,'task-actions');
-    // 原会话跳转的兜底链：结果引用的会话 > 任务所属执行线程的绑定会话 >
-    // 成员绑定会话（阶段一执行线程契约：任务经线程派发，线程绑定是跳转的
-    // 权威来源；旧网关无线程投影时退回成员会话）。
-    const thread=(this.detail?.threads||[]).find(th=>th.id===task.executionThreadId);
-    const sessionId=result?.sessionId||task.dispatchSessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null);
+    // 实时面板与完整 Run 共用会话解析，避免两处跳转口径漂移。
+    const sessionId=teamTaskSessionId(task,this.detail,member);
     if(sessionId){
       const open=this.button(t('打开原会话'),()=>{
         // 不先 leave() 退栈；由会话入口记录来源 Run 和结果回合，提供准确的返回路径。
@@ -2546,12 +2548,10 @@ class TeamRunScreen{
   openForwardDialog(task){
     const dialog=this.forwardDialog();
     const member=this.teamMember(task.memberId);
-    // 来源会话兜底链与任务卡的原会话跳转一致（阶段一执行线程契约）：
-    // 结果引用 > 执行线程绑定 > 成员绑定。
-    const thread=(this.detail?.threads||[]).find(th=>th.id===task.executionThreadId);
+    // 来源会话与任务卡、实时面板使用同一兜底链。
     dialog.forwardState={
       taskId:task.id,
-      sourceSessionId:task.result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null),
+      sourceSessionId:teamTaskSessionId(task,this.detail,member),
       source:'task',scope:'main',
       target:'',note:'',
       busy:false,error:'',
@@ -2650,4 +2650,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout,renderTeamGoalReview,teamRunGroup};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout,renderTeamGoalReview,teamRunGroup,teamTaskSessionId};

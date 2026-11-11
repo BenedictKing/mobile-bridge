@@ -38,12 +38,14 @@ var graphStatusPrecedence = []string{
 // 节点是真实任务 ID；broadcast 聚合节点是计划条目 ID，memberIds>1 时前端
 // 展开成员列表）；agentKinds 必带（成员类型徽标依赖，解析不到成员时为空
 // 数组而非缺失）；runCount 是该阶段的执行次数（派生链聚合累加，普通节点
-// 恒 1）；resultHead/truncated 是最新一次执行的有界结果摘要。
+// 恒 1）；taskIds 按快照序保留真实执行任务，供会话跳转和定位使用；
+// resultHead/truncated 是最新一次执行的有界结果摘要。
 type RunGraphNode struct {
 	ID         string   `json:"id"`
 	Label      string   `json:"label"`
 	Status     string   `json:"status"`
 	MemberIDs  []string `json:"memberIds"`
+	TaskIDs    []string `json:"taskIds"`
 	AgentKinds []string `json:"agentKinds"`
 	DependsOn  []string `json:"dependsOn"`
 	RunCount   int      `json:"runCount"`
@@ -171,11 +173,13 @@ func BuildRunGraph(run *Run, teamRow *Team) RunGraph {
 			ID:         builder.id,
 			Label:      builder.id,
 			MemberIDs:  []string{},
+			TaskIDs:    []string{},
 			AgentKinds: []string{},
 			DependsOn:  []string{},
 			RunCount:   1,
 		}
 		for _, task := range builder.tasks {
+			node.TaskIDs = append(node.TaskIDs, task.ID)
 			node.MemberIDs = appendUnique(node.MemberIDs, task.MemberID)
 			if kind := agentKindOf(task.MemberID); kind != "" {
 				node.AgentKinds = appendUnique(node.AgentKinds, kind)

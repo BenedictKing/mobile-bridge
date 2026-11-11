@@ -126,12 +126,13 @@ function teamCanvasDeliveryRows(run,t=value=>value){
 }
 
 class TeamCanvasController{
-  constructor({root,request,openRun,notify}){
-    Object.assign(this,{root,request,openRun,notify});
-    this.current=null;this.inputs=[];this.issues=[];
+  constructor({root,request,openRun,openSession,notify}){
+    Object.assign(this,{root,request,openRun,openSession,notify});
+    this.current=null;this.inputs=[];this.issues=[];this.currentRun=null;
     this.positions=new Map();this.generation=0;this.pollTimer=null;this.refreshToken=null;
-    this.transform={x:0,y:0,scale:1};this.drag=null;this.detailIssue=null;this.detailRun=null;this.detailRequestToken=null;this.focusedIssueID=null;
+    this.transform={x:0,y:0,scale:1};this.drag=null;this.detailIssue=null;this.detailRun=null;this.detailRequestToken=null;this.focusedIssueID=null;this.detailMode=null;
     this.viewport=document.getElementById('team-canvas-viewport');
+    this.stage=document.getElementById('team-canvas-stage');
     this.world=document.getElementById('team-canvas-world');
     this.nodes=document.getElementById('team-canvas-nodes');
     this.wires=document.getElementById('team-canvas-wires');
@@ -141,6 +142,10 @@ class TeamCanvasController{
     this.zoomLabel=document.getElementById('team-canvas-zoom');
     this.boardRoot=document.getElementById('team-project-board');this.view='canvas';this.boardPanel=null;
     this.touchPoints=new Map();this.pinch=null;
+    this.liveRoot=this.node('div');
+    this.livePanel=typeof TeamLivePanelController==='undefined'?null:new TeamLivePanelController({root:this.liveRoot,request:this.request,
+      openRun:(teamID,runID,options)=>this.openRun?.(teamID,runID,options),
+      openSession:(sessionID,source)=>this.openSession?.(sessionID,source)});
     this.bindControls();
   }
   t(value){return typeof BridgeI18n!=='undefined'?BridgeI18n.t(value):value;}
@@ -156,13 +161,14 @@ class TeamCanvasController{
         if(!target)return;event.preventDefault();this.setView(target);document.getElementById('team-view-'+target).focus();
       });
     }
+    document.getElementById('team-canvas-current-run').addEventListener('click',event=>this.openCurrentRun(event.currentTarget));
     document.getElementById('team-canvas-refresh').addEventListener('click',()=>this.refresh(true));
     document.getElementById('team-canvas-fit').addEventListener('click',()=>this.fitAll());
     document.getElementById('team-canvas-zoom-out').addEventListener('click',()=>this.zoomAt(this.transform.scale/1.2));
     document.getElementById('team-canvas-zoom-in').addEventListener('click',()=>this.zoomAt(this.transform.scale*1.2));
     document.getElementById('team-canvas-detail-close').addEventListener('click',()=>this.closeDetail());
     this.detail.addEventListener('keydown',event=>{
-      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();this.closeDetail();}
+      if(event.key==='Escape'){event.preventDefault();event.stopPropagation();if(!this.livePanel?.clearSelection())this.closeDetail();}
       else if(event.key==='Tab'&&this.detail.getAttribute('aria-modal')==='true'){
         const targets=[...this.detail.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[tabindex="0"]')].filter(node=>node.offsetWidth&&node.offsetHeight);
         const first=targets[0],last=targets[targets.length-1];
@@ -190,7 +196,79 @@ class TeamCanvasController{
     },{passive:false});
     window.addEventListener('resize',()=>{if(this.root.hidden)return;this.render();});
   }
+  setCurrentRun(run,team=null){
+    this.currentRun=run||null;
+    const button=document.getElementById('team-canvas-current-run');if(!button)return;
+    button.disabled=!run;
+    button.textContent=run?this.t('当前 Run')+' · '+this.t(typeof teamRunStatusLabel==='function'?teamRunStatusLabel(run.status):run.status):this.t('当前 Run');
+    if(run)button.dataset.status=run.status||'';else delete button.dataset.status;
+    if(this.detailMode==='current'&&run&&(!team||team.id===this.current?.id)){
+      const sameRun=this.detailRun?.id===run.id;
+      this.detailRun=run;this.renderCurrentDetail(sameRun);
+    }
+    this.restoreOpenDetail();
+  }
+  captureDetail(){
+    if(this.current&&!this.detail.hidden&&this.detailRun)this.pendingRestore={teamId:this.current.id,mode:this.detailMode,issueId:this.detailIssue?.id||null,runId:this.detailRun.id,selection:this.livePanel?.pinned||null};
+  }
+  restoreOpenDetail(){
+    const restore=this.restoreDetail;if(!restore||this.detailRun||!this.current)return;
+    if(restore.mode==='current'&&this.currentRun?.id===restore.runId)this.openCurrentRun(null,restore.selection);
+    else if(restore.mode==='issue'){
+      const issue=this.issues.find(row=>row.id===restore.issueId);
+      if(issue&&(issue.runs||[]).some(run=>run.id===restore.runId))this.openDetail(issue,null,restore.selection);
+    }
+  }
+  openCurrentRun(trigger,selection=null){
+    if(!this.currentRun)return;
+    this.openLiveDetail({issue:null,run:this.currentRun,trigger,selection});
+  }
+  openLiveDetail({issue,run,trigger,selection}){
+    document.getElementById('team-canvas-detail-error').textContent='';
+    this.restoreDetail=null;this.detailIssue=issue;this.detailRun=run;this.detailMode=issue?'issue':'current';this.detailTrigger=trigger;
+    this.detail.hidden=false;this.detail.classList.add('open');this.detail.setAttribute('aria-modal',String(window.matchMedia('(max-width:720px)').matches));
+    this.detail.setAttribute('aria-label',this.t(issue?'事项详情':'当前 Run'));
+    this.syncDetailLayout();if(issue)this.focusItem(issue.id);
+    this.detailRequestToken={};this.liveSelection=selection;
+    if(issue)this.renderDetail(issue);else this.renderCurrentDetail();
+    document.getElementById('team-canvas-detail-close').focus({preventScroll:true});
+  }
+  syncLivePanel(issue=null){
+    const run=this.detailRun;if(!this.livePanel)return;
+    if(!run){this.livePanel.close();return;}
+    if(this.livePanel.run?.id===run.id)this.livePanel.update({team:this.current,run,issue});
+    else this.livePanel.open({team:this.current,run,issue,selection:this.liveSelection});
+    this.liveSelection=null;
+  }
+  renderCurrentDetail(preserveScroll=false){
+    const run=this.detailRun;if(!run)return;
+    const focus=this.livePanel?.captureFocus();
+    document.getElementById('team-canvas-detail-id').textContent='Run · '+this.shortID(run.id);
+    document.getElementById('team-canvas-detail-title').textContent=run.goal||run.id;
+    document.getElementById('team-canvas-detail-status').textContent=this.statusLabel(run);
+    const body=document.getElementById('team-canvas-detail-body'),scrollTop=preserveScroll?body.scrollTop:0;body.replaceChildren();
+    const related=this.issues.filter(issue=>(issue.runs||[]).some(row=>row.id===run.id));
+    if(related.length){
+      const section=this.detailSection('关联事项',[]);
+      for(const issue of related)section.append(this.button(issue.title||this.t('团队事项'),'plain team-canvas-source',()=>this.openDetail(issue,null)));
+      body.append(section);
+    }
+    this.syncLivePanel(null);if(this.livePanel)body.append(this.liveRoot);
+    this.livePanel?.restoreFocus(focus);
+    body.scrollTop=scrollTop;
+    document.getElementById('team-canvas-delete-issue').hidden=true;
+    const openRunButton=document.getElementById('team-canvas-open-run');openRunButton.disabled=false;openRunButton.textContent=this.t('打开 Run 详情');
+  }
+  syncDetailLayout(){
+    if(!this.viewport)return;
+    this.viewport.classList.toggle('detail-docked',!this.detail.hidden);
+    if(!this.lastRecords)return;
+    this.layout(this.lastRecords.bubbles,this.lastRecords.issues);this.renderWires(this.lastRecords);
+  }
+  viewportRect(){return(this.stage||this.viewport).getBoundingClientRect();}
   open(team){
+    this.captureDetail();
+    const restore=team&&this.pendingRestore?.teamId===team.id?this.pendingRestore:null;
     clearInterval(this.pollTimer);
     this.resetTouch();
     this.boardPanel?.stopPolling();this.boardPanel=null;this.boardRoot.replaceChildren();
@@ -205,6 +283,9 @@ class TeamCanvasController{
       openRun:(teamID,runID)=>this.openRun?.(teamID,runID)});
     let view='canvas';try{view=localStorage.getItem('team-view:'+team.id)||view;}catch{}
     this.setView(view,false);
+    // setView 会清理旧详情；恢复必须在它之后，成员会话期间仍保留来源。
+    this.restoreDetail=restore;if(restore)this.pendingRestore=null;
+    this.restoreOpenDetail();
     this.pollTimer=setInterval(()=>this.refresh(),5000);
   }
   close(){this.open(null);}
@@ -217,7 +298,7 @@ class TeamCanvasController{
       const tab=document.getElementById('team-view-'+key),selected=this.view===key;
       tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;
     }
-    for(const id of ['team-canvas-fit','team-canvas-zoom-out','team-canvas-zoom-in','team-canvas-zoom'])document.getElementById(id).hidden=board;
+    for(const id of ['team-canvas-fit','team-canvas-zoom-out','team-canvas-zoom-in','team-canvas-zoom','team-canvas-current-run'])document.getElementById(id).hidden=board;
     if(persist&&this.current)try{localStorage.setItem('team-view:'+this.current.id,this.view);}catch{}
     if(board)this.boardPanel?.refreshAll();
     else{this.render();this.refresh(true);}
@@ -259,7 +340,7 @@ class TeamCanvasController{
         if(!teamCanvasDataEqual(inputResult.value,this.inputs)){this.inputs=inputResult.value;changed=true;}
       }else this.error.textContent=this.t(inputResult.reason?.message||'读取输入失败');
       if(generation===this.generation&&this.current?.id===team.id&&changed){
-        this.render();
+        this.render();this.restoreOpenDetail();
         const latest=this.issues.find(issue=>issue.id===this.detailIssue?.id);
         if(latest&&latest.reviewRunVersion!==this.detailIssue.reviewRunVersion&&!this.detailRefreshing){
           this.detailRefreshing=true;const issueID=latest.id,requestToken=this.detailRequestToken;
@@ -424,7 +505,7 @@ class TeamCanvasController{
   layout(bubbleRecords,issueRecords){
     const mobile=window.matchMedia('(max-width:720px)').matches;
     if(this.mobileLayout!==undefined&&this.mobileLayout!==mobile)this.positions.clear();
-    const plan=teamCanvasLayout(bubbleRecords,issueRecords,{width:this.viewport.clientWidth||940,mobile});
+    const plan=teamCanvasLayout(bubbleRecords,issueRecords,{width:(this.stage||this.viewport).clientWidth||940,mobile});
     let {width,height}=plan;
     for(const {record,key,grid,busX,...position} of plan.positions){
       const node=record.node;let {x,y}=position;
@@ -482,31 +563,27 @@ class TeamCanvasController{
     if(!boxes.length)return;
     const left=Math.min(...boxes.map(box=>box.x)),top=Math.min(...boxes.map(box=>box.y));
     const width=Math.max(...boxes.map(box=>box.x+box.width))-left,height=Math.max(...boxes.map(box=>box.y+box.height))-top;
-    const rect=this.viewport.getBoundingClientRect();
-    // 桌面详情占据右侧，关联节点应完整落在剩余画布；手机全屏详情关闭后再看画布。
-    const detailWidth=!this.mobileLayout&&!this.detail.hidden?this.detail.offsetWidth:0;
+    const rect=this.viewportRect?this.viewportRect():this.viewport.getBoundingClientRect();
+    // 宽屏 stage 已扣除停靠详情；覆盖式详情仍需在剩余画布中定位。
+    const docked=this.stage&&window.matchMedia('(min-width:1400px)').matches;
+    const detailWidth=!this.mobileLayout&&!this.detail.hidden&&!docked?this.detail.offsetWidth:0;
     const fit=teamCanvasFitTransform(rect.width-detailWidth,rect.height,width,height);
     if(fit){this.transform={scale:fit.scale,x:fit.x-left*fit.scale,y:fit.y-top*fit.scale};this.applyTransform();}
   }
   focusMessage(id){
     const node=this.nodes.querySelector(`[data-input-id="${CSS.escape(id)}"]`),p=node?._canvasPosition;
     if(!p)return;
-    const rect=this.viewport.getBoundingClientRect();
+    const rect=this.viewportRect?this.viewportRect():this.viewport.getBoundingClientRect();
     this.transform.scale=Math.max(this.transform.scale,Math.min(.72,(rect.width-48)/this.canvasWidth));
     this.transform.x=rect.width/2-(p.x+node.offsetWidth/2)*this.transform.scale;
     this.transform.y=rect.height/2-(p.y+node.offsetHeight/2)*this.transform.scale;
     this.userInteracted=true;
     this.applyTransform();
   }
-  openDetail(issue,trigger){
-    document.getElementById('team-canvas-detail-error').textContent='';
-    this.detailIssue=issue;this.detailRun=(issue.runs||[])[0]||null;this.detailTrigger=trigger;this.detail.hidden=false;this.detail.classList.add('open');
-    this.detail.setAttribute('aria-modal',String(window.matchMedia('(max-width:720px)').matches));
-    this.focusItem(issue.id);
-    const requestToken={};this.detailRequestToken=requestToken;
-    this.renderDetail(issue);
-    document.getElementById('team-canvas-detail-close').focus({preventScroll:true});
-    const teamID=this.current?.id;
+  openDetail(issue,trigger,selection=null){
+    const run=(issue.runs||[])[0]||null;
+    this.openLiveDetail({issue,run,trigger,selection});
+    const requestToken=this.detailRequestToken,teamID=this.current?.id;
     if(!teamID)return;
     this.request('/api/teams/'+encodeURIComponent(teamID)+'/issues/'+encodeURIComponent(issue.id)).then(detail=>{
       if(this.detailRequestToken!==requestToken||this.detailIssue?.id!==issue.id)return;
@@ -518,15 +595,19 @@ class TeamCanvasController{
     });
   }
   renderDetail(issue,preserveScroll=false){
+    const focus=this.livePanel?.captureFocus();
     document.getElementById('team-canvas-detail-id').textContent='Issue · '+this.shortID(issue.id);
     document.getElementById('team-canvas-detail-title').textContent=issue.title||this.t('团队事项');
     document.getElementById('team-canvas-detail-status').textContent=this.statusLabel(issue);
     const body=document.getElementById('team-canvas-detail-body'),scrollTop=preserveScroll?body.scrollTop:0;body.replaceChildren();
+    document.getElementById('team-canvas-delete-issue').hidden=false;
     body.append(this.detailSection('当前着落',[
       teamCanvasOwnerLine(issue,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind),
       this.progress(issue)?this.t('Agent 任务')+' '+this.progress(issue).completed+'/'+this.progress(issue).total+' '+this.t('正常结束'):'进度待同步',
       issue.nextAction?.label?this.t('下一步')+' · '+issue.nextAction.label:'',
     ].filter(Boolean)));
+    if(this.detailRun){this.syncLivePanel(issue);if(this.livePanel)body.append(this.liveRoot);}else this.livePanel?.close();
+    this.livePanel?.restoreFocus(focus);
     if(issue.outcome&&issue.reviewRunId&&typeof renderTeamGoalReview==='function'){
       this.goalDrafts=this.goalDrafts||new Map();
       const teamID=this.current.id,issueID=issue.id;
@@ -556,15 +637,15 @@ class TeamCanvasController{
       body.append(section);
     }
     const runs=(issue.runs||[]).map(run=>{
-      const progress=this.progress(run),parts=[this.statusLabel(run)];
-      if(progress)parts.push(this.t('Agent 任务')+' '+progress.completed+'/'+progress.total+' '+this.t('正常结束'));
-      const owner=teamCanvasOwnerLine(run,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind);if(owner)parts.push(owner);
-      if(run.nextAction?.label)parts.push(this.t('下一步')+' · '+run.nextAction.label);
-      if(run.lastUpdate?.summary)parts.push(this.t('最近回音')+' · '+run.lastUpdate.summary);
-      const sections=[this.detailSection('Run · '+this.shortID(run.id),parts)];
-      if(this.openRun){
-        const teamID=this.current.id;
-        sections[0].append(this.button(this.t('打开 Run 详情'),'plain',()=>this.openRun(teamID,run.id)));
+      const live=run.id===this.detailRun?.id,sections=[];
+      if(!live){
+        const progress=this.progress(run),parts=[this.statusLabel(run)];
+        if(progress)parts.push(this.t('Agent 任务')+' '+progress.completed+'/'+progress.total+' '+this.t('正常结束'));
+        const owner=teamCanvasOwnerLine(run,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind);if(owner)parts.push(owner);
+        if(run.nextAction?.label)parts.push(this.t('下一步')+' · '+run.nextAction.label);
+        if(run.lastUpdate?.summary)parts.push(this.t('最近回音')+' · '+run.lastUpdate.summary);
+        sections.push(this.detailSection('Run · '+this.shortID(run.id),parts));
+        if(this.openRun){const teamID=this.current.id;sections[0].append(this.button(this.t('打开 Run 详情'),'plain',()=>this.openRun(teamID,run.id)));}
       }
       const evidence=teamCanvasDeliveryRows(run,value=>this.t(value));
       const result=run.delivery?.resultSummary||{};
@@ -626,12 +707,14 @@ class TeamCanvasController{
   }
   closeDetail(){
     if(!this.detail)return;
-    this.detailRequestToken=null;
-    this.detail.classList.remove('open');this.detail.hidden=true;this.detailIssue=null;this.detailRun=null;this.detail.setAttribute('aria-modal','false');
+    this.detailRequestToken=null;this.restoreDetail=null;this.livePanel?.close();
+    this.detail.classList.remove('open');this.detail.hidden=true;this.detailIssue=null;this.detailRun=null;this.detailMode=null;this.detail.setAttribute('aria-modal','false');
+    this.syncDetailLayout();
     this.detailTrigger?.focus?.({preventScroll:true});this.detailTrigger=null;
+    if(this.focusedIssueID)this.focusItem(this.focusedIssueID);
   }
   fitAll(userInitiated=true,readable=false){
-    const rect=this.viewport.getBoundingClientRect();if(!rect.width||!rect.height||!this.canvasWidth||!this.canvasHeight)return;
+    const rect=this.viewportRect?this.viewportRect():this.viewport.getBoundingClientRect();if(!rect.width||!rect.height||!this.canvasWidth||!this.canvasHeight)return;
     const fit=teamCanvasFitTransform(rect.width,rect.height,this.canvasWidth,this.canvasHeight,readable?.9:1);
     if(!fit)return;
     if(readable){
@@ -644,7 +727,7 @@ class TeamCanvasController{
     this.applyTransform();
   }
   zoomAt(scale,clientX,clientY){
-    const rect=this.viewport.getBoundingClientRect(),x=clientX===undefined?rect.width/2:clientX-rect.left,y=clientY===undefined?rect.height/2:clientY-rect.top;
+    const rect=this.viewportRect(),x=clientX===undefined?rect.width/2:clientX-rect.left,y=clientY===undefined?rect.height/2:clientY-rect.top;
     const pointX=(x-this.transform.x)/this.transform.scale,pointY=(y-this.transform.y)/this.transform.scale;
     this.transform.scale=Math.max(.08,Math.min(1.6,scale));
     this.userInteracted=true;

@@ -396,6 +396,7 @@ class TeamChatController{
   }
   render(){
     const root=this.root,team=this.team,run=this.run;
+    globalThis.BridgeTeamCanvas?.setCurrentRun(this.current?run:null,this.current);
     root.replaceChildren();
     if(!this.current||!team){root.hidden=true;return;}
     root.hidden=false;

@@ -557,6 +557,7 @@ function chatRunSource(id,host){
 function syncChatRunSource(id,host){
   const source=chatRunSource(id,host);
   $('chat-run-origin').hidden=!source;
+  $('chat-run-back').textContent=t(source?.returnTo==='canvas'?'返回画布':'返回 Run');
   $('chat-run-task').textContent=source?.taskId||'';
 }
 $('chat-run-back').onclick=()=>{if(history.state?.chatRunOrigin)history.back();};
@@ -1929,7 +1930,9 @@ const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatControll
     if(result&&currentTeam?.id===team.id&&currentId!==result.sessionId)await openChat(result.sessionId,'local',team.id);
   }catch(error){toast(error.message);}
 }});
-const teamCanvas=typeof TeamCanvasController==='undefined'?null:new TeamCanvasController({root:$('team-canvas'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),notify:toast});
+const teamCanvas=typeof TeamCanvasController==='undefined'?null:new TeamCanvasController({root:$('team-canvas'),request:teamRequest,
+  openRun:(teamId,runId,options)=>openTeamRun(teamId,runId,false,options?.taskId),
+  openSession:(sessionId,source)=>openRunConversation(sessionId,{...source,returnTo:'canvas'}),notify:toast});
 globalThis.BridgeTeamCanvas=teamCanvas;
 async function openTeamChat(team){
   const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
@@ -2087,7 +2090,7 @@ function closeTeamRunView(){
   if($('chat').hidden)$('welcome').hidden=false;
   syncWorkspaceNavigation();
 }
-function openTeamRun(teamId,runId,fromRoute=false){
+function openTeamRun(teamId,runId,fromRoute=false,taskId=''){
   if(!teamRunScreen)return;
   const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
   openRunRoute='#run='+encodeURIComponent(teamId)+'/'+encodeURIComponent(runId);
@@ -2103,7 +2106,7 @@ function openTeamRun(teamId,runId,fromRoute=false){
   $('welcome').hidden=true;$('chat').hidden=true;$('team-run').hidden=false;
   $('app').classList.remove('team-open');$('app').classList.add('chat-open');
   syncWorkspaceNavigation();
-  teamRunScreen.openRun(teamId,runId).then(()=>syncDocumentTitle());
+  teamRunScreen.openRun(teamId,runId).then(()=>{syncDocumentTitle();if(taskId)requestAnimationFrame(()=>teamRunScreen.revealTask(taskId));});
 }
 /* 团队工作台独立使用 #teams 深链；Run 摘要只在工作台可见时 15s 轮询。 */
 if(teamsPanel){

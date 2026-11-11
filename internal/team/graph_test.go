@@ -79,6 +79,9 @@ func TestBuildRunGraphBroadcastGroupAggregates(t *testing.T) {
 		t.Fatalf("broadcast 组应聚合为单节点: %+v", graph.Nodes)
 	}
 	scan := graphNodeOf(t, graph, "scan")
+	if len(scan.TaskIDs) != 2 || scan.TaskIDs[0] != "scan-lead" || scan.TaskIDs[1] != "scan-dev" {
+		t.Fatalf("广播组必须按快照顺序保留真实任务 ID: %+v", scan.TaskIDs)
+	}
 	if scan.RunCount != 1 {
 		t.Fatalf("组是同一次条目执行的多路展开，runCount 恒 1: %+v", scan)
 	}
@@ -128,6 +131,9 @@ func TestBuildRunGraphRepairChainAggregatesRunCount(t *testing.T) {
 		t.Fatalf("修复链聚合、派生任务独立成节点，应有三节点: %+v", graph.Nodes)
 	}
 	lead := graphNodeOf(t, graph, "lead")
+	if len(lead.TaskIDs) != 2 || lead.TaskIDs[0] != "lead" || lead.TaskIDs[1] != "actfix-lead-1" {
+		t.Fatalf("修复链必须保留原任务及最新执行，不能只输出阶段 ID: %+v", lead.TaskIDs)
+	}
 	if lead.RunCount != 2 || lead.Status != TaskFailed || lead.ResultHead != "第一轮规划" {
 		t.Fatalf("修复链节点 runCount=2、状态取最新、结果取最近带结果的执行: %+v", lead)
 	}
