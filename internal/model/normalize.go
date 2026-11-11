@@ -105,7 +105,7 @@ func NormalizeState(state *jsoncompat.Object, connected bool) *jsoncompat.Object
 					messages.Items = append(messages.Items, NormalizeItem(item))
 				}
 			} else {
-				messages.Items = append(messages.Items, NormalizeItem(item))
+				messages.Items = append(messages.Items, normalizeTurnItem(item, jsoncompat.PyStr(turn.MustGet("status"))))
 			}
 		}
 		hasUser := false

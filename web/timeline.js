@@ -12,6 +12,25 @@ const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title===
 const reasoningRow=row=>row.role==='activity'&&(row.kind==='reasoning'||row.kind==='agentThought');
 const approvalReviewRow=row=>row.role==='activity'&&(row.kind==='automaticApprovalReview'||row.title==='automaticApprovalReview');
 const approvalReviewStatus=status=>timelineText({approved:'已批准',allow:'已批准',denied:'已拒绝',rejected:'已拒绝',deny:'已拒绝',inProgress:'审查中',pending:'审查中',completed:'审查已结束',failed:'审查失败',interrupted:'已中断',cancelled:'已取消'}[status]||'状态待同步');
+const approvedReview=(row,text)=>{
+  if(row.status&&row.status!=='completed')return /^(approved|allow)$/.test(row.status);
+  try{const value=JSON.parse(text);return /^(approved|allow)$/.test(value?.decision||value?.review?.decision||value?.status);}catch{return false;}
+};
+const compactionRow=row=>row.role==='activity'&&(row.kind==='contextCompaction'||row.title==='contextCompaction');
+const compactionStatusText=status=>timelineText({inProgress:'压缩中',completed:'已完成',interrupted:'已中断'}[status]||'状态待同步');
+const compactionContent=(row,text)=>{
+  let status=row.status,source,value;
+  try{value=JSON.parse(text);}catch{}
+  if(value&&typeof value==='object'&&!Array.isArray(value)&&value.type==='contextCompaction'){
+    status=row.turnStatus==='completed'||value.completed!==false?'completed':!row.turnStatus||row.turnStatus==='inProgress'?'inProgress':'interrupted';
+    source=value.source??'automatic';
+  }else if(!/^\s*[\[{]/.test(String(text||''))){
+    return {status,text};
+  }else if(!status&&row.turnStatus==='completed')status='completed';
+  const lines=[timelineText('压缩状态')+'：'+compactionStatusText(status)];
+  if(source==='manual'||source==='automatic')lines.push(timelineText('触发方式')+'：'+timelineText(source==='manual'?'手动':'自动'));
+  return {status,text:lines.join('\n')};
+};
 // 兼容旧网关把未知事件序列化为 JSON 的历史投影；只生成文本节点。
 const approvalReviewText=(text,row)=>{
   let value;try{value=JSON.parse(text);}catch{
@@ -62,10 +81,11 @@ const toolLabel=title=>{
 };
 
 // Heading label for one row; plan rows surface live completion counts.
-const rowLabel=row=>{
+const rowLabel=(row,text=row.text)=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
   if(approvalReviewRow(row))return timelineText('自动审批审查')+(row.status?' · '+approvalReviewStatus(row.status):'');
+  if(compactionRow(row))return timelineText('上下文压缩')+' · '+compactionStatusText(compactionContent(row,text).status);
   if(reasoningRow(row))return timelineText('思考摘要');
   if(commandRow(row)){
     const state=commandState(row);
@@ -404,8 +424,14 @@ class ChatTimeline {
         }
         body.append(list);body.hidden=false;more.hidden=true;
       }else{
-        if(approvalReviewRow(row))body.textContent=approvalReviewText(text,row);
-        else if(activity&&!reasoning)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
+        if(approvalReviewRow(row)){
+          node.dataset.approvalStatus=approvedReview(row,text)?'approved':'';
+          body.textContent=approvalReviewText(text,row);
+        }else if(compactionRow(row)){
+          const content=compactionContent(row,text);
+          heading.textContent=timelineText('上下文压缩')+' · '+compactionStatusText(content.status);
+          body.textContent=content.text;
+        }else if(activity&&!reasoning)body.textContent=text;else this.renderText(body,text,[...this.files.values()],()=>this.fullText(row));
         if(activity)body.hidden=!text;
         more.hidden=detail?detail.next===null:!row.truncated;
         more.textContent=detail?timelineText('继续加载正文'):timelineText('展开完整内容');
@@ -518,7 +544,7 @@ class ChatTimeline {
     for(const [key,entry] of this.nodes){
       const row=this.rows.get(key)?.row;if(!row)continue;
       const node=entry.node,heading=node.querySelector(':scope>.who,:scope>summary');
-      if(heading)heading.textContent=rowLabel(row);
+      if(heading)heading.textContent=rowLabel(row,this.details.get(key)?.text??row.text);
       const more=node.querySelector('.detail-more');
       if(more&&!more.disabled)more.textContent=timelineText(this.details.has(key)?'继续加载正文':'展开完整内容');
       const attachment=node.querySelector('.timeline-attachments small.muted');

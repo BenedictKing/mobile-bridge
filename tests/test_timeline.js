@@ -361,12 +361,62 @@ test('truncated legacy approval JSON stays readable and expands to full rational
   timeline.dispose();
 });
 
-test('normalized approval text keeps its readable preview without pretending the command succeeded',()=>{
+test('approved reviews hide their collapsed bodies without pretending the command succeeded',()=>{
   const{timeline}=setup();
   const node=timeline.renderRow({key:'normalized',role:'activity',kind:'automaticApprovalReview',status:'approved',title:'自动审批审查',
     text:'审批状态：已批准\n风险等级：低\n审查依据：检查已授权。',truncated:true},false);
   assert.equal(node.children[0].textContent,'自动审批审查 · 已批准');
   assert.equal(node.children[0].children.length,0,'审批通过不能当作执行命令成功');
+  assert.equal(node.dataset.approvalStatus,'approved');
   assert.match(node.children[1].textContent,/风险等级：低/);
+  const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
+  assert.match(css,/\.activity\[data-approval-status=approved\]:not\(\[open\]\) \.activity-body\{display:none\}/);
+  assert.match(css,/:not\(\[data-approval-status=approved\]\)/,'三行预览规则必须排除已批准审查');
+  timeline.dispose();
+});
+
+test('denied and pending reviews retain their previews and legacy approved decisions collapse',()=>{
+  const{timeline}=setup();
+  for(const status of ['denied','pending','inProgress','failed']){
+    const node=timeline.renderRow({key:status,role:'activity',kind:'automaticApprovalReview',status,text:'审查依据：需要确认。'},false);
+    assert.equal(node.dataset.approvalStatus,'');
+    assert.match(node.children[1].textContent,/需要确认/);
+  }
+  const node=timeline.renderRow({key:'legacy-allow',role:'activity',kind:'automaticApprovalReview',
+    text:JSON.stringify({status:'completed',review:{decision:'allow',reason:'已确认。'}})},true);
+  assert.equal(node.dataset.approvalStatus,'approved');
+  assert.equal(node.open,true);
+  assert.match(node.children[1].textContent,/原因：已确认。/);
+  timeline.dispose();
+});
+
+test('context compaction renders the actual completion flag and trigger without raw fields',()=>{
+  const{timeline}=setup();
+  for(const [completed,turnStatus,status] of [[false,'inProgress','压缩中'],[true,'inProgress','已完成'],[false,'interrupted','已中断'],[false,'completed','已完成']]){
+    const node=timeline.renderRow({key:'compaction',role:'activity',kind:'contextCompaction',turnStatus,
+      text:JSON.stringify({type:'contextCompaction',id:'internal-id',startedAtMs:123,completed,source:'manual'})},false);
+    assert.equal(node.children[0].textContent,'上下文压缩 · '+status);
+    assert.match(node.children[1].textContent,/触发方式：手动/);
+    assert.doesNotMatch(node.children[1].textContent,/contextCompaction|internal-id|startedAtMs|\{/);
+  }
+  timeline.dispose();
+});
+
+test('truncated legacy compaction stays conservative then updates on full detail',async()=>{
+  const{timeline}=setup();
+  const full=JSON.stringify({type:'contextCompaction',id:'i'.repeat(200),completed:true,source:'automatic'});
+  const row={key:'legacy-compaction',version:'v1',role:'activity',kind:'contextCompaction',turnStatus:'inProgress',truncated:true,text:full.slice(0,180)};
+  timeline.rows.set(row.key,{row,sequence:1});
+  const node=timeline.renderRow(row,false);node.isConnected=true;
+  assert.equal(node.children[0].textContent,'上下文压缩 · 状态待同步');
+  assert.doesNotMatch(node.children[1].textContent,/contextCompaction|\{/);
+  timeline.read=async()=>({version:'v1',text:full,offset:0,next:null});
+  await node.children[2].onclick();
+  assert.equal(node.children[0].textContent,'上下文压缩 · 已完成');
+  assert.equal(node.children[1].textContent,'压缩状态：已完成\n触发方式：自动');
+  timeline.nodes.set(row.key,{node});
+  node.querySelector=selector=>selector===':scope>.who,:scope>summary'?node.children[0]:null;
+  timeline.relabel();
+  assert.equal(node.children[0].textContent,'上下文压缩 · 已完成','刷新标签时保留已加载详情的压缩状态');
   timeline.dispose();
 });

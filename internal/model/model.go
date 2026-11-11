@@ -345,6 +345,10 @@ func pyBaseName(path string) string {
 
 // NormalizeItem mirrors normalize_item: one desktop item to one row.
 func NormalizeItem(item *jsoncompat.Object) *jsoncompat.Object {
+	return normalizeTurnItem(item, "")
+}
+
+func normalizeTurnItem(item *jsoncompat.Object, turnStatus string) *jsoncompat.Object {
 	kindValue := any("unknown")
 	if value, ok := item.Get("type"); ok {
 		kindValue = value
@@ -404,6 +408,27 @@ func NormalizeItem(item *jsoncompat.Object) *jsoncompat.Object {
 			attachment.Set("name", pyBaseName(path))
 			row.Set("attachments", &jsoncompat.Array{Items: []any{attachment}})
 		}
+	case "contextCompaction":
+		// 桌面历史项可能没有 completed；完成回合也覆盖尚未回放的 false。
+		// 未完成的压缩随父回合中断，不能一直显示为进行中。
+		status := "completed"
+		if item.MustGet("completed") == false && turnStatus != "completed" {
+			status = "inProgress"
+			if turnStatus != "" && turnStatus != "inProgress" {
+				status = "interrupted"
+			}
+		}
+		label := map[string]string{"completed": "已完成", "inProgress": "压缩中", "interrupted": "已中断"}[status]
+		text := "压缩状态：" + label
+		if source, _ := getDefault(item, "source", "automatic").(string); source == "manual" {
+			text += "\n触发方式：手动"
+		} else if source == "automatic" {
+			text += "\n触发方式：自动"
+		}
+		row.Set("role", "activity")
+		row.Set("title", "上下文压缩")
+		row.Set("status", status)
+		row.Set("text", text)
 	case "automaticApprovalReview":
 		row.Set("role", "activity")
 		row.Set("title", "自动审批审查")
