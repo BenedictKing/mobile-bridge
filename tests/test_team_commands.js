@@ -97,7 +97,7 @@ test('migrate command validates the target and delegates with instructions',asyn
   flow.toast=message=>messages.push(message);
   flow.compactAvailable=()=>true;
   flow.state={agent:'kimi',agents:[{kind:'kimi'},{kind:'zcode'}]};
-  flow.migrateControl={migrate:async(...args)=>calls.push(args)};
+  flow.migrateControl={migrate:async(...args)=>{calls.push(args);return true;}};
   assert.equal(await flow.runMigrateCommand({agent:'',scope:'main'}),false);
   assert.equal(await flow.runMigrateCommand({agent:'codex',scope:'main'}),false);
   assert.equal(calls.length,0);

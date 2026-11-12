@@ -61,7 +61,7 @@
       </div>
       <select id="send-mode" aria-label="发送方式" data-i18n-aria-label="发送方式" hidden><option value="send" data-i18n="发送新消息">发送新消息</option><option value="queue" data-i18n="完成后发送">完成后发送</option><option value="steer" data-i18n="补充当前任务">补充当前任务</option></select><select id="work-mode" aria-label="工作模式" data-i18n-aria-label="工作模式" hidden><option value="default" data-i18n="普通模式">普通模式</option><option value="plan" data-i18n="计划模式">计划模式</option><option value="goal" data-i18n="目标模式">目标模式</option></select>
       <div class="compose-actions"><button id="goal-toggle" class="goal-toggle" type="button" hidden aria-controls="goal-state" aria-label="目标进度" title="目标进度" data-i18n-aria-label="目标进度" data-i18n-title="目标进度"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg><span data-i18n="目标进度">目标进度</span></button><button id="stop" class="stop" type="button" hidden aria-label="停止" title="停止" data-i18n-aria-label="停止" data-i18n-title="停止"><span class="stop-icon" aria-hidden="true">■</span><span class="stop-label" data-i18n="停止">停止</span></button>
-        <div class="send-split"><button id="send" type="submit" class="primary"><span id="send-label">发送</span><span id="send-shortcut" class="send-shortcut"></span></button></div>
+        <div class="send-split"><button id="send" type="submit" class="primary"><span class="send-spinner" aria-hidden="true"></span><span id="send-label">发送</span><span id="send-shortcut" class="send-shortcut"></span></button></div>
       </div>
     </div>
   </div></form></section><section id="team-run" hidden></section></main>

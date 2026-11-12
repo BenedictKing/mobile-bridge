@@ -933,6 +933,11 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
 .composer-options-button{display:none}
 .compose-actions{margin-left:auto;align-items:center}
 .send-split #send{border-radius:8px}
+.send-spinner{display:none;width:14px;height:14px;flex:none;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:send-spin .7s linear infinite}
+#send{display:inline-flex;align-items:center;justify-content:center;gap:7px}
+#send[data-pending=true] .send-spinner{display:inline-block}
+#send[data-pending=true] #send-shortcut{display:none}
+@keyframes send-spin{to{transform:rotate(360deg)}}
 .composer-expand{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;min-height:40px;padding:6px;border:0;border-radius:8px;background:transparent;color:var(--muted)}
 .composer-expand:hover{background:var(--active);color:var(--text)}
 .composer-expand svg{width:18px;height:18px}

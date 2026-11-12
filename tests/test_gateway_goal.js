@@ -193,6 +193,51 @@ test('pending goal creation cannot be dismissed before confirmation',()=>{
   assert.equal(root.children.some(node=>node.className==='goal-close'),true);
 });
 
+function maintenanceComposer(command,run){
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const helperStart=source.indexOf('async function runComposerMaintenance'),helperEnd=source.indexOf('function renderState',helperStart);
+  const submitStart=source.indexOf('function syncSendButton()'),submitEnd=source.indexOf("$('message').onkeydown",submitStart);
+  const nodes={composer:new Node('form'),message:new Node('textarea'),'work-mode':new Node('select'),'send-mode':new Node('select'),send:new Node('button'),'send-label':new Node('span'),'send-error':new Node()};
+  const values=new Map([['draft:local|chat','/migrate kimi']]);
+  const context={
+    $:id=>nodes[id],t:value=>value,window:{BridgePresentation:{resizeMessage(){}}},sending:false,currentId:'chat',currentHost:'local',currentTeam:null,
+    state:{agent:'kimi',status:'idle',connected:true,agents:[{kind:'kimi'}]},attachments:{ready:()=>true,ids:()=>[]},
+    closeSkillSuggestions(){},parsePlainCommand:()=>command,parseTeamCommand:()=>null,compactAvailable:()=>true,chatKey:()=> 'local|chat',
+    sessionStorage:{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},
+    runMigrateCommand:run,runGatewayCompact:run,runNativeCompact:run,updateSkillSuggestions(){},
+  };
+  vm.runInNewContext(source.slice(helperStart,helperEnd)+'\n'+source.slice(submitStart,submitEnd),context);
+  return{nodes,values,context};
+}
+
+test('maintenance commands show progress and clear the draft only after acceptance',async()=>{
+  let accept;
+  const flow=maintenanceComposer({kind:'migrate',agent:'kimi',scope:'main'},()=>new Promise(resolve=>{accept=resolve;}));
+  flow.nodes.message.value='/migrate kimi';
+  const pending=flow.nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(flow.context.sending,true);
+  assert.equal(flow.nodes.send.dataset.pending,'true');
+  assert.equal(flow.nodes.send.attributes['aria-busy'],'true');
+  assert.equal(flow.nodes['send-label'].textContent,'正在提交…');
+  assert.equal(flow.nodes.message.value,'/migrate kimi');
+  accept(true);await pending;
+  assert.equal(flow.nodes.message.value,'');
+  assert.equal(flow.values.has('draft:local|chat'),false);
+  assert.equal(flow.context.sending,false);
+  assert.equal(flow.nodes.send.dataset.pending,'false');
+  assert.equal(flow.nodes['send-label'].textContent,'发送');
+
+  const failed=maintenanceComposer({kind:'native',scope:'main'},async()=>false);
+  failed.nodes.message.value='/compress main';
+  await failed.nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(failed.nodes.message.value,'/compress main');
+  assert.equal(failed.values.has('draft:local|chat'),true);
+  assert.equal(failed.nodes.send.dataset.pending,'false');
+  const html=readFileSync(require.resolve('../web/index.html'),'utf8'),css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
+  assert.match(html,/class="send-spinner" aria-hidden="true"/);
+  assert.match(css,/#send\[data-pending=true\] \.send-spinner\{display:inline-block\}/);
+});
+
 test('running composer sends through the queue without a send-mode menu',async()=>{
   const {nodes,calls}=goalComposer({active:true});
   nodes.message.value='继续处理';

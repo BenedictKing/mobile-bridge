@@ -1034,7 +1034,7 @@ function nativeCompactPrompt(scope,instructions){
 // onError 缺省用 toast，详情页入口沿用 compact-error 展示。
 async function runNativeCompact(scope,onError,instructions=''){
   const text=nativeCompactPrompt(scope,instructions),target=currentId,targetHost=currentHost,targetKey=chatKey();
-  if(!text||!target)return;
+  if(!text||!target)return false;
   compactChat.busy=true;$('compact-error').textContent='';renderCompactState();
   try{
     const result=await api(sessionUrl(target,'send',targetHost),{id:uuid(),text,mode:'send',skills:[],workMode:'default',attachments:[],uiLocale:BridgeI18n.locale(),...(currentTeam?{teamMode:'direct',teamId:currentTeam.id,teamMaintenance:'compact'}:{})});
@@ -1042,7 +1042,8 @@ async function runNativeCompact(scope,onError,instructions=''){
     bumpRecency(target,targetHost);
     if(currentId===target&&currentHost===targetHost)$('chat-details-dialog').close();
     toast('已发送上下文压缩请求');
-  }catch(error){(onError||(message=>toast(message)))(error.message);}
+    return true;
+  }catch(error){(onError||(message=>toast(message)))(error.message);return false;}
   finally{compactChat.busy=false;renderCompactState();}
 }
 async function runMigrateCommand(command){
@@ -1051,8 +1052,7 @@ async function runMigrateCommand(command){
   if(!target){toast('目标 Agent 未启用：'+command.agent);return false;}
   if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再迁移');return false;}
   const operation=command.agent===state?.agent?'compact':'migrate';
-  await migrateControl?.migrate(command.agent,command.scope,operation,{instructions:command.instructions});
-  return true;
+  return !!(await migrateControl?.migrate(command.agent,command.scope,operation,{instructions:command.instructions}));
 }
 async function runGatewayCompact(scope,instructions=''){
   if(!COMPACT_PROMPTS[scope]||!currentId||!compactAvailable())return false;
@@ -1064,8 +1064,7 @@ async function runGatewayCompact(scope,instructions=''){
     if(pendingInputs>0){toast('团队仍有待路由或等待处理的输入，处理后再压缩主控上下文');return false;}
     options.teamMaintenance='compact';options.teamId=currentTeam.id;
   }
-  await migrateControl?.migrate(state.agent,scope,'compact',options);
-  return true;
+  return !!(await migrateControl?.migrate(state.agent,scope,'compact',options));
 }
 function compactGateway(scope){
   if(!COMPACT_PROMPTS[scope]||compactMethod!=='gateway'||compactChat.busy||migrateControl?.busy||!currentId||!compactAvailable())return;
@@ -1076,7 +1075,15 @@ async function compactChat(scope){
   if(!COMPACT_PROMPTS[scope]||compactMethod!=='native'||compactChat.busy||!currentId||!compactAvailable())return;
   await runNativeCompact(scope,message=>{if(chatKey()===targetKey)$('compact-error').textContent=t(message);},compactInstructions());
 }
-function renderState(view){state=view;renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){if(sessionActivity.read(chatKey()))api(sessionUrl(currentId,'read',currentHost),{}).catch(()=>{});renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';
+async function runComposerMaintenance(command){
+  const target=currentId,targetHost=currentHost;
+  sending=true;syncSendButton();
+  try{
+    const accepted=command.kind==='migrate'?await runMigrateCommand(command):command.kind==='gateway'?await runGatewayCompact(command.scope,command.instructions):await runNativeCompact(command.scope,undefined,command.instructions);
+    if(accepted)clearComposerDraft(target,targetHost);
+  }finally{sending=false;syncSendButton();}
+}
+function renderState(view){view=applyPendingQueueOrder(view);state=view;renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){if(sessionActivity.read(chatKey()))api(sessionUrl(currentId,'read',currentHost),{}).catch(()=>{});renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';
 $('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(view.agent==='codex'?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');const workingSpan=$('working').querySelector('span');if(workingSpan){workingSpan.textContent=retrying?(retrying.statusCode===429?t('模型服务繁忙（429），正在自动重试'):t('模型请求失败，正在自动重试'))+retryCount+'…':agentName+t(' 正在工作…');workingSpan.title=retrying?.errorMessage||'';}$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected||readOnly;
   // 运行中统一排队；需要立即执行时在排队消息中操作。
   const sendMode=view.status==='active'?'queue':'send';$('send-mode').value=sendMode;syncTeamQueueMode($('send-mode').value);
@@ -1319,6 +1326,8 @@ function renderQueueAttachments(row,target,host){
   });
   return root;
 }
+let queueOrderSync=null;
+let queueOrderRequest=Promise.resolve();
 function uniqueQueueRows(rows){
   const seen=new Set();
   return rows.filter(row=>{if(seen.has(row.id))return false;seen.add(row.id);return true;});
@@ -1331,12 +1340,53 @@ function moveQueueRows(rows,id,beforeID){
   next.splice(at,0,moving);
   return next.every((row,index)=>row===rows[index])?rows:next;
 }
+function applyQueueOrder(rows,order){
+  const rank=new Map(order.filter(row=>row.status==='queued').map((row,index)=>[row.id,index]));
+  const queued=rows.map((row,index)=>({row,index})).filter(item=>item.row.status==='queued').sort((a,b)=>{
+    const ar=rank.has(a.row.id)?rank.get(a.row.id):rank.size+a.index,br=rank.has(b.row.id)?rank.get(b.row.id):rank.size+b.index;
+    return ar-br||a.index-b.index;
+  });
+  const next=[...rows];let index=0;
+  for(let at=0;at<next.length;at++)if(next[at].status==='queued')next[at]=queued[index++].row;
+  return next;
+}
+function queueOrderMatches(rows,order){
+  const actual=uniqueQueueRows(rows).filter(row=>row.status==='queued').map(row=>row.id),expected=uniqueQueueRows(order).filter(row=>row.status==='queued').map(row=>row.id);
+  const expectedSet=new Set(expected),actualSet=new Set(actual),actualExpected=actual.filter(id=>expectedSet.has(id)),expectedActual=expected.filter(id=>actualSet.has(id));
+  return actualExpected.length===expectedActual.length&&actualExpected.every((id,index)=>id===expectedActual[index]);
+}
+function applyPendingQueueOrder(view){
+  const pending=queueOrderSync;
+  if(!pending||currentId!==pending.target||currentHost!==pending.host)return view;
+  const rows=view.submissions||[];pending.serverRows=rows;
+  if(pending.synced&&queueOrderMatches(rows,pending.next)){queueOrderSync=null;return view;}
+  return {...view,submissions:applyQueueOrder(rows,pending.next)};
+}
 async function reorderQueuedMessage(id,beforeID,target,host){
   if(!state||currentId!==target||currentHost!==host)return;
   const previous=state.submissions||[],next=moveQueueRows(previous,id,beforeID);if(next===previous)return;
+  const prior=queueOrderSync,serverRows=prior?.target===target&&prior?.host===host?prior.serverRows:previous;
+  const pending={target,host,next,serverRows,synced:false};queueOrderSync=pending;
   state.submissions=next;renderQueue(next);
-  try{await api(sessionUrl(target,'queue',host),{id,action:'reorder',beforeId:beforeID});toast(t('排队顺序已更新'));}
-  catch(error){if(currentId===target&&currentHost===host&&state?.submissions===next){state.submissions=previous;renderQueue(previous);}toast(error.message);}
+  const request=queueOrderRequest.catch(()=>{}).then(()=>api(sessionUrl(target,'queue',host),{id,action:'reorder',beforeId:beforeID}));
+  queueOrderRequest=request;
+  try{
+    await request;
+    if(queueOrderSync===pending){
+      pending.synced=true;
+      if(queueOrderMatches(pending.serverRows,next)){
+        queueOrderSync=null;
+        if(currentId===target&&currentHost===host&&state){state.submissions=pending.serverRows;renderQueue(pending.serverRows);}
+      }
+    }
+    toast(t('排队顺序已更新'));
+  }catch(error){
+    if(queueOrderSync===pending){
+      queueOrderSync=null;
+      if(currentId===target&&currentHost===host&&state){state.submissions=pending.serverRows;renderQueue(pending.serverRows);}
+    }
+    toast(error.message);
+  }
 }
 function queueDropBeforeID(sourceID,clientY){
   const cards=[...$('queued').querySelectorAll('.queue-card[data-queue-id]')].filter(card=>card.dataset.queueId!==sourceID);
@@ -1518,9 +1568,16 @@ function syncSendButton(){
   const unavailable=!!state?.readOnly||sending||!state||state.loadingHistory||state.activating;
   $('send').disabled=unavailable||!attachments.ready()||(!$('message').value.trim()&&!attachments.ids().length);
   $('send').dataset.mode=state?.status==='active'?'queue':'send';
-  $('send-label').textContent=t('发送');
+  $('send').dataset.pending=String(sending);
+  $('send').setAttribute('aria-busy',String(sending));
+  $('send-label').textContent=t(sending?'正在提交…':'发送');
 }
-$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;let text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;const composerCommand=currentTeam?parseTeamCommand(text):parsePlainCommand(text);if(composerCommand?.kind==='goal'){const option=$('work-mode').querySelector('[value=goal]');if(option?.disabled||option?.hidden){$('send-error').textContent=t(state?.status==='active'?'当前回复结束后可开启目标模式':'当前 Agent 不支持目标模式');return;}workModes.selection='goal';$('work-mode').value='goal';workModes.render(state,$('send-mode').value,sending);text=composerCommand.objective;if(!text){$('message').value='';saveDraft();syncSendButton();return;}}if(composerCommand&&composerCommand.kind!=='goal'){if(attachmentIds.length){toast(composerCommand.kind==='native'||composerCommand.kind==='gateway'?'请先移除附件后再压缩':composerCommand.kind==='migrate'?'请先移除附件后再迁移':false);return;}if(composerCommand.kind==='newchat'){const agent=state?.agent,cwd=state?.cwd,sourceId=currentId;if(!agent){toast('无法确定当前会话配置，请刷新后重试');return;}if(!cwd){toast('无法确定当前会话目录，请刷新后重试');return;}const title=Array.from((state?.title||'').trim()).slice(0,120).join('')||t('新建聊天');sending=true;try{const result=await api('/api/sessions',{id:uuid(),agent,cwd,title,inheritFrom:sourceId});$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));loadList(true).catch(e=>toast(e.message));if(currentId!==result.id)await openChat(result.id,result.host||'local');else toast(result.message||t('新会话已创建'));}catch(error){toast(error.message);}finally{sending=false;}return;}if(composerCommand.kind==='migrate'){await runMigrateCommand(composerCommand);return;}if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再压缩');return;}if(composerCommand.kind==='gateway'){await runGatewayCompact(composerCommand.scope,composerCommand.instructions);return;}await runNativeCompact(composerCommand.scope,undefined,composerCommand.instructions);return;}const mode=state?.status==='active'?'queue':'send';$('send-mode').value=mode;const workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort(),teamFields=currentTeam?teamSubmissionFields(currentTeam.id):{};if(currentTeam&&skills.length){toast('团队聊天暂不支持 Skill');return;}const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds)||(pending.teamId||'')!==(teamFields.teamId||'')||(pending.teamMode||'')!==(teamFields.teamMode||''))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale(),...teamFields};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);if(result.runId)teamChat?.accepted(result);else if(result.queueStatus)teamChat?.refreshRun(true);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
+function clearComposerDraft(target,host){
+  sessionStorage.removeItem('draft:'+chatKey(target,host));
+  if(currentId!==target||currentHost!==host)return;
+  $('message').value='';window.BridgePresentation?.resizeMessage();updateSkillSuggestions();syncSendButton();
+}
+$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;let text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;const composerCommand=currentTeam?parseTeamCommand(text):parsePlainCommand(text);if(composerCommand?.kind==='goal'){const option=$('work-mode').querySelector('[value=goal]');if(option?.disabled||option?.hidden){$('send-error').textContent=t(state?.status==='active'?'当前回复结束后可开启目标模式':'当前 Agent 不支持目标模式');return;}workModes.selection='goal';$('work-mode').value='goal';workModes.render(state,$('send-mode').value,sending);text=composerCommand.objective;if(!text){$('message').value='';saveDraft();syncSendButton();return;}}if(composerCommand&&composerCommand.kind!=='goal'){if(attachmentIds.length){toast(composerCommand.kind==='native'||composerCommand.kind==='gateway'?'请先移除附件后再压缩':composerCommand.kind==='migrate'?'请先移除附件后再迁移':false);return;}if(composerCommand.kind==='newchat'){const agent=state?.agent,cwd=state?.cwd,sourceId=currentId;if(!agent){toast('无法确定当前会话配置，请刷新后重试');return;}if(!cwd){toast('无法确定当前会话目录，请刷新后重试');return;}const title=Array.from((state?.title||'').trim()).slice(0,120).join('')||t('新建聊天');sending=true;syncSendButton();try{const result=await api('/api/sessions',{id:uuid(),agent,cwd,title,inheritFrom:sourceId});$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));loadList(true).catch(e=>toast(e.message));if(currentId!==result.id)await openChat(result.id,result.host||'local');else toast(result.message||t('新会话已创建'));}catch(error){toast(error.message);}finally{sending=false;syncSendButton();}return;}if(composerCommand.kind==='migrate'){await runComposerMaintenance(composerCommand);return;}if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再压缩');return;}await runComposerMaintenance(composerCommand);return;}const mode=state?.status==='active'?'queue':'send';$('send-mode').value=mode;const workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort(),teamFields=currentTeam?teamSubmissionFields(currentTeam.id):{};if(currentTeam&&skills.length){toast('团队聊天暂不支持 Skill');return;}const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds)||(pending.teamId||'')!==(teamFields.teamId||'')||(pending.teamMode||'')!==(teamFields.teamMode||''))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale(),...teamFields};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);syncSendButton();$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);if(result.runId)teamChat?.accepted(result);else if(result.queueStatus)teamChat?.refreshRun(true);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
 toast(result.runId?t('团队已受理'):workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){const busy=/^(.+) 正在执行。(.+)$/.exec(error.message);$('send-error').textContent=busy?busy[1]+t(' 正在执行。')+t(busy[2]):t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);syncSendButton();}};
 $('message').onkeydown=event=>{
   if(handleSkillKeydown(event))return;

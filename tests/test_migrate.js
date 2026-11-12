@@ -69,7 +69,8 @@ test('scope click prepares the target, then confirm migrates with the chosen set
   const [instructions]=byClass(root,'migrate-instructions');
   instructions.value='  继续补完测试并修复失败项  ';instructions.oninput();
 
-  await byClass(root,'migrate-start')[0].onclick();
+  const accepted=await byClass(root,'migrate-start')[0].onclick();
+  assert.equal(accepted,true);
   assert.equal(requests.length,2);
   assert.equal(requests[1].phase,undefined);
   assert.equal(requests[1].id,requests[0].id);  // Confirm reuses the prepared session.
@@ -123,7 +124,8 @@ test('a rejected confirm keeps the settings step so another model can be picked'
   find(root,button=>button.dataset.agent==='kimi').onclick();
   await find(root,button=>button.dataset.scope==='main').onclick();
   const [model]=byClass(root,'migrate-model');model.value='m1';model.onchange();
-  await byClass(root,'migrate-start')[0].onclick();
+  const accepted=await byClass(root,'migrate-start')[0].onclick();
+  assert.equal(accepted,false);
   assert.deepEqual(errors,['此 Agent 不支持所选模型']);
   assert.notEqual(control.prepared,null);
   assert.equal(byClass(root,'migrate-start').length,1);

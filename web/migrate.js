@@ -174,8 +174,10 @@ class MigrateControl {
       const result=await this.request(body);
       this.prepared=null;  // The target session is now a real migration.
       this.onMigrated(result,label,body,operation);
+      return true;
     }catch(error){
       this.onError(error,operation);
+      return false;
     }finally{
       this.busy=false;this.confirming=false;
       this.render();

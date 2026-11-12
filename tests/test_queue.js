@@ -6,11 +6,11 @@ const vm=require('node:vm');
 
 function queueHelpers(){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
-  const start=source.indexOf('function uniqueQueueRows(rows){');
+  const start=source.indexOf('let queueOrderSync=null;');
   const end=source.indexOf('// waiting_input 任务卡',start);
   assert.ok(start>=0&&end>start,'queue helpers not found');
   const context={};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.unique=uniqueQueueRows;this.move=moveQueueRows;this.render=renderQueue;',context);
+  vm.runInNewContext(source.slice(start,end)+'\nthis.unique=uniqueQueueRows;this.move=moveQueueRows;this.render=renderQueue;this.applyPending=applyPendingQueueOrder;this.pendingOrder=()=>queueOrderSync;',context);
   return{uniqueQueueRows:context.unique,moveQueueRows:context.move,renderQueue:context.render,context};
 }
 const {uniqueQueueRows,moveQueueRows}=queueHelpers();
@@ -58,6 +58,72 @@ test('queue reorder sends the gateway contract and rolls back failed optimistic 
   context.api=async()=>{throw new Error('网络失败');};
   await context.reorderQueuedMessage('b','','thread','local');
   assert.equal(context.state.submissions,previous);
+});
+
+test('queue reorder survives stale snapshots until the gateway order catches up',async()=>{
+  const {context}=queueHelpers(),rows=['a','b','c'].map(id=>({id,status:'queued'}));
+  let release;
+  Object.assign(context,{state:{submissions:rows},currentId:'thread',currentHost:'local',sessionUrl:()=>'/queue',renderQueue:()=>{},t:text=>text,toast:()=>{}});
+  context.api=()=>new Promise(resolve=>{release=resolve;});
+  const pending=context.reorderQueuedMessage('c','a','thread','local');
+  await Promise.resolve();await Promise.resolve();
+  const stale=context.applyPending({submissions:rows});
+  assert.deepEqual(Array.from(stale.submissions,row=>row.id),['c','a','b']);
+  release({status:'queued'});await pending;
+  const staleAfterSuccess=context.applyPending({submissions:rows});
+  assert.deepEqual(Array.from(staleAfterSuccess.submissions,row=>row.id),['c','a','b']);
+  const confirmedRows=[rows[2],rows[0],rows[1]],confirmedView={submissions:confirmedRows};
+  assert.equal(context.applyPending(confirmedView),confirmedView);
+  assert.equal(context.pendingOrder(),null);
+});
+
+test('rapid queue reorders stay optimistic locally and sync in request order',async()=>{
+  const {context}=queueHelpers(),rows=['a','b','c'].map(id=>({id,status:'queued'})),calls=[],releases=[];
+  Object.assign(context,{state:{submissions:rows},currentId:'thread',currentHost:'local',sessionUrl:()=>'/queue',renderQueue:()=>{},t:text=>text,toast:()=>{}});
+  context.api=(path,body)=>{calls.push(body);return new Promise(resolve=>releases.push(resolve));};
+  const first=context.reorderQueuedMessage('c','a','thread','local');
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(calls.length,1);
+  const second=context.reorderQueuedMessage('a','','thread','local');
+  assert.deepEqual(Array.from(context.state.submissions,row=>row.id),['c','b','a']);
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(calls.length,1);
+  releases[0]({status:'queued'});await first;
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(calls.length,2);
+  assert.deepEqual({...calls[1]},{id:'a',action:'reorder',beforeId:''});
+  releases[1]({status:'queued'});await second;
+  assert.deepEqual(Array.from(context.state.submissions,row=>row.id),['c','b','a']);
+});
+
+test('failed rapid reorders roll back to the last real server order',async()=>{
+  const {context}=queueHelpers(),rows=['a','b','c'].map(id=>({id,status:'queued'})),calls=[],rejections=[];
+  Object.assign(context,{state:{submissions:rows},currentId:'thread',currentHost:'local',sessionUrl:()=>'/queue',renderQueue:()=>{},t:text=>text,toast:()=>{}});
+  context.api=(path,body)=>{calls.push(body);return new Promise((resolve,reject)=>rejections.push(reject));};
+  const first=context.reorderQueuedMessage('c','a','thread','local');
+  await Promise.resolve();await Promise.resolve();
+  const second=context.reorderQueuedMessage('a','','thread','local');
+  rejections[0](new Error('第一次失败'));await first;
+  await Promise.resolve();await Promise.resolve();
+  assert.equal(calls.length,2);
+  rejections[1](new Error('第二次失败'));await second;
+  assert.equal(context.state.submissions,rows);
+  assert.equal(context.pendingOrder(),null);
+});
+
+test('queue reorder rollback uses the latest server snapshot and keeps new rows',async()=>{
+  const {context}=queueHelpers(),rows=['a','b','c'].map(id=>({id,status:'queued'}));
+  let reject;
+  Object.assign(context,{state:{submissions:rows},currentId:'thread',currentHost:'local',sessionUrl:()=>'/queue',renderQueue:()=>{},t:text=>text,toast:()=>{}});
+  context.api=()=>new Promise((resolve,rejectRequest)=>{reject=rejectRequest;});
+  const pending=context.reorderQueuedMessage('c','a','thread','local');
+  await Promise.resolve();await Promise.resolve();
+  const serverRows=[...rows,{id:'d',status:'queued'}];
+  const optimistic=context.applyPending({submissions:serverRows});
+  assert.deepEqual(Array.from(optimistic.submissions,row=>row.id),['c','a','b','d']);
+  reject(new Error('网络失败'));await pending;
+  assert.equal(context.state.submissions,serverRows);
+  assert.equal(context.pendingOrder(),null);
 });
 
 test('queue editor has a visible close icon',()=>{
