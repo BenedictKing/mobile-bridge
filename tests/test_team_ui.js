@@ -84,6 +84,26 @@ test('cancelled, failed and running executions show only their existing results'
   const empty=renderTeamGoalReview(feedbackOutcome({executionStatus:'cancelled',result:null}),{drafts:new Map()});assert.equal(empty.hidden,true);
 });
 
+test('an active issue can close tracking without a run cancellation action',async()=>{
+  const{renderTeamGoalReview}=require('../web/team.js'),sent=[];
+  const outcome=feedbackOutcome({executionStatus:'dispatching',scope:{id:'issue-a',hash:'scope'}});
+  const drafts=new Map(),panel=renderTeamGoalReview(outcome,{runVersion:7,drafts,submit:async body=>sent.push(body)});
+  const buttons=panel.querySelectorAll('button');
+  assert.equal(buttons.find(button=>button.textContent==='Confirm requirements are met'),undefined);
+  assert.equal(buttons.find(button=>button.textContent==='Save completion criteria'),undefined);
+  const close=buttons.find(button=>button.textContent==='Close goal tracking');
+  assert.ok(close);[...drafts.values()][0].reason='不再需要追踪';await close.listeners.click();
+  assert.equal(sent.length,1);assert.equal(sent[0].action,'close');assert.equal(sent[0].scopeId,'issue-a');assert.equal(sent[0].reason,'不再需要追踪');
+});
+
+test('workspace changes preserve the confirmed outcome and show both versions',()=>{
+  const{renderTeamGoalReview}=require('../web/team.js');
+  const outcome=feedbackOutcome({status:'satisfied',workspaceChange:{confirmedHead:'1234567890abcdef',currentHead:'abcdef1234567890',reason:'工作区版本已变化'}});
+  const panel=renderTeamGoalReview(outcome,{runVersion:4,drafts:new Map()});
+  assert.match(text(panel),/The workspace changed; the earlier assessment is preserved/);
+  assert.match(text(panel),/1234567890ab → abcdef123456/);
+});
+
 test('problem feedback preserves the original scope and needs only a concrete note',async()=>{
   const{renderTeamGoalReview}=require('../web/team.js'),drafts=new Map(),sent=[];
   const panel=renderTeamGoalReview(feedbackOutcome(),{runVersion:7,drafts,submit:async body=>sent.push(body)});

@@ -209,6 +209,7 @@ type InputLedger struct {
 	inputs       map[string]*TeamInput
 	issues       map[string]*Issue
 	issuesOrder  []string
+	issueGoals   map[string]*GoalRecord
 	ops          map[string]string // 操作 UUID → inputID（重复操作幂等回放）
 	teamsSeq     map[string]uint64 // 每 Team 的接受序号发生器
 	deleted      map[string]string // inputID → teamID，防止历史导入恢复已删除气泡
@@ -222,6 +223,7 @@ func LoadInputLedger(snapshotPath string, journal *Journal) *InputLedger {
 		journal:      journal,
 		inputs:       map[string]*TeamInput{},
 		issues:       map[string]*Issue{},
+		issueGoals:   map[string]*GoalRecord{},
 		ops:          map[string]string{},
 		teamsSeq:     map[string]uint64{},
 		deleted:      map[string]string{},
@@ -259,6 +261,22 @@ func LoadInputLedger(snapshotPath string, journal *Journal) *InputLedger {
 						}
 						ledger.issues[issueID] = issue.Clone()
 						ledger.issuesOrder = append(ledger.issuesOrder, issueID)
+					}
+				}
+				continue
+			}
+			if key == "_issueGoals" {
+				rows, _ := raw.(*jsoncompat.Object)
+				if rows != nil {
+					for _, issueID := range rows.Keys() {
+						value, _ := rows.Get(issueID)
+						record := decodeGoalRecord(value)
+						issue := ledger.issues[issueID]
+						if record == nil || record.Scope.ID != issueID || issue == nil {
+							log.Printf("team-inputs.json Issue 目标记录解析失败，已跳过: key=%s", issueID)
+							continue
+						}
+						ledger.issueGoals[issueID] = record
 					}
 				}
 				continue
@@ -910,6 +928,15 @@ func (l *InputLedger) saveSnapshotLocked() error {
 		}
 	}
 	object.Set("_issues", issues)
+	issueGoals := jsoncompat.NewObject()
+	for _, key := range sortedGoalIDs(l.issueGoals) {
+		value, err := issueGoalSnapshotValue(l.issueGoals[key])
+		if err != nil {
+			return err
+		}
+		issueGoals.Set(key, value)
+	}
+	object.Set("_issueGoals", issueGoals)
 	deleted := jsoncompat.NewObject()
 	for id, teamID := range l.deleted {
 		deleted.Set(id, teamID)
@@ -1178,6 +1205,8 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		l.applyIssueProposalEvent(event)
 	case EventIssueAssociationFailed:
 		l.applyIssueAssociationFailedEvent(event)
+	case EventGoalReviewed, EventIssueClosed:
+		l.applyIssueGoalEvent(event)
 	case EventIssueDeleted:
 		l.applyIssueDeletedEvent(event)
 	case EventInputDeleted:
@@ -1204,6 +1233,7 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		for _, key := range l.issuesOrder {
 			if issue := l.issues[key]; issue != nil && issue.TeamID == teamID {
 				delete(l.issues, key)
+				delete(l.issueGoals, key)
 				continue
 			}
 			keptIssues = append(keptIssues, key)

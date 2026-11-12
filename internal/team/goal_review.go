@@ -25,6 +25,35 @@ var ErrGoalReviewInvalid = fmt.Errorf("目标评估参数无效")
 
 func goalInvalid(message string) error { return fmt.Errorf("%w：%s", ErrGoalReviewInvalid, message) }
 
+func (s *Service) issueGoalRecord(run *Run, scope GoalScope) (*GoalRecord, bool) {
+	if s.inputs == nil || scope.ID == "run" {
+		return nil, false
+	}
+	issue := s.inputs.GetIssue(run.TeamID, scope.ID)
+	if issue == nil {
+		return nil, false
+	}
+	return s.inputs.IssueGoal(run.TeamID, scope.ID), true
+}
+
+func evaluateGoalRecord(run *Run, teamRow *Team, scope GoalScope, record *GoalRecord, issueScoped bool) GoalOutcome {
+	if issueScoped {
+		return EvaluateIssueGoal(run, teamRow, scope, record)
+	}
+	return EvaluateGoal(run, teamRow, scope)
+}
+
+func (s *Service) syncIssueGoal(run *Run, scope GoalScope, issueScoped bool) error {
+	if !issueScoped {
+		return nil
+	}
+	record := run.Goals[scope.ID]
+	if record == nil {
+		return nil
+	}
+	return s.inputs.ApplyIssueGoal(run.TeamID, run.ID, record)
+}
+
 func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRequest) (*Run, error) {
 	if _, err := uuid.Parse(request.ID); err != nil {
 		return nil, goalInvalid("操作标识无效")
@@ -53,6 +82,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 	if observed == nil {
 		return nil, ErrNotFound
 	}
+	issueRecord, issueScoped := s.issueGoalRecord(observed, scope)
 	for _, record := range observed.Goals {
 		if record == nil {
 			continue
@@ -60,6 +90,9 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 		if previous, exists := record.Operations[request.ID]; exists {
 			if previous != fingerprint {
 				return nil, goalInvalid("同一操作标识不能用于不同内容")
+			}
+			if err := s.syncIssueGoal(observed, scope, issueScoped); err != nil {
+				return nil, err
 			}
 			return observed, nil
 		}
@@ -75,7 +108,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 			if observed == nil {
 				return nil, ErrNotFound
 			}
-			outcome := EvaluateGoal(observed, s.store.Team(observed.TeamID), scope)
+			outcome := evaluateGoalRecord(observed, s.store.Team(observed.TeamID), scope, issueRecord, issueScoped)
 			if outcome.CanConfirm {
 				if err := s.checkGoalWorkspaceEvidence(observed, outcome.Contract); err != nil {
 					return nil, err
@@ -109,6 +142,9 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 			return nil, false
 		}
 		current := run.Goals[scope.ID]
+		if issueScoped && issueRecord != nil {
+			current = goalRecordForScope(issueRecord, scope)
+		}
 		record := cloneGoalRecord(current)
 		if record == nil || record.Scope.Hash != scope.Hash {
 			record = &GoalRecord{Scope: scope, Contract: DefaultGoalContract(scope)}
@@ -159,6 +195,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 				record.Contract.Criteria[i].EvidenceRefs = nil
 			}
 			record.AssessedBy, record.EvidenceHash, record.Closed = "", "", false
+			record.WorkspaceHead, record.WorkspaceDiff = "", ""
 		case "assess":
 			if len(request.States) != len(record.Contract.Criteria) {
 				decisionErr = goalInvalid("请逐项核对全部完成条件")
@@ -175,7 +212,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 				record.Contract.Criteria[i].EvidenceRefs = goalEvidenceRefs(run)
 				allMet = allMet && value == "met"
 			}
-			if allMet && !EvaluateGoal(run, s.store.Team(run.TeamID), scope).CanConfirm {
+			if allMet && !evaluateGoalRecord(run, s.store.Team(run.TeamID), scope, record, issueScoped).CanConfirm {
 				decisionErr = goalInvalid("结果或必要检查尚未就绪，不能确认目标达成")
 				return nil, false
 			}
@@ -188,8 +225,9 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 				reason = "用户确认结果符合要求"
 			}
 			record.AssessedBy, record.AssessedAt, record.EvidenceHash, record.Reason, record.Closed = "user", time.Now(), GoalEvidenceHash(run), reason, false
+			record.WorkspaceHead, record.WorkspaceDiff = goalWorkspaceBinding(run, s.store.Team(run.TeamID), record.Contract)
 		case "close":
-			if !terminalRun(run.Status) {
+			if !issueScoped && !terminalRun(run.Status) {
 				decisionErr = goalInvalid("请先停止执行，再关闭目标追踪")
 				return nil, false
 			}
@@ -217,39 +255,90 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 	if decisionErr != nil {
 		return nil, decisionErr
 	}
-	return s.store.Run(runID), nil
+	fresh := s.store.Run(runID)
+	if err := s.syncIssueGoal(fresh, scope, issueScoped); err != nil {
+		return nil, err
+	}
+	return fresh, nil
 }
 
-func (s *Service) checkGoalWorkspaceEvidence(run *Run, contract GoalContract) error {
+func goalWorkspaceBinding(run *Run, teamRow *Team, contract GoalContract) (string, string) {
+	if contract.Verify.Requirement == "required" && run.Verify != nil {
+		return run.Verify.HeadRevision, run.Verify.DiffHash
+	}
+	if contract.Review.Requirement == "required" {
+		for _, task := range goalReviewTasks(run, teamRow) {
+			if task.HeadRevision != "" || task.DiffHash != "" {
+				return task.HeadRevision, task.DiffHash
+			}
+		}
+	}
+	return "", ""
+}
+
+func (s *Service) goalWorkspaceEvidenceError(run *Run, contract GoalContract) (string, string, error) {
 	checksRequired := contract.Verify.Requirement == "required" || contract.Review.Requirement == "required"
 	if !checksRequired {
-		return nil
+		return "", "", nil
 	}
 	teamRow := s.store.Team(run.TeamID)
 	if s.Fingerprints == nil || teamRow == nil || teamRow.ProjectCwd == "" {
-		return goalInvalid("无法核对检查结果所对应的当前工作区版本")
+		return "", "", goalInvalid("无法核对检查结果所对应的当前工作区版本")
 	}
 	head, diff, err := s.Fingerprints.Fingerprint(teamRow.ProjectCwd)
 	if err != nil {
-		return goalInvalid("读取当前工作区版本失败，请重新验证")
+		return "", "", goalInvalid("读取当前工作区版本失败，请重新验证")
 	}
 	if contract.Verify.Requirement == "required" && (run.Verify == nil || run.Verify.HeadRevision != head || run.Verify.DiffHash != diff) {
-		return goalInvalid("验证结果对应的工作区版本已变化，请重新验证")
+		return head, diff, goalInvalid("验证结果对应的工作区版本已变化，请重新验证")
 	}
 	if contract.Review.Requirement == "required" {
 		for _, task := range goalReviewTasks(run, teamRow) {
 			if task.HeadRevision != head || task.DiffHash != diff {
-				return goalInvalid("审查结果对应的工作区版本已变化，请重新审查")
+				return head, diff, goalInvalid("审查结果对应的工作区版本已变化，请重新审查")
 			}
 		}
 	}
-	return nil
+	return head, diff, nil
 }
 
-// GoalOutcome 在展示时复核必要检查的工作区身份；外部编辑也会令旧确认失效。
+func (s *Service) checkGoalWorkspaceEvidence(run *Run, contract GoalContract) error {
+	_, _, err := s.goalWorkspaceEvidenceError(run, contract)
+	return err
+}
+
 func (s *Service) GoalOutcome(run *Run, scope GoalScope) GoalOutcome {
-	out := EvaluateGoal(run, s.store.Team(run.TeamID), scope)
-	if out.CanConfirm && (out.Contract.Verify.Requirement == "required" || out.Contract.Review.Requirement == "required") {
+	return s.goalOutcome(run, scope, nil, false)
+}
+
+func (s *Service) IssueGoalOutcome(run *Run, scope GoalScope, record *GoalRecord) GoalOutcome {
+	return s.goalOutcome(run, scope, record, true)
+}
+
+// GoalOutcome 保留用户结论；未确认结果仍按当前工作区复核必要检查。
+func (s *Service) goalOutcome(run *Run, scope GoalScope, issueRecord *GoalRecord, issueScoped bool) GoalOutcome {
+	teamRow := s.store.Team(run.TeamID)
+	out := evaluateGoalRecord(run, teamRow, scope, issueRecord, issueScoped)
+	checksRequired := out.Contract.Verify.Requirement == "required" || out.Contract.Review.Requirement == "required"
+	if !checksRequired {
+		return out
+	}
+	if out.AssessedBy == "user" {
+		head, diff, err := s.goalWorkspaceEvidenceError(run, out.Contract)
+		if err != nil {
+			change := &GoalWorkspaceChange{CurrentHead: head, CurrentDiff: diff, Reason: err.Error()}
+			record := issueRecord
+			if record == nil {
+				record = run.Goals[scope.ID]
+			}
+			if record != nil {
+				change.ConfirmedHead, change.ConfirmedDiff = record.WorkspaceHead, record.WorkspaceDiff
+			}
+			out.WorkspaceChange = change
+		}
+		return out
+	}
+	if out.CanConfirm {
 		if err := s.checkGoalWorkspaceEvidence(run, out.Contract); err != nil {
 			out.Status, out.Label, out.Reason, out.CanConfirm = "pending_verification", GoalOutcomeLabels["pending_verification"], err.Error(), false
 		}

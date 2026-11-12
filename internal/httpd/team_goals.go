@@ -93,6 +93,15 @@ func (h *handler) runGoalOutcomes(run *team.Run) []team.GoalOutcome {
 }
 
 func (h *handler) goalOutcome(run *team.Run, scope team.GoalScope) team.GoalOutcome {
+	if h.server.TeamInputs != nil && scope.ID != "run" {
+		if issue := h.server.TeamInputs.GetIssue(run.TeamID, scope.ID); issue != nil {
+			record := h.server.TeamInputs.IssueGoal(run.TeamID, scope.ID)
+			if h.server.Teams != nil {
+				return h.server.Teams.IssueGoalOutcome(run, scope, record)
+			}
+			return team.EvaluateIssueGoal(run, h.server.TeamStore.Team(run.TeamID), scope, record)
+		}
+	}
 	if h.server.Teams != nil {
 		return h.server.Teams.GoalOutcome(run, scope)
 	}

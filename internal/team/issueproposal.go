@@ -436,6 +436,7 @@ func (l *InputLedger) applyIssueDeletedEvent(event *Event) {
 	}
 	if issue := l.issues[issueID]; issue != nil && issue.TeamID == teamID {
 		delete(l.issues, issueID)
+		delete(l.issueGoals, issueID)
 	}
 	l.order = removeMissing(l.order, l.inputs)
 	l.issuesOrder = removeMissing(l.issuesOrder, l.issues)

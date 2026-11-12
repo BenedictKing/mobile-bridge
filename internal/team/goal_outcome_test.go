@@ -317,8 +317,9 @@ func TestGoalRequiredEvidenceTracksCurrentWorkspace(t *testing.T) {
 		t.Fatal("匹配当前版本的证据应可确认")
 	}
 	fingerprint.diff = "external-edit"
-	if out := h.service.GoalOutcome(run, scope); out.Status != "pending_verification" || out.CanConfirm {
-		t.Fatalf("外部改动使旧证据失效: %+v", out)
+	if out := h.service.GoalOutcome(run, scope); out.Status != "satisfied" || out.WorkspaceChange == nil ||
+		out.WorkspaceChange.ConfirmedHead != "commit" || out.WorkspaceChange.CurrentDiff != "external-edit" {
+		t.Fatalf("外部改动只提示版本变化，不回退用户确认: %+v", out)
 	}
 	confirm = goalRequest(run, scope, "assess")
 	confirm.States = map[string]string{"original": "met"}

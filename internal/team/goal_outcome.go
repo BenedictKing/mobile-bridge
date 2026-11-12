@@ -60,14 +60,16 @@ type GoalContract struct {
 }
 
 type GoalRecord struct {
-	Scope        GoalScope         `json:"scope"`
-	Contract     GoalContract      `json:"contract"`
-	EvidenceHash string            `json:"evidenceHash,omitempty"`
-	AssessedBy   string            `json:"assessedBy,omitempty"`
-	AssessedAt   time.Time         `json:"assessedAt,omitempty"`
-	Reason       string            `json:"reason,omitempty"`
-	Closed       bool              `json:"closed,omitempty"`
-	Operations   map[string]string `json:"operations,omitempty"`
+	Scope         GoalScope         `json:"scope"`
+	Contract      GoalContract      `json:"contract"`
+	EvidenceHash  string            `json:"evidenceHash,omitempty"`
+	WorkspaceHead string            `json:"workspaceHead,omitempty"`
+	WorkspaceDiff string            `json:"workspaceDiff,omitempty"`
+	AssessedBy    string            `json:"assessedBy,omitempty"`
+	AssessedAt    time.Time         `json:"assessedAt,omitempty"`
+	Reason        string            `json:"reason,omitempty"`
+	Closed        bool              `json:"closed,omitempty"`
+	Operations    map[string]string `json:"operations,omitempty"`
 }
 
 type GoalResultRef struct {
@@ -80,20 +82,29 @@ type GoalResultRef struct {
 	Truncated    bool   `json:"truncated"`
 }
 
+type GoalWorkspaceChange struct {
+	ConfirmedHead string `json:"confirmedHead,omitempty"`
+	ConfirmedDiff string `json:"confirmedDiff,omitempty"`
+	CurrentHead   string `json:"currentHead,omitempty"`
+	CurrentDiff   string `json:"currentDiff,omitempty"`
+	Reason        string `json:"reason"`
+}
+
 type GoalOutcome struct {
-	SchemaVersion   int            `json:"schemaVersion"`
-	ExecutionStatus string         `json:"executionStatus"`
-	Scope           GoalScope      `json:"scope"`
-	Status          string         `json:"status"`
-	Label           string         `json:"label"`
-	Reason          string         `json:"reason"`
-	Contract        GoalContract   `json:"contract"`
-	EvidenceHash    string         `json:"evidenceHash"`
-	Result          *GoalResultRef `json:"result,omitempty"`
-	AssessedBy      string         `json:"assessedBy,omitempty"`
-	AssessedAt      time.Time      `json:"assessedAt,omitempty"`
-	CanConfirm      bool           `json:"canConfirm"`
-	Closed          bool           `json:"closed,omitempty"`
+	SchemaVersion   int                  `json:"schemaVersion"`
+	ExecutionStatus string               `json:"executionStatus"`
+	Scope           GoalScope            `json:"scope"`
+	Status          string               `json:"status"`
+	Label           string               `json:"label"`
+	Reason          string               `json:"reason"`
+	Contract        GoalContract         `json:"contract"`
+	EvidenceHash    string               `json:"evidenceHash"`
+	Result          *GoalResultRef       `json:"result,omitempty"`
+	AssessedBy      string               `json:"assessedBy,omitempty"`
+	AssessedAt      time.Time            `json:"assessedAt,omitempty"`
+	CanConfirm      bool                 `json:"canConfirm"`
+	Closed          bool                 `json:"closed,omitempty"`
+	WorkspaceChange *GoalWorkspaceChange `json:"workspaceChange,omitempty"`
 }
 
 var GoalOutcomeLabels = map[string]string{
@@ -284,16 +295,43 @@ func goalCheckEvidence(run *Run, teamRow *Team, contract GoalContract) (GoalChec
 
 // EvaluateGoal 是所有 API 和界面共用的纯判定。缺记录的旧 Run 保守投影，绝不补造通过事实。
 func EvaluateGoal(run *Run, teamRow *Team, scope GoalScope) GoalOutcome {
+	return evaluateGoal(run, teamRow, scope, nil, false)
+}
+
+// EvaluateIssueGoal 使用事项级契约和用户结论，当前 Run 只提供执行结果与检查证据。
+func EvaluateIssueGoal(run *Run, teamRow *Team, scope GoalScope, record *GoalRecord) GoalOutcome {
+	if record == nil {
+		return EvaluateGoal(run, teamRow, scope)
+	}
+	return evaluateGoal(run, teamRow, scope, record, true)
+}
+
+func goalRecordForScope(record *GoalRecord, scope GoalScope) *GoalRecord {
+	record = cloneGoalRecord(record)
+	if record == nil || record.Scope.Hash == scope.Hash {
+		return record
+	}
+	record.Scope = scope
+	if len(record.Contract.Criteria) > 0 && record.Contract.Criteria[0].ID == "original" {
+		record.Contract.Criteria[0].Text = scope.Text
+	}
+	return record
+}
+
+func evaluateGoal(run *Run, teamRow *Team, scope GoalScope, issueRecord *GoalRecord, preserveAssessment bool) GoalOutcome {
 	out := GoalOutcome{SchemaVersion: 1, ExecutionStatus: run.Status, Scope: scope, Status: "unassessed", Reason: "尚无可查看的最终结果。",
 		Contract: DefaultGoalContract(scope), EvidenceHash: GoalEvidenceHash(run), Result: FinalGoalResult(run)}
 	record := run.Goals[scope.ID]
+	if issueRecord != nil {
+		record = goalRecordForScope(issueRecord, scope)
+	}
 	if record != nil && record.Scope.Hash == scope.Hash {
 		out.Contract = record.Contract
 		out.Contract.Criteria = append([]GoalCriterion(nil), record.Contract.Criteria...)
 	}
 	out.Contract = automaticGoalContract(out.Contract)
 	out.Contract.Verify, out.Contract.Review = goalCheckEvidence(run, teamRow, out.Contract)
-	if run.Status == RunCancelled {
+	if run.Status == RunCancelled && !preserveAssessment {
 		out.Status, out.Label, out.Reason = "cancelled", GoalOutcomeLabels["cancelled"], "本次执行已取消，已有结果保留。"
 		if run.StopReason != "" {
 			out.Reason = run.StopReason
@@ -321,7 +359,7 @@ func EvaluateGoal(run *Run, teamRow *Team, scope GoalScope) GoalOutcome {
 		}
 	}
 	out.CanConfirm = !blocked && out.Result != nil
-	if record != nil && record.Scope.Hash == scope.Hash && record.EvidenceHash == out.EvidenceHash {
+	if record != nil && record.Scope.Hash == scope.Hash && (preserveAssessment || record.EvidenceHash == out.EvidenceHash) {
 		out.AssessedBy, out.AssessedAt, out.Closed = record.AssessedBy, record.AssessedAt, record.Closed
 		if record.AssessedBy == "user" {
 			met, unmet, unknown := 0, 0, 0
@@ -339,7 +377,7 @@ func EvaluateGoal(run *Run, teamRow *Team, scope GoalScope) GoalOutcome {
 				out.Status, out.Reason = "partial", record.Reason
 			} else if unmet > 0 {
 				out.Status, out.Reason = "unsatisfied", record.Reason
-			} else if met > 0 && unknown+unmet == 0 && out.CanConfirm {
+			} else if met > 0 && unknown+unmet == 0 && (preserveAssessment || out.CanConfirm) {
 				out.Status, out.Reason = "satisfied", record.Reason
 			}
 		}

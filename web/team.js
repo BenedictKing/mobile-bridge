@@ -128,8 +128,9 @@ function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executio
   const t=BridgeI18n.t,node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
   const box=node('section',undefined,'team-goal-review');
   const reviewable=!executionStatus||executionStatus==='completed';
-  if(!reviewable&&!outcome.result?.text){box.hidden=true;return box;}
-  if(reviewable)box.append(node('h3',t(outcome.label||'目标结果')),node('p',outcome.reason||'','muted'));
+  const closeOnly=!reviewable&&outcome.scope?.id&&outcome.scope.id!=='run';
+  if(!reviewable&&!closeOnly&&!outcome.result?.text){box.hidden=true;return box;}
+  if(reviewable||closeOnly)box.append(node('h3',t(outcome.label||'目标结果')),node('p',outcome.reason||'','muted'));
   if(outcome.result?.text){
     const result=node('details',undefined,'team-goal-result');result.open=true;
     result.append(node('summary',t(reviewable?'最终结果':'已有结果')));
@@ -140,7 +141,11 @@ function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executio
     if(outcome.result.truncated)result.append(node('p',t('结果摘要已截断，请在来源任务查看完整内容。'),'muted'));
     box.append(result);
   }
-  if(!reviewable||outcome.closed)return box;
+  if(outcome.workspaceChange){
+    const change=outcome.workspaceChange,confirmed=String(change.confirmedHead||'?').slice(0,12),current=String(change.currentHead||'?').slice(0,12);
+    box.append(node('p',t('工作区已变化，确认时的结论仍保留。')+' '+confirmed+' → '+current+(change.reason?' · '+change.reason:''),'muted'));
+  }
+  if(outcome.closed||(!reviewable&&!closeOnly))return box;
   const key=outcome.scope.id+'|'+outcome.scope.hash+'|'+outcome.contract.revision;
   let state=drafts.get(key);
   if(!state||state.evidenceHash!==outcome.evidenceHash){
@@ -152,17 +157,20 @@ function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executio
   const field=(label,control,translate=true)=>{const wrap=node('label',undefined,'team-goal-field');wrap.append(node('span',translate?t(label):label),control);controls.push(control);return wrap;};
   const select=(name,options,value,update)=>{const el=node('select');el.name=name;for(const [id,label] of options){const option=node('option',t(label));option.value=id;el.append(option);}el.value=value;el.addEventListener('change',()=>update(el.value));return el;};
   const textArea=(value,update)=>{const el=node('textarea');el.rows=2;el.value=value;el.addEventListener('input',()=>update(el.value));return el;};
-  const settings=node('details',undefined,'team-goal-contract');settings.open=false;
-  settings.append(node('summary',t('调整完成条件（可选）')),node('p',t('原始要求已保留，需要时可补充条件或调整检查方式。'),'muted'));
-  settings.append(field('交付类型',select('deliverableKind',[['result','任务结果'],['answer','咨询回答'],['investigation','调查分析'],['change','实现修改'],['operation','操作执行']],state.kind,value=>state.kind=value)));
-  const requirements=[['auto','跟随执行中的检查'],['required','必须通过'],['not_required','本次不需要']];
-  settings.append(field('验证要求',select('verifyRequirement',requirements,state.verify,value=>state.verify=value)));
-  const verifyReason=field('验证不适用的原因',textArea(state.verifyReason,value=>state.verifyReason=value));verifyReason.hidden=state.verify!=='not_required';settings.append(verifyReason);
-  settings.querySelector('select[name="verifyRequirement"]')?.addEventListener('change',()=>{verifyReason.hidden=state.verify!=='not_required';});
-  settings.append(field('审查要求',select('reviewRequirement',requirements,state.review,value=>state.review=value)));
-  const reviewReason=field('审查不适用的原因',textArea(state.reviewReason,value=>state.reviewReason=value));reviewReason.hidden=state.review!=='not_required';settings.append(reviewReason);
-  settings.querySelector('select[name="reviewRequirement"]')?.addEventListener('change',()=>{reviewReason.hidden=state.review!=='not_required';});
-  settings.append(field('补充完成条件（每行一项）',textArea(state.extra,value=>state.extra=value)));
+  const settings=node('details',undefined,'team-goal-contract');settings.open=closeOnly;
+  settings.append(node('summary',t(closeOnly?'关闭事项追踪':'调整完成条件（可选）')));
+  if(reviewable){
+    settings.append(node('p',t('原始要求已保留，需要时可补充条件或调整检查方式。'),'muted'));
+    settings.append(field('交付类型',select('deliverableKind',[['result','任务结果'],['answer','咨询回答'],['investigation','调查分析'],['change','实现修改'],['operation','操作执行']],state.kind,value=>state.kind=value)));
+    const requirements=[['auto','跟随执行中的检查'],['required','必须通过'],['not_required','本次不需要']];
+    settings.append(field('验证要求',select('verifyRequirement',requirements,state.verify,value=>state.verify=value)));
+    const verifyReason=field('验证不适用的原因',textArea(state.verifyReason,value=>state.verifyReason=value));verifyReason.hidden=state.verify!=='not_required';settings.append(verifyReason);
+    settings.querySelector('select[name="verifyRequirement"]')?.addEventListener('change',()=>{verifyReason.hidden=state.verify!=='not_required';});
+    settings.append(field('审查要求',select('reviewRequirement',requirements,state.review,value=>state.review=value)));
+    const reviewReason=field('审查不适用的原因',textArea(state.reviewReason,value=>state.reviewReason=value));reviewReason.hidden=state.review!=='not_required';settings.append(reviewReason);
+    settings.querySelector('select[name="reviewRequirement"]')?.addEventListener('change',()=>{reviewReason.hidden=state.review!=='not_required';});
+    settings.append(field('补充完成条件（每行一项）',textArea(state.extra,value=>state.extra=value)));
+  }
   const act=async(action,choice='')=>{
     if(state.busy)return;
     if(choice==='confirm'&&!outcome.canConfirm)return;
@@ -183,21 +191,25 @@ function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executio
     finally{state.busy=false;syncControls();}
   };
   const button=(label,action,choice='')=>{const el=node('button',t(label));el.type='button';el.addEventListener('click',()=>act(action,choice));controls.push(el);return el;};
-  settings.append(button('保存完成条件','define'));
-  const checks=node('fieldset');checks.append(node('legend',t('逐项核对原始要求')));
-  for(const criterion of outcome.contract.criteria){
-    checks.append(field(criterion.text,select('criterion-'+criterion.id,[['unknown','待确认'],['met','满足'],['unmet','不满足']],state.states[criterion.id]||'unknown',value=>state.states[criterion.id]=value),false));
+  if(reviewable){
+    settings.append(button('保存完成条件','define'));
+    const checks=node('fieldset');checks.append(node('legend',t('逐项核对原始要求')));
+    for(const criterion of outcome.contract.criteria){
+      checks.append(field(criterion.text,select('criterion-'+criterion.id,[['unknown','待确认'],['met','满足'],['unmet','不满足']],state.states[criterion.id]||'unknown',value=>state.states[criterion.id]=value),false));
+    }
+    settings.append(checks,button('记录核对结论','assess'));
   }
-  settings.append(checks,button('记录核对结论','assess'),button('关闭目标追踪','close'));
+  const close=button('关闭目标追踪','close');if(reviewable)settings.append(close);
   const evidence=node('p',undefined,'muted');
   const labels={passed:'已通过',failed:'未通过',pending:'待执行',stale:'证据已过期',unknown:'未取得结论',not_configured:'未配置'};
   const checkLabel=check=>check.requirement==='not_required'?t('本次不需要')+' · '+check.reason:t(labels[check.status]||'未配置');
   const checksConfigured=[['验证',outcome.contract.verify],['审查',outcome.contract.review]].filter(([,check])=>check.requirement==='required'||check.status!=='not_configured');
   if(checksConfigured.length){evidence.textContent=checksConfigured.map(([label,check])=>t(label)+' · '+checkLabel(check)).join(' / ');box.append(evidence);}
-  if(!outcome.canConfirm)box.append(node('p',t('当前结果或必要检查尚未就绪，可先反馈问题。'),'muted'));
-  box.append(field('反馈或补充说明（可选）',textArea(state.reason,value=>state.reason=value)));
+  if(reviewable&&!outcome.canConfirm)box.append(node('p',t('当前结果或必要检查尚未就绪，可先反馈问题。'),'muted'));
+  box.append(field(closeOnly?'关闭原因':'反馈或补充说明（可选）',textArea(state.reason,value=>state.reason=value)));
   const confirm=button('确认符合要求','assess','confirm'),actions=node('div',undefined,'team-run-actions');
-  confirm.className='primary';confirm.hidden=outcome.status==='satisfied';actions.append(confirm,button('反馈问题','assess','feedback'));box.append(actions,notice,error,settings);
+  confirm.className='primary';confirm.hidden=outcome.status==='satisfied';actions.append(confirm,button('反馈问题','assess','feedback'));
+  if(reviewable)box.append(actions,notice,error,settings);else box.append(close,notice,error);
   function syncControls(){for(const el of controls)el.disabled=!!state.busy||el===confirm&&!outcome.canConfirm;}
   syncControls();
   return box;

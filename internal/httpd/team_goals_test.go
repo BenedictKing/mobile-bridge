@@ -82,12 +82,14 @@ func TestRunGoalReviewScopesAndIssueResolution(t *testing.T) {
 			t.Fatalf("post want %d: %d %s", intended, response.Code, response.Body.String())
 		}
 	}
+	criteria := append([]team.GoalCriterion(nil), goal.Contract.Criteria...)
+	criteria = append(criteria, team.GoalCriterion{ID: "extra", Text: "保留追加条件", State: "unknown"})
 	request := map[string]any{"id": uuid.NewString(), "version": detail.Version, "goalRevision": goal.Contract.Revision, "scopeId": goal.Scope.ID, "scopeHash": goal.Scope.Hash, "evidenceHash": goal.EvidenceHash, "action": "define",
-		"contract": map[string]any{"deliverableKind": "investigation", "criteria": goal.Contract.Criteria, "verify": map[string]any{"requirement": "not_required", "reason": "本次仅调查"}, "review": map[string]any{"requirement": "not_required", "reason": "用户核对依据"}}}
+		"contract": map[string]any{"deliverableKind": "investigation", "criteria": criteria, "verify": map[string]any{"requirement": "not_required", "reason": "本次仅调查"}, "review": map[string]any{"requirement": "not_required", "reason": "用户核对依据"}}}
 	post(request, http.StatusOK)
 	detail = get()
 	goal = detail.GoalOutcomes[0]
-	confirm := map[string]any{"id": uuid.NewString(), "version": detail.Version, "goalRevision": goal.Contract.Revision, "scopeId": goal.Scope.ID, "scopeHash": goal.Scope.Hash, "evidenceHash": goal.EvidenceHash, "action": "assess", "states": map[string]any{"original": "met"}, "reason": "确认甲的调查已回答原问题"}
+	confirm := map[string]any{"id": uuid.NewString(), "version": detail.Version, "goalRevision": goal.Contract.Revision, "scopeId": goal.Scope.ID, "scopeHash": goal.Scope.Hash, "evidenceHash": goal.EvidenceHash, "action": "assess", "states": map[string]any{"original": "met", "extra": "met"}, "reason": "确认甲的调查已回答原问题"}
 	post(confirm, http.StatusOK)
 	post(confirm, http.StatusOK)
 	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/issues", "")
@@ -111,6 +113,85 @@ func TestRunGoalReviewScopesAndIssueResolution(t *testing.T) {
 	}
 	if get().Outcome.Status == "satisfied" {
 		t.Fatal("一个事项确认不代表全部达成")
+	}
+
+	routeIssueRun := func(runID, text, status string, createdAt time.Time, result string) {
+		t.Helper()
+		followUp, _, acceptErr := env.server.TeamInputs.AcceptWithIssueRouting(teamID, uuid.NewString(), text, nil, "policy", 64, true)
+		if acceptErr != nil {
+			t.Fatal(acceptErr)
+		}
+		_, _, acceptErr = env.server.TeamInputs.ApplyIssueProposal(teamID, "link-"+runID, &team.IssueProposal{InputID: followUp.ID, Revision: 1,
+			Segments: []team.IssueProposalSegment{{Action: team.IssueSegmentLink, IssueID: goal.Scope.ID, SourceStart: 0, SourceEnd: len([]rune(text))}}})
+		if acceptErr != nil {
+			t.Fatal(acceptErr)
+		}
+		if acceptErr = env.server.TeamInputs.MarkRoutingIntent(teamID, followUp.ID, "follow_up", runID, "lead", ""); acceptErr != nil {
+			t.Fatal(acceptErr)
+		}
+		if acceptErr = env.server.TeamInputs.MarkRouted(teamID, followUp.ID, "follow_up", runID, "lead"); acceptErr != nil {
+			t.Fatal(acceptErr)
+		}
+		run := &team.Run{ID: runID, TeamID: teamID, Goal: text, Status: status, CreatedAt: createdAt}
+		if result != "" {
+			run.Tasks = []team.Task{{ID: "lead", MemberID: "lead", Status: team.TaskCompleted, Result: result}}
+		}
+		if acceptErr = env.store.SaveRun(run); acceptErr != nil {
+			t.Fatal(acceptErr)
+		}
+	}
+	const nextRunID = "goal-scope-next-run"
+	routeIssueRun(nextRunID, "甲后续", team.RunCompleted, time.Now().Add(time.Minute), "新的执行结果")
+	response = env.request(http.MethodGet, "/api/teams/"+teamID+"/issues/"+goal.Scope.ID, "")
+	var latest struct {
+		Status      string           `json:"status"`
+		ReviewRunID string           `json:"reviewRunId"`
+		Outcome     team.GoalOutcome `json:"outcome"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &latest); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || latest.ReviewRunID != nextRunID || latest.Status != "resolved" || latest.Outcome.Status != "satisfied" {
+		t.Fatalf("新 Run 关联后应保留事项确认: %d %+v", response.Code, latest)
+	}
+	if len(latest.Outcome.Contract.Criteria) != 2 || latest.Outcome.Contract.Criteria[1].Text != "保留追加条件" ||
+		!strings.Contains(latest.Outcome.Contract.Criteria[0].Text, "甲后续") {
+		t.Fatalf("跨 Run 应保留追加条件并迁移当前范围: %+v", latest.Outcome.Contract.Criteria)
+	}
+
+	const activeRunID = "goal-scope-active-run"
+	routeIssueRun(activeRunID, "甲活跃后续", team.RunWaitingInput, time.Now().Add(2*time.Minute), "")
+	activeBase := "/api/teams/" + teamID + "/runs/" + activeRunID
+	response = env.request(http.MethodGet, activeBase, "")
+	var active struct {
+		Version      uint64             `json:"version"`
+		GoalOutcomes []team.GoalOutcome `json:"goalOutcomes"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &active); err != nil {
+		t.Fatal(err)
+	}
+	var activeGoal *team.GoalOutcome
+	for i := range active.GoalOutcomes {
+		if active.GoalOutcomes[i].Scope.ID == goal.Scope.ID {
+			activeGoal = &active.GoalOutcomes[i]
+		}
+	}
+	if activeGoal == nil || activeGoal.Status != "satisfied" {
+		t.Fatalf("活跃 Run 不应清除事项确认: %+v", active.GoalOutcomes)
+	}
+	closeBody, _ := json.Marshal(map[string]any{"id": uuid.NewString(), "version": active.Version,
+		"goalRevision": activeGoal.Contract.Revision, "scopeId": activeGoal.Scope.ID, "scopeHash": activeGoal.Scope.Hash,
+		"evidenceHash": activeGoal.EvidenceHash, "action": "close", "reason": "关闭事项追踪，执行继续"})
+	response = env.request(http.MethodPost, activeBase+"/goal-review", string(closeBody))
+	if response.Code != http.StatusOK || env.store.Run(activeRunID).Status != team.RunWaitingInput {
+		t.Fatalf("活跃事项应可独立关闭且不取消 Run: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodGet, "/api/teams/"+teamID+"/issues/"+goal.Scope.ID, "")
+	if err = json.Unmarshal(response.Body.Bytes(), &latest); err != nil {
+		t.Fatal(err)
+	}
+	if latest.Status != "closed" || !latest.Outcome.Closed {
+		t.Fatalf("关闭应独立于活跃 Run 状态: %+v", latest)
 	}
 	confirm["id"] = uuid.NewString()
 	post(confirm, http.StatusConflict)
