@@ -30,7 +30,7 @@ Android App 复用现有 Mobile Bridge 网页、Cloudflare 登录和会话。普
 需要 JDK 17、Android SDK Platform 36 和对应构建工具。设置 `ANDROID_HOME` 后，在仓库根目录运行：
 
 ```bash
-make build-android
+make android-build
 ```
 
 该命令执行 JVM 测试与 debug APK 构建，输出：
