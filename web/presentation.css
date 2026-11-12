@@ -1027,3 +1027,8 @@ html[lang=en] .sidebar-foot>.plain:last-child{padding-right:0}
   .team-live-actions .plain{min-height:44px}
 }
 @media(max-width:390px){.team-canvas-current-run{max-width:88px}}
+
+@media(max-width:720px){
+  .timeline:has(#queued:not(:empty)){padding-bottom:6px}
+  #queued .queue-card:last-child{margin-bottom:0}
+}
