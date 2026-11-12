@@ -732,6 +732,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	case EventTaskPlanned:
 		task.Status = TaskPlanned
 		task.MemberID = payloadString(event.Payload, "memberId")
+		task.Phase = payloadString(event.Payload, "phase")
 		task.InstructionsHead = payloadString(event.Payload, "instructionsHead")
 		task.ExecutionContext = payloadString(event.Payload, "executionContext")
 		task.IssueClassificationOnly = payloadBool(event.Payload, "issueClassificationOnly")

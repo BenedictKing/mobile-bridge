@@ -54,6 +54,7 @@ type PlanTaskInput struct {
 	MemberID  string   `json:"memberId"`
 	MemberIDs []string `json:"memberIds,omitempty"`
 	Prompt    string   `json:"prompt"`
+	Phase     string   `json:"phase,omitempty"`
 	DependsOn []string `json:"dependsOn,omitempty"`
 	WriteLock string   `json:"writeLock,omitempty"`
 	Review    *bool    `json:"review,omitempty"`
@@ -224,6 +225,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 		default:
 			return nil, fmt.Errorf("任务 %s 的工作区模式无效：%s", input.ID, input.WorkspaceMode)
 		}
+		input.Phase = NormalizeTaskPhase(input.Phase)
 		normalized = append(normalized, input)
 	}
 
@@ -244,6 +246,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 				ID:            taskID,
 				MemberID:      memberID,
 				Prompt:        input.Prompt,
+				Phase:         input.Phase,
 				DependsOn:     input.DependsOn,
 				WriteLock:     input.WriteLock,
 				Review:        input.Review,
@@ -376,6 +379,7 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 			ID:               input.ID,
 			MemberID:         input.MemberID,
 			Prompt:           input.Prompt,
+			Phase:            input.Phase,
 			ReviewOf:         append([]string(nil), input.ReviewOf...),
 			Attempt:          0,
 			Ordinal:          ordinal,
@@ -393,6 +397,9 @@ func ParsePlan(team *Team, goal string, mode string, collect string, raw []PlanT
 		}
 		task.InputHash = InputHashFor(&task, policyDigest, "")
 		tasks = append(tasks, task)
+	}
+	if err := validatePlanPhaseGate(team, tasks); err != nil {
+		return nil, err
 	}
 	return &Plan{
 		Mode:          mode,
@@ -433,7 +440,7 @@ func PolicyDigest(policy TeamPolicy) string {
 }
 
 // PlanHash 计算规范化计划的摘要：模式 + 收集策略 + 目标 + 每任务的确定性
-// 字段（id/memberId/prompt/dependsOn/workspaceMode/writeLock/attachments），拓扑序排列。
+// 字段（id/memberId/prompt/phase/dependsOn/workspaceMode/writeLock/attachments），拓扑序排列。
 // 与任务运行态字段（status/result/submissionId 等）无关，同一计划重算稳定。
 func PlanHash(mode, collect, goal string, tasks []Task) string {
 	object := jsoncompat.NewObject()
@@ -447,6 +454,9 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 		entry.Set("id", task.ID)
 		entry.Set("memberId", task.MemberID)
 		entry.Set("prompt", task.Prompt)
+		if task.Phase != "" {
+			entry.Set("phase", task.Phase)
+		}
 		if task.IssueClassificationOnly {
 			entry.Set("issueClassificationOnly", true)
 		}
@@ -492,6 +502,9 @@ func InputHashFor(task *Task, policyDigest, contextText string) string {
 	object := jsoncompat.NewObject()
 	object.Set("memberId", task.MemberID)
 	object.Set("prompt", task.Prompt)
+	if task.Phase != "" {
+		object.Set("phase", task.Phase)
+	}
 	object.Set("executionContext", task.ExecutionContext)
 	if task.IssueClassificationOnly {
 		object.Set("issueClassificationOnly", true)

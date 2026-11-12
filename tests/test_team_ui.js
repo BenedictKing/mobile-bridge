@@ -173,6 +173,23 @@ test('self review is visibly labelled as non-independent',()=>{
   assert.doesNotMatch(text(independent),/Non-independent review/);
 });
 
+test('tasks group by phase and legacy tasks fall back to other',()=>{
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
+  screen.team=team;screen.detail={id:'r1',status:'completed',tasks:[],workspace:{}};
+  const box=screen.renderTaskGroups([
+    {id:'design',memberId:'kimi',phase:'plan',status:'completed'},
+    {id:'impl',memberId:'buddy',phase:'implement',status:'running'},
+    {id:'legacy',memberId:'buddy',status:'completed'},
+  ]);
+  const groups=find(box,'team-phase');
+  assert.equal(groups.length,3);
+  assert.deepEqual(groups.map(group=>group.dataset.phase),['plan','implement','Other']);
+  assert.match(text(groups[0]),/plan · 1\/1/);
+  assert.match(text(groups[1]),/implement · 0\/1/);
+  assert.match(text(groups[2]),/Other · 1\/1/);
+  assert.ok(groups.every(group=>group.open));
+});
+
 test('teams panel localizes member roles and shows the readable project name',()=>{
   const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
   const card=panel.renderTeam(team);

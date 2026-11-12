@@ -1959,7 +1959,7 @@ class TeamRunScreen{
     if(graphSection)body.append(graphSection);
     const tasks=detail.tasks||[];
     if(!tasks.length)body.append(this.node('p',t('还没有任务。'),'muted'));
-    for(const task of tasks)body.append(this.renderTask(task));
+    if(tasks.length)body.append(this.renderTaskGroups(tasks));
     root.append(body);
     body.scrollTop=scrollTop;
   }
@@ -2107,6 +2107,24 @@ class TeamRunScreen{
       if(generation!==this.generation){this.actionNotice='';this.actionError='';}
       this.actionBusy=false;this.render();
     }
+  }
+  renderTaskGroups(tasks){
+    const t=BridgeI18n.t,groups=new Map();
+    for(const task of tasks){
+      const phase=task.phase||t('其他');
+      if(!groups.has(phase))groups.set(phase,[]);
+      groups.get(phase).push(task);
+    }
+    const box=this.node('div',undefined,'team-phases');
+    for(const [phase,items] of groups){
+      const completed=items.filter(task=>task.status==='completed').length;
+      const details=this.node('details',undefined,'team-phase');
+      details.dataset.phase=phase;details.open=true;
+      details.append(this.node('summary',phase+' · '+completed+'/'+items.length));
+      for(const task of items)details.append(this.renderTask(task));
+      box.append(details);
+    }
+    return box;
   }
   renderTask(task){
     const t=BridgeI18n.t;

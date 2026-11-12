@@ -231,6 +231,9 @@ func (p *PlanTaskInput) jsonObject() *jsoncompat.Object {
 		object.Set("memberIds", members)
 	}
 	object.Set("prompt", p.Prompt)
+	if p.Phase != "" {
+		object.Set("phase", p.Phase)
+	}
 	if len(p.DependsOn) > 0 {
 		depends := &jsoncompat.Array{}
 		for _, id := range p.DependsOn {

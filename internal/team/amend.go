@@ -231,6 +231,9 @@ func (s *Service) CreateAmendRun(team *Team, parentRunID, runID, goal, mode, col
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
 		}
+		if task.Phase != "" {
+			payload["phase"] = task.Phase
+		}
 		if task.ExecutionContext != "" {
 			payload["executionContext"] = task.ExecutionContext
 		}

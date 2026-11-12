@@ -3723,6 +3723,13 @@ func parseTeamPolicy(raw any, base team.TeamPolicy) (team.TeamPolicy, error) {
 		}
 		policy.AutoApplyChanges = false
 	}
+	if value, exists := object.Get("allowImplementationWithoutPlan"); exists {
+		enabled, isBool := value.(bool)
+		if !isBool {
+			return base, errors.New("策略字段 allowImplementationWithoutPlan 必须是布尔值")
+		}
+		policy.AllowImplementationWithoutPlan = enabled
+	}
 	return policy, nil
 }
 
@@ -3746,6 +3753,7 @@ func parsePlanInputs(raw any) ([]team.PlanTaskInput, error) {
 			ID:            stringField(object, "id"),
 			MemberID:      stringField(object, "memberId"),
 			Prompt:        stringField(object, "prompt"),
+			Phase:         stringField(object, "phase"),
 			WriteLock:     stringField(object, "writeLock"),
 			WorkspaceMode: stringField(object, "workspaceMode"),
 			WorkspaceID:   stringField(object, "workspaceId"),

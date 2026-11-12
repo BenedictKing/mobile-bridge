@@ -458,6 +458,9 @@ func (s *Service) createRunWithOptions(team *Team, runID, goal, mode, collect st
 			"memberId":         task.MemberID,
 			"instructionsHead": task.InstructionsHead,
 		}
+		if task.Phase != "" {
+			payload["phase"] = task.Phase
+		}
 		if task.ExecutionContext != "" {
 			payload["executionContext"] = task.ExecutionContext
 		}
@@ -917,6 +920,9 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 				"instructionsHead": task.InstructionsHead,
 				"round":            jsoncompat.Num(action.Round),
 				"actionKey":        action.ActionKey,
+			}
+			if task.Phase != "" {
+				payload["phase"] = task.Phase
 			}
 			if task.ExecutionContext != "" {
 				payload["executionContext"] = task.ExecutionContext

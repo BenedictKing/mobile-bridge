@@ -301,6 +301,8 @@ type TeamPolicy struct {
 	WritePolicy            string `json:"writePolicy"`   // exclusive | parallel
 	AutoDispatch           bool   `json:"autoDispatch"`
 	AutoApplyChanges       bool   `json:"autoApplyChanges"`
+	// AllowImplementationWithoutPlan 允许显式 implement 写任务省略 plan 依赖。
+	AllowImplementationWithoutPlan bool `json:"allowImplementationWithoutPlan,omitempty"`
 	// MaxPendingInputs 是每 Team 待路由输入的上限（docs/
 	// team-demand-queue-plan.md §3.2，阶段 1）：独立于 MaxTasksPerRun 的
 	// 入口背压；≤0 视为不限（DefaultPolicy 给 DefaultMaxPendingInputs）。
@@ -439,6 +441,7 @@ type Task struct {
 	ID                      string   `json:"id"`
 	MemberID                string   `json:"memberId"`
 	Prompt                  string   `json:"prompt"`
+	Phase                   string   `json:"phase,omitempty"`
 	IssueClassificationOnly bool     `json:"issueClassificationOnly,omitempty"`
 	Attachments             []string `json:"attachments,omitempty"`
 	InputHash               string   `json:"inputHash"`
@@ -533,6 +536,7 @@ type Action struct {
 	Round        int    `json:"round"`
 	Member       string `json:"member,omitempty"`
 	Task         string `json:"task,omitempty"`
+	Phase        string `json:"phase,omitempty"`
 	FromTaskID   string `json:"fromTaskId,omitempty"`
 	WriteLock    string `json:"writeLock,omitempty"`
 	Review       *bool  `json:"review,omitempty"`
@@ -646,7 +650,7 @@ var verifyResultKnownFields = map[string]bool{
 }
 
 var taskKnownFields = map[string]bool{
-	"id": true, "memberId": true, "prompt": true, "issueClassificationOnly": true, "attachments": true, "inputHash": true,
+	"id": true, "memberId": true, "prompt": true, "phase": true, "issueClassificationOnly": true, "attachments": true, "inputHash": true,
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
 	"baseRevision": true, "writeLock": true, "review": true,
@@ -753,6 +757,9 @@ func (p *TeamPolicy) jsonObject() *jsoncompat.Object {
 	object.Set("writePolicy", p.WritePolicy)
 	object.Set("autoDispatch", p.AutoDispatch)
 	object.Set("autoApplyChanges", p.AutoApplyChanges)
+	if p.AllowImplementationWithoutPlan {
+		object.Set("allowImplementationWithoutPlan", true)
+	}
 	object.Set("maxPendingInputs", jsoncompat.Num(p.MaxPendingInputs))
 	object.Set("maxActiveRuns", jsoncompat.Num(p.MaxActiveRuns))
 	object.Set("queueDispatchBudget", jsoncompat.Num(p.QueueDispatchBudget))
@@ -1047,6 +1054,9 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	object.Set("id", t.ID)
 	object.Set("memberId", t.MemberID)
 	object.Set("prompt", t.Prompt)
+	if t.Phase != "" {
+		object.Set("phase", t.Phase)
+	}
 	if t.IssueClassificationOnly {
 		object.Set("issueClassificationOnly", true)
 	}

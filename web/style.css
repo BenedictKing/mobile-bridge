@@ -215,6 +215,10 @@
 .team-run-body{flex:1;min-height:0;overflow-y:auto;padding:20px max(24px,calc((100% - 790px)/2))}
 .team-workspace code{font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border-radius:4px;padding:2px 5px}
 .task-card{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:14px;margin:0 0 14px}
+.team-phase{border:1px solid var(--line);border-radius:12px;background:var(--raised);margin:0 0 14px}
+.team-phase>summary{padding:10px 14px;cursor:pointer;font-size:12px;font-weight:600}
+.team-phase>.task-card{margin:14px}
+.team-phase>.task-card:last-child{margin-bottom:14px}
 .task-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .task-head strong{font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .task-member{font-size:11px;color:var(--muted)}
