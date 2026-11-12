@@ -307,6 +307,7 @@ func (s *Service) accountDispatchLockedWithBriefingSession(state *runState, team
 		if reviewHead != "" || reviewDiff != "" {
 			current.HeadRevision = reviewHead
 			current.DiffHash = reviewDiff
+			current.ReviewPaths = reviewTouchedPaths(fresh, current)
 		}
 		// 执行线程绑定（阶段一契约）：成员在本 Run 的首派创建线程并落
 		// thread_bound 事实，线程事件先于派发事件落账；成员绑定会话被恢复
@@ -364,6 +365,7 @@ func (s *Service) accountDispatchLockedWithBriefingSession(state *runState, team
 		if reviewHead != "" || reviewDiff != "" {
 			event.Payload["headRevision"] = reviewHead
 			event.Payload["diffHash"] = reviewDiff
+			event.Payload["reviewPaths"] = current.ReviewPaths
 		}
 		event.IdempotencyKey = TaskIdempotencyKey(fresh.TeamID, fresh.ID, taskID, attempt)
 		events = append(events, event)

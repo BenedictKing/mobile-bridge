@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -144,7 +145,12 @@ func (a teamWorkspaceAdapter) Cleanup(workspaceID string) error {
 // fatal 信息对定位最有价值）。全局附带 core.quotePath=false：diff 的路径
 // 输出保持原始 UTF-8，不做八进制转义（否则中文文件名会变成 "\346..."）。
 func gitWorkspaceOutput(dir string, args ...string) (string, error) {
+	return gitWorkspaceOutputEnv(dir, nil, args...)
+}
+
+func gitWorkspaceOutputEnv(dir string, env []string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-c", "core.quotePath=false", "-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -310,35 +316,109 @@ func cutUTF8(text string, max int) string {
 	return text[:cut]
 }
 
-// gitFingerprinter 是 team.WorkspaceFingerprinter 的 git 实现（阶段 5，
-// docs/team-demand-queue-plan.md §6）：head=rev-parse HEAD；diffHash 覆盖
-// 已跟踪改动（git diff HEAD）与未跟踪文件清单（ls-files -o）——新建文件
-// 是任务的正常产出，只哈希已跟踪 diff 会漏掉它们。全部走固定 argv，绝不
-// 过 shell；任一 git 失败返回错误（调用方按停靠/未绑定处理）。
-type gitFingerprinter struct{}
+const workspaceFingerprintCacheTTL = 30 * time.Second
+
+type workspaceFingerprintCacheEntry struct {
+	head, diff string
+	mtime      time.Time
+	cachedAt   time.Time
+}
+
+// gitFingerprinter 用临时 index 计算内容树哈希；HEAD 仅用于展示。
+type gitFingerprinter struct {
+	mu           sync.Mutex
+	cache        map[string]workspaceFingerprintCacheEntry
+	now          func() time.Time
+	computeCalls int
+}
 
 // NewGitFingerprinter 返回共享 cwd 的 git 指纹实现。
-func NewGitFingerprinter() team.WorkspaceFingerprinter { return gitFingerprinter{} }
+func NewGitFingerprinter() team.WorkspaceFingerprinter {
+	return &gitFingerprinter{cache: map[string]workspaceFingerprintCacheEntry{}, now: time.Now}
+}
 
-func (gitFingerprinter) Fingerprint(path string) (string, string, error) {
+func (g *gitFingerprinter) Fingerprint(path string) (string, string, error) {
+	return g.FingerprintPaths(path, nil)
+}
+
+func (g *gitFingerprinter) FingerprintPaths(path string, paths []string) (string, string, error) {
+	path = filepath.Clean(path)
+	paths = team.NormalizeTouchedPaths(paths)
+	stat, err := os.Stat(path)
+	if err != nil {
+		return "", "", err
+	}
+	key := path + "\x00" + strings.Join(paths, "\x00")
+	g.mu.Lock()
+	if g.cache == nil {
+		g.cache = map[string]workspaceFingerprintCacheEntry{}
+	}
+	now := time.Now
+	if g.now != nil {
+		now = g.now
+	}
+	at := now()
+	if entry, ok := g.cache[key]; ok && at.Sub(entry.cachedAt) < workspaceFingerprintCacheTTL && stat.ModTime().Equal(entry.mtime) {
+		g.mu.Unlock()
+		return entry.head, entry.diff, nil
+	}
+	g.computeCalls++
+	g.mu.Unlock()
+
+	head, diff, err := g.computeFingerprint(path, paths)
+	if err != nil {
+		return "", "", err
+	}
+	g.mu.Lock()
+	g.cache[key] = workspaceFingerprintCacheEntry{head: head, diff: diff, mtime: stat.ModTime(), cachedAt: at}
+	g.mu.Unlock()
+	return head, diff, nil
+}
+
+func (g *gitFingerprinter) computeFingerprint(path string, paths []string) (string, string, error) {
 	head, err := gitWorkspaceOutput(path, "rev-parse", "HEAD")
 	if err != nil {
 		return "", "", err
 	}
-	diff, err := gitWorkspaceOutput(path, "diff", "HEAD")
+	top, err := gitWorkspaceOutput(path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", "", err
 	}
-	untracked, err := gitWorkspaceOutput(path, "ls-files", "--others", "--exclude-standard")
+	top = strings.TrimSpace(top)
+	gitDir, err := gitWorkspaceOutput(top, "rev-parse", "--absolute-git-dir")
 	if err != nil {
 		return "", "", err
 	}
-	digest := sha256.New()
-	digest.Write([]byte("head\x00"))
-	digest.Write([]byte(head))
-	digest.Write([]byte("diff\x00"))
-	digest.Write([]byte(diff))
-	digest.Write([]byte("untracked\x00"))
-	digest.Write([]byte(untracked))
-	return strings.TrimSpace(head), hex.EncodeToString(digest.Sum(nil)), nil
+	gitDir = strings.TrimSpace(gitDir)
+	index, err := os.CreateTemp(gitDir, ".mobile-bridge-index-*")
+	if err != nil {
+		return "", "", err
+	}
+	indexPath := index.Name()
+	if err := index.Close(); err != nil {
+		_ = os.Remove(indexPath)
+		return "", "", err
+	}
+	defer os.Remove(indexPath)
+	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	if _, err := gitWorkspaceOutputEnv(top, env, "read-tree", "HEAD"); err != nil {
+		return "", "", err
+	}
+	if _, err := gitWorkspaceOutputEnv(top, env, "add", "-A", "--", "."); err != nil {
+		return "", "", err
+	}
+	tree, err := gitWorkspaceOutputEnv(top, env, "write-tree")
+	if err != nil {
+		return "", "", err
+	}
+	if len(paths) == 0 {
+		return strings.TrimSpace(head), strings.TrimSpace(tree), nil
+	}
+	args := append([]string{"ls-files", "-s", "--"}, paths...)
+	entries, err := gitWorkspaceOutputEnv(top, env, args...)
+	if err != nil {
+		return "", "", err
+	}
+	digest := sha256.Sum256([]byte(entries))
+	return strings.TrimSpace(head), hex.EncodeToString(digest[:]), nil
 }

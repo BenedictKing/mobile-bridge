@@ -455,10 +455,11 @@ type Task struct {
 	// ReviewOf 是审查任务声明的被审任务（阶段 5，docs/team-demand-queue-plan.md
 	// §6）：显式因果绑定，规范化后并入 DependsOn（被审任务完成才可派发审查）。
 	ReviewOf []string `json:"reviewOf,omitempty"`
+	// ReviewPaths 是被审任务声明触及的仓库相对路径；空集合保守回退全工作区。
+	ReviewPaths []string `json:"reviewPaths,omitempty"`
 	// HeadRevision/DiffHash 是审查任务派发时记录的工作区版本绑定（共享 cwd
-	// 的 rev-parse HEAD 与 git diff 哈希）：审查后的再次写入使裁决过期
-	//（ReviewVerdictStale），旧 passed 不能充当新版本的交付证据。空=未绑定
-	//（未声明 reviewOf 的审查保持旧行为）。
+	// 的 HEAD 与内容哈希）：被审路径的后续写入使裁决过期（ReviewVerdictStale），
+	// 旧 passed 不能充当新内容的交付证据。空=未绑定（未声明 reviewOf 的审查保持旧行为）。
 	HeadRevision string `json:"headRevision,omitempty"`
 	DiffHash     string `json:"diffHash,omitempty"`
 	// ReviewVerdictStale 由同 Run 后续写任务的 completed 事实置位（journal
@@ -500,14 +501,15 @@ type Task struct {
 // CommandSummary 是从 turn 的 activity 条目挖掘的有界摘要（§6.5 文件变更
 // 摘要与命令执行摘要，随 Run 持久化并随 task_completed 事件携带）。
 type TaskResult struct {
-	SessionID      string `json:"sessionId"`
-	TurnID         string `json:"turnId"`
-	Result         string `json:"result"`
-	ResultChars    int    `json:"resultChars"`
-	Truncated      bool   `json:"truncated"`
-	StopReason     string `json:"stopReason,omitempty"`
-	FileSummary    string `json:"fileSummary,omitempty"`
-	CommandSummary string `json:"commandSummary,omitempty"`
+	SessionID      string   `json:"sessionId"`
+	TurnID         string   `json:"turnId"`
+	Result         string   `json:"result"`
+	ResultChars    int      `json:"resultChars"`
+	Truncated      bool     `json:"truncated"`
+	StopReason     string   `json:"stopReason,omitempty"`
+	FileSummary    string   `json:"fileSummary,omitempty"`
+	CommandSummary string   `json:"commandSummary,omitempty"`
+	TouchedPaths   []string `json:"touchedPaths,omitempty"`
 	// ReviewVerdict 是评审回复末行的显式裁决（review.go，passed/failed；
 	// 未识别不落键，评审任务缺省即 unknown）。从截断前全文解析。
 	ReviewVerdict string `json:"reviewVerdict,omitempty"`
@@ -654,13 +656,13 @@ var taskKnownFields = map[string]bool{
 	"cachedFrom": true,
 	"error":      true, "outcome": true, "stopReason": true, "instructionsHead": true,
 	"sentText": true, "reduction": true, "triageFor": true,
-	"reviewOf": true, "headRevision": true, "diffHash": true, "reviewVerdictStale": true,
+	"reviewOf": true, "reviewPaths": true, "headRevision": true, "diffHash": true, "reviewVerdictStale": true,
 }
 
 var taskResultKnownFields = map[string]bool{
 	"sessionId": true, "turnId": true, "result": true,
 	"resultChars": true, "truncated": true, "stopReason": true,
-	"fileSummary": true, "commandSummary": true, "reviewVerdict": true,
+	"fileSummary": true, "commandSummary": true, "reviewVerdict": true, "touchedPaths": true,
 }
 
 // UnmarshalJSON 解码 Team 并保留未知字段。
@@ -1088,7 +1090,7 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	if t.WriteLock != "" {
 		object.Set("writeLock", t.WriteLock)
 	}
-	// 审查绑定（阶段 5）：reviewOf/headRevision/diffHash/reviewVerdictStale
+	// 审查绑定：reviewOf/reviewPaths/headRevision/diffHash/reviewVerdictStale
 	// 必须落盘——漏序列化会让重启后 stale 与版本绑定静默失效（交付证据
 	// 据此判定旧裁决是否过期）。
 	if len(t.ReviewOf) > 0 {
@@ -1097,6 +1099,13 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 			reviewOf.Items = append(reviewOf.Items, id)
 		}
 		object.Set("reviewOf", reviewOf)
+	}
+	if len(t.ReviewPaths) > 0 {
+		paths := &jsoncompat.Array{}
+		for _, value := range t.ReviewPaths {
+			paths.Items = append(paths.Items, value)
+		}
+		object.Set("reviewPaths", paths)
 	}
 	if t.HeadRevision != "" {
 		object.Set("headRevision", t.HeadRevision)
@@ -1187,6 +1196,7 @@ func (t *Task) Clone() *Task {
 	}
 	copied.DependsOn = append([]string(nil), t.DependsOn...)
 	copied.ReviewOf = append([]string(nil), t.ReviewOf...)
+	copied.ReviewPaths = append([]string(nil), t.ReviewPaths...)
 	copied.Attachments = append([]string(nil), t.Attachments...)
 	copied.ResultDetail = t.ResultDetail.Clone()
 	copied.extra = cloneExtra(t.extra)
@@ -1227,6 +1237,13 @@ func (tr *TaskResult) jsonObject() *jsoncompat.Object {
 	if tr.FileSummary != "" {
 		object.Set("fileSummary", tr.FileSummary)
 	}
+	if len(tr.TouchedPaths) > 0 {
+		paths := &jsoncompat.Array{}
+		for _, value := range tr.TouchedPaths {
+			paths.Items = append(paths.Items, value)
+		}
+		object.Set("touchedPaths", paths)
+	}
 	if tr.CommandSummary != "" {
 		object.Set("commandSummary", tr.CommandSummary)
 	}
@@ -1243,6 +1260,7 @@ func (tr *TaskResult) Clone() *TaskResult {
 		return nil
 	}
 	copied := *tr
+	copied.TouchedPaths = append([]string(nil), tr.TouchedPaths...)
 	copied.extra = cloneExtra(tr.extra)
 	return &copied
 }

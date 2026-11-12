@@ -138,12 +138,16 @@ var ErrRunNotWaiting = errors.New("只有等待用户处理的运行可以继续
 // outcome_unknown），取消等写操作被拒绝。HTTP 侧映射 409。
 var ErrRunFinished = errors.New("运行已结束，不能取消")
 
-// WorkspaceFingerprinter 是工作区指纹端口（阶段 5，docs/
-// team-demand-queue-plan.md §6）：审查任务派发与验证执行前记录
-// (HEAD, 工作区改动哈希)，作为「结论只对同一版本有效」的机器依据。
+// WorkspaceFingerprinter 是工作区指纹端口：审查任务派发与验证执行前记录
+// (HEAD, 内容哈希)，作为「结论只对同一内容有效」的机器依据。HEAD 仅用于展示。
 // 实现方（httpd）走固定 argv 的 git，绝不过 shell；非 git 目录或 git
 // 失败返回错误（调用方按停靠/未绑定处理）。
 type WorkspaceFingerprinter interface {
-	// Fingerprint 返回 path 的当前 HEAD 提交与工作区改动摘要哈希。
+	// Fingerprint 返回 path 的当前 HEAD 提交与全工作区内容哈希。
 	Fingerprint(path string) (head string, diffHash string, err error)
+}
+
+// WorkspacePathFingerprinter 是可选的路径级指纹端口；未实现时回退全工作区。
+type WorkspacePathFingerprinter interface {
+	FingerprintPaths(path string, paths []string) (head string, diffHash string, err error)
 }

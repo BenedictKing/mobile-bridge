@@ -785,6 +785,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		if diffHash := payloadString(event.Payload, "diffHash"); diffHash != "" {
 			task.DiffHash = diffHash
 		}
+		task.ReviewPaths = payloadStrings(event.Payload, "reviewPaths")
 		if attempt := payloadInt(event.Payload, "attempt"); attempt > 0 {
 			task.Attempt = attempt
 		}
@@ -801,6 +802,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			FileSummary:    payloadString(event.Payload, "fileSummary"),
 			CommandSummary: payloadString(event.Payload, "commandSummary"),
 			ReviewVerdict:  payloadString(event.Payload, "reviewVerdict"),
+			TouchedPaths:   payloadStrings(event.Payload, "touchedPaths"),
 		}
 		result.Truncated, _ = event.Payload["truncated"].(bool)
 		task.Result = result.Result

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/BenedictKing/mobile-bridge/internal/team"
@@ -359,5 +360,116 @@ func TestWorkspaceRegistryRoundtrip(t *testing.T) {
 	}
 	if _, err := loadTeamWorkspaceRegistry(nested); err != nil {
 		t.Fatalf("嵌套路径读取失败: %v", err)
+	}
+}
+
+func runGitTestCommand(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v 失败: %v: %s", args, err, out)
+	}
+}
+
+func TestFingerprintContentSurvivesCommitAndTracksUntrackedContent(t *testing.T) {
+	_, worktree := newGitWorktreeFixture(t, "wt-fingerprint-content")
+	fingerprinter := &gitFingerprinter{}
+	if err := os.WriteFile(filepath.Join(worktree, "a.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	untracked := filepath.Join(worktree, "new.txt")
+	if err := os.WriteFile(untracked, []byte("one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	headBefore, contentBefore, err := fingerprinter.computeFingerprint(worktree, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGitTestCommand(t, worktree, "add", "-A")
+	runGitTestCommand(t, worktree, "commit", "-qm", "reviewed content")
+	headAfter, contentAfter, err := fingerprinter.computeFingerprint(worktree, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headBefore == headAfter || contentBefore != contentAfter {
+		t.Fatalf("同一内容提交前后应保持内容指纹: %s/%s -> %s/%s", headBefore, contentBefore, headAfter, contentAfter)
+	}
+	if err := os.WriteFile(untracked, []byte("two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, contentChanged, err := fingerprinter.computeFingerprint(worktree, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentChanged == contentAfter {
+		t.Fatal("已跟踪或未跟踪文件的内容变化都必须改变指纹")
+	}
+}
+
+func TestFingerprintPathsIgnoreUnrelatedChanges(t *testing.T) {
+	_, worktree := newGitWorktreeFixture(t, "wt-fingerprint-paths")
+	fingerprinter := &gitFingerprinter{}
+	if err := os.WriteFile(filepath.Join(worktree, "a.txt"), []byte("a1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(worktree, "other.txt")
+	if err := os.WriteFile(other, []byte("b1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, pathBefore, err := fingerprinter.computeFingerprint(worktree, []string{"a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("b2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, pathAfter, err := fingerprinter.computeFingerprint(worktree, []string{"a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathBefore != pathAfter {
+		t.Fatal("无关文件变化不应改变被审路径指纹")
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "a.txt"), []byte("a2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, pathChanged, err := fingerprinter.computeFingerprint(worktree, []string{"a.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathChanged == pathAfter {
+		t.Fatal("被审文件变化应改变路径指纹")
+	}
+}
+
+func TestFingerprintCachesByCwdAndMtime(t *testing.T) {
+	_, worktree := newGitWorktreeFixture(t, "wt-fingerprint-cache")
+	now := time.Now()
+	fingerprinter := &gitFingerprinter{now: func() time.Time { return now }}
+	if _, _, err := fingerprinter.Fingerprint(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fingerprinter.Fingerprint(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprinter.computeCalls != 1 {
+		t.Fatalf("相同 cwd/mtime 的 30 秒内读取应命中缓存: %d", fingerprinter.computeCalls)
+	}
+	changed := now.Add(time.Second)
+	if err := os.Chtimes(worktree, changed, changed); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fingerprinter.Fingerprint(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprinter.computeCalls != 2 {
+		t.Fatalf("cwd mtime 变化应使缓存失效: %d", fingerprinter.computeCalls)
+	}
+	now = now.Add(31 * time.Second)
+	if _, _, err := fingerprinter.Fingerprint(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprinter.computeCalls != 3 {
+		t.Fatalf("超过 30 秒应重新计算: %d", fingerprinter.computeCalls)
 	}
 }

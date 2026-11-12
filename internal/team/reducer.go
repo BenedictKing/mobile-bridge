@@ -101,7 +101,7 @@ func ExtractResult(sessionID string, turn *jsoncompat.Object, maxChars int) Task
 	} else {
 		result.Result = full
 	}
-	result.FileSummary, result.CommandSummary = mineActivitySummaries(turn)
+	result.FileSummary, result.CommandSummary, result.TouchedPaths = mineActivitySummaries(turn)
 	if verdict := ExtractReviewVerdict(full); verdict != ReviewVerdictUnknown {
 		result.ReviewVerdict = verdict
 	}
@@ -133,10 +133,10 @@ var (
 // CommandSummary 的产物，changes 数组携带 {path,oldText,newText} 的结构化
 // 文件变更（changes.go appendContentChanges）。返回两份单行摘要（空串表示
 // 该类无内容），上限由 joinBoundedItems 保证。
-func mineActivitySummaries(turn *jsoncompat.Object) (fileSummary, commandSummary string) {
+func mineActivitySummaries(turn *jsoncompat.Object) (fileSummary, commandSummary string, touchedPaths []string) {
 	messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
 	if messages == nil {
-		return "", ""
+		return "", "", nil
 	}
 	var paths, commands []string
 	seenPath, seenCommand := map[string]bool{}, map[string]bool{}
@@ -147,6 +147,7 @@ func mineActivitySummaries(turn *jsoncompat.Object) (fileSummary, commandSummary
 		}
 		seenPath[path] = true
 		paths = append(paths, path)
+		touchedPaths = append(touchedPaths, path)
 	}
 	addCommand := func(command string) {
 		command = strings.TrimSpace(command)
@@ -206,7 +207,7 @@ func mineActivitySummaries(turn *jsoncompat.Object) (fileSummary, commandSummary
 			}
 		}
 	}
-	return joinBoundedItems(paths, "、"), joinBoundedItems(commands, "；")
+	return joinBoundedItems(paths, "、"), joinBoundedItems(commands, "；"), NormalizeTouchedPaths(touchedPaths)
 }
 
 // containsAny 报告 text 是否包含 probes 里的任一子串。

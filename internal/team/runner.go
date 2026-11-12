@@ -1592,9 +1592,8 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		}
 		cwd = binding.path
 	}
-	// (2.6) 审查版本绑定（阶段 5，§6）：声明 reviewOf 的审查任务在派发前
-	// 记录工作区指纹（rev-parse HEAD + git diff 哈希，锁外 I/O）；无法确定
-	// 版本时停靠（waiting_input）——不能凭当前 HEAD 猜待审提交。绑定值随
+	// (2.6) 审查版本绑定：声明 reviewOf 的审查任务在派发前记录被审路径的
+	// 内容指纹（锁外 I/O）；路径未知时保守绑定全工作区。绑定值随
 	// task_dispatching 同批落账（accountDispatchLocked 闭包内写入）。
 	reviewHead, reviewDiff := "", ""
 	if len(task.ReviewOf) > 0 {
@@ -1603,7 +1602,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 				"网关未装配工作区指纹端口，审查任务无法绑定工作区版本")
 			return
 		}
-		head, diffHash, fpErr := s.Fingerprints.Fingerprint(cwd)
+		head, diffHash, fpErr := s.fingerprintForPaths(cwd, reviewTouchedPaths(run, task))
 		if fpErr != nil {
 			s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable,
 				fmt.Sprintf("无法确定工作区改动版本（%v），审查已停靠：请先提交或固定基线后继续", fpErr))
@@ -2511,6 +2510,9 @@ func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome
 			if result.CommandSummary != "" {
 				payload["commandSummary"] = result.CommandSummary
 			}
+			if len(result.TouchedPaths) > 0 {
+				payload["touchedPaths"] = result.TouchedPaths
+			}
 			if result.ReviewVerdict != "" {
 				payload["reviewVerdict"] = result.ReviewVerdict
 			}
@@ -2591,22 +2593,19 @@ func (s *Service) completingWriteTask(runID, taskID string) bool {
 	return !IsReviewTask(team, task) && !task.Reduction && task.WriteLock != TaskWriteLockNone
 }
 
-// markStaleReviewsLocked 把同 Run 内已绑定工作区版本的审查裁决标记为过期
-// （阶段 5，§6「实现后再次写入使 verdict 变 stale」）：写任务 completed 后，
-// 旧 passed 不能充当新版本的交付证据。事件 review_stale 供 journal 重建；
-// 幂等（已 stale 不重复落账）。调用方持有 state.mu。
+// markStaleReviewsLocked 只让触及被审路径的旧裁决过期；任一路径未知时保守
+// 全部过期。事件 review_stale 供 journal 重建；已 stale 的幂等跳过。
 func (s *Service) markStaleReviewsLocked(state *runState, runID, writeTaskID string) {
 	err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
 		if terminalRun(fresh.Status) {
 			return nil, false
 		}
+		writeTask := findTaskIn(fresh, writeTaskID)
 		var events []*Event
 		for i := range fresh.Tasks {
 			review := &fresh.Tasks[i]
-			// 只标记已绑定版本的审查（DiffHash 非空）：它们审的是写入前的
-			// 工作区状态；writeTaskID 完成后该版本已被取代。之后才派发的
-			// 新审查会指纹新版本，不受影响。已 stale 的幂等跳过。
-			if review.DiffHash == "" || review.ReviewVerdictStale {
+			// 只处理已绑定版本的审查；之后才派发的新审查不受影响。
+			if review.DiffHash == "" || review.ReviewVerdictStale || !reviewStaleAfterWrite(review, writeTask) {
 				continue
 			}
 			review.ReviewVerdictStale = true

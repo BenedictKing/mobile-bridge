@@ -299,13 +299,17 @@ func (s *Service) goalWorkspaceEvidenceError(run *Run, contract GoalContract) (s
 	if err != nil {
 		return "", "", goalInvalid("读取当前工作区版本失败，请重新验证")
 	}
-	if contract.Verify.Requirement == "required" && (run.Verify == nil || run.Verify.HeadRevision != head || run.Verify.DiffHash != diff) {
+	if contract.Verify.Requirement == "required" && (run.Verify == nil || run.Verify.DiffHash != diff) {
 		return head, diff, goalInvalid("验证结果对应的工作区版本已变化，请重新验证")
 	}
 	if contract.Review.Requirement == "required" {
 		for _, task := range goalReviewTasks(run, teamRow) {
-			if task.HeadRevision != head || task.DiffHash != diff {
-				return head, diff, goalInvalid("审查结果对应的工作区版本已变化，请重新审查")
+			_, reviewDiff, err := s.fingerprintForPaths(teamRow.ProjectCwd, task.ReviewPaths)
+			if err != nil {
+				return head, diff, goalInvalid("读取当前工作区版本失败，请重新审查")
+			}
+			if task.DiffHash != reviewDiff {
+				return head, diff, goalInvalid("审查结果对应的工作区内容已变化，请重新审查")
 			}
 		}
 	}

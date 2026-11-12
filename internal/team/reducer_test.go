@@ -326,6 +326,7 @@ func TestTaskResultSummariesPersistRoundTrip(t *testing.T) {
 				SessionID: "s-1", TurnID: "t-1", Result: "结果文本", ResultChars: 4,
 				FileSummary:    "src/a.go、src/b.go",
 				CommandSummary: "go test ./...；make check",
+				TouchedPaths:   []string{"src/a.go", "src/b.go"},
 			},
 		}},
 	}
@@ -341,9 +342,8 @@ func TestTaskResultSummariesPersistRoundTrip(t *testing.T) {
 	if detail == nil {
 		t.Fatal("重载后 ResultDetail 应存在")
 	}
-	if detail.FileSummary != "src/a.go、src/b.go" || detail.CommandSummary != "go test ./...；make check" {
-		t.Fatalf("两份摘要应随 Run 持久化，实际 file=%q command=%q",
-			detail.FileSummary, detail.CommandSummary)
+	if detail.FileSummary != "src/a.go、src/b.go" || detail.CommandSummary != "go test ./...；make check" || len(detail.TouchedPaths) != 2 {
+		t.Fatalf("摘要与触及路径应随 Run 持久化，实际 %+v", detail)
 	}
 	// journal 重建路径（applyJournalEventToRun）同样保留两摘要。
 	rebuilt := &Run{ID: "run-rt", TeamID: team.ID, Status: RunDispatching}
@@ -351,11 +351,12 @@ func TestTaskResultSummariesPersistRoundTrip(t *testing.T) {
 		"taskId": "a", "sessionId": "s-1", "turnId": "t-1", "result": "结果文本",
 		"resultChars": json.Number("4"),
 		"fileSummary": "src/a.go、src/b.go", "commandSummary": "go test ./...；make check",
+		"touchedPaths": []string{"src/a.go", "src/b.go"},
 	}
 	applyJournalEventToRun(rebuilt, &Event{Type: EventTaskCompleted, Payload: payload})
 	if detail := rebuilt.Tasks[0].ResultDetail; detail == nil ||
-		detail.FileSummary != "src/a.go、src/b.go" || detail.CommandSummary != "go test ./...；make check" {
-		t.Fatalf("journal 重建应保留两摘要，实际 %+v", rebuilt.Tasks[0].ResultDetail)
+		detail.FileSummary != "src/a.go、src/b.go" || detail.CommandSummary != "go test ./...；make check" || len(detail.TouchedPaths) != 2 {
+		t.Fatalf("journal 重建应保留摘要与触及路径，实际 %+v", rebuilt.Tasks[0].ResultDetail)
 	}
 }
 
