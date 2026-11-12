@@ -612,6 +612,10 @@ class TeamSettingsDialog{
     reviewerSelect.value=reviewerID;
     reviewerSelect.onchange=()=>this.changeReviewer(reviewerSelect.value);
     reviewerField.append(reviewerSelect);roles.append(leadField,reviewerField);this.body.append(roles);
+    const swarmLabel=this.node('label',undefined,'team-settings-section');
+    const swarmInput=document.createElement('input');swarmInput.type='checkbox';swarmInput.checked=!!team.policy?.swarmEnabled;swarmInput.disabled=this.busy;
+    swarmInput.onchange=()=>this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(team.id),{method:'PATCH',body:{version:this.team.version,policy:{swarmEnabled:swarmInput.checked}}}));
+    swarmLabel.append(swarmInput,this.node('span',t_safe('启用目标契约与评测（仅新运行）')));this.body.append(swarmLabel);
     const context=this.node('section',undefined,'team-settings-section team-context-section');
     context.append(this.node('h3',t_safe('主控上下文')));
     const actions=this.node('div',undefined,'team-context-actions');

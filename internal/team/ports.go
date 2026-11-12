@@ -151,3 +151,14 @@ type WorkspaceFingerprinter interface {
 type WorkspacePathFingerprinter interface {
 	FingerprintPaths(path string, paths []string) (head string, diffHash string, err error)
 }
+
+// WorkspaceFreshFingerprinter 是验收门禁使用的可选端口。实现必须重新读取实际
+// 内容，不能使用按目录 mtime/TTL 缓存的指纹；paths 为空时覆盖完整工作区。
+// 这只保证本次读取新鲜，不代替评测快照或文件系统隔离。
+type WorkspaceFreshFingerprinter interface {
+	FingerprintFresh(path string, paths []string) (head string, content string, err error)
+}
+
+// ErrFreshWorkspaceFingerprintUnavailable 表示无法提供门禁要求的新鲜内容身份。
+// 严格验收不得回退到可能缓存的 WorkspaceFingerprinter。
+var ErrFreshWorkspaceFingerprintUnavailable = errors.New("工作区适配器不支持即时内容核验，无法执行严格验收")

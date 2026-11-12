@@ -25,6 +25,7 @@ import (
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/swarmeval"
 	"github.com/google/uuid"
 )
 
@@ -40,10 +41,14 @@ const defaultWaitSlice = 25 * time.Second
 // Service 是 Team 编排执行服务。构造后由装配方（httpd/main）直赋 OnEvent
 // 与 Admission；store/journal/queue/resolver 在 NewService 注入后不再变更。
 type Service struct {
-	store    TeamStore
-	journal  *Journal
-	queue    QueueAdapter
-	resolver SessionResolver
+	SwarmRunner   *swarmeval.Runner
+	swarmBudgetMu sync.Mutex
+	swarmCancels  map[string]map[string]context.CancelFunc
+	swarmEvalBusy map[string]bool
+	store         TeamStore
+	journal       *Journal
+	queue         QueueAdapter
+	resolver      SessionResolver
 	// ExecutionSessions creates the Lead's Run-scoped worker sessions. Nil keeps
 	// the legacy member binding for non-production/test adapters.
 	ExecutionSessions ExecutionSessionProvisioner
@@ -257,8 +262,9 @@ func (s *Service) SetStallAfter(after time.Duration) {
 // watcher、cancel、resume 与恢复的全部「journal+快照」变更；纯读（账本轮询、
 // 快照读取）不持锁。
 type runState struct {
-	runID string
-	mu    sync.Mutex
+	swarmMu sync.Mutex
+	runID   string
+	mu      sync.Mutex
 	// wake（容量 1）在任务落定或状态变更后非阻塞唤醒调度循环。
 	wake chan struct{}
 	// done 在 run 到达终态时关闭：所有 watcher 与循环随即退出。
@@ -491,6 +497,28 @@ func (s *Service) createRunWithOptions(team *Team, runID, goal, mode, collect st
 // SaveRun 落全量快照 → 启动调度循环。amend 的缓存命中任务由调用方在快照
 // 构造期直接置 completed（创建批次内单次落账，绝不二次改写）。
 func (s *Service) accountCreatedRun(run *Run, events []*Event) error {
+	if team := s.store.Team(run.TeamID); team != nil && team.Policy.SwarmEnabled && !run.IsIssueClassificationOnly() {
+		run.Swarm = newSwarm(run.ID)
+		policyCopy := team.Policy
+		run.Swarm.Policy = &policyCopy
+		deadline := team.Policy.RunTimeoutSecs
+		if deadline <= 0 || deadline > 7200 {
+			deadline = 7200
+		}
+		run.Swarm.Deadline = time.Now().Add(time.Duration(deadline) * time.Second)
+		if parent := s.store.Run(run.ParentRunID); parent != nil && parent.Swarm != nil {
+			run.Swarm.ChainID = parent.Swarm.ChainID
+			run.Swarm.Deadline = parent.Swarm.Deadline
+		}
+		events = append(events, swarmEvent(run, "runner"))
+		for _, event := range events {
+			if event.Type == EventTaskPlanned {
+				if task := findTaskIn(run, payloadString(event.Payload, "taskId")); task != nil {
+					event.Payload["swarmTask"] = goValue(task)
+				}
+			}
+		}
+	}
 	for _, event := range events {
 		if err := s.journal.Append(event); err != nil {
 			return fmt.Errorf("run 创建记账失败: %w", err)
@@ -611,6 +639,9 @@ func (s *Service) loopPass(state *runState) bool {
 	// 注册表读取 + git rev-parse）：找不到 worktree 或基线不匹配 → 任务
 	// 停靠 + workspace_lost + run waiting_input，绝不自动创建新 worktree。
 	s.adoptWorkspaceWatchers(state, adoptions)
+	if s.passSwarm(state) {
+		return true
+	}
 	// ⓵ Lead 自动动作执行段（§5.2，阶段三）：proposed 动作的判定/执行/拒绝。
 	// 位于派发段之前——同 pass 内派生任务即可参与派发（依赖释放/写锁/AIMD/
 	// 幂等键/watcher 全套复用 executeDispatch，零新派发代码）。
@@ -683,6 +714,9 @@ func (s *Service) passAdvance(state *runState, collectTargets *[]cancelTarget) (
 	}
 	team := s.store.Team(run.TeamID)
 	policy := policyOf(team)
+	if run.Swarm != nil && run.Swarm.Policy != nil {
+		policy = *run.Swarm.Policy
+	}
 	if run.Status == RunCreated {
 		// created → dispatching（§4.3；显式计划不经过 planning）。
 		if err := s.commitRun(run.ID, func(fresh *Run) ([]*Event, bool) {
@@ -1246,6 +1280,9 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 	team := s.store.Team(run.TeamID)
 	policy := policyOf(team)
 	// 预算闸门（§9，阶段四 cost-stats）：计量=任务派发次数（journal
+	if run.Swarm != nil && run.Swarm.Policy != nil {
+		policy = *run.Swarm.Policy
+	}
 	// task_dispatching 计数，可精确重放；token 无法归因到 Run/Task，不做
 	// token 预算——见 stats.go 文件头）。BudgetUnits>0 且已派发数≥
 	// max(BudgetCeiling,BudgetUnits) 时不再选新任务，run 落 waiting_input
@@ -1321,7 +1358,18 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 		}
 	}
 	inFlight += s.teamPending[run.TeamID]
-	selected := ReadyTasks(run, policy, inFlight, memberBusy, cwdByTask, s.locks)
+	selectionRun := run
+	if run.Swarm != nil {
+		selectionRun = run.Clone()
+		policy.MaxParallelTasks = min(policy.MaxParallelTasks, 2)
+		for i := range selectionRun.Tasks {
+			task := &selectionRun.Tasks[i]
+			if (task.Status == TaskPlanned || task.Status == TaskReady) && !SwarmReady(run, team, task) {
+				task.Status = TaskRunning
+			}
+		}
+	}
+	selected := ReadyTasks(selectionRun, policy, inFlight, memberBusy, cwdByTask, s.locks)
 	// 预算余量封顶（§9）：闸门判定用的是已落账计数，本批选择还要扣掉
 	// 派发窗口在途（pendingDispatch，尚未落账的记账窗口）——否则同批
 	// ReadyTasks 一次放行 N 个会越过阈值。余量外的任务保持 planned，
@@ -1390,7 +1438,7 @@ func (s *Service) passFold(state *runState) bool {
 	if hasRunnableProposedActions(run, policyOf(s.store.Team(run.TeamID))) {
 		return true
 	}
-	if s.ensureAutoPlanReductionLocked(state, run) {
+	if (run.Swarm == nil || swarmRunPassed(run)) && s.ensureAutoPlanReductionLocked(state, run) {
 		return true
 	}
 	if status, stopReason := FoldRunStatus(run.Tasks, run.Mode, run.CollectPolicy); status != "" {
@@ -1403,6 +1451,9 @@ func (s *Service) passFold(state *runState) bool {
 		// 验证「成功」。幂等：ensureVerifyGateLocked 对闸门在飞/已落 no-op。
 		if status == RunCompleted && verifyPending(run) {
 			s.ensureVerifyGateLocked(state, run)
+			return true
+		}
+		if status == RunCompleted && run.Swarm != nil && !swarmRunPassed(run) {
 			return true
 		}
 		return s.finishRunLocked(state, run, status, stopReason)
@@ -1481,6 +1532,10 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		return
 	}
 	team = s.store.Team(teamID)
+	if run.Swarm != nil && run.Swarm.Policy != nil && team != nil {
+		team = team.Clone()
+		team.Policy = *run.Swarm.Policy
+	}
 	member := memberOf(team, task.MemberID)
 	if member == nil {
 		s.failDispatch(state, runID, taskID, fmt.Sprintf("任务 %s 引用的成员不存在：%s", taskID, task.MemberID))
@@ -1491,11 +1546,38 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		return
 	}
 	providerSessionID := member.SessionID
+	if a := swarmReviewArtifact(run, task.ID); a != nil {
+		if s.ExecutionSessions == nil || s.SwarmRunner == nil {
+			s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable, "独立审查能力未就绪")
+			return
+		}
+		artifact, err := s.SwarmRunner.LoadArtifact(context.Background(), a.ID)
+		if err != nil {
+			s.failDispatch(state, runID, taskID, err.Error())
+			return
+		}
+		providerSessionID, err = s.ExecutionSessions.EnsureExecutionSession(teamID, runID+"-"+a.ID, member, artifact.Directory)
+		if err != nil {
+			s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable, err.Error())
+			return
+		}
+		cwd = artifact.Directory
+	}
 	if task.IssueClassificationOnly && s.ExecutionSessions == nil {
 		s.failDispatch(state, runID, taskID, "历史归类要求独立 Lead 执行会话，但网关未装配执行会话端口")
 		return
 	}
 	independentExecution := task.ExecutionContext == ExecutionContextLeadRun && s.ExecutionSessions != nil
+	if swarmReviewArtifact(run, task.ID) != nil {
+		independentExecution = false
+	}
+	if run.Swarm != nil && swarmWorker(team, task) {
+		if s.ExecutionSessions == nil {
+			s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable, "Swarm 写任务需要专用执行会话能力")
+			return
+		}
+		independentExecution = true
+	}
 	if independentExecution {
 		executionCwd := cwd
 		if task.WorkspaceMode == WorkspaceIsolatedWorktree {
@@ -1518,14 +1600,22 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 			return
 		}
 		var createErr error
-		providerSessionID, createErr = s.ExecutionSessions.EnsureExecutionSession(team.ID, run.ID, member, executionCwd)
+		provisionRunID := run.ID
+		if run.Swarm != nil && swarmWorker(team, task) {
+			provisionRunID += "-" + task.ID
+		}
+		providerSessionID, createErr = s.ExecutionSessions.EnsureExecutionSession(team.ID, provisionRunID, member, executionCwd)
 		if createErr != nil {
+			if run.Swarm != nil {
+				s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable, "独立执行会话未就绪，需要核查："+createErr.Error())
+				return
+			}
 			s.failDispatch(state, runID, taskID, fmt.Sprintf("创建 Lead 执行会话失败：%v", createErr))
 			return
 		}
 	}
 	_, session, resolveErr := s.resolver.Resolve(providerSessionID)
-	if sessionRecreationNeeded(resolveErr) && !independentExecution {
+	if sessionRecreationNeeded(resolveErr) && !independentExecution && swarmReviewArtifact(run, task.ID) == nil {
 		if err := s.recoverMissingMemberSession(team, member, cwd); err != nil {
 			s.failDispatch(state, runID, taskID, err.Error())
 			return
@@ -1537,7 +1627,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		s.failDispatch(state, runID, taskID, fmt.Sprintf("Lead 执行会话无法恢复，请检查该 Run 的执行聊天后重试：%v", resolveErr))
 		return
 	}
-	if independentExecution && session == nil {
+	if (independentExecution || swarmReviewArtifact(run, task.ID) != nil) && session == nil {
 		reason := "Agent 未返回 Lead 执行会话"
 		if resolveErr != nil {
 			reason = resolveErr.Error()
@@ -1656,6 +1746,12 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 	}
 	if dispatch == nil {
 		return // 本轮暂缓（写锁被占等）
+	}
+	if run.Swarm != nil && swarmWorker(team, task) {
+		if err := s.preflightSwarmInput(state, run, task, cwd); err != nil {
+			s.failDispatch(state, runID, taskID, "Swarm 环境未就绪："+err.Error())
+			return
+		}
 	}
 	dispatch.bucketKey = bucketKey
 	// (4) 锁外入队（mode=queue，绝不立即派发；duplicate 是幂等重入）。
@@ -3463,6 +3559,7 @@ func (s *Service) CancelParked(runID string, expectedVersion uint64) (*Run, erro
 }
 
 func (s *Service) cancel(runID string, expectedVersion *uint64) (*Run, error) {
+	defer s.CancelSwarmEval(runID)
 	state := s.stateFor(runID)
 	var targets []cancelTarget
 	err := func() error {
@@ -3564,6 +3661,7 @@ func (s *Service) cancel(runID string, expectedVersion *uint64) (*Run, error) {
 // waiting_input 拒绝（它本就是停靠态，语义严格强于 paused，直接 Resume 或
 // Cancel 即可）——两者都包 ErrRunNotWaiting 哨兵（HTTP 侧既有映射 409）。
 func (s *Service) Pause(runID string) (*Run, error) {
+	defer s.CancelSwarmEval(runID)
 	state := s.stateFor(runID)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -3747,6 +3845,12 @@ func (s *Service) RecoverRun(runID string) error {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		run := s.store.Run(runID)
+		if run != nil && run.Swarm != nil {
+			if err := s.syncSwarmLocked(run); err != nil {
+				return err
+			}
+			run = s.store.Run(runID)
+		}
 		if run == nil || terminalRun(run.Status) {
 			return nil
 		}

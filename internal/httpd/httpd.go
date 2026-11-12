@@ -435,6 +435,7 @@ var staticRoutes = map[string]staticRoute{
 	"/accounts.js":                {"accounts.js", "text/javascript; charset=utf-8"},
 	"/pool.js":                    {"pool.js", "text/javascript; charset=utf-8"},
 	"/team.js":                    {"team.js", "text/javascript; charset=utf-8"},
+	"/team-swarm.js":              {"team-swarm.js", "text/javascript; charset=utf-8"},
 	"/team-chat.js":               {"team-chat.js", "text/javascript; charset=utf-8"},
 	"/team-live-panel.js":         {"team-live-panel.js", "text/javascript; charset=utf-8"},
 	"/team-canvas.js":             {"team-canvas.js", "text/javascript; charset=utf-8"},

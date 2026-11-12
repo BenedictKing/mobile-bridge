@@ -1499,6 +1499,7 @@ class TeamRunScreen{
   constructor({root,request,openChat,onUnauthorized,onNavigateAway}){
     Object.assign(this,{root,request,openChat,onUnauthorized,onNavigateAway});
     this.teamId=null;this.runId=null;this.team=null;this.detail=null;this.meta=null;
+    this.swarmDrafts=new Map();
     this.epoch='';this.lastSeq=-1;this.generation=0;this.refetchRequest=0;
     this.stopFn=null;this.refetchTimer=null;this.actionError='';
     this.actionBusy=false;     // Run 控制按钮的请求中状态（防连点重复 POST）
@@ -1662,7 +1663,7 @@ class TeamRunScreen{
     if(TEAM_TERMINAL_RUN_STATUSES.has(status)){
       // 只在转入终态后补读一次完整 RunDetail；后续空帧不再重读。
       if(!this.terminalSynced){this.terminalSynced=true;this.scheduleRefetch(0);}
-      else if(rows.some(event=>event?.type==='goal_reviewed'))this.scheduleRefetch(0);
+      else if(rows.some(event=>event?.type==='goal_reviewed'||event?.type==='swarm_updated'))this.scheduleRefetch(0);
     }else{
       this.terminalSynced=false;
       if(rows.length)this.scheduleRefetch(400);
@@ -2022,6 +2023,7 @@ class TeamRunScreen{
     head.append(back,info,this.renderActions());
     root.append(head);
     const body=this.node('div',undefined,'team-run-body');
+    if(detail.swarm&&typeof TeamSwarmPanel!=='undefined')body.append(new TeamSwarmPanel({run:detail,teamId:this.teamId,request:this.request,drafts:this.swarmDrafts,onChange:()=>this.scheduleRefetch(0)}).render());
     for(const outcome of detail.goalOutcomes||[]){
       const generation=this.generation,url=this.runUrl('goal-review');
       body.append(renderTeamGoalReview(outcome,{runVersion:detail.version,executionStatus:detail.status,drafts:this.goalDrafts,

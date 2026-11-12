@@ -516,3 +516,7 @@
 .team-workflow-next[data-kind="answer"],.team-workflow-next[data-kind="inspect"],.team-workflow-next[data-kind="resume"]{background:var(--warning-bg);color:var(--warning-text);font-weight:600}
 .team-workflow-next-reason{color:var(--muted);font-size:11px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;min-width:0;flex:1 1 120px}
 .team-workflow-next-go{min-height:0;padding:3px 10px;border:1px solid var(--line);border-radius:999px;background:none;font-size:11.5px;color:var(--green)}
+
+/* Swarm 证据在窄屏保留换行，避免命令和内容身份撑开页面。 */
+.team-swarm-panel pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.team-swarm-panel{min-width:0;overflow-wrap:anywhere}

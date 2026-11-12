@@ -57,6 +57,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/opencode"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
+	"github.com/BenedictKing/mobile-bridge/internal/swarmeval"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
 	"github.com/BenedictKing/mobile-bridge/internal/tunnel"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
@@ -994,6 +995,7 @@ func runGateway(args []string) {
 	server.TeamFeeds = httpd.NewTeamFeedRegistry(teamJournal, teamStore)
 	teamQueue, teamResolver := httpd.NewTeamAdapters(server)
 	server.Teams = team.NewService(teamStore, teamJournal, teamQueue, teamResolver)
+	server.Teams.SwarmRunner = &swarmeval.Runner{Root: filepath.Join(dataDir, "team-artifacts")}
 	// 输入路由器（阶段 2）：账本装配后重泵全部 Team——崩溃窗口里停在
 	// routing 的输入按 intent 对账补齐（inputroute.go 的幂等创建路径）。
 	server.Teams.SetInputs(server.TeamInputs)

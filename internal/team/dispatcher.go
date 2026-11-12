@@ -425,6 +425,7 @@ func composeTaskDispatchMessageWithBriefing(team *Team, run *Run, task *Task, po
 		lead += leadBriefing
 	}
 	briefing := lead + BuildReviewBriefing(team, task)
+	briefing += SwarmBriefing(run, task)
 	if task.IssueClassificationOnly {
 		briefing = leadBriefing
 	}

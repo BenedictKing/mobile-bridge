@@ -1,6 +1,7 @@
 package team
 
 import (
+	"fmt"
 	"path"
 	"sort"
 	"strings"
@@ -66,4 +67,23 @@ func (s *Service) fingerprintForPaths(cwd string, paths []string) (string, strin
 		}
 	}
 	return s.Fingerprints.Fingerprint(cwd)
+}
+
+// fingerprintFreshForPaths 专供严格门禁，旧展示/审查路径继续使用原有 helper。
+func (s *Service) fingerprintFreshForPaths(cwd string, paths []string) (string, string, error) {
+	if s == nil {
+		return "", "", ErrFreshWorkspaceFingerprintUnavailable
+	}
+	fingerprinter, ok := s.Fingerprints.(WorkspaceFreshFingerprinter)
+	if !ok {
+		return "", "", ErrFreshWorkspaceFingerprintUnavailable
+	}
+	head, content, err := fingerprinter.FingerprintFresh(cwd, paths)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(head) == "" || strings.TrimSpace(content) == "" {
+		return "", "", fmt.Errorf("工作区即时内容核验未返回完整身份")
+	}
+	return head, content, nil
 }

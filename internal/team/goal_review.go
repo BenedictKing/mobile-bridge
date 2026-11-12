@@ -167,6 +167,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 			return nil, false
 		}
 		record.Contract = automaticGoalContract(record.Contract)
+		record.Contract = withSwarmCriteria(run, scope, record.Contract)
 		switch request.Action {
 		case "define":
 			if (len(run.VerifyCommand) > 0 || run.Verify != nil) && request.Contract.Verify.Requirement == "not_required" {
@@ -317,6 +318,11 @@ func (s *Service) goalWorkspaceEvidenceError(run *Run, contract GoalContract) (s
 }
 
 func (s *Service) checkGoalWorkspaceEvidence(run *Run, contract GoalContract) error {
+	if run.Swarm != nil {
+		if err := s.validateSwarmEvidence(run); err != nil {
+			return goalInvalid(err.Error())
+		}
+	}
 	_, _, err := s.goalWorkspaceEvidenceError(run, contract)
 	return err
 }

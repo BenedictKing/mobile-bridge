@@ -545,6 +545,19 @@ func (s *Store) RebuildRunsFromJournal(events []*Event) {
 // 只认事实，不做终态回退保护（journal 本身就是权威顺序）。
 func applyJournalEventToRun(run *Run, event *Event) {
 	run.UpdatedAt = event.CreatedAt
+	if raw, exists := event.Payload["swarmState"]; exists {
+		if v := decodeSwarm(raw); v != nil {
+			v.Sequence = event.Sequence
+			run.Swarm = v
+		}
+	}
+	if event.Type == EventSwarmUpdated {
+		if v := decodeSwarm(event.Payload["swarm"]); v != nil {
+			v.Sequence = event.Sequence
+			run.Swarm = v
+		}
+		return
+	}
 	if !isTaskScopedEvent(event.Type) && event.Type != EventTaskPlanned && event.Type != EventTaskUpdateIntent {
 		switch event.Type {
 		case EventGoalReviewed:
@@ -730,6 +743,14 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	}
 	switch event.Type {
 	case EventTaskPlanned:
+		if raw, exists := event.Payload["swarmTask"]; exists {
+			data, _ := json.Marshal(treeToGo(raw))
+			var saved Task
+			if json.Unmarshal(data, &saved) == nil && saved.ID == task.ID {
+				*task = saved
+				break
+			}
+		}
 		task.Status = TaskPlanned
 		task.MemberID = payloadString(event.Payload, "memberId")
 		task.Phase = payloadString(event.Payload, "phase")

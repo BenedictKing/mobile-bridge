@@ -1,3 +1,12 @@
+## Swarm Riding 本地执行版（2026-11-12）
+
+- 团队设置的开关默认关闭，只影响新 Run；契约保留原话、冻结检查及任务边界。真实候选、独立评测、专用审查会话、有界返修和集成复验进入既有 journal 与目标确认链，不改变旧执行的证据哈希。
+- 全仓 `go test ./...`、`go vet ./...`、`go build ./...` 通过；`go test -race ./internal/team ./internal/httpd ./internal/swarmeval` 通过。最终并发修复补丁再经 Swarm/Fresh race 连续两次通过。前端 298/298 通过，HTTP 对拍 27/27。
+- 四条静态 golden 长度及哈希按实际文件独立计算更新；三条 timeline 资源与起始 HEAD 字节相同，本轮首页只增加 Swarm 脚本。鉴权、API 和安全头期望不变。
+- 真实临时 Git 仓库和评测进程覆盖内容身份、未跟踪文件、用户已有修改、源 index、补丁应用、进程树取消、环境失败与冲突集成。Service/派发/watcher 覆盖失败→修复→独立审查→集成→复验；成员输出使用 fixture，没有向真实模型发送测试消息。
+- ego-browser 在隔离数据目录 `.local/swarm-qa/`、端口 18816 验证提出/冻结契约、读取真实候选 diff、终态真实 make 复验及事件刷新、逐项确认、页面刷新与隔离进程重启保留。390×844 与 1440×900 均无横向溢出，截图 `mobile-final.png`、`desktop-final.png` 已目视检查。隔离进程已停止，主网关未重启。
+- 范围：本地快照不是 OS 沙箱；最终目标仍需用户确认。非 Unix 评测、自动 worktree 供给、通用指标表达式和真实多模型联调未开放/未验证。完整边界见 [实施记录](docs/team-swarm-implementation.md)。
+
 ## Claude Base64 图片缩略图（2026-11-11）
 
 - 根因：ACP `user_message_chunk` 未走内联图片落盘分支，通用 `Text` 又递归读取图片的 `data`，导致编码成为用户消息。Claude 原生历史只提取文字，未保留 `source.type=base64` 图片附件。

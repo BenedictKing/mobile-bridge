@@ -286,6 +286,7 @@ type ExecutionThread struct {
 
 // TeamPolicy 是编排策略（§4.2）。零值不可直接使用，请用 DefaultPolicy。
 type TeamPolicy struct {
+	SwarmEnabled           bool   `json:"swarmEnabled,omitempty"`
 	MaxParallelTasks       int    `json:"maxParallelTasks"`
 	MinParallelTasks       int    `json:"minParallelTasks"`
 	MaxProviderConcurrency int    `json:"maxProviderConcurrency"`
@@ -348,16 +349,17 @@ func DefaultPolicy() TeamPolicy {
 // completed 时先过闸门再终局，绝不采信 Agent 的口头成功声明；Verify 持久化
 // 闸门结果，resume 清空后重跑即复验。
 type Run struct {
-	ID            string `json:"id"`
-	TeamID        string `json:"teamId"`
-	Goal          string `json:"goal"`
-	Mode          string `json:"mode,omitempty"`
-	CollectPolicy string `json:"collectPolicy,omitempty"`
-	AutoPlan      bool   `json:"autoPlan,omitempty"`
-	Status        string `json:"status"`
-	StopReason    string `json:"stopReason,omitempty"`
-	Round         int    `json:"round"`
-	PlanHash      string `json:"planHash"`
+	Swarm         *SwarmState `json:"swarm,omitempty"`
+	ID            string      `json:"id"`
+	TeamID        string      `json:"teamId"`
+	Goal          string      `json:"goal"`
+	Mode          string      `json:"mode,omitempty"`
+	CollectPolicy string      `json:"collectPolicy,omitempty"`
+	AutoPlan      bool        `json:"autoPlan,omitempty"`
+	Status        string      `json:"status"`
+	StopReason    string      `json:"stopReason,omitempty"`
+	Round         int         `json:"round"`
+	PlanHash      string      `json:"planHash"`
 	// ParentRunID 是 amend 修订链的父 Run（§6.4.1/§10.2 amend 段，阶段三）：
 	// 创建新 Run、绝不改写父 Run 的 journal；父 Run 的可复用前驱结果按
 	// inputHash 匹配导入（amend.go），随 run_created payload 落账供
@@ -634,7 +636,8 @@ var teamKnownFields = map[string]bool{
 // deliveryStatus 是已移除的验收状态：仍列为已知字段，旧快照读入时直接丢弃，
 // 不进 extra 原样回写。
 var runKnownFields = map[string]bool{
-	"id": true, "teamId": true, "goal": true, "mode": true,
+	"swarm": true,
+	"id":    true, "teamId": true, "goal": true, "mode": true,
 	"collectPolicy": true, "autoPlan": true, "status": true, "deliveryStatus": true,
 	"stopReason": true, "round": true, "planHash": true, "parentRunId": true,
 	"scheduledFrom": true, "budgetCeiling": true,
@@ -742,6 +745,9 @@ func (m *TeamMember) jsonObject() *jsoncompat.Object {
 
 func (p *TeamPolicy) jsonObject() *jsoncompat.Object {
 	object := jsoncompat.NewObject()
+	if p.SwarmEnabled {
+		object.Set("swarmEnabled", true)
+	}
 	object.Set("maxParallelTasks", jsoncompat.Num(p.MaxParallelTasks))
 	object.Set("minParallelTasks", jsoncompat.Num(p.MinParallelTasks))
 	object.Set("maxProviderConcurrency", jsoncompat.Num(p.MaxProviderConcurrency))
@@ -803,6 +809,9 @@ func (r *Run) MarshalJSON() ([]byte, error) {
 
 func (r *Run) jsonObject() *jsoncompat.Object {
 	object := jsoncompat.NewObject()
+	if r.Swarm != nil {
+		object.Set("swarm", goValue(r.Swarm))
+	}
 	object.Set("id", r.ID)
 	object.Set("teamId", r.TeamID)
 	object.Set("goal", r.Goal)
@@ -996,6 +1005,7 @@ func (r *Run) Clone() *Run {
 		return nil
 	}
 	copied := *r
+	copied.Swarm = cloneSwarm(r.Swarm)
 	if r.Goals != nil {
 		copied.Goals = make(map[string]*GoalRecord, len(r.Goals))
 		for id, record := range r.Goals {

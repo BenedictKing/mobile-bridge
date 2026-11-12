@@ -137,14 +137,21 @@ func RunGoalScope(run *Run) GoalScope {
 
 // GoalEvidenceHash 不包含评估记录或 Run.Version，重复确认不改变证据身份。
 func GoalEvidenceHash(run *Run) string {
-	return goalHash(struct {
+	legacy := struct {
 		Status    string
 		Tasks     []Task
 		Verify    *VerifyResult
 		Command   []string
 		Questions []PendingQuestion
 		Actions   []Action
-	}{run.ID + ":" + run.Status, run.Tasks, run.Verify, run.VerifyCommand, run.PendingQuestions, run.PendingActions})
+	}{run.ID + ":" + run.Status, run.Tasks, run.Verify, run.VerifyCommand, run.PendingQuestions, run.PendingActions}
+	if run.Swarm == nil {
+		return goalHash(legacy)
+	}
+	return goalHash(struct {
+		Legacy any
+		Swarm  any
+	}{legacy, swarmEvidenceIdentity(run)})
 }
 
 func FinalGoalResult(run *Run) *GoalResultRef {
@@ -229,6 +236,9 @@ func goalReviewTasks(run *Run, teamRow *Team) []*Task {
 	for i := range run.Tasks {
 		task := &run.Tasks[i]
 		if !IsReviewTask(teamRow, task) {
+			continue
+		}
+		if swarmReviewArtifact(run, task.ID) != nil {
 			continue
 		}
 		refs := append([]string(nil), task.ReviewOf...)
@@ -349,6 +359,7 @@ func evaluateGoal(run *Run, teamRow *Team, scope GoalScope, issueRecord *GoalRec
 		out.Contract.Criteria = append([]GoalCriterion(nil), record.Contract.Criteria...)
 	}
 	out.Contract = automaticGoalContract(out.Contract)
+	out.Contract = withSwarmCriteria(run, scope, out.Contract)
 	out.Contract.Verify, out.Contract.Review = goalCheckEvidence(run, teamRow, out.Contract)
 	if run.Status == RunCancelled && !preserveAssessment {
 		out.Status, out.Label, out.Reason = "cancelled", GoalOutcomeLabels["cancelled"], "本次执行已取消，已有结果保留。"
@@ -378,6 +389,12 @@ func evaluateGoal(run *Run, teamRow *Team, scope GoalScope, issueRecord *GoalRec
 		}
 	}
 	out.CanConfirm = !blocked && out.Result != nil
+	if run.Swarm != nil && !swarmRunPassed(run) {
+		blocked = true
+		out.CanConfirm = false
+		out.Status = "pending_verification"
+		out.Reason = "Swarm 候选的必要检查尚未有效通过。"
+	}
 	if record != nil && record.Scope.Hash == scope.Hash && (preserveAssessment || record.EvidenceHash == out.EvidenceHash) {
 		out.AssessedBy, out.AssessedAt, out.Closed = record.AssessedBy, record.AssessedAt, record.Closed
 		if record.AssessedBy == "user" {
@@ -410,6 +427,12 @@ func evaluateGoal(run *Run, teamRow *Team, scope GoalScope, issueRecord *GoalRec
 		}
 	}
 	out.Label = GoalOutcomeLabels[out.Status]
+	if run.Swarm != nil && !swarmRunPassed(run) && out.Status == "satisfied" {
+		out.Status = "pending_verification"
+		out.Label = GoalOutcomeLabels[out.Status]
+		out.Reason = "原确认已保留，当前候选的必要检查尚未有效通过。"
+		out.CanConfirm = false
+	}
 	if out.Closed {
 		out.Label = "已关闭"
 		out.Reason = record.Reason

@@ -189,6 +189,9 @@ func countReviewRepairs(run *Run, reviewTaskID string) int {
 // 已达修复上限、原任务不承担审查语义、ID 超长/占用或 Run 任务数满时返回
 // false（确定性收场为 unknown，不循环派单）。
 func buildReviewRepairTask(run *Run, team *Team, reviewTaskID string) (Task, bool) {
+	if swarmReviewArtifact(run, reviewTaskID) != nil {
+		return Task{}, false
+	}
 	if run == nil || team == nil || strings.HasPrefix(reviewTaskID, reviewRepairPrefix) {
 		return Task{}, false
 	}

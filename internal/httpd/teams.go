@@ -85,6 +85,9 @@ func (h *handler) handleTeams(method string) {
 		h.fail(http.StatusNotFound, errorBody("页面不存在"))
 		return
 	}
+	if h.handleSwarmRoute(method, segments) {
+		return
+	}
 	switch {
 	case len(segments) == 1:
 		switch method {
@@ -2470,7 +2473,7 @@ func (r *TeamFeedRegistry) PrimeFromJournal() error {
 	}
 	byRun := map[string][]*team.Event{}
 	for _, event := range events {
-		byRun[event.RunID] = append(byRun[event.RunID], event)
+		byRun[event.RunID] = append(byRun[event.RunID], teamEventForFeed(event))
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -2521,7 +2524,7 @@ func (r *TeamFeedRegistry) Ingest(event *team.Event) {
 		feed = team.NewEventFeed(event.RunID, nil)
 		r.feeds[event.RunID] = feed
 	}
-	if feed.Add(event) {
+	if feed.Add(teamEventForFeed(event)) {
 		feed.SetMeta(teamRunMeta(r.store.Run(event.RunID)))
 	}
 }
@@ -2702,6 +2705,9 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 		return jsoncompat.NewObject()
 	}
 	teamRow := h.server.TeamStore.Team(run.TeamID)
+	if run.Swarm != nil {
+		detail.Set("swarm", h.swarmProject(run))
+	}
 	if tasks, ok := detail.MustGet("tasks").(*jsoncompat.Array); ok {
 		var sourceSessions map[string]string
 		tasksByID := make(map[string]*team.Task, len(run.Tasks))
@@ -3686,6 +3692,13 @@ func parseTeamPolicy(raw any, base team.TeamPolicy) (team.TeamPolicy, error) {
 	object, ok := raw.(*jsoncompat.Object)
 	if !ok {
 		return base, errors.New("策略必须是对象")
+	}
+	if value, exists := object.Get("swarmEnabled"); exists {
+		enabled, ok := value.(bool)
+		if !ok {
+			return base, errors.New("swarmEnabled 必须是布尔值")
+		}
+		policy.SwarmEnabled = enabled
 	}
 	for _, field := range teamPolicyIntFields {
 		value, exists := object.Get(field.key)

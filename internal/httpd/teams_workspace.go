@@ -341,6 +341,30 @@ func (g *gitFingerprinter) Fingerprint(path string) (string, string, error) {
 	return g.FingerprintPaths(path, nil)
 }
 
+// FingerprintFresh 绕过展示缓存。文件原地改写不会更新父目录 mtime，所以
+// 验收门禁必须每次计算内容；不改缓存，避免并发展示请求覆盖门禁读取结果。
+func (g *gitFingerprinter) FingerprintFresh(path string, paths []string) (string, string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", "", errors.New("工作区路径不能为空")
+	}
+	for _, candidate := range paths {
+		if len(team.NormalizeTouchedPaths([]string{candidate})) != 1 {
+			return "", "", fmt.Errorf("核验路径无效：%q", candidate)
+		}
+	}
+	literalPaths := team.NormalizeTouchedPaths(paths)
+	for i := range literalPaths {
+		// 路径来自产物清单而非 git 通配表达式，文件名里的 *、[] 必须按字面处理。
+		literalPaths[i] = ":(literal)" + literalPaths[i]
+	}
+	g.mu.Lock()
+	g.computeCalls++
+	g.mu.Unlock()
+	return g.computeFingerprint(filepath.Clean(path), literalPaths)
+}
+
+var _ team.WorkspaceFreshFingerprinter = (*gitFingerprinter)(nil)
+
 func (g *gitFingerprinter) FingerprintPaths(path string, paths []string) (string, string, error) {
 	path = filepath.Clean(path)
 	paths = team.NormalizeTouchedPaths(paths)

@@ -2037,6 +2037,7 @@ const en={
   "团队列表已刷新": "Team list refreshed",
   "Run 已创建": "Run created",
   "团队设置已更新": "Team settings updated",
+  "启用目标契约与评测（仅新运行）": "Enable goal contracts and evaluations (new runs only)",
   "已加载历史消息并跳转": "Loaded older messages and jumped to the prompt",
   "未找到该条消息，已加载可用历史": "Message not found; loaded the available history",
   // 团队工作台与闭环回音（team-dashboard-design）：固定 UI 词条。服务端含
