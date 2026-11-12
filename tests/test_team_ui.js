@@ -285,6 +285,21 @@ test('run echoes do not claim that a paused or completed run is still executing'
   assert.match(teamUI.teamRunEchoLine({status:'completed',currentOwner:{name:'Kimi'}}),/Kimi · Lead/);
 });
 
+test('graph nodes place agent and task status on the same meta row',()=>{
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
+  screen.team=team;
+  screen.detail={id:'r1',teamId:'t1',status:'completed',tasks:[]};
+  const card=screen.renderGraphNode({id:'task-1',label:'任务',status:'completed',memberIds:['buddy'],agentKinds:['workbuddy']});
+  assert.equal(find(find(card,'team-graph-node-head')[0],'team-badge').length,0);
+  const meta=find(card,'team-graph-node-meta')[0];
+  assert.equal(meta.children.length,2);
+  assert.equal(text(meta.children[0]),'workbuddy');
+  assert.equal(meta.children[1].className,'team-badge b-completed');
+  assert.equal(meta.children[1].textContent,'Completed');
+  const withoutAgent=screen.renderGraphNode({id:'task-2',label:'任务',status:'completed'});
+  assert.equal(text(find(withoutAgent,'team-graph-node-meta')[0]),'Completed');
+});
+
 test('docked stop reasons and fixed task errors render in English',()=>{
   const reason='任务 lead-d1-0 停靠：账号认证失败或登录过期，任务已停靠（处理账号或配置后可继续）';
   const run={stopReason:reason,tasks:[{id:'lead-d1-0',status:'stopped',outcome:'auth'}]};

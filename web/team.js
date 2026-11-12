@@ -1950,22 +1950,20 @@ class TeamRunScreen{
     const title=detailTask&&typeof teamWorkflowTaskTitle==='function'?teamWorkflowTaskTitle(detailTask):node.label||node.id;
     head.append(this.node('strong',title));
     if(typeof node.runCount==='number'&&node.runCount>1)head.append(this.node('span','×'+node.runCount,'team-graph-runs'));
-    head.append(this.taskBadge(detailTask?detailTask.status:node.status));
     card.append(head);
     const kinds=Array.isArray(node.agentKinds)?node.agentKinds:[],memberIds=Array.isArray(node.memberIds)?node.memberIds:[];
-    if(memberIds.length||kinds.length){
-      const chips=this.node('div',undefined,'team-graph-kinds');
-      if(memberIds.length){
-        for(const memberId of memberIds){
-          const member=this.teamMember(memberId);
-          const label=typeof teamWorkflowMemberLabel==='function'?teamWorkflowMemberLabel(member,{memberId}):(member?(member.name||member.id):memberId);
-          chips.append(this.node('span',label,'team-graph-kind'));
-        }
-      }else{
-        for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
+    const meta=this.node('div',undefined,'team-graph-node-meta'),chips=this.node('div',undefined,'team-graph-kinds');
+    if(memberIds.length){
+      for(const memberId of memberIds){
+        const member=this.teamMember(memberId);
+        const label=typeof teamWorkflowMemberLabel==='function'?teamWorkflowMemberLabel(member,{memberId}):(member?(member.name||member.id):memberId);
+        chips.append(this.node('span',label,'team-graph-kind'));
       }
-      card.append(chips);
+    }else{
+      for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
     }
+    meta.append(chips,this.taskBadge(detailTask?detailTask.status:node.status));
+    card.append(meta);
     if(node.resultHead){
       card.append(this.node('p',node.resultHead,'task-instructions'));
       if(node.truncated)card.append(this.node('span',t('已截断'),'team-truncated'));

@@ -273,10 +273,11 @@
 .team-graph-node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .team-graph-node-head{display:flex;align-items:flex-start;gap:7px;min-width:0}
 .team-graph-node-head strong{display:-webkit-box;flex:1;min-width:0;font-size:12px;line-height:1.55;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
-.team-graph-node-head .team-badge{flex:none}
 .team-graph-runs{flex:none;color:var(--warning-text);background:var(--warning-bg);border-radius:10px;padding:1px 7px;font-size:10px}
-.team-graph-kinds{display:flex;flex-wrap:wrap;gap:5px;min-width:0;overflow:hidden}
+.team-graph-node-meta{display:flex;align-items:center;gap:5px;min-width:0}
+.team-graph-kinds{display:flex;flex:1;flex-wrap:nowrap;gap:5px;min-width:0;overflow:hidden}
 .team-graph-kind{flex:none;background:var(--soft);color:var(--green);border-radius:10px;padding:1px 7px;font-size:10px;white-space:nowrap}
+.team-graph-node-meta .team-badge{flex:none}
 .team-graph-node .task-instructions{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;margin:0;color:var(--muted);font-size:11px;line-height:1.55;overflow:hidden}
 .team-graph-members{margin-top:2px;border-top:1px dashed var(--line);padding-top:6px;display:grid;gap:4px}
 .team-graph-member{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
