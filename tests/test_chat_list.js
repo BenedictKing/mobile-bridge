@@ -217,10 +217,11 @@ test('working status sits top left and Goal sits bottom left above the timeline'
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   assert.match(css,/\.timeline-shell\{position:relative;flex:1;min-height:0\}/);
   assert.match(css,/\.timeline-overlay\{position:absolute;z-index:3;inset:0;[^}]*display:grid/);
-  assert.match(css,/\.timeline-overlay\{[^}]*padding:8px max\(24px,calc\(\(100% - 780px\)\/2\)\)/);
+  assert.match(css,/\.timeline-overlay\{[^}]*padding:8px 24px/);
+  assert.match(css,/\.timeline-overlay \.newer\{[^}]*right:max\(24px,calc\(\(100% - 780px\)\/2\)\)/);
   assert.match(css,/\.timeline-overlay\{padding-left:[^}]*padding-bottom:8px\}/);
   assert.match(css,/\.timeline-overlay \.working\{grid-area:1\/1/);
   assert.match(css,/\.timeline-overlay \.goal-state\{grid-area:3\/1;[^}]*pointer-events:auto/);
-  assert.match(css,/\.timeline-overlay \.newer\{grid-area:3\/2;[^}]*pointer-events:auto/);
+  assert.match(css,/\.timeline-overlay \.newer\{position:absolute;[^}]*pointer-events:auto/);
   assert.match(css,/\.goal-state:not\(:has\(details\[open\]\)\) \.goal-close\{top:50%;translate:0 -50%\}/);
 });
