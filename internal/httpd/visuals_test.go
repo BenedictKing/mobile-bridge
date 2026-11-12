@@ -21,7 +21,7 @@ import (
 // visualAgent writes workspace files and streams non-text content blocks back
 // when prompted: one markdown message referencing the files, one inline image
 // chunk that must be persisted to MediaDir.
-func visualAgent(t *testing.T, dir string) []string {
+func visualAgent(t *testing.T, dir, outside string) []string {
 	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -29,6 +29,7 @@ func visualAgent(t *testing.T, dir string) []string {
 	}
 	script := `import base64,json,os,sys
 DIR = "` + dir + `"
+OUTSIDE = ` + jsonText(outside) + `
 PNG = b"\x89PNG\r\n\x1a\n" + b"v" * 16
 def note(update):
  print(json.dumps({"jsonrpc":"2.0","method":"session/update","params":{"update":update}}),flush=True)
@@ -44,7 +45,13 @@ for line in sys.stdin:
   with open(os.path.join(CWD,"shot.png"),"wb") as fh: fh.write(PNG)
   with open(os.path.join(CWD,"viz.html"),"w") as fh: fh.write("<html>ok</html>")
   with open(os.path.join(CWD,"app.apk"),"wb") as fh: fh.write(b"apk-binary-content")
-  note({"sessionUpdate":"agent_message_chunk","messageId":"m-1","content":{"type":"text","text":"看图 ![截图](shot.png)、[可视化](viz.html) 与 [安装包](app.apk)"}});
+  text="看图 ![截图](shot.png)、[可视化](viz.html) 与 [安装包](app.apk)"
+  for project in ["fridge-master","best-workout","unmentioned"]:
+   path=os.path.join(OUTSIDE,project,"app-debug.apk")
+   os.makedirs(os.path.dirname(path),exist_ok=True)
+   with open(path,"wb") as fh: fh.write(b"apk-binary-content")
+   text+="\n["+project+"]("+path+")"
+  note({"sessionUpdate":"agent_message_chunk","messageId":"m-1","content":{"type":"text","text":text}});
   note({"sessionUpdate":"agent_message_chunk","messageId":"m-1","content":{"type":"image","data":base64.b64encode(PNG).decode(),"mimeType":"image/png"}});
   result={"stopReason":"end_turn"}
  else: result={}
@@ -62,7 +69,8 @@ for line in sys.stdin:
 // come back as desktopId attachments, and both routes actually serve bytes.
 func TestVisualResultsEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	manager := acpruntime.NewCommand(visualAgent(t, dir))
+	outside := t.TempDir()
+	manager := acpruntime.NewCommand(visualAgent(t, dir, outside))
 	manager.MediaDir = filepath.Join(dir, "agent-media")
 	defer manager.Close()
 
@@ -99,7 +107,8 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 	if create.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
 	}
-	send := request(http.MethodPost, "/api/sessions/km-visual/send", `{"text":"生成图片"}`)
+	send := request(http.MethodPost, "/api/sessions/km-visual/send", `{"text":`+
+		jsonText("生成图片 "+filepath.Join(outside, "fridge-master")+" "+filepath.Join(outside, "best-workout"))+`}`)
 	if send.Code != http.StatusOK {
 		t.Fatalf("send status=%d body=%s", send.Code, send.Body.String())
 	}
@@ -118,6 +127,7 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 	// files: the markdown references resolve to servable workspace artifacts.
 	files, _ := payload.MustGet("files").(*jsoncompat.Array)
 	var imageID, htmlID, apkID string
+	externalAPKIDs := []string{}
 	for _, item := range files.Items {
 		file, _ := item.(*jsoncompat.Object)
 		if file == nil {
@@ -132,9 +142,12 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 			if file.MustGet("size") == nil || file.MustGet("modifiedAt") == nil {
 				t.Fatalf("apk metadata missing: %s", page.Body.String())
 			}
+		} else if reference, _ := file.MustGet("reference").(string); strings.HasPrefix(reference, outside) {
+			id, _ := file.MustGet("id").(string)
+			externalAPKIDs = append(externalAPKIDs, id)
 		}
 	}
-	if imageID == "" || htmlID == "" || apkID == "" {
+	if imageID == "" || htmlID == "" || apkID == "" || len(externalAPKIDs) != 2 {
 		t.Fatalf("files incomplete (image=%q html=%q apk=%q): %s", imageID, htmlID, apkID, page.Body.String())
 	}
 
@@ -209,6 +222,25 @@ func TestVisualResultsEndToEnd(t *testing.T) {
 	if partial.Code != http.StatusPartialContent || partial.Body.String() != "apk-" ||
 		partial.Header().Get("Content-Range") != "bytes 0-3/18" {
 		t.Fatalf("apk range status=%d headers=%v body=%q", partial.Code, partial.Header(), partial.Body.String())
+	}
+	for _, id := range externalAPKIDs {
+		apk := request(http.MethodGet, "/api/sessions/km-visual/files/"+id, "")
+		if apk.Code != http.StatusOK || apk.Body.String() != "apk-binary-content" ||
+			apk.Header().Get("Content-Type") != "application/vnd.android.package-archive" {
+			t.Fatalf("external APK download status=%d headers=%v", apk.Code, apk.Header())
+		}
+	}
+	server.artifactMu.Lock()
+	delete(server.artifactCache, "km-visual")
+	server.artifactMu.Unlock()
+	cold := request(http.MethodGet, "/api/sessions/km-visual/files/"+externalAPKIDs[0], "")
+	if cold.Code != http.StatusOK || cold.Body.String() != "apk-binary-content" {
+		t.Fatalf("cold external APK download status=%d", cold.Code)
+	}
+	blockedID := artifacts.ID(filepath.Join(outside, "unmentioned", "app-debug.apk"))
+	blocked := request(http.MethodGet, "/api/sessions/km-visual/files/"+blockedID, "")
+	if blocked.Code != http.StatusNotFound {
+		t.Fatalf("unmentioned project download status=%d", blocked.Code)
 	}
 }
 

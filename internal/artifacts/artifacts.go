@@ -27,6 +27,10 @@ const MaxAPKFile = 512 * 1024 * 1024
 var markdownPath = regexp.MustCompile(`!?\[[^\]\n]*\]\((?:<([^>\n]+)>|([^)\n]+))\)`)
 var visualizationPath = regexp.MustCompile(`(?m)^[\t ]*\x{E200}visualize\x{E202}([^\r\n]+)\x{E201}[\t ]*\r?$`)
 
+// User scope references may be bare absolute paths, quoted paths with spaces,
+// or Markdown targets. Relative prose never grants access outside the cwd.
+var userPath = regexp.MustCompile("`([^`\r\n]+)`|\"([^\"\r\n]+)\"|'([^'\r\n]+)'|(?:^|[\\s(<])((?:/|[A-Za-z]:[\\\\/]|file://)[^\\s<>\"'`()]+)")
+
 var lineSuffix = regexp.MustCompile(`:[0-9]+$`)
 
 var imageSuffixes = map[string]bool{
@@ -142,13 +146,66 @@ func within(root, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// userRoots adds only paths the user explicitly supplied in this chat. A file
+// reference grants that file alone; a directory grants its resolved subtree.
+func userRoots(turns *jsoncompat.Array) []string {
+	roots := []string{}
+	seen := map[string]bool{}
+	add := func(raw string) {
+		path := ReferencePath(raw, "")
+		if !filepath.IsAbs(path) {
+			return
+		}
+		resolved := Identity(path)
+		if !seen[resolved] {
+			seen[resolved] = true
+			roots = append(roots, resolved)
+		}
+	}
+	for _, item := range turns.Items {
+		turn, _ := item.(*jsoncompat.Object)
+		if turn == nil {
+			continue
+		}
+		messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+		if messages == nil {
+			continue
+		}
+		for _, item := range messages.Items {
+			message, _ := item.(*jsoncompat.Object)
+			if message == nil || message.MustGet("role") != "user" {
+				continue
+			}
+			text, _ := message.MustGet("text").(string)
+			for _, match := range markdownPath.FindAllStringSubmatch(text, -1) {
+				add(match[1] + match[2])
+			}
+			// Do not re-parse part of a Markdown path containing spaces as a
+			// second, broader bare path.
+			text = markdownPath.ReplaceAllString(text, " ")
+			for _, match := range userPath.FindAllStringSubmatch(text, -1) {
+				for _, raw := range match[1:] {
+					if raw != "" {
+						add(raw)
+					}
+				}
+			}
+		}
+	}
+	return roots
+}
+
 // Collect gathers the artifacts a chat view references. Markdown links in
-// assistant messages stay bound to the session roots (cwd and visualization
-// directories); localImage/image attachments are runtime evidence and may
-// point anywhere on disk. Keys are artifact IDs.
+// assistant messages stay bound to the session roots (cwd, visualization
+// directories, and explicit user paths); localImage/image attachments are
+// runtime evidence and may point anywhere on disk. Keys are artifact IDs.
 func Collect(view *jsoncompat.Object, cwd string) map[string]Entry {
 	result := map[string]Entry{}
-	roots := Roots(cwd)
+	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
+	if turns == nil {
+		return result
+	}
+	roots := append(Roots(cwd), userRoots(turns)...)
 	add := func(raw string, trusted bool) {
 		path := ReferencePath(raw, cwd)
 		if path == "" {
@@ -178,10 +235,6 @@ func Collect(view *jsoncompat.Object, cwd string) map[string]Entry {
 		result[id] = Entry{ID: id, Path: resolved, Reference: raw,
 			Name: filepath.Base(resolved), Image: imageSuffixes[strings.ToLower(filepath.Ext(resolved))],
 			Size: info.Size(), ModTime: info.ModTime().UnixMilli()}
-	}
-	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
-	if turns == nil {
-		return result
 	}
 	for _, turnValue := range turns.Items {
 		turn, _ := turnValue.(*jsoncompat.Object)

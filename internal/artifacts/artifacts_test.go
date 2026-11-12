@@ -86,6 +86,111 @@ func imageAttachment(t *testing.T, path string) *jsoncompat.Object {
 	return attachment
 }
 
+func viewWithUserAndAgentText(t *testing.T, userText, agentText string) *jsoncompat.Object {
+	t.Helper()
+	view := viewWithAgentText(t, agentText)
+	message := jsoncompat.NewObject()
+	message.Set("role", "user")
+	message.Set("text", userText)
+	turn := jsoncompat.NewObject()
+	turn.Set("messages", &jsoncompat.Array{Items: []any{message}})
+	turns := view.MustGet("turns").(*jsoncompat.Array)
+	turns.Items = append([]any{turn}, turns.Items...)
+	return view
+}
+
+func TestCollectUserReferencedProjects(t *testing.T) {
+	cwd, outside := t.TempDir(), t.TempDir()
+	paths := []string{
+		filepath.Join(cwd, "dist", "mobile-bridge.apk"),
+		filepath.Join(outside, "fridge-master", "android", "app-debug.apk"),
+		filepath.Join(outside, "best-workout", "android", "app-debug.apk"),
+		filepath.Join(outside, "fridge-master-private", "app-debug.apk"),
+	}
+	agentText := ""
+	for _, path := range paths {
+		writeFile(t, path, []byte("apk"))
+		agentText += "[下载](" + path + ")\n"
+	}
+	if err := os.Truncate(paths[1], 80*1024*1024); err != nil {
+		t.Fatal(err)
+	}
+	view := viewWithUserAndAgentText(t,
+		filepath.Join(outside, "fridge-master")+" "+filepath.Join(outside, "best-workout")+" 类似这两个项目也修复这个问题",
+		agentText)
+	files := Collect(view, cwd)
+	if len(files) != 3 {
+		t.Fatalf("files=%+v, want three APKs", files)
+	}
+	for _, path := range paths[:3] {
+		if entry, ok := files[ID(path)]; !ok || entry.Reference != path {
+			t.Errorf("missing APK %s: %+v", path, entry)
+		}
+	}
+	if _, ok := files[ID(paths[3])]; ok {
+		t.Fatal("user directory reference granted a sibling with the same prefix")
+	}
+}
+
+func TestCollectUserPathScopes(t *testing.T) {
+	cwd, outside := t.TempDir(), t.TempDir()
+	project := filepath.Join(outside, "other project")
+	apk, sibling := filepath.Join(project, "app.apk"), filepath.Join(project, "notes.txt")
+	partial := filepath.Join(outside, "other", "private.apk")
+	writeFile(t, apk, []byte("apk"))
+	writeFile(t, sibling, []byte("notes"))
+	writeFile(t, partial, []byte("private"))
+	agentText := "[下载](<" + apk + ">) [文档](<" + sibling + ">) [未授权](" + partial + ")"
+	for _, test := range []struct {
+		name, userText string
+		want           int
+	}{
+		{"backticks", "处理 `" + project + "`", 2},
+		{"double quotes", "处理 \"" + project + "\"", 2},
+		{"single quotes", "处理 '" + project + "'", 2},
+		{"markdown directory", "处理 [项目](<" + project + ">)", 2},
+		{"file URL", "处理 `file://" + filepath.ToSlash(project) + "`", 2},
+		{"exact file", "只处理 [APK](<" + apk + ">)", 1},
+		{"relative path", "../" + filepath.Base(outside), 0},
+		{"remote URL", "https://example.com" + filepath.ToSlash(apk), 0},
+		{"assistant only", "生成下载链接", 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			view := viewWithUserAndAgentText(t, test.userText, agentText)
+			files := Collect(view, cwd)
+			if len(files) != test.want {
+				t.Fatalf("files=%+v, want %d", files, test.want)
+			}
+			if test.want == 1 {
+				if _, ok := files[ID(apk)]; !ok {
+					t.Fatal("explicit file reference did not grant the APK")
+				}
+			}
+		})
+	}
+	view := viewWithUserAndAgentText(t, "`"+project+"`", agentText)
+	turn := view.MustGet("turns").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+	message := turn.MustGet("messages").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+	message.Set("role", "tool")
+	if files := Collect(view, cwd); len(files) != 0 {
+		t.Fatalf("tool output granted artifact access: %+v", files)
+	}
+}
+
+func TestCollectUserDirectorySymlinkEscape(t *testing.T) {
+	cwd, project, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	secret := filepath.Join(outside, "private.apk")
+	writeFile(t, secret, []byte("private"))
+	link := filepath.Join(project, "escape.apk")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	view := viewWithUserAndAgentText(t, project, "[下载]("+link+")")
+	if files := Collect(view, cwd); len(files) != 0 {
+		t.Fatalf("symlink escaped the user-referenced directory: %+v", files)
+	}
+}
+
 func TestCollectScopesAndTrust(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
