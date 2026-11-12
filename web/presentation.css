@@ -577,6 +577,11 @@ main{background:var(--page);overflow:hidden}
 
 /* 本轮改动：外层不再套虚线框，避免框中框。 */
 .turn-diff-summary{padding:0;border:0}
+@media(max-width:720px){
+  .timeline-row:has(+.turn-diff-summary){margin-bottom:4px}
+  .turn-diff-summary{margin-top:4px;margin-bottom:4px}
+  .timeline:has(>#messages>.turn-diff-summary:last-child){padding-bottom:6px}
+}
 
 /* 审批卡：风险标签在警示底色上需要描边才看得出；命令区跟随主题。 */
 .approval-command{background:var(--raised);color:var(--text)}
