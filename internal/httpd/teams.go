@@ -732,8 +732,9 @@ func (h *handler) handleRunList(teamID string) {
 		return
 	}
 	rows := &jsoncompat.Array{}
+	includeClassification := h.request.URL.Query().Get("includeClassification") == "1"
 	for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
-		if run.IsIssueClassificationOnly() {
+		if run.IsIssueClassificationOnly() && !includeClassification {
 			continue
 		}
 		summary := teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID))
@@ -3136,6 +3137,11 @@ func teamRunSummary(teamRow *team.Team, run *team.Run, feed *team.EventFeed) *js
 	summary.Set("id", run.ID)
 	summary.Set("teamId", run.TeamID)
 	summary.Set("goal", run.Goal)
+	summary.Set("autoPlan", run.AutoPlan)
+	summary.Set("classificationOnly", run.IsIssueClassificationOnly())
+	if run.ScheduledFrom != "" {
+		summary.Set("scheduledFrom", run.ScheduledFrom)
+	}
 	if run.Mode != "" {
 		summary.Set("mode", run.Mode)
 	}

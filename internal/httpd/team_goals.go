@@ -163,6 +163,15 @@ func goalNextAction(outcome team.GoalOutcome) *jsoncompat.Object {
 func (h *handler) decorateRunGoals(run *team.Run, object *jsoncompat.Object, detail bool) {
 	outcomes := h.runGoalOutcomes(run)
 	outcome := aggregateGoals(outcomes)
+	issueIDs := &jsoncompat.Array{}
+	seen := map[string]bool{}
+	for _, goal := range outcomes {
+		if goal.Scope.ID != "run" && !seen[goal.Scope.ID] {
+			seen[goal.Scope.ID] = true
+			issueIDs.Items = append(issueIDs.Items, goal.Scope.ID)
+		}
+	}
+	object.Set("issueIds", issueIDs)
 	object.Set("outcome", goalObject(map[string]any{"schemaVersion": 1, "status": outcome.Status, "label": outcome.Label, "reason": outcome.Reason, "closed": outcome.Closed}))
 	if detail {
 		object.Set("goalOutcomes", goalObject(outcomes))

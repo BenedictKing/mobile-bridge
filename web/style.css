@@ -485,6 +485,14 @@
 .team-activity-next[data-kind="answer"],.team-activity-next[data-kind="inspect"],.team-activity-next[data-kind="resume"]{background:var(--warning-bg);color:var(--warning-text);font-weight:600}
 .team-activity-row[data-group="attention"]{border-left-color:var(--error)}
 .team-activity-row[data-group="active"]{border-left-color:var(--green)}
+.team-view-tabs{display:flex;gap:6px;margin:10px 0}
+.team-view-tab{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 12px;font-size:11.5px;color:var(--muted);min-height:32px}
+.team-view-tab.on{border-color:var(--green);color:var(--green);background:var(--soft);font-weight:600}
+.team-issue-row{border:1px solid var(--line);border-radius:10px;background:var(--raised);margin:0 0 6px;padding:10px 12px}
+.team-issue-summary{display:flex;align-items:baseline;justify-content:space-between;gap:10px;cursor:pointer}
+.team-issue-summary small{flex:none}
+.team-issue-run-link{display:block;width:100%;text-align:left;border:0;border-top:1px solid var(--line);background:transparent;color:var(--green);padding:8px 0 0;margin-top:8px;font-size:11px}
+.team-issue-history>summary{cursor:pointer}
 .team-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0;align-items:start}
 .team-grid .team-card{margin:0;width:100%}
 .team-grid-empty{grid-column:1/-1;border:1px dashed var(--line);border-radius:12px;padding:22px;text-align:center}

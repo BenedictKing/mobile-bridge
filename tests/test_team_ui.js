@@ -135,21 +135,46 @@ const team={id:'t1',name:'团队',leadId:'kimi',project:'codex:7015435b2c37',pro
   {id:'buddy',name:'workbuddy',role:'member',agentKind:'workbuddy'},
 ]};
 
-test('project board loads only its team runs and preserves filtering during refresh',async()=>{
+test('project board defaults to issues and keeps run history in a separate execution view',async()=>{
   const root=new FakeNode('div'),calls=[],opened=[];
   const panel=new TeamsPanel({root,teamId:'t1',openRun:(...args)=>opened.push(args),request:async url=>{
     calls.push(url);
-    return url==='/api/teams'?{teams:[team,{...team,id:'t2',name:'别的团队'}]}:{runs:[{id:'r1',goal:'本项目任务',status:'waiting_input',updatedAt:'2026-11-10T00:00:00Z',taskCounts:{completed:1}}]};
+    if(url==='/api/teams')return{teams:[team,{...team,id:'t2',name:'别的团队'}]};
+    if(url.endsWith('/issues'))return{issues:[{id:'i1',title:'本项目事项',status:'in_progress',progress:{known:true,total:1,completed:0},runs:[{id:'r1',goal:'本项目任务',status:'waiting_input'}]}]};
+    return{runs:[{id:'r1',goal:'本项目任务',status:'waiting_input',updatedAt:'2026-11-10T00:00:00Z',taskCounts:{completed:1},issueIds:['i1']}]};
   }});
   await panel.refreshAll();
-  assert.deepEqual(calls,['/api/teams','/api/teams/t1/runs']);
+  assert.deepEqual(calls,['/api/teams','/api/teams/t1/runs?includeClassification=1','/api/teams/t1/issues']);
   assert.equal(find(root,'team-card').length,0,'项目看板不重复呈现团队卡片和跨团队管理');
   assert.ok(!text(root).includes('New team'));
   assert.ok(!text(root).includes('别的团队'));
-  assert.equal(text(find(root,'team-kpi')[0]),'1Runs');
-  find(root,'team-activity-row')[0].onclick();assert.deepEqual(opened,[['t1','r1']]);
+  assert.equal(text(find(root,'team-kpi')[0]),'1Item');
+  assert.equal(find(root,'team-issue-row').length,1);
+  assert.equal(find(root,'team-activity-row').length,0,'默认看板不再以 Run 为对象');
+  find(root,'team-issue-run-link')[0].onclick();assert.deepEqual(opened,[['t1','r1']]);
+  panel.view='records';panel.render();
+  assert.equal(find(root,'team-activity-row').length,1);
   panel.filter='active';await panel.refreshAll();assert.equal(panel.filter,'active');
-  assert.equal(find(root,'team-activity-row').length,0,'筛选不能混入其他状态或团队');
+  assert.equal(find(root,'team-activity-row').length,0,'执行记录筛选不能混入其他状态或团队');
+});
+
+test('issue board collapses historical items and execution rows label run kinds',()=>{
+  const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
+  panel.teams=[team];
+  panel.issues.set(team.id,{rows:[{id:'current',title:'当前事项',status:'open',runs:[]},{id:'old',title:'历史事项',status:'resolved',historical:true,runs:[]}]});
+  const board=panel.renderIssueActivity();
+  const history=find(board,'team-issue-history')[0];
+  assert.ok(history);assert.equal(history.open,undefined,'历史事项默认折叠');
+  assert.equal(find(board,'team-issue-row').length,2,'当前与历史事项只各出现一次');
+  panel.filter='active';
+  assert.match(text(panel.renderIssueActivity()),/No items match this filter/,'筛选同时作用于当前和历史事项');
+  panel.filter='all';panel.view='records';
+  const explicit=panel.renderActivityRow(team,{id:'explicit',status:'completed',autoPlan:false,issueIds:[]});
+  assert.match(text(explicit),/Explicit plan/);assert.match(text(explicit),/Unclassified execution/);
+  const scheduled=panel.renderActivityRow(team,{id:'scheduled',status:'completed',scheduledFrom:'trigger',issueIds:['current']});
+  assert.match(text(scheduled),/Scheduled/);assert.match(text(scheduled),/Linked to 1 items/);
+  const classifier=panel.renderActivityRow(team,{id:'classifier',status:'completed',classificationOnly:true,issueIds:[]});
+  assert.match(text(classifier),/Classification/);
 });
 
 test('task source chat opens the execution session with its originating Run',()=>{
@@ -202,7 +227,7 @@ test('teams panel localizes member roles and shows the readable project name',()
 
 test('dashboard groups actionable, active and ended runs and keeps unknown states actionable',()=>{
   const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
-  panel.teams=[team];
+  panel.teams=[team];panel.view='records';
   const run=(id,status,updatedAt)=>({id,teamId:team.id,goal:id,status,updatedAt,
     taskCounts:{completed:1},currentOwner:{name:'Kimi'},nextAction:{label:'Review result'}});
   panel.runs.set(team.id,{rows:[

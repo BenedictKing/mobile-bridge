@@ -415,7 +415,8 @@ class TeamCanvasController{
     this.boardRoot.replaceChildren();
     const stages=[['open','待处理'],['in_progress','处理中'],['waiting','等待处理'],['resolved','已解决'],['closed','已关闭']];
     const columns=new Map(stages.map(([id,label])=>[id,{label,items:[]}]));
-    for(const issue of this.issues){const stage=columns.has(issue.status)?issue.status:'waiting';columns.get(stage).items.push(issue);}
+    const current=this.issues.filter(issue=>!issue.historical),historical=this.issues.filter(issue=>issue.historical);
+    for(const issue of current){const stage=columns.has(issue.status)?issue.status:'waiting';columns.get(stage).items.push(issue);}
     this.boardRoot.append(this.node('p',this.issues.length+' '+this.t('个事项'),'muted team-issue-board-summary'));
     const grid=this.node('div',undefined,'team-issue-board-grid');
     for(const [id,column] of columns){
@@ -425,7 +426,14 @@ class TeamCanvasController{
       for(const issue of column.items){const card=this.renderIssue(issue);card.classList.add('team-issue-board-card');section.append(card);}
       grid.append(section);
     }
-    this.boardRoot.append(grid);this.boardRoot.scrollTop=scroll;
+    this.boardRoot.append(grid);
+    if(historical.length){
+      const history=this.node('details',undefined,'team-issue-history');
+      history.append(this.node('summary',this.t('历史记录')+' · '+historical.length));
+      for(const issue of historical){const card=this.renderIssue(issue);card.classList.add('team-issue-board-card');history.append(card);}
+      this.boardRoot.append(history);
+    }
+    this.boardRoot.scrollTop=scroll;
   }
   associationLabel(input,issueIDs){
     const runHint=teamCanvasInputRunID(input,issueIDs)?' · '+this.t('查看 Run'):'';

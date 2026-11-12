@@ -51,6 +51,19 @@ test('issue board groups the same items as canvas and removes deleted items afte
   assert.ok(calls.every(path=>!path.endsWith('/runs')),'看板不得从历史 Run 重建已删除事项');
 });
 
+test('issue board collapses historical items by default',t=>{
+  const{root}=installDOM(t),{TeamCanvasController}=require('../web/team-canvas.js');
+  const controller=new TeamCanvasController({root,request:async()=>({})});
+  controller.boardRoot=document.createElement('div');
+  controller.issues=[{id:'current',status:'open'},{id:'old',status:'resolved',historical:true}];
+  controller.renderIssue=issue=>{const card=document.createElement('button');card.dataset.issueId=issue.id;return card;};
+  controller.renderBoard();
+  const history=controller.boardRoot.querySelector('.team-issue-history');
+  assert.ok(history);assert.equal(history.open,undefined);
+  assert.equal(controller.boardRoot.querySelector('.team-issue-board-grid').querySelectorAll('button').length,1);
+  assert.equal(history.querySelectorAll('button').length,1);
+});
+
 test('member state prioritizes a failed task while preserving other running work',()=>{
   const member={id:'dev',role:'member'};
   const run={tasks:[

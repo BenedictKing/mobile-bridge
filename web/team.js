@@ -674,6 +674,8 @@ class TeamsPanel{
     this.renameValue='';
     this.expanded=new Set(); // Run 列表展开的 teamId
     this.runs=new Map();    // teamId -> {loading,error,rows}
+    this.issues=new Map();  // teamId -> {loading,error,rows}
+    this.view='issues';     // issues=事项看板；records=执行记录
     this.scheduleOpen=new Set(); // 定时运行卡展开的 teamId
     this.schedules=new Map();    // teamId -> {loading,error,cfg,busy,notice}
     this.policyEdit=null;   // 预算策略编辑中的 teamId（§11.7，0=只统计）
@@ -703,7 +705,7 @@ class TeamsPanel{
   /* 工作台打开入口（app.js teams-button）：团队 + 全部团队的 Run 摘要一次
      拉齐；KPI、活动列表与团队卡都消费同一份轻量摘要（§3 并行读取）。 */
   async refreshAll(){
-    if(await this.refresh())await this.loadAllRuns();
+    if(await this.refresh())await Promise.all([this.loadAllRuns(),this.loadAllIssues()]);
   }
   /* 并行拉取所有团队的 Run 摘要：单个团队失败只影响该团队的 Run 区域
      （entry.error 就地展示），不拖垮整页。 */
@@ -715,13 +717,29 @@ class TeamsPanel{
       const entry=this.runs.get(team.id)||{loading:false,error:'',rows:[]};
       entry.loading=true;this.runs.set(team.id,entry);
       try{
-        const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs');
+        const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs?includeClassification=1');
         entry.rows=result.runs||[];entry.error='';
       }catch(error){entry.error=error.message;}
       finally{entry.loading=false;}
     }));
     this._runsLoading=false;
     this.lastSynced=new Date().toLocaleTimeString(BridgeI18n.locale());
+    this.render();
+  }
+  async loadAllIssues(){
+    if(this._issuesLoading)return;
+    this._issuesLoading=true;
+    const teams=this.teams.slice();
+    await Promise.allSettled(teams.map(async team=>{
+      const entry=this.issues.get(team.id)||{loading:false,error:'',rows:[]};
+      entry.loading=true;this.issues.set(team.id,entry);
+      try{
+        const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues');
+        entry.rows=result.issues||[];entry.error='';
+      }catch(error){entry.error=error.message;}
+      finally{entry.loading=false;}
+    }));
+    this._issuesLoading=false;
     this.render();
   }
   startPolling(){
@@ -732,6 +750,7 @@ class TeamsPanel{
     if(this.pollTimer){clearInterval(this.pollTimer);this.pollTimer=null;}
   }
   teamRuns(teamId){return (this.runs.get(teamId)||{}).rows||[];}
+  teamIssues(teamId){return (this.issues.get(teamId)||{}).rows||[];}
   /* 团队卡先展示需处理项，其次运行中项，最后才展示最近终态。 */
   teamLatestRun(teamId){
     const rows=this.teamRuns(teamId);
@@ -742,9 +761,18 @@ class TeamsPanel{
       ||null;
   }
   runStats(){
-    const stats={teams:this.teams.length,members:0,active:0,attention:0};
+    const stats={teams:this.teams.length,members:0,active:0,attention:0,total:0};
     for(const team of this.teams)stats.members+=(team.members||[]).length;
+    if(this.view==='issues'){
+      for(const entry of this.issues.values())for(const issue of entry.rows||[]){
+        stats.total++;
+        if(issue.status==='in_progress')stats.active++;
+        else if(issue.status==='waiting')stats.attention++;
+      }
+      return stats;
+    }
     for(const entry of this.runs.values())for(const run of entry.rows||[]){
+      stats.total++;
       const group=teamRunGroup(run);
       if(group==='attention')stats.attention++;
       else if(group==='active')stats.active++;
@@ -752,6 +780,11 @@ class TeamsPanel{
     return stats;
   }
   filteredTeams(){
+    if(this.view==='issues'){
+      if(this.filter==='active')return this.teams.filter(team=>this.teamIssues(team.id).some(issue=>issue.status==='in_progress'));
+      if(this.filter==='attention')return this.teams.filter(team=>this.teamIssues(team.id).some(issue=>issue.status==='waiting'));
+      return this.teams;
+    }
     if(this.filter==='active')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run)==='active'));
     if(this.filter==='attention')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run)==='attention'));
     return this.teams;
@@ -806,6 +839,7 @@ class TeamsPanel{
     const stats=this.runStats();
     root.append(this.renderKpis(stats));
     root.append(this.renderFilters(stats));
+    root.append(this.renderViewTabs());
     root.append(this.renderActivity());
     if(this.teamId)return;
     const teams=this.filteredTeams();
@@ -837,8 +871,7 @@ class TeamsPanel{
       }
       return item;
     };
-    const totalRuns=[...this.runs.values()].reduce((sum,entry)=>sum+(entry.rows||[]).length,0);
-    box.append(cell(this.teamId?totalRuns:stats.teams,this.teamId?'Run 记录':'团队'),cell(stats.members,'成员'),
+    box.append(cell(this.teamId?stats.total:stats.teams,this.teamId?(this.view==='issues'?'事项':'Run 记录'):'团队'),cell(stats.members,'成员'),
       cell(stats.active,'运行中','active'),cell(stats.attention,'需处理','attention'));
     return box;
   }
@@ -846,13 +879,7 @@ class TeamsPanel{
     const t=BridgeI18n.t,box=this.node('div',undefined,'team-filters');
     box.setAttribute('role','group');
     box.setAttribute('aria-label',t('运行筛选'));
-    const counts={all:0,active:0,attention:0};
-    for(const entry of this.runs.values())for(const run of entry.rows||[]){
-      const group=teamRunGroup(run);
-      if(group==='attention')counts.attention++;
-      else if(group==='active')counts.active++;
-      counts.all++;
-    }
+    const counts={all:stats.total,active:stats.active,attention:stats.attention};
     const options=[['all',t('全部')],['active',t('运行中')],['attention',t('需处理')]];
     for(const [key,label] of options){
       const item=this.button(label+' '+counts[key]);
@@ -863,11 +890,24 @@ class TeamsPanel{
     }
     return box;
   }
+  renderViewTabs(){
+    const t=BridgeI18n.t,box=this.node('div',undefined,'team-view-tabs');
+    box.setAttribute('role','group');
+    const options=[['issues',t('事项')],['records',t('执行记录')]];
+    for(const [view,label] of options){
+      const button=this.button(label);button.className='team-view-tab'+(this.view===view?' on':'');
+      button.setAttribute('aria-pressed',String(this.view===view));
+      button.onclick=()=>{this.view=view;this.render();};
+      box.append(button);
+    }
+    return box;
+  }
   /* 最近活动（§3）：全部团队聚合的轻量 Run 摘要，按 updatedAt 倒序 ≤6 条；
      每行回答四个问题——谁负责/做到哪/下一步/结果在哪（点击即达）。 */
   renderActivity(){
+    if(this.view==='issues')return this.renderIssueActivity();
     const t=BridgeI18n.t,box=this.node('section',undefined,'team-activity');
-    box.append(this.node('h3',t('最近活动')));
+    box.append(this.node('h3',t('执行记录')));
     const teamById=new Map(this.teams.map(team=>[team.id,team]));
     const rows=[];
     for(const team of this.teams){
@@ -912,6 +952,75 @@ class TeamsPanel{
     box.append(line);
     return box;
   }
+  renderIssueActivity(){
+    const t=BridgeI18n.t,box=this.node('section',undefined,'team-activity team-issue-activity');
+    box.append(this.node('h3',t('事项看板')));
+    const current=[],historical=[];
+    for(const team of this.teams){
+      for(const issue of this.teamIssues(team.id)){
+        const at=issue.updatedAt?new Date(issue.updatedAt).getTime():0;
+        (issue.historical?historical:current).push({team,issue,at:Number.isFinite(at)?at:0});
+      }
+    }
+    current.sort((a,b)=>b.at-a.at);historical.sort((a,b)=>b.at-a.at);
+    const stages=[['open',t('待处理')],['in_progress',t('处理中')],['waiting',t('等待处理')],['resolved',t('已解决')],['closed',t('已关闭')]].filter(([id])=>this.filter==='all'||this.filter===id);
+    const visibleCurrent=current.filter(({issue})=>this.filter==='all'||(issue.status||'waiting')===this.filter);
+    for(const [status,label] of stages){
+      const matching=visibleCurrent.filter(({issue})=>(issue.status||'waiting')===status);
+      if(matching.length)box.append(this.renderIssueSection(label,matching));
+    }
+    const visibleHistory=historical.filter(({issue})=>this.filter==='all'||(issue.status||'waiting')===this.filter);
+    if(visibleHistory.length){
+      const history=this.node('details',undefined,'team-activity-group team-issue-history');
+      const summary=this.node('summary',t('历史记录')+' · '+visibleHistory.length);
+      history.append(summary);
+      for(const row of visibleHistory)history.append(this.renderIssueRow(row.team,row.issue));
+      box.append(history);
+    }
+    if(!visibleCurrent.length&&!visibleHistory.length){
+      const loading=this.teams.some(team=>(this.issues.get(team.id)||{}).loading);
+      const failed=this.teams.some(team=>((this.issues.get(team.id)||{}).error));
+      const empty=this.filter!=='all'?t('当前筛选没有匹配的事项。'):loading?t('正在读取事项…'):failed?t('部分团队的事项读取失败，可点击「刷新」重试。'):t('还没有事项。');
+      box.append(this.node('p',empty,'muted'));
+    }
+    return box;
+  }
+  renderIssueSection(label,rows){
+    const section=this.node('section',undefined,'team-activity-group');
+    const heading=this.node('h4',undefined,'team-activity-group-title');
+    heading.append(this.node('span',label),this.node('small',String(rows.length),'muted'));
+    section.append(heading);
+    const list=this.node('div',undefined,'team-activity-list');
+    for(const {team,issue} of rows)list.append(this.renderIssueRow(team,issue));
+    section.append(list);
+    return section;
+  }
+  renderIssueRow(team,issue){
+    const t=BridgeI18n.t,labels={open:t('待处理'),in_progress:t('处理中'),waiting:t('等待处理'),resolved:t('已解决'),closed:t('已关闭')};
+    const details=this.node('details',undefined,'team-issue-row');
+    details.dataset.issueId=issue.id;
+    const summary=this.node('summary',undefined,'team-issue-summary');
+    summary.append(this.node('strong',issue.title||issue.id));
+    const progress=issue.progress||{},progressText=progress.known===false||!progress.total?t('进度待同步'):(progress.completed||0)+'/'+progress.total;
+    summary.append(this.node('small',team.name+' · '+(labels[issue.status]||labels.waiting)+' · '+progressText,'muted'));
+    details.append(summary);
+    if(issue.nextAction?.label)details.append(this.node('p',t('下一步')+' · '+issue.nextAction.label,'muted'));
+    const runs=[...(issue.runs||[])].reverse();
+    if(!runs.length)details.append(this.node('p',t('暂无关联 Run'),'muted'));
+    for(const run of runs){
+      const button=this.button('Run '+String(run.id||'').replace(/-/g,'').slice(0,8).toUpperCase()+' · '+t(teamRunStatusLabel(run.status))+' · '+(run.goal||run.id));
+      button.className='team-issue-run-link';button.onclick=()=>this.openRun&&this.openRun(team.id,run.id);
+      details.append(button);
+    }
+    return details;
+  }
+  runKindLabel(run){
+    const t=BridgeI18n.t;
+    if(run.classificationOnly)return t('归类');
+    if(run.scheduledFrom)return t('定时');
+    if(run.autoPlan===false)return t('显式计划');
+    return '';
+  }
   renderActivityRow(team,run){
     const t=BridgeI18n.t,row=this.button('');
     row.className='team-activity-row';
@@ -922,7 +1031,9 @@ class TeamsPanel{
     title.title=run.goal||run.id;
     main.append(title);
     const meta=this.node('small',undefined,'team-activity-meta muted');
-    const bits=[team.name];
+    const bits=[team.name],kind=this.runKindLabel(run);
+    if(kind)bits.push(kind);
+    bits.push((run.issueIds||[]).length?t('关联')+' '+run.issueIds.length+' '+t('个事项'):t('未分类执行'));
     const progress=teamRunProgress(run);
     bits.push(progress?progress.completed+'/'+progress.total:t('进度待同步'));
     if(run.currentOwner&&run.currentOwner.name)bits.push(run.currentOwner.name+t(' · 负责人'));

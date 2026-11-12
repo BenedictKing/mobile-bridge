@@ -292,6 +292,7 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 
 	teamRow := h.server.TeamStore.Team(issue.TeamID)
 	inputRows := &jsoncompat.Array{}
+	hasCurrentInput := false
 	runIDs := []string{}
 	runIDSet := map[string]bool{}
 	clarification := false
@@ -299,6 +300,9 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 		input := h.server.TeamInputs.Get(issue.TeamID, link.InputID)
 		if input == nil || input.Revision != link.Revision {
 			continue
+		}
+		if !input.Historical {
+			hasCurrentInput = true
 		}
 		if input.AssociationStatus == team.IssueAssociationClarification {
 			clarification = true
@@ -331,6 +335,7 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 		}
 	}
 	result.Set("inputs", inputRows)
+	result.Set("historical", len(inputRows.Items) > 0 && !hasCurrentInput)
 	runIDRows := &jsoncompat.Array{}
 	for _, id := range runIDs {
 		runIDRows.Items = append(runIDRows.Items, id)
