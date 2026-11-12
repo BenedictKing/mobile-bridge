@@ -177,6 +177,30 @@ test('issue board collapses historical items and execution rows label run kinds'
   assert.match(text(classifier),/Classification/);
 });
 
+test('plan execution view excludes automatic and scheduled runs',()=>{
+  const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
+  panel.teams=[team];panel.view='plans';
+  panel.runs.set(team.id,{rows:[
+    {id:'automatic',goal:'自动',status:'completed',autoPlan:true},
+    {id:'scheduled',goal:'定时',status:'completed',autoPlan:false,scheduledFrom:'trigger'},
+    {id:'explicit',goal:'手动计划',status:'completed',autoPlan:false},
+  ]});
+  const activity=panel.renderActivity();
+  assert.equal(find(activity,'team-activity-row').length,1);
+  assert.match(text(activity),/Plan executions/);assert.match(text(activity),/手动计划/);
+  assert.doesNotMatch(text(activity),/自动|定时/);
+  assert.equal(panel.runStats().total,1);
+  const tabs=find(panel.renderViewTabs(),'team-view-tab');
+  assert.deepEqual(tabs.map(text),['Item','Execution records','Plan executions']);
+  assert.equal(tabs[2].attributes['aria-pressed'],'true');
+});
+
+test('scheduled pseudo issues are labelled in the issue board',()=>{
+  const panel=new TeamsPanel({root:new FakeNode('div'),request:async()=>({})});
+  const row=panel.renderIssueRow(team,{id:'schedule-t1',title:'每日巡检',scheduled:true,status:'in_progress',progress:{known:true,total:1,completed:0},runs:[]});
+  assert.match(text(row),/Scheduled item/);
+});
+
 test('task source chat opens the execution session with its originating Run',()=>{
   const opened=[];
   const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({}),openChat:(id,source)=>opened.push({id,source})});

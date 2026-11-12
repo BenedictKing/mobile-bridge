@@ -504,7 +504,7 @@ class TeamCanvasController{
   renderIssue(issue){
     const button=this.button('', 'team-canvas-node team-canvas-issue');button.dataset.issueId=issue.id;button.dataset.status=issue.status;
     const head=this.node('div',undefined,'team-canvas-issue-head');
-    head.append(this.node('span',this.t('事项')+' · '+this.shortID(issue.id),'team-canvas-issue-id'));
+    head.append(this.node('span',this.t(issue.scheduled?'定时事项':'事项')+' · '+this.shortID(issue.id),'team-canvas-issue-id'));
     head.append(this.node('span',this.statusLabel(issue),'team-canvas-status'));button.append(head);
     button.append(this.node('strong',issue.title||this.t('团队事项'),'team-canvas-issue-title'));
     const progress=this.progress(issue);
@@ -623,11 +623,11 @@ class TeamCanvasController{
   }
   renderDetail(issue,preserveScroll=false){
     const focus=this.livePanel?.captureFocus();
-    document.getElementById('team-canvas-detail-id').textContent='Issue · '+this.shortID(issue.id);
+    document.getElementById('team-canvas-detail-id').textContent=(issue.scheduled?this.t('定时事项'):'Issue')+' · '+this.shortID(issue.id);
     document.getElementById('team-canvas-detail-title').textContent=issue.title||this.t('团队事项');
     document.getElementById('team-canvas-detail-status').textContent=this.statusLabel(issue);
     const body=document.getElementById('team-canvas-detail-body'),scrollTop=preserveScroll?body.scrollTop:0;body.replaceChildren();
-    document.getElementById('team-canvas-delete-issue').hidden=false;
+    document.getElementById('team-canvas-delete-issue').hidden=!!issue.scheduled;
     body.append(this.detailSection('当前着落',[
       teamCanvasOwnerLine(issue,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind),
       this.progress(issue)?this.t('Agent 任务')+' '+this.progress(issue).completed+'/'+this.progress(issue).total+' '+this.t('正常结束'):'进度待同步',
@@ -690,7 +690,7 @@ class TeamCanvasController{
   }
   async deleteIssue(){
     const issue=this.detailIssue,team=this.current;
-    if(!issue||!team||this.deletingIssue)return;
+    if(!issue||issue.scheduled||!team||this.deletingIssue)return;
     const button=document.getElementById('team-canvas-delete-issue'),errorBox=document.getElementById('team-canvas-detail-error');
     const path='/api/teams/'+encodeURIComponent(team.id)+'/issues/'+encodeURIComponent(issue.id);
     this.deletingIssue=true;button.disabled=true;button.textContent=this.t('正在读取…');errorBox.textContent='';

@@ -163,6 +163,9 @@ func (h *handler) handleTeamIssuesList(teamID string) {
 	for _, issue := range h.server.TeamInputs.ListIssues(teamID) {
 		rows.Items = append(rows.Items, h.teamIssueProject(issue, false))
 	}
+	if issue := h.scheduledTeamIssue(teamID); issue != nil {
+		rows.Items = append(rows.Items, h.teamIssueProject(issue, false))
+	}
 	result := jsoncompat.NewObject()
 	result.Set("teamId", teamID)
 	result.Set("issues", rows)
@@ -178,11 +181,44 @@ func (h *handler) handleTeamIssueGet(teamID, issueID string) {
 		return
 	}
 	issue := h.server.TeamInputs.GetIssue(teamID, issueID)
+	if issue == nil && issueID == scheduledTeamIssueID(teamID) {
+		issue = h.scheduledTeamIssue(teamID)
+	}
 	if issue == nil {
 		h.fail(http.StatusNotFound, errorBody("Issue 不存在"))
 		return
 	}
 	h.output(http.StatusOK, h.teamIssueProject(issue, true), contentTypeJSON, "")
+}
+
+func scheduledTeamIssueID(teamID string) string { return "schedule-" + teamID }
+
+func (h *handler) scheduledTeamIssue(teamID string) *team.Issue {
+	if h.server.TeamSchedules == nil {
+		return nil
+	}
+	schedule := h.server.TeamSchedules.Schedule(teamID)
+	teamRow := h.server.TeamStore.Team(teamID)
+	if schedule == nil || teamRow == nil {
+		return nil
+	}
+	issue := &team.Issue{ID: scheduledTeamIssueID(teamID), TeamID: teamID, Title: schedule.Goal,
+		CreatedAt: teamRow.CreatedAt, UpdatedAt: teamRow.UpdatedAt}
+	for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
+		if run.ScheduledFrom == "" {
+			continue
+		}
+		if issue.CreatedAt.IsZero() || run.CreatedAt.Before(issue.CreatedAt) {
+			issue.CreatedAt = run.CreatedAt
+		}
+		if run.UpdatedAt.After(issue.UpdatedAt) {
+			issue.UpdatedAt = run.UpdatedAt
+		}
+	}
+	if schedule.LastRunAt.After(issue.UpdatedAt) {
+		issue.UpdatedAt = schedule.LastRunAt
+	}
+	return issue
 }
 
 func (h *handler) teamIssueRunIDs(issue *team.Issue) map[string]bool {
@@ -212,6 +248,10 @@ func (h *handler) handleTeamIssueDelete(teamID, issueID string) {
 	}
 	if h.server.TeamInputs == nil {
 		h.fail(http.StatusConflict, errorBody("当前网关未启用团队 Issue 账本"))
+		return
+	}
+	if issueID == scheduledTeamIssueID(teamID) && h.scheduledTeamIssue(teamID) != nil {
+		h.fail(http.StatusConflict, errorBody("定时事项由定时配置管理，请通过定时运行设置修改或停用。"))
 		return
 	}
 	issue := h.server.TeamInputs.GetIssue(teamID, issueID)
@@ -289,6 +329,10 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 	result.Set("title", issue.Title)
 	result.Set("createdAt", issue.CreatedAt.Format(time.RFC3339Nano))
 	result.Set("updatedAt", issue.UpdatedAt.Format(time.RFC3339Nano))
+	scheduled := issue.ID == scheduledTeamIssueID(issue.TeamID) && len(issue.Links) == 0
+	if scheduled {
+		result.Set("scheduled", true)
+	}
 
 	teamRow := h.server.TeamStore.Team(issue.TeamID)
 	inputRows := &jsoncompat.Array{}
@@ -334,6 +378,14 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 			}
 		}
 	}
+	runsByID := map[string]*team.Run{}
+	for _, run := range h.server.TeamStore.RunsByTeam(issue.TeamID) {
+		runsByID[run.ID] = run
+		if scheduled && run.ScheduledFrom != "" && !runIDSet[run.ID] {
+			runIDSet[run.ID] = true
+			runIDs = append(runIDs, run.ID)
+		}
+	}
 	result.Set("inputs", inputRows)
 	result.Set("historical", len(inputRows.Items) > 0 && !hasCurrentInput)
 	runIDRows := &jsoncompat.Array{}
@@ -342,10 +394,6 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 	}
 	result.Set("runIds", runIDRows)
 
-	runsByID := map[string]*team.Run{}
-	for _, run := range h.server.TeamStore.RunsByTeam(issue.TeamID) {
-		runsByID[run.ID] = run
-	}
 	linkedRuns := make([]*team.Run, 0, len(runIDs))
 	for _, id := range runIDs {
 		if run := runsByID[id]; run != nil {
@@ -367,9 +415,11 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 		}
 		runs.Items = append(runs.Items, summary)
 		if index == 0 {
-			attribution = team.IssueTaskAttribution(issue, run, h.server.TeamInputs.ListAll(issue.TeamID))
+			if !scheduled {
+				attribution = team.IssueTaskAttribution(issue, run, h.server.TeamInputs.ListAll(issue.TeamID))
+			}
 			for _, task := range run.Tasks {
-				if attribution.Contains(task.ID) {
+				if scheduled || attribution.Contains(task.ID) {
 					counts[task.Status]++
 				}
 			}
@@ -394,24 +444,27 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 	// 事项的解决状态取决于当前目标与最新一轮的有效判定，历史失败不永久拖住修订。
 	if len(linkedRuns) > 0 {
 		latestRun := linkedRuns[0]
-		outcome := h.goalOutcome(latestRun, h.issueGoalScope(issue))
-		result.Set("outcome", goalObject(outcome))
+		var outcome team.GoalOutcome
+		if !scheduled {
+			outcome = h.goalOutcome(latestRun, h.issueGoalScope(issue))
+			result.Set("outcome", goalObject(outcome))
+			result.Set("reviewRunId", latestRun.ID)
+			result.Set("reviewRunVersion", jsoncompat.Num(int(latestRun.Version)))
+		}
 		result.Set("executionStatus", latestRun.Status)
-		result.Set("reviewRunId", latestRun.ID)
-		result.Set("reviewRunVersion", jsoncompat.Num(int(latestRun.Version)))
 		businessStatus := "open"
 		switch {
-		case outcome.Closed:
+		case !scheduled && outcome.Closed:
 			businessStatus = "closed"
-		case clarification:
+		case !scheduled && clarification:
 			businessStatus = "waiting"
 		case latestRun.Status == team.RunWaitingInput || latestRun.Status == team.RunPaused || latestRun.Status == team.RunOutcomeUnknown || latestRun.Status == team.RunFailed:
 			businessStatus = "waiting"
 		case !team.RunTerminal(latestRun.Status):
 			businessStatus = "in_progress"
-		case outcome.Status == "satisfied":
+		case !scheduled && outcome.Status == "satisfied":
 			businessStatus = "resolved"
-		case latestRun.Status == team.RunCompleted:
+		case !scheduled && latestRun.Status == team.RunCompleted:
 			businessStatus = "waiting"
 		}
 		result.Set("status", businessStatus)
@@ -429,7 +482,7 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 		if next, exists := latest.Get("nextAction"); exists {
 			result.Set("nextAction", next)
 		}
-		if linkedRuns[0].Status == team.RunCompleted {
+		if !scheduled && linkedRuns[0].Status == team.RunCompleted {
 			result.Set("nextAction", goalNextAction(h.goalOutcome(linkedRuns[0], h.issueGoalScope(issue))))
 		}
 	}

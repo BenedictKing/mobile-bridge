@@ -675,7 +675,7 @@ class TeamsPanel{
     this.expanded=new Set(); // Run 列表展开的 teamId
     this.runs=new Map();    // teamId -> {loading,error,rows}
     this.issues=new Map();  // teamId -> {loading,error,rows}
-    this.view='issues';     // issues=事项看板；records=执行记录
+    this.view='issues';     // issues=事项看板；records=执行记录；plans=显式计划
     this.scheduleOpen=new Set(); // 定时运行卡展开的 teamId
     this.schedules=new Map();    // teamId -> {loading,error,cfg,busy,notice}
     this.policyEdit=null;   // 预算策略编辑中的 teamId（§11.7，0=只统计）
@@ -751,9 +751,14 @@ class TeamsPanel{
   }
   teamRuns(teamId){return (this.runs.get(teamId)||{}).rows||[];}
   teamIssues(teamId){return (this.issues.get(teamId)||{}).rows||[];}
+  explicitPlan(run){return run.autoPlan===false&&!run.scheduledFrom&&!run.classificationOnly;}
+  teamViewRuns(teamId){
+    const rows=this.teamRuns(teamId);
+    return this.view==='plans'?rows.filter(run=>this.explicitPlan(run)):rows;
+  }
   /* 团队卡先展示需处理项，其次运行中项，最后才展示最近终态。 */
   teamLatestRun(teamId){
-    const rows=this.teamRuns(teamId);
+    const rows=this.teamViewRuns(teamId);
     const latest=[...rows].reverse();
     return latest.find(run=>teamRunGroup(run)==='attention')
       ||latest.find(run=>teamRunGroup(run)==='active')
@@ -771,7 +776,7 @@ class TeamsPanel{
       }
       return stats;
     }
-    for(const entry of this.runs.values())for(const run of entry.rows||[]){
+    for(const team of this.teams)for(const run of this.teamViewRuns(team.id)){
       stats.total++;
       const group=teamRunGroup(run);
       if(group==='attention')stats.attention++;
@@ -785,8 +790,8 @@ class TeamsPanel{
       if(this.filter==='attention')return this.teams.filter(team=>this.teamIssues(team.id).some(issue=>issue.status==='waiting'));
       return this.teams;
     }
-    if(this.filter==='active')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run)==='active'));
-    if(this.filter==='attention')return this.teams.filter(team=>this.teamRuns(team.id).some(run=>teamRunGroup(run)==='attention'));
+    if(this.filter==='active')return this.teams.filter(team=>this.teamViewRuns(team.id).some(run=>teamRunGroup(run)==='active'));
+    if(this.filter==='attention')return this.teams.filter(team=>this.teamViewRuns(team.id).some(run=>teamRunGroup(run)==='attention'));
     return this.teams;
   }
   async send(method,path,body){
@@ -893,7 +898,7 @@ class TeamsPanel{
   renderViewTabs(){
     const t=BridgeI18n.t,box=this.node('div',undefined,'team-view-tabs');
     box.setAttribute('role','group');
-    const options=[['issues',t('事项')],['records',t('执行记录')]];
+    const options=[['issues',t('事项')],['records',t('执行记录')],['plans',t('计划执行')]];
     for(const [view,label] of options){
       const button=this.button(label);button.className='team-view-tab'+(this.view===view?' on':'');
       button.setAttribute('aria-pressed',String(this.view===view));
@@ -907,11 +912,10 @@ class TeamsPanel{
   renderActivity(){
     if(this.view==='issues')return this.renderIssueActivity();
     const t=BridgeI18n.t,box=this.node('section',undefined,'team-activity');
-    box.append(this.node('h3',t('执行记录')));
-    const teamById=new Map(this.teams.map(team=>[team.id,team]));
+    box.append(this.node('h3',t(this.view==='plans'?'计划执行':'执行记录')));
     const rows=[];
     for(const team of this.teams){
-      for(const run of this.teamRuns(team.id)){
+      for(const run of this.teamViewRuns(team.id)){
         const at=run.updatedAt?new Date(run.updatedAt).getTime():0;
         if(Number.isFinite(at))rows.push({team,run,at});
       }
@@ -1002,7 +1006,7 @@ class TeamsPanel{
     const summary=this.node('summary',undefined,'team-issue-summary');
     summary.append(this.node('strong',issue.title||issue.id));
     const progress=issue.progress||{},progressText=progress.known===false||!progress.total?t('进度待同步'):(progress.completed||0)+'/'+progress.total;
-    summary.append(this.node('small',team.name+' · '+(labels[issue.status]||labels.waiting)+' · '+progressText,'muted'));
+    summary.append(this.node('small',team.name+' · '+(issue.scheduled?t('定时事项')+' · ':'')+(labels[issue.status]||labels.waiting)+' · '+progressText,'muted'));
     details.append(summary);
     if(issue.nextAction?.label)details.append(this.node('p',t('下一步')+' · '+issue.nextAction.label,'muted'));
     const runs=[...(issue.runs||[])].reverse();

@@ -732,9 +732,18 @@ func (h *handler) handleRunList(teamID string) {
 		return
 	}
 	rows := &jsoncompat.Array{}
-	includeClassification := h.request.URL.Query().Get("includeClassification") == "1"
+	query := h.request.URL.Query()
+	includeClassification := query.Get("includeClassification") == "1"
+	filter := query.Get("filter")
+	if filter != "" && filter != "explicit-plan" {
+		h.fail(http.StatusBadRequest, errorBody("未知 Run 筛选："+filter))
+		return
+	}
 	for _, run := range h.server.TeamStore.RunsByTeam(teamID) {
 		if run.IsIssueClassificationOnly() && !includeClassification {
+			continue
+		}
+		if filter == "explicit-plan" && (run.AutoPlan || run.ScheduledFrom != "" || run.IsIssueClassificationOnly()) {
 			continue
 		}
 		summary := teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID))

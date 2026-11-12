@@ -171,6 +171,12 @@ func (h *handler) decorateRunGoals(run *team.Run, object *jsoncompat.Object, det
 			issueIDs.Items = append(issueIDs.Items, goal.Scope.ID)
 		}
 	}
+	if run.ScheduledFrom != "" && h.server.TeamSchedules != nil && h.server.TeamSchedules.Schedule(run.TeamID) != nil {
+		issueID := scheduledTeamIssueID(run.TeamID)
+		if !seen[issueID] {
+			issueIDs.Items = append(issueIDs.Items, issueID)
+		}
+	}
 	object.Set("issueIds", issueIDs)
 	object.Set("outcome", goalObject(map[string]any{"schemaVersion": 1, "status": outcome.Status, "label": outcome.Label, "reason": outcome.Reason, "closed": outcome.Closed}))
 	if detail {
