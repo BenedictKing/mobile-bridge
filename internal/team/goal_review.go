@@ -36,11 +36,21 @@ func (s *Service) issueGoalRecord(run *Run, scope GoalScope) (*GoalRecord, bool)
 	return s.inputs.IssueGoal(run.TeamID, scope.ID), true
 }
 
-func evaluateGoalRecord(run *Run, teamRow *Team, scope GoalScope, record *GoalRecord, issueScoped bool) GoalOutcome {
+func (s *Service) evaluateGoalRecord(run *Run, teamRow *Team, scope GoalScope, record *GoalRecord, issueScoped bool) GoalOutcome {
 	if issueScoped {
-		return EvaluateIssueGoal(run, teamRow, scope, record)
+		issue := s.inputs.GetIssue(run.TeamID, scope.ID)
+		return EvaluateIssueGoal(issue, run, s.inputs.ListAll(run.TeamID), teamRow, scope, record)
 	}
 	return EvaluateGoal(run, teamRow, scope)
+}
+
+func (s *Service) goalEvidenceRun(run *Run, scope GoalScope, issueScoped bool) *Run {
+	if !issueScoped {
+		return run
+	}
+	issue := s.inputs.GetIssue(run.TeamID, scope.ID)
+	scoped, _ := RunForIssue(issue, run, s.inputs.ListAll(run.TeamID))
+	return scoped
 }
 
 func (s *Service) syncIssueGoal(run *Run, scope GoalScope, issueScoped bool) error {
@@ -108,9 +118,9 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 			if observed == nil {
 				return nil, ErrNotFound
 			}
-			outcome := evaluateGoalRecord(observed, s.store.Team(observed.TeamID), scope, issueRecord, issueScoped)
+			outcome := s.evaluateGoalRecord(observed, s.store.Team(observed.TeamID), scope, issueRecord, issueScoped)
 			if outcome.CanConfirm {
-				if err := s.checkGoalWorkspaceEvidence(observed, outcome.Contract); err != nil {
+				if err := s.checkGoalWorkspaceEvidence(s.goalEvidenceRun(observed, scope, issueScoped), outcome.Contract); err != nil {
 					return nil, err
 				}
 			}
@@ -133,7 +143,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 				return nil, false
 			}
 		}
-		if run.Version != request.Version || request.EvidenceHash != GoalEvidenceHash(run) {
+		if run.Version != request.Version || request.EvidenceHash != GoalEvidenceHash(s.goalEvidenceRun(run, scope, issueScoped)) {
 			decisionErr = ErrVersionConflict
 			return nil, false
 		}
@@ -163,7 +173,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 				decisionErr = goalInvalid("本轮已配置验证闸门，必须保留验证要求")
 				return nil, false
 			}
-			if len(goalReviewTasks(run, s.store.Team(run.TeamID))) > 0 && request.Contract.Review.Requirement == "not_required" {
+			if len(goalReviewTasks(s.goalEvidenceRun(run, scope, issueScoped), s.store.Team(run.TeamID))) > 0 && request.Contract.Review.Requirement == "not_required" {
 				decisionErr = goalInvalid("本轮已安排审查，必须保留审查要求")
 				return nil, false
 			}
@@ -209,10 +219,10 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 					return nil, false
 				}
 				record.Contract.Criteria[i].State = value
-				record.Contract.Criteria[i].EvidenceRefs = goalEvidenceRefs(run)
+				record.Contract.Criteria[i].EvidenceRefs = goalEvidenceRefs(s.goalEvidenceRun(run, scope, issueScoped))
 				allMet = allMet && value == "met"
 			}
-			if allMet && !evaluateGoalRecord(run, s.store.Team(run.TeamID), scope, record, issueScoped).CanConfirm {
+			if allMet && !s.evaluateGoalRecord(run, s.store.Team(run.TeamID), scope, record, issueScoped).CanConfirm {
 				decisionErr = goalInvalid("结果或必要检查尚未就绪，不能确认目标达成")
 				return nil, false
 			}
@@ -224,8 +234,8 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 			if reason == "" {
 				reason = "用户确认结果符合要求"
 			}
-			record.AssessedBy, record.AssessedAt, record.EvidenceHash, record.Reason, record.Closed = "user", time.Now(), GoalEvidenceHash(run), reason, false
-			record.WorkspaceHead, record.WorkspaceDiff = goalWorkspaceBinding(run, s.store.Team(run.TeamID), record.Contract)
+			record.AssessedBy, record.AssessedAt, record.EvidenceHash, record.Reason, record.Closed = "user", time.Now(), GoalEvidenceHash(s.goalEvidenceRun(run, scope, issueScoped)), reason, false
+			record.WorkspaceHead, record.WorkspaceDiff = goalWorkspaceBinding(s.goalEvidenceRun(run, scope, issueScoped), s.store.Team(run.TeamID), record.Contract)
 		case "close":
 			if !issueScoped && !terminalRun(run.Status) {
 				decisionErr = goalInvalid("请先停止执行，再关闭目标追踪")
@@ -235,7 +245,7 @@ func (s *Service) ReviewGoal(runID string, scope GoalScope, request GoalReviewRe
 				decisionErr = goalInvalid("请记录关闭原因")
 				return nil, false
 			}
-			record.Closed, record.Reason, record.EvidenceHash = true, request.Reason, GoalEvidenceHash(run)
+			record.Closed, record.Reason, record.EvidenceHash = true, request.Reason, GoalEvidenceHash(s.goalEvidenceRun(run, scope, issueScoped))
 		}
 		if record.Operations == nil {
 			record.Operations = map[string]string{}
@@ -318,13 +328,14 @@ func (s *Service) IssueGoalOutcome(run *Run, scope GoalScope, record *GoalRecord
 // GoalOutcome 保留用户结论；未确认结果仍按当前工作区复核必要检查。
 func (s *Service) goalOutcome(run *Run, scope GoalScope, issueRecord *GoalRecord, issueScoped bool) GoalOutcome {
 	teamRow := s.store.Team(run.TeamID)
-	out := evaluateGoalRecord(run, teamRow, scope, issueRecord, issueScoped)
+	out := s.evaluateGoalRecord(run, teamRow, scope, issueRecord, issueScoped)
+	evidenceRun := s.goalEvidenceRun(run, scope, issueScoped)
 	checksRequired := out.Contract.Verify.Requirement == "required" || out.Contract.Review.Requirement == "required"
 	if !checksRequired {
 		return out
 	}
 	if out.AssessedBy == "user" {
-		head, diff, err := s.goalWorkspaceEvidenceError(run, out.Contract)
+		head, diff, err := s.goalWorkspaceEvidenceError(evidenceRun, out.Contract)
 		if err != nil {
 			change := &GoalWorkspaceChange{CurrentHead: head, CurrentDiff: diff, Reason: err.Error()}
 			record := issueRecord
@@ -339,7 +350,7 @@ func (s *Service) goalOutcome(run *Run, scope GoalScope, issueRecord *GoalRecord
 		return out
 	}
 	if out.CanConfirm {
-		if err := s.checkGoalWorkspaceEvidence(run, out.Contract); err != nil {
+		if err := s.checkGoalWorkspaceEvidence(evidenceRun, out.Contract); err != nil {
 			out.Status, out.Label, out.Reason, out.CanConfirm = "pending_verification", GoalOutcomeLabels["pending_verification"], err.Error(), false
 		}
 	}

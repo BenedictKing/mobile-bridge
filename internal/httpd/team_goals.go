@@ -99,7 +99,7 @@ func (h *handler) goalOutcome(run *team.Run, scope team.GoalScope) team.GoalOutc
 			if h.server.Teams != nil {
 				return h.server.Teams.IssueGoalOutcome(run, scope, record)
 			}
-			return team.EvaluateIssueGoal(run, h.server.TeamStore.Team(run.TeamID), scope, record)
+			return team.EvaluateIssueGoal(issue, run, h.server.TeamInputs.ListAll(run.TeamID), h.server.TeamStore.Team(run.TeamID), scope, record)
 		}
 	}
 	if h.server.Teams != nil {

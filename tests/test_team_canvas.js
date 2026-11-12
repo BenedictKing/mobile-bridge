@@ -129,6 +129,11 @@ test('closed issue retains the last executor',()=>{
   assert.equal(teamCanvasOwnerLine({}), '');
 });
 
+test('unknown task attribution does not invent issue progress',()=>{
+  const c=Object.assign(Object.create(TeamCanvasController.prototype),{t:value=>value});
+  assert.equal(c.progress({progress:{known:false},taskCounts:{completed:1}}),null);
+});
+
 test('issue detail shows bounded delivery, review and verification evidence',()=>{
   const rows=teamCanvasDeliveryRows({delivery:{
     resultSummary:{text:'导航已完成，验证通过。',truncated:true},

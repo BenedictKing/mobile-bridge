@@ -104,6 +104,13 @@ test('workspace changes preserve the confirmed outcome and show both versions',(
   assert.match(text(panel),/1234567890ab → abcdef123456/);
 });
 
+test('shared task output is labelled in the goal result',()=>{
+  const{renderTeamGoalReview}=require('../web/team.js');
+  const outcome=feedbackOutcome({result:{text:'共享汇总',includesShared:true}});
+  const panel=renderTeamGoalReview(outcome,{runVersion:4,drafts:new Map()});
+  assert.match(text(panel),/Includes output from shared tasks/);
+});
+
 test('problem feedback preserves the original scope and needs only a concrete note',async()=>{
   const{renderTeamGoalReview}=require('../web/team.js'),drafts=new Map(),sent=[];
   const panel=renderTeamGoalReview(feedbackOutcome(),{runVersion:7,drafts,submit:async body=>sent.push(body)});

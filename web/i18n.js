@@ -42,6 +42,7 @@ const en={
 "确认符合要求":"Confirm requirements are met",
 "反馈问题":"Report a problem",
 "结果摘要已截断，请在来源任务查看完整内容。":"This result is truncated. Open the source task for the full text.",
+"包含共享任务输出":"Includes output from shared tasks",
 "交付类型与完成条件":"Deliverable and completion criteria",
 "交付类型":"Deliverable type",
 "请选择交付类型":"Choose a deliverable type",

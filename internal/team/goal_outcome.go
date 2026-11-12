@@ -73,13 +73,14 @@ type GoalRecord struct {
 }
 
 type GoalResultRef struct {
-	TaskID       string `json:"taskId"`
-	Attempt      int    `json:"attempt"`
-	SubmissionID string `json:"submissionId,omitempty"`
-	SessionID    string `json:"sessionId,omitempty"`
-	TurnID       string `json:"turnId,omitempty"`
-	Text         string `json:"text"`
-	Truncated    bool   `json:"truncated"`
+	TaskID         string `json:"taskId"`
+	Attempt        int    `json:"attempt"`
+	SubmissionID   string `json:"submissionId,omitempty"`
+	SessionID      string `json:"sessionId,omitempty"`
+	TurnID         string `json:"turnId,omitempty"`
+	Text           string `json:"text"`
+	Truncated      bool   `json:"truncated"`
+	IncludesShared bool   `json:"includesShared,omitempty"`
 }
 
 type GoalWorkspaceChange struct {
@@ -298,12 +299,30 @@ func EvaluateGoal(run *Run, teamRow *Team, scope GoalScope) GoalOutcome {
 	return evaluateGoal(run, teamRow, scope, nil, false)
 }
 
-// EvaluateIssueGoal 使用事项级契约和用户结论，当前 Run 只提供执行结果与检查证据。
-func EvaluateIssueGoal(run *Run, teamRow *Team, scope GoalScope, record *GoalRecord) GoalOutcome {
-	if record == nil {
-		return EvaluateGoal(run, teamRow, scope)
+// EvaluateIssueGoal 使用事项级契约和用户结论，当前 Run 只提供该事项与共享任务的证据。
+func EvaluateIssueGoal(issue *Issue, run *Run, inputs []*TeamInput, teamRow *Team, scope GoalScope, record *GoalRecord) GoalOutcome {
+	scoped, attribution := RunForIssue(issue, run, inputs)
+	out := evaluateGoal(scoped, teamRow, scope, record, record != nil)
+	if out.Result == nil {
+		return out
 	}
-	return evaluateGoal(run, teamRow, scope, record, true)
+	if out.Result.TaskID != "" {
+		out.Result.IncludesShared = attribution.ContainsShared(out.Result.TaskID)
+		return out
+	}
+	for i := range scoped.Tasks {
+		task := &scoped.Tasks[i]
+		text := task.Result
+		if task.ResultDetail != nil && text == "" {
+			text = task.ResultDetail.Result
+		}
+		isReview := task.Review != nil && *task.Review || task.ResultDetail != nil && task.ResultDetail.ReviewVerdict != ""
+		if attribution.ContainsShared(task.ID) && task.Status == TaskCompleted && !task.IssueClassificationOnly && !isReview && strings.TrimSpace(ResultDisplayText(text)) != "" {
+			out.Result.IncludesShared = true
+			break
+		}
+	}
+	return out
 }
 
 func goalRecordForScope(record *GoalRecord, scope GoalScope) *GoalRecord {

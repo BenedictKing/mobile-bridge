@@ -428,6 +428,69 @@ func TestTeamIssueDeleteRejectsSharedActiveRun(t *testing.T) {
 	}
 }
 
+func TestTeamIssueProgressUsesAttributedTasks(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	input, _, err := env.server.TeamInputs.AcceptWithIssueRouting(teamID,
+		"dddddddd-bbbb-4ccc-8ddd-eeeeeeeeee07", "甲乙", nil, "policy", 64, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked, _, err := env.server.TeamInputs.ApplyIssueProposal(teamID, "issue-proposal-progress", &team.IssueProposal{
+		InputID: input.ID, Revision: input.Revision, Segments: []team.IssueProposalSegment{
+			{Action: team.IssueSegmentCreate, NewIssueTitle: "甲事项", SourceStart: 0, SourceEnd: 1},
+			{Action: team.IssueSegmentCreate, NewIssueTitle: "乙事项", SourceStart: 1, SourceEnd: 2},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []team.WorkItem{
+		{ID: "item-a", SourceInputID: input.ID, SourceRevision: 1, RequirementText: "甲", SourceStart: 0, SourceEnd: 1,
+			RunID: input.ID, TaskIDs: []string{"item-a"}, Status: "proposed"},
+		{ID: "item-b", SourceInputID: input.ID, SourceRevision: 1, RequirementText: "乙", SourceStart: 1, SourceEnd: 2,
+			RunID: input.ID, TaskIDs: []string{"item-b"}, Status: "proposed"},
+	}
+	if _, _, err = env.server.TeamInputs.ProposeRoute(teamID, input.ID, "route-progress", items, linked.Version); err != nil {
+		t.Fatal(err)
+	}
+	for _, taskID := range []string{"item-a", "item-b"} {
+		if err = env.server.TeamInputs.MarkRouted(teamID, input.ID, "planned", input.ID, taskID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &team.Run{ID: input.ID, TeamID: teamID, Goal: input.Text, Status: team.RunWaitingInput, Tasks: []team.Task{
+		{ID: "item-a", MemberID: "lead", Status: team.TaskCompleted, Result: "甲完成"},
+		{ID: "item-b", MemberID: "lead", Status: team.TaskPlanned},
+	}}
+	if err = env.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	response := env.request(http.MethodGet, "/api/teams/"+teamID+"/issues", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("Issue list failed: %d %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Issues []struct {
+			Title           string `json:"title"`
+			SharedTaskCount int    `json:"sharedTaskCount"`
+			Progress        struct {
+				Known     bool `json:"known"`
+				Total     int  `json:"total"`
+				Completed int  `json:"completed"`
+			} `json:"progress"`
+		} `json:"issues"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Issues) != 2 || !result.Issues[0].Progress.Known || !result.Issues[1].Progress.Known ||
+		result.Issues[0].Progress.Total != 1 || result.Issues[0].Progress.Completed != 1 ||
+		result.Issues[1].Progress.Total != 1 || result.Issues[1].Progress.Completed != 0 {
+		t.Fatalf("共享 Run 应分别计算事项进度: %+v", result.Issues)
+	}
+}
+
 func TestTeamInputFollowUpResumesWaitingRun(t *testing.T) {
 	env := newTeamTestEnv(t, "queued", true)
 	teamID, _ := env.createTeam(t)

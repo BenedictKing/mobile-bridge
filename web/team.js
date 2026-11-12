@@ -139,6 +139,7 @@ function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executio
     else body.textContent=outcome.result.text;
     result.append(body);
     if(outcome.result.truncated)result.append(node('p',t('结果摘要已截断，请在来源任务查看完整内容。'),'muted'));
+    if(outcome.result.includesShared)result.append(node('p',t('包含共享任务输出'),'muted'));
     box.append(result);
   }
   if(outcome.workspaceChange){

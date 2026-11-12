@@ -353,6 +353,7 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 
 	runs := &jsoncompat.Array{}
 	counts := map[string]int{}
+	attribution := team.TaskAttribution{Known: true}
 	for index, run := range linkedRuns {
 		summary := teamRunSummary(teamRow, run, h.server.TeamFeeds.Peek(run.ID))
 		h.decorateRunGoals(run, summary, false)
@@ -361,12 +362,16 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 		}
 		runs.Items = append(runs.Items, summary)
 		if index == 0 {
+			attribution = team.IssueTaskAttribution(issue, run, h.server.TeamInputs.ListAll(issue.TeamID))
 			for _, task := range run.Tasks {
-				counts[task.Status]++
+				if attribution.Contains(task.ID) {
+					counts[task.Status]++
+				}
 			}
 		}
 	}
 	result.Set("runs", runs)
+	result.Set("sharedTaskCount", jsoncompat.Num(len(attribution.SharedTaskIDs)))
 	taskCounts := jsoncompat.NewObject()
 	total, completed := 0, counts[team.TaskCompleted]
 	for status, count := range counts {
@@ -376,6 +381,7 @@ func (h *handler) teamIssueProject(issue *team.Issue, includeDelivery bool) *jso
 	progress := jsoncompat.NewObject()
 	progress.Set("total", jsoncompat.Num(total))
 	progress.Set("completed", jsoncompat.Num(completed))
+	progress.Set("known", attribution.Known)
 	result.Set("taskCounts", taskCounts)
 	result.Set("progress", progress)
 

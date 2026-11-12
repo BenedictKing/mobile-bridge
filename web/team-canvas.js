@@ -377,6 +377,7 @@ class TeamCanvasController{
     return this.t(statusLabels[issue.status]||labels[issue.status]||issue.status||'状态待同步');
   }
   progress(issue){
+    if(issue?.progress?.known===false)return null;
     const counts=issue?.taskCounts;if(!counts||typeof counts!=='object')return null;
     let total=0,completed=0;
     for(const [status,value] of Object.entries(counts)){const count=Number(value)||0;total+=count;if(status==='completed')completed=count;}
