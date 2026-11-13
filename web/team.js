@@ -124,7 +124,7 @@ function teamTaskSessionId(task,detail,member){
 }
 
 // Run 与事项共用的目标核对入口；草稿留在控制器内，轮询重绘不会丢失用户输入。
-function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executionStatus=outcome.executionStatus}){
+function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executionStatus=outcome.executionStatus,allowFeedback=true}){
   const t=BridgeI18n.t,node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
   const box=node('section',undefined,'team-goal-review');
   const reviewable=!executionStatus||executionStatus==='completed';
@@ -206,10 +206,11 @@ function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executio
   const checkLabel=check=>check.requirement==='not_required'?t('本次不需要')+' · '+check.reason:t(labels[check.status]||'未配置');
   const checksConfigured=[['验证',outcome.contract.verify],['审查',outcome.contract.review]].filter(([,check])=>check.requirement==='required'||check.status!=='not_configured');
   if(checksConfigured.length){evidence.textContent=checksConfigured.map(([label,check])=>t(label)+' · '+checkLabel(check)).join(' / ');box.append(evidence);}
-  if(reviewable&&!outcome.canConfirm)box.append(node('p',t('当前结果或必要检查尚未就绪，可先反馈问题。'),'muted'));
-  box.append(field(closeOnly?'关闭原因':'反馈或补充说明（可选）',textArea(state.reason,value=>state.reason=value)));
+  if(allowFeedback&&reviewable&&!outcome.canConfirm)box.append(node('p',t('当前结果或必要检查尚未就绪，可先反馈问题。'),'muted'));
+  if(allowFeedback||closeOnly)box.append(field(closeOnly?'关闭原因':'反馈或补充说明（可选）',textArea(state.reason,value=>state.reason=value)));
   const confirm=button('确认符合要求','assess','confirm'),actions=node('div',undefined,'team-run-actions');
-  confirm.className='primary';confirm.hidden=outcome.status==='satisfied';actions.append(confirm,button('反馈问题','assess','feedback'));
+  confirm.className='primary';confirm.hidden=outcome.status==='satisfied';actions.append(confirm);
+  if(allowFeedback)actions.append(button('反馈问题','assess','feedback'));
   if(reviewable)box.append(actions,notice,error,settings);else box.append(close,notice,error);
   function syncControls(){for(const el of controls)el.disabled=!!state.busy||el===confirm&&!outcome.canConfirm;}
   syncControls();

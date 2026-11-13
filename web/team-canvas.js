@@ -638,7 +638,7 @@ class TeamCanvasController{
     if(issue.outcome&&issue.reviewRunId&&typeof renderTeamGoalReview==='function'){
       this.goalDrafts=this.goalDrafts||new Map();
       const teamID=this.current.id,issueID=issue.id;
-      body.append(renderTeamGoalReview(issue.outcome,{runVersion:issue.reviewRunVersion,drafts:this.goalDrafts,
+      body.append(renderTeamGoalReview(issue.outcome,{runVersion:issue.reviewRunVersion,drafts:this.goalDrafts,allowFeedback:false,
         submit:payload=>this.request('/api/teams/'+encodeURIComponent(teamID)+'/runs/'+encodeURIComponent(issue.reviewRunId)+'/goal-review',{method:'POST',body:payload}),
         updated:async()=>{
           if(this.current?.id!==teamID||this.detailIssue?.id!==issueID)return;

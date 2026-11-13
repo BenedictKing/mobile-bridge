@@ -120,6 +120,17 @@ test('problem feedback preserves the original scope and needs only a concrete no
   assert.equal(sent[0].scopeHash,'scope');assert.deepEqual(sent[0].states,{original:'unmet'});assert.equal(sent[0].reason,'缺少未提交文件的回撤说明');
 });
 
+test('issue details omit problem feedback while preserving results and confirmation',async()=>{
+  const{renderTeamGoalReview}=require('../web/team.js'),sent=[];
+  const panel=renderTeamGoalReview(feedbackOutcome({scope:{id:'issue-a',hash:'scope'}}),{runVersion:7,drafts:new Map(),allowFeedback:false,submit:async body=>sent.push(body)});
+  assert.match(text(panel),/回答已经给出/);
+  assert.equal(panel.querySelectorAll('button').find(button=>button.textContent==='Report a problem'),undefined);
+  assert.ok(!text(panel).includes('Feedback or additional notes (optional)'));
+  const confirm=panel.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met');
+  assert.equal(confirm.disabled,false);await confirm.listeners.click();
+  assert.equal(sent.length,1);assert.equal(sent[0].reason,'');assert.deepEqual(sent[0].states,{original:'met'});
+});
+
 test('missing required evidence disables confirmation while allowing feedback',async()=>{
   const{renderTeamGoalReview}=require('../web/team.js'),sent=[];
   const panel=renderTeamGoalReview(feedbackOutcome({canConfirm:false,status:'pending_verification'}),{drafts:new Map(),submit:async body=>sent.push(body)});
