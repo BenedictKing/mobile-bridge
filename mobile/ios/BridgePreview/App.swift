@@ -181,6 +181,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             guard signature != self.channelSignature else{return}
             self.channelSignature=signature
             self.channelWiFi = path.status == .satisfied && (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
+            self.localRecovery?.stop();self.localRecovery=nil;self.startLocalRecovery(self.origin)
             if self.web==nil{self.checkComputers()}else{self.checkChannels(failure:false,reason:"network")}
         }
         monitor.start(queue: .main)
@@ -194,6 +195,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         defaults.removeObject(forKey:preferenceKey("disabled-channels",address));defaults.removeObject(forKey:preferenceKey("channel-mode",address))
         guard let id=channelRecord(address)?["deviceId"] as? String else { return }
         channelTicket += 1; lastChannelProbe=nil
+        localRecovery?.stop();localRecovery=nil;LocalRecoveryCoordinator.clear(deviceID:id)
         DeviceBinding.clear(GatewayChannels.vault(id));defaults.removeObject(forKey:"name:"+id)
         defaults.removeObject(forKey:"channel-anchor:"+id)
         let store=WKWebsiteDataStore.default().httpCookieStore
@@ -287,7 +289,34 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         controller.toolbarItems=[UIBarButtonItem(customView:remove),UIBarButtonItem.flexibleSpace(),UIBarButtonItem(customView:save)];sheet.setToolbarHidden(false,animated:false)
     }
     private func catalog(_ address:String)->[String] {
-        channelRecord(address).map(GatewayChannels.endpoints) ?? [address]
+        var values=channelRecord(address).map(GatewayChannels.endpoints) ?? [address]
+        if let id=channelRecord(address)?["deviceId"] as? String {
+            for origin in LocalRecoveryCoordinator.cached(deviceID:id) where !values.contains(origin){values.append(origin)}
+        }
+        return values
+    }
+    private func startLocalRecovery(_ address:String){
+        guard localRecovery == nil,let id=channelRecord(address)?["deviceId"] as? String else{return}
+        let screen=generation
+        localRecovery=LocalRecoveryCoordinator(deviceID:id){[weak self] found in
+            guard let self,self.generation==screen,self.origin==address,self.saved.contains(address) else{return}
+            let new=found.filter{!self.catalog(address).contains($0)}
+            guard !new.isEmpty else{return}
+            for other in self.saved where self.channelRecord(other)?["deviceId"] as? String==id {
+                guard var record=self.channelRecord(other) else{continue}
+                record["endpoints"]=GatewayChannels.endpoints(record)+new.filter{!GatewayChannels.endpoints(record).contains($0)}
+                self.defaults.set(record,forKey:"channels:"+other)
+            }
+            self.paintAddresses(address)
+            if self.web==nil {
+                let url=self.requestedRoute ?? URL(string:address+"/")!
+                self.localRecovery?.stop();self.localRecovery=nil
+                self.openComputer(address,url)
+            } else if !self.pageReady {
+                _=self.raceChannels(failure:true,allowed:new)
+            }
+        }
+        localRecovery?.start()
     }
     private func paintAddresses(_ address:String) {
         guard let list=addressLists[address] else{return}
@@ -423,8 +452,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     private func openComputer(_ address:String,_ url:URL){
         guard !addresses(address).isEmpty else{manageComputer(address);return}
         guard let d=channelRecord(address) else{connect(url,address:address);return}
+        requestedRoute=url
         clear();navigation(home:false);origin=address;subtitle.isHidden=false
         let screen=generation,targets=addresses(address)
+        startLocalRecovery(address)
         var progress=[String:String]()
         subtitle.isHidden=true
         let container=UIView(),panel=column(),title=label(MobileStrings.text("正在连接 · ")+computerName(address),size:20,weight:.semibold)
@@ -506,6 +537,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         guard peerViews.removeValue(forKey:child) != nil else{return};child.navigationDelegate=nil;child.uiDelegate=nil;child.removeFromSuperview()
     }
     private var routeDiscovery: ConnectionDiscovery?
+    private var localRecovery: LocalRecoveryCoordinator?
     private var routeAttempted = false
     private var requestedRoute: URL?
     private var connectionError: UIView?
@@ -775,7 +807,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { routeTraffic.removeAll();uu.scope = ""; hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { routeTraffic.removeAll();uu.scope = ""; hideEntryProgress();pageReady=false;pendingPeer=nil;for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; localRecovery?.stop(); localRecovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -1074,6 +1106,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         catch { info(error.localizedDescription); return }
         if origin != address, #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } }
         clear(); navigation(home: false); subtitle.isHidden = false; origin = address; documentAddress=address; var all = saved; if !all.contains(address) { all.append(address) }; defaults.set(all, forKey: "origins"); defaults.set(address, forKey: "active"); defaults.set(Date().timeIntervalSince1970, forKey: "last-opened:" + address); subtitle.text = MobileStrings.text("正在连接 · ") + computerName(address)
+        startLocalRecovery(address)
         let configuration = WKWebViewConfiguration(); configuration.websiteDataStore = .default(); configuration.applicationNameForUserAgent = "BridgeMobile/0.1-iOS"
         configuration.preferences.javaScriptCanOpenWindowsAutomatically=true
         configuration.ignoresViewportScaleLimits = false
@@ -1534,8 +1567,8 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             }
         }
     } }
-    @objc private func active() { watchChannels(); computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.sync() } }
-    @objc private func inactive() { cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1; channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    @objc private func active() { watchChannels(); startLocalRecovery(origin); computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.sync() } }
+    @objc private func inactive() { cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1; channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; localRecovery?.stop(); localRecovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
     private func cancelSync() {
         pollGeneration += 1; pollTasks.values.forEach { $0.cancel() }; pollTasks.removeAll(); polling.removeAll()
     }

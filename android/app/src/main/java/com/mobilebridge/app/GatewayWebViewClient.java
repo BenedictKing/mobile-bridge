@@ -20,14 +20,25 @@ final class GatewayWebViewClient extends WebViewClient {
         void onLoaded();
 
         void onFailed(String reason);
+
+        default void onAuthenticated(JSONObject auth) {}
     }
 
     private final URI publicOrigin;
     private final DirectTransport direct;
     private final PageListener pages;
+    private final android.content.Context context;
+    private final java.util.Set<Candidate> manifestCandidates = new java.util.LinkedHashSet<>();
+    private final java.util.Set<Candidate> mdnsCandidates = new java.util.LinkedHashSet<>();
+    private BonjourDiscovery bonjour;
+    private String lastCookie = "";
+    private String deviceId = "";
+    private String instanceId = "";
     private boolean failed;
 
-    GatewayWebViewClient(URI publicOrigin, DirectTransport direct, PageListener pages) {
+    GatewayWebViewClient(android.content.Context context, URI publicOrigin,
+                         DirectTransport direct, PageListener pages) {
+        this.context = context.getApplicationContext();
         this.publicOrigin = publicOrigin;
         this.direct = direct;
         this.pages = pages;
@@ -66,7 +77,7 @@ final class GatewayWebViewClient extends WebViewClient {
         if ("/api/auth".equals(uri.getPath())) {
             return proxyAuth(uri, cookie);
         }
-        NativeHttp.Response local = direct.open(uri, request.getMethod(), cookie);
+        NativeHttp.Response local = direct.open(uri, request.getMethod());
         if (local == null) return null;
         return webResponse(local, false);
     }
@@ -90,23 +101,77 @@ final class GatewayWebViewClient extends WebViewClient {
         try {
             JSONObject auth = new JSONObject(new String(body));
             if (!auth.optBoolean("authenticated")) {
+                close();
                 direct.clear();
                 return;
             }
-            List<URI> candidates = new ArrayList<>();
-            if (auth.has("nativeDirect")) {
-                for (int i = 0; i < auth.getJSONArray("nativeDirect").length(); i++) {
-                    try {
-                        candidates.add(URI.create(auth.getJSONArray("nativeDirect").getString(i)));
-                    } catch (Exception ignored) {
-                        // Ignore malformed candidates; never scan or infer other addresses.
+            JSONObject routes = auth.optJSONObject("mobileRoutes");
+            synchronized (this) {
+                manifestCandidates.clear();
+                if (auth.has("nativeDirect")) {
+                    for (int i = 0; i < auth.getJSONArray("nativeDirect").length(); i++) {
+                        addCandidate(manifestCandidates, auth.getJSONArray("nativeDirect").getString(i),
+                            routes, Candidate.NATIVE_DIRECT);
                     }
                 }
+                if (routes != null && routes.optJSONArray("endpoints") != null) {
+                    for (int i = 0; i < routes.getJSONArray("endpoints").length(); i++) {
+                        addCandidate(manifestCandidates, routes.getJSONArray("endpoints").getString(i), routes,
+                            Candidate.PUBLIC_MANIFEST);
+                    }
+                }
+                lastCookie = cookie;
+                deviceId = routes == null ? "" : routes.optString("deviceId");
+                instanceId = auth.optString("instanceId");
+                if (bonjour == null && deviceId.matches("^[a-f0-9]{32}$")) {
+                    bonjour = new BonjourDiscovery(context, deviceId, this::onBonjourCandidates);
+                }
+                if (bonjour != null) bonjour.start();
             }
-            direct.refresh(candidates, cookie, auth.optString("instanceId"));
+            refreshCandidates();
+            pages.onAuthenticated(auth);
         } catch (Exception ignored) {
             direct.clear();
         }
+    }
+
+    private void addCandidate(java.util.Set<Candidate> candidates, String value,
+                              JSONObject routes, String source) {
+        try {
+            URI origin = URI.create(value);
+            if (!"http".equalsIgnoreCase(origin.getScheme()) || !BonjourDiscovery.localAddress(origin.getHost())) return;
+            String deviceId = routes == null ? "" : routes.optString("deviceId");
+            candidates.add(new Candidate(origin, deviceId, source, 0));
+        } catch (Exception ignored) {
+            // Ignore malformed candidates; never scan or infer other addresses.
+        }
+    }
+
+    private synchronized void onBonjourCandidates(List<Candidate> candidates) {
+        mdnsCandidates.addAll(candidates);
+        refreshCandidates();
+    }
+
+    private synchronized void refreshCandidates() {
+        java.util.Set<Candidate> merged = new java.util.LinkedHashSet<>();
+        merged.addAll(manifestCandidates);
+        merged.addAll(mdnsCandidates);
+        direct.refresh(new ArrayList<>(merged), lastCookie, deviceId, instanceId);
+    }
+
+    synchronized void pauseDiscovery() {
+        if (bonjour != null) bonjour.stop();
+    }
+
+    synchronized void resumeDiscovery() {
+        if (bonjour != null) bonjour.start();
+    }
+
+    synchronized void close() {
+        if (bonjour != null) bonjour.stop();
+        bonjour = null;
+        manifestCandidates.clear();
+        mdnsCandidates.clear();
     }
 
     private void syncPublicCookies(Map<String, List<String>> headers) {

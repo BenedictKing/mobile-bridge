@@ -85,11 +85,13 @@ Windows 使用 CPython 标准库 `_winapi` 的 overlapped I/O 读取原始字节
 
 直连不可用、认证失效或图片加载失败时立即回到公网，并按退避和前台/online 事件重新探测。GET 与实时游标可以安全续读；POST/PATCH/DELETE 不跨链路自动重放，沿用原有结果未知与人工重试约定。退出登录会尝试撤销两个会话。未配置、配置无效或 TLS 端口不可用时只记录日志，原公网链路不受影响。一次性 DNS、证书与端口配置见 [固定域名教程](docs/fixed-domain.md)。
 
-### Android 原生动态局域网加速
+### 原生动态局域网发现与恢复
 
 默认 LAN 模式且未显式设置 `lanAddresses` 时，HTTP 使用通配监听，Host/Origin 校验回调按当前网卡动态放行，热点导致 IP 变化后无需重启网关。显式地址列表仍保持静态绑定。已登录且携带 `X-Mobile-Bridge-Native: 1` 的 `/api/auth` 响应额外返回排除回环地址的 `nativeDirect` 候选；普通浏览器响应不变。
 
-Android WebView 只拦截公网 origin 下的 GET/HEAD `/api/`。原生选择器验证候选的 authenticated 与 instanceId 后，复用 App 内公网会话 Cookie 发起局域网 HTTP 读取，本地 Set-Cookie 不回写公网 CookieManager。GET、图片和 SSE 建连失败回退公网；写请求始终由 WebView 走 Cloudflare，避免 WebView 无 POST body 和跨链路重放问题。该模式面向可信热点，局域网 HTTP 令牌暴露边界及构建说明见 [Android 文档](docs/android.md)。
+`internal/lan` 通过 `_mobile-bridge._tcp` 广播 TXT `v=1` 和稳定 `DeviceID`，端口复用现有 LAN listener。`desktop.json` 的 `lanDiscovery` 或 `GATEWAY_LAN_DISCOVERY=1` 显式开启，默认关闭；只有存在可信手机且有可发布物理网卡时才注册，配置、网卡和可信设备变化会更新广播，停机会撤销。广播失败不影响 HTTP。
+
+Android 使用 `NsdManager`，iOS 使用 `NWBrowser`；两端把历史 origin 与 mDNS 结果并入现有候选竞速。mDNS/缓存候选先走匿名 `/api/connection/prove`，通过后才允许一次根凭据 `/api/auth` 引导，业务读取使用目标 origin 的派生 route Cookie。Android 的 `LocalRecoveryCoordinator` 与 iOS 既有 `moveChannel` 在公网主文档失败时安装 HostOnly route Cookie 并加载 LAN shell。正常公网页面仍只把 GET/HEAD/SSE 切到 LAN，写请求不跨链路重放；恢复后的 LAN 页面按同源方式提交写请求，服务端继续执行 CSRF 与幂等校验。该模式面向可信热点，详见 [Android 文档](docs/android.md)和 [iOS 文档](docs/ios.md)。
 
 ## 消息与审批
 

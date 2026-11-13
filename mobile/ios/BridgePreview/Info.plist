@@ -55,7 +55,11 @@
 	<key>NSCameraUsageDescription</key>
 	<string>扫描电脑网关登录二维码。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>连接同一网络中的电脑网关，继续你的聊天。</string>
+	<string>查找并连接同一局域网中已配对的 Mobile Bridge 网关。</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_mobile-bridge._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

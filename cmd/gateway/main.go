@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/kimi"
+	"github.com/BenedictKing/mobile-bridge/internal/lan"
 	"github.com/BenedictKing/mobile-bridge/internal/lifecycle"
 	"github.com/BenedictKing/mobile-bridge/internal/mcode"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
@@ -1022,6 +1024,33 @@ func runGateway(args []string) {
 	server.MobilePush = notifications.NewMobilePush(dataDir, mobileFeed)
 	server.MobilePush.SessionValidator(func(key string) bool { return server.Auth.SessionValidKey(key) })
 	server.ComputerName, _ = os.Hostname()
+	advertiser := lan.NewMDNSAdvertiser()
+	advertiserStop := make(chan struct{})
+	advertiserDone := make(chan struct{})
+	go func() {
+		defer close(advertiserDone)
+		defer advertiser.Stop()
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		var previous *lan.AdvertiseSpec
+		for {
+			spec := gatewayAdvertiseSpec(dataDir, port, server.ComputerName, authenticator.DeviceID(), gatewayHasTrustedDevice(authenticator))
+			if previous == nil || !reflect.DeepEqual(*previous, spec) {
+				if err := advertiser.Update(spec); err != nil {
+					log.Printf("局域网发现广播不可用: %v", err)
+					previous = nil
+				} else {
+					copy := spec
+					previous = &copy
+				}
+			}
+			select {
+			case <-ticker.C:
+			case <-advertiserStop:
+				return
+			}
+		}
+	}()
 	// Run 通知（编排计划 §12 阶段四工作项 3/5，§6.3/§9）：完成/失败/取消/
 	// 停止/waiting_input 事件经 ntfy/Bark 推送（click deep link），stall 只
 	// 通知不停止。OnRunStatus 在 run 状态事件落账点同步回调（notify.go 的
@@ -1125,6 +1154,8 @@ func runGateway(args []string) {
 	// 定时触发器优雅退出（ctx 取消 + 等待循环返回，仿 accpool Poller）：
 	// sweep 中断处即停，进行中的触发留标记，重启后按 journal 回扫收尾。
 	teamScheduler.Stop()
+	close(advertiserStop)
+	<-advertiserDone
 	server.StopDiscovery()
 	outcomeWorker.Close()
 	// Run 通知收尾：worker 先优雅退出，再把水位盖到关停时刻——重启后的
@@ -1147,6 +1178,75 @@ func runGateway(args []string) {
 	controller.Close()
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+}
+
+func gatewayLANDiscovery(dataDir string) bool {
+	switch os.Getenv("GATEWAY_LAN_DISCOVERY") {
+	case "1":
+		return true
+	case "0":
+		return false
+	}
+	enabled := false
+	lanEnabled := true
+	if raw, err := os.ReadFile(filepath.Join(dataDir, "desktop.json")); err == nil {
+		if value, decodeErr := jsoncompat.Unmarshal(raw); decodeErr == nil {
+			if root, ok := value.(*jsoncompat.Object); ok {
+				if flag, ok := root.MustGet("lanDiscovery").(bool); ok {
+					enabled = flag
+				}
+				if flag, ok := root.MustGet("lan").(bool); ok {
+					lanEnabled = flag
+				}
+			}
+		}
+	}
+	return enabled && lanEnabled
+}
+
+func gatewayHasTrustedDevice(authenticator *auth.Auth) bool {
+	found := false
+	authenticator.EachSession(func(_ string, session *jsoncompat.Object) bool {
+		trusted, _ := session.MustGet("trustedDevice").(bool)
+		found = trusted
+		return !found
+	})
+	return found
+}
+
+func gatewayAdvertiseInterfaces(dataDir string) []net.Interface {
+	selected := map[string]bool{}
+	for _, address := range gatewayListenAddresses(dataDir) {
+		ip := net.ParseIP(address)
+		if ip != nil && ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+			selected[ip.String()] = true
+		}
+	}
+	interfaces, _ := net.Interfaces()
+	result := []net.Interface{}
+	for _, iface := range lan.PublishableInterfaces(interfaces) {
+		addresses, _ := iface.Addrs()
+		for _, raw := range addresses {
+			ip := net.ParseIP(strings.Split(raw.String(), "/")[0])
+			if ip != nil && selected[ip.String()] {
+				result = append(result, iface)
+				break
+			}
+		}
+	}
+	return result
+}
+
+func gatewayAdvertiseSpec(dataDir string, port int, instance, deviceID string, trusted bool) lan.AdvertiseSpec {
+	interfaces := gatewayAdvertiseInterfaces(dataDir)
+	return lan.AdvertiseSpec{
+		Enabled:    gatewayLANDiscovery(dataDir) && trusted && strings.TrimSpace(instance) != "" && len(interfaces) > 0,
+		Service:    lan.ServiceType,
+		Instance:   lan.InstanceName(instance),
+		DeviceID:   deviceID,
+		Port:       port,
+		Interfaces: interfaces,
 	}
 }
 

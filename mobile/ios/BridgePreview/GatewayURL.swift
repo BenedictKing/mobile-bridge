@@ -12,6 +12,8 @@ enum GatewayURL {
     }
     static func local(_ host: String) -> Bool {
         if host.lowercased() == "localhost" || host == "::1" || host == "[::1]" { return true }
+        let ipv6 = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).split(separator: "%").first?.lowercased() ?? ""
+        if ipv6.contains(":") { return ipv6.hasPrefix("fc") || ipv6.hasPrefix("fd") }
         let parts = host.split(separator: ".").map(String.init)
         let n = parts.compactMap(Int.init)
         guard n.count == 4, zip(parts,n).allSatisfy({ $0.0 == String($0.1) && (0...255).contains($0.1) }) else { return false }

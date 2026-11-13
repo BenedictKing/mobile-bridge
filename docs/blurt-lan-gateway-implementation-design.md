@@ -1,8 +1,10 @@
 # Blurt 风格网内发现与快速连接实现设计
 
-状态：设计提案
+状态：已实现，待真机验收
 
 日期：2026-11-13
+
+实现记录：Go DNS-SD 广播、Android/iOS 发现与候选竞速、proof-before-cookie、历史 origin 恢复和 LAN WebView bootstrap 已落地。配置按现有 `desktop.json` 扁平结构使用 `lanDiscovery`，并支持 `GATEWAY_LAN_DISCOVERY=1/0` 覆盖。iOS 复用既有 `moveChannel` 完成本地启动，没有另写重复的 Cookie/bootstrap 算法。单元测试、Android APK 和 iOS 未签名构建通过；真实手机热点、局域网权限与抓包矩阵仍需真机执行。
 
 关联研究：[Blurt 网内连接、发现与传输学习报告](blurt-lan-gateway-study.md)
 
@@ -319,14 +321,12 @@ type AdvertiseSpec struct {
 
 ```json
 {
-  "lan": {
-    "enabled": true,
-    "discovery": false
-  }
+  "lan": true,
+  "lanDiscovery": false
 }
 ```
 
-配置优先级沿用现有网关约定；`GATEWAY_LAN_DISCOVERY=1/0` 只作为部署覆盖，不把密钥或接口列表放进环境变量。内存中的 `lanState` 至少包含 `listenerReady`、`port`、`origins`、`discoveryEnabled` 和 `trustedDeviceCount`。广播器只订阅状态快照，不直接读取 session store。
+配置沿用现有 `desktop.json` 扁平结构；`GATEWAY_LAN_DISCOVERY=1/0` 作为部署覆盖，不把密钥或接口列表放进环境变量。网关每 15 秒从 listener 地址、`Auth.DeviceID()`、可信设备快照和系统网卡生成不可变 `AdvertiseSpec`，只有内容变化时才更新广播。
 
 ### 8.3 Android
 
@@ -560,16 +560,14 @@ RecoveryRecord {
 
 ## 13. 待决事项
 
-实现前需要在预检中确认以下事项，不应由单元测试替代：
+以下事项不能由单元测试或构建替代：
 
-1. Go 选定的纯 Go DNS-SD 库是否能通过当前 Linux/macOS/Windows build matrix，并正确发送 goodbye。
-2. Android 当前目标 SDK 对 `ACCESS_LOCAL_NETWORK` 的权限行为，以及 `CookieManager` 写入 HostOnly HTTP route Cookie 的实际结果。
-3. iOS 目标版本的 `NWBrowser` 服务解析和 `WKHTTPCookieStore` 写入 HTTP Cookie 行为。
-4. 本地 shell 自动允许写请求是否符合产品的可信热点边界；若不符合，恢复模式必须只读并在 UI 明确提示。
-5. 网关 `AllowOrigin` 在 DHCP 地址变化时是否能精确识别当前 listener；如果不能，先修正 listener/origin 状态模型，再接入 mDNS。
-6. 默认开启时的隐私选择：是否允许同 LAN 设备看到 ComputerName 与稳定 DeviceID；默认关闭方案保留到真机验证结束。
+1. Android 目标 SDK 的 `ACCESS_LOCAL_NETWORK` 权限行为，以及 `CookieManager` 写入 HostOnly HTTP route Cookie 的实际结果。
+2. iOS 真机的 `NWBrowser` 服务解析、局域网授权和 `WKHTTPCookieStore` 写入 HTTP Cookie 行为。
+3. 本地 shell 自动允许写请求是否符合产品的可信热点边界；若不符合，恢复模式必须只读并在 UI 明确提示。
+4. 是否未来默认开启广播：同 LAN 设备可以看到 ComputerName 与稳定 DeviceID，因此当前保持默认关闭。
 
-在这些事项确认前，不应把“发现到服务”宣传成“公网断开时必定可连接”。最终验收必须包含真实手机热点、电脑网卡变化、域名 DNS/TLS 不可达和网关重启四组场景。
+纯 Go DNS-SD adapter 已接入，跨平台编译和 `Shutdown` goodbye 由构建/单元测试覆盖；动态 `AllowOrigin` 复用现有精确网卡地址回调，没有放宽到任意私网地址。最终验收仍必须包含真实手机热点、电脑网卡变化、域名 DNS/TLS 不可达和网关重启四组场景。
 
 
 

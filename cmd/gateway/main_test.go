@@ -56,6 +56,34 @@ func TestGatewayListenAddressesHonorsLanSelection(t *testing.T) {
 	}
 }
 
+func TestGatewayLANDiscoveryDefaultsOffAndHonorsOverrides(t *testing.T) {
+	dataDir := t.TempDir()
+	if gatewayLANDiscovery(dataDir) {
+		t.Fatal("discovery must default to off")
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(`{"lan":true,"lanDiscovery":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !gatewayLANDiscovery(dataDir) {
+		t.Fatal("desktop config did not enable discovery")
+	}
+	t.Setenv("GATEWAY_LAN_DISCOVERY", "0")
+	if gatewayLANDiscovery(dataDir) {
+		t.Fatal("environment override did not disable discovery")
+	}
+	t.Setenv("GATEWAY_LAN_DISCOVERY", "1")
+	if !gatewayLANDiscovery(dataDir) {
+		t.Fatal("environment override did not enable discovery")
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "desktop.json"), []byte(`{"lan":false,"lanDiscovery":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GATEWAY_LAN_DISCOVERY", "")
+	if gatewayLANDiscovery(dataDir) {
+		t.Fatal("discovery must follow LAN disable")
+	}
+}
+
 func TestClassifyArgsHelpVariantsAndUnknownRejected(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"-h"}, {"help"}, {"serve", "--help"}, {"snapshot", "-h"}} {
 		help, action, _, err := classifyArgs(args)

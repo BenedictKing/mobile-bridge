@@ -53,15 +53,15 @@ final class ConnectionDiscovery: NSObject, URLSessionTaskDelegate, @unchecked Se
     }
     func resolve(_ old: String, descriptor: [String: String], secret: String) async -> String {
         defer { session.finishTasksAndInvalidate() }
-        let key = Self.hash(secret)
-        guard !secret.isEmpty, descriptor["binding"] == key, let device = descriptor["deviceId"], let relay = descriptor["relay"], let grant = descriptor["discoveryKey"],
+        let key = secret
+        guard !secret.isEmpty, descriptor["binding"] == Self.hash(key), let device = descriptor["deviceId"], let relay = descriptor["relay"], let grant = descriptor["discoveryKey"],
               let routes = try? await read(relay + "/relay/discover/" + device, key: grant), routes["deviceId"] as? String == device,
               let endpoints = routes["endpoints"] as? [String] else { return old }
         for endpoint in endpoints.prefix(16) {
             guard !cancelled else { return old }
             guard let target = try? GatewayURL.origin(endpoint), target == GatewayURL.httpOrigin(target), target.hasPrefix("https://") else { continue }
             let nonce = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
-            guard let proof = try? await read(target + "/api/connection/prove?id=" + Self.hash(key) + "&challenge=" + nonce), proof["deviceId"] as? String == device, let code = proof["proof"] as? String,
+            guard let proof = try? await read(target + "/api/connection/prove?device=" + device + "&id=" + Self.hash(key) + "&challenge=" + nonce), proof["deviceId"] as? String == device, let code = proof["proof"] as? String,
                   code.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { continue }
             if Self.verify(code, key: key, device: device, target: target, nonce: nonce) { return target }
         }
@@ -93,7 +93,7 @@ enum GatewayChannels {
         (descriptor["endpoints"] as? [String] ?? []).filter { (try? GatewayURL.origin($0)) == $0 && GatewayURL.httpOrigin($0) == $0 }
     }
     static func proves(_ device: String, target: String, token: String) async -> Bool {
-        let probe = ConnectionDiscovery(), key = ConnectionDiscovery.hash(token)
+        let probe = ConnectionDiscovery(), key = token
         defer { probe.cancel() }
         let nonce = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
         guard let response = try? await probe.read(target + "/api/connection/prove?device=" + device + "&id=" + ConnectionDiscovery.hash(key) + "&challenge=" + nonce),

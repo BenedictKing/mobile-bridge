@@ -18,11 +18,13 @@ make build-ios
 
 - 保存、重命名、切换和移除多台电脑网关。
 - 使用 Keychain 保存设备绑定，不把网关密码写入手机。
-- 局域网/公网入口探测、延迟展示和自动信道恢复，写操作仍固定走当前公网入口。
+- 局域网/公网入口探测、延迟展示和自动信道恢复。`NWBrowser` 浏览 `_mobile-bridge._tcp`，稳定 `DeviceID` 过滤服务，历史 LAN origin 与 DNS-SD 候选一起进入现有 proof/route renewal；缓存不包含 Cookie。
 - 文件下载断点恢复、文件选择、通知服务扩展和按电脑选择通知来源。
 - iOS 16.2 及以上的执行状态 Live Activity；系统能力或推送未配置时会回退到前台同步。
 - 共享剪贴板、主题、系统栏、页面导航与 HTML/图片预览隔离。
 
-这些能力来自上游原生壳代码，是否在当前网关端到端可用还取决于 API 契约。当前 Go 网关已经提供网页聊天、`/api/auth`、会话、直接局域网读取和文件路由；上游 iOS 还依赖的 `/api/mobile/events`、`/api/mobile/push`、`/api/connection/prove`、`/api/connection/routes` 及部分诊断接口尚未在本仓库补齐。因此当前 IPA 可以构建并打开网页工作台，但后台电脑通知、持久设备绑定、入口迁移和完整自动信道恢复需要下一阶段先补后端协议。
+当前 Go 网关已提供网页聊天、移动事件/推送、ownership proof、路由续期和文件路由。自动 DNS-SD 广播默认关闭，需在 `desktop.json` 设置 `"lanDiscovery": true` 或设置 `GATEWAY_LAN_DISCOVERY=1` 后由用户重启网关。iOS 的 `Info.plist` 声明本地网络用途与 `_mobile-bridge._tcp` 服务；拒绝权限时保留公网入口。
 
-当前没有在真实 iPhone 或签名安装环境完成验收；模拟器设备也取决于本机是否安装对应 Runtime。构建通过不代表相机扫码、蜂窝网络、锁屏通知、Live Activity 或 App 覆盖升级已经实机验证。
+公网失败时，App 复用已有 `moveChannel` 安装 HostOnly route Cookie 并加载 LAN shell。正常公网页面不跨链路重放写请求；恢复后的 LAN 页面执行同源写入，仍受登录、CSRF 和提交幂等校验。热点同时阻断组播且 DHCP 已换址时无法自动推断新地址，App 不扫描网段。
+
+当前没有在真实 iPhone 或签名安装环境完成验收；模拟器设备也取决于本机是否安装对应 Runtime。构建通过不代表局域网授权、真实 DNS-SD 恢复、相机扫码、蜂窝网络、锁屏通知、Live Activity 或 App 覆盖升级已经实机验证。

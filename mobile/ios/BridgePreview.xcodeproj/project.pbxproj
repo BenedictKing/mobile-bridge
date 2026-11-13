@@ -54,6 +54,8 @@ F4000000000000000000000F = {isa = PBXBuildFile; fileRef = F100000000000000000000
 F40000000000000000000010 = {isa = PBXBuildFile; fileRef = F10000000000000000000001; };
 F40000000000000000000011 = {isa = PBXBuildFile; fileRef = F10000000000000000000002; };
 F40000000000000000000012 = {isa = PBXBuildFile; fileRef = F10000000000000000000003; };
+BEE000000000000000000003 /* BonjourDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE000000000000000000001; };
+BEE000000000000000000004 /* LocalRecoveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE000000000000000000002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -89,6 +91,8 @@ F40000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourceco
 F40000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 F40000000000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
 F40000000000000000000004 = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; path = BridgeNotifications.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+BEE000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BonjourDiscovery.swift; sourceTree = "<group>"; };
+BEE000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalRecoveryCoordinator.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -134,7 +138,7 @@ D00000000000000000000001,
 C00000000000000000000001,
 B00000000000000000000001,B00000000000000000000002,
 				A00000000000000000000021 /* GatewayURL.swift */,
-F30000000000000000000002, F40000000000000000000001, F40000000000000000000002,
+F30000000000000000000002, BEE000000000000000000001, BEE000000000000000000002, F40000000000000000000001, F40000000000000000000002,
 				A00000000000000000000022 /* Info.plist */,
 				A00000000000000000000044 /* AppIcon83x83@2x.png */,
 				A00000000000000000000043 /* AppIcon76x76@2x.png */,
@@ -243,7 +247,7 @@ D00000000000000000000002,
 C00000000000000000000002,
 B0000000000000000000000A,B0000000000000000000000B,
 				A00000000000000000000031 /* GatewayURL.swift in Sources */,
-F30000000000000000000001, F4000000000000000000000A,
+F30000000000000000000001, BEE000000000000000000003 /* BonjourDiscovery.swift in Sources */, BEE000000000000000000004 /* LocalRecoveryCoordinator.swift in Sources */, F4000000000000000000000A,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

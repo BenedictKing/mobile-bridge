@@ -75,6 +75,13 @@ public final class MainActivity extends Activity {
     private View scrim;
     private WebView webView;
     private DirectTransport direct;
+    private GatewayWebViewClient gatewayClient;
+    private LocalRecoveryCoordinator recovery;
+    private DirectTransport.VerifiedRoute pendingRecovery;
+    private boolean publicLoaded;
+    private boolean publicFailed;
+    private boolean localShell;
+    private long connectStartedAt;
     private ConnectivityManager.NetworkCallback networkCallback;
     private ValueCallback<Uri[]> fileCallback;
     private DownloadManager.Request pendingDownload;
@@ -595,28 +602,133 @@ public final class MainActivity extends Activity {
         hideSettings();
         int epoch = ++connectionGeneration;
         if (direct != null) direct.close();
+        if (gatewayClient != null) gatewayClient.close();
+        if (recovery != null) recovery.close();
+        recovery = null;
+        pendingRecovery = null;
+        publicLoaded = false;
+        publicFailed = false;
+        localShell = false;
+        connectStartedAt = System.currentTimeMillis();
         route = routeJson("public", "");
-        direct = new DirectTransport(origin, (mode, host) -> main.post(() -> {
-            if (epoch == connectionGeneration) showRoute(mode, host);
-        }));
+        GatewayProfile connectedProfile = profile;
+        direct = new DirectTransport(origin, new DirectTransport.Listener() {
+            @Override
+            public void onRoute(String mode, String host) {
+                main.post(() -> { if (epoch == connectionGeneration) showRoute(mode, host); });
+            }
+
+            @Override
+            public void onVerified(DirectTransport.VerifiedRoute verifiedRoute) {
+                main.post(() -> {
+                    if (epoch != connectionGeneration) return;
+                    connectedProfile.recordAuthentication(verifiedRoute.auth, verifiedRoute.candidate.origin.toString());
+                    saveGatewayProfiles();
+                });
+            }
+        });
         webView.stopLoading();
         webView.setVisibility(View.VISIBLE);
-        GatewayProfile connectedProfile = profile;
-        webView.setWebViewClient(new GatewayWebViewClient(origin, direct, new GatewayWebViewClient.PageListener() {
+        gatewayClient = new GatewayWebViewClient(this, origin, direct, new GatewayWebViewClient.PageListener() {
             @Override
             public void onLoaded() {
-                // 标题栏由网页绘制，网关入口也在网页标题栏里。
+                if (epoch != connectionGeneration) return;
+                publicLoaded = true;
+                publicFailed = false;
+                pendingRecovery = null;
+                if (recovery != null) recovery.close();
+                recovery = null;
             }
 
             @Override
             public void onFailed(String reason) {
                 if (epoch != connectionGeneration) return;
-                // 不展示 WebView 自带的错误页，直接给出可修改的地址和原因。
-                webView.setVisibility(View.INVISIBLE);
-                showSettings("无法打开 " + connectedProfile.name + "（" + reason + "）。请确认电脑网关在运行、地址正确。");
+                if (!localShell) {
+                    publicFailed = true;
+                    if (pendingRecovery != null) {
+                        loadLocalRecovery(pendingRecovery, epoch);
+                        return;
+                    }
+                    if (recovery != null) {
+                        showRoute("probing", "");
+                        return;
+                    }
+                }
+                failConnection(connectedProfile, reason);
             }
-        }));
+
+            @Override
+            public void onAuthenticated(JSONObject auth) {
+                main.post(() -> {
+                    if (epoch != connectionGeneration) return;
+                    connectedProfile.recordAuthentication(auth, localShell ? webView.getUrl() : null);
+                    saveGatewayProfiles();
+                });
+            }
+        });
+        webView.setWebViewClient(gatewayClient);
         webView.loadUrl(origin.toString());
+        startLocalRecovery(connectedProfile, origin, epoch);
+    }
+
+    private void startLocalRecovery(GatewayProfile profile, URI publicOrigin, int epoch) {
+        String cookie = CookieManager.getInstance().getCookie(publicOrigin.toString());
+        if (cookie == null || profile.deviceId.isEmpty()) return;
+        recovery = new LocalRecoveryCoordinator(this, profile, publicOrigin, cookie,
+            new LocalRecoveryCoordinator.Listener() {
+                @Override
+                public void onRecovered(DirectTransport.VerifiedRoute route) {
+                    if (epoch != connectionGeneration || publicLoaded || localShell) return;
+                    profile.recordAuthentication(route.auth, route.candidate.origin.toString());
+                    saveGatewayProfiles();
+                    pendingRecovery = route;
+                    long elapsed = System.currentTimeMillis() - connectStartedAt;
+                    if (publicFailed || elapsed >= 2000) loadLocalRecovery(route, epoch);
+                    else main.postDelayed(() -> loadLocalRecovery(route, epoch), 2000 - elapsed);
+                }
+
+                @Override
+                public void onTimeout() {
+                    if (epoch != connectionGeneration || publicLoaded || localShell) return;
+                    recovery = null;
+                    failConnection(profile, "未找到同一局域网中的网关");
+                }
+            });
+        recovery.start();
+    }
+
+    private void loadLocalRecovery(DirectTransport.VerifiedRoute route, int epoch) {
+        if (epoch != connectionGeneration || publicLoaded || localShell || pendingRecovery != route) return;
+        localShell = true;
+        pendingRecovery = null;
+        if (recovery != null) recovery.close();
+        recovery = null;
+        URI local = route.candidate.origin;
+        int equals = route.routeCookie.indexOf('=');
+        if (equals <= 0) {
+            failConnection(findGateway(activeGatewayId), "已发现网关，但无法安全安装路由凭据");
+            return;
+        }
+        String cookie = route.routeCookie + "; Path=/; HttpOnly; SameSite=Lax";
+        CookieManager.getInstance().setCookie(local.toString(), cookie, accepted -> {
+            if (epoch != connectionGeneration) return;
+            if (!Boolean.TRUE.equals(accepted)) {
+                failConnection(findGateway(activeGatewayId), "已发现网关，但无法安全启动局域网页面");
+                return;
+            }
+            CookieManager.getInstance().flush();
+            direct.clear();
+            webView.stopLoading();
+            webView.setVisibility(View.VISIBLE);
+            showRoute("lan", local.getHost());
+            webView.loadUrl(local.toString());
+        });
+    }
+
+    private void failConnection(GatewayProfile profile, String reason) {
+        webView.setVisibility(View.INVISIBLE);
+        String name = profile == null ? "网关" : profile.name;
+        showSettings("无法打开 " + name + "（" + reason + "）。请确认电脑网关在运行、地址正确，且手机与电脑允许局域网互通。");
     }
 
     static URI normalizeOrigin(String value) throws Exception {
@@ -720,11 +832,35 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        if (gatewayClient != null) gatewayClient.resumeDiscovery();
+        if (webView != null && !publicLoaded && !localShell && recovery == null) {
+            GatewayProfile profile = findGateway(activeGatewayId);
+            if (profile != null) {
+                try { startLocalRecovery(profile, URI.create(profile.origin), connectionGeneration); }
+                catch (Exception ignored) {}
+            }
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        if (gatewayClient != null) gatewayClient.pauseDiscovery();
+        if (recovery != null) recovery.close();
+        recovery = null;
+        pendingRecovery = null;
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
         if (networkCallback != null) {
             ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(networkCallback);
         }
         if (direct != null) direct.close();
+        if (gatewayClient != null) gatewayClient.close();
+        if (recovery != null) recovery.close();
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         webView.destroy();
         super.onDestroy();
