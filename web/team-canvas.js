@@ -628,7 +628,7 @@ class TeamCanvasController{
     document.getElementById('team-canvas-detail-status').textContent=this.statusLabel(issue);
     const body=document.getElementById('team-canvas-detail-body'),scrollTop=preserveScroll?body.scrollTop:0;body.replaceChildren();
     document.getElementById('team-canvas-delete-issue').hidden=!!issue.scheduled;
-    body.append(this.detailSection('当前着落',[
+    if(!this.detailRun)body.append(this.detailSection('当前着落',[
       teamCanvasOwnerLine(issue,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind),
       this.progress(issue)?this.t('Agent 任务')+' '+this.progress(issue).completed+'/'+this.progress(issue).total+' '+this.t('正常结束'):'进度待同步',
       issue.nextAction?.label?this.t('下一步')+' · '+issue.nextAction.label:'',

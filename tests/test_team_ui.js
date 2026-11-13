@@ -447,6 +447,16 @@ test('graph renders positioned DOM nodes and SVG edges without duplicate depende
   delete global.matchMedia;
 });
 
+test('run screen places the execution graph before secondary statistics',()=>{
+  const root=new FakeNode('div'),screen=new TeamRunScreen({root,request:async()=>({})});
+  screen.detail={id:'r1',status:'running',tasks:[]};screen.stats={loading:false};
+  screen.renderGraph=()=>screen.node('section','阶段图','team-graph');
+  screen.renderStats=()=>screen.node('section','统计','team-stats');
+  screen.render();
+  const classes=find(root,'team-run-body')[0].children.map(node=>node.className);
+  assert.ok(classes.indexOf('team-graph')<classes.indexOf('team-stats'));
+});
+
 test('vertical graph with skip dependencies fits the phone content width',()=>{
   const nodes=[
     {id:'lead',dependsOn:[]},

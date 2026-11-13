@@ -244,9 +244,9 @@
 /* 阶段四：stall 提示条 / 统计卡 / 阶段图 / 定时运行卡 / 预算编辑 */
 .team-stall-banner{display:flex;flex-wrap:wrap;align-items:center;gap:10px;border:1px solid var(--warning-line);background:var(--warning-bg);border-radius:12px;padding:12px 16px;margin:0 0 14px;font-size:12px;color:var(--warning-text)}
 .team-stall-banner .muted{font-size:11px}
-.team-stats,.team-graph{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:12px 14px;margin:12px 0}
+.team-stats,.team-graph{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:14px 16px;margin:14px 0}
 .team-stats-head{display:flex;align-items:center;gap:8px}
-.team-stats-head h3,.team-graph h3{margin:0;font-size:13px;flex:1}
+.team-stats-head h3,.team-graph h3{margin:0;font-size:14px;flex:1}
 .team-stats-head button{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:6px 12px;font-size:11px;color:var(--muted)}
 .team-stats-tasks{display:grid;gap:5px;margin:10px 0 4px}
 .team-stat-row{display:flex;align-items:center;gap:8px;font-size:11px}
@@ -254,33 +254,33 @@
 .team-stat-bar{flex:1;height:6px;background:var(--surface);border-radius:4px;overflow:hidden}
 .team-stat-bar i{display:block;height:100%;background:var(--green);border-radius:4px}
 .team-stat-value{flex:none;min-width:56px;text-align:right;color:var(--muted)}
-.team-graph-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-.team-graph-count{color:var(--muted);font-size:11px}
+.team-graph-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.team-graph-count{color:var(--muted);font-size:12px}
 .team-graph-canvas{position:relative;overflow:auto;border-radius:10px;background:var(--surface);overscroll-behavior:contain;scrollbar-width:thin}
 .team-graph-stage{position:relative;margin:0 auto}
 .team-graph-edges{position:absolute;inset:0;overflow:visible;pointer-events:none}
 .team-graph-edge{fill:none;stroke:var(--control);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .team-graph-arrowhead{fill:var(--muted)}
-.team-graph-layer{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
-.team-graph-arrow{text-align:center;color:var(--muted);font-size:12px;line-height:1.2;margin:2px 0}
-.team-graph-node{display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-left:3px solid var(--line);border-radius:10px;background:var(--raised);padding:11px 12px;cursor:pointer;font-size:12px;text-align:left;overflow:hidden;transition:border-color .15s ease,background-color .15s ease}
+.team-graph-layer{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0}
+.team-graph-arrow{text-align:center;color:var(--muted);font-size:12px;line-height:1.2;margin:3px 0}
+.team-graph-node{display:flex;flex-direction:column;gap:7px;border:1px solid var(--line);border-left:3px solid var(--line);border-radius:10px;background:var(--raised);padding:12px 14px;cursor:pointer;font-size:13px;text-align:left;overflow:hidden;transition:border-color .15s ease,background-color .15s ease,box-shadow .15s ease}
 .team-graph-node:not(.positioned){min-width:150px;max-width:240px}
 .team-graph-node.positioned{position:absolute}
 .team-graph-node[data-status=completed]{border-left-color:var(--green)}
-.team-graph-node[data-status=running],.team-graph-node[data-status=dispatching]{border-left-color:var(--accent)}
+.team-graph-node[data-status=running],.team-graph-node[data-status=dispatching]{border-color:color-mix(in srgb,var(--accent) 38%,var(--line));border-left-color:var(--accent);background:color-mix(in srgb,var(--accent) 5%,var(--raised));box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 10%,transparent)}
 .team-graph-node[data-status=failed],.team-graph-node[data-status=outcome_unknown]{border-left-color:var(--error)}
 .team-graph-node:hover{border-color:var(--accent);background:var(--active)}
 .team-graph-node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .team-graph-node-head{display:flex;align-items:flex-start;gap:7px;min-width:0}
-.team-graph-node-head strong{display:-webkit-box;flex:1;min-width:0;font-size:12px;line-height:1.55;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
-.team-graph-runs{flex:none;color:var(--warning-text);background:var(--warning-bg);border-radius:10px;padding:1px 7px;font-size:10px}
-.team-graph-node-meta{display:flex;align-items:center;gap:5px;min-width:0}
+.team-graph-node-head strong{display:-webkit-box;flex:1;min-width:0;font-size:13px;line-height:1.5;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+.team-graph-runs{flex:none;color:var(--warning-text);background:var(--warning-bg);border-radius:10px;padding:1px 7px;font-size:11px}
+.team-graph-node-meta{display:flex;align-items:center;gap:6px;min-width:0}
 .team-graph-kinds{display:flex;flex:1;flex-wrap:nowrap;gap:5px;min-width:0;overflow:hidden}
-.team-graph-kind{flex:none;background:var(--soft);color:var(--green);border-radius:10px;padding:1px 7px;font-size:10px;white-space:nowrap}
+.team-graph-kind{flex:none;background:var(--soft);color:var(--green);border-radius:10px;padding:2px 8px;font-size:11px;white-space:nowrap}
 .team-graph-node-meta .team-badge{flex:none}
-.team-graph-node .task-instructions{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;margin:0;color:var(--muted);font-size:11px;line-height:1.55;overflow:hidden}
+.team-graph-node .task-instructions{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;margin:0;color:var(--muted);font-size:12px;line-height:1.6;overflow:hidden}
 .team-graph-members{margin-top:2px;border-top:1px dashed var(--line);padding-top:6px;display:grid;gap:4px}
-.team-graph-member{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.team-graph-member{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .team-schedule{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
 .team-schedule h4{margin:0 0 6px;font-size:12px}
 .team-schedule-summary{margin:0 0 6px;font-size:11px;overflow-wrap:anywhere}

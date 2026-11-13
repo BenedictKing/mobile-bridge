@@ -217,7 +217,7 @@ class TeamLivePanelController{
       if(this.run.nextAction?.label)this.root.append(this.node('p',this.t('下一步')+' · '+this.run.nextAction.label,'team-live-next'));
       if(this.error)this.root.append(this.node('p',this.t('刷新失败：')+this.error,'error'));
       if(this.loading&&!this.detail){this.root.append(this.node('p',this.t('正在读取任务与交付证据…'),'muted'));return;}
-      this.root.append(this.renderMembers(),this.renderGraph(),this.renderSelection());
+      this.root.append(this.renderGraph(),this.renderMembers(),this.renderSelection());
       const actions=this.node('div',undefined,'team-live-actions');
       actions.append(this.button(this.t('打开完整 Run'),'plain',()=>this.openRun?.(this.team.id,this.run.id,{})));
       if(this.error||this.graphError)actions.append(this.button(this.t('重试'),'plain',()=>{this.loading=true;this.render();this.load(++this.generation);}));
@@ -265,7 +265,7 @@ class TeamLivePanelController{
     if(!nodes.length){section.append(this.node('p',this.t('还没有任务。'),'muted'));return section;}
     const relations=teamGraphRelations(nodes,this.effectiveSelection());
     const compact=typeof globalThis.matchMedia==='function'&&globalThis.matchMedia('(max-width:720px)').matches;
-    const layout=!compact&&typeof teamGraphLayout==='function'?teamGraphLayout(nodes,'TB',node=>teamGraphNodeHeight(node)):null;
+    const layout=!compact&&typeof teamGraphLayout==='function'?teamGraphLayout(nodes,'TB',node=>teamGraphNodeHeight(node),240):null;
     if(layout){
       const scroll=this.node('div',undefined,'team-live-graph-scroll');scroll.tabIndex=0;scroll.setAttribute('role','region');scroll.setAttribute('aria-label',this.t('任务关系图'));
       const stage=this.node('div',undefined,'team-live-graph-stage');stage.style.width=layout.width+'px';stage.style.height=layout.height+'px';

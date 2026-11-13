@@ -1473,10 +1473,10 @@ class TeamsPanel{
 const TEAM_GRAPH_NODE_WIDTH=208;
 // Dagre 只计算布局；节点仍由 TeamRunScreen 渲染成可交互 DOM，连线由 SVG 绘制。
 // 布局库未加载时返回 null，调用方回退到原有的分层列表，不阻塞 Run 详情。
-function teamGraphLayout(nodes,direction='LR',heightFor=()=>76){
+function teamGraphLayout(nodes,direction='LR',heightFor=()=>76,verticalNodeWidth=180){
   const dagre=globalThis.dagre;
   if(!dagre?.graphlib?.Graph||!Array.isArray(nodes)||!nodes.length)return null;
-  const vertical=direction==='TB',nodeWidth=vertical?180:TEAM_GRAPH_NODE_WIDTH;
+  const vertical=direction==='TB',nodeWidth=vertical?verticalNodeWidth:TEAM_GRAPH_NODE_WIDTH;
   const graph=new dagre.graphlib.Graph().setGraph({
     rankdir:direction,nodesep:vertical?12:26,ranksep:vertical?36:44,
     marginx:vertical?8:16,marginy:16,
@@ -1497,7 +1497,7 @@ function teamGraphLayout(nodes,direction='LR',heightFor=()=>76){
 }
 
 function teamGraphNodeHeight(node,expandedMemberCount=0){
-  return 92+(node.resultHead?42:0)+(expandedMemberCount?expandedMemberCount*22+12:0);
+  return 104+(node.resultHead?48:0)+(expandedMemberCount?expandedMemberCount*22+12:0);
 }
 
 function appendTeamGraphNodeContent(card,node,{title,status,memberLabels=[],expandedMemberLabels=[]}){
@@ -1876,7 +1876,7 @@ class TeamRunScreen{
       const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
       return teamGraphNodeHeight(node,aggregate&&this.graphOpen.has(node.id)?node.memberIds.length:0);
     };
-    const layout=compact?null:teamGraphLayout(nodes,direction,heightFor);
+    const layout=compact?null:teamGraphLayout(nodes,direction,heightFor,direction==='TB'?240:180);
     if(layout){
       const canvas=this.node('div',undefined,'team-graph-canvas');
       const stage=this.node('div',undefined,'team-graph-stage');
@@ -2060,8 +2060,6 @@ class TeamRunScreen{
     }
     // 交付证据（§8 阶段三）：完成的 Run 展示 Agent / 审查 / 验证各维度，不设验收。
     if(detail.status==='completed'&&detail.delivery)body.append(this.renderDelivery());
-    // 统计卡（阶段四）：进页拉一次，手动刷新按钮重拉；404（旧网关）整块不显示。
-    if(this.stats)body.append(this.renderStats());
     // 成员提问（§5.4，detail.pendingQuestions 是权威快照）：open 画应答卡，
     // answered/withdrawn 画灰态徽标——放在任务列表前，等待输入最先被看到。
     const questions=detail.pendingQuestions;
@@ -2077,6 +2075,8 @@ class TeamRunScreen{
     // 回退平铺列表——图是补充视图，缺省时任务卡照常渲染。
     const graphSection=this.renderGraph();
     if(graphSection)body.append(graphSection);
+    // 统计是次要信息，排在执行路径之后；404（旧网关）整块不显示。
+    if(this.stats)body.append(this.renderStats());
     const tasks=detail.tasks||[];
     if(!tasks.length)body.append(this.node('p',t('还没有任务。'),'muted'));
     if(tasks.length)body.append(this.renderTaskGroups(tasks));
