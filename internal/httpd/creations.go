@@ -27,8 +27,8 @@ type creationEntry struct {
 	Warning        string  `json:"warning,omitempty"`
 	Attempts       int     `json:"attempts,omitempty"`
 	Message        string  `json:"message,omitempty"`
-	// Model/Effort are the target settings chosen in the migrate dialog; they
-	// are applied before the transcript is injected, on every send path.
+	// Model/Effort are the target settings chosen in the migrate dialog or
+	// resolved from Codex defaults; they are applied on every send path.
 	Model  string `json:"model,omitempty"`
 	Effort string `json:"effort,omitempty"`
 }

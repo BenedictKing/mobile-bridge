@@ -131,13 +131,13 @@ func (c *Catalog) fetch(cwd string, run func(request func(method string, params 
 }
 
 // Models returns the codex model directory for one working directory:
-// {kind:"models", models[], modelSource, fastMode, currentEffort, modelError?}.
-// currentModel stays empty for the caller to fold in from the live thread.
+// {kind:"models", models[], modelSource, fastMode, currentModel, currentEffort, modelError?}.
+// The caller folds in model/effort overrides from the live thread.
 func (c *Catalog) Models(cwd, provider string, refresh bool) (*jsoncompat.Object, error) {
 	key := cwd + "\x00" + provider
 	c.mu.Lock()
 	if cached, ok := c.models[key]; ok && !refresh && time.Since(cached.at) < catalogTTL {
-		value := cached.value
+		value := jsoncompat.Clone(cached.value).(*jsoncompat.Object)
 		c.mu.Unlock()
 		return value, nil
 	}
@@ -217,11 +217,12 @@ func (c *Catalog) Models(cwd, provider string, refresh bool) (*jsoncompat.Object
 	if modelError, ok := raw.Get("modelError"); ok {
 		value.Set("modelError", modelError)
 	}
+	value.Set("currentModel", raw.MustGet("currentModel"))
 	value.Set("currentEffort", raw.MustGet("currentEffort"))
 	c.mu.Lock()
 	c.models[key] = modelsCacheEntry{at: time.Now(), value: value}
 	c.mu.Unlock()
-	return value, nil
+	return jsoncompat.Clone(value).(*jsoncompat.Object), nil
 }
 
 // Skills lists the cwd's Skill rows through the same short-lived runtime.
@@ -319,6 +320,7 @@ func readModels(request func(method string, params any) (*jsoncompat.Object, err
 	custom := provider != "openai" || base != "" || anyOf(providerDefinition,
 		"env_key", "experimental_bearer_token", "http_headers", "env_http_headers", "auth", "gateway_oauth")
 	result := jsoncompat.NewObject()
+	result.Set("currentModel", effective.MustGet("model"))
 	result.Set("currentEffort", effective.MustGet("model_reasoning_effort"))
 	if !custom {
 		if authResult, err := request("account/read", map[string]any{"refreshToken": false}); err == nil {

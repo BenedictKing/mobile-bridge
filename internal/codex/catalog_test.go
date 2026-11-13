@@ -21,7 +21,7 @@ SKILLS=[{"errors":["one skill failed to load"],"skills":[{"name":"pdf","descript
 for line in sys.stdin:
  m=json.loads(line); method=m.get("method"); ident=m.get("id")
  if method=="initialize": result={"ok":True}
- elif method=="config/read": result={"config":{"model_provider":"openai","model_reasoning_effort":"high","service_tier":"priority"}}
+ elif method=="config/read": result={"config":{"model":"gpt-5.3","model_provider":"openai","model_reasoning_effort":"high","service_tier":"priority"}}
  elif method=="account/read": result={"account":{"type":"chatgpt"},"requiresOpenaiAuth":True}
  elif method=="configRequirements/read": result={"requirements":{"featureRequirements":{"fast_mode":True}}}
  elif method=="model/list":
@@ -42,7 +42,8 @@ for line in sys.stdin:
 
 func TestCatalogModelsAndFastMode(t *testing.T) {
 	bridge := &Bridge{Home: t.TempDir(), Executable: fakeAppServer(t)}
-	value, err := bridge.Catalog().Models(t.TempDir(), "", false)
+	cwd := t.TempDir()
+	value, err := bridge.Catalog().Models(cwd, "", false)
 	if err != nil {
 		t.Fatalf("models err=%v", err)
 	}
@@ -54,19 +55,22 @@ func TestCatalogModelsAndFastMode(t *testing.T) {
 		t.Fatalf("hidden model leaked: %s", body)
 	}
 	for _, needle := range []string{`"fastTier": "fast"`, `"allowed": true`, `"defaultServiceTier": "priority"`,
-		`"currentEffort": "high"`, `"efforts": ["low", "high"]`} {
+		`"currentModel": "gpt-5.3"`, `"currentEffort": "high"`, `"efforts": ["low", "high"]`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("models body missing %s: %s", needle, body)
 		}
 	}
-	// The catalog cache serves the second read without a new process.
-	again, err := bridge.Catalog().Models(cwd2(value), "", false)
+	value.Set("currentModel", "other-model")
+	value.Set("currentEffort", "low")
+	again, err := bridge.Catalog().Models(cwd, "", false)
 	if err != nil || len(again.MustGet("models").(*jsoncompat.Array).Items) != 2 {
 		t.Fatalf("cached read err=%v", err)
 	}
+	cached := string(jsoncompat.EncodePythonDefault(again))
+	if !strings.Contains(cached, `"currentModel": "gpt-5.3"`) || !strings.Contains(cached, `"currentEffort": "high"`) {
+		t.Fatalf("caller mutated cached defaults: %s", cached)
+	}
 }
-
-func cwd2(_ *jsoncompat.Object) string { return os.TempDir() }
 
 func TestCatalogSkillsAndValidate(t *testing.T) {
 	bridge := &Bridge{Home: t.TempDir(), Executable: fakeAppServer(t)}

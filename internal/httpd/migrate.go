@@ -680,6 +680,27 @@ func (h *handler) handleMigrate(threadID string) {
 			}
 		}
 	}
+	if target == nil && !alreadySent && modelName == "" {
+		if ledger != nil {
+			if entry := ledger.lookup(requestID); entry != nil && entry.Model != "" {
+				modelName, effort = entry.Model, entry.Effort
+			}
+		}
+		if modelName == "" {
+			catalog, settingsErr := h.server.Codex.Catalog().Models(cwd, "", false)
+			if settingsErr != nil {
+				h.fail(http.StatusConflict, errorBody("无法读取 Codex 默认模型与思考强度: "+settingsErr.Error()))
+				return
+			}
+			modelName = stringField(catalog, "currentModel")
+			effort = stringField(catalog, "currentEffort")
+			if modelName == "" {
+				h.fail(http.StatusConflict, errorBody("无法读取 Codex 默认模型，请手动选择模型与思考强度"))
+				return
+			}
+		}
+	}
+
 	// A migrated chat keeps a link back to its source (Python's fork origin
 	// ledger; the phone renders it as 来源会话 in the details sheet).
 	if h.server.Forks != nil && createdID != "" && threadID != createdID {
