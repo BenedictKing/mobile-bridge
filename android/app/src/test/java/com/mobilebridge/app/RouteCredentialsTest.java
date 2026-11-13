@@ -9,11 +9,11 @@ public final class RouteCredentialsTest {
     @Test
     public void derivesTheServerRouteAndProofVectors() {
         String target = "http://192.168.1.2:8787";
-        assertEquals("2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b",
+        assertEquals("3d91b58504a6cc3a159005ee7b16c7ae503ca6ac2a6a3c893837083c236b864a",
             RouteCredentials.identifier("secret"));
         assertEquals("cmbroute1_9f2e11e3449b0960d5883226dfb9044c64da2339dabe4d831b7c7bbf1d08c1be",
             RouteCredentials.routeToken("secret", target));
-        assertEquals("37726173c3f686d15ef271ebbe28e74f4b63b593667921aa47ac4987b2a5643e",
+        assertEquals("a51e16f93c369cebdb836736bbcd29818e7572adb29593b937073d139989e0ad",
             RouteCredentials.proof("secret", "0123456789abcdef0123456789abcdef", target, "ab".repeat(32)));
     }
 

@@ -87,10 +87,11 @@ func PublishableInterfaces(interfaces []net.Interface) []net.Interface {
 }
 
 type MDNSAdvertiser struct {
-	mu       sync.Mutex
-	server   responder
-	cancel   context.CancelFunc
-	starting bool
+	mu         sync.Mutex
+	server     responder
+	cancel     context.CancelFunc
+	starting   bool
+	generation uint64
 }
 
 func NewMDNSAdvertiser() *MDNSAdvertiser {
@@ -118,9 +119,11 @@ func (a *MDNSAdvertiser) Start(ctx context.Context, spec AdvertiseSpec) error {
 	a.server = server
 	a.cancel = cancel
 	a.starting = true
+	a.generation++
+	generation := a.generation
 	go func() {
 		<-child.Done()
-		_ = a.Stop()
+		a.stopGeneration(generation)
 	}()
 	return nil
 }
@@ -133,7 +136,17 @@ func (a *MDNSAdvertiser) Update(spec AdvertiseSpec) error {
 }
 
 func (a *MDNSAdvertiser) Stop() error {
+	a.stopGeneration(0)
+	return nil
+}
+
+// A cancelled registration must never withdraw its replacement.
+func (a *MDNSAdvertiser) stopGeneration(generation uint64) {
 	a.mu.Lock()
+	if generation != 0 && generation != a.generation {
+		a.mu.Unlock()
+		return
+	}
 	server, cancel := a.server, a.cancel
 	a.server, a.cancel, a.starting = nil, nil, false
 	a.mu.Unlock()
@@ -143,5 +156,4 @@ func (a *MDNSAdvertiser) Stop() error {
 	if server != nil {
 		server.Shutdown()
 	}
-	return nil
 }

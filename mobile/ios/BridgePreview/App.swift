@@ -299,21 +299,26 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         guard localRecovery == nil,let id=channelRecord(address)?["deviceId"] as? String else{return}
         let screen=generation
         localRecovery=LocalRecoveryCoordinator(deviceID:id){[weak self] found in
-            guard let self,self.generation==screen,self.origin==address,self.saved.contains(address) else{return}
-            let new=found.filter{!self.catalog(address).contains($0)}
-            guard !new.isEmpty else{return}
-            for other in self.saved where self.channelRecord(other)?["deviceId"] as? String==id {
-                guard var record=self.channelRecord(other) else{continue}
-                record["endpoints"]=GatewayChannels.endpoints(record)+new.filter{!GatewayChannels.endpoints(record).contains($0)}
-                self.defaults.set(record,forKey:"channels:"+other)
-            }
-            self.paintAddresses(address)
-            if self.web==nil {
-                let url=self.requestedRoute ?? URL(string:address+"/")!
-                self.localRecovery?.stop();self.localRecovery=nil
-                self.openComputer(address,url)
-            } else if !self.pageReady {
-                _=self.raceChannels(failure:true,allowed:new)
+            Task { @MainActor in
+                guard let self,self.generation==screen,self.origin==address,self.saved.contains(address),
+                      UIApplication.shared.applicationState == .active else{return}
+                // Discovery has already cached these origins; compare only the channel record.
+                let known=self.channelRecord(address).map(GatewayChannels.endpoints) ?? []
+                let new=found.filter{!known.contains($0)}
+                guard !new.isEmpty else{return}
+                for other in self.saved where self.channelRecord(other)?["deviceId"] as? String==id {
+                    guard var record=self.channelRecord(other) else{continue}
+                    record["endpoints"]=GatewayChannels.endpoints(record)+new.filter{!GatewayChannels.endpoints(record).contains($0)}
+                    self.defaults.set(record,forKey:"channels:"+other)
+                }
+                self.paintAddresses(address)
+                if self.web==nil {
+                    let url=self.requestedRoute ?? URL(string:address+"/")!
+                    self.localRecovery?.stop();self.localRecovery=nil
+                    self.openComputer(address,url)
+                } else if !self.pageReady {
+                    _=self.raceChannels(failure:true,allowed:new)
+                }
             }
         }
         localRecovery?.start()
@@ -376,7 +381,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         channelJobs[job]=Task { @MainActor in
             defer{channelJobs.removeValue(forKey:job);finished()}
             var any=false
-            await GatewayChannels.probe(d,root:root.token,targets:targets){ url,ms in
+            await GatewayChannels.probe(d,root:root.token,name:root.name,targets:targets){ url,ms in
                 guard current(),DeviceBinding.load(GatewayChannels.vault(id))?.token==root.token else{return}
                 let result=ms ?? (self.pageReady && url==self.origin && ProcessInfo.processInfo.systemUptime-(self.routeTraffic[url] ?? -30)<30 ? self.routeTimes[id]?[url]:nil)
                 self.routeTimes[id,default:[:]][url]=result ?? -1

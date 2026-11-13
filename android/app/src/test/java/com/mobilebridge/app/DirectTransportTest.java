@@ -31,9 +31,14 @@ public final class DirectTransportTest {
         server.handler = (path, query, cookie) -> {
             if ("/api/connection/prove".equals(path)) {
                 proofCookie.set(cookie);
+                // Independently implement the Go wire contract, not the client helper.
+                String key = sha256("root-secret");
+                if (!sha256(key).equals(query(query, "id"))) throw new IllegalArgumentException("wrong identity");
+                javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+                mac.init(new javax.crypto.spec.SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
                 return new JSONObject().put("deviceId", device)
-                    .put("proof", RouteCredentials.proof("root-secret", device, server.origin(),
-                        query(query, "challenge"))).toString();
+                    .put("proof", hex(mac.doFinal((device + "\n" + server.origin() + "\n"
+                        + query(query, "challenge")).getBytes(StandardCharsets.UTF_8)))).toString();
             }
             if ("/api/auth".equals(path)) {
                 authCookie.set(cookie);
@@ -72,6 +77,16 @@ public final class DirectTransportTest {
             if (pair.length == 2 && pair[0].equals(name)) return pair[1];
         }
         return "";
+    }
+
+    private static String sha256(String value) throws Exception {
+        return hex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private static String hex(byte[] value) {
+        StringBuilder result = new StringBuilder();
+        for (byte b : value) result.append(String.format("%02x", b & 255));
+        return result.toString();
     }
 
     private static final class TestServer implements Closeable {

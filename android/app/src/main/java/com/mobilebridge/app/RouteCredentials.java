@@ -45,11 +45,11 @@ final class RouteCredentials {
     }
 
     static String identifier(String rootToken) {
-        return sha256(rootToken);
+        return sha256(sha256(rootToken));
     }
 
     static String proof(String rootToken, String deviceId, String target, String challenge) {
-        return hmac(rootToken, deviceId + "\n" + target + "\n" + challenge);
+        return hmac(sha256(rootToken), deviceId + "\n" + target + "\n" + challenge);
     }
 
     static String challenge() {

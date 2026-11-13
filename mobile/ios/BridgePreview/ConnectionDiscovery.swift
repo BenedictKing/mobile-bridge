@@ -53,8 +53,8 @@ final class ConnectionDiscovery: NSObject, URLSessionTaskDelegate, @unchecked Se
     }
     func resolve(_ old: String, descriptor: [String: String], secret: String) async -> String {
         defer { session.finishTasksAndInvalidate() }
-        let key = secret
-        guard !secret.isEmpty, descriptor["binding"] == Self.hash(key), let device = descriptor["deviceId"], let relay = descriptor["relay"], let grant = descriptor["discoveryKey"],
+        let key = Self.hash(secret)
+        guard !secret.isEmpty, descriptor["binding"] == key, let device = descriptor["deviceId"], let relay = descriptor["relay"], let grant = descriptor["discoveryKey"],
               let routes = try? await read(relay + "/relay/discover/" + device, key: grant), routes["deviceId"] as? String == device,
               let endpoints = routes["endpoints"] as? [String] else { return old }
         for endpoint in endpoints.prefix(16) {
@@ -93,14 +93,34 @@ enum GatewayChannels {
         (descriptor["endpoints"] as? [String] ?? []).filter { (try? GatewayURL.origin($0)) == $0 && GatewayURL.httpOrigin($0) == $0 }
     }
     static func proves(_ device: String, target: String, token: String) async -> Bool {
-        let probe = ConnectionDiscovery(), key = token
+        let probe = ConnectionDiscovery(), key = ConnectionDiscovery.hash(token)
         defer { probe.cancel() }
         let nonce = (UUID().uuidString + UUID().uuidString).replacingOccurrences(of: "-", with: "").lowercased()
         guard let response = try? await probe.read(target + "/api/connection/prove?device=" + device + "&id=" + ConnectionDiscovery.hash(key) + "&challenge=" + nonce),
               response["deviceId"] as? String == device, let code = response["proof"] as? String else { return false }
         return ConnectionDiscovery.verify(code, key: key, device: device, target: target, nonce: nonce)
     }
-    static func probe(_ descriptor:[String:Any], root:String, targets:[String], sample:@escaping @MainActor (String,Int?) -> Void) async {
+    // A newly discovered LAN origin has no route binding yet. Prove root
+    // ownership anonymously before the single root-auth bootstrap request.
+    static func prepare(_ device: String, anchor: String, target: String, root: String, name: String) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        let route = token(root, anchor: anchor, target: target)
+        if await proves(device, target: target, token: route) { return !Task.isCancelled }
+        guard !Task.isCancelled, !root.isEmpty, !root.hasPrefix("cmbroute1_"),
+              (try? GatewayURL.origin(target)) == target, target.hasPrefix("http://"),
+              target == GatewayURL.httpOrigin(target),
+              name.range(of: "^codex_mobile_session(_[a-f0-9]{24})?$", options: .regularExpression) != nil,
+              await proves(device, target: target, token: root), !Task.isCancelled else { return false }
+        let client = ConnectionDiscovery()
+        defer { client.cancel() }
+        guard let auth = try? await client.read(target + "/api/auth", cookie: name + "=" + root),
+              !Task.isCancelled, auth["authenticated"] as? Bool == true,
+              auth["trustedDevice"] as? Bool == true, let instance = auth["instanceId"] as? String, !instance.isEmpty,
+              let routes = auth["mobileRoutes"] as? [String: Any], routes["deviceId"] as? String == device,
+              endpoints(routes).contains(target) else { return false }
+        return await proves(device, target: target, token: route) && !Task.isCancelled
+    }
+    static func probe(_ descriptor:[String:Any], root:String, name:String, targets:[String], sample:@escaping @MainActor (String,Int?) -> Void) async {
         guard let id=descriptor["deviceId"] as? String, let anchor=descriptor["anchor"] as? String else { return }
         let limit=min(8,max(1,(descriptor["race"] as? [String:Any])?["parallel"] as? Int ?? 4))
         await withTaskGroup(of:(String,Int?).self) { group in
@@ -109,7 +129,7 @@ enum GatewayChannels {
                 group.addTask {
                     await ChannelProbeSlots.shared.acquire()
                     let start=ProcessInfo.processInfo.systemUptime
-                    let ok=await proves(id,target:url,token:token(root,anchor:anchor,target:url))
+                    let ok=await prepare(id,anchor:anchor,target:url,root:root,name:name)
                     await ChannelProbeSlots.shared.release()
                     return (url,ok ? Int((ProcessInfo.processInfo.systemUptime-start)*1000) : nil)
                 }

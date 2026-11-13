@@ -110,3 +110,26 @@ func TestMDNSAdvertiserFailureDoesNotRetainState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestOldCancellationCannotStopReplacement(t *testing.T) {
+	original := registerService
+	defer func() { registerService = original }()
+	registerService = func(AdvertiseSpec) (responder, error) { return &fakeResponder{}, nil }
+	a := NewMDNSAdvertiser()
+	defer a.Stop()
+	if err := a.Start(context.Background(), validSpec()); err != nil {
+		t.Fatal(err)
+	}
+	oldGeneration := a.generation
+	if err := a.Update(validSpec()); err != nil {
+		t.Fatal(err)
+	}
+	// Deliver the old cancellation after the replacement is fully installed.
+	a.stopGeneration(oldGeneration)
+	a.mu.Lock()
+	alive := a.starting && a.server != nil
+	a.mu.Unlock()
+	if !alive {
+		t.Fatal("old cancellation withdrew the new registration")
+	}
+}

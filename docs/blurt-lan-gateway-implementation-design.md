@@ -8,6 +8,10 @@
 
 关联研究：[Blurt 网内连接、发现与传输学习报告](blurt-lan-gateway-study.md)
 
+质量修复：统一 proof 的双层摘要标识与摘要密钥；iOS 新候选只与 channel record 去重，不与已写入的发现缓存去重，并异步触发恢复避免启动重入；新增地址通过匿名根证明、单次根认证和派生凭据再证明完成引导。广播取消仅清理对应注册代际。
+
+跨端回归：在具备 Java、Swift 和私网接口的 macOS 开发机运行 `go test ./internal/httpd -run TestNativeLANClients -v -args -native-lan`。该测试使用隔离的 Go HTTP 服务和真实客户端源码，覆盖公网锚点不可达、新 LAN 地址尚未绑定、错误设备、路由复用，以及 proof 无 Cookie、根认证仅一次、后续使用 route Cookie 的边界；不连接运行中的网关。
+
 ## 目录
 
 1. [设计结论](#1-设计结论)
@@ -207,10 +211,10 @@ Candidate {
 当前 Android `DirectTransport.verify()` 会直接把公网 Cookie 发给候选的 `/api/auth`。这个行为只适合候选已由可信公网清单提供的情形，不能直接用于未经验证的 mDNS 结果。新流程应为：
 
 1. 手机为候选生成 32 字节随机 `challenge`。
-2. 手机计算 `id = SHA256(rootCredential)`，但不发送 `rootCredential`。
+2. 手机先计算 `key = SHA256(cookieToken)`（根 Cookie 或派生 route Cookie 的摘要），再计算 `id = SHA256(key)`；不发送 Cookie。
 3. 手机匿名请求 `GET /api/connection/prove?id=<id>&challenge=<challenge>&device=<DeviceID>`。
 4. 网关要求 `device == Auth.DeviceID()` 且 `target` 是当前可信 origin，再用已登记的 root session 或 target route binding 计算 HMAC。
-5. 手机验证返回的 `proof = HMAC(credential, device + "\n" + target + "\n" + challenge)`。
+5. 手机验证返回的 `proof = HMAC(key, device + "\n" + target + "\n" + challenge)`。服务端保存的是凭据摘要，不能用原始 Cookie 作为 proof 密钥。
 6. proof 通过后，再按现有 `mobileRoutes`/`renewRoutes` 规则获得目标 origin 的路由级 Cookie；业务请求只携带该 Cookie。
 7. `/api/auth` 必须同时返回 `authenticated=true`、匹配的 `deviceId` 和当前 `instanceId`，否则候选失败。
 
@@ -381,7 +385,7 @@ Android 的 `GatewayProfile` 当前只保存 `id/name/origin`，需要增加 `de
 1. 只发匿名 `/api/connection/prove`，用根凭据的 digest 证明手机持有已配对会话。
 2. proof 成功后，只发一次带根 Cookie 的 `/api/auth`，不访问业务接口。
 3. 要求响应的 `deviceId` 匹配，并要求 `mobileRoutes.endpoints` 包含该 canonical origin。
-4. 从同一根凭据按现有公式派生该 origin 的 `cmbroute1_` Cookie，后续只使用路由 Cookie。
+4. 从同一根凭据按现有公式派生该 origin 的 `cmbroute1_` Cookie；iOS 再用该凭据执行匿名 proof，确认新绑定已生效，然后交给原有 `moveChannel`。后续只使用路由 Cookie。
 5. 引导失败、设备不匹配或 route manifest 不包含该 origin 时，立即关闭 response 并丢弃候选。
 
 这条引导依赖当前 `trustedOrigin()` 能识别真实活动 LAN listener。若动态网卡地址不在 `Origins`，必须修正 `AllowOrigin`/`NativeCandidates` 的精确活动地址集合；不能为了 mDNS 放宽为“任意私网 IP 都可信”。
