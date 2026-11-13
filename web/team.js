@@ -1496,6 +1496,31 @@ function teamGraphLayout(nodes,direction='LR',heightFor=()=>76){
   };
 }
 
+function teamGraphNodeHeight(node,expandedMemberCount=0){
+  return 92+(node.resultHead?42:0)+(expandedMemberCount?expandedMemberCount*22+12:0);
+}
+
+function appendTeamGraphNodeContent(card,node,{title,status,memberLabels=[],expandedMemberLabels=[]}){
+  const t=BridgeI18n.t,create=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
+  const head=create('div',undefined,'team-graph-node-head');
+  head.append(create('strong',title));
+  if(typeof node.runCount==='number'&&node.runCount>1)head.append(create('span','×'+node.runCount,'team-graph-runs'));
+  card.append(head);
+  const meta=create('div',undefined,'team-graph-node-meta'),chips=create('div',undefined,'team-graph-kinds');
+  for(const label of memberLabels.filter(Boolean))chips.append(create('span',label,'team-graph-kind'));
+  meta.append(chips,teamStatusBadge(status,TEAM_TASK_STATUS_LABELS));card.append(meta);
+  if(node.resultHead){
+    card.append(create('p',node.resultHead,'task-instructions'));
+    if(node.truncated)card.append(create('span',t('已截断'),'team-truncated'));
+  }
+  if(expandedMemberLabels.length){
+    const list=create('div',undefined,'team-graph-members');
+    for(const label of expandedMemberLabels)list.append(create('span',label,'team-graph-member'));
+    card.append(list);
+  }
+  return card;
+}
+
 class TeamRunScreen{
   constructor({root,request,openChat,onUnauthorized,onNavigateAway}){
     Object.assign(this,{root,request,openChat,onUnauthorized,onNavigateAway});
@@ -1849,7 +1874,7 @@ class TeamRunScreen{
     const direction=compact||nodes.length>3?'TB':'LR';
     const heightFor=node=>{
       const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
-      return 92+(node.resultHead?42:0)+(aggregate&&this.graphOpen.has(node.id)?node.memberIds.length*22+12:0);
+      return teamGraphNodeHeight(node,aggregate&&this.graphOpen.has(node.id)?node.memberIds.length:0);
     };
     const layout=compact?null:teamGraphLayout(nodes,direction,heightFor);
     if(layout){
@@ -1922,7 +1947,6 @@ class TeamRunScreen{
     return layers;
   }
   renderGraphNode(node){
-    const t=BridgeI18n.t;
     const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
     // 本地 detail 实时覆盖仅限单任务节点（非聚合且 runCount===1）：派生链/
     // 修复链聚合节点的 id=根任务 ID，findTask 命中的是根任务本人的陈旧终态，
@@ -1930,8 +1954,9 @@ class TeamRunScreen{
     //（根任务已终态、派生任务 running）会误显「已完成 ×N」而非「进行中」。
     const single=!aggregate&&!(typeof node.runCount==='number'&&node.runCount>1);
     const detailTask=single?this.findTask(node.id):null;
+    const status=detailTask?detailTask.status:node.status;
     const card=this.node('div',undefined,'team-graph-node'+(aggregate?' aggregate':''));
-    card.dataset.status=detailTask?detailTask.status:node.status;
+    card.dataset.status=status;
     card.setAttribute('role','button');
     card.tabIndex=0;
     const activate=()=>{
@@ -1947,38 +1972,17 @@ class TeamRunScreen{
     card.onkeydown=event=>{
       if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}
     };
-    const head=this.node('div',undefined,'team-graph-node-head');
     const title=detailTask&&typeof teamWorkflowTaskTitle==='function'?teamWorkflowTaskTitle(detailTask):node.label||node.id;
-    head.append(this.node('strong',title));
-    if(typeof node.runCount==='number'&&node.runCount>1)head.append(this.node('span','×'+node.runCount,'team-graph-runs'));
-    card.append(head);
     const kinds=Array.isArray(node.agentKinds)?node.agentKinds:[],memberIds=Array.isArray(node.memberIds)?node.memberIds:[];
-    const meta=this.node('div',undefined,'team-graph-node-meta'),chips=this.node('div',undefined,'team-graph-kinds');
-    if(memberIds.length){
-      for(const memberId of memberIds){
-        const member=this.teamMember(memberId);
-        const label=typeof teamWorkflowMemberLabel==='function'?teamWorkflowMemberLabel(member,{memberId}):(member?(member.name||member.id):memberId);
-        chips.append(this.node('span',label,'team-graph-kind'));
-      }
-    }else{
-      for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
-    }
-    meta.append(chips,this.taskBadge(detailTask?detailTask.status:node.status));
-    card.append(meta);
-    if(node.resultHead){
-      card.append(this.node('p',node.resultHead,'task-instructions'));
-      if(node.truncated)card.append(this.node('span',t('已截断'),'team-truncated'));
-    }
-    if(aggregate&&this.graphOpen.has(node.id)){
-      const list=this.node('div',undefined,'team-graph-members');
-      for(const memberId of node.memberIds){
-        const member=this.teamMember(memberId);
-        list.append(this.node('span',(member?(member.name||member.id):memberId)
-          +(member?' · '+BridgeI18n.agentLabel(member.agentKind):''),'team-graph-member'));
-      }
-      card.append(list);
-    }
-    return card;
+    const memberLabels=memberIds.length?memberIds.map(memberId=>{
+      const member=this.teamMember(memberId);
+      return typeof teamWorkflowMemberLabel==='function'?teamWorkflowMemberLabel(member,{memberId}):(member?(member.name||member.id):memberId);
+    }):kinds.map(kind=>BridgeI18n.agentLabel(kind));
+    const expandedMemberLabels=aggregate&&this.graphOpen.has(node.id)?memberIds.map(memberId=>{
+      const member=this.teamMember(memberId);
+      return(member?(member.name||member.id):memberId)+(member?' · '+BridgeI18n.agentLabel(member.agentKind):'');
+    }):[];
+    return appendTeamGraphNodeContent(card,node,{title,status,memberLabels,expandedMemberLabels});
   }
   leave(){
     this.close();
@@ -2808,4 +2812,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout,renderTeamGoalReview,teamRunGroup,teamTaskSessionId};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout,teamGraphNodeHeight,appendTeamGraphNodeContent,renderTeamGoalReview,teamRunGroup,teamTaskSessionId};

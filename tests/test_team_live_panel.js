@@ -6,7 +6,7 @@ const {TeamLivePanelController,teamMemberRunState,teamGraphRelations,teamSelecti
 
 // DOM 测试保留焦点事件与节点身份，覆盖轮询重绘和真实按钮的生命周期。
 function installDOM(t){
-  const saved={document:global.document,window:global.window,TeamsPanel:global.TeamsPanel,TeamLivePanelController:global.TeamLivePanelController};
+  const saved={document:global.document,window:global.window,TeamsPanel:global.TeamsPanel,TeamLivePanelController:global.TeamLivePanelController,BridgeI18n:global.BridgeI18n,appendTeamGraphNodeContent:global.appendTeamGraphNodeContent};
   const doc={activeElement:null},ids=new Map();
   class Node{
     constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.style={};this.attributes={};this.className='';this.listeners={};this.textContent='';}
@@ -30,6 +30,7 @@ function installDOM(t){
   doc.getElementById=id=>{if(!ids.has(id))ids.set(id,new Node('div'));return ids.get(id);};
   global.document=doc;global.window={matchMedia:()=>({matches:false}),addEventListener(){}};
   global.TeamsPanel=class{stopPolling(){}};global.TeamLivePanelController=TeamLivePanelController;
+  global.BridgeI18n={t:value=>value};global.appendTeamGraphNodeContent=require('../web/team.js').appendTeamGraphNodeContent;
   t.after(()=>Object.assign(global,saved));
   return{doc,root:new Node('div')};
 }
@@ -184,6 +185,23 @@ test('focus and pointer previews preserve task buttons and terminate during refr
   doc.body.focus();controller.preview('b','hover');
   assert.equal(root.querySelector('[data-live-task="b"]').className.includes('selected'),true);
   controller.clearSelection();assert.equal(controller.effectiveSelection(),null);assert.equal(renders,2);
+});
+
+test('live workflow nodes share run graph content and keep task selection',t=>{
+  const{root}=installDOM(t),controller=new TeamLivePanelController({root});
+  controller.team={id:'team',members:[{id:'dev',name:'Dev'}]};
+  controller.run=controller.detail={id:'run',tasks:[{id:'task',memberId:'dev',status:'completed',prompt:'Implement'}]};
+  controller.graph={nodes:[{id:'task',label:'Implement',status:'completed',memberIds:['dev'],taskIds:['task'],runCount:2,resultHead:'Finished output',truncated:true}]};
+  controller.render();
+  const card=root.querySelector('[data-live-task="task"]');
+  assert.ok(card.className.includes('team-graph-node'));
+  assert.equal(card.querySelector('.team-graph-node-head').querySelector('strong').textContent,'Implement');
+  assert.equal(card.querySelector('.team-graph-runs').textContent,'×2');
+  assert.equal(card.querySelector('.team-graph-kind').textContent,'Dev');
+  assert.equal(card.querySelector('.team-badge').textContent,'已完成');
+  assert.equal(card.querySelector('.task-instructions').textContent,'Finished output');
+  assert.equal(card.querySelector('.team-truncated').textContent,'已截断');
+  card.listeners.click();assert.deepEqual(controller.pinned,{kind:'task',id:'task'});
 });
 
 test('broadcast and repair stages expose their actual execution sessions and anchors',t=>{

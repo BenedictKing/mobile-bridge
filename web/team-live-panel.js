@@ -265,7 +265,7 @@ class TeamLivePanelController{
     if(!nodes.length){section.append(this.node('p',this.t('还没有任务。'),'muted'));return section;}
     const relations=teamGraphRelations(nodes,this.effectiveSelection());
     const compact=typeof globalThis.matchMedia==='function'&&globalThis.matchMedia('(max-width:720px)').matches;
-    const layout=!compact&&typeof teamGraphLayout==='function'?teamGraphLayout(nodes,'TB',()=>88):null;
+    const layout=!compact&&typeof teamGraphLayout==='function'?teamGraphLayout(nodes,'TB',node=>teamGraphNodeHeight(node)):null;
     if(layout){
       const scroll=this.node('div',undefined,'team-live-graph-scroll');scroll.tabIndex=0;scroll.setAttribute('role','region');scroll.setAttribute('aria-label',this.t('任务关系图'));
       const stage=this.node('div',undefined,'team-live-graph-stage');stage.style.width=layout.width+'px';stage.style.height=layout.height+'px';
@@ -310,22 +310,22 @@ class TeamLivePanelController{
     return teamLiveTaskTitle(tasks.length===1?tasks[0]:null,node);
   }
   renderTaskNode(node,relations,positioned){
-    const id=node.id,selected=relations.selected.has(id),classes=['team-live-task'];
+    const id=node.id,selected=relations.selected.has(id),classes=['team-live-task','team-graph-node'];
     if(positioned)classes.push('positioned');
+    if(Array.isArray(node.memberIds)&&node.memberIds.length>1)classes.push('aggregate');
     if(this.effectiveSelection()){
       if(selected)classes.push('selected');
       else if(relations.upstream.has(id))classes.push('upstream');
       else if(relations.downstream.has(id))classes.push('downstream');
       else classes.push('dimmed');
     }
-    const card=this.button('',classes.join(' '),()=>this.select('task',id));
-    card.dataset.liveTask=id;card.dataset.status=node.status||'';card.setAttribute('aria-pressed',String(this.pinned?.kind==='task'&&this.pinned.id===id));card.title=this.nodeTitle(node);
+    const title=this.nodeTitle(node),card=this.button('',classes.join(' '),()=>this.select('task',id));
+    card.dataset.liveTask=id;card.dataset.status=node.status||'';card.setAttribute('aria-pressed',String(this.pinned?.kind==='task'&&this.pinned.id===id));card.title=title;
     card.addEventListener('mouseenter',()=>this.preview(id,'hover'));card.addEventListener('mouseleave',()=>this.preview(null,'hover'));
     card.addEventListener('focus',()=>this.preview(id,'focus'));card.addEventListener('blur',()=>this.preview(null,'focus'));
-    card.append(this.node('strong',this.nodeTitle(node)),this.node('span',this.taskStatus(node.status),'team-live-task-status'));
     const memberIds=Array.isArray(node.memberIds)?node.memberIds:[node.memberId];
-    card.append(this.node('small',memberIds.filter(Boolean).map(id=>this.memberLabel(id)).join(' · ')));
-    return card;
+    const memberLabels=memberIds.filter(Boolean).map(memberId=>this.memberLabel(memberId));
+    return appendTeamGraphNodeContent(card,node,{title,status:node.status,memberLabels});
   }
   renderSelection(){
     const box=this.node('section',undefined,'team-live-selection');box.id='team-live-selection';
