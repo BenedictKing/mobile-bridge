@@ -442,10 +442,8 @@ public final class MainActivity extends Activity {
         URI target;
         try {
             if (active == null) throw new IllegalArgumentException("No active gateway");
-            target = URI.create(url);
-            if (!DownloadPolicy.allows(URI.create(active.origin), target)) {
-                throw new IllegalArgumentException("Download is not a gateway artifact");
-            }
+            target = DownloadPolicy.resolve(URI.create(active.origin), url);
+            if (target == null) throw new IllegalArgumentException("Download is not a gateway artifact");
         } catch (Exception invalid) {
             Toast.makeText(this, "无法下载：附件地址无效", Toast.LENGTH_LONG).show();
             return;

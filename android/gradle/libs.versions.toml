@@ -1,0 +1,11 @@
+[versions]
+agp = "9.5.1"
+json = "20260814"
+junit = "4.13.2"
+
+[libraries]
+json = { group = "org.json", name = "json", version.ref = "json" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

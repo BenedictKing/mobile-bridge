@@ -1,6 +1,8 @@
 package com.mobilebridge.app;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -16,6 +18,13 @@ public final class DownloadPolicyTest {
     @Test
     public void acceptsCurrentGatewayApkDownloads() {
         assertTrue(DownloadPolicy.allows(PUBLIC, URI.create("https://codex.example.com" + APK + "?host=local")));
+    }
+
+    @Test
+    public void resolvesOnlyAllowedRelativeDownloads() {
+        assertEquals(URI.create(PUBLIC + APK + "?host=local"),
+            DownloadPolicy.resolve(PUBLIC, APK + "?host=local"));
+        assertNull(DownloadPolicy.resolve(PUBLIC, "/app.js"));
     }
 
     @Test

@@ -16,6 +16,11 @@ final class DownloadPolicy {
 
     private DownloadPolicy() {}
 
+    static URI resolve(URI publicOrigin, String value) {
+        URI target = publicOrigin.resolve(value);
+        return allows(publicOrigin, target) ? target : null;
+    }
+
     static boolean allows(URI publicOrigin, URI target) {
         if (!sameOrigin(publicOrigin, target) || target.getRawFragment() != null) return false;
         String path = target.getRawPath();
