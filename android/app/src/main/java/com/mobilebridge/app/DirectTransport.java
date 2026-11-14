@@ -129,7 +129,7 @@ final class DirectTransport {
         RouteCredentials.Root root = RouteCredentials.root(context.cookie);
         String routeCookie = root == null ? context.cookie
             : root.name + "=" + RouteCredentials.routeToken(root.token, candidate.origin.toString());
-        return new VerifiedRoute(candidate, routeCookie, auth);
+        return verifyRouteCookie(candidate, routeCookie, auth, context);
     }
 
     private VerifiedRoute prove(Candidate candidate, VerificationContext context) throws Exception {
@@ -162,8 +162,22 @@ final class DirectTransport {
         }
         JSONObject auth = new JSONObject(NativeHttp.readStringAndClose(authResponse));
         if (!validAuth(candidate, auth, true, context)) return null;
-        return new VerifiedRoute(candidate,
-            root.name + "=" + RouteCredentials.routeToken(root.token, target), auth);
+        return verifyRouteCookie(candidate,
+            root.name + "=" + RouteCredentials.routeToken(root.token, target), auth, context);
+    }
+
+    private VerifiedRoute verifyRouteCookie(Candidate candidate, String cookie, JSONObject bootstrap,
+                                           VerificationContext context) throws Exception {
+        NativeHttp.Response response = NativeHttp.open(candidate.origin.resolve("/api/auth"), "GET",
+            headers(cookie), 700, 1500);
+        if (response.status != 200) {
+            response.close();
+            return null;
+        }
+        JSONObject auth = new JSONObject(NativeHttp.readStringAndClose(response));
+        if (!validAuth(candidate, auth, false, context)
+            || !bootstrap.optString("instanceId").equals(auth.optString("instanceId"))) return null;
+        return new VerifiedRoute(candidate, cookie, auth);
     }
 
     private boolean validAuth(Candidate candidate, JSONObject auth, boolean requireManifest, VerificationContext context) {

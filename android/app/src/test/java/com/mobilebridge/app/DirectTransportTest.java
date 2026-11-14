@@ -41,7 +41,7 @@ public final class DirectTransportTest {
                         + query(query, "challenge")).getBytes(StandardCharsets.UTF_8)))).toString();
             }
             if ("/api/auth".equals(path)) {
-                authCookie.set(cookie);
+                if (!cookie.contains("cmbroute1_")) authCookie.set(cookie);
                 return new JSONObject().put("authenticated", true).put("instanceId", "new-instance")
                     .put("mobileRoutes", new JSONObject().put("deviceId", device)
                         .put("endpoints", new org.json.JSONArray().put(server.origin()))).toString();
@@ -71,6 +71,47 @@ public final class DirectTransportTest {
                 download.uri.toString());
             assertEquals("codex_mobile_session=" + RouteCredentials.routeToken("root-secret", server.origin()),
                 download.cookie);
+        } finally {
+            transport.close();
+            server.close();
+        }
+    }
+
+    @Test
+    public void rejectsUnboundRouteCookieDespiteHttp200() throws Exception {
+        checkRouteCredential(false, "instance", false);
+    }
+
+    @Test
+    public void rejectsRouteCookieForDifferentInstance() throws Exception {
+        checkRouteCredential(true, "other-instance", false);
+    }
+
+    @Test
+    public void acceptsAuthenticatedRouteCookie() throws Exception {
+        checkRouteCredential(true, "instance", true);
+    }
+
+    private void checkRouteCredential(boolean authenticated, String instance, boolean accepted) throws Exception {
+        TestServer server = new TestServer();
+        AtomicReference<String> checkedCookie = new AtomicReference<>();
+        server.handler = (path, query, cookie) -> {
+            boolean derived = cookie.contains("cmbroute1_");
+            if (derived) checkedCookie.set(cookie);
+            return new JSONObject().put("authenticated", !derived || authenticated)
+                .put("instanceId", derived ? instance : "instance").toString();
+        };
+        CountDownLatch finished = new CountDownLatch(1);
+        DirectTransport transport = new DirectTransport(URI.create("https://public.example"),
+            (mode, host) -> { if ("lan".equals(mode) || "public".equals(mode)) finished.countDown(); });
+        try {
+            transport.refresh(java.util.Collections.singletonList(
+                new Candidate(URI.create(server.origin()), "", Candidate.NATIVE_DIRECT, 1)),
+                "codex_mobile_session=root-secret", "", "instance");
+            assertTrue("route check did not finish", finished.await(5, TimeUnit.SECONDS));
+            assertEquals("codex_mobile_session=" + RouteCredentials.routeToken("root-secret", server.origin()),
+                checkedCookie.get());
+            assertEquals(accepted, transport.downloadTarget(URI.create("https://public.example/api/chats")) != null);
         } finally {
             transport.close();
             server.close();

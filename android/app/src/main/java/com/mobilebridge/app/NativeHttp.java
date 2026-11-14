@@ -52,6 +52,7 @@ final class NativeHttp {
         connection.setInstanceFollowRedirects(false);
         connection.setConnectTimeout(connectTimeoutMs);
         connection.setReadTimeout(readTimeoutMs);
+        connection.setRequestProperty("User-Agent", "BridgeMobile/0.2.0-Android");
         for (Map.Entry<String, String> header : headers.entrySet()) {
             connection.setRequestProperty(header.getKey(), header.getValue());
         }
