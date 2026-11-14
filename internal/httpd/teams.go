@@ -2175,7 +2175,7 @@ func (h *handler) handleTeamWorkspaceRegister() {
 		return
 	}
 	createdBy := ""
-	if session := h.server.Auth.Get(h.cookieToken()); session != nil {
+	if session := h.authenticatedSession(h.routeSessionKey()); session != nil {
 		createdBy, _ = session.MustGet("ip").(string)
 	}
 	registry := h.server.TeamWorkspaceRegistry
@@ -2404,7 +2404,7 @@ func (h *handler) teamStreamRunEvents(feed *team.EventFeed) {
 	// wake 重订阅仍带同一 stale since，无法自愈。
 	lastDelivered := epoch + "." + strconv.FormatUint(sequence, 10)
 	for {
-		if h.server.Auth.Get(h.cookieToken()) == nil {
+		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.sseFrame("logout", &jsoncompat.Object{}, "")
 			return
 		}
@@ -2434,7 +2434,7 @@ func (h *handler) teamStreamRunEvents(feed *team.EventFeed) {
 			return
 		}
 		timer.Stop()
-		if h.server.Auth.Get(h.cookieToken()) == nil {
+		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.sseFrame("logout", &jsoncompat.Object{}, "")
 			return
 		}

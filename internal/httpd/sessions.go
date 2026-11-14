@@ -1456,14 +1456,14 @@ func (h *handler) stream(bridge SessionBridge, threadID string, query map[string
 	}
 	sequence = -1
 	for {
-		if h.server.Auth.Get(h.cookieToken()) == nil {
+		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.writeRaw("event: logout\ndata: {}\n\n")
 			return
 		}
 		updated := session.WaitFor(func() bool { return session.Sequence != sequence },
 			12*time.Second)
 		sequence = session.Sequence
-		if h.server.Auth.Get(h.cookieToken()) == nil {
+		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.writeRaw("event: logout\ndata: {}\n\n")
 			return
 		}
@@ -1488,14 +1488,14 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 	welcome.Set("sequence", jsoncompat.Num(session.Sequence))
 	h.sseFrame("ready", welcome, "")
 	for {
-		if h.server.Auth.Get(h.cookieToken()) == nil {
+		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.sseFrame("logout", &jsoncompat.Object{}, "")
 			return
 		}
 		changed := session.WaitFor(func() bool {
 			return session.Sequence != sequence || session.Epoch != epoch
 		}, 12*time.Second)
-		if h.server.Auth.Get(h.cookieToken()) == nil {
+		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.sseFrame("logout", &jsoncompat.Object{}, "")
 			return
 		}

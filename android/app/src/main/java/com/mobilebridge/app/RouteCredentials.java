@@ -26,18 +26,43 @@ final class RouteCredentials {
 
     static Root root(String cookieHeader) {
         if (cookieHeader == null) return null;
+        Root selected = null;
+        for (String part : cookieHeader.split(";")) {
+            Root candidate = parseRoot(part);
+            if (candidate == null) continue;
+            // 无网关命名空间时，多枚登录 Cookie 的顺序不代表身份。
+            if (selected != null) return null;
+            selected = candidate;
+        }
+        return selected;
+    }
+
+    static Root root(String cookieHeader, String cookieName) {
+        if (cookieName == null || cookieName.isEmpty()) return root(cookieHeader);
+        if (cookieHeader == null || !sessionName(cookieName)) return null;
+        Root legacy = null;
         for (String part : cookieHeader.split(";")) {
             int equals = part.indexOf('=');
             if (equals <= 0) continue;
             String name = part.substring(0, equals).trim();
-            String token = part.substring(equals + 1).trim();
-            if (("codex_mobile_session".equals(name)
-                || name.matches("^codex_mobile_session_[a-f0-9]{24}$")) && !token.isEmpty()
-                && !token.startsWith("cmbroute1_")) {
-                return new Root(name, token);
-            }
+            if (cookieName.equals(name)) return parseRoot(part);
+            if ("codex_mobile_session".equals(name)) legacy = parseRoot(part);
         }
-        return null;
+        // 与服务端的旧登录兼容一致，但后续派生凭据必须使用当前命名空间。
+        return legacy == null ? null : new Root(cookieName, legacy.token);
+    }
+
+    private static boolean sessionName(String name) {
+        return "codex_mobile_session".equals(name) || name.matches("^codex_mobile_session_[a-f0-9]{24}$");
+    }
+
+    private static Root parseRoot(String part) {
+        int equals = part.indexOf('=');
+        if (equals <= 0) return null;
+        String name = part.substring(0, equals).trim();
+        String token = part.substring(equals + 1).trim();
+        return sessionName(name) && !token.isEmpty() && !token.startsWith("cmbroute1_")
+            ? new Root(name, token) : null;
     }
 
     static String routeToken(String rootToken, String target) {

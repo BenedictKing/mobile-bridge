@@ -82,6 +82,51 @@ public final class DirectTransportTest {
         checkRouteCredential(false, "instance", false);
     }
 
+    @Test public void keepsVerifiedRouteDuringSameSessionRefresh() throws Exception {
+        TestServer server = new TestServer();
+        CountDownLatch firstReady = new CountDownLatch(1), probing = new CountDownLatch(1), release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean refreshing = new java.util.concurrent.atomic.AtomicBoolean();
+        server.handler = (path, query, cookie) -> {
+            if (refreshing.get()) { probing.countDown(); release.await(3, TimeUnit.SECONDS); }
+            return new JSONObject().put("authenticated", true).put("instanceId", "instance").toString();
+        };
+        DirectTransport transport = new DirectTransport(URI.create("https://public.example"),
+            (mode, host) -> { if ("lan".equals(mode)) firstReady.countDown(); });
+        java.util.List<Candidate> candidates = java.util.Collections.singletonList(
+            new Candidate(URI.create(server.origin()), "", Candidate.NATIVE_DIRECT, 1));
+        try {
+            transport.refresh(candidates, "codex_mobile_session=current", "", "instance");
+            assertTrue(firstReady.await(5, TimeUnit.SECONDS));
+            refreshing.set(true);
+            transport.refresh(candidates, "codex_mobile_session=current", "", "instance");
+            assertTrue(probing.await(2, TimeUnit.SECONDS));
+            org.junit.Assert.assertNotNull(transport.downloadTarget(URI.create("https://public.example/api/chats")));
+            transport.refresh(candidates, "codex_mobile_session=changed", "", "instance");
+            assertNull("changed login must invalidate the previous route", transport.selected());
+        } finally { release.countDown(); transport.close(); server.close(); }
+    }
+
+    @Test public void derivesDownloadCredentialFromTheAuthenticatedGatewayCookie() throws Exception {
+        TestServer server = new TestServer();
+        String name = "codex_mobile_session_0123456789abcdef01234567";
+        String expected = name + "=" + RouteCredentials.routeToken("current", server.origin());
+        server.handler = (path, query, cookie) -> new JSONObject()
+            .put("authenticated", !cookie.contains("cmbroute1_") || expected.equals(cookie))
+            .put("instanceId", "instance").put("cookieName", name).toString();
+        CountDownLatch finished = new CountDownLatch(1);
+        DirectTransport transport = new DirectTransport(URI.create("https://public.example"),
+            (mode, host) -> { if (!"probing".equals(mode)) finished.countDown(); });
+        try {
+            transport.refresh(java.util.Collections.singletonList(
+                new Candidate(URI.create(server.origin()), "", Candidate.NATIVE_DIRECT, 1)),
+                "codex_mobile_session=stale; " + name + "=current", "", "instance");
+            assertTrue(finished.await(5, TimeUnit.SECONDS));
+            DirectTransport.DownloadTarget target = transport.downloadTarget(URI.create("https://public.example/api/chats"));
+            org.junit.Assert.assertNotNull("valid gateway route must be selected", target);
+            assertEquals(expected, target.cookie);
+        } finally { transport.close(); server.close(); }
+    }
+
     @Test
     public void rejectsRouteCookieForDifferentInstance() throws Exception {
         checkRouteCredential(true, "other-instance", false);

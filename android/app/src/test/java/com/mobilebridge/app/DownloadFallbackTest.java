@@ -24,4 +24,13 @@ public final class DownloadFallbackTest {
         assertNotEquals(DownloadFallback.session("codex_mobile_session=other-account"), record.getString("session"));
         assertEquals("", DownloadFallback.session(null));
     }
+
+    @Test public void retryUsesTheOriginalNamespaceWithStaleCookiesPresent() throws Exception {
+        String name = "codex_mobile_session_0123456789abcdef01234567";
+        JSONObject record = DownloadFallback.record("https://public.example",
+            URI.create("https://public.example/api/chats"), "app.apk", null, null, name + "=current");
+        String header = "codex_mobile_session=stale; " + name + "=current";
+        RouteCredentials.Root root = RouteCredentials.root(header, record.getString("cookieName"));
+        assertEquals(record.getString("session"), DownloadFallback.session(root.cookie()));
+    }
 }

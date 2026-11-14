@@ -17,7 +17,9 @@ public final class RecoveryRecordTest {
                 .put("http://192.168.1.2:8787")
                 .put("https://home.example.com")
                 .put("http://8.8.8.8:8787"));
-        JSONObject auth = new JSONObject().put("mobileRoutes", routes);
+        String cookieName = "codex_mobile_session_0123456789abcdef01234567";
+        JSONObject auth = new JSONObject().put("mobileRoutes", routes).put("cookieName", cookieName)
+            .put("csrf", "private-token");
         profile.recordAuthentication(auth, "http://10.0.0.2:8787");
 
         JSONObject encoded = profile.toJson();
@@ -27,7 +29,8 @@ public final class RecoveryRecordTest {
         assertEquals(2, decoded.localOrigins.size());
         assertEquals(2, decoded.recoveryCandidates(4).size());
         assertEquals(Candidate.CACHE, decoded.recoveryCandidates(4).get(0).source);
-        assertFalse(encoded.toString().contains("codex_mobile_session"));
+        assertEquals(cookieName, decoded.cookieName);
+        assertFalse(encoded.toString().contains("private-token"));
         assertFalse(encoded.toString().contains("cmbroute1_"));
     }
 

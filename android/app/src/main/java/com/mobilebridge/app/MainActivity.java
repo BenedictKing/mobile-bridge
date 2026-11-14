@@ -465,8 +465,10 @@ public final class MainActivity extends Activity {
             request.addRequestHeader("Origin", active.origin);
             request.addRequestHeader("X-Mobile-Bridge-Native", "1");
         }
-        JSONObject fallback = local == null ? null : DownloadFallback.record(active.origin, target, name, mimeType,
-            userAgent, CookieManager.getInstance().getCookie(active.origin + "/"));
+        RouteCredentials.Root rootCookie = local == null ? null : RouteCredentials.root(
+            CookieManager.getInstance().getCookie(active.origin + "/"), local.cookie.split("=", 2)[0]);
+        JSONObject fallback = rootCookie == null ? null : DownloadFallback.record(active.origin, target, name, mimeType,
+            userAgent, rootCookie.cookie());
         Runnable enqueue = () -> enqueueDownload(request, fallback);
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -679,7 +681,9 @@ public final class MainActivity extends Activity {
     private void startLocalRecovery(GatewayProfile profile, URI publicOrigin, int epoch) {
         String cookie = CookieManager.getInstance().getCookie(publicOrigin.toString());
         if (cookie == null || profile.deviceId.isEmpty()) return;
-        recovery = new LocalRecoveryCoordinator(this, profile, publicOrigin, cookie,
+        RouteCredentials.Root rootCookie = RouteCredentials.root(cookie, profile.cookieName);
+        if (rootCookie == null) return;
+        recovery = new LocalRecoveryCoordinator(this, profile, publicOrigin, rootCookie.cookie(),
             new LocalRecoveryCoordinator.Listener() {
                 @Override
                 public void onRecovered(DirectTransport.VerifiedRoute route) {
@@ -823,6 +827,8 @@ public final class MainActivity extends Activity {
 
     @Override
     @SuppressWarnings("deprecation")
+    // Android 13+ 手势已由 registerBackHandler 的原生回调处理；此处保留旧系统返回键兼容。
+    @android.annotation.SuppressLint("GestureBackNavigation")
     public void onBackPressed() {
         if (settingsPanel != null && settingsPanel.getVisibility() == View.VISIBLE) {
             if (canLeaveSettings()) hideSettings();

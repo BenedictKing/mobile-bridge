@@ -26,10 +26,12 @@ public final class DownloadFallback extends BroadcastReceiver {
 
     static JSONObject record(String origin, URI url, String name, String mime, String agent, String cookie) {
         JSONObject value = new JSONObject();
+        RouteCredentials.Root root = RouteCredentials.root(cookie);
         try {
             value.put("origin", origin).put("url", url.toString()).put("name", name)
                 .put("mime", mime == null ? "" : mime).put("agent", agent == null ? "" : agent)
-                .put("session", session(cookie));
+                .put("session", session(cookie))
+                .put("cookieName", root == null ? "" : root.name);
         } catch (Exception error) {
             throw new IllegalArgumentException(error);
         }
@@ -76,6 +78,8 @@ public final class DownloadFallback extends BroadcastReceiver {
             URI url = DownloadPolicy.resolve(URI.create(origin), value.getString("url"));
             if (url == null) return;
             String cookie = CookieManager.getInstance().getCookie(origin + "/");
+            RouteCredentials.Root root = RouteCredentials.root(cookie, value.optString("cookieName"));
+            cookie = root == null ? null : root.cookie();
             if (cookie == null || session(cookie).isEmpty()
                 || !session(cookie).equals(value.optString("session"))) return;
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url.toString()))

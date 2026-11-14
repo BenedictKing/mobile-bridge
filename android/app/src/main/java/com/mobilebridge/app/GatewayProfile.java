@@ -15,6 +15,7 @@ final class GatewayProfile {
     String name;
     String origin;
     String deviceId = "";
+    String cookieName = "";
     long lastSuccessAt;
     final List<String> localOrigins = new ArrayList<>();
 
@@ -31,6 +32,7 @@ final class GatewayProfile {
                 .put("name", name)
                 .put("origin", origin)
                 .put("deviceId", deviceId)
+                .put("cookieName", cookieName)
                 .put("lastSuccessAt", lastSuccessAt)
                 .put("localOrigins", new JSONArray(localOrigins));
         } catch (Exception impossible) {
@@ -48,6 +50,7 @@ final class GatewayProfile {
         if (name.isEmpty()) name = "新网关";
         GatewayProfile profile = new GatewayProfile(id, name, origin);
         profile.deviceId = value.optString("deviceId", "");
+        profile.cookieName = value.optString("cookieName", "");
         profile.lastSuccessAt = value.optLong("lastSuccessAt");
         JSONArray origins = value.optJSONArray("localOrigins");
         if (origins != null) {
@@ -60,6 +63,7 @@ final class GatewayProfile {
     }
 
     void recordAuthentication(JSONObject auth, String preferredOrigin) {
+        cookieName = auth.optString("cookieName", cookieName);
         JSONObject routes = auth.optJSONObject("mobileRoutes");
         if (routes == null) return;
         String id = routes.optString("deviceId", "");

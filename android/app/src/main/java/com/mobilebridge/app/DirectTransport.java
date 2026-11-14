@@ -69,28 +69,35 @@ final class DirectTransport {
 
     void refresh(List<Candidate> candidates, String cookie, String expectedDeviceId, String gatewayInstanceId) {
         int current = generation.incrementAndGet();
+        VerifiedRoute previous = selectedRoute;
+        boolean keep = previous != null && cookie.equals(lastCookie)
+            && deviceId.equals(expectedDeviceId == null ? "" : expectedDeviceId)
+            && instanceId.equals(gatewayInstanceId == null ? "" : gatewayInstanceId)
+            && candidates.stream().anyMatch(candidate -> candidate.origin.equals(previous.candidate.origin));
         lastCandidates = new ArrayList<>(candidates);
         lastCookie = cookie;
         deviceId = expectedDeviceId == null ? "" : expectedDeviceId;
         instanceId = gatewayInstanceId == null ? "" : gatewayInstanceId;
-        selectedRoute = null;
+        if (!keep) selectedRoute = null;
         if (candidates.isEmpty() || cookie.isEmpty()) {
             listener.onRoute("public", "");
             return;
         }
         VerificationContext context = new VerificationContext(cookie, deviceId, instanceId);
-        listener.onRoute("probing", "");
+        if (!keep) listener.onRoute("probing", "");
         refreshExecutor.execute(() -> {
             List<URI> origins = new ArrayList<>();
             for (Candidate candidate : candidates) origins.add(candidate.origin);
             URI found = selector.select(origins, origin -> verify(find(candidates, origin, context), context) != null);
             if (current != generation.get()) return;
             if (found == null) {
+                selectedRoute = null;
                 listener.onRoute("public", "");
                 return;
             }
             VerifiedRoute route = context.verified.get(found.toString());
             if (route == null) {
+                selectedRoute = null;
                 listener.onRoute("public", "");
                 return;
             }
@@ -124,9 +131,9 @@ final class DirectTransport {
         }
         JSONObject auth = new JSONObject(NativeHttp.readStringAndClose(response));
         if (!validAuth(candidate, auth, false, context)) return null;
-        RouteCredentials.Root root = RouteCredentials.root(context.cookie);
-        String routeCookie = root == null ? context.cookie
-            : root.name + "=" + RouteCredentials.routeToken(root.token, candidate.origin.toString());
+        RouteCredentials.Root root = RouteCredentials.root(context.cookie, auth.optString("cookieName"));
+        if (root == null) return null;
+        String routeCookie = root.name + "=" + RouteCredentials.routeToken(root.token, candidate.origin.toString());
         return verifyRouteCookie(candidate, routeCookie, auth, context);
     }
 

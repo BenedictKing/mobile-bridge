@@ -120,7 +120,8 @@ final class GatewayWebViewClient extends WebViewClient {
                             Candidate.PUBLIC_MANIFEST);
                     }
                 }
-                lastCookie = cookie;
+                RouteCredentials.Root root = RouteCredentials.root(cookie, auth.optString("cookieName"));
+                lastCookie = root == null ? "" : root.cookie();
                 deviceId = routes == null ? "" : routes.optString("deviceId");
                 instanceId = auth.optString("instanceId");
                 if (bonjour == null && deviceId.matches("^[a-f0-9]{32}$")) {

@@ -25,4 +25,22 @@ public final class RouteCredentialsTest {
         assertEquals("secret", root.token);
         assertNull(RouteCredentials.root("codex_mobile_session=cmbroute1_abc"));
     }
+
+    @Test public void selectsTheGatewayNamespaceRegardlessOfCookieOrder() {
+        String name = "codex_mobile_session_0123456789abcdef01234567";
+        String stale = "codex_mobile_session=old; codex_mobile_session_aaaaaaaaaaaaaaaaaaaaaaaa=other";
+        for (String header : new String[]{stale + "; " + name + "=current", name + "=current; " + stale}) {
+            assertNull(RouteCredentials.root(header));
+            assertEquals("current", RouteCredentials.root(header, name).token);
+            assertEquals(name, RouteCredentials.root(header, name).name);
+        }
+    }
+
+    @Test public void migratesLegacyCookieButDoesNotReplaceAnInvalidNamespacedCookie() {
+        String name = "codex_mobile_session_0123456789abcdef01234567";
+        assertEquals(name + "=old", RouteCredentials.root("codex_mobile_session=old", name).cookie());
+        assertNull(RouteCredentials.root(name + "=cmbroute1_invalid; codex_mobile_session=old", name));
+        assertNull(RouteCredentials.root("codex_mobile_session_aaaaaaaaaaaaaaaaaaaaaaaa=other", name));
+        assertNull(RouteCredentials.root("codex_mobile_session=old", "unrelated-cookie"));
+    }
 }

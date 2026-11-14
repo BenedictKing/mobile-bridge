@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <instrumentation android:name="com.mobilebridge.app.DownloadVerification"
         android:targetPackage="com.mobilebridge.app" />
+    <instrumentation android:name="com.mobilebridge.app.RouteDiagnostic"
+        android:targetPackage="com.mobilebridge.app" />
+    <instrumentation android:name="com.mobilebridge.app.DownloadInspection"
+        android:targetPackage="com.mobilebridge.app" />
 </manifest>
