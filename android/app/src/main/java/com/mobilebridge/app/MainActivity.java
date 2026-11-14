@@ -462,7 +462,7 @@ public final class MainActivity extends Activity {
         URI destination = local == null ? target : local.uri;
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(destination.toString()))
             .setTitle(name)
-            .setDescription("来自 " + active.displayName())
+            .setDescription((local == null ? "公网下载 · " : "局域网下载 · ") + destination.getAuthority())
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
         if (mimeType != null && !mimeType.isEmpty()) request.setMimeType(mimeType);

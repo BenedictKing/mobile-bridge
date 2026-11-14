@@ -23,6 +23,7 @@ public final class DownloadInspection extends Instrumentation {
                 JSONObject report = new JSONObject().put("id", id).put("status", status)
                     .put("reason", cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)))
                     .put("uri", cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_URI)))
+                    .put("description", cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_DESCRIPTION)))
                     .put("bytes", cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)))
                     .put("total", cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)));
                 if (status == DownloadManager.STATUS_SUCCESSFUL) {

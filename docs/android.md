@@ -47,6 +47,8 @@ Android App 复用现有 Mobile Bridge 网页、Cloudflare 登录和会话。普
 
 独立测试 APK 中的 `DownloadVerification` 可接受 `url`、`initial`、`sha256` 参数复验；不包含在交付 APK 中。先构建 `:app:assembleAndroidTest` 并安装应用和测试 APK，再通过 `adb shell am instrument -w ... com.mobilebridge.app.test/com.mobilebridge.app.DownloadVerification` 运行。测试只使用隔离端点的测试凭据。
 
+下载来源显示复验：用户反馈系统下载通知/记录显示公网域名。在上述真实聊天重测，旧包任务 19 的实际 URI 为 LAN `172.27.70.98:8787`，但 description 固定为“来自 默认网关 · bridge.lightllm.online”。现在 description 按实际目的地址显示“局域网下载 · 地址”或“公网下载 · 地址”，自动回退显示“公网重试 · 地址（局域网下载失败）”。新包任务 20 的 URI 和 description 均为 LAN，约 11 秒完整下载同一文件，字节数及 SHA-256 一致。旧下载记录不会被覆盖，需新建下载观察；手机实际线路仍须以新任务为准。模拟器网络调度限制与前述相同。
+
 真实链路可用只读工具：`RouteDiagnostic` 接受 `origin`、`local` 参数，输出 Cookie 名称与鉴权结果（不输出凭据）；`DownloadInspection` 接受 `id`，输出任务实际 URI、状态、字节数及已完成文件的 SHA-256。
 
 ## 返回手势

@@ -84,7 +84,7 @@ public final class DownloadFallback extends BroadcastReceiver {
                 || !session(cookie).equals(value.optString("session"))) return;
             DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url.toString()))
                 .setTitle(value.getString("name"))
-                .setDescription("局域网下载失败，已通过公网重新下载")
+                .setDescription("公网重试 · " + url.getAuthority() + "（局域网下载失败）")
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, value.getString("name"));
             request.addRequestHeader("Cookie", cookie);
