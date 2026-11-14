@@ -449,16 +449,22 @@ public final class MainActivity extends Activity {
             return;
         }
         String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
-        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(target.toString()))
+        DirectTransport.DownloadTarget local = direct == null ? null : direct.downloadTarget(target);
+        URI destination = local == null ? target : local.uri;
+        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(destination.toString()))
             .setTitle(name)
             .setDescription("来自 " + active.displayName())
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
         if (mimeType != null && !mimeType.isEmpty()) request.setMimeType(mimeType);
         if (userAgent != null && !userAgent.isEmpty()) request.addRequestHeader("User-Agent", userAgent);
-        // 系统下载器独立于 WebView，必须显式携带当前网关的登录 Cookie。
-        String cookie = CookieManager.getInstance().getCookie(active.origin + "/");
+        // 系统下载器独立于 WebView，必须显式携带当前网关或已验证直连路由的登录 Cookie。
+        String cookie = local == null ? CookieManager.getInstance().getCookie(active.origin + "/") : local.cookie;
         if (cookie != null && !cookie.isEmpty()) request.addRequestHeader("Cookie", cookie);
+        if (local != null) {
+            request.addRequestHeader("Origin", active.origin);
+            request.addRequestHeader("X-Mobile-Bridge-Native", "1");
+        }
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
             pendingDownload = request;

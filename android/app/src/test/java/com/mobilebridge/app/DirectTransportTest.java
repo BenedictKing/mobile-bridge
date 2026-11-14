@@ -65,6 +65,12 @@ public final class DirectTransportTest {
             assertEquals(200, response.status);
             response.close();
             assertEquals("codex_mobile_session=" + RouteCredentials.routeToken("root-secret", server.origin()), businessCookie.get());
+            DirectTransport.DownloadTarget download = transport.downloadTarget(
+                URI.create("https://public.example/api/sessions/session_123e4567-e89b-42d3-a456-426614174000/files/file?host=local"));
+            assertEquals(server.origin() + "/api/sessions/session_123e4567-e89b-42d3-a456-426614174000/files/file?host=local",
+                download.uri.toString());
+            assertEquals("codex_mobile_session=" + RouteCredentials.routeToken("root-secret", server.origin()),
+                download.cookie);
         } finally {
             transport.close();
             server.close();

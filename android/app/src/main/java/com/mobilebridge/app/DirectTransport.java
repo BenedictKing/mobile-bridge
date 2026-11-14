@@ -181,14 +181,30 @@ final class DirectTransport {
         return false;
     }
 
-    NativeHttp.Response open(URI publicRequest, String method) {
+    static final class DownloadTarget {
+        final URI uri;
+        final String cookie;
+
+        DownloadTarget(URI uri, String cookie) {
+            this.uri = uri;
+            this.cookie = cookie;
+        }
+    }
+
+    DownloadTarget downloadTarget(URI publicRequest) {
         URI local = selected;
         String cookie = selectedCookie;
         if (local == null || cookie.isEmpty()) return null;
         String target = publicRequest.getRawPath();
         if (publicRequest.getRawQuery() != null) target += "?" + publicRequest.getRawQuery();
+        return new DownloadTarget(local.resolve(target), cookie);
+    }
+
+    NativeHttp.Response open(URI publicRequest, String method) {
+        DownloadTarget target = downloadTarget(publicRequest);
+        if (target == null) return null;
         try {
-            NativeHttp.Response response = NativeHttp.open(local.resolve(target), method, headers(cookie), 800, 0);
+            NativeHttp.Response response = NativeHttp.open(target.uri, method, headers(target.cookie), 800, 0);
             if (response.status == 401 || response.status == 403) {
                 response.close();
                 invalidate();
