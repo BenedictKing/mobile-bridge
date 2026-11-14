@@ -21,6 +21,13 @@ public final class DownloadPolicyTest {
     }
 
     @Test
+    public void acceptsAcpSessionApkDownloads() {
+        String apk = APK.replace(SESSION, "session_" + SESSION);
+        assertEquals(URI.create(PUBLIC + apk + "?host=local"),
+            DownloadPolicy.resolve(PUBLIC, apk + "?host=local"));
+    }
+
+    @Test
     public void resolvesOnlyAllowedRelativeDownloads() {
         assertEquals(URI.create(PUBLIC + APK + "?host=local"),
             DownloadPolicy.resolve(PUBLIC, APK + "?host=local"));

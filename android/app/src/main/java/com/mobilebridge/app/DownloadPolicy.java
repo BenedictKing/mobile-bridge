@@ -4,15 +4,16 @@ import java.net.URI;
 import java.util.regex.Pattern;
 
 final class DownloadPolicy {
+    private static final String SESSION = "(?:session_)?[0-9a-f-]{36}";
     private static final Pattern ARTIFACT = Pattern.compile(
-        "^/api/sessions/[0-9a-f-]{36}/(?:files/[a-f0-9]{64}|workspace/download)$");
+        "^/api/sessions/" + SESSION + "/(?:files/[a-f0-9]{64}|workspace/download)$");
     private static final Pattern DESKTOP_ARTIFACT = Pattern.compile(
         "^/api/desktop-sessions/(?:claude|deepseek|zcode)/workspace/download$");
     private static final Pattern IMAGE = Pattern.compile(
-        "^/api/sessions/[0-9a-f-]{36}/(?:uploads/[0-9a-f-]{36}/preview|desktop-images/[a-f0-9]{64})$" +
+        "^/api/sessions/" + SESSION + "/(?:uploads/[0-9a-f-]{36}/preview|desktop-images/[a-f0-9]{64})$" +
         "|^/api/desktop-sessions/(?:claude|deepseek|zcode)/(?:uploads/[0-9a-f-]{36}/preview|images/[a-f0-9]{64})$");
     private static final Pattern DIAGNOSTIC_QUERY = Pattern.compile(
-        "^thread=[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
+        "^thread=(?:session_)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
     private DownloadPolicy() {}
 
