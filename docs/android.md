@@ -43,6 +43,8 @@ Android App 复用现有 Mobile Bridge 网页、Cloudflare 登录和会话。普
 
 用户首次重启后，真实 LAN 增量流连续 16 秒收到 `ready`、`reset` 和心跳，未再收到 `logout`。继续检查 LAN 恢复页面发现第二处凭据生命周期问题：`/api/auth` 对有效路由 Cookie 使用根 Cookie 续期器，误发 `Max-Age=0` 并将浏览器 Cookie 删除。现路由认证不再重写 Cookie，根登录仍正常续期；恢复页面下载仅允许公网 origin 或已验证 LAN origin 的附件路径，并继续携带该路由凭据。修复后需再次加载后端并复验恢复页面。
 
+用户第二次重启后确认：路由 `/api/auth` 返回已认证且不再含删除 Cookie 的响应头；APK 自动恢复到真实 LAN 页面，多次认证和聊天订阅后 Cookie 保留、页面保持登录。恢复页点击同一真实 APK 产生任务 18，仍使用 `172.27.70.98:8787`，约 11 秒完成 86,360,851 字节，SHA-256 与源文件一致。已修正旧传输器回调覆盖 LAN 状态标签的问题。Android 33 项测试、构建、lint 通过；HTTP 层全量竞态回归及后续 Cookie 生命周期定向竞态回归通过。两次真实下载均需绕过模拟器 PARTIAL_CONNECTIVITY 的调度限制，不将其表述为实机自动调度验收。
+
 独立测试 APK 中的 `DownloadVerification` 可接受 `url`、`initial`、`sha256` 参数复验；不包含在交付 APK 中。先构建 `:app:assembleAndroidTest` 并安装应用和测试 APK，再通过 `adb shell am instrument -w ... com.mobilebridge.app.test/com.mobilebridge.app.DownloadVerification` 运行。测试只使用隔离端点的测试凭据。
 
 真实链路可用只读工具：`RouteDiagnostic` 接受 `origin`、`local` 参数，输出 Cookie 名称与鉴权结果（不输出凭据）；`DownloadInspection` 接受 `id`，输出任务实际 URI、状态、字节数及已完成文件的 SHA-256。

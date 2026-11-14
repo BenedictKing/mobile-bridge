@@ -632,7 +632,7 @@ public final class MainActivity extends Activity {
         direct = new DirectTransport(origin, new DirectTransport.Listener() {
             @Override
             public void onRoute(String mode, String host) {
-                main.post(() -> { if (epoch == connectionGeneration) showRoute(mode, host); });
+                main.post(() -> { if (epoch == connectionGeneration && !localShell) showRoute(mode, host); });
             }
 
             @Override
