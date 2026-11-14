@@ -16,6 +16,10 @@ public final class RouteDiagnostic extends Instrumentation {
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
+            if ("true".equals(args.getString("activity"))) {
+                startActivitySync(new android.content.Intent(getTargetContext(), MainActivity.class)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+            }
             String origin = args.getString("origin");
             String local = args.getString("local");
             String cookies = CookieManager.getInstance().getCookie(origin);

@@ -57,4 +57,15 @@ public final class DownloadPolicyTest {
         assertFalse(DownloadPolicy.allows(PUBLIC, URI.create(
             "https://codex.example.com/api/sessions/" + SESSION + "/uploads/" + SESSION + "/preview?download=1&download=1")));
     }
+
+    @Test public void recoveredPageAcceptsOnlyItsVerifiedOrigin() {
+        URI local = URI.create("http://192.168.1.2:8787");
+        URI expected = URI.create(PUBLIC + APK + "?host=local");
+        assertEquals(expected, DownloadPolicy.resolve(PUBLIC, local, local + APK + "?host=local"));
+        assertEquals(expected, DownloadPolicy.resolve(PUBLIC, local, APK + "?host=local"));
+        assertEquals(expected, DownloadPolicy.resolve(PUBLIC, local, expected.toString()));
+        assertNull(DownloadPolicy.resolve(PUBLIC, local, "http://192.168.1.3:8787" + APK));
+        assertNull(DownloadPolicy.resolve(PUBLIC, local, local + "/api/auth"));
+        assertNull(DownloadPolicy.resolve(PUBLIC, local, local + APK + "#fragment"));
+    }
 }

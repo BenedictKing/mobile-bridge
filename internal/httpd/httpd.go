@@ -1577,7 +1577,9 @@ func (h *handler) handleAuth() {
 		body.Set("nativeDirect", candidates)
 	}
 	cookie := ""
-	if session != nil {
+	if session != nil && !viaRoute {
+		// Route credentials are installed by the verified companion. The root
+		// cookie formatter cannot renew them and would emit Max-Age=0.
 		cookie = h.cookieValue(token)
 	}
 	h.output(http.StatusOK, body, contentTypeJSON, cookie)

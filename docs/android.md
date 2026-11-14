@@ -41,6 +41,8 @@ Android App 复用现有 Mobile Bridge 网页、Cloudflare 登录和会话。普
 
 网络切换复查还暴露出网关 SSE 登录复查不一致：真实服务接受路由 Cookie 后返回 `ready`，随即因只检查根 Cookie 而返回 `logout`。聊天快照流、增量流和团队事件流现统一使用路由会话解析；回归测试验证有效路由先收到数据，撤销父登录后仍正确退出。此后端修复必须由用户重启网关加载，Android 更新本身不能替换运行中的网关。
 
+用户首次重启后，真实 LAN 增量流连续 16 秒收到 `ready`、`reset` 和心跳，未再收到 `logout`。继续检查 LAN 恢复页面发现第二处凭据生命周期问题：`/api/auth` 对有效路由 Cookie 使用根 Cookie 续期器，误发 `Max-Age=0` 并将浏览器 Cookie 删除。现路由认证不再重写 Cookie，根登录仍正常续期；恢复页面下载仅允许公网 origin 或已验证 LAN origin 的附件路径，并继续携带该路由凭据。修复后需再次加载后端并复验恢复页面。
+
 独立测试 APK 中的 `DownloadVerification` 可接受 `url`、`initial`、`sha256` 参数复验；不包含在交付 APK 中。先构建 `:app:assembleAndroidTest` 并安装应用和测试 APK，再通过 `adb shell am instrument -w ... com.mobilebridge.app.test/com.mobilebridge.app.DownloadVerification` 运行。测试只使用隔离端点的测试凭据。
 
 真实链路可用只读工具：`RouteDiagnostic` 接受 `origin`、`local` 参数，输出 Cookie 名称与鉴权结果（不输出凭据）；`DownloadInspection` 接受 `id`，输出任务实际 URI、状态、字节数及已完成文件的 SHA-256。

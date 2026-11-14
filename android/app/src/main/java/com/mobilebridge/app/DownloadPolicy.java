@@ -22,6 +22,14 @@ final class DownloadPolicy {
         return allows(publicOrigin, target) ? target : null;
     }
 
+    static URI resolve(URI publicOrigin, URI verifiedOrigin, String value) {
+        URI direct = resolve(verifiedOrigin, value);
+        if (direct == null) return resolve(publicOrigin, value);
+        String path = direct.getRawPath();
+        if (direct.getRawQuery() != null) path += "?" + direct.getRawQuery();
+        return publicOrigin.resolve(path);
+    }
+
     static boolean allows(URI publicOrigin, URI target) {
         if (!sameOrigin(publicOrigin, target) || target.getRawFragment() != null) return false;
         String path = target.getRawPath();

@@ -65,3 +65,28 @@ func TestStreamsAcceptRouteCookieAndHonorRevocation(t *testing.T) {
 		})
 	}
 }
+
+func TestRouteAuthDoesNotExpireInstalledCookie(t *testing.T) {
+	f := newMobileAPIFixture(t, "none")
+	target := "http://127.0.0.1:8790"
+	credential := routeCredential(f.token, target)
+	bindings := jsoncompat.NewObject()
+	bindings.Set(target, routeDigest(credential))
+	f.auth.MutateSessionByKey(auth.SessionKey(f.token), func(session *jsoncompat.Object) bool {
+		session.Set("routeBindings", bindings)
+		return true
+	})
+	request := f.build(http.MethodGet, "/api/auth", "", false)
+	request.AddCookie(&http.Cookie{Name: f.auth.CookieName(), Value: credential})
+	response := f.serve(request)
+	if decodeMobileJSON(t, response)["authenticated"] != true {
+		t.Fatal("route cookie must authenticate")
+	}
+	if cookies := response.Header().Values("Set-Cookie"); len(cookies) != 0 {
+		t.Fatalf("route authentication must preserve the installed cookie: %v", cookies)
+	}
+	root := f.request(http.MethodGet, "/api/auth", "")
+	if root.Header().Get("Set-Cookie") == "" {
+		t.Fatal("root login renewal must remain enabled")
+	}
+}

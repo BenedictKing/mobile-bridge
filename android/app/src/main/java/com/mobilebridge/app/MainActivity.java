@@ -78,6 +78,7 @@ public final class MainActivity extends Activity {
     private GatewayWebViewClient gatewayClient;
     private LocalRecoveryCoordinator recovery;
     private DirectTransport.VerifiedRoute pendingRecovery;
+    private DirectTransport.VerifiedRoute recoveredRoute;
     private boolean publicLoaded;
     private boolean publicFailed;
     private boolean localShell;
@@ -442,7 +443,10 @@ public final class MainActivity extends Activity {
         URI target;
         try {
             if (active == null) throw new IllegalArgumentException("No active gateway");
-            target = DownloadPolicy.resolve(URI.create(active.origin), url);
+            URI publicOrigin = URI.create(active.origin);
+            target = localShell && recoveredRoute != null
+                ? DownloadPolicy.resolve(publicOrigin, recoveredRoute.candidate.origin, url)
+                : DownloadPolicy.resolve(publicOrigin, url);
             if (target == null) throw new IllegalArgumentException("Download is not a gateway artifact");
         } catch (Exception invalid) {
             Toast.makeText(this, "无法下载：附件地址无效", Toast.LENGTH_LONG).show();
@@ -450,6 +454,11 @@ public final class MainActivity extends Activity {
         }
         String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
         DirectTransport.DownloadTarget local = direct == null ? null : direct.downloadTarget(target);
+        if (localShell && recoveredRoute != null) {
+            String path = target.getRawPath();
+            if (target.getRawQuery() != null) path += "?" + target.getRawQuery();
+            local = new DirectTransport.DownloadTarget(recoveredRoute.candidate.origin.resolve(path), recoveredRoute.routeCookie);
+        }
         URI destination = local == null ? target : local.uri;
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(destination.toString()))
             .setTitle(name)
@@ -616,6 +625,7 @@ public final class MainActivity extends Activity {
         publicLoaded = false;
         publicFailed = false;
         localShell = false;
+        recoveredRoute = null;
         connectStartedAt = System.currentTimeMillis();
         route = routeJson("public", "");
         GatewayProfile connectedProfile = profile;
@@ -726,6 +736,7 @@ public final class MainActivity extends Activity {
                 return;
             }
             CookieManager.getInstance().flush();
+            recoveredRoute = route;
             direct.clear();
             webView.stopLoading();
             webView.setVisibility(View.VISIBLE);
