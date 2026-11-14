@@ -84,7 +84,7 @@ public final class MainActivity extends Activity {
     private long connectStartedAt;
     private ConnectivityManager.NetworkCallback networkCallback;
     private ValueCallback<Uri[]> fileCallback;
-    private DownloadManager.Request pendingDownload;
+    private Runnable pendingDownload;
     private final List<GatewayProfile> gateways = new ArrayList<>();
     private String selectedGatewayId = "";
     private String activeGatewayId = "";
@@ -465,20 +465,21 @@ public final class MainActivity extends Activity {
             request.addRequestHeader("Origin", active.origin);
             request.addRequestHeader("X-Mobile-Bridge-Native", "1");
         }
+        JSONObject fallback = local == null ? null : DownloadFallback.record(active.origin, target, name, mimeType,
+            userAgent, CookieManager.getInstance().getCookie(active.origin + "/"));
+        Runnable enqueue = () -> enqueueDownload(request, fallback);
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
             checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            pendingDownload = request;
+            pendingDownload = enqueue;
             requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, DOWNLOAD_PERMISSION);
             return;
         }
-        enqueueDownload(request);
+        enqueue.run();
     }
 
-    private void enqueueDownload(DownloadManager.Request request) {
+    private void enqueueDownload(DownloadManager.Request request, JSONObject fallback) {
         try {
-            DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            if (manager == null) throw new IllegalStateException("Download service unavailable");
-            manager.enqueue(request);
+            DownloadFallback.enqueue(this, request, fallback);
             Toast.makeText(this, "已开始下载，完成后可在系统下载记录中打开", Toast.LENGTH_LONG).show();
         } catch (Exception error) {
             Toast.makeText(this, "下载失败，请检查系统下载服务和存储空间后重试", Toast.LENGTH_LONG).show();
@@ -810,11 +811,11 @@ public final class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != DOWNLOAD_PERMISSION) return;
-        DownloadManager.Request request = pendingDownload;
+        Runnable request = pendingDownload;
         pendingDownload = null;
         if (request == null) return;
         if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            enqueueDownload(request);
+            request.run();
         } else {
             Toast.makeText(this, "需要存储权限才能保存下载文件", Toast.LENGTH_LONG).show();
         }

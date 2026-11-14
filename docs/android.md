@@ -22,6 +22,20 @@ Android App 复用现有 Mobile Bridge 网页、Cloudflare 登录和会话。普
 - 公网 TLS 始终使用系统证书校验，没有忽略证书错误。
 - Android 新版本可能要求“局域网”运行时权限，请按系统提示允许；拒绝后仍可使用 Cloudflare。
 
+## 附件下载
+
+- 下载使用 Android 系统下载器。入队时复用当前已验证 LAN 路由的地址和派生 Cookie；无可用路由时使用公网。
+- LAN 路由只有在实际派生 Cookie 的 `/api/auth` 响应包含 `authenticated: true` 且网关身份一致后才可用。HTTP 200 本身不代表登录成功。地址与 Cookie 作为同一个快照发布。
+- LAN 任务因鉴权或传输错误最终失败后，后台完成广播触发一次公网重试。重试读取原网关的当前 Cookie，并校验登录会话未变；持久记录不保存原始凭据。
+- 文件不存在、存储错误、空间不足和用户取消不触发公网重试。公网重试不会再次创建回退任务。
+- 系统下载器负责同一 URL 的重试和续传。跨路由回退从头下载；排队、暂停或正在传输的任务不会立即切换 URL。路由探测期间点击下载仍可能选择公网。
+
+2026-11-14 验证：Pixel_9 系统下载器收到受控 401 后，自动创建回退任务并下载真实 Fridge Master APK；86,360,851 字节，SHA-256 为 `201d045b7e8c045b2edd481ea50bbdfa34eba9f6cc4a8ca2208741c657ecb3d0`，与源文件一致。
+
+此验证使用隔离 HTTP 端点，两个任务均因模拟器网络约束而手动触发 JobScheduler；不代表真实公网或完整网关流程已验收。仍需用正式包、真实网关、自动 LAN 发现和聊天附件点击，核实实际 Host、鉴权、字节数及网络切换行为。
+
+独立测试 APK 中的 `DownloadVerification` 可接受 `url`、`initial`、`sha256` 参数复验；不包含在交付 APK 中。先构建 `:app:assembleAndroidTest` 并安装应用和测试 APK，再通过 `adb shell am instrument -w ... com.mobilebridge.app.test/com.mobilebridge.app.DownloadVerification` 运行。测试只使用隔离端点的测试凭据。
+
 ## 返回手势
 
 系统返回手势和返回键按 WebView 的历史栈处理：聊天页、团队会话和 Run 页各压一条历史，返回一次回到会话列表，列表页再返回才退出 App。网页侧因此不再只用 `replaceState` 换屏（那会让历史栈永远只有一条，`webView.canGoBack()` 恒为 false，返回手势会直接退出 App）；压栈只在手机宽度（≤720px）生效，桌面和平板的双栏布局仍按原来的方式只替换 hash。深链（通知或转发链接落在某个聊天、`#team=`、`#run=`）没有可退的列表条目，此时页内返回按钮就地关闭面板，系统返回直接退出。

@@ -53,8 +53,7 @@ final class DirectTransport {
     private final URI publicOrigin;
     private volatile String instanceId = "";
     private volatile String deviceId = "";
-    private volatile URI selected;
-    private volatile String selectedCookie = "";
+    private volatile VerifiedRoute selectedRoute;
     private volatile List<Candidate> lastCandidates = new ArrayList<>();
     private volatile String lastCookie = "";
 
@@ -64,7 +63,8 @@ final class DirectTransport {
     }
 
     URI selected() {
-        return selected;
+        VerifiedRoute route = selectedRoute;
+        return route == null ? null : route.candidate.origin;
     }
 
     void refresh(List<Candidate> candidates, String cookie, String expectedDeviceId, String gatewayInstanceId) {
@@ -73,8 +73,7 @@ final class DirectTransport {
         lastCookie = cookie;
         deviceId = expectedDeviceId == null ? "" : expectedDeviceId;
         instanceId = gatewayInstanceId == null ? "" : gatewayInstanceId;
-        selected = null;
-        selectedCookie = "";
+        selectedRoute = null;
         if (candidates.isEmpty() || cookie.isEmpty()) {
             listener.onRoute("public", "");
             return;
@@ -95,8 +94,7 @@ final class DirectTransport {
                 listener.onRoute("public", "");
                 return;
             }
-            selected = found;
-            selectedCookie = route.routeCookie;
+            selectedRoute = route;
             listener.onVerified(route);
             listener.onRoute("lan", found.getHost());
         });
@@ -206,9 +204,10 @@ final class DirectTransport {
     }
 
     DownloadTarget downloadTarget(URI publicRequest) {
-        URI local = selected;
-        String cookie = selectedCookie;
-        if (local == null || cookie.isEmpty()) return null;
+        VerifiedRoute route = selectedRoute;
+        if (route == null || route.routeCookie.isEmpty()) return null;
+        URI local = route.candidate.origin;
+        String cookie = route.routeCookie;
         String target = publicRequest.getRawPath();
         if (publicRequest.getRawQuery() != null) target += "?" + publicRequest.getRawQuery();
         return new DownloadTarget(local.resolve(target), cookie);
@@ -232,8 +231,7 @@ final class DirectTransport {
     }
 
     void networkChanged() {
-        selected = null;
-        selectedCookie = "";
+        selectedRoute = null;
         if (!lastCandidates.isEmpty() && !lastCookie.isEmpty()) {
             refresh(lastCandidates, lastCookie, deviceId, instanceId);
         }
@@ -241,8 +239,7 @@ final class DirectTransport {
 
     void clear() {
         generation.incrementAndGet();
-        selected = null;
-        selectedCookie = "";
+        selectedRoute = null;
         lastCandidates = new ArrayList<>();
         lastCookie = "";
         instanceId = "";
@@ -251,8 +248,7 @@ final class DirectTransport {
     }
 
     private void invalidate() {
-        selected = null;
-        selectedCookie = "";
+        selectedRoute = null;
         listener.onRoute("public", "");
         if (!lastCandidates.isEmpty() && !lastCookie.isEmpty()) refresh(lastCandidates, lastCookie, deviceId, instanceId);
     }
