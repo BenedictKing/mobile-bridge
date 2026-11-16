@@ -45,3 +45,12 @@
 5. 验收包括断线后协程退出、空闲刷新次数受控、长会话多连接开销、增量消息/权限请求/子 Agent/Goal 正常更新及 race 检查。运行服务的 CPU 改善须在用户自行重启后再测量。
 
 本地证据保存在 `.tmp/gateway-cpu-current-symbolized.sample.txt`、`.tmp/gateway-cpu-diagnostic_test.go`、`.tmp/gateway-cpu-overlay.json`、`.tmp/gateway-cpu-diagnostic-results.txt` 和 `.tmp/gateway-cpu-http-disconnect-results.txt`；这些临时文件不纳入版本控制。
+
+## 用户重启后复测
+
+- 用户自行重启后，网关 PID 为 7442，仍监听 8787。首次检查已运行约 3 分 49 秒，CPU 为 18.7%；Agent Host 和 cloudflared 均为 0.0%。
+- 2026-11-16 19:15:26 至 19:16:28（北京时间），用 `top` 连续观察约 62 秒。排除首个没有区间基线的 0.0% 读数后，12 个区间 CPU 为 32.7%～55.8%，算术平均 42.2%；线程数 25～26，内存读数约 107～166 MB。
+- 5 秒调用栈采样仍命中 `streamIncremental → WaitFor → refreshLiveProjection → acpViewState → KimiStore.sessionDir / View.Snapshot`，空闲轮询中的昂贵工作依然存在。
+- 新二进制 revision 为 `a3b21573174422330a4a45dbf234fb16bbdf43e6`，带 dirty 标记；该提交只新增本诊断文档，目前没有针对上述运行逻辑的修复提交。
+- 结论：重启后的 CPU 已明显低于此前 242.3% 的单次观测，但仍持续消耗约 0.42 个 CPU 核心。两次并非相同负载的受控性能对比，不能据此精确归因或证明根治；断线退出和刷新开销仍需修复。
+- 本次未操作浏览器连接、调用实际网关 API或再次重启。证据：`.tmp/gateway-after-restart-7442-top.txt`、`.tmp/gateway-after-restart-7442.sample.txt`、`.tmp/gateway-after-restart-7442-symbolized.sample.txt`。
