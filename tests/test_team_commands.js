@@ -53,6 +53,27 @@ test('plain chats parse /new as new-chat, /new stays un-interceptable via compac
   assert.equal(parseCompactCommand('/new'),null);
 });
 
+test('plain /new creates a fresh title and inherits settings only',async()=>{
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const parseStart=source.indexOf('function parsePlainCommand'),parseEnd=source.indexOf('function compactInstructions',parseStart);
+  const submitStart=source.indexOf("$('composer').onsubmit="),submitEnd=source.indexOf("$('message').onkeydown",submitStart);
+  const nodes={composer:{},message:{value:'/new'}},calls=[],opened=[];
+  const context={
+    $:id=>nodes[id],t:value=>value,currentId:'old-chat',currentHost:'local',currentTeam:null,sending:false,
+    state:{agent:'kimi',cwd:'/work',title:'旧对话标题'},closeSkillSuggestions(){},syncSendButton(){},
+    attachments:{ready:()=>true,ids:()=>[]},uuid:()=> 'request-1',chatKey:(id,host)=>host+'|'+id,
+    sessionStorage:{removeItem(){}},loadList:async()=>{},openChat:async(...args)=>opened.push(args),toast(){},
+    api:async(path,body)=>{calls.push({path,body});return{id:'fresh-chat',host:'local'};},
+  };
+  vm.runInNewContext(source.slice(parseStart,parseEnd)+'\n'+source.slice(submitStart,submitEnd),context);
+  await nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].path,'/api/sessions');
+  same(calls[0].body,{id:'request-1',agent:'kimi',cwd:'/work',title:'新聊天',inheritFrom:'old-chat'});
+  assert.notEqual(calls[0].body.title,context.state.title);
+  same(opened,[['fresh-chat','local']]);
+});
+
 test('goal command parses objectives and is suggested only for capable plain chats',()=>{
   const flow=extract();
   same(flow.parsePlainCommand('/goal'),{kind:'goal',objective:''});
