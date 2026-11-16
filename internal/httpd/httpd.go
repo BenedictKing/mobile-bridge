@@ -80,6 +80,8 @@ func (stubBridge) AccountsPublic() any {
 
 // Server mirrors GatewayServer's request-facing behavior.
 type Server struct {
+	streamsClosed    chan struct{}
+	streamsCloseOnce sync.Once
 	Auth             *auth.Auth
 	Creations        *creations
 	Queue            *submissions
@@ -176,6 +178,7 @@ type Server struct {
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {
 	server := &Server{Auth: authenticator, WebFS: webFS, Port: port, InstanceID: instanceID,
+		streamsClosed: make(chan struct{}),
 		LocalHosts: map[string]bool{"127.0.0.1:" + strconv.Itoa(port): true,
 			"localhost:" + strconv.Itoa(port): true},
 		Hosts: map[string]bool{"127.0.0.1:" + strconv.Itoa(port): true,
@@ -257,9 +260,11 @@ func (w *trackedWriter) Write(body []byte) (int, error) {
 }
 
 func (w *trackedWriter) Flush() {
-	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	_ = w.FlushError()
+}
+
+func (w *trackedWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *trackedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

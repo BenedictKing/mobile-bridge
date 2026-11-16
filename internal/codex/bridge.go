@@ -33,6 +33,10 @@ type Bridge struct {
 	IPC        *ipc.Desktop
 	mu         sync.Mutex
 	sessions   map[string]*Session
+	following  map[string]bool
+	followAt   map[string]time.Time
+	followWG   sync.WaitGroup
+	closing    bool
 	// AutoApprove, when set, evaluates one pending approval request and may
 	// answer it natively; the session/request identifiers feed the audit log.
 	AutoApprove        func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object
@@ -95,12 +99,13 @@ func (b *Bridge) Watch(id string, timeout time.Duration) (*Session, error) {
 	}
 	b.mu.Lock()
 	owner := session.Owner
+	changed := session.Changed
 	b.mu.Unlock()
 	if err := b.IPC.Follow(id, owner, b.Host, true); err != nil {
 		return session, err
 	}
 	select {
-	case <-session.Changed:
+	case <-changed:
 		return session, nil
 	case <-time.After(timeout):
 		return session, nil
@@ -151,6 +156,46 @@ func (b *Bridge) LiveSequence(id string) (int, bool) {
 		return 0, false
 	}
 	return session.Sequence, true
+}
+
+// Revision observes a follower without cloning its state or performing IPC.
+// The channel also wakes on connection state changes.
+func (b *Bridge) Revision(id string) (int, <-chan struct{}, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	session := b.sessions[id]
+	if session == nil {
+		return 0, nil, false
+	}
+	return session.Sequence, session.Changed, session.State != nil
+}
+
+// EnsureWatching coalesces bounded reconnect attempts across SSE subscribers.
+// Network discovery must never block a client's cancellation or idle wait.
+func (b *Bridge) EnsureWatching(id string) {
+	b.mu.Lock()
+	if b.closing || b.following[id] || time.Since(b.followAt[id]) < 5*time.Second {
+		b.mu.Unlock()
+		return
+	}
+	if session := b.sessions[id]; session != nil && session.Connected {
+		b.mu.Unlock()
+		return
+	}
+	if b.following == nil {
+		b.following, b.followAt = map[string]bool{}, map[string]time.Time{}
+	}
+	b.following[id] = true
+	b.followAt[id] = time.Now()
+	b.followWG.Add(1)
+	b.mu.Unlock()
+	go func() {
+		defer b.followWG.Done()
+		_, _ = b.Watch(id, 1500*time.Millisecond)
+		b.mu.Lock()
+		delete(b.following, id)
+		b.mu.Unlock()
+	}()
 }
 
 // Activity reports already-followed local sessions without activating a new
@@ -335,7 +380,15 @@ func (b *Bridge) handleDisconnect() {
 	}
 }
 
-func (b *Bridge) Close() { b.IPC.Close() }
+func (b *Bridge) Close() {
+	b.mu.Lock()
+	b.closing = true
+	b.mu.Unlock()
+	b.IPC.Close()
+	b.followWG.Wait()
+	// An in-flight connect may have completed after the first Close.
+	b.IPC.Close()
+}
 
 // Owner reports the desktop client id recorded for a followed session. The
 // field is guarded by the bridge lock (Watch and handleEvent write it from

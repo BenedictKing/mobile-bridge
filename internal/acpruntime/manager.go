@@ -2203,6 +2203,12 @@ func (m *Manager) Close() {
 
 // Snapshot returns the session's current view.
 func (s *Session) Snapshot() *jsoncompat.Object {
+	snapshot, _ := s.SnapshotWithSequence()
+	return snapshot
+}
+
+// SnapshotWithSequence captures the view and its revision under the same lock.
+func (s *Session) SnapshotWithSequence() (*jsoncompat.Object, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := s.View.Snapshot()
@@ -2212,7 +2218,7 @@ func (s *Session) Snapshot() *jsoncompat.Object {
 	if s.retrying != nil {
 		snapshot.Set("retrying", jsoncompat.Clone(s.retrying))
 	}
-	return snapshot
+	return snapshot, s.sequence
 }
 
 // ReadOnly reports whether this view is a native transcript without a control
@@ -2239,6 +2245,14 @@ func (s *Session) Sequence() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sequence
+}
+
+// Revision subscribes without copying history. Subscribe before reading a
+// snapshot so changes during the read cannot be lost by the subsequent wait.
+func (s *Session) Revision() (int, <-chan struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sequence, s.changed
 }
 
 // Wait blocks until the next view change or timeout. It picks up the change
@@ -2609,6 +2623,13 @@ func (s *Session) Close() {
 		s.nativeStop = nil
 	}
 	process := s.Process
+	// Explicit close also changes connected state. Wake readers just as an
+	// unexpected process exit does, without changing conversation recency.
+	if s.changed != nil {
+		s.signalViewLocked()
+	} else {
+		s.sequence++
+	}
 	s.mu.Unlock()
 	if process != nil {
 		process.Close()

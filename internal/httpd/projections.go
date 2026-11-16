@@ -20,6 +20,7 @@ import (
 type projectionSlot struct {
 	mu       sync.Mutex
 	timeline *timeline.Timeline
+	live     liveProjectionCache
 }
 
 // projectionSlotFor returns the thread's slot, creating it when missing

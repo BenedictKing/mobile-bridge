@@ -2395,7 +2395,9 @@ func (h *handler) teamStreamRunEvents(feed *team.EventFeed) {
 	welcome := jsoncompat.NewObject()
 	welcome.Set("epoch", feed.Epoch())
 	welcome.Set("sequence", jsoncompat.Num(int(feed.Sequence())))
-	h.sseFrame("ready", welcome, "")
+	if err := h.sseFrame("ready", welcome, ""); err != nil {
+		return
+	}
 	// 变更判定基准是「已下发给该客户端的游标」（since/上一帧 id），不是订阅
 	// 时刻的服务端头部：重连携带落后 since 时，头部与 since 之间的积压必须
 	// 立即冲给客户端（对照 sessions.go streamIncremental 按客户端游标比较），
@@ -2422,7 +2424,9 @@ func (h *handler) teamStreamRunEvents(feed *team.EventFeed) {
 			parsed, _ := strconv.ParseUint(sequenceNumber.String(), 10, 64)
 			epoch, sequence = epochValue, parsed
 			lastDelivered = epochValue + "." + sequenceNumber.String()
-			h.sseFrame(event, payload, lastDelivered)
+			if err := h.sseFrame(event, payload, lastDelivered); err != nil {
+				return
+			}
 			continue
 		}
 		timer := time.NewTimer(12 * time.Second)
@@ -2430,6 +2434,9 @@ func (h *handler) teamStreamRunEvents(feed *team.EventFeed) {
 		case <-feed.Notify():
 		case <-timer.C:
 		case <-h.request.Context().Done():
+			timer.Stop()
+			return
+		case <-h.server.Closed():
 			timer.Stop()
 			return
 		}
@@ -2441,7 +2448,9 @@ func (h *handler) teamStreamRunEvents(feed *team.EventFeed) {
 		// 等待期间头部未前进（Notify 的残留信号/伪唤醒）→ 心跳；否则回到
 		// 循环顶部按客户端游标发增量。
 		if feed.Cursor() == lastDelivered {
-			h.writeRaw(": heartbeat\n\n")
+			if err := h.writeRaw(": heartbeat\n\n"); err != nil {
+				return
+			}
 		}
 	}
 }

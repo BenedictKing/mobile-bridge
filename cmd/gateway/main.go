@@ -1115,6 +1115,7 @@ func runGateway(args []string) {
 	server.StartDiscovery()
 	go server.PreloadRecentSessions()
 	httpServer := &http.Server{Handler: server}
+	httpServer.RegisterOnShutdown(server.CloseStreams)
 	shutdown := make(chan os.Signal, 1)
 	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
 	go func() {

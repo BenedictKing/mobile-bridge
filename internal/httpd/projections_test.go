@@ -179,9 +179,8 @@ func TestStreamIncrementalSendsDeltaFrames(t *testing.T) {
 	server.ACPAgents = map[string]*acpruntime.Manager{"zcode": manager}
 
 	api := httptest.NewServer(server)
-	// Closed in the background after the test: the SSE handler only ends at
-	// its next auth check (the loop's WaitFor runs up to 12s first), and
-	// httptest.Server.Close waits for outstanding handlers.
+	// Client cancellation now releases the SSE handler without waiting for a
+	// heartbeat; teardown at the end also waits for the handler to finish.
 	hostPort := api.URL[len("http://"):]
 	server.Hosts[hostPort] = true
 	server.Origins["http://"+hostPort] = true
@@ -340,13 +339,11 @@ func TestStreamIncrementalSendsDeltaFrames(t *testing.T) {
 			lastSequence = sequence
 		}
 	}
-	// End the stream: the closed body unblocks the reader, the logout ends
-	// the handler at its next auth check, and the server teardown (which
-	// waits for that handler) runs in the background.
+	// End the stream and wait for both the reader and server-side handler.
 	_ = events.Body.Close()
 	authenticator.Logout(token)
 	api.CloseClientConnections()
-	go api.Close()
+	api.Close()
 	select {
 	case <-readerDone:
 	case <-time.After(2 * time.Second):

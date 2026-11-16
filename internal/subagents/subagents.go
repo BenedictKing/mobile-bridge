@@ -17,6 +17,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -532,24 +533,65 @@ func (s *ZcodeStore) History(childID string) *jsoncompat.Object {
 // KimiStore: ~/.kimi-code/session_index.jsonl locates the session directory;
 // state.json lists spawned agents and agents/<id>/wire.jsonl records each
 // child's execution as native loop events.
-type KimiStore struct{ baseStore }
+type KimiStore struct {
+	baseStore
+	indexMu   sync.Mutex
+	indexInfo os.FileInfo
+	indexDirs map[string]string
+}
 
 func NewKimiStore(root string) *KimiStore {
-	return &KimiStore{baseStore{root: root, rosterCache: map[string]cacheEntry{}, historyCache: map[string]cacheEntry{}}}
+	return &KimiStore{baseStore: baseStore{root: root, rosterCache: map[string]cacheEntry{}, historyCache: map[string]cacheEntry{}}}
 }
 
 func (s *KimiStore) sessionDir(sessionID string) string {
-	found := ""
-	iterLines(filepath.Join(s.root, "session_index.jsonl"), 1024*1024, func(entry *jsoncompat.Object) bool {
-		id, _ := entry.MustGet("sessionId").(string)
-		dir, _ := entry.MustGet("sessionDir").(string)
-		if id == sessionID && dir != "" {
-			found = dir
-			return false
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+	path := filepath.Join(s.root, "session_index.jsonl")
+	info, err := os.Stat(path)
+	if err != nil {
+		s.indexInfo, s.indexDirs = nil, nil
+		return ""
+	}
+	unchanged := func(other os.FileInfo) bool {
+		return other != nil && os.SameFile(info, other) && info.Size() == other.Size() && info.ModTime().Equal(other.ModTime())
+	}
+	if unchanged(s.indexInfo) {
+		return s.indexDirs[sessionID]
+	}
+	handle, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer handle.Close()
+	opened, err := handle.Stat()
+	if err != nil || !unchanged(opened) {
+		return ""
+	}
+	dirs := map[string]string{}
+	reader := json.NewDecoder(io.LimitReader(handle, 1024*1024))
+	for {
+		var entry struct {
+			ID  string `json:"sessionId"`
+			Dir string `json:"sessionDir"`
 		}
-		return true
-	})
-	return found
+		if err := reader.Decode(&entry); err != nil {
+			if _, malformed := err.(*json.UnmarshalTypeError); malformed {
+				continue // ignore rows with non-string ids/directories as before
+			}
+			// A partially appended/replaced index must be retried, not cached.
+			if err == io.EOF {
+				if after, statErr := os.Stat(path); statErr == nil && unchanged(after) {
+					s.indexInfo, s.indexDirs = info, dirs
+				}
+			}
+			break
+		}
+		if entry.ID != "" && entry.Dir != "" && dirs[entry.ID] == "" {
+			dirs[entry.ID] = entry.Dir // preserve the original first-match rule
+		}
+	}
+	return dirs[sessionID]
 }
 
 func (s *KimiStore) Children(parentID string) []Child {

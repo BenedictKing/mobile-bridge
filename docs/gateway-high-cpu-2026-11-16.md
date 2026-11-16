@@ -4,7 +4,7 @@
 
 会话 SSE 的空闲等待反复执行昂贵的完整视图刷新；连接断开后处理协程又不会正常退出，两者叠加可造成持续负载。前者已由当前进程采样核实，后者已在当前源码的隔离 HTTP 测试中复现。尚未测量运行进程中残留 SSE 的数量或两者各自的 CPU 占比。
 
-本次仅诊断，未修改运行逻辑，未调用实际网关 API，未重启网关。原有 4 个 Android 配置文件改动不属于本次任务。
+最初两轮仅做诊断与重启后复测；用户随后批准实施修复，结果见文末。未调用实际网关 API，未自行重启网关。原有 4 个 Android 配置文件改动不属于本次任务。
 
 ## 运行证据
 
@@ -54,3 +54,23 @@
 - 新二进制 revision 为 `a3b21573174422330a4a45dbf234fb16bbdf43e6`，带 dirty 标记；该提交只新增本诊断文档，目前没有针对上述运行逻辑的修复提交。
 - 结论：重启后的 CPU 已明显低于此前 242.3% 的单次观测，但仍持续消耗约 0.42 个 CPU 核心。两次并非相同负载的受控性能对比，不能据此精确归因或证明根治；断线退出和刷新开销仍需修复。
 - 本次未操作浏览器连接、调用实际网关 API或再次重启。证据：`.tmp/gateway-after-restart-7442-top.txt`、`.tmp/gateway-after-restart-7442.sample.txt`、`.tmp/gateway-after-restart-7442-symbolized.sample.txt`。
+
+## 修复实施与本地验收
+
+- SSE 与长轮询的等待接入请求取消、网关关闭信号；普通/增量/Team SSE 写入与 flush 出错后退出，单次写入最多等待 10 秒。网关 HTTP shutdown 先通知流退出。
+- ACP/Codex 变更通知驱动等待，先订阅再读取以避免漏唤醒；ACP 快照和源版本在同一把锁下读取，主动关闭也递增版本并唤醒等待者。
+- 每会话共享完整视图和时间线投影；源版本不变时不深拷贝历史。空闲等待每秒补查一次独立元数据，Goal、子 Agent、队列、分支来源变化可推进投影版本。显式时间线读取立即检查元数据。
+- Codex 桌面重连异步执行，同一会话合并尝试并限制重试频率，避免网络发现阻塞 SSE 取消；跟随通知的读取也加锁以避免并发漏唤醒。
+- Kimi 索引按文件身份、大小和修改时间缓存；缺失项也复用索引，替换、删除、追加会失效，未写完整的尾部不固化为有效缓存。
+
+验证结果：
+
+- 全仓库 Go 包均已验证通过：全量执行中新增 Codex socket fixture 暴露 macOS 路径长度限制，修正后 Codex 包单独完整复测及 race 通过；其余包在全量执行中通过。
+- 定向 race 覆盖 HTTP 并发读、流式 delta、取消/写入/flush 错误、路由认证撤销、共享投影、Goal/子 Agent 独立变化和 Kimi 缓存；10 次真实本地 HTTP 断开均在 1 秒的测试上限内退出。
+- `go vet` 检查受影响包与网关入口通过，最终网关二进制已编译到 `dist/gateway-go`，未安装或替换运行服务。
+- HTTP golden 对拍仍有唯一 `index-gzip` 摘要差异。用 Git HEAD 修改前源码覆盖构建并复测，诊断输出逐字相同，因此未更新 golden 或修改无关首页。
+- 相同 fixture 的 3 轮微基准：共享空闲检查 177.3～179.5ns/op、0B/op、0allocs/op；完整 ACP 视图 2730～3372ns/op、4936B/op、43allocs/op。fixture 是单轮长文本，数字不代表真实多会话整进程 CPU 降幅；每秒元数据补查仍有少量开销。
+
+本地结果见 `.tmp/gateway-cpu-all-tests.txt`、`.tmp/gateway-cpu-race-tests.txt`、`.tmp/gateway-cpu-reconnect-tests.txt`、`.tmp/gateway-cpu-vet.txt`、`.tmp/gateway-cpu-benchmarks.txt`、`.tmp/gateway-cpu-http-conformance.txt` 和 `.tmp/gateway-cpu-baseline-conformance.txt`。
+
+尚待用户自行重新构建/重启运行服务后，以相同会话与浏览器连接数量观察 CPU、反复开关页面后的负载及实际消息流。当前运行进程尚未完成修复后的线上验收。

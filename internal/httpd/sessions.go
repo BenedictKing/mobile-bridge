@@ -5,6 +5,7 @@
 package httpd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,7 @@ type ScriptedSession struct {
 	Epoch    string
 	Sequence int
 	Live     func() (string, int, bool) // optional: (epoch, sequence) from the live projection
+	Watch    func() <-chan struct{}     // subscribe before refreshing to avoid lost wakeups
 }
 
 func (s *ScriptedSession) refresh() {
@@ -54,24 +56,47 @@ func (s *ScriptedSession) refresh() {
 	}
 }
 
-// WaitFor mirrors condition.wait_for(pred, timeout): immediate when the
-// predicate already holds, otherwise it polls until the timeout and reports
-// the predicate one last time.
+// WaitFor is the context-free compatibility wrapper for scripted test bridges.
 func (s *ScriptedSession) WaitFor(predicate func() bool, timeout time.Duration) bool {
-	s.refresh()
-	if predicate() {
-		return true
+	return s.WaitForContext(context.Background(), nil, predicate, timeout)
+}
+
+func (s *ScriptedSession) WaitForContext(ctx context.Context, closed <-chan struct{}, predicate func() bool, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	interval := time.Second
+	if s.Watch == nil && s.Live != nil {
+		interval = 50 * time.Millisecond // legacy live test bridges
 	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-closed:
+			return false
+		default:
+		}
+		var changed <-chan struct{}
+		if s.Watch != nil {
+			changed = s.Watch()
+		}
 		s.refresh()
 		if predicate() {
 			return true
 		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-closed:
+			return false
+		case <-deadline.C:
+			return false
+		case <-changed:
+		case <-ticker.C:
+		}
 	}
-	s.refresh()
-	return predicate()
 }
 
 // SessionBridge extends Bridge with the session-route surface.
@@ -194,20 +219,36 @@ func (h *handler) withTimelineAgents(result any) any {
 	return object
 }
 
-func (h *handler) writeRaw(text string) {
-	_, _ = h.writer.Write([]byte(text))
-	if flusher, ok := h.writer.(http.Flusher); ok {
-		flusher.Flush()
+func (h *handler) writeRaw(text string) error {
+	if err := h.request.Context().Err(); err != nil {
+		return err
 	}
+	controller := http.NewResponseController(h.writer)
+	if err := controller.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	defer controller.SetWriteDeadline(time.Time{})
+	n, err := h.writer.Write([]byte(text))
+	if err != nil {
+		return err
+	}
+	if n != len(text) {
+		return io.ErrShortWrite
+	}
+	err = controller.Flush()
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
 }
 
 // sseFrame mirrors httpd.sse_frame.
-func (h *handler) sseFrame(event string, payload any, cursor string) {
+func (h *handler) sseFrame(event string, payload any, cursor string) error {
 	head := ""
 	if cursor != "" {
 		head = "id: " + cursor + "\n"
 	}
-	h.writeRaw(head + "event: " + event + "\ndata: " +
+	return h.writeRaw(head + "event: " + event + "\ndata: " +
 		string(jsoncompat.EncodeCompact(payload)) + "\n\n")
 }
 
@@ -1251,15 +1292,17 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 // own slot lock serializes Update/SetMeta with the Page/Changes/Detail/Deltas
 // reads; other threads fold concurrently.
 func (h *handler) liveTimeline(threadID, action string, query map[string][]string) (any, bool, error) {
-	view, kind, ok := h.liveView(threadID)
+	slot := h.server.liveProjectionSlot(threadID)
+	if slot == nil {
+		return nil, false, nil
+	}
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	view, kind, ok := h.server.refreshProjectionLocked(threadID, slot, true)
 	if !ok {
 		return nil, false, nil
 	}
-	slot := h.server.projectionSlotFor(threadID)
-	slot.mu.Lock()
-	defer slot.mu.Unlock()
 	projection := slot.timeline
-	projection.Update(view)
 	projection.SetMeta("host", "local")
 	if kind != "" {
 		projection.SetMeta("agent", kind)
@@ -1395,10 +1438,10 @@ func (h *handler) sessionRouteChanges(bridge SessionBridge, threadID string,
 	epoch := queryValue(query, "epoch", "")
 	start := queryValue(query, "start", "")
 	session := bridge.Session(threadID)
-	session.WaitFor(func() bool {
+	session.WaitForContext(h.request.Context(), bridge.Closed(), func() bool {
 		return session.Sequence != after || epoch != session.Epoch
 	}, 12*time.Second)
-	if h.session(false) == nil {
+	if h.streamClosed(bridge) || h.session(false) == nil {
 		return
 	}
 	h.output(http.StatusOK, h.withTimelineAgents(bridge.TimelineRead(threadID, "changes")),
@@ -1410,8 +1453,8 @@ func (h *handler) sessionRoutePoll(bridge SessionBridge, threadID string,
 	query map[string][]string) {
 	after, _ := strconv.Atoi(queryValue(query, "after", "-1"))
 	session := bridge.Session(threadID)
-	changed := session.WaitFor(func() bool { return session.Sequence != after }, 12*time.Second)
-	if h.session(false) == nil {
+	changed := session.WaitForContext(h.request.Context(), bridge.Closed(), func() bool { return session.Sequence != after }, 12*time.Second)
+	if h.streamClosed(bridge) || h.session(false) == nil {
 		return
 	}
 	result := jsoncompat.NewObject()
@@ -1423,8 +1466,22 @@ func (h *handler) sessionRoutePoll(bridge SessionBridge, threadID string,
 	h.output(http.StatusOK, result, contentTypeJSON, "")
 }
 
+func (h *handler) streamClosed(bridge SessionBridge) bool {
+	select {
+	case <-h.request.Context().Done():
+		return true
+	case <-bridge.Closed():
+		return true
+	default:
+		return false
+	}
+}
+
 // stream mirrors httpd.stream: the SSE endpoint behind /events.
 func (h *handler) stream(bridge SessionBridge, threadID string, query map[string][]string) {
+	if h.streamClosed(bridge) {
+		return
+	}
 	incremental := queryValue(query, "incremental", "") == "1"
 	epoch, sequence := "", -1
 	if incremental {
@@ -1456,12 +1513,18 @@ func (h *handler) stream(bridge SessionBridge, threadID string, query map[string
 	}
 	sequence = -1
 	for {
+		if h.streamClosed(bridge) {
+			return
+		}
 		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.writeRaw("event: logout\ndata: {}\n\n")
 			return
 		}
-		updated := session.WaitFor(func() bool { return session.Sequence != sequence },
+		updated := session.WaitForContext(h.request.Context(), bridge.Closed(), func() bool { return session.Sequence != sequence },
 			12*time.Second)
+		if h.streamClosed(bridge) {
+			return
+		}
 		sequence = session.Sequence
 		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.writeRaw("event: logout\ndata: {}\n\n")
@@ -1469,11 +1532,17 @@ func (h *handler) stream(bridge SessionBridge, threadID string, query map[string
 		}
 		if updated {
 			payload := string(jsoncompat.EncodeCompact(bridge.View(threadID)))
-			h.writeRaw("id: " + strconv.Itoa(sequence) + "\nevent: state\ndata: " + payload + "\n\n")
+			if err := h.writeRaw("id: " + strconv.Itoa(sequence) + "\nevent: state\ndata: " + payload + "\n\n"); err != nil {
+				return
+			}
 		} else {
-			h.writeRaw(": heartbeat\n\n")
+			if err := h.writeRaw(": heartbeat\n\n"); err != nil {
+				return
+			}
 		}
 		select {
+		case <-h.request.Context().Done():
+			return
 		case <-bridge.Closed():
 			return
 		case <-time.After(200 * time.Millisecond):
@@ -1486,15 +1555,23 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 	welcome := jsoncompat.NewObject()
 	welcome.Set("epoch", session.Epoch)
 	welcome.Set("sequence", jsoncompat.Num(session.Sequence))
-	h.sseFrame("ready", welcome, "")
+	if err := h.sseFrame("ready", welcome, ""); err != nil {
+		return
+	}
 	for {
+		if h.streamClosed(bridge) {
+			return
+		}
 		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.sseFrame("logout", &jsoncompat.Object{}, "")
 			return
 		}
-		changed := session.WaitFor(func() bool {
+		changed := session.WaitForContext(h.request.Context(), bridge.Closed(), func() bool {
 			return session.Sequence != sequence || session.Epoch != epoch
 		}, 12*time.Second)
+		if h.streamClosed(bridge) {
+			return
+		}
 		if h.authenticatedSession(h.routeSessionKey()) == nil {
 			h.sseFrame("logout", &jsoncompat.Object{}, "")
 			return
@@ -1540,18 +1617,26 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 				}
 			}
 			if payload == nil {
-				h.writeRaw(": heartbeat\n\n")
+				if err := h.writeRaw(": heartbeat\n\n"); err != nil {
+					return
+				}
 			} else {
 				epochValue, _ := payload.MustGet("epoch").(string)
 				sequenceNumber, _ := payload.MustGet("sequence").(json.Number)
 				parsed, _ := strconv.Atoi(sequenceNumber.String())
 				epoch, sequence = epochValue, parsed
-				h.sseFrame(event, payload, epoch+"."+strconv.Itoa(sequence))
+				if err := h.sseFrame(event, payload, epoch+"."+strconv.Itoa(sequence)); err != nil {
+					return
+				}
 			}
 		} else {
-			h.writeRaw(": heartbeat\n\n")
+			if err := h.writeRaw(": heartbeat\n\n"); err != nil {
+				return
+			}
 		}
 		select {
+		case <-h.request.Context().Done():
+			return
 		case <-bridge.Closed():
 			return
 		case <-time.After(200 * time.Millisecond):

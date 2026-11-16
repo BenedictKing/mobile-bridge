@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ func (s *Server) Session(threadID string) *ScriptedSession {
 	session := &ScriptedSession{Epoch: epoch, Sequence: sequence}
 	server := s
 	session.Live = func() (string, int, bool) { return server.refreshLiveProjection(threadID) }
+	session.Watch = func() <-chan struct{} { return server.liveProjectionChanges(threadID) }
 	return session
 }
 
@@ -184,14 +186,25 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 		activity = manager.Subagents.Activity(session.ID)
 		session.NoteSubagents(activity.Revision)
 	}
-	view := session.Snapshot()
+	view, sequence := session.SnapshotWithSequence()
 	// Settled turns become actionable so the shared projection derives
 	// editable/forkable rows (the phone's branch controls) — see acp_fork.go.
 	annotateACPForkability(view)
-	view.Set("sequence", jsoncompat.Num(session.Sequence()))
+	view.Set("sequence", jsoncompat.Num(sequence))
 	if manager.Subagents != nil {
 		subagents.Inject(view, activity)
 	}
+	metadata := s.acpViewMetadata(kind, manager, session)
+	for _, key := range metadata.Keys() {
+		view.Set(key, metadata.MustGet(key))
+	}
+	return view
+}
+
+// acpViewMetadata reads independent controls without copying conversation turns.
+func (s *Server) acpViewMetadata(kind string, manager *acpruntime.Manager, session *acpruntime.Session) *jsoncompat.Object {
+	view := jsoncompat.NewObject()
+	view.Set("goal", nil)
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", kind)
@@ -312,36 +325,16 @@ func (s *Server) agentRoster() *jsoncompat.Array {
 // read the current native or attached view, fold it into the shared per-thread
 // projection, and report the projection's epoch/sequence.
 func (s *Server) refreshLiveProjection(threadID string) (string, int, bool) {
-	if resolution := s.resolveACPHistory(threadID); resolution.manager != nil {
-		if resolution.session == nil {
-			return s.projectionState(threadID)
-		}
-		view := s.acpViewState(resolution.kind, resolution.manager, resolution.session)
-		return s.foldProjection(threadID, view)
-	}
-	if s.Codex == nil {
+	slot := s.liveProjectionSlot(threadID)
+	if slot == nil {
 		return "", 0, false
 	}
-	_, _ = s.Codex.Watch(threadID, 1500*time.Millisecond)
-	state, sequence, connected, connectionError := s.Codex.Snapshot(threadID)
-	if state == nil {
-		return s.projectionState(threadID)
-	}
-	view := model.NormalizeState(state, connected)
-	// Must match liveView's annotation exactly: both fold the same shared
-	// per-thread projection, and divergent rows would flap row digests.
-	annotateViewChanges(view, model.OrderedTurns(state))
-	view.Set("sequence", jsoncompat.Num(sequence))
-	view.Set("connectionError", connectionError)
-	view.Set("connecting", false)
-	view.Set("activating", false)
-	view.Set("loadingHistory", false)
-	view.Set("host", "local")
-	view.Set("hostLabel", "此电脑")
-	view.Set("agent", "codex")
-	view.Set("capabilities", s.codexCapabilities())
-	s.codexSubagentView(threadID, view)
-	return s.foldProjection(threadID, view)
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	_, _, ok := s.refreshProjectionLocked(threadID, slot, false)
+	current := slot.timeline.State()
+	sequence, _ := strconv.Atoi(current.Sequence)
+	return current.Epoch, sequence, ok || current.Sequence != ""
 }
 
 // codexSubagentView decorates a codex view with on-disk child agents
@@ -361,6 +354,18 @@ func (s *Server) codexSubagentView(threadID string, view *jsoncompat.Object) {
 func (s *Server) View(threadID string) any {
 	if s.Hidden.Hidden(threadID) {
 		return jsoncompat.NewObject()
+	}
+	if slot := s.lookupProjection(threadID); slot != nil {
+		slot.mu.Lock()
+		if slot.live.view != nil {
+			view, _, ok := s.refreshProjectionLocked(threadID, slot, true)
+			if ok {
+				result := jsoncompat.Clone(view)
+				slot.mu.Unlock()
+				return result
+			}
+		}
+		slot.mu.Unlock()
 	}
 	if resolution := s.resolveACPHistory(threadID); resolution.manager != nil && resolution.session != nil {
 		return s.acpViewState(resolution.kind, resolution.manager, resolution.session)
@@ -441,7 +446,17 @@ func (s *Server) TimelineRead(threadID, mode string) any {
 }
 
 func (s *Server) Closed() <-chan struct{} {
-	return nil
+	return s.streamsClosed
+}
+
+// CloseStreams lets HTTP shutdown release long-lived handlers before waiting
+// for them to finish. A zero-value test server has no shutdown channel.
+func (s *Server) CloseStreams() {
+	s.streamsCloseOnce.Do(func() {
+		if s.streamsClosed != nil {
+			close(s.streamsClosed)
+		}
+	})
 }
 
 func (s *Server) liveViewForBridge(threadID string) (any, bool) {
