@@ -276,6 +276,11 @@ for line in sys.stdin:
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8790, "instance")
 	server.Codex = bridge
+	forksPath := filepath.Join(t.TempDir(), "forks.json")
+	server.Forks = LoadForks(forksPath)
+	threadID := "5f0a1111-2222-4333-8444-555566667777"
+	server.Forks.Record("local-child", forkOrigin{ID: threadID, Host: "local", Title: "旧名字"})
+	server.Forks.Record("remote-child", forkOrigin{ID: threadID, Host: "ssh", Title: "旧名字"})
 
 	request := func(target, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -289,12 +294,18 @@ for line in sys.stdin:
 		server.ServeHTTP(response, httptestRequest)
 		return response
 	}
-	threadID := "5f0a1111-2222-4333-8444-555566667777"
 	renamed := request("/api/sessions/"+threadID+"/rename", `{"title":"新名字"}`)
 	if renamed.Code != http.StatusOK ||
 		!strings.Contains(renamed.Body.String(), `"title": "新名字"`) ||
 		!strings.Contains(renamed.Body.String(), `"id": "`+threadID+`"`) {
 		t.Fatalf("rename status=%d body=%s", renamed.Code, renamed.Body.String())
+	}
+	reloaded := LoadForks(forksPath)
+	if origin, _ := reloaded.Origin("local-child"); origin.Title != "新名字" {
+		t.Fatalf("local source title was not updated: %+v", origin)
+	}
+	if origin, _ := reloaded.Origin("remote-child"); origin.Title != "旧名字" {
+		t.Fatalf("remote source title changed unexpectedly: %+v", origin)
 	}
 	long := strings.Repeat("长", 121)
 	if response := request("/api/sessions/"+threadID+"/rename", `{"title":"`+long+`"}`); response.Code != http.StatusBadRequest {

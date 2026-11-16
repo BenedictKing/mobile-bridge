@@ -12,6 +12,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 	"github.com/google/uuid"
 )
 
@@ -359,7 +360,7 @@ func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, sco
 	if scope == "latest" {
 		texts.header, texts.cont = texts.latestHeader, texts.latestContinue
 	}
-	title, _ := view.MustGet("title").(string)
+	title := textutil.CleanTitle(stringField(view, "title"))
 	cwd, _ := view.MustGet("cwd").(string)
 	lines := []string{
 		sprintf(texts.header, sourceLabel),
@@ -581,7 +582,7 @@ func (h *handler) handleMigrate(threadID string) {
 	}
 
 	cwd, _ := view.MustGet("cwd").(string)
-	title := strings.TrimSpace(stringField(view, "title"))
+	title := textutil.CleanTitle(strings.TrimSpace(stringField(view, "title")))
 	if runes := []rune(title); len(runes) > 120 {
 		title = string(runes[:120])
 	}

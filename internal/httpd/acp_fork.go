@@ -15,6 +15,7 @@ import (
 
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 	"github.com/BenedictKing/mobile-bridge/internal/timeline"
 	"github.com/google/uuid"
 )
@@ -118,7 +119,7 @@ func acpForkMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, tail 
 	texts := acpForkTextsByLocale[locale]
 	base := migrationTextsByLocale[locale]
 	entries, truncated := migrationTranscript(view, "full")
-	title, _ := view.MustGet("title").(string)
+	title := textutil.CleanTitle(stringField(view, "title"))
 	cwd, _ := view.MustGet("cwd").(string)
 	lines := []string{
 		sprintf(texts[0], sourceLabel),
@@ -221,7 +222,7 @@ func (h *handler) handleACPMessageAction(kind string, manager *acpruntime.Manage
 		return
 	}
 
-	sourceTitle := stringField(view, "title")
+	sourceTitle := textutil.CleanTitle(stringField(view, "title"))
 	if strings.TrimSpace(sourceTitle) == "" {
 		sourceTitle = "未命名聊天"
 	}

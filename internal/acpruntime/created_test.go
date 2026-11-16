@@ -103,6 +103,14 @@ func TestCreatedSessionStaysKnownAfterRestart(t *testing.T) {
 	if rows := restarted.MergePending(listed); len(rows) != 1 {
 		t.Fatalf("listed session duplicated: %v", rows)
 	}
+	listed[0].Set("title", "【从 fake 迁移的会话】\n标题：团队 · 成员\n目录：/work")
+	rows = restarted.MergePending(listed)
+	if len(rows) != 1 || rows[0].MustGet("title") != "团队 · 成员" {
+		t.Fatalf("protocol title replaced created title: %v", rows)
+	}
+	if listed[0].MustGet("title") == "团队 · 成员" {
+		t.Fatal("MergePending mutated the cached session/list row")
+	}
 }
 
 func TestCreatedStoreIgnoresEmptyIDs(t *testing.T) {

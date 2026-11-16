@@ -69,6 +69,28 @@ func (f *forkLedger) Origin(childID string) (forkOrigin, bool) {
 	return origin, ok
 }
 
+// UpdateSourceTitle keeps source links readable after a native rename. The
+// source id and host remain immutable; only the display title changes.
+func (f *forkLedger) UpdateSourceTitle(sourceID, host, title string) {
+	if f == nil || sourceID == "" {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	changed := false
+	for child, origin := range f.entries {
+		if origin.ID != sourceID || origin.Host != host || origin.Title == title {
+			continue
+		}
+		origin.Title = title
+		f.entries[child] = origin
+		changed = true
+	}
+	if changed {
+		f.saveLocked()
+	}
+}
+
 func (f *forkLedger) saveLocked() {
 	if f.path == "" {
 		return

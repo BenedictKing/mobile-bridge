@@ -51,6 +51,15 @@ func TestTitleFromTextStripsProtocolWrappers(t *testing.T) {
 		{"review briefing", "[Team review]\n你是本团队的评审成员，本任务只做审查\n[Assigned task]\n审查接口", "审查接口"},
 		{"ordinary mention", "修复 [Team context] 显示", "修复 [Team context] 显示"},
 		{"user text with envelope word", "[Team review] 帮我整理周报", "[Team review] 帮我整理周报"},
+		{"migration", "【从 Kimi 迁移的会话】\n标题：源会话\n目录：/work", "源会话"},
+		{"latest migration", "【来自 Kimi 的最新问答】\n标题：源会话\n目录：/work", "源会话"},
+		{"fork", "【从 Kimi 分支的会话】\n标题：源会话\n目录：/work", "源会话"},
+		{"English migration", "[Session migrated from Kimi]\nTitle: Source chat\nDirectory: /work", "Source chat"},
+		{"English latest migration", "[Latest exchange from Kimi]\nTitle: Source chat\nDirectory: /work", "Source chat"},
+		{"English fork", "[Session branched from Kimi]\nTitle: Source chat\nDirectory: /work", "Source chat"},
+		{"flattened auto title", "【从 Kimi 迁移的会话】 标题：源会话 目录：/work", "源会话"},
+		{"header only", "[Session branched from Kimi]", ""},
+		{"ordinary migration prose", "[Session migrated from notes]\n整理迁移文档", "[Session migrated from notes] 整理迁移文档"},
 	}
 	for _, tc := range cases {
 		if got := TitleFromText(tc.input); got != tc.want {

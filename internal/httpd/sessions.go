@@ -575,6 +575,7 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				h.fail(http.StatusConflict, errorBody(renameErr.Error()))
 				return true
 			}
+			h.server.Forks.UpdateSourceTitle(threadID, "local", title)
 			result := jsoncompat.NewObject()
 			result.Set("id", threadID)
 			result.Set("host", "local")

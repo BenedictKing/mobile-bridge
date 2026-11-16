@@ -26,6 +26,53 @@ var teamEnvelopes = []struct{ header, marker string }{
 	{"[Team review]", "你是本团队的评审成员"},
 }
 
+// Migration and fork prompts (internal/httpd migrate.go / acp_fork.go). Agents
+// sometimes derive a session title from these synthetic headers; display the
+// source title carried by the envelope instead of the protocol text itself.
+var transcriptEnvelopes = []struct{ prefix, suffix string }{
+	{"【从 ", " 迁移的会话】"},
+	{"【来自 ", " 的最新问答】"},
+	{"【从 ", " 分支的会话】"},
+	{"[Session migrated from ", "]"},
+	{"[Latest exchange from ", "]"},
+	{"[Session branched from ", "]"},
+}
+
+func transcriptTitle(text string) (string, bool) {
+	for _, envelope := range transcriptEnvelopes {
+		if !strings.HasPrefix(text, envelope.prefix) {
+			continue
+		}
+		end := strings.Index(text, envelope.suffix)
+		if end < 0 {
+			continue
+		}
+		if newline := strings.Index(text, "\n"); newline >= 0 && end > newline {
+			continue
+		}
+		rest := strings.TrimSpace(text[end+len(envelope.suffix):])
+		for _, label := range []string{"标题：", "Title:"} {
+			if !strings.HasPrefix(rest, label) {
+				continue
+			}
+			title := strings.TrimSpace(strings.TrimPrefix(rest, label))
+			if line, _, found := strings.Cut(title, "\n"); found {
+				title = strings.TrimSpace(line)
+			}
+			for _, directory := range []string{" 目录：", " Directory:"} {
+				if at := strings.Index(title, directory); at >= 0 {
+					title = strings.TrimSpace(title[:at])
+				}
+			}
+			return title, true
+		}
+		if rest == "" || strings.HasPrefix(rest, "目录：") || strings.HasPrefix(rest, "Directory:") {
+			return "", true
+		}
+	}
+	return text, false
+}
+
 // StripInternalReminders removes harness-only reminder envelopes from the
 // phone timeline. It never changes prompts sent to an agent.
 func StripInternalReminders(text string) string {
@@ -37,8 +84,8 @@ func StripInternalReminders(text string) string {
 }
 
 // titleBody strips protocol wrappers before a title is derived: internal
-// reminders, local-command blocks, and Team envelopes (the real task follows the
-// last `[Assigned task]` header; an envelope without one has no user text).
+// reminders, local-command blocks, Team envelopes (the real task follows the
+// last `[Assigned task]` header), and migration/fork transcript envelopes.
 func titleBody(text string) string {
 	text = strings.TrimSpace(localCommandBlock.ReplaceAllString(StripInternalReminders(text), ""))
 	for _, envelope := range teamEnvelopes {
@@ -48,6 +95,9 @@ func titleBody(text string) string {
 			}
 			return ""
 		}
+	}
+	if title, ok := transcriptTitle(text); ok {
+		return title
 	}
 	return text
 }

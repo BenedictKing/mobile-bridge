@@ -836,6 +836,20 @@ func TestSessionTracksSessionInfoTitle(t *testing.T) {
 	}
 }
 
+func TestSessionKeepsGatewayTitleForTranscriptProtocol(t *testing.T) {
+	session := &Session{ID: "sess-fork", Title: "源会话 · 分支", View: acpview.NewView("sess-fork", "源会话 · 分支", "/work", func() float64 { return 1 }), changed: make(chan struct{})}
+	message := jsoncompat.NewObject()
+	message.Set("method", "session/update")
+	params := jsoncompat.NewObject()
+	params.Set("sessionUpdate", "session_info_update")
+	params.Set("title", "【从 Kimi 分支的会话】\n标题：源会话\n目录：/work")
+	message.Set("params", params)
+	session.onNotification(message)
+	if session.Title != "源会话 · 分支" || session.Snapshot().MustGet("title") != "源会话 · 分支" {
+		t.Fatalf("protocol title replaced gateway title: %q", session.Title)
+	}
+}
+
 func TestSessionCancelsOnlyRequestedReverseRequest(t *testing.T) {
 	session := &Session{ID: "sess-1", View: acpview.NewView("sess-1", "Demo", "/work", func() float64 { return 1 }), changed: make(chan struct{})}
 	addRequest := func(id any) {

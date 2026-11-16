@@ -23,7 +23,8 @@ type Session struct {
 	Process *acp.Process
 	View    *acpview.View
 
-	// CreatedAtMs is immutable. Title follows session_info_update under mu.
+	// CreatedAtMs is immutable. Title follows session_info_update under mu after
+	// filtering synthetic transcript protocol titles.
 	Title       string
 	CreatedAtMs int64
 
@@ -516,19 +517,43 @@ func methodNotFound(err *acp.Error) bool {
 // the agent's own session/list does not cover yet (zcode's lazy placeholder
 // before the first prompt, claude before the first persisted transcript).
 // A pending id is dropped once it — or its canonical backend id — is listed.
+// Listed rows polluted by synthetic transcript titles recover the gateway's
+// creation-time title without mutating the shared session/list cache.
 func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
+	// rows may alias the cached session/list slice returned by List to many
+	// concurrent callers; copy before changing or appending so concurrent
+	// MergePending calls never write into the shared backing array.
+	rows = append(rows[:0:0], rows...)
 	listed := map[string]bool{}
-	for _, row := range rows {
+	listedRows := map[string]int{}
+	for index, row := range rows {
 		if id, ok := row.MustGet("sessionId").(string); ok && id != "" {
 			listed[id] = true
+			listedRows[id] = index
 		}
 	}
-	// rows may alias the cached session/list slice returned by List to many
-	// concurrent callers; copy before appending so concurrent MergePending
-	// calls never write into the shared backing array.
-	rows = append(rows[:0:0], rows...)
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	restoreTitle := func(id, title string) {
+		if title == "" {
+			title = "未命名聊天"
+		}
+		rowID := id
+		if !listed[rowID] {
+			rowID = m.canonicalLocked(id)
+		}
+		index, exists := listedRows[rowID]
+		if !exists {
+			return
+		}
+		current, _ := rows[index].MustGet("title").(string)
+		if textutil.CleanTitle(current) == current {
+			return
+		}
+		replacement, _ := jsoncompat.Clone(rows[index]).(*jsoncompat.Object)
+		replacement.Set("title", title)
+		rows[index] = replacement
+	}
 	for id, session := range m.sessions {
 		if session == nil || session.IsClosed() || session.CreatedAtMs == 0 {
 			// Only bridge-created sessions count as pending; opened ones have no
@@ -538,6 +563,7 @@ func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
 		session.mu.Lock()
 		title := session.Title
 		session.mu.Unlock()
+		restoreTitle(id, title)
 		if title == "" {
 			title = "未命名聊天"
 		}
@@ -559,6 +585,8 @@ func (m *Manager) MergePending(rows []*jsoncompat.Object) []*jsoncompat.Object {
 	// reopen (open has no creation timestamp) or a restart.
 	for _, row := range m.Created.Rows(m.Kind) {
 		id, _ := row.MustGet("sessionId").(string)
+		title, _ := row.MustGet("title").(string)
+		restoreTitle(id, title)
 		if id == "" || listed[id] {
 			continue
 		}
@@ -2720,7 +2748,13 @@ func (s *Session) onNotification(message *jsoncompat.Object) {
 	s.View.OnUpdate(params)
 	updateKind, _ := params.MustGet("sessionUpdate").(string)
 	if updateKind == "session_info_update" {
-		s.Title, _ = s.View.Title.(string)
+		title, _ := s.View.Title.(string)
+		cleaned := textutil.CleanTitle(title)
+		if cleaned != title && s.Title != "" && textutil.CleanTitle(s.Title) == s.Title {
+			cleaned = s.Title
+		}
+		s.Title = cleaned
+		s.View.Title = cleaned
 	} else if updateKind == "current_mode_update" && s.modes != nil {
 		s.modes.Set("currentModeId", params.MustGet("currentModeId"))
 	} else if updateKind == "usage_update" {
