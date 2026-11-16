@@ -92,3 +92,14 @@
 - 在本机随机端口的独立只读预览中，使用真实桌面 IPC 和 ego 页面验证：`connected: true`、`status: active`、`sequence: 39`；页面不刷新即可自动出现新发送的本轮进度文字。临时预览已关闭，没有发送测试聊天消息，没有重启 8787 服务。
 
 本次源码修改仍需用户加载新版本后再验证 8787 页面及正常更新时的 CPU。证据：`.tmp/gateway-fixed-33310-summary.json`、`.tmp/gateway-fixed-33310-top.txt`、`.tmp/gateway-fixed-33310-symbolized.sample.txt`、`.tmp/codex-v13-before.txt`、`.tmp/codex-v13-tests.txt`、`.tmp/codex-v13-replay-results.txt`、`.tmp/codex-v13-http-tests.txt`、`.tmp/codex-v13-live-preview.png`。包含真实会话内容的原始 IPC 捕获仅保存在忽略目录 `.tmp`，不纳入提交。
+
+## v13 修复加载后的实际验收
+
+- 用户再次重启后，PID 54155 的构建 revision 为 `9c7efc6b2f83a7460ad7628c777ea29a0c9bcbba`，带 dirty 标记；服务继续监听 8787。
+- 在 ego 打开用户指定的生产会话，接口返回 `connected: true`、`status: active`、空连接错误；页面不再显示未连接提示。保持页面不刷新，本轮新进度自动出现，投影序列从 37 推进到 87。没有向会话发送测试消息。
+- 2026-11-16 21:36:50～21:37:53（北京时间）观察约 63 秒，排除首个无区间基线的读数后，12 个 CPU 区间为 10.5%～44.8%，平均 **24.65%**；线程数 25，内存约 107～153 MB。
+- 相比此前重启但未修复时的平均 42.21%，本轮观测均值低约 41.6%。采集时有 10 条入站连接，包含 ego 验收页面；不同时间的会话、连接数及活动量不完全一致，因此此比例不是严格的受控性能提升值。上一轮 13.59% 的读数发生在 Codex 未连接时，不能作为正常更新下的基线。
+- CPU 区间采集后关闭本轮 ego 页面，另做 5 秒调用栈采样；主要应用栈涉及列表发现/Claude 历史解析，以及别名和 Goal 查询。SSE 刷新仍会随真实变化执行，本次未再次采到密集的 Kimi 会话索引解析链；包含帧计数不等于各功能的 CPU 占比。
+- 本轮确认了实际 8787 服务的实时更新恢复及短时 CPU 回落；没有复现原先持续占用约两核的状态。长时间运行及反复开关用户页面后的稳定性仍需后续观察，剩余扫描和查询开销尚未优化。
+
+验收证据：`.tmp/gateway-v13-54155-browser.json`、`.tmp/gateway-v13-54155-live.png`、`.tmp/gateway-v13-54155-summary.json`、`.tmp/gateway-v13-54155-top.txt`、`.tmp/gateway-v13-54155-connections.txt`、`.tmp/gateway-v13-54155.sample.txt`、`.tmp/gateway-v13-54155-symbolized.sample.txt`。本次只新增验证记录，未更改运行逻辑或自行重启服务。
