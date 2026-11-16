@@ -74,3 +74,21 @@
 本地结果见 `.tmp/gateway-cpu-all-tests.txt`、`.tmp/gateway-cpu-race-tests.txt`、`.tmp/gateway-cpu-reconnect-tests.txt`、`.tmp/gateway-cpu-vet.txt`、`.tmp/gateway-cpu-benchmarks.txt`、`.tmp/gateway-cpu-http-conformance.txt` 和 `.tmp/gateway-cpu-baseline-conformance.txt`。
 
 尚待用户自行重新构建/重启运行服务后，以相同会话与浏览器连接数量观察 CPU、反复开关页面后的负载及实际消息流。当前运行进程尚未完成修复后的线上验收。
+
+## 修复版运行观测与 Codex v13 兼容补充
+
+用户再次重启后，PID 33310 的构建 revision 为 `151e7db7cfa316eabcf4b9d768b754699eae28a3`（dirty 标记）。20:15:19～20:16:21（北京时间）连续 12 个区间的 CPU 为 4.4%～23.0%，平均 13.59%；此前重启基线平均为 42.21%。本次有 7 条网关入站连接，线程数 24。采样主要命中会话列表发现/Claude 历史解析，没有再次命中原来密集的 SSE 全量刷新链。
+
+不过用户随后指出当前 Codex 会话不更新，因此上述约 68% 的观测降幅只能作为阶段性记录，不能作为正常消息流下的最终性能验收。
+
+具体原因与修复：
+
+- ego 中生产页面仍显示未连接，时间线接口返回 `connected: false`，仅显示上一轮历史。
+- 直接观察该会话的桌面 IPC：初始化和所有者发现成功，实际广播版本为 **13**，包含 canonical `turnHistory` 快照及带 `baseRevision/revision` 的 JSON patches。
+- 网关原先仅接受版本 **11**；该硬编码在 CPU 修复前已经存在。v13 消息被静默丢弃，和浏览器登录状态无关。
+- 新增明确的 v11/v13 兼容，继续使用现有 canonical 历史与 JSON patch 解析；不盲目接受未知未来版本。未知版本保留连接错误并记录日志，相同错误不逐事件重复唤醒。
+- `stream_version_test.go` 覆盖两种版本的快照、canonical 增量、订阅唤醒、未知版本错误与恢复。捕获的真实会话 1 个快照和 5 个增量也已逐条成功回放，每次归一化均保留 5 个 turn。
+- Codex/model/IPC 完整 race 测试、HTTP 流式与并发投影定向 race、vet 和构建通过。
+- 在本机随机端口的独立只读预览中，使用真实桌面 IPC 和 ego 页面验证：`connected: true`、`status: active`、`sequence: 39`；页面不刷新即可自动出现新发送的本轮进度文字。临时预览已关闭，没有发送测试聊天消息，没有重启 8787 服务。
+
+本次源码修改仍需用户加载新版本后再验证 8787 页面及正常更新时的 CPU。证据：`.tmp/gateway-fixed-33310-summary.json`、`.tmp/gateway-fixed-33310-top.txt`、`.tmp/gateway-fixed-33310-symbolized.sample.txt`、`.tmp/codex-v13-before.txt`、`.tmp/codex-v13-tests.txt`、`.tmp/codex-v13-replay-results.txt`、`.tmp/codex-v13-http-tests.txt`、`.tmp/codex-v13-live-preview.png`。包含真实会话内容的原始 IPC 捕获仅保存在忽略目录 `.tmp`，不纳入提交。

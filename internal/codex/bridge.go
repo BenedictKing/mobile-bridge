@@ -5,6 +5,7 @@ package codex
 
 import (
 	"errors"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -273,9 +274,6 @@ func (b *Bridge) handleEvent(message *jsoncompat.Object) {
 	if message.MustGet("method") != "thread-stream-state-changed" {
 		return
 	}
-	if message.MustGet("version") != jsoncompat.Num(11) {
-		return
-	}
 	params, _ := message.MustGet("params").(*jsoncompat.Object)
 	if params == nil || params.MustGet("hostId") != b.Host {
 		return
@@ -288,6 +286,23 @@ func (b *Bridge) handleEvent(message *jsoncompat.Object) {
 	session := b.session(id)
 	b.mu.Lock()
 	if owner, ok := message.MustGet("sourceClientId").(string); ok && session.Owner != "" && owner != session.Owner {
+		b.mu.Unlock()
+		return
+	}
+	// Current desktops emit v13 canonical history. Its snapshot and JSON patch
+	// envelopes match v11; the model already handles both canonical/plain turns.
+	// Keep unsupported future versions explicit instead of silently freezing UI.
+	switch message.MustGet("version") {
+	case jsoncompat.Num(11), jsoncompat.Num(13):
+	default:
+		problem := "桌面事件协议版本不兼容（" + jsoncompat.PyStr(message.MustGet("version")) + "），请更新网关"
+		if session.Connected || session.Error != problem {
+			session.Connected, session.Error = false, problem
+			session.Sequence++
+			close(session.Changed)
+			session.Changed = make(chan struct{})
+			log.Printf("codex stream %s: %s", id, problem)
+		}
 		b.mu.Unlock()
 		return
 	}
