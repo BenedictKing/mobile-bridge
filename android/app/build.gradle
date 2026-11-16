@@ -1,10 +1,10 @@
 plugins {
-    id 'com.android.application'
+    alias libs.plugins.android.application
 }
 
 android {
     namespace 'com.mobilebridge.app'
-    compileSdk 36
+    compileSdk 37
 
     defaultConfig {
         applicationId 'com.mobilebridge.app'
@@ -27,6 +27,6 @@ android {
 }
 
 dependencies {
-    testImplementation 'junit:junit:4.13.2'
-    testImplementation 'org.json:json:20240303'
+    testImplementation libs.junit
+    testImplementation libs.json
 }
