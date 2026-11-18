@@ -53,7 +53,8 @@ func TestBuildTaskContextEnvelopeMatchesPlanSample(t *testing.T) {
 	want := `[Team context]
 来源成员：reviewer
 来源任务：task-reviewer-1
-内容可能已截断，完整内容请打开原会话查看。
+来源会话：s-task-reviewer-1
+内容可能已截断；来源任务与来源会话指向只追加原始记录，需要完整上下文时请续读原始记录，不要根据摘要补写未知细节。
 
 发现两个错误处理问题。
 

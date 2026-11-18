@@ -561,3 +561,33 @@ func TestComputeRunStatsResumedRunExcludesParkedIdle(t *testing.T) {
 		t.Fatalf("停靠中耗时止于最后事件，得到 %d", stats.RunElapsedMs)
 	}
 }
+
+func TestComputeRunCollaboration(t *testing.T) {
+	teamRow := testTeam()
+	run := &Run{ID: "r-collab", TeamID: teamRow.ID, AutoPlan: true, Tasks: []Task{
+		{ID: "lead", MemberID: "lead", ExecutionContext: ExecutionContextLeadControl},
+		{ID: "delivery", MemberID: "dev"},
+		{ID: "review", MemberID: "rev", Review: reviewFlag(true)},
+	}}
+	events := []*Event{
+		statsEvent("r-collab", EventTaskForwarded, statsBase, map[string]any{"targetMemberId": "dev"}),
+		statsEvent("r-collab", EventTaskForwarded, statsBase.Add(time.Second), map[string]any{"targetMemberId": "dev"}),
+		statsEvent("r-collab", EventTaskDispatching, statsBase.Add(2*time.Second), map[string]any{"taskId": "delivery", "contextTruncated": true}),
+	}
+	events[0].IdempotencyKey = "forward-1"
+	events[1].IdempotencyKey = "forward-1"
+	events[2].IdempotencyKey = "dispatch-1"
+	stats := ComputeRunCollaboration(events, run, teamRow)
+	if stats.SingleDelivery || stats.ForwardCount != 1 || stats.ContextTruncationCount != 1 || stats.FailureTriageCount != 0 {
+		t.Fatalf("协作指标应去重且识别跨成员转交: %+v", stats)
+	}
+	stats = ComputeRunCollaboration(nil, run, teamRow)
+	if !stats.SingleDelivery {
+		t.Fatalf("一个执行交付加独立审查仍应算单助手端到端闭环: %+v", stats)
+	}
+	run.Tasks = append(run.Tasks, Task{ID: "lead-triage-1", MemberID: "lead", TriageFor: "delivery"})
+	stats = ComputeRunCollaboration(nil, run, teamRow)
+	if stats.FailureTriageCount != 1 || stats.SingleDelivery {
+		t.Fatalf("失败改派应计数并取消单助手闭环判定: %+v", stats)
+	}
+}

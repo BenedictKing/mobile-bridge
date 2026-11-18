@@ -290,7 +290,7 @@ Lead 可以返回普通回答，也可以在回答中附加：
 
 autoPlan Lead 的任务派发文本会在原始 goal 前附加 `[Team delegation]` 简报，列出启用成员的 ID、名称、Agent 类型、角色、动作字段、当前 `autoDispatch` 语义与轮次/任务/并发限制，使 Lead 不必猜测成员和协议。简报只用于 autoPlan 的 Lead 普通任务与派生任务；显式计划、普通成员、转发和修复任务不注入。最终顺序为 `[Team delegation]` → `[Team context]` → `[Assigned task]`/原始 Prompt，原始 goal 保留且只出现一次。
 
-简报中的动作示例只展示 JSON 动作对象，不携带字面 `<team-actions>` 信封，避免 Agent 回显 prompt 时将示例误执行。若成员结果还需 Lead 汇总或继续规划，简报会要求首批动作同时给 Lead 自身安排一条 `delegate` 后续任务，而不是在该批动作中提前混入 `summarize`；后续 Lead 任务取得结果后再发起汇总。delegate 未显式携带 `fromTaskId` 时默认依赖 `sourceTaskId`，使 Worker 位于来源 Lead 的下一阶段；Lead 给自己委派的后续任务还会依赖此前已落账的非 Lead 工作任务，保证“先并行 Worker、再由 Lead 合并”的拓扑；显式 `fromTaskId` 仍优先。简报与依赖上下文共同进入派发期 `InputHash`；创建期哈希、PlanHash 和 amend 缓存规则不变。完整派发文本仍持久化为 `Task.SentText`，重启、收养、取消和 turn 匹配始终优先使用存量文本。
+简报中的动作示例只展示 JSON 动作对象，不携带字面 `<team-actions>` 信封，避免 Agent 回显 prompt 时将示例误执行。若成员结果还需 Lead 汇总或继续规划，简报会要求首批动作同时给 Lead 自身安排一条 `delegate` 后续任务，而不是在该批动作中提前混入 `summarize`；后续 Lead 任务取得结果后再发起汇总。delegate 未显式携带 `fromTaskId` 时默认依赖 `sourceTaskId`，使 Worker 位于来源 Lead 的下一阶段；Lead 给自己委派的后续任务还会依赖此前已落账的非 Lead 工作任务，保证“先并行 Worker、再由 Lead 合并”的拓扑；显式 `fromTaskId` 仍优先。简报与依赖上下文共同进入派发期 `InputHash`；创建期哈希、PlanHash 和 amend 缓存规则不变。完整派发文本仍持久化为 `Task.SentText`，重启、收养、取消和 turn 匹配始终优先使用存量文本。Lead 简报默认要求一件可独立验收的交付由一个成员闭环完成，不按产品、架构、前端、后端、测试等工序横切接力；只有独立交付或独立审查才拆分成员，缺上下文时通过 `request_context` 续读原始任务。
 
 autoPlan 一旦存在已完成的非 Lead 任务，成功终局前由 Team Service 确定性补一条 `lead-auto-reduce` 收尾任务，不再依赖 Lead 自觉汇总。该任务依赖全部已完成的非收尾结果、`writeLock=none`、`reduction=true`，汇总目标、改动、验证和遗留问题；自动收尾结果不解析新 `team-actions`，但 Lead 主动 summarize 仍保留原有动作与修复能力。任务满额时落确定性失败，纯 Lead、显式计划及失败/取消路径不补收尾。`task_planned` 持久化 reduction、prompt 和 dependsOn，供 Journal 重建。
 
@@ -530,7 +530,8 @@ Task 完成后，Reducer 只提取有界结果：
 [Team context]
 来源成员：reviewer
 来源任务：task-reviewer-1
-内容可能已截断，完整内容请打开原会话查看。
+来源会话：session-reviewer
+内容可能已截断；来源任务与来源会话指向只追加原始记录，需要完整上下文时请续读原始记录，不要根据摘要补写未知细节。
 
 发现两个错误处理问题。
 
@@ -538,7 +539,7 @@ Task 完成后，Reducer 只提取有界结果：
 请修复上述问题，并说明修改了哪些文件。
 ```
 
-默认只注入结果摘要，用户可以选择注入最近 N 条消息。禁止静默注入完整 transcript。
+默认只注入结果摘要，用户可以选择注入最近 N 条消息。禁止静默注入完整 transcript。`request_context` 遇到带截断标记的任务结果时，通过其 `sessionId` 按需续读原始转录；转发信封始终保留来源任务与来源会话引用。成员转交不得形成回环，同一转交链最多 3 次；自动转交触线后拒绝动作并把 Run 停靠为 `waiting_input`，由用户明确接手。
 
 ### 7.2 Context Builder 接口
 
@@ -670,7 +671,7 @@ GET    /api/teams/:teamID/quotas
 
 创建请求可同时携带顶层 `project`，并随 Team 账本持久化；未显式携带时从成员的项目键归一。项目型团队成员必须同属一个项目，后续新增或换绑会话也校验工作目录。旧的无项目 Team 账本继续按原规则读取。
 
-项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次打开时先通过 `GET /api/projects/:projectKey/agents` 让用户选择主控，确认后以 `{leadAgent}` 创建团队及项目历史 ACP Agent 的专用会话，取消则不创建；保存 `defaultForProject=true` 与稳定 `projectCwd`，重放复用已有团队且返回 `duplicate:true`。未携带 `leadAgent` 的旧客户端仍按候选首位创建，显式选择不在候选列表中的 Agent 返回 400。候选至少 3 个时默认分配主控、执行成员和末位评审；两个时为主控+执行成员，一个时仅主控并由主控自我委派执行，不为凑角色取消执行能力。默认团队查找同时接受项目键和 `projectCwd` 匹配，因此 `acp:` / `codex:` 前缀随项目去重策略变化时不会误创建或误显示待创建。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
+项目默认团队通过 `PUT /api/projects/:projectKey/team` 幂等落实：首次打开时先通过 `GET /api/projects/:projectKey/agents` 让用户选择主控，确认后以 `{leadAgent}` 创建团队及项目历史 ACP Agent 的专用会话，取消则不创建；保存 `defaultForProject=true` 与稳定 `projectCwd`，重放复用已有团队且返回 `duplicate:true`。未携带 `leadAgent` 的旧客户端仍按候选首位创建，显式选择不在候选列表中的 Agent 返回 400。默认只创建所选主控一个成员，由主控自我委派并端到端执行完整交付；独立审查和其他专业成员由用户按实际交付边界显式添加，不按可用 Agent 数量自动搭建工序角色。默认团队查找同时接受项目键和 `projectCwd` 匹配，因此 `acp:` / `codex:` 前缀随项目去重策略变化时不会误创建或误显示待创建。项目列表中的虚拟默认行只在用户打开时调用 ensure，不因展示列表产生模型 turn。`#team=<teamId>` 深链不随主控会话变化。
 
 成员添加接受 `{agent,role}` 并创建项目内专用会话，候选下拉与新建对话、新建团队一致，使用 `GET /api/projects` 返回的已启用非 Codex ACP Agent，不要求当前项目已有该 Agent 的历史会话；只显示 Agent 类型而不混入会话标题。Team 以 `leadId` 与 `reviewerId` 分别持久化主控和默认评审；两者只需指向团队成员，允许同一成员同时担任主控和默认评审。PATCH 更换或移除默认评审在非终态 Run 存在时返回 409，移除该成员会清空失效的 `reviewerId`。旧 Lead 会话和历史 Run 保留。
 

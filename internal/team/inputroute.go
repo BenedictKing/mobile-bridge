@@ -4,7 +4,7 @@ package team
 // 每次处理一个 Team 的一条输入，按「优先输入在前、各自按接受序」取队；
 // 路由决策是机械且可复核的（无歧义自动派发）：
 //
-//	显式 targetRunId/targetTaskId → follow_up（追加 Lead 任务）
+//	显式 targetRunId/targetTaskId → follow_up（直达原任务的成员与执行线程）
 //	→ 唯一活跃 autoPlan Run 续作 → follow_up
 //	→ 无活跃 Run 且有历史 → amend（parentRunId 血缘修订）
 //	→ 全新 → new_task（runId=inputID 的初始 autoPlan Run）
@@ -113,6 +113,7 @@ func (s *Service) queueBudgetState(team *Team) (bool, string) {
 // 确认 routed（停靠/幂等跳过返回 false）。
 func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded bool, budgetReason string) bool {
 	kind, runID, taskID, parentRunID := input.RouteStatus, input.TargetRunID, input.TargetTaskID, input.ParentRunID
+	sourceTaskID := input.SourceTaskID
 	hasIntent := (input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput) && kind != ""
 	waitReason := ""
 	if !hasIntent {
@@ -131,7 +132,13 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded boo
 		}
 		switch {
 		case input.ExplicitTarget && input.TargetTaskID != "" && input.TargetRunID != "":
-			kind, runID, taskID = "follow_up", input.TargetRunID, input.TargetTaskID
+			targetRun := s.store.Run(input.TargetRunID)
+			if targetRun == nil || findTaskIn(targetRun, input.TargetTaskID) == nil {
+				waitReason = "追问目标不存在，请刷新 Run 后重新选择任务"
+				break
+			}
+			kind, runID, taskID = "follow_up", input.TargetRunID, ConversationTaskID(input.ID)
+			sourceTaskID = input.TargetTaskID
 		case len(active) > 1:
 			waitReason = "团队有多个未结束的 Run，请先在 Run 详情页收敛目标（完成或取消）后重试"
 		case len(active) == 1:
@@ -162,11 +169,12 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded boo
 		return false
 	}
 	// ① 意图先持久化（同意图幂等；queued/waiting → routing）。
-	if err := s.inputs.MarkRoutingIntent(team.ID, input.ID, kind, runID, taskID, parentRunID); err != nil {
+	if err := s.inputs.MarkRoutingIntent(team.ID, input.ID, kind, runID, taskID, parentRunID, sourceTaskID); err != nil {
 		log.Printf("team %s 输入 %s 路由意图落账失败: %v", team.ID, input.ID, err)
 		return false
 	}
 	// ② 幂等创建 Run/Task（确定性 ID：重放命中既有 Run/Task）。
+	input.SourceTaskID = sourceTaskID
 	createErr := s.materializeRoute(team, input, kind, runID, taskID, parentRunID)
 	if createErr != nil {
 		waitReason = createErr.Error()
@@ -222,7 +230,7 @@ func (s *Service) materializeRoute(team *Team, input *TeamInput, kind, runID, ta
 		_, err := s.CreateConversationAmendRun(team, parentRunID, runID, input.Text, input.AttachmentIDs)
 		return err
 	case "follow_up":
-		_, _, err := s.FollowUpConversationRun(team, runID, taskID, input.Text, input.AttachmentIDs)
+		_, _, err := s.FollowUpConversationRun(team, runID, taskID, input.Text, input.AttachmentIDs, input.SourceTaskID)
 		return err
 	case "planned":
 		return s.materializePlannedRoute(team, input)

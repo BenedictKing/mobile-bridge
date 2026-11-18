@@ -978,6 +978,7 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 	if reviewer := team.ReviewerMemberID(); reviewer != "" && reviewer != team.LeadID {
 		builder.WriteString("默认评审也是可执行任务的普通成员：实现、排查等执行任务委派给它时必须写 review=false，独立审查任务才写 review=true。审查应尽量由未参与实现的成员完成；没有合适的独立评审时明确说明未审查，不要伪造评审结论。审查动作必须单独成批：不要与普通执行任务放在同一动作块，也不要在实现任务尚未全部完成时委派审查——需要等实现后再审查时，先给 Lead 自己委派后续任务，等实现完成、后续 Lead 任务取得结果后再单独输出审查动作。\n")
 	}
+	builder.WriteString("默认把一件可独立验收的交付交给一个成员从需求到结果闭环完成；不要按产品、架构、前端、后端、测试等工序横切接力，也不要因为任务较大或需要分批就转交。只有交付物彼此独立且规范或权限不同，或确需独立审查时才拆分成员。接手任务的成员必须自己完成；缺少上下文时用 request_context 引用原始任务续读，不要只转发摘要。\n")
 	builder.WriteString("你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须先通过 delegate 分派，不得在主控回合中不经委派直接执行。Lead 也是默认执行成员，允许 delegate 给自己；后续 Lead 执行任务应按任务内容直接完成，不要仅为转交而再次委派。Lead 自己的 delegate 也可用于汇总结果和继续规划。需要编排时，")
 	builder.WriteString(actionSchemaInstruction())
 	builder.WriteString("\n")

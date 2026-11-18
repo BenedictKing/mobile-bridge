@@ -191,6 +191,9 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 	if input.TargetTaskID != "" {
 		object.Set("targetTaskId", input.TargetTaskID)
 	}
+	if input.SourceTaskID != "" {
+		object.Set("sourceTaskId", input.SourceTaskID)
+	}
 	if input.ParentRunID != "" {
 		object.Set("parentRunId", input.ParentRunID)
 	}

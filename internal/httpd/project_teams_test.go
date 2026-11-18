@@ -62,20 +62,16 @@ func TestDefaultTeamEnsureIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestDefaultTeamRoles(t *testing.T) {
-	cases := []struct {
-		index, count int
-		want         string
-	}{
-		{0, 1, "lead"},
-		{0, 2, "lead"}, {1, 2, "member"},
-		{0, 3, "lead"}, {1, 3, "member"}, {2, 3, "reviewer"},
-		{1, 4, "member"}, {2, 4, "member"}, {3, 4, "reviewer"},
+func TestDefaultTeamUsesSingleEndToEndLead(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	project := "acp:" + hashProject(env.dataDir)
+	response := env.request(http.MethodPut, "/api/projects/"+project+"/team", `{"leadAgent":"kimi"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("创建默认团队失败: %d %s", response.Code, response.Body.String())
 	}
-	for _, testCase := range cases {
-		if got := defaultTeamRole(testCase.index, testCase.count); got != testCase.want {
-			t.Fatalf("defaultTeamRole(%d, %d)=%q，期望 %q", testCase.index, testCase.count, got, testCase.want)
-		}
+	created := env.store.Teams()[0]
+	if len(created.Members) != 1 || created.Members[0].Role != "lead" || created.LeadID != created.Members[0].ID || created.ReviewerID != "" {
+		t.Fatalf("默认团队应只有一个端到端 Lead，不自动搭角色班子: %+v", created)
 	}
 }
 

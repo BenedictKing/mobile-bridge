@@ -47,7 +47,7 @@ Run 内已有 `DependsOn`、成员互斥、共享工作区写锁、Team 级 `max
 
 ```text
 TeamInput: id, teamId, revision, text, attachmentIds, contentHash,
-           acceptedAt, queueStatus, routeStatus, targetRunId?, targetTaskId?,
+           acceptedAt, queueStatus, routeStatus, targetRunId?, targetTaskId?, sourceTaskId?,
            priority, policyDigest, version, runIds[], workItemIds[]
 WorkItem:  id, sourceInputId, sourceRevision, requirementText, runId?,
            taskIds[], dependsOnItemIds[], status, evidenceRef?
@@ -76,7 +76,7 @@ POST   /api/teams/:teamId/inputs/:inputId/cancel  # 仅未派发部分可取消
 
 每 Team 同时只路由一批输入，按持久序号处理；执行中的不同 Run 可以并行。仅合并**尚未开始路由**且用户明确属于同一目标的输入，原始输入 ID、正文、附件和各自的 WorkItem 仍逐条保留。Lead 返回结构化路由提案，网关先完整校验，再创建 Run/Task；模型输出不能直接改 Team 或工作区。
 
-路由规则按以下顺序执行：显式 `targetTaskId` / `targetRunId` → 与唯一兼容的活跃 Run 续作 → 创建独立 Run → 目标或范围不明时 `waiting_input`。多个活跃 Run 不应使已受理输入消失，也不应猜最近一个；保留输入并要求选择。纯问答可产生答复而不创建 Run，但必须有输入记录和终局投影。
+路由规则按以下顺序执行：显式 `targetTaskId` / `targetRunId` → 与唯一兼容的活跃 Run 续作 → 创建独立 Run → 目标或范围不明时 `waiting_input`。显式任务追问用 `sourceTaskId` 保留血缘，新任务复用来源成员与执行线程，不再绕回 Lead 控制线程。多个活跃 Run 不应使已受理输入消失，也不应猜最近一个；保留输入并要求选择。纯问答可产生答复而不创建 Run，但必须有输入记录和终局投影。
 
 单条输入的每个可检查要求分配稳定 WorkItem ID，保留原句、来源片段和约束；不能让 Lead 把“Web 和桌面”缩成“仅 Web”。Lead 可建议关联、依赖和成员；网关可机械校验来源引用完整、字段合法和有无未映射片段，但无法单凭程序证明语义覆盖。多要求计划在派发前展示映射供用户核对；无歧义且策略允许的计划可自动派发，范围歧义会影响副作用时先澄清，不用猜测代替用户决定。
 

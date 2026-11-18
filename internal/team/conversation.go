@@ -21,9 +21,15 @@ func (s *Service) CreateConversationAmendRun(team *Team, parentRunID, runID, goa
 	return s.createRun(team, runID, goal, ModeSingle, "", nil, nil, true, "", parentRunID, attachments)
 }
 
-// FollowUpConversationRun 把一条团队消息追加为当前 autoPlan Run 的 Lead 任务。
-// waiting_input/paused 由用户的新消息显式恢复；旧任务及其结果保持原样。
-func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string, attachments []string) (*Run, bool, error) {
+// FollowUpConversationRun 把一条团队消息追加为当前 autoPlan Run 的任务。
+// 默认进入 Lead 控制线程；sourceTaskID 非空时表示显式追问某个干活任务，
+// 新任务复用其成员与执行上下文。waiting_input/paused 由用户的新消息显式恢复；
+// 旧任务及其结果保持原样。
+func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string, attachments []string, sourceTaskIDs ...string) (*Run, bool, error) {
+	sourceTaskID := ""
+	if len(sourceTaskIDs) > 0 {
+		sourceTaskID = sourceTaskIDs[0]
+	}
 	if team == nil {
 		return nil, false, fmt.Errorf("team 不能为 nil")
 	}
@@ -42,12 +48,27 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 			decisionErr = fmt.Errorf("%w: 当前 Run 正在验证，请稍后继续", ErrRunNotWaiting)
 			return nil, false
 		}
-		if !fresh.AutoPlan || fresh.Mode != ModeSingle {
+		if sourceTaskID == "" && (!fresh.AutoPlan || fresh.Mode != ModeSingle) {
 			decisionErr = fmt.Errorf("%w: 当前显式计划 Run 请在其详情页处理", ErrRunNotWaiting)
 			return nil, false
 		}
+		memberID := team.LeadID
+		executionContext := ExecutionContextLeadControl
+		var dependsOn []string
+		if sourceTaskID != "" {
+			source := findTaskIn(fresh, sourceTaskID)
+			if source == nil {
+				decisionErr = fmt.Errorf("%w: 追问来源任务 %s", ErrNotFound, sourceTaskID)
+				return nil, false
+			}
+			memberID = source.MemberID
+			executionContext = source.ExecutionContext
+			if source.Status == TaskPlanned || source.Status == TaskReady || source.Status == TaskDispatching || source.Status == TaskRunning {
+				dependsOn = []string{sourceTaskID}
+			}
+		}
 		if existing := findTaskIn(fresh, taskID); existing != nil {
-			if existing.MemberID == team.LeadID && existing.Prompt == goal && sameStringSlices(existing.Attachments, attachments) {
+			if existing.MemberID == memberID && existing.Prompt == goal && sameStringSlices(existing.Attachments, attachments) {
 				duplicate = true
 				return nil, false
 			}
@@ -59,9 +80,9 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 			return nil, false
 		}
 		task := Task{
-			ID: taskID, MemberID: team.LeadID, Prompt: goal, Attachments: append([]string(nil), attachments...),
+			ID: taskID, MemberID: memberID, Prompt: goal, Attachments: append([]string(nil), attachments...),
 			Ordinal: len(fresh.Tasks), Status: TaskPlanned, InstructionsHead: InstructionsHead(goal),
-			ExecutionContext: ExecutionContextLeadControl,
+			ExecutionContext: executionContext, DependsOn: dependsOn,
 		}
 		task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
 		fresh.Tasks = append(fresh.Tasks, task)
@@ -75,6 +96,11 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 		}
 		if len(task.Attachments) > 0 {
 			payload["attachments"] = append([]string(nil), task.Attachments...)
+		}
+		if sourceTaskID != "" {
+			payload["sourceTaskId"] = sourceTaskID
+			payload["prompt"] = task.Prompt
+			payload["dependsOn"] = append([]string(nil), task.DependsOn...)
 		}
 		return []*Event{newEvent(runID, EventTaskPlanned, "user", payload)}, true
 	})

@@ -110,6 +110,7 @@ func TestForwardToMemberTaskSourceEnvelopeAndDelivery(t *testing.T) {
 		"[Team context]",
 		"来源成员：lead",
 		"来源任务：analysis",
+		"来源会话：s-lead",
 		"", // 时间行在下面单独断言（RFC3339 可解析）。
 		contextTruncationNote,
 		"",
@@ -131,11 +132,11 @@ func TestForwardToMemberTaskSourceEnvelopeAndDelivery(t *testing.T) {
 			t.Fatalf("信封第 %d 行应为 %q，实际 %q:\n%s", i, wantLine, lines[i], text)
 		}
 	}
-	if !strings.HasPrefix(lines[3], "时间：") {
-		t.Fatalf("第 4 行应为时间行，实际 %q:\n%s", lines[3], text)
+	if !strings.HasPrefix(lines[4], "时间：") {
+		t.Fatalf("第 5 行应为时间行，实际 %q:\n%s", lines[4], text)
 	}
-	if _, err := time.Parse(time.RFC3339, strings.TrimPrefix(lines[3], "时间：")); err != nil {
-		t.Fatalf("时间行应为 RFC3339，实际 %q: %v", lines[3], err)
+	if _, err := time.Parse(time.RFC3339, strings.TrimPrefix(lines[4], "时间：")); err != nil {
+		t.Fatalf("时间行应为 RFC3339，实际 %q: %v", lines[4], err)
 	}
 	// 事件：journal 里有 task_forwarded（幂等键 + payload 契约）。
 	events, err := h.journal.Replay()
@@ -661,6 +662,15 @@ func TestForwardToMemberConcurrentPreemptEnqueuesIdenticalContent(t *testing.T) 
 // sourceTaskId 产生新的合法 ActionKey 并在 autoDispatch 下被执行。任务源与
 // 会话源转录同剥；正文只剩动作块的任务源转发确定性报错（没有可转发的
 // 结果内容）。
+func TestForwardToMemberRejectsSelfForward(t *testing.T) {
+	h := newForwardHarness(t)
+	run := h.saveForwardRun(t, forwardRunFixture("run-fwd-self"))
+	_, _, err := h.service.ForwardToMember(h.team, run, forwardRequest(uuid.NewString(), "analysis", "", "lead"))
+	if !errors.Is(err, ErrForwardRule) || !strings.Contains(err.Error(), "再次转交给自己") {
+		t.Fatalf("自我转交应命中团队约定，实际 %v", err)
+	}
+}
+
 func TestForwardToMemberStripsActionBlocks(t *testing.T) {
 	h := newForwardHarness(t)
 	run := forwardRunFixture("run-fwd-strip")
@@ -669,11 +679,11 @@ func TestForwardToMemberStripsActionBlocks(t *testing.T) {
 	run.Tasks[0].ResultDetail.Result = run.Tasks[0].Result
 	h.saveForwardRun(t, run)
 
-	// 任务源 → Lead（最危险的走私目标）：入队文本剥块但保留正文。
-	if _, _, err := h.service.ForwardToMember(h.team, run, forwardRequest(uuid.NewString(), "analysis", "", "lead")); err != nil {
+	// 任务源跨成员转发：入队文本剥块但保留正文。
+	if _, _, err := h.service.ForwardToMember(h.team, run, forwardRequest(uuid.NewString(), "analysis", "", "dev")); err != nil {
 		t.Fatalf("剥离后应可转发: %v", err)
 	}
-	entry, ok := h.queue.firstEntry("s-lead")
+	entry, ok := h.queue.firstEntry("s-dev")
 	if !ok {
 		t.Fatal("目标成员会话应收到转发消息")
 	}
@@ -714,5 +724,81 @@ func TestForwardToMemberStripsActionBlocks(t *testing.T) {
 	if _, _, err := h.service.ForwardToMember(h.team, onlyBlock, forwardRequest(uuid.NewString(), "analysis", "", "rev")); err == nil ||
 		!strings.Contains(err.Error(), "没有可转发的结果内容") {
 		t.Fatalf("只剩动作块的结果应确定性报错，实际 %v", err)
+	}
+}
+
+func TestForwardToMemberRejectsLoopAndLongChain(t *testing.T) {
+	h := newForwardHarness(t)
+	h.team.Members = append(h.team.Members,
+		TeamMember{ID: "ops", SessionID: "s-ops", Role: RoleMember, Enabled: true},
+		TeamMember{ID: "qa", SessionID: "s-qa", Role: RoleMember, Enabled: true})
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatal(err)
+	}
+	run := forwardRunFixture("run-fwd-chain")
+	for index, memberID := range []string{"dev", "rev", "ops"} {
+		run.Tasks = append(run.Tasks, Task{
+			ID: "done-" + memberID, MemberID: memberID, Ordinal: index + 2,
+			Status: TaskCompleted, Result: "结果-" + memberID,
+		})
+	}
+	h.saveForwardRun(t, run)
+	for _, step := range []struct {
+		source, target string
+	}{{"analysis", "dev"}, {"done-dev", "rev"}, {"done-rev", "ops"}} {
+		if _, _, err := h.service.ForwardToMember(h.team, run, forwardRequest(uuid.NewString(), step.source, "", step.target)); err != nil {
+			t.Fatalf("链内第 %s→%s 次转发应成功: %v", step.source, step.target, err)
+		}
+	}
+	_, _, err := h.service.ForwardToMember(h.team, run, forwardRequest(uuid.NewString(), "done-ops", "", "qa"))
+	if !errors.Is(err, ErrForwardRule) || !strings.Contains(err.Error(), "最多 3 次") {
+		t.Fatalf("第 4 次链式转交应熔断找人，实际 %v", err)
+	}
+	_, _, err = h.service.ForwardToMember(h.team, run, forwardRequest(uuid.NewString(), "done-rev", "", "lead"))
+	if !errors.Is(err, ErrForwardRule) || !strings.Contains(err.Error(), "禁止再回环") {
+		t.Fatalf("已参与成员回环应拒绝，实际 %v", err)
+	}
+}
+
+func TestRejectForwardActionParksRun(t *testing.T) {
+	h := newForwardHarness(t)
+	run := forwardRunFixture("run-fwd-reject")
+	action := Action{ActionKey: "action-forward-loop", Type: ActionTypeRequestContext,
+		SourceTaskID: "analysis", Member: "lead", FromTaskID: "analysis", Status: ActionStatusProposed}
+	run.PendingActions = []Action{action}
+	h.saveForwardRun(t, run)
+	state := h.service.stateFor(run.ID)
+	h.service.rejectForwardAction(state, &action, "转交链回环，请用户接手")
+	fresh := h.store.Run(run.ID)
+	if fresh.Status != RunWaitingInput || fresh.StopReason != "转交链回环，请用户接手" ||
+		len(fresh.PendingActions) != 1 || fresh.PendingActions[0].Status != ActionStatusRejected {
+		t.Fatalf("确定性转交违例应拒绝动作并停靠找人: %+v", fresh)
+	}
+}
+
+func TestForwardRequestContextReadsOriginalTranscriptForTruncatedResult(t *testing.T) {
+	h := newForwardHarness(t)
+	run := forwardRunFixture("run-fwd-original")
+	run.Tasks[0].ResultDetail.Truncated = true
+	run.Tasks[0].ResultDetail.Result = "被截断的摘要"
+	h.saveForwardRun(t, run)
+	transcripts := &fakeTranscripts{text: "用户：原始需求\n助手：完整分析与原始命令", truncated: false}
+	h.service.Transcripts = transcripts
+	req := forwardRequest(uuid.NewString(), "analysis", "", "dev")
+	req.ActionKey = "action-original-context"
+	if _, _, err := h.service.ForwardToMember(h.team, run, req); err != nil {
+		t.Fatalf("截断结果的 request_context 应续读原始转录: %v", err)
+	}
+	if len(transcripts.calls) != 1 || transcripts.calls[0] != "s-lead/" {
+		t.Fatalf("应使用来源会话默认范围续读: %v", transcripts.calls)
+	}
+	entry, _ := h.queue.firstEntry("s-dev")
+	for _, want := range []string{"来源任务：analysis", "来源会话：s-lead", "完整分析与原始命令"} {
+		if !strings.Contains(entry.text, want) {
+			t.Fatalf("原始现场信封应包含 %q:\n%s", want, entry.text)
+		}
+	}
+	if strings.Contains(entry.text, "被截断的摘要") || strings.Contains(entry.text, "（结果过长，已截断）") {
+		t.Fatalf("成功续读原始转录后不应再只发截断摘要:\n%s", entry.text)
 	}
 }

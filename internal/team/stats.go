@@ -63,12 +63,23 @@ type BudgetStat struct {
 // 数据源，明示不支持，绝不填估值）；RunElapsedMs=run_created.createdAt 到
 // 终局事件（无终局则到 now）的间隔。
 type RunStats struct {
-	RunElapsedMs  int64      `json:"runElapsedMs"`
-	DispatchCount int        `json:"dispatchCount"`
-	Tokens        *struct{}  `json:"tokens"`
-	Tasks         []TaskStat `json:"tasks"`
-	Coverage      string     `json:"coverage"`
-	Budget        BudgetStat `json:"budget"`
+	RunElapsedMs  int64             `json:"runElapsedMs"`
+	DispatchCount int               `json:"dispatchCount"`
+	Tokens        *struct{}         `json:"tokens"`
+	Tasks         []TaskStat        `json:"tasks"`
+	Coverage      string            `json:"coverage"`
+	Budget        BudgetStat        `json:"budget"`
+	Collaboration CollaborationStat `json:"collaboration"`
+}
+
+// CollaborationStat 是团队协作健康度：SingleDelivery 表示只有一个端到端
+// 执行交付且没有跨成员转交/失败改派；独立审查不计入交付数。其余计数用于
+// 发现层层转交与上下文截断造成的负优化。
+type CollaborationStat struct {
+	SingleDelivery         bool `json:"singleDelivery"`
+	ForwardCount           int  `json:"forwardCount"`
+	FailureTriageCount     int  `json:"failureTriageCount"`
+	ContextTruncationCount int  `json:"contextTruncationCount"`
 }
 
 // budgetExhausted 是 §9 预算停靠的统一判定（passDispatch 的闸门与
@@ -168,6 +179,63 @@ func countRunDispatches(events []*Event, runID string) int {
 		seen[[2]any{payloadString(event.Payload, "taskId"), payloadInt(event.Payload, "attempt")}] = true
 	}
 	return len(seen)
+}
+
+// ComputeRunCollaboration 从快照与 journal 事实计算协作健康度。转发与截断
+// 按幂等键去重；没有幂等键的历史事件退化为事件 ID，避免恢复重放重复计数。
+func ComputeRunCollaboration(events []*Event, run *Run, teamRow *Team) CollaborationStat {
+	stats := CollaborationStat{}
+	if run == nil {
+		return stats
+	}
+	seenForwards := map[string]bool{}
+	seenTruncation := map[string]bool{}
+	for _, event := range events {
+		if event == nil || event.RunID != run.ID {
+			continue
+		}
+		key := event.IdempotencyKey
+		if key == "" {
+			key = event.ID
+		}
+		switch event.Type {
+		case EventTaskForwarded:
+			if !seenForwards[key] {
+				seenForwards[key] = true
+				stats.ForwardCount++
+			}
+			if payloadBool(event.Payload, "truncated") && !seenTruncation["forward:"+key] {
+				seenTruncation["forward:"+key] = true
+				stats.ContextTruncationCount++
+			}
+		case EventTaskDispatching:
+			if payloadBool(event.Payload, "contextTruncated") && !seenTruncation["dispatch:"+key] {
+				seenTruncation["dispatch:"+key] = true
+				stats.ContextTruncationCount++
+			}
+		}
+	}
+	deliveries := 0
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		if task.Reduction || task.IssueClassificationOnly || task.TriageFor != "" {
+			continue
+		}
+		if teamRow != nil && IsReviewTask(teamRow, task) {
+			continue
+		}
+		if run.AutoPlan && teamRow != nil && task.MemberID == teamRow.LeadID && task.ExecutionContext != ExecutionContextLeadRun {
+			continue
+		}
+		deliveries++
+	}
+	for i := range run.Tasks {
+		if run.Tasks[i].TriageFor != "" {
+			stats.FailureTriageCount++
+		}
+	}
+	stats.SingleDelivery = deliveries == 1 && stats.ForwardCount == 0 && stats.FailureTriageCount == 0
+	return stats
 }
 
 // ComputeRunStats 从 journal 事件推导 Run 统计（纯函数，零 I/O）：events

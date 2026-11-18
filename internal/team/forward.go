@@ -33,6 +33,13 @@ const forwardTimeLayout = time.RFC3339
 // Run 结束后不再产生新的成员消息）。HTTP 侧映射 409。
 var ErrForwardRunFinished = errors.New("运行已结束，不能转发")
 
+// ErrForwardRule 表示转交会形成成员回环或超过同一链路的转交上限。
+// 自动 request_context 命中后必须拒绝动作并停靠找人，不能按瞬态错误重试。
+var ErrForwardRule = errors.New("转发违反团队协作约定")
+
+// maxForwardChainHops 是同一条成员转交链允许的最大转发次数。
+const maxForwardChainHops = 3
+
 // ForwardRequest 描述一次成员间显式转发。来源二选一：SourceTaskID（该 Run
 // 内 completed 任务的结果）或 SourceSessionID+Scope（按 scope 裁剪的会话
 // 转录）；RequestID 是幂等键的组成部分（必填 UUID）。ActionKey 非空表示
@@ -135,9 +142,22 @@ func (s *Service) ForwardToMember(team *Team, run *Run, req ForwardRequest) (str
 		recordedAt = payloadString(recorded.Payload, "recordedAt")
 	}
 
-	// ③ 会话源转录提取（无锁——绝不占 run 锁）。任务源正文在 ④ 里从 run
-	// 快照读取（纯内存）。
+	// ③ 会话源转录提取（无锁——绝不占 run 锁）。任务源正文通常在 ④ 里从
+	// run 快照读取；request_context 遇到已截断结果时续读来源会话的原始转录，
+	// 不让下游只能根据二手摘要猜测。
 	var transcript *forwardTranscript
+	if req.ActionKey != "" && req.SourceTaskID != "" && s.Transcripts != nil {
+		if source := findTaskIn(run, req.SourceTaskID); source != nil && source.ResultDetail != nil &&
+			source.ResultDetail.Truncated && source.ResultDetail.SessionID != "" {
+			text, truncated, err := s.Transcripts.BoundedTranscript(source.ResultDetail.SessionID, "")
+			if err != nil {
+				return "", false, fmt.Errorf("原始转录提取失败: %w", err)
+			}
+			if strings.TrimSpace(text) != "" {
+				transcript = &forwardTranscript{text: text, truncated: truncated}
+			}
+		}
+	}
 	if req.SourceSessionID != "" {
 		if s.Transcripts == nil {
 			return "", false, ErrTranscriptUnavailable
@@ -173,6 +193,11 @@ func (s *Service) ForwardToMember(team *Team, run *Run, req ForwardRequest) (str
 			alreadyRecorded = true
 		}
 	}
+	if !alreadyRecorded {
+		if err := s.forwardChainViolation(team, fresh, req); err != nil {
+			return "", false, err
+		}
+	}
 	contextText, note, truncated, at, err := s.composeForward(team, fresh, req, transcript, recordedAt)
 	if err != nil {
 		return "", false, err
@@ -191,6 +216,9 @@ func (s *Service) ForwardToMember(team *Team, run *Run, req ForwardRequest) (str
 		"recordedAt":     at,
 		"contextChars":   jsoncompat.Num(len([]rune(contextText))),
 		"truncated":      truncated,
+	}
+	if sourceMemberID := forwardSourceMember(team, fresh, req.SourceTaskID, req.SourceSessionID); sourceMemberID != "" {
+		payload["sourceMemberId"] = sourceMemberID
 	}
 	if req.SourceTaskID != "" {
 		payload["sourceTaskId"] = req.SourceTaskID
@@ -241,21 +269,29 @@ func (s *Service) composeForward(team *Team, run *Run, req ForwardRequest, trans
 		// 下游可执行的动作只来自编排器的正式派发。转发目标是 Lead 时回显
 		// 信封会以新 sourceTaskId 产生新的合法 ActionKey 并在 autoDispatch
 		// 下被执行。只剥成对块；孤立标记是普通文本，无副作用。
-		body = stripActionBlocks(detail.Result)
-		if detail.FileSummary != "" {
-			body += "\n变更文件：" + detail.FileSummary
-		}
-		if detail.CommandSummary != "" {
-			body += "\n执行命令：" + detail.CommandSummary
-		}
-		if detail.Truncated {
-			body += "\n（结果过长，已截断）"
-			truncated = true
+		if transcript != nil {
+			body = stripActionBlocks(transcript.text)
+			truncated = transcript.truncated
+		} else {
+			body = stripActionBlocks(detail.Result)
+			if detail.FileSummary != "" {
+				body += "\n变更文件：" + detail.FileSummary
+			}
+			if detail.CommandSummary != "" {
+				body += "\n执行命令：" + detail.CommandSummary
+			}
+			if detail.Truncated {
+				body += "\n（结果过长，已截断）"
+				truncated = true
+			}
 		}
 		if strings.TrimSpace(body) == "" {
 			return "", "", false, "", fmt.Errorf("来源任务没有可转发的结果内容：%s", req.SourceTaskID)
 		}
 		headerLines = []string{"来源成员：" + task.MemberID, "来源任务：" + task.ID}
+		if detail.SessionID != "" {
+			headerLines = append(headerLines, "来源会话："+detail.SessionID)
+		}
 	} else {
 		// 会话源同样剥动作块（Lead 会话转录里的动作信封与任务结果同源，
 		// 走私路径与防护同条）。
@@ -313,4 +349,97 @@ func (s *Service) forwardRecorded(runID, idempotencyKey string) *Event {
 		}
 	}
 	return nil
+}
+
+// forwardChainViolation 在记账前检查成员转交链。转发不是 DAG 任务，因此
+// 回环与链长必须单独由 task_forwarded 事实约束；历史事件缺少
+// sourceMemberId 时按来源任务/会话回补，外部会话则作为新链起点。
+func (s *Service) forwardChainViolation(team *Team, run *Run, req ForwardRequest) error {
+	source := forwardSourceMember(team, run, req.SourceTaskID, req.SourceSessionID)
+	if source == "" {
+		return nil
+	}
+	if source == req.TargetMemberID {
+		return fmt.Errorf("%w：成员 %s 不能把自己接手的内容再次转交给自己", ErrForwardRule, source)
+	}
+	events, err := s.journal.Replay()
+	if err != nil {
+		return fmt.Errorf("转发链读取失败: %w", err)
+	}
+	edges := map[string][]string{}
+	for _, event := range events {
+		if event == nil || event.RunID != run.ID || event.Type != EventTaskForwarded {
+			continue
+		}
+		from := payloadString(event.Payload, "sourceMemberId")
+		if from == "" {
+			from = forwardSourceMember(team, run,
+				payloadString(event.Payload, "sourceTaskId"), payloadString(event.Payload, "sourceSessionId"))
+		}
+		to := payloadString(event.Payload, "targetMemberId")
+		if from != "" && to != "" {
+			edges[from] = append(edges[from], to)
+		}
+	}
+	if forwardPathExists(edges, req.TargetMemberID, source, map[string]bool{}) {
+		return fmt.Errorf("%w：成员 %s 已参与当前转交链，禁止再回环到 %s", ErrForwardRule, req.TargetMemberID, source)
+	}
+	if forwardChainDepth(edges, source, map[string]bool{}) >= maxForwardChainHops {
+		return fmt.Errorf("%w：同一转交链最多 %d 次，已停止自动转交，请由用户明确接手", ErrForwardRule, maxForwardChainHops)
+	}
+	return nil
+}
+
+func forwardSourceMember(team *Team, run *Run, sourceTaskID, sourceSessionID string) string {
+	if sourceTaskID != "" {
+		if task := findTaskIn(run, sourceTaskID); task != nil {
+			return task.MemberID
+		}
+		return ""
+	}
+	if sourceSessionID != "" && team != nil {
+		for _, member := range team.Members {
+			if member.SessionID == sourceSessionID {
+				return member.ID
+			}
+		}
+	}
+	return ""
+}
+
+func forwardPathExists(edges map[string][]string, from, target string, visiting map[string]bool) bool {
+	if from == target {
+		return true
+	}
+	if visiting[from] {
+		return false
+	}
+	visiting[from] = true
+	defer delete(visiting, from)
+	for _, next := range edges[from] {
+		if forwardPathExists(edges, next, target, visiting) {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardChainDepth 返回到达 member 的最长既有转交边数。历史脏数据中的环
+// 由 visiting 截断；新转发能否形成环已在上面的反向可达检查中单独拒绝。
+func forwardChainDepth(edges map[string][]string, member string, visiting map[string]bool) int {
+	if visiting[member] {
+		return 0
+	}
+	visiting[member] = true
+	defer delete(visiting, member)
+	depth := 0
+	for from, targets := range edges {
+		if !containsString(targets, member) {
+			continue
+		}
+		if candidate := forwardChainDepth(edges, from, visiting) + 1; candidate > depth {
+			depth = candidate
+		}
+	}
+	return depth
 }

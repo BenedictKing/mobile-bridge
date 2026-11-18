@@ -112,16 +112,6 @@ func (h *handler) teamProjectCwd(teamRow *team.Team) string {
 	return (teamSessionResolver{server: h.server}).Cwd(teamLeadSessionID(teamRow))
 }
 
-func defaultTeamRole(index, count int) string {
-	if index == 0 {
-		return team.RoleLead
-	}
-	if count >= 3 && index == count-1 {
-		return team.RoleReviewer
-	}
-	return team.RoleMember
-}
-
 func (h *handler) handleDefaultTeamPut(projectKey string) {
 	cwd := h.resolveProjectCwd(projectKey)
 	if cwd == "" {
@@ -166,17 +156,20 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 			candidates[0], candidates[selected] = candidates[selected], candidates[0]
 		}
 	}
+	// 默认团队只供给一个可端到端执行的 Lead；独立审查与其他专业成员由
+	// 用户按实际交付边界显式添加，不按可用 Agent 数量自动搭角色班子。
+	candidates = candidates[:1]
 	teamID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:default-team:"+projectKey)).String()
 	name := filepath.Base(filepath.Clean(cwd)) + "团队"
 	policy := team.DefaultPolicy()
 	policy.AutoDispatch = true
 	entries := make([]*jsoncompat.Object, 0, len(candidates))
-	for index, candidate := range candidates {
+	for _, candidate := range candidates {
 		entry := jsoncompat.NewObject()
 		entry.Set("id", "member-"+candidate.Agent)
 		entry.Set("project", projectKey)
 		entry.Set("agent", candidate.Agent)
-		entry.Set("role", defaultTeamRole(index, len(candidates)))
+		entry.Set("role", team.RoleLead)
 		entry.Set("name", candidate.Agent)
 		entries = append(entries, entry)
 	}
@@ -200,9 +193,6 @@ func (h *handler) handleDefaultTeamPut(projectKey string) {
 	created := &team.Team{
 		ID: teamID, Name: name, Project: projectKey, ProjectCwd: cwd, DefaultForProject: true,
 		Members: members, LeadID: members[0].ID, Policy: policy, CreatedAt: now, UpdatedAt: now,
-	}
-	if len(members) >= 3 {
-		created.ReviewerID = members[len(members)-1].ID
 	}
 	if err := h.server.TeamStore.SaveTeam(created); err != nil {
 		if existing := h.server.TeamStore.Team(teamID); existing != nil {

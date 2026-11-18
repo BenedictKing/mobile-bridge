@@ -14,7 +14,7 @@ import (
 const (
 	teamContextHeader     = "[Team context]"
 	assignedTaskHeader    = "[Assigned task]"
-	contextTruncationNote = "内容可能已截断，完整内容请打开原会话查看。"
+	contextTruncationNote = "内容可能已截断；来源任务与来源会话指向只追加原始记录，需要完整上下文时请续读原始记录，不要根据摘要补写未知细节。"
 )
 
 // ContextSource 记录一段注入上下文的来源（§7.2「记录实际注入长度和来源任务」）。
@@ -43,6 +43,7 @@ type ContextResult struct {
 type contextBlock struct {
 	taskID    string
 	memberID  string
+	sessionID string
 	content   string
 	truncated bool
 }
@@ -90,9 +91,14 @@ func BuildTaskContext(run *Run, task *Task, policy TeamPolicy) ContextResult {
 		if dep.Status != TaskCompleted || strings.TrimSpace(content) == "" {
 			continue
 		}
+		sessionID := ""
+		if dep.ResultDetail != nil {
+			sessionID = dep.ResultDetail.SessionID
+		}
 		blocks = append(blocks, contextBlock{
-			taskID:   dep.ID,
-			memberID: dep.MemberID,
+			taskID:    dep.ID,
+			memberID:  dep.MemberID,
+			sessionID: sessionID,
 			// 先剥 <team-actions> 动作块（§5.1：Lead 结果里的动作信封绝不由
 			// 上下文走私进下游——下游可执行的动作只来自编排器的正式派发），
 			// 再剥 [Team context] 信封（§7.2 防多轮接力指数增长）。
@@ -170,7 +176,11 @@ func assignedFraming(prompt string) int {
 }
 
 func (b *contextBlock) header() string {
-	return "来源成员：" + b.memberID + "\n来源任务：" + b.taskID + "\n" + contextTruncationNote
+	header := "来源成员：" + b.memberID + "\n来源任务：" + b.taskID
+	if b.sessionID != "" {
+		header += "\n来源会话：" + b.sessionID
+	}
+	return header + "\n" + contextTruncationNote
 }
 
 // chars 是该来源块的 rune 数（含来源头与空行）。

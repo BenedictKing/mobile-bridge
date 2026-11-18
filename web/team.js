@@ -1842,6 +1842,14 @@ class TeamRunScreen{
         box.append(grid);
       }
     }
+    const collaboration=data.collaboration;
+    if(collaboration&&typeof collaboration==='object'){
+      const bits=[collaboration.singleDelivery?t('单助手端到端闭环'):t('多成员协作')];
+      if(typeof collaboration.forwardCount==='number')bits.push(t('转交 ')+collaboration.forwardCount+t(' 次'));
+      if(typeof collaboration.failureTriageCount==='number')bits.push(t('失败分诊 ')+collaboration.failureTriageCount+t(' 次'));
+      if(typeof collaboration.contextTruncationCount==='number')bits.push(t('上下文截断 ')+collaboration.contextTruncationCount+t(' 次'));
+      box.append(this.node('p',bits.join(' · '),'muted'));
+    }
     const budget=data.budget;
     if(budget&&typeof budget==='object'){
       const line=this.node('p',undefined,'muted');

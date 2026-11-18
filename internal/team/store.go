@@ -770,7 +770,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		if refs := payloadStrings(event.Payload, "reviewOf"); len(refs) > 0 {
 			task.ReviewOf = refs
 		}
-		if task.Reduction || task.TriageFor != "" {
+		if task.Reduction || task.TriageFor != "" || payloadString(event.Payload, "sourceTaskId") != "" {
 			task.Prompt = payloadString(event.Payload, "prompt")
 			task.DependsOn = payloadStrings(event.Payload, "dependsOn")
 		}

@@ -204,7 +204,7 @@ sourceTaskId, resultVersion, workspaceId, truncated
 [Assigned task]
 ```
 
-不做全量 transcript 两两广播。上下文上限、轮次、任务数、并发数和预算都由 Team Policy 控制。
+不做全量 transcript 两两广播。上下文上限、轮次、任务数、并发数和预算都由 Team Policy 控制。默认一件可独立验收的交付由一个成员端到端闭环，只有独立交付与独立审查才拆分；上下文保留来源任务和来源会话引用，截断结果可通过 `request_context` 续读原始转录。成员转交禁止回环，同一链最多 3 次，自动转交触线后停靠 `waiting_input` 找人。
 
 ## 8. 权限和交付
 

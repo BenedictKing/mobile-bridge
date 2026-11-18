@@ -1035,6 +1035,10 @@ func (s *Service) executeForwardAction(state *runState, team *Team, policy TeamP
 		if errors.Is(err, ErrForwardRunFinished) {
 			return // Run 已终局：动作随 Run 收场（快照保持 proposed，纯预览）。
 		}
+		if errors.Is(err, ErrForwardRule) {
+			s.rejectForwardAction(state, action, err.Error())
+			return
+		}
 		log.Printf("team run %s 动作 %s 转发失败（保持 proposed，下轮重试）: %v", state.runID, action.ActionKey, err)
 		return
 	}
@@ -1051,6 +1055,31 @@ func (s *Service) executeForwardAction(state *runState, team *Team, policy TeamP
 	state.mu.Unlock()
 	if err != nil {
 		log.Printf("team run %s 动作 %s executed 收敛失败（下轮按 journal 事实补齐）: %v", state.runID, action.ActionKey, err)
+	}
+}
+
+// rejectForwardAction 把确定性的转交约定违例落为 action_rejected，并停靠
+// Run 请求用户接手。与 I/O 失败的下轮重试不同，回环/超链重放永远不会成功。
+func (s *Service) rejectForwardAction(state *runState, action *Action, reason string) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	err := s.commitRun(state.runID, func(fresh *Run) ([]*Event, bool) {
+		index := findProposedActionIndex(fresh, action.ActionKey)
+		if index < 0 {
+			return nil, false
+		}
+		fresh.PendingActions[index].Status = ActionStatusRejected
+		fresh.PendingActions[index].Reason = reason
+		fresh.Status = RunWaitingInput
+		fresh.StopReason = reason
+		rejected := newEvent(fresh.ID, EventActionRejected, "runner", actionRejectedPayload(action, reason))
+		rejected.IdempotencyKey = action.ActionKey
+		waiting := newEvent(fresh.ID, EventRunWaitingInput, "runner", map[string]any{"stopReason": reason})
+		waiting.IdempotencyKey = action.ActionKey + ":forward-rule-waiting"
+		return []*Event{rejected, waiting}, true
+	})
+	if err != nil {
+		log.Printf("team run %s 动作 %s 转交熔断记账失败（下轮重试）: %v", state.runID, action.ActionKey, err)
 	}
 }
 

@@ -140,6 +140,7 @@ type TeamInput struct {
 	RouteStatus            string           `json:"routeStatus"`
 	TargetRunID            string           `json:"targetRunId,omitempty"`
 	TargetTaskID           string           `json:"targetTaskId,omitempty"`
+	SourceTaskID           string           `json:"sourceTaskId,omitempty"`
 	ParentRunID            string           `json:"parentRunId,omitempty"`
 	Priority               bool             `json:"priority,omitempty"`
 	PolicyDigest           string           `json:"policyDigest,omitempty"`
@@ -663,7 +664,11 @@ func (l *InputLedger) PurgeTeam(teamID string) error {
 
 // MarkRoutingIntent 落完整路由意图（queued → routing）。routing/waiting_input
 // 中已有意图只允许完整字段一致的重放；改派必须先显式撤销旧意图。
-func (l *InputLedger) MarkRoutingIntent(teamID, inputID, kind, targetRunID, targetTaskID, parentRunID string) error {
+func (l *InputLedger) MarkRoutingIntent(teamID, inputID, kind, targetRunID, targetTaskID, parentRunID string, sourceTaskIDs ...string) error {
+	sourceTaskID := ""
+	if len(sourceTaskIDs) > 0 {
+		sourceTaskID = sourceTaskIDs[0]
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	input := l.inputs[inputID]
@@ -677,7 +682,7 @@ func (l *InputLedger) MarkRoutingIntent(teamID, inputID, kind, targetRunID, targ
 	}
 	if (input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput) && input.RouteStatus != "" {
 		if input.RouteStatus == kind && input.TargetRunID == targetRunID &&
-			input.TargetTaskID == targetTaskID && input.ParentRunID == parentRunID {
+			input.TargetTaskID == targetTaskID && input.ParentRunID == parentRunID && input.SourceTaskID == sourceTaskID {
 			return nil
 		}
 		return errors.New("输入已有不同的路由意图，请先撤销原意图")
@@ -688,7 +693,7 @@ func (l *InputLedger) MarkRoutingIntent(teamID, inputID, kind, targetRunID, targ
 	event := newEvent("", EventInputRouteIntent, "router", map[string]any{
 		"inputId": inputID, "teamId": teamID, "routeKind": kind,
 		"targetRunId": targetRunID, "targetTaskId": targetTaskID,
-		"parentRunId": parentRunID,
+		"parentRunId": parentRunID, "sourceTaskId": sourceTaskID,
 	})
 	event.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":intent:" + kind + ":" + targetRunID
 	return l.commitLocked(event, func() {
@@ -1093,7 +1098,8 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		parentRunID := payloadString(event.Payload, "parentRunId")
 		if (input.QueueStatus == InputRouting || input.QueueStatus == InputWaitingInput) &&
 			input.RouteStatus == kind && input.TargetRunID == runID &&
-			input.TargetTaskID == taskID && input.ParentRunID == parentRunID {
+			input.TargetTaskID == taskID && input.ParentRunID == parentRunID &&
+			input.SourceTaskID == payloadString(event.Payload, "sourceTaskId") {
 			return // 同意图重放
 		}
 		if input.QueueStatus == InputRouted || input.QueueStatus == InputCancelled {
@@ -1103,6 +1109,7 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		input.RouteStatus = kind
 		input.TargetRunID = runID
 		input.TargetTaskID = taskID
+		input.SourceTaskID = payloadString(event.Payload, "sourceTaskId")
 		input.ParentRunID = parentRunID
 		input.WaitingReason = ""
 		input.Version++
@@ -1123,6 +1130,7 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		input.RouteStatus = ""
 		input.TargetRunID = ""
 		input.TargetTaskID = ""
+		input.SourceTaskID = ""
 		input.ParentRunID = ""
 		input.ExplicitTarget = false
 		input.WorkItems = nil

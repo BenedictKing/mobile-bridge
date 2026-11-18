@@ -1368,6 +1368,8 @@ func TestBuildLeadBriefing(t *testing.T) {
 		"给 Lead 自己一条 delegate 作为后续任务", "不要在该批动作中直接混用 summarize",
 		"你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总",
 		"不得在主控回合中不经委派直接执行", "Lead 也是默认执行成员，允许 delegate 给自己",
+		"一件可独立验收的交付交给一个成员", "不要按产品、架构、前端、后端、测试等工序横切接力",
+		"缺少上下文时用 request_context 引用原始任务续读",
 		"默认评审也是可执行任务的普通成员", "review=false", "review=true", "不要伪造评审结论",
 	} {
 		if !strings.Contains(briefing, want) {

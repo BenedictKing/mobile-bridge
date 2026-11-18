@@ -282,3 +282,52 @@ func TestRouterReconnectsCreatedRunBeforeConfirmation(t *testing.T) {
 		t.Fatalf("重复重泵不得重复创建 Run/Task: %+v", run)
 	}
 }
+
+func TestRouterExplicitFollowUpUsesOriginalExecutionThread(t *testing.T) {
+	h := newRouterHarness(t)
+	h.acceptInput(t, "in-direct", "初始需求")
+	h.service.RoutePendingInputs(h.team.ID)
+	run := h.store.Run("in-direct")
+	run.Tasks = append(run.Tasks, Task{ID: "dev-task", MemberID: "dev", Status: TaskCompleted,
+		Prompt: "端到端实现", ExecutionContext: "", Result: "已完成"})
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	h.acceptInput(t, "in-follow", "补上错误态")
+	h.service.inputs.inputs["in-follow"].ExplicitTarget = true
+	h.service.inputs.inputs["in-follow"].TargetRunID = run.ID
+	h.service.inputs.inputs["in-follow"].TargetTaskID = "dev-task"
+	if routed := h.service.RoutePendingInputs(h.team.ID); routed != 1 {
+		t.Fatal("显式追问应完成路由")
+	}
+	fresh := h.store.Run(run.ID)
+	followUp := findTaskIn(fresh, ConversationTaskID("in-follow"))
+	if followUp == nil || followUp.MemberID != "dev" || followUp.ExecutionContext != "" || len(followUp.DependsOn) != 0 {
+		t.Fatalf("已完成任务的追问应直达原成员线程: %+v", followUp)
+	}
+	input := h.service.inputs.Get(h.team.ID, "in-follow")
+	if input.TargetTaskID != ConversationTaskID("in-follow") || input.SourceTaskID != "dev-task" {
+		t.Fatalf("路由应同时保留新任务与原始来源血缘: %+v", input)
+	}
+}
+
+func TestRouterExplicitFollowUpSupportsPipelineRun(t *testing.T) {
+	h := newRouterHarness(t)
+	run := &Run{ID: "run-pipeline-follow", TeamID: h.team.ID, Mode: ModePipeline,
+		Status: RunDispatching, Tasks: []Task{{ID: "delivery", MemberID: "dev", Status: TaskCompleted}}}
+	if err := h.store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+	h.acceptInput(t, "in-pipeline-follow", "继续处理边界情况")
+	input := h.service.inputs.inputs["in-pipeline-follow"]
+	input.ExplicitTarget = true
+	input.TargetRunID = run.ID
+	input.TargetTaskID = "delivery"
+	if routed := h.service.RoutePendingInputs(h.team.ID); routed != 1 {
+		t.Fatal("显式计划中的任务追问也应直达执行成员")
+	}
+	followUp := findTaskIn(h.store.Run(run.ID), ConversationTaskID("in-pipeline-follow"))
+	if followUp == nil || followUp.MemberID != "dev" {
+		t.Fatalf("显式计划追问应保留原执行成员: %+v", followUp)
+	}
+}

@@ -1876,10 +1876,12 @@ func (h *handler) handleRunStats(teamID, runID string) {
 		return
 	}
 	policy := team.DefaultPolicy()
-	if teamRow := h.server.TeamStore.Team(run.TeamID); teamRow != nil {
+	teamRow := h.server.TeamStore.Team(run.TeamID)
+	if teamRow != nil {
 		policy = teamRow.Policy
 	}
 	stats := team.ComputeRunStats(events, run, policy, time.Now())
+	stats.Collaboration = team.ComputeRunCollaboration(events, run, teamRow)
 	raw, err := json.Marshal(stats)
 	if err != nil {
 		log.Printf("team run %s 统计序列化失败: %v", runID, err)
@@ -2008,7 +2010,8 @@ func (h *handler) handleRunForward(teamID, runID string) {
 	if forwardErr != nil {
 		switch {
 		case errors.Is(forwardErr, team.ErrTranscriptUnavailable),
-			errors.Is(forwardErr, team.ErrForwardRunFinished):
+			errors.Is(forwardErr, team.ErrForwardRunFinished),
+			errors.Is(forwardErr, team.ErrForwardRule):
 			h.fail(http.StatusConflict, errorBody(forwardErr.Error()))
 		case errors.Is(forwardErr, team.ErrNotFound):
 			h.failTeamError(forwardErr)

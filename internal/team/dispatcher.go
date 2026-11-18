@@ -362,6 +362,9 @@ func (s *Service) accountDispatchLockedWithBriefingSession(state *runState, team
 		if current.ExecutionContext != "" {
 			event.Payload["executionContext"] = current.ExecutionContext
 		}
+		if composed.context.Truncated {
+			event.Payload["contextTruncated"] = true
+		}
 		if reviewHead != "" || reviewDiff != "" {
 			event.Payload["headRevision"] = reviewHead
 			event.Payload["diffHash"] = reviewDiff
