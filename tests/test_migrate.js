@@ -183,6 +183,27 @@ test('chat details keep migration before and outside the compaction section',()=
   assert(html.indexOf('id="migrate-control"')<html.indexOf('id="compact-control"'));
 });
 
+test('chat details allow transcript operations while only native compaction waits for idle',()=>{
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  assert(source.includes("enabled:()=>transcriptMaintenanceAvailable()&&!compactChat.busy"));
+  const start=source.indexOf('function transcriptMaintenanceAvailable'),end=source.indexOf('// leadContextAction',start);
+  const node=()=>({hidden:false,disabled:false,dataset:{},classList:{toggle(){}}});
+  const nodes=Object.fromEntries(['compact-instructions-field','compact-confirm','compact-native-hint','compact-native-scopes','compact-gateway'].map(id=>[id,node()]));
+  const methods=[node()],nativeScopes=[node()],gatewayScopes=[node()];
+  const context={
+    state:{status:'active',connected:true,readOnly:false,requests:[{id:'approval'}]},compactMethod:'gateway',compactScope:'main',
+    compactChat:{busy:false},migrateControl:{busy:false,render(){}},$:id=>nodes[id],
+    document:{querySelectorAll:selector=>selector==='[data-compact-method]'?methods:selector==='[data-compact]'?nativeScopes:gatewayScopes},
+  };
+  vm.runInNewContext(source.slice(start,end)+'\nthis.renderCompactState=renderCompactState;',context);
+  context.renderCompactState();
+  assert.equal(nodes['compact-confirm'].disabled,false);
+  assert.equal(gatewayScopes[0].disabled,false);
+  context.compactMethod='native';context.renderCompactState();
+  assert.equal(nodes['compact-confirm'].disabled,true);
+  assert.equal(nativeScopes[0].disabled,true);
+});
+
 test('dismissing the dialog abandons a prepared session and resets the picker',async()=>{
   const requests=[];
   const {control,root}=loadControl({request:async body=>{requests.push(body);return {catalog:CATALOG};}});

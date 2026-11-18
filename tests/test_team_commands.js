@@ -9,10 +9,10 @@ const vm=require('node:vm');
 function extract({team=false,defaultCompact}={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const start=source.indexOf('const COMPACT_PROMPTS=');
-  const end=source.indexOf('async function runGatewayCompact',start);
+  const end=source.indexOf('function compactGateway',start);
   assert.ok(start>=0&&end>start,'composer command block not found in app.js');
   const context={t:value=>value,currentTeam:team,state:{agent:'kimi',agents:[{kind:'kimi'}]},window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
-  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.parseMigrateCommand=parseMigrateCommand;this.runMigrateCommand=runMigrateCommand;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;this.nativeCompactPrompt=nativeCompactPrompt;',context);
+  vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.parseMigrateCommand=parseMigrateCommand;this.runMigrateCommand=runMigrateCommand;this.runGatewayCompact=runGatewayCompact;this.transcriptMaintenanceAvailable=transcriptMaintenanceAvailable;this.compactAvailable=compactAvailable;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;this.nativeCompactPrompt=nativeCompactPrompt;',context);
   return context;
 }
 const same=(actual,expected)=>assert.deepEqual(JSON.parse(JSON.stringify(actual)),expected);
@@ -113,11 +113,33 @@ test('migrate command suggestions include the current agent as gateway compactio
   assert.match(rows[1].description,/后续指示/);
 });
 
+test('transcript migration and gateway compaction allow an active source with pending requests',async()=>{
+  const flow=extract();
+  flow.state={agent:'kimi',status:'active',connected:true,readOnly:false,requests:[{id:'approval'}]};
+  assert.equal(flow.transcriptMaintenanceAvailable(),true);
+  assert.equal(flow.compactAvailable(),false);
+  flow.state.status='idle';
+  assert.equal(flow.transcriptMaintenanceAvailable(),true);
+  assert.equal(flow.compactAvailable(),false);
+  flow.state.requests=[];
+  assert.equal(flow.compactAvailable(),true);
+  flow.state.connected=false;
+  assert.equal(flow.transcriptMaintenanceAvailable(),false);
+  flow.state.connected=true;flow.state.readOnly=true;
+  assert.equal(flow.transcriptMaintenanceAvailable(),false);
+
+  const calls=[];
+  flow.currentId='chat';flow.currentTeam=null;flow.$=()=>({textContent:''});
+  flow.migrateControl={migrate:async(...args)=>{calls.push(args);return true;}};
+  flow.state.readOnly=false;flow.state.status='active';flow.state.requests=[{id:'approval'}];
+  assert.equal(await flow.runGatewayCompact('main','继续实现'),true);
+  same(calls,[['kimi','main','compact',{instructions:'继续实现'}]]);
+});
+
 test('migrate command validates the target and delegates with instructions',async()=>{
   const flow=extract(),calls=[],messages=[];
   flow.toast=message=>messages.push(message);
-  flow.compactAvailable=()=>true;
-  flow.state={agent:'kimi',agents:[{kind:'kimi'},{kind:'zcode'}]};
+  flow.state={agent:'kimi',status:'active',connected:true,readOnly:false,requests:[{id:'approval'}],agents:[{kind:'kimi'},{kind:'zcode'}]};
   flow.migrateControl={migrate:async(...args)=>{calls.push(args);return true;}};
   assert.equal(await flow.runMigrateCommand({agent:'',scope:'main'}),false);
   assert.equal(await flow.runMigrateCommand({agent:'codex',scope:'main'}),false);

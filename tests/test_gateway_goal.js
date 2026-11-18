@@ -198,16 +198,16 @@ function maintenanceComposer(command,run){
   const helperStart=source.indexOf('async function runComposerMaintenance'),helperEnd=source.indexOf('function renderState',helperStart);
   const submitStart=source.indexOf('function syncSendButton()'),submitEnd=source.indexOf("$('message').onkeydown",submitStart);
   const nodes={composer:new Node('form'),message:new Node('textarea'),'work-mode':new Node('select'),'send-mode':new Node('select'),send:new Node('button'),'send-label':new Node('span'),'send-error':new Node()};
-  const values=new Map([['draft:local|chat','/migrate kimi']]);
+  const values=new Map([['draft:local|chat','/migrate kimi']]),toasts=[];
   const context={
     $:id=>nodes[id],t:value=>value,window:{BridgePresentation:{resizeMessage(){}}},sending:false,currentId:'chat',currentHost:'local',currentTeam:null,
-    state:{agent:'kimi',status:'idle',connected:true,agents:[{kind:'kimi'}]},attachments:{ready:()=>true,ids:()=>[]},
+    state:{agent:'kimi',status:'idle',connected:true,agents:[{kind:'kimi'}]},attachments:{ready:()=>true,ids:()=>[]},toast:message=>toasts.push(message),
     closeSkillSuggestions(){},parsePlainCommand:()=>command,parseTeamCommand:()=>null,compactAvailable:()=>true,chatKey:()=> 'local|chat',
     sessionStorage:{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},
     runMigrateCommand:run,runGatewayCompact:run,runNativeCompact:run,updateSkillSuggestions(){},
   };
   vm.runInNewContext(source.slice(helperStart,helperEnd)+'\n'+source.slice(submitStart,submitEnd),context);
-  return{nodes,values,context};
+  return{nodes,values,context,toasts};
 }
 
 test('maintenance commands show progress and clear the draft only after acceptance',async()=>{
@@ -236,6 +236,27 @@ test('maintenance commands show progress and clear the draft only after acceptan
   const html=readFileSync(require.resolve('../web/index.html'),'utf8'),css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   assert.match(html,/class="send-spinner" aria-hidden="true"/);
   assert.match(css,/#send\[data-pending=true\] \.send-spinner\{display:inline-block\}/);
+});
+
+test('composer only applies the running and pending-request guard to native compaction',async()=>{
+  for(const kind of ['migrate','gateway']){
+    const flow=maintenanceComposer({kind,agent:'kimi',scope:'main'},async()=>true);
+    flow.context.compactAvailable=()=>false;
+    flow.context.state.status='active';flow.context.state.requests=[{id:'approval'}];
+    flow.nodes.message.value=kind==='migrate'?'/migrate kimi':'/compress gateway';
+    await flow.nodes.composer.onsubmit({preventDefault(){}});
+    assert.equal(flow.nodes.message.value,'',kind);
+    assert.deepEqual(flow.toasts,[],kind);
+  }
+  let nativeCalls=0;
+  const native=maintenanceComposer({kind:'native',scope:'main'},async()=>{nativeCalls++;return true;});
+  native.context.compactAvailable=()=>false;
+  native.context.state.status='active';native.context.state.requests=[{id:'approval'}];
+  native.nodes.message.value='/compress main';
+  await native.nodes.composer.onsubmit({preventDefault(){}});
+  assert.equal(nativeCalls,0);
+  assert.equal(native.nodes.message.value,'/compress main');
+  assert.deepEqual(native.toasts,['当前会话正在运行或有待处理请求，稍后再压缩']);
 });
 
 test('running composer sends through the queue without a send-mode menu',async()=>{
