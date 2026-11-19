@@ -225,7 +225,7 @@ func (b *Bridge) Activity(ids []string) []*jsoncompat.Object {
 				if requests, ok := state.MustGet("requests").(*jsoncompat.Array); ok && len(requests.Items) > 0 {
 					row.Set("pendingRequests", len(requests.Items))
 				}
-				if turns, ok := state.MustGet("turns").(*jsoncompat.Array); ok && len(turns.Items) > 0 {
+				if turns := model.OrderedTurns(state); len(turns.Items) > 0 {
 					if turn, ok := turns.Items[len(turns.Items)-1].(*jsoncompat.Object); ok {
 						turnID, _ = turn.MustGet("turnId").(string)
 						if turnID == "" {
