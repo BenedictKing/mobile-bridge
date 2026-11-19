@@ -254,6 +254,26 @@ test('steered event is a readable status without raw JSON',()=>{
   timeline.dispose();
 });
 
+test('sleep rows show readable durations without exposing raw JSON',async()=>{
+  const{timeline}=setup();
+  const full=JSON.stringify({type:'sleep',id:'call-internal',durationMs:45000});
+  const node=timeline.renderRow({key:'sleep',role:'activity',kind:'sleep',title:'sleep',text:full},false);
+  assert.equal(node.dataset.tool,'');
+  assert.equal(node.children[0].textContent,'等待');
+  assert.equal(node.children[1].textContent,'等待 45 秒');
+  assert.doesNotMatch(node.children[1].textContent,/call-internal|durationMs|\{/);
+
+  const row={key:'legacy-sleep',version:'v1',role:'activity',kind:'sleep',title:'sleep',truncated:true,text:full.slice(0,40)};
+  timeline.rows.set(row.key,{row,sequence:1});
+  const legacy=timeline.renderRow(row,false);legacy.isConnected=true;
+  assert.equal(legacy.children[1].textContent,'等待时长未知');
+  assert.doesNotMatch(legacy.children[1].textContent,/\{/);
+  timeline.read=async()=>({version:'v1',text:full,offset:0,next:null});
+  await legacy.children[2].onclick();
+  assert.equal(legacy.children[1].textContent,'等待 45 秒');
+  timeline.dispose();
+});
+
 test('command rows are collapsed to an accessible status and expand to full text',()=>{
   const cases=[
     [{kind:'commandExecution',status:'inProgress',text:'go test ./...'},'执行命令（进行中）','inProgress'],

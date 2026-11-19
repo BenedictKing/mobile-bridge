@@ -7,7 +7,8 @@ const TOOL_ROW_KINDS=/^(toolCall|tool_call|storedToolEvent|mcpToolCall|dynamicTo
 // userIndex contains only user rows and omits role, so recognize its protocol entries by prefix too.
 const internalTeamProtocolRow=row=>(row?.role==='user'||row?.role==null)&&/^\s*\[(?:Team delegation|Team context|Team review|Team historical issue routing|Team issue routing|Team account quotas|Team background tasks)\]/i.test(String(row.text||''));
 const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecution)$/.test(row.kind)||row.toolKind==='execute');
-const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row));
+const sleepRow=row=>row.role==='activity'&&row.kind==='sleep';
+const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row)||sleepRow(row));
 const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title==='steered');
 const reasoningRow=row=>row.role==='activity'&&(row.kind==='reasoning'||row.kind==='agentThought');
 const approvalReviewRow=row=>row.role==='activity'&&(row.kind==='automaticApprovalReview'||row.title==='automaticApprovalReview');
@@ -30,6 +31,13 @@ const compactionContent=(row,text)=>{
   const lines=[timelineText('压缩状态')+'：'+compactionStatusText(status)];
   if(source==='manual'||source==='automatic')lines.push(timelineText('触发方式')+'：'+timelineText(source==='manual'?'手动':'自动'));
   return {status,text:lines.join('\n')};
+};
+const sleepContent=(row,text)=>{
+  let duration=row.durationMs,value;
+  if(duration==null){try{value=JSON.parse(text);}catch{}if(value?.type==='sleep')duration=value.durationMs;}
+  if(typeof duration!=='number'||!Number.isFinite(duration)||duration<0)return timelineText('等待时长未知');
+  if(duration<1000)return timelineText('等待')+' '+duration+timelineText(' 毫秒');
+  return timelineText('等待')+' '+Number((duration/1000).toFixed(3))+timelineText(' 秒');
 };
 // 兼容旧网关把未知事件序列化为 JSON 的历史投影；只生成文本节点。
 const approvalReviewText=(text,row)=>{
@@ -86,6 +94,7 @@ const rowLabel=(row,text=row.text)=>{
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
   if(approvalReviewRow(row))return timelineText('自动审批审查')+(row.status?' · '+approvalReviewStatus(row.status):'');
   if(compactionRow(row))return timelineText('上下文压缩')+' · '+compactionStatusText(compactionContent(row,text).status);
+  if(sleepRow(row))return timelineText('等待');
   if(reasoningRow(row))return timelineText('思考摘要');
   if(commandRow(row)){
     const state=commandState(row);
@@ -424,7 +433,9 @@ class ChatTimeline {
         }
         body.append(list);body.hidden=false;more.hidden=true;
       }else{
-        if(approvalReviewRow(row)){
+        if(sleepRow(row)){
+          body.textContent=sleepContent(row,text);
+        }else if(approvalReviewRow(row)){
           node.dataset.approvalStatus=approvedReview(row,text)?'approved':'';
           body.textContent=approvalReviewText(text,row);
         }else if(compactionRow(row)){

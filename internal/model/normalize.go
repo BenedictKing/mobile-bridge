@@ -245,33 +245,37 @@ func NormalizeState(state *jsoncompat.Object, connected bool) *jsoncompat.Object
 	view.Set("turns", result)
 	view.Set("requests", PendingRequests(state))
 	view.Set("historyComplete", historyComplete)
-	if usage := normalizeTokenUsage(state.MustGet("tokenUsage")); usage != nil {
+	if usage := normalizeTokenUsage(state); usage != nil {
 		view.Set("usage", usage)
 	}
 	return view
 }
 
-func normalizeTokenUsage(value any) *jsoncompat.Object {
-	usage := obj(value)
+func normalizeTokenUsage(state *jsoncompat.Object) *jsoncompat.Object {
+	usage := obj(state.MustGet("latestTokenUsageInfo"))
 	if usage == nil {
 		return nil
 	}
-	total := obj(usage.MustGet("total"))
-	if total == nil {
+	last := obj(usage.MustGet("last"))
+	if last == nil {
 		return nil
 	}
-	used, usedOK := total.MustGet("totalTokens").(json.Number)
+	used, usedOK := last.MustGet("totalTokens").(json.Number)
 	size, sizeOK := usage.MustGet("modelContextWindow").(json.Number)
 	if !usedOK || !sizeOK {
 		return nil
 	}
-	window, err := size.Float64()
-	if err != nil || window <= 0 {
+	usedCount, usedErr := used.Float64()
+	window, sizeErr := size.Float64()
+	if usedErr != nil || usedCount < 0 || sizeErr != nil || window <= 0 {
 		return nil
 	}
 	result := jsoncompat.NewObject()
 	result.Set("used", used)
 	result.Set("size", size)
+	if state.MustGet("tokenUsageFromHistory") == true {
+		result.Set("stale", true)
+	}
 	return result
 }
 

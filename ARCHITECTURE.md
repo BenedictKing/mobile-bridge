@@ -194,7 +194,7 @@ dsh 会话被桌面 App 持有时（dsh-acp 报 `already owned by an active writ
 
 ### 当前 Go Capability 门控
 
-Codex 与 ACP 的 user/assistant 文本在展示层统一移除完整的 `<system-reminder>…</system-reminder>` 块，内部提醒不会进入手机时间线，发送给 Agent 的原文不变。view 的可选 `usage: {used, size}` 统一表示当前上下文 token 用量：ACP 来自 `usage_update`，Codex 来自 `tokenUsage.total.totalTokens` 与 `modelContextWindow`；前端在模型按钮上显示已用/总窗口，未上报时隐藏。
+Codex 与 ACP 的 user/assistant 文本在展示层统一移除完整的 `<system-reminder>…</system-reminder>` 块，内部提醒不会进入手机时间线，发送给 Agent 的原文不变。view 的可选 `usage: {used, size, stale?}` 统一表示当前上下文 token 用量：ACP 来自 `usage_update`，Codex 来自 `latestTokenUsageInfo.last.totalTokens` 与 `modelContextWindow`，其中 `last` 是最近一次请求的上下文占用而非累计计费用量；`tokenUsageFromHistory` 映射为 `stale`。前端在模型按钮上显示已用/总窗口，未上报时显示占位。
 
 view 携带 `capabilities` 字符串数组与 `agent` 字段，前端据此门控：无 `steer` 隐藏"补充当前任务"选项；无 `goals` 隐藏目标模式；无 `skills` 隐藏 Skill 按钮；fork/edit 按钮依赖每行 `forkable`/`editable`（ACP 会话天然为假）；Fast 模式与额度档位随目录 `fastMode.allowed` 隐藏；`fullHistory` 由快照 `historyComplete` 决定。审批卡片对 `acp/requestPermission` 按 agent 返回的 `options` 动态渲染，kimi 的 AskUserQuestion 也走此通道并标记为提问卡片（问题文本 + 选项 + 跳过）；网页回应仍只回传 `optionId`（或 `cancel`），由 `Session.Respond` 统一翻译成 ACP 的 `{outcome:{outcome,optionId}}` 线格式（optionId 先对请求选项校验，非法回应保留卡片可重答）。`elicitation/create` 表单支持单选、多选及 Other 文本字段，数组按 `minItems`/`maxItems` 校验，OpenCode 的 `format`/`pattern` 字段保持可渲染，文本 pattern 由浏览器原生校验。状态文案与会话行标题按 `BridgeI18n.agentLabel(view.agent)` 显示 Agent 名称。通知路由见 `bridge/notifications.py`：watch/policy 接受非 UUID 会话标识，经 Registry 路由到对应 bridge；推送标题使用 adapter 的 `label`；`notification_candidates` 的 SQLite 全局发现仍是 codex-only，ACP 会话依赖显式关注。
 
