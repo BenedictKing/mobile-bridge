@@ -5,9 +5,114 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
+
+func TestTranscriptReaderUsesExplicitTurnLifecycle(t *testing.T) {
+	for _, origin := range []string{"user", "task"} {
+		for _, ending := range []struct{ event, want string }{
+			{"", "inProgress"},
+			{`{"type":"turn.ended","reason":"completed"}`, "completed"},
+			{`{"type":"turn.ended","reason":"failed"}`, "failed"},
+			{`{"type":"turn.cancel"}`, "interrupted"},
+		} {
+			t.Run(origin+"/"+ending.want, func(t *testing.T) {
+				dir := t.TempDir()
+				wire := filepath.Join(dir, "wire.jsonl")
+				content := `{"type":"turn.prompt","input":"问题","origin":{"kind":"` + origin + `"}}
+{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"中途说明"}}}
+` + ending.event + "\n"
+				if err := os.WriteFile(wire, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				snapshot, err := readHistory(wire, false)
+				if err != nil || snapshot == nil {
+					t.Fatalf("snapshot=%v err=%v", snapshot, err)
+				}
+				turn := snapshot.Turns[0]
+				if turn.MustGet("status") != ending.want {
+					t.Fatalf("status=%v want %s", turn.MustGet("status"), ending.want)
+				}
+				if ending.want == "inProgress" && turn.MustGet("stopReason") != nil {
+					t.Fatal("running text retained a synthetic stop reason")
+				}
+				if len(snapshot.TurnOrigins) != 1 || snapshot.TurnOrigins[0] != origin {
+					t.Fatal("turn provenance was lost")
+				}
+			})
+		}
+	}
+}
+
+func TestTranscriptReaderResetAndInitialStaleTurn(t *testing.T) {
+	home := t.TempDir()
+	wire := filepath.Join(home, "sessions", "workspace", "sess-stale", "agents", "main", "wire.jsonl")
+	if err := os.MkdirAll(filepath.Dir(wire), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wire, []byte(`{"type":"turn.prompt","input":"问题","origin":"user"}
+{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"中途说明"}}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * historyStaleAfter)
+	if err := os.Chtimes(wire, old, old); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewTranscriptReader(home)
+	for attempt := 0; attempt < 2; attempt++ {
+		reader.Reset("sess-stale")
+		snapshot, err := reader.Load("sess-stale")
+		if err != nil || snapshot == nil {
+			t.Fatalf("load=%v err=%v", snapshot, err)
+		}
+		if snapshot.Turns[0].MustGet("status") != "interrupted" {
+			t.Fatal("a stale initial read reopened an abandoned turn")
+		}
+	}
+}
+
+func TestTranscriptReaderDeduplicatesUserCopies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wire.jsonl")
+	content := `{"type":"turn.prompt","promptId":"p1","input":"开始","origin":{"kind":"user"}}
+{"type":"context.append_message","message":{"id":"p1","role":"user","content":"开始","origin":{"kind":"user"}}}
+{"type":"context.append_message","message":{"role":"user","content":"隐藏的技能内容","origin":{"kind":"skill_activation"}}}
+{"type":"turn.ended","reason":"completed"}
+{"type":"turn.prompt","promptId":"p2","input":"任务通知","origin":{"kind":"task"}}
+{"type":"context.append_message","message":{"id":"p2","role":"user","content":"任务通知","origin":{"kind":"task"}}}
+{"type":"turn.ended","reason":"completed"}
+{"type":"turn.prompt","promptId":"p3","input":"继续","origin":{"kind":"user"}}
+{"type":"context.append_message","message":{"id":"p3","role":"user","content":"继续","origin":{"kind":"user"}}}
+{"type":"turn.ended","reason":"completed"}
+{"type":"turn.prompt","promptId":"p4","input":"继续","origin":{"kind":"user"}}
+{"type":"context.append_message","message":{"id":"p4","role":"user","content":"继续","origin":{"kind":"user"}}}
+{"type":"turn.ended","reason":"completed"}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := readHistory(path, false)
+	if err != nil || snapshot == nil {
+		t.Fatalf("snapshot=%v err=%v", snapshot, err)
+	}
+	if len(snapshot.Turns) != 4 || len(snapshot.TurnOrigins) != 4 {
+		t.Fatalf("turns=%d origins=%d", len(snapshot.Turns), len(snapshot.TurnOrigins))
+	}
+	if snapshot.TurnOrigins[1] != "task" {
+		t.Fatal("task provenance was lost while merging the user copy")
+	}
+	for _, turn := range snapshot.Turns {
+		messages := turn.MustGet("messages").(*jsoncompat.Array)
+		if len(messages.Items) != 1 {
+			t.Fatalf("duplicate user messages=%d", len(messages.Items))
+		}
+		if strings.Contains(string(jsoncompat.EncodeCompact(turn)), "隐藏的技能内容") {
+			t.Fatal("skill injection appeared as a user request")
+		}
+	}
+}
 
 func TestTranscriptReaderIncludesRunningTaskNotification(t *testing.T) {
 	home := t.TempDir()

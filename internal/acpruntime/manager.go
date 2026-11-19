@@ -109,6 +109,11 @@ type Session struct {
 	// ids) becomes the view; later folds keep the settled-tip dedupe so
 	// ordinary gateway turns do not re-key the timeline.
 	nativeBootstrapped bool
+	// nativeTurns anchors reconciliation to the last applied store prefix.
+	nativeTurns    int
+	nativePending  []nativePendingPrompt
+	nativeDeferred *acpview.NativeSnapshot
+	nativeSyncMu   sync.Mutex
 }
 
 // MaxAutoContinue bounds consecutive automatic "继续" sends without an
@@ -1205,6 +1210,11 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 	// A warm-up is a synthetic turn nobody asked to resume, so it never
 	// reaches the hook.
 	defer func() {
+		if s.kind == "kimi" {
+			// Task notifications may have started outside the ACP turn. Fold
+			// them before the settle hook tries to send queued work.
+			s.syncNative()
+		}
 		if !warmup {
 			s.fireAutoContinue()
 		}
@@ -2451,6 +2461,9 @@ func (s *Session) followNative(stop <-chan struct{}) {
 // authoritative while a prompt this gateway sent is running; the store is
 // only consulted for turns the desktop drives.
 func (s *Session) syncNative() {
+	// The poller and ACP settle path may both read. Apply them in read order.
+	s.nativeSyncMu.Lock()
+	defer s.nativeSyncMu.Unlock()
 	loader := s.native
 	if loader == nil {
 		return
@@ -2462,15 +2475,24 @@ func (s *Session) syncNative() {
 		return
 	}
 	snapshot, err := loader(s.ID)
-	if err != nil || snapshot == nil {
+	if err != nil {
 		return
 	}
 	s.mu.Lock()
-	if s.closed || s.promptRunning {
+	if s.closed {
 		s.mu.Unlock()
 		return
 	}
+	if snapshot != nil {
+		s.nativeDeferred = snapshot
+	}
+	if s.promptRunning || s.nativeDeferred == nil {
+		s.mu.Unlock()
+		return
+	}
+	snapshot = s.nativeDeferred
 	wasActive := s.View.Status == "active"
+	taskAhead := s.kimiTaskAhead(snapshot)
 	changed := false
 	if title := strings.TrimSpace(snapshot.Title); title != "" && s.View.Title != title {
 		s.View.Title = title
@@ -2479,14 +2501,19 @@ func (s *Session) syncNative() {
 		}
 		changed = true
 	}
-	if s.shouldApplyNative(snapshot) && s.View.ApplyNative(snapshot) {
+	if s.shouldApplyNative(snapshot) && s.View.ApplyNative(s.preserveKimiPrompts(snapshot)) {
 		s.nativeBootstrapped = true
+		s.nativeTurns = len(snapshot.Turns)
+		s.nativeDeferred = nil
 		changed = true
+	} else if s.nativeLagSince.IsZero() {
+		// Only a timed lag guard needs the consumed snapshot on later ticks.
+		s.nativeDeferred = nil
 	}
 	if changed {
 		s.signalViewLocked()
 	}
-	settled := wasActive && s.View.Status != "active"
+	settled := (wasActive || taskAhead) && s.View.Status != "active"
 	hook := s.nativeSettle
 	s.mu.Unlock()
 	if settled && hook != nil {
@@ -2548,16 +2575,27 @@ func (s *Session) shouldApplyNative(snapshot *acpview.NativeSnapshot) bool {
 		return true
 	}
 	viewText, nativeText := firstUserText(tip), firstUserText(candidate)
+	hasPrompt := snapshotHasUserText(snapshot, viewText)
+	if s.kind == "kimi" && s.nativeTurns > 0 && len(s.View.Turns) > s.nativeTurns {
+		// A repeated user text in old history does not acknowledge a new send.
+		start := min(s.nativeTurns, len(snapshot.Turns))
+		hasPrompt = snapshotHasUserText(&acpview.NativeSnapshot{Turns: snapshot.Turns[start:]}, viewText)
+	}
 	// The store is append-only: a snapshot that does not contain the prompt
 	// the phone's view ends with is behind (the agent has not flushed it
-	// yet) and must not roll the view back. A running native turn may instead
-	// replace an empty settled prompt that the agent never added to its store.
-	if viewText != "" && !snapshotHasUserText(snapshot, viewText) {
-		if turnStatusOf(candidate) == "inProgress" && emptySettledPrompt(tip) {
+	// yet) and must not roll the view back. A verified new Kimi task may
+	// advance the view while unmaterialized user messages remain visible.
+	if viewText != "" && !hasPrompt {
+		if s.kimiTaskAhead(snapshot) {
 			s.nativeLagSince = time.Time{}
 			return true
 		}
+		s.nativeLagSince = time.Time{}
 		return false
+	}
+	if s.kind == "kimi" && s.nativeTurns > 0 && len(snapshot.Turns) > s.nativeTurns {
+		s.nativeLagSince = time.Time{}
+		return true
 	}
 	if viewText == "" || viewText != nativeText {
 		s.nativeLagSince = time.Time{}

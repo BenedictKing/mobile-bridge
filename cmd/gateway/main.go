@@ -825,9 +825,10 @@ func runGateway(args []string) {
 			return kimi.ListSessions(kimiHome)
 		}
 		manager.NativeListExclusive = true
-		reader := kimi.TranscriptReader(kimiHome)
-		manager.Native = reader
-		manager.NativeTranscript = reader
+		reader := kimi.NewTranscriptReader(kimiHome)
+		manager.Native = reader.Load
+		manager.NativeTranscript = reader.Load
+		manager.NativeReset = reader.Reset
 		manager.NativeSettle = func(session *acpruntime.Session) {
 			server.QueueSettleACP("kimi", session)
 		}

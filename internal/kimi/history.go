@@ -20,7 +20,7 @@ const (
 	historyStaleAfter   = 15 * time.Minute
 )
 
-type historyReader struct {
+type TranscriptSource struct {
 	index      *wireIndex
 	mu         sync.Mutex
 	signatures map[string][2]int64
@@ -29,12 +29,24 @@ type historyReader struct {
 
 // TranscriptReader loads the main agent's wire.jsonl without starting Kimi.
 func TranscriptReader(home string) func(string) (*acpview.NativeSnapshot, error) {
-	reader := &historyReader{index: &wireIndex{root: filepath.Join(home, "sessions")},
-		signatures: map[string][2]int64{}, pending: map[string]bool{}}
-	return reader.load
+	return NewTranscriptReader(home).Load
 }
 
-func (r *historyReader) load(sessionID string) (*acpview.NativeSnapshot, error) {
+// NewTranscriptReader shares change detection between live and history reads.
+func NewTranscriptReader(home string) *TranscriptSource {
+	return &TranscriptSource{index: &wireIndex{root: filepath.Join(home, "sessions")},
+		signatures: map[string][2]int64{}, pending: map[string]bool{}}
+}
+
+// Reset forces the next read to rebuild when a new view or handle opens.
+func (r *TranscriptSource) Reset(sessionID string) {
+	r.mu.Lock()
+	delete(r.signatures, sessionID)
+	delete(r.pending, sessionID)
+	r.mu.Unlock()
+}
+
+func (r *TranscriptSource) Load(sessionID string) (*acpview.NativeSnapshot, error) {
 	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) {
 		return nil, nil
 	}
@@ -45,24 +57,21 @@ func (r *historyReader) load(sessionID string) (*acpview.NativeSnapshot, error) 
 	}
 	signature := [2]int64{info.Size(), info.ModTime().UnixMilli()}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	previous, seen := r.signatures[sessionID]
 	pending := r.pending[sessionID]
-	r.mu.Unlock()
-	stale := false
+	stale := time.Since(info.ModTime()) >= historyStaleAfter
 	if seen && previous == signature {
-		if !pending || time.Since(info.ModTime()) < historyStaleAfter {
+		if !pending || !stale {
 			return nil, nil
 		}
-		stale = true
 	}
 	snapshot, err := readHistory(path, stale)
 	if err != nil || snapshot == nil {
 		return nil, err
 	}
-	r.mu.Lock()
 	r.signatures[sessionID] = signature
 	r.pending[sessionID] = nativeHistoryActive(snapshot)
-	r.mu.Unlock()
 	return snapshot, nil
 }
 
@@ -75,6 +84,9 @@ func readHistory(path string, stale bool) (*acpview.NativeSnapshot, error) {
 	sessionDir := filepath.Dir(filepath.Dir(filepath.Dir(path)))
 	sessionID := filepath.Base(sessionDir)
 	builder := acpview.NewNativeBuilder(sessionID)
+	status := "completed"
+	var origins []string
+	seenUsers := make(map[string]bool)
 	if row, _ := readSessionRow(filepath.Dir(sessionDir), sessionID); row != nil {
 		if title, _ := row.MustGet("title").(string); title != "" {
 			builder.SetTitle(title)
@@ -96,19 +108,57 @@ func readHistory(path string, stale bool) (*acpview.NativeSnapshot, error) {
 		switch kind {
 		case "turn.prompt":
 			if historyInternalOrigin(event.MustGet("origin")) {
+				if builder.HasTurns() {
+					status = "inProgress"
+				}
 				continue
 			}
 			titleText = acpview.Text(event.MustGet("input"))
+			id, _ := event.MustGet("promptId").(string)
+			if id != "" && seenUsers[id] {
+				continue
+			}
 			builder.User(titleText)
+			if titleText != "" {
+				if id != "" {
+					seenUsers[id] = true
+				}
+				origins = append(origins, historyOrigin(event.MustGet("origin")))
+				status = "inProgress"
+			}
 		case "context.append_message":
-			applyKimiMessage(builder, event.MustGet("message"))
+			message, _ := event.MustGet("message").(*jsoncompat.Object)
+			if message != nil && message.MustGet("role") == "user" {
+				if historyInternalOrigin(message.MustGet("origin")) || acpview.Text(message.MustGet("content")) == "" {
+					continue
+				}
+				id, _ := message.MustGet("id").(string)
+				if id != "" && seenUsers[id] {
+					// Kimi persists turn.prompt again as a user-message copy.
+					continue
+				}
+				if id != "" {
+					seenUsers[id] = true
+				}
+				origins = append(origins, historyOrigin(message.MustGet("origin")))
+				status = "inProgress"
+			}
+			applyKimiMessage(builder, message)
 		case "context.append_loop_event":
 			applyKimiLoopEvent(builder, event.MustGet("event"))
 		case "turn.ended":
 			reason, _ := event.MustGet("reason").(string)
 			builder.End(reason)
+			status = "completed"
+			switch reason {
+			case "cancelled":
+				status = "interrupted"
+			case "failed", "blocked":
+				status = "failed"
+			}
 		case "turn.cancel":
 			builder.End("cancelled")
+			status = "interrupted"
 		}
 		if builder.HasTurns() && builder.Title() == "" {
 			if title := textutil.TitleFromText(titleText); title != "" {
@@ -119,10 +169,38 @@ func readHistory(path string, stale bool) (*acpview.NativeSnapshot, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	return builder.Snapshot(stale), nil
+	snapshot := builder.Snapshot(stale)
+	if snapshot != nil {
+		if status == "inProgress" && stale {
+			status = "interrupted"
+			snapshot.Turns[len(snapshot.Turns)-1].Set("stopReason", "cancelled")
+		}
+		snapshot.Turns[len(snapshot.Turns)-1].Set("status", status)
+		if status == "inProgress" {
+			snapshot.Turns[len(snapshot.Turns)-1].Delete("stopReason")
+		}
+		if len(origins) == len(snapshot.Turns) {
+			snapshot.TurnOrigins = origins
+		}
+	}
+	return snapshot, nil
+}
+
+func historyOrigin(value any) string {
+	if origin, ok := value.(string); ok {
+		return origin
+	}
+	if origin, ok := value.(*jsoncompat.Object); ok {
+		kind, _ := origin.MustGet("kind").(string)
+		return kind
+	}
+	return ""
 }
 
 func historyInternalOrigin(value any) bool {
+	if historyOrigin(value) == "skill_activation" {
+		return true
+	}
 	if origin, ok := value.(string); ok {
 		return internalTitleOrigins[origin]
 	}

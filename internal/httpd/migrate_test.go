@@ -230,6 +230,15 @@ func TestMigrateAcrossAgents(t *testing.T) {
 
 	// The source zcode chat saw exactly one create (the source) plus one
 	// self-migrate create, and two prompts (the seed send + self migrate).
+	// HTTP acknowledges submission before the fake agent handles the prompt.
+	target := zcode.Get("zcode-1")
+	if target == nil {
+		t.Fatal("self-migrate target was not registered")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for target.Snapshot().MustGet("status") == "active" && time.Now().Before(deadline) {
+		target.Wait(10 * time.Millisecond)
+	}
 	if creates, prompts := counterValue(t, zcodeCreates), counterValue(t, zcodePrompts); creates != 2 || prompts != 2 {
 		t.Fatalf("zcode counters creates=%d prompts=%d", creates, prompts)
 	}

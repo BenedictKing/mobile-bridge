@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,20 +87,21 @@ func TestShouldApplyNativeNeverRollsBackToAnOlderStore(t *testing.T) {
 
 func TestSyncNativeReplacesEmptyContinueWithRunningNativeTurn(t *testing.T) {
 	session := nativeSession()
+	session.kind = "kimi"
 	session.View.ApplyNative(&acpview.NativeSnapshot{Turns: []*jsoncompat.Object{
 		nativeTurn("t1", "completed", "原始问题"),
 	}})
 	session.nativeBootstrapped = true
+	session.nativeTurns = 1
 	session.View.BeginTurn("继续")
 	session.View.EndTurn("end_turn")
 	if session.shouldApplyNative(&acpview.NativeSnapshot{Turns: []*jsoncompat.Object{
-		nativeTurn("t1", "completed", "原始问题"),
-		nativeTurn("t2", "completed", "<notification>后台任务已停止</notification>"),
+		nativeTurn("t1", "inProgress", "原始问题"),
 	}}) {
-		t.Fatal("a settled store must not roll back an empty continue")
+		t.Fatal("an older running store must not roll back an empty continue")
 	}
 	session.native = func(string) (*acpview.NativeSnapshot, error) {
-		return &acpview.NativeSnapshot{Turns: []*jsoncompat.Object{
+		return &acpview.NativeSnapshot{TurnOrigins: []string{"user", "task"}, Turns: []*jsoncompat.Object{
 			nativeTurn("t1", "completed", "原始问题"),
 			nativeTurn("t2", "inProgress", "<notification>后台任务已停止</notification>"),
 		}}, nil
@@ -110,6 +112,9 @@ func TestSyncNativeReplacesEmptyContinueWithRunningNativeTurn(t *testing.T) {
 	}
 	if got := firstUserText(session.View.TipTurn()); got != "<notification>后台任务已停止</notification>" {
 		t.Fatalf("native turn did not replace empty continue: %q", got)
+	}
+	if !strings.Contains(string(jsoncompat.EncodeCompact(session.View.TipTurn())), "继续") {
+		t.Fatal("accepted continuation disappeared during native reconciliation")
 	}
 }
 

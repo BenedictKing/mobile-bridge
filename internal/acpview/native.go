@@ -11,6 +11,8 @@ type NativeSnapshot struct {
 	Model  any
 	Effort any
 	Turns  []*jsoncompat.Object
+	// TurnOrigins preserves provider provenance in turn order for reconciliation.
+	TurnOrigins []string
 }
 
 // ApplyNative replaces the visible turns with a native snapshot and mirrors
