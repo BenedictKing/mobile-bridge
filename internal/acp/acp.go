@@ -134,7 +134,10 @@ func (p *Process) send(message *jsoncompat.Object) error {
 	data := append(jsoncompat.EncodePythonDefault(message), '\n')
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	if p.closed {
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
 		return notSubmitted()
 	}
 	if _, err := p.stdin.Write(data); err != nil {

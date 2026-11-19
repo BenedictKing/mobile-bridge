@@ -2,6 +2,7 @@ package acp
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -56,5 +57,35 @@ func TestSubmitDistinguishesClosedBeforeWriteFromInterruptedWrite(t *testing.T) 
 	}
 	if len(interrupted.pending) != 0 {
 		t.Fatal("interrupted Submit left a pending waiter")
+	}
+}
+
+func TestNotifyConcurrentWithClose(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		writer := &interruptedWriteCloser{}
+		process := &Process{stdin: writer, pending: map[string]chan Delivery{}, done: make(chan struct{})}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			var acpErr *Error
+			if err := process.Notify("session/cancel", jsoncompat.NewObject()); !errors.As(err, &acpErr) || (acpErr.Kind != KindUnavailable && acpErr.Kind != KindWriteUnknown) {
+				t.Errorf("concurrent close error=%v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			process.Close()
+		}()
+		close(start)
+		wg.Wait()
+		writes := writer.writes
+		var acpErr *Error
+		if err := process.Notify("session/cancel", jsoncompat.NewObject()); !errors.As(err, &acpErr) || acpErr.Kind != KindUnavailable || writer.writes != writes {
+			t.Fatalf("closed process attempted a write: error=%v writes=%d", err, writer.writes)
+		}
 	}
 }
