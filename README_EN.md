@@ -324,6 +324,8 @@ Gateway-managed goals also offer **Continue one step manually** and **Mark compl
 - Chat details also offer **Delete chat**: a local Codex chat is permanently deleted through native `thread/delete` when the runtime supports it. If native deletion fails, the gateway falls back to removing the chat from the list and warns that its computer records may remain. ACP sessions are only removed from the list; the agent's own history stays.
 - **Context compaction** is also available from chat details: native compaction runs in the current session, while gateway transcript compaction creates a compacted copy with the selected scope and leaves the source chat unchanged.
 
+Repeated migration or gateway transcript compaction unwraps prior migration transcripts before applying the selected scope and size budget, preserving original user questions, assistant replies and follow-up instructions without nesting migration headers. `latest` keeps the restored latest question and subsequent replies. Text already removed from an older transcript cannot be recovered; its truncation warning is retained.
+
 ## Login settings
 
 The default is independent username/password authentication. To change the password from the CLI:

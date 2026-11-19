@@ -160,6 +160,7 @@ func migrationTranscript(view *jsoncompat.Object, scope string) ([]migrationEntr
 
 func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes int) ([]migrationEntry, bool) {
 	entries := []migrationEntry{}
+	contentTruncated := false
 	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
 	if turns != nil {
 		for _, item := range turns.Items {
@@ -192,7 +193,13 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 				switch {
 				case role == "user" || role == "assistant":
 					if text != "" {
-						entries = append(entries, migrationEntry{role, text})
+						history, truncated := extractMigrationHistory(migrationEntry{role, text})
+						contentTruncated = contentTruncated || truncated
+						for _, entry := range history {
+							if scope != "latest" || entry.role == "user" || entry.role == "assistant" || entry.text == migrationImageMarker {
+								entries = append(entries, entry)
+							}
+						}
 					}
 				case scope != "latest" && (role == "activity" || role == "error"):
 					if role == "activity" && scope == "main" && isMigrationNoise(message) {
@@ -256,13 +263,13 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 	selected := make([]bool, len(capped))
 	kept := []migrationEntry{}
 	total, bytesUsed := 0, 0
-	contentTruncated := false
 	add := func(index, reserve int) bool {
 		if index < 0 || index >= len(capped) || selected[index] || len(kept) >= maxMessages {
 			return false
 		}
 		entry := capped[index]
-		charsLeft, bytesLeft := maxChars-total-8, maxBytes-bytesUsed-16
+		// Include role labels, separators and the portable history frame.
+		charsLeft, bytesLeft := maxChars-total-8, maxBytes-bytesUsed-32
 		if utf8.RuneCountInString(entry.text) > charsLeft || len(entry.text) > bytesLeft {
 			if reserve == 0 || charsLeft < 2 || bytesLeft < 4 {
 				return false
@@ -277,7 +284,7 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 		selected[index] = true
 		kept = append(kept, entry)
 		total += utf8.RuneCountInString(entry.text) + 8
-		bytesUsed += len(entry.text) + 16
+		bytesUsed += len(entry.text) + 32
 		return true
 	}
 	firstTask, lastUser, lastAssistant := -1, -1, -1
@@ -371,11 +378,12 @@ func migrationMessage(sourceLabel string, view *jsoncompat.Object, uiLocale, sco
 	if instructions = strings.TrimSpace(instructions); instructions != "" {
 		footer = append(footer, "", texts.instructions, instructions)
 	}
-	overhead := len(strings.Join(lines, "\n")) + len(strings.Join(footer, "\n")) + len(texts.truncated) + 4
+	overhead := len(strings.Join(lines, "\n")) + len(strings.Join(footer, "\n")) + len(texts.truncated) + len(migrationHistoryFrame(nil, instructions)) + 6
 	entries, truncated := migrationTranscriptBounded(view, scope, 100000-overhead)
 	if truncated {
 		lines = append(lines, texts.truncated)
 	}
+	lines = append(lines, "", migrationHistoryFrame(entries, instructions))
 	lines = append(lines, "")
 	for _, entry := range entries {
 		role := texts.roles[entry.role]
