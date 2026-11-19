@@ -84,6 +84,24 @@ test('compact canvas keeps the full current run status readable',()=>{
   }finally{global.document=previousDocument;global.window=previousWindow;global.teamRunStatusLabel=previousLabel;}
 });
 
+test('waiting input and paused issues do not count as outcome review',()=>{
+  const steps=teamCanvasPulse([], [
+    {status:'waiting',executionStatus:'waiting_input'},
+    {status:'waiting',executionStatus:'paused'},
+    {status:'waiting',executionStatus:'completed'},
+  ]);
+  assert.equal(steps.find(step=>step.id==='review').count,1);
+});
+
+test('canvas rerender restores dynamic current run text after language relabeling',()=>{
+  let synced=0;
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+    root:{hidden:false},view:'board',syncCurrentRunButton:()=>{synced++;},renderPulse(){},renderBoard(){},
+  });
+  controller.render();
+  assert.equal(synced,1);
+});
+
 test('standalone message deletion uses its version and refreshes only after success',async()=>{
   const previousWindow=global.window;global.window={confirm:()=>true};
   try{

@@ -1176,13 +1176,17 @@ body:has(#teams-button.active) .team-toolbar .team-synced{display:none}
   .team-canvas-toolbar{padding-right:12px;padding-left:12px}
 }
 @media(max-width:720px){
-  .team-canvas{height:calc(100dvh - 195px);max-height:calc(100dvh - 195px)}
+  /* 画布位于可滚动时间线内，必须跟随时间线剩余高度，不能按整屏计算而压住输入区。 */
+  .team-canvas{height:100%;min-height:0;max-height:none}
+  .team-canvas-viewport{min-height:0}
+  .team-canvas:has(.team-canvas-detail.open) .team-canvas-toolbar,
+  .team-canvas:has(.team-canvas-detail.open) .team-canvas-pulse{display:none}
   .team-canvas-toolbar{min-height:52px;padding:6px 8px}
   .team-view-tabs>button{min-height:44px;padding:3px 10px}
   .team-canvas-actions{gap:4px}
   .team-canvas-action-group{padding:1px}
   .team-canvas-action-group .team-canvas-tool{width:44px;height:44px;min-width:44px}
-  .team-canvas-current-run{height:44px;max-width:112px;padding:0 7px;font-size:11px}
+  .team-canvas-current-run{height:44px;max-width:min(160px,44vw);padding:0 7px;font-size:11px;line-height:1.25;white-space:normal;text-overflow:clip}
   .team-canvas-zoom-controls{display:none}
   #team-canvas-detail-close.team-canvas-tool{width:44px;height:44px;min-width:44px}
   .team-canvas-pulse{min-height:40px;padding:6px 8px}
@@ -1200,7 +1204,7 @@ body:has(#teams-button.active) .team-toolbar .team-synced{display:none}
   .team-canvas-detail{box-shadow:none}
 }
 @media(max-width:390px){
-  .team-canvas-current-run{max-width:112px}
+  .team-canvas-current-run{max-width:min(160px,44vw)}
   .team-canvas-legend{gap:8px}
   .team-canvas-legend>span{gap:4px}
 }

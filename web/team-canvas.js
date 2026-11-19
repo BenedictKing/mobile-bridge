@@ -50,7 +50,9 @@ function teamCanvasIssueTone(issue){
 }
 
 function teamCanvasPulse(inputs,issues){
-  const tones=(issues||[]).map(teamCanvasIssueTone),active=tones.filter(tone=>tone==='active').length,review=tones.filter(tone=>tone==='review').length;
+  const rows=issues||[],tones=rows.map(teamCanvasIssueTone),active=tones.filter(tone=>tone==='active').length;
+  // waiting_input / paused 只是等待继续执行；只有执行已经结束且业务仍待确认时才进入验收。
+  const review=rows.filter(issue=>teamCanvasIssueTone(issue)==='review'&&issue.executionStatus==='completed').length;
   const complete=tones.filter(tone=>tone==='complete').length;
   return[
     {id:'input',count:(inputs||[]).length,state:inputs?.length?'complete':'empty'},
@@ -426,6 +428,7 @@ class TeamCanvasController{
   }
   render(){
     if(this.root.hidden)return;
+    this.syncCurrentRunButton();
     this.renderPulse();
     if(this.view==='board'){this.renderBoard();return;}
     this.nodes.replaceChildren();this.wires.replaceChildren();
