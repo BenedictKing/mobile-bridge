@@ -9,6 +9,37 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
+func TestTranscriptReaderIncludesRunningTaskNotification(t *testing.T) {
+	home := t.TempDir()
+	const id = "sess-task-notification"
+	dir := filepath.Join(home, "sessions", "workspace", id)
+	wire := filepath.Join(dir, "agents", "main", "wire.jsonl")
+	if err := os.MkdirAll(filepath.Dir(wire), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"title":"原生标题","cwd":"/work"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"type":"turn.prompt","input":[{"type":"text","text":"<notification>后台任务已停止</notification>"}],"origin":{"kind":"task"}}
+{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"继续处理"}}}
+{"type":"context.append_loop_event","event":{"type":"tool.call","toolCallId":"c1","name":"Bash","args":{"command":"npm test"}}}
+`
+	if err := os.WriteFile(wire, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := TranscriptReader(home)(id)
+	if err != nil || snapshot == nil || len(snapshot.Turns) != 1 {
+		t.Fatalf("snapshot=%v err=%v", snapshot, err)
+	}
+	if status, _ := snapshot.Turns[0].MustGet("status").(string); status != "inProgress" {
+		t.Fatalf("status=%q, want inProgress", status)
+	}
+	encoded := string(jsoncompat.EncodeCompact(snapshot.Turns[0]))
+	if !strings.Contains(encoded, "后台任务已停止") || !strings.Contains(encoded, "继续处理") {
+		t.Fatalf("turn=%s", encoded)
+	}
+}
+
 func TestTranscriptReaderBuildsTurnsFromMainWire(t *testing.T) {
 	home := t.TempDir()
 	const id = "sess-history"

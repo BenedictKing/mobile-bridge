@@ -825,7 +825,12 @@ func runGateway(args []string) {
 			return kimi.ListSessions(kimiHome)
 		}
 		manager.NativeListExclusive = true
-		manager.NativeTranscript = kimi.TranscriptReader(kimiHome)
+		reader := kimi.TranscriptReader(kimiHome)
+		manager.Native = reader
+		manager.NativeTranscript = reader
+		manager.NativeSettle = func(session *acpruntime.Session) {
+			server.QueueSettleACP("kimi", session)
+		}
 		// Kimi Code rewrites state.json's updatedAt on every session/load, so
 		// the startup preload restamped the recent chats as just-used after
 		// each restart. The wire transcript's last event time is the real

@@ -2550,8 +2550,13 @@ func (s *Session) shouldApplyNative(snapshot *acpview.NativeSnapshot) bool {
 	viewText, nativeText := firstUserText(tip), firstUserText(candidate)
 	// The store is append-only: a snapshot that does not contain the prompt
 	// the phone's view ends with is behind (the agent has not flushed it
-	// yet) and must never roll the view back.
+	// yet) and must not roll the view back. A running native turn may instead
+	// replace an empty settled prompt that the agent never added to its store.
 	if viewText != "" && !snapshotHasUserText(snapshot, viewText) {
+		if turnStatusOf(candidate) == "inProgress" && emptySettledPrompt(tip) {
+			s.nativeLagSince = time.Time{}
+			return true
+		}
 		return false
 	}
 	if viewText == "" || viewText != nativeText {
@@ -2606,6 +2611,18 @@ func snapshotHasUserText(snapshot *acpview.NativeSnapshot, text string) bool {
 		}
 	}
 	return false
+}
+
+func emptySettledPrompt(turn *jsoncompat.Object) bool {
+	if turnStatusOf(turn) != "completed" {
+		return false
+	}
+	messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+	if messages == nil || len(messages.Items) != 1 {
+		return false
+	}
+	message, _ := messages.Items[0].(*jsoncompat.Object)
+	return message != nil && message.MustGet("kind") == "userMessage" && message.MustGet("role") == "user"
 }
 
 func turnStatusOf(turn *jsoncompat.Object) string {
