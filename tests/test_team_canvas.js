@@ -2,7 +2,7 @@
 
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
+const {TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasIssueTone,teamCanvasPulse,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows}=require('../web/team-canvas.js');
 
 test('issue labels distinguish unconfirmed goals, resolution and execution problems',()=>{
   const c=Object.assign(Object.create(TeamCanvasController.prototype),{t:value=>value});
@@ -72,6 +72,18 @@ test('team view switching preserves canvas state and persists per team',()=>{
   }finally{global.document=previousDocument;global.localStorage=previousStorage;}
 });
 
+test('compact canvas keeps the full current run status readable',()=>{
+  const previousDocument=global.document,previousWindow=global.window,previousLabel=global.teamRunStatusLabel;
+  const button={dataset:{}};global.document={getElementById:()=>button};global.window={matchMedia:()=>({matches:true})};global.teamRunStatusLabel=()=>'执行结束';
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{t:value=>value,restoreDetail:null});
+  try{
+    controller.setCurrentRun({id:'run',status:'completed'});
+    assert.equal(button.textContent,'Run · 执行结束');assert.equal(button.title,'当前 Run · 执行结束');
+    global.window.matchMedia=()=>({matches:false});controller.syncCurrentRunButton();
+    assert.equal(button.textContent,'当前 Run · 执行结束');
+  }finally{global.document=previousDocument;global.window=previousWindow;global.teamRunStatusLabel=previousLabel;}
+});
+
 test('standalone message deletion uses its version and refreshes only after success',async()=>{
   const previousWindow=global.window;global.window={confirm:()=>true};
   try{
@@ -132,6 +144,24 @@ test('closed issue retains the last executor',()=>{
 test('unknown task attribution does not invent issue progress',()=>{
   const c=Object.assign(Object.create(TeamCanvasController.prototype),{t:value=>value});
   assert.equal(c.progress({progress:{known:false},taskCounts:{completed:1}}),null);
+});
+
+test('canvas pulse counts real planning, execution and review states',()=>{
+  const steps=teamCanvasPulse([{inputId:'one'},{inputId:'two'}],[
+    {id:'planned',status:'open'},
+    {id:'running',status:'in_progress'},
+    {id:'review',status:'waiting',executionStatus:'completed'},
+    {id:'done',status:'resolved'},
+    {id:'failed',status:'waiting',executionStatus:'failed'},
+  ]);
+  assert.deepEqual(steps,[
+    {id:'input',count:2,state:'complete'},
+    {id:'plan',count:5,state:'complete'},
+    {id:'execute',count:1,state:'active'},
+    {id:'review',count:1,state:'attention'},
+  ]);
+  assert.equal(teamCanvasIssueTone({status:'resolved',executionStatus:'failed'}),'complete','业务结论优先于历史执行失败');
+  assert.equal(teamCanvasIssueTone({status:'waiting',executionStatus:'outcome_unknown'}),'failed');
 });
 
 test('issue detail shows bounded delivery, review and verification evidence',()=>{

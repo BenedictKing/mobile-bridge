@@ -41,6 +41,25 @@ function teamCanvasFitTransform(viewportWidth,viewportHeight,canvasWidth,canvasH
   return{scale,x:(viewportWidth-canvasWidth*scale)/2,y:(viewportHeight-canvasHeight*scale)/2};
 }
 
+function teamCanvasIssueTone(issue){
+  if(['resolved','closed'].includes(issue?.status))return'complete';
+  if(['failed','outcome_unknown'].includes(issue?.status)||['failed','outcome_unknown'].includes(issue?.executionStatus))return'failed';
+  if(issue?.status==='waiting')return'review';
+  if(issue?.status==='in_progress'||['created','dispatching','collecting','reducing','running'].includes(issue?.executionStatus))return'active';
+  return'planned';
+}
+
+function teamCanvasPulse(inputs,issues){
+  const tones=(issues||[]).map(teamCanvasIssueTone),active=tones.filter(tone=>tone==='active').length,review=tones.filter(tone=>tone==='review').length;
+  const complete=tones.filter(tone=>tone==='complete').length;
+  return[
+    {id:'input',count:(inputs||[]).length,state:inputs?.length?'complete':'empty'},
+    {id:'plan',count:(issues||[]).length,state:issues?.length?'complete':'empty'},
+    {id:'execute',count:active,state:active?'active':complete?'complete':'empty'},
+    {id:'review',count:review,state:review?'attention':complete?'complete':'empty'},
+  ];
+}
+
 // 以关联关系分组，同一输入或事项只出现一次；组和组内气泡按原始输入顺序排列。
 function teamCanvasGroups(bubbleRecords,issueRecords){
   const linked=teamCanvasLinkedRecords(bubbleRecords,issueRecords),byBubble=new Map(bubbleRecords.map(record=>[record,[]]));
@@ -138,6 +157,7 @@ class TeamCanvasController{
     this.wires=document.getElementById('team-canvas-wires');
     this.detail=document.getElementById('team-canvas-detail');
     this.summary=document.getElementById('team-canvas-summary');
+    this.pulse=document.getElementById('team-canvas-pulse');
     this.error=document.getElementById('team-canvas-error');
     this.zoomLabel=document.getElementById('team-canvas-zoom');
     this.boardRoot=document.getElementById('team-project-board');this.view='canvas';this.boardPanel=null;
@@ -194,14 +214,19 @@ class TeamCanvasController{
       if(event.ctrlKey||event.metaKey)this.zoomAt(this.transform.scale*(event.deltaY<0?1.08:.92),event.clientX,event.clientY);
       else{this.transform.x-=event.deltaX;this.transform.y-=event.deltaY;this.userInteracted=true;this.applyTransform();}
     },{passive:false});
-    window.addEventListener('resize',()=>{if(this.root.hidden)return;this.render();});
+    window.addEventListener('resize',()=>{if(this.root.hidden)return;this.syncCurrentRunButton();this.render();});
+  }
+  syncCurrentRunButton(){
+    const run=this.currentRun,button=document.getElementById('team-canvas-current-run');if(!button)return;
+    button.disabled=!run;
+    const status=run?this.t(typeof teamRunStatusLabel==='function'?teamRunStatusLabel(run.status):run.status):'';
+    const full=run?this.t('当前 Run')+' · '+status:this.t('当前 Run'),compact=typeof window!=='undefined'&&typeof window.matchMedia==='function'&&window.matchMedia('(max-width:720px)').matches;
+    button.textContent=run&&compact?'Run · '+status:full;button.title=full;
+    if(run)button.dataset.status=run.status||'';else delete button.dataset.status;
   }
   setCurrentRun(run,team=null){
     this.currentRun=run||null;
-    const button=document.getElementById('team-canvas-current-run');if(!button)return;
-    button.disabled=!run;
-    button.textContent=run?this.t('当前 Run')+' · '+this.t(typeof teamRunStatusLabel==='function'?teamRunStatusLabel(run.status):run.status):this.t('当前 Run');
-    if(run)button.dataset.status=run.status||'';else delete button.dataset.status;
+    this.syncCurrentRunButton();
     if(this.detailMode==='current'&&run&&(!team||team.id===this.current?.id)){
       const sameRun=this.detailRun?.id===run.id;
       this.detailRun=run;this.renderCurrentDetail(sameRun);
@@ -391,8 +416,17 @@ class TeamCanvasController{
     const issues=this.issues.map(issue=>({issue,bubbles:(issue.inputs||[]).map(source=>inputByID.get(source.inputId)).filter(record=>record&&record.issueIDs.includes(issue.id))}));
     return{bubbles,issues};
   }
+  renderPulse(){
+    if(!this.pulse)return;
+    for(const step of teamCanvasPulse(this.inputs,this.issues)){
+      const item=this.pulse.querySelector(`[data-stage="${step.id}"]`);if(!item)continue;
+      item.dataset.state=step.state;
+      const count=item.querySelector('[data-stage-count]');if(count)count.textContent=String(step.count);
+    }
+  }
   render(){
     if(this.root.hidden)return;
+    this.renderPulse();
     if(this.view==='board'){this.renderBoard();return;}
     this.nodes.replaceChildren();this.wires.replaceChildren();
     const {bubbles,issues}=this.buildGroups();
@@ -446,6 +480,7 @@ class TeamCanvasController{
     const {input,index,issueIDs}=record,id=input.inputId||input.id;
     const linkedRunID=teamCanvasInputRunID(input,issueIDs);
     const card=this.node('div',undefined,'team-canvas-node team-canvas-message');card.dataset.inputId=id;
+    card.dataset.state=issueIDs.length?'linked':input.associationStatus||'pending';
     const button=this.button('', 'team-canvas-message-main');card.append(button);
     const head=this.node('div',undefined,'team-canvas-message-head');
     head.append(this.node('span',String(input.sequence||index).padStart(2,'0'),'team-canvas-message-index'));
@@ -502,7 +537,7 @@ class TeamCanvasController{
     finally{button.disabled=false;}
   }
   renderIssue(issue){
-    const button=this.button('', 'team-canvas-node team-canvas-issue');button.dataset.issueId=issue.id;button.dataset.status=issue.status;
+    const button=this.button('', 'team-canvas-node team-canvas-issue');button.dataset.issueId=issue.id;button.dataset.status=issue.status;button.dataset.tone=teamCanvasIssueTone(issue);
     const head=this.node('div',undefined,'team-canvas-issue-head');
     head.append(this.node('span',this.t(issue.scheduled?'定时事项':'事项')+' · '+this.shortID(issue.id),'team-canvas-issue-id'));
     head.append(this.node('span',this.statusLabel(issue),'team-canvas-status'));button.append(head);
@@ -512,18 +547,15 @@ class TeamCanvasController{
       const progressBox=this.node('div',undefined,'team-canvas-progress');
       const progressHead=this.node('div',undefined,'team-canvas-progress-head');
       progressHead.append(this.node('strong',this.t('Agent 任务')+' '+progress.completed+'/'+progress.total+' '+this.t('正常结束')));
+      progressHead.append(this.node('span',progress.percent+'%'));
       const track=this.node('div',undefined,'team-canvas-progress-track'),fill=this.node('span',undefined,'team-canvas-progress-fill');fill.style.width=progress.percent+'%';track.append(fill);progressBox.append(progressHead,track);button.append(progressBox);
     }else button.append(this.node('p',this.t('进度待同步'),'team-canvas-issue-muted'));
-    const bits=[];
-    const owner=teamCanvasOwnerLine(issue,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind);if(owner)bits.push(owner);
-    if(issue.lastUpdate?.summary)bits.push(this.t('最近回音')+' · '+issue.lastUpdate.summary);
-    if(issue.nextAction?.label)bits.push(this.t('下一步')+' · '+issue.nextAction.label);
+    const owner=teamCanvasOwnerLine(issue,value=>this.t(value),kind=>typeof BridgeI18n!=='undefined'?BridgeI18n.agentLabel(kind):kind);
     const meta=this.node('div',undefined,'team-canvas-issue-meta');
-    for(const bit of bits){
-      const recent=issue.lastUpdate?.summary&&bit===this.t('最近回音')+' · '+issue.lastUpdate.summary;
-      meta.append(this.node('span',bit,recent?'team-canvas-recent-update':undefined));
-    }
-    button.append(meta,this.node('span',this.t('查看事项详情'),'team-canvas-open-hint'));
+    if(owner)meta.append(this.node('span',owner,'team-canvas-owner'));
+    if(issue.lastUpdate?.summary)meta.append(this.node('span',this.t('最近回音')+' · '+issue.lastUpdate.summary,'team-canvas-recent-update'));
+    if(issue.nextAction?.label)meta.append(this.node('span',this.t('下一步')+' · '+issue.nextAction.label,'team-canvas-next-action'));
+    button.append(meta,this.node('span',this.t('查看事项详情')+' ↗','team-canvas-open-hint'));
     button.setAttribute('aria-label',this.shortID(issue.id)+' '+(issue.title||'')+' · '+this.statusLabel(issue)+' · '+this.t('查看事项详情'));
     button.addEventListener('click',()=>{if(Date.now()>=(this.suppressClickUntil||0))this.openDetail(issue,button);});
     if(this.view!=='board')this.bindNodeDrag(button,()=>({key:'i:'+issue.id,issue}));
@@ -842,4 +874,4 @@ class TeamCanvasController{
   }
 }
 
-if(typeof module!=='undefined'&&module.exports)module.exports={TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows};
+if(typeof module!=='undefined'&&module.exports)module.exports={TeamCanvasController,teamCanvasAssociations,teamCanvasLinkedRecords,teamCanvasInputRunID,teamCanvasFitTransform,teamCanvasIssueTone,teamCanvasPulse,teamCanvasGroups,teamCanvasLayout,teamCanvasOwnerLine,teamCanvasDeliveryRows};
