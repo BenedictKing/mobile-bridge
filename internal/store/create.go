@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pelletier/go-toml/v2"
 )
 
 var ErrDirectCreateUnsupported = errors.New("Codex 本地存储不支持直接创建")
@@ -54,7 +54,7 @@ type emptyRolloutMeta struct {
 // CreateThread persists only a new, empty legacy rollout and its index row.
 // Simple root settings are mirrored; layered config uses the runtime fallback.
 func (s *SessionStore) CreateThread(cwd, title string) (string, error) {
-	database, err := s.databasePath()
+	database, err := s.directCreateDatabasePath()
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrDirectCreateUnsupported, err)
 	}
@@ -119,6 +119,17 @@ func (s *SessionStore) CreateThread(cwd, title string) (string, error) {
 	return id, nil
 }
 
+func (s *SessionStore) directCreateDatabasePath() (string, error) {
+	paths, err := s.databasePaths()
+	if err != nil {
+		return "", err
+	}
+	if len(paths) != 1 {
+		return "", errors.New("存在多个 Codex 会话数据库，需要官方运行时确认索引")
+	}
+	return paths[0], nil
+}
+
 func readThreadColumnSchema(db *sql.DB) (map[string]threadColumnSchema, error) {
 	rows, err := db.Query("PRAGMA table_info(threads)")
 	if err != nil {
@@ -156,29 +167,11 @@ func readDirectCreateSettings(home, cwd string) (directCreateSettings, error) {
 	if err != nil {
 		return directCreateSettings{}, err
 	}
-	root, seen := true, map[string]bool{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "[") {
-			header, _, _ := strings.Cut(trimmed, "#")
-			table := strings.Trim(strings.TrimSpace(header), "[] \t")
-			if complexDirectCreateKey(table) {
-				return directCreateSettings{}, fmt.Errorf("Codex 配置含有需运行时解析的表 %s", table)
-			}
-			root = false
-			continue
-		}
-		if !root {
-			continue
-		}
-		key, value, ok := strings.Cut(trimmed, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
+	var root map[string]any
+	if err := toml.Unmarshal(raw, &root); err != nil {
+		return directCreateSettings{}, fmt.Errorf("解析 config.toml 失败: %w", err)
+	}
+	for key, value := range root {
 		if complexDirectCreateKey(key) {
 			return directCreateSettings{}, fmt.Errorf("Codex 配置含有需运行时解析的键 %s", key)
 		}
@@ -187,13 +180,9 @@ func readDirectCreateSettings(home, cwd string) (directCreateSettings, error) {
 		default:
 			continue
 		}
-		if seen[key] {
-			return directCreateSettings{}, fmt.Errorf("config.toml 含有重复 %s", key)
-		}
-		seen[key] = true
-		parsed, parseErr := parseRootConfigString(value)
-		if parseErr != nil {
-			return directCreateSettings{}, fmt.Errorf("解析 %s 失败: %w", key, parseErr)
+		parsed, ok := value.(string)
+		if !ok {
+			return directCreateSettings{}, fmt.Errorf("%s 必须是字符串", key)
 		}
 		switch key {
 		case "profile":
@@ -213,10 +202,12 @@ func readDirectCreateSettings(home, cwd string) (directCreateSettings, error) {
 				return directCreateSettings{}, fmt.Errorf("未知 sandbox_mode %q", parsed)
 			}
 		case "approval_policy":
-			if parsed == "" {
-				return directCreateSettings{}, errors.New("approval_policy 不能为空")
+			switch parsed {
+			case "untrusted", "on-failure", "on-request", "never":
+				settings.approvalMode = parsed
+			default:
+				return directCreateSettings{}, fmt.Errorf("未知 approval_policy %q", parsed)
 			}
-			settings.approvalMode = parsed
 		}
 	}
 	return settings, nil
@@ -255,37 +246,6 @@ func rejectDirectProjectConfig(home, cwd string) error {
 		}
 		dir = parent
 	}
-}
-
-func parseRootConfigString(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if len(raw) < 2 || (raw[0] != '"' && raw[0] != '\'') {
-		return "", errors.New("值必须是单行字符串")
-	}
-	quote := raw[0]
-	for index := 1; index < len(raw); index++ {
-		if quote == '"' && raw[index] == '\\' {
-			index++
-			continue
-		}
-		if raw[index] != quote {
-			continue
-		}
-		rest := strings.TrimSpace(raw[index+1:])
-		if rest != "" && !strings.HasPrefix(rest, "#") {
-			return "", errors.New("字符串后含有无法识别的内容")
-		}
-		literal := raw[:index+1]
-		if quote == '\'' {
-			return literal[1 : len(literal)-1], nil
-		}
-		value, err := strconv.Unquote(literal)
-		if err != nil {
-			return "", err
-		}
-		return value, nil
-	}
-	return "", errors.New("字符串未闭合")
 }
 
 func threadCreateValues(id, rollout, cwd, title string, settings directCreateSettings, now time.Time) []threadCreateValue {

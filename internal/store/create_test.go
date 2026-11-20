@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/google/uuid"
@@ -57,7 +58,7 @@ func createThreadTestDB(t *testing.T, home, schema string) *sql.DB {
 func TestCreateThreadWritesImmediatelyReadableConversation(t *testing.T) {
 	home, cwd := t.TempDir(), t.TempDir()
 	createThreadTestDB(t, home, createThreadTestSchema).Close()
-	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("model_provider = \"bridge_api\" # 当前接入\nsandbox_mode = \"workspace-write\"\napproval_policy = \"never\""), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("\"model_provider\" = \"bridge_api\" # 当前接入\n'sandbox_mode' = \"workspace-write\"\n\"approval_policy\" = \"never\""), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	store := NewSessionStore(home)
@@ -118,16 +119,27 @@ func TestReadDirectCreateSettings(t *testing.T) {
 		{name: "default", wantProvider: "openai"},
 		{name: "double quoted", config: `model_provider = "bridge_api" # active`, wantProvider: "bridge_api"},
 		{name: "single quoted", config: `model_provider = 'custom_provider'`, wantProvider: "custom_provider"},
+		{name: "double quoted key", config: `"model_provider" = "bridge_api"`, wantProvider: "bridge_api"},
+		{name: "single quoted key", config: `'model_provider' = 'bridge_api'`, wantProvider: "bridge_api"},
+		{name: "escaped key", config: `"model\u005fprovider" = "bridge_api"`, wantProvider: "bridge_api"},
+		{name: "multiline provider", config: "model_provider = \"\"\"bridge_api\"\"\"", wantProvider: "bridge_api"},
 		{name: "profile section does not override root", config: "model_provider = \"root\"\n[profiles.work]\nmodel_provider = \"other\"", wantProvider: "root"},
 		{name: "simple permissions", config: "sandbox_mode = \"workspace-write\"\napproval_policy = \"never\"", wantProvider: "openai", wantSandbox: "workspace-write", wantApproval: "never"},
 		{name: "active profile falls back", config: "profile = \"work\"\nmodel_provider = \"custom\"", wantError: true},
+		{name: "quoted active profile falls back", config: `"profile" = "work"`, wantError: true},
 		{name: "unquoted provider falls back", config: "model_provider = custom", wantError: true},
 		{name: "empty provider falls back", config: `model_provider = ""`, wantError: true},
 		{name: "complex permission key falls back", config: `default_permissions = {}`, wantError: true},
 		{name: "complex permission table falls back", config: "[sandbox_workspace_write]\nnetwork_access = true", wantError: true},
 		{name: "history settings fall back", config: "[history]\npersistence = \"none\"", wantError: true},
 		{name: "memory settings fall back", config: "[memories] # custom memory behavior\ngenerate_memories = false", wantError: true},
+		{name: "quoted memory table falls back", config: "[\"memories\"] # custom\ngenerate_memories = false", wantError: true},
+		{name: "quoted dotted history falls back", config: `'history'.persistence = "none"`, wantError: true},
 		{name: "unknown sandbox falls back", config: `sandbox_mode = "unknown"`, wantError: true},
+		{name: "unknown approval falls back", config: `approval_policy = "unknown"`, wantError: true},
+		{name: "duplicate quoted key falls back", config: "model_provider = \"first\"\n\"model_provider\" = \"second\"", wantError: true},
+		{name: "malformed unrelated setting falls back", config: "model_provider = \"bridge_api\"\nmodel = [", wantError: true},
+		{name: "non string provider falls back", config: `model_provider = 1`, wantError: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -151,6 +163,41 @@ func TestReadDirectCreateSettings(t *testing.T) {
 				t.Fatalf("settings=%+v error=%v, want %+v error=%v", settings, err, want, test.wantError)
 			}
 		})
+	}
+}
+
+func TestCreateThreadRejectsMultipleDatabasesBeforeWriting(t *testing.T) {
+	home, cwd := t.TempDir(), t.TempDir()
+	current := createThreadTestDB(t, home, createThreadTestSchema)
+	defer current.Close()
+	oldPath := filepath.Join(home, "state_0.sqlite")
+	old, err := sql.Open("sqlite", oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if _, err := old.Exec(createThreadTestSchema); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(oldPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewSessionStore(home).CreateThread(cwd, "不能写入旧库")
+	if !errors.Is(err, ErrDirectCreateUnsupported) {
+		t.Fatalf("error=%v, want ErrDirectCreateUnsupported", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "sessions")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ambiguous database wrote session data: %v", err)
+	}
+	for _, db := range []*sql.DB{current, old} {
+		var count int
+		if err := db.QueryRow("SELECT COUNT(*) FROM threads").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("ambiguous database inserted %d rows", count)
+		}
 	}
 }
 

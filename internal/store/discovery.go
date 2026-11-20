@@ -25,10 +25,10 @@ type SessionStore struct {
 
 func NewSessionStore(home string) *SessionStore { return &SessionStore{Home: home} }
 
-func (s *SessionStore) databasePath() (string, error) {
+func (s *SessionStore) databasePaths() ([]string, error) {
 	entries, err := os.ReadDir(s.Home)
 	if err != nil {
-		return "", ErrUnavailable
+		return nil, ErrUnavailable
 	}
 	var paths []string
 	for _, entry := range entries {
@@ -37,7 +37,15 @@ func (s *SessionStore) databasePath() (string, error) {
 		}
 	}
 	if len(paths) == 0 {
-		return "", errors.New("暂时找不到 Codex 会话数据库，请打开电脑 Codex 后重试。")
+		return nil, errors.New("暂时找不到 Codex 会话数据库，请打开电脑 Codex 后重试。")
+	}
+	return paths, nil
+}
+
+func (s *SessionStore) databasePath() (string, error) {
+	paths, err := s.databasePaths()
+	if err != nil {
+		return "", err
 	}
 	sort.Slice(paths, func(i, j int) bool {
 		left, leftErr := os.Stat(paths[i])
