@@ -813,8 +813,16 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		}
 	case EventTaskRunning:
 		task.Status = TaskRunning
-	case EventTaskCompleted:
+	case EventTaskCompleted, EventTaskFailed:
 		task.Status = TaskCompleted
+		if event.Type == EventTaskFailed {
+			task.Status = TaskFailed
+			task.Error = payloadString(event.Payload, "error")
+			task.Outcome = payloadString(event.Payload, "outcome")
+			if _, hasResult := event.Payload["result"]; !hasResult {
+				break
+			}
+		}
 		result := &TaskResult{
 			SessionID:      payloadString(event.Payload, "sessionId"),
 			TurnID:         payloadString(event.Payload, "turnId"),
@@ -827,6 +835,9 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			TouchedPaths:   payloadStrings(event.Payload, "touchedPaths"),
 		}
 		result.Truncated, _ = event.Payload["truncated"].(bool)
+		if _, hasReason := event.Payload["resultStopReason"]; hasReason {
+			result.StopReason = payloadString(event.Payload, "resultStopReason")
+		}
 		task.Result = result.Result
 		task.ResultDetail = result
 	case EventTaskCacheHit:
@@ -848,10 +859,6 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		result.Truncated, _ = event.Payload["truncated"].(bool)
 		task.Result = result.Result
 		task.ResultDetail = result
-	case EventTaskFailed:
-		task.Status = TaskFailed
-		task.Error = payloadString(event.Payload, "error")
-		task.Outcome = payloadString(event.Payload, "outcome")
 	case EventTaskRetryScheduled:
 		applyTaskRetryAssignment(task, retryAssignmentFromEvent(event))
 		advanceRebuildRound(run, event)

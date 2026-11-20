@@ -58,9 +58,11 @@ type IssueProposalSegment struct {
 	Action        string `json:"action"`
 	IssueID       string `json:"issueId,omitempty"`
 	NewIssueTitle string `json:"newIssueTitle,omitempty"`
-	SourceStart   int    `json:"sourceStart"`
-	SourceEnd     int    `json:"sourceEnd"`
-	Reason        string `json:"reason,omitempty"`
+	// Source=full 由网关解析全文范围，模型无需计算 Unicode 字符位置。
+	Source      string `json:"source,omitempty"`
+	SourceStart int    `json:"sourceStart"`
+	SourceEnd   int    `json:"sourceEnd"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 type IssueProposal struct {
@@ -132,6 +134,12 @@ func validateIssueProposal(proposal *IssueProposal, input *TeamInput, teamID str
 	validated := make([]IssueProposalSegment, len(proposal.Segments))
 	linked, clarified := false, false
 	for index, segment := range proposal.Segments {
+		if segment.Source != "" {
+			if segment.Source != "full" || len(proposal.Segments) != 1 || segment.SourceStart != 0 || segment.SourceEnd != 0 {
+				return nil, "", fmt.Errorf("第 %d 个片段的 source 只支持 full，且全文归类必须是唯一片段、不能同时指定数字区间", index+1)
+			}
+			segment.Source, segment.SourceStart, segment.SourceEnd = "", 0, len(runes)
+		}
 		if segment.SourceStart < 0 || segment.SourceEnd <= segment.SourceStart || segment.SourceEnd > len(runes) {
 			return nil, "", fmt.Errorf("第 %d 个片段的来源区间越界", index+1)
 		}
@@ -172,7 +180,11 @@ func validateIssueProposal(proposal *IssueProposal, input *TeamInput, teamID str
 	}
 	for pos, ok := range covered {
 		if !ok && !unicode.IsSpace(runes[pos]) {
-			return nil, "", fmt.Errorf("Issue 提案漏掉原文位置 %d", pos)
+			end := pos + 1
+			for end < len(runes) && !covered[end] {
+				end++
+			}
+			return nil, "", fmt.Errorf("Issue 提案漏掉原文位置 %d；未覆盖区间 [%d,%d)，原文共 %d 个 Unicode rune，遗漏内容 %q。整段归类请使用 source=full，不要逐字猜测结束位置", pos, pos, end, len(runes), truncateRunes(string(runes[pos:end]), 80))
 		}
 	}
 	status := IssueAssociationIgnored
@@ -481,12 +493,12 @@ func (l *InputLedger) IssueAssociationBriefing(teamID, inputID string) string {
 	}
 	builder.WriteString("输出一个 team-issues JSON 块。格式：\n")
 	builder.WriteString("<team-issues>\n")
-	builder.WriteString("{\"inputId\":\"<inputId>\",\"revision\":1,\"segments\":[")
-	builder.WriteString("{\"action\":\"link\",\"issueId\":\"<已有ID>\",\"sourceStart\":0,\"sourceEnd\":8},")
-	builder.WriteString("{\"action\":\"create\",\"newIssueTitle\":\"简短事项标题\",\"sourceStart\":9,\"sourceEnd\":20},")
-	builder.WriteString("{\"action\":\"ignore\",\"sourceStart\":0,\"sourceEnd\":4},")
-	builder.WriteString("{\"action\":\"clarify\",\"reason\":\"需要确认目标\",\"sourceStart\":21,\"sourceEnd\":28}]}\n")
+	builder.WriteString(fmt.Sprintf("{\"inputId\":%q,\"revision\":%d,\"segments\":[{\"action\":\"create\",\"newIssueTitle\":\"简短事项标题\",\"source\":\"full\"}]}\n", input.ID, input.Revision))
 	builder.WriteString("</team-issues>\n")
+	builder.WriteString("原消息属于同一个主题时，使用唯一片段的 source=full，由网关解析全文区间；不要计算字符数，也不要同时填写 sourceStart/sourceEnd。action 仍须按实际语义选择 create/link/ignore/clarify，示例不是要求一律新建。\n")
+	runeCount := len([]rune(input.Text))
+	builder.WriteString(fmt.Sprintf("原文共 %d 个 Unicode rune，全文区间为 [0,%d)。只有需要拆分多个主题时才在同一个 segments 数组里用 sourceStart/sourceEnd 替代 source，不要同时输出全文示例和拆分提案。\n", runeCount, runeCount))
+	builder.WriteString("各片段除来源外的字段：link 必须提供已有 issueId；create 必须提供 newIssueTitle；ignore 不带 Issue 标识或标题；clarify 必须提供 reason 且不带 Issue 标识或标题。\n")
 	builder.WriteString("sourceStart/sourceEnd 是原消息的 0 起始 Unicode rune 半开区间。所有非空白原文必须且只能被一个片段覆盖；消息可以拆成多个不同主题，每段分别选择 action。只有主题明确连续时才关联已有 Issue；不要因为同属一个项目而合并。寒暄和不需要跟进的纯沟通使用 ignore；只有确实无法判断目标时才用 clarify。create 的标题要短且能代表长期事项。\n")
 	builder.WriteString(fmt.Sprintf("当前输入：inputId=%s revision=%d。\n", input.ID, input.Revision))
 	builder.WriteString("原始输入全文（片段区间以此文本的 Unicode rune 索引为准）：\n")

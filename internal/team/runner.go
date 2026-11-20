@@ -2625,7 +2625,7 @@ func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome
 		payload["attempt"] = jsoncompat.Num(task.Attempt)
 	}
 	switch eventType {
-	case EventTaskCompleted:
+	case EventTaskCompleted, EventTaskFailed:
 		if result != nil {
 			payload["sessionId"] = result.SessionID
 			payload["turnId"] = result.TurnID
@@ -2648,10 +2648,14 @@ func mutateTaskTerminal(run *Run, taskID, status, stopReason, errorText, outcome
 				payload["reviewVerdict"] = result.ReviewVerdict
 			}
 		}
-	case EventTaskFailed:
-		payload["error"] = errorText
-		if stopReason != "" {
-			payload["stopReason"] = stopReason
+		if eventType == EventTaskFailed {
+			payload["error"] = errorText
+			if result != nil {
+				payload["resultStopReason"] = result.StopReason
+			}
+			if stopReason != "" {
+				payload["stopReason"] = stopReason
+			}
 		}
 	default: // task_stopped / task_outcome_unknown
 		if eventType == EventTaskStopped {
@@ -2813,8 +2817,8 @@ func (s *Service) settlesLeadActions(state *runState, taskID string) bool {
 //     落事件、事件序任务事实先于动作事实。修复任务经既有 executeDispatch
 //     派发+watcher 观察（超时/收养/终态机械免费复用），其回复在同一
 //     completed 分支重解析；第 maxActionRepairs+1 次失败落 final=true、不再
-//     创建修复回合，结果按普通文本保留（§5.1 规则 3）。修复 ID 超长/非法或
-//     任务数达 MaxTasksPerRun 时同样确定性收场为 final，绝不静默。
+//     创建修复回合，任务落 failed 并保留原始结果，防止编排失败被折叠成成功。
+//     修复 ID 超长/非法或任务数达 MaxTasksPerRun 时同样确定性收场为 final，绝不静默。
 //
 // 幂等：批次内全部事件带幂等键，落账前 Replay 预扫描已记账键（journal.Append
 // 不去重；forwardRecorded 同款）——整批失败（journal/快照写失败）时返回
@@ -2862,41 +2866,16 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 			return nil, false
 		}
 		source := findTaskIn(fresh, dispatch.taskID)
-		stopReason := ""
-		if result != nil {
-			stopReason = result.StopReason
-		}
-		completedEvent, done := mutateTaskTerminal(fresh, dispatch.taskID, TaskCompleted,
-			stopReason, "", "", result, EventTaskCompleted, "watcher")
-		if !done {
-			return nil, false
-		}
-		// Lead 任务结算的全部事实（含 completed 本身）带幂等键：整批失败重试
-		//（journal 已落、快照未存的崩溃窗口）只补快照、不重复落账。
-		events := []*Event{}
-		completedKey := leadSettleKey(fresh.TeamID, fresh.ID, dispatch.taskID)
-		if !recorded[completedKey] {
-			completedEvent.IdempotencyKey = completedKey
-			events = append(events, completedEvent)
-		}
-		// 任务终态同批撤回其全部 open 问题（§5.4）：本路径不经
-		// applyTaskTerminalLocked（动作事实与之原子同批），撤回义务在此补齐，
-		// 事件序任务事实先于问题撤回。
-		events = append(events,
-			withdrawTaskQuestions(fresh, dispatch.taskID, questionWithdrawTaskTerminal, "watcher")...)
 		team := s.store.Team(fresh.TeamID)
 		leadDriven := fresh.AutoPlan && source != nil && !isAutoReductionTask(source) && team != nil &&
 			team.LeadID != "" && source.MemberID == team.LeadID
-		switch {
-		case leadDriven && len(violations) > 0:
+		attempt, repairID, final := 0, "", false
+		list := boundedViolations(violations)
+		if leadDriven && len(violations) > 0 {
 			root := actionRepairRoot(dispatch.taskID)
-			// 尝试号＝既有修复回合数+1，向后跳过已占用 ID（撞号守卫：
-			// actionRepairRoot 已把修复任务的派生子任务归回本根链，这里再
-			// 防御历史快照里的占位，绝不追加重复任务 ID）。
-			attempt := nextActionRepairAttempt(fresh, root)
-			repairID := actionRepairID(root, attempt)
-			final := attempt > maxActionRepairs
-			list := boundedViolations(violations)
+			attempt = nextActionRepairAttempt(fresh, root)
+			repairID = actionRepairID(root, attempt)
+			final = attempt > maxActionRepairs
 			if !final && !ValidMemberID(repairID) {
 				final = true
 				list = append(list, fmt.Sprintf("修复任务 ID %s 超长或含非法字符（字母/数字/下划线/连字符，1-64 字符），无法创建修复回合", repairID))
@@ -2905,6 +2884,38 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				final = true
 				list = append(list, fmt.Sprintf("任务数已达上限 %d，无法创建修复回合", policy.MaxTasksPerRun))
 			}
+		}
+		stopReason := ""
+		if result != nil {
+			stopReason = result.StopReason
+		}
+		status, eventType, errorText := TaskCompleted, EventTaskCompleted, ""
+		if final {
+			status, eventType = TaskFailed, EventTaskFailed
+			errorText = "团队编排校验失败，无法继续纠错：" + strings.Join(list, "；")
+			stopReason = errorText
+		}
+		terminalEvent, done := mutateTaskTerminal(fresh, dispatch.taskID, status,
+			stopReason, errorText, "", result, eventType, "watcher")
+		if !done {
+			return nil, false
+		}
+		// Lead 任务结算的全部事实（含终态本身）带幂等键：整批失败重试
+		//（journal 已落、快照未存的崩溃窗口）只补快照、不重复落账。
+		events := []*Event{}
+		settledKey := leadSettleKey(fresh.TeamID, fresh.ID, dispatch.taskID)
+		if !recorded[settledKey] {
+			terminalEvent.IdempotencyKey = settledKey
+			events = append(events, terminalEvent)
+		}
+		// 任务终态同批撤回其全部 open 问题（§5.4）：本路径不经
+		// applyTaskTerminalLocked（动作事实与之原子同批），撤回义务在此补齐，
+		// 事件序任务事实先于问题撤回。
+		events = append(events,
+			withdrawTaskQuestions(fresh, dispatch.taskID, questionWithdrawTaskTerminal, "watcher")...)
+		switch {
+		case leadDriven && len(violations) > 0:
+			root := actionRepairRoot(dispatch.taskID)
 			if final && s.inputs != nil && source != nil {
 				if inputID := issueInputIDForLeadTask(fresh, source); inputID != "" {
 					if input := s.inputs.Get(fresh.TeamID, inputID); input != nil && input.IssueRouting && input.AssociationProposalID == "" {
@@ -3035,9 +3046,10 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 		}
 	}
 	if settled {
-		// Lead 任务的 completed 不经 applyTaskTerminalLocked（动作事实原子
-		// 同批），stall 锚点在此刷新（§6.3）。
-		s.noteTaskSuccessLocked(state, dispatch.taskID)
+		// 只有协议结算成功才刷新成功锚点；最终校验失败也必须释放任务锁。
+		if task := findTaskIn(s.store.Run(state.runID), dispatch.taskID); task != nil && task.Status == TaskCompleted {
+			s.noteTaskSuccessLocked(state, dispatch.taskID)
+		}
 		s.releaseTaskLockLocked(state, dispatch.taskID)
 		s.wakeLocked(state)
 	}

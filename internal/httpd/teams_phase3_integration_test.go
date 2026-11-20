@@ -380,8 +380,8 @@ func TestTeamPhase3AutoPlanDelegatesAndSummarize(t *testing.T) {
 
 // TestTeamPhase3InvalidActionRepairLoop 覆盖三条修复回路：非法 JSON → 修复
 // 指令回送 Lead 会话 → 修复回合回合法块 → 派生任务执行；连续 3 次修复仍
-// 非法 → 第 4 次失败 final=true、无第 4 条修复消息、Run 不因动作失败而失败
-// （根结果按普通文本保留）；宽容 JSON（单引号/尾逗号）一次通过（无
+// 非法 → 第 4 次失败 final=true、无第 4 条修复消息、任务与 Run 明确失败
+// 并保留原始回复；宽容 JSON（单引号/尾逗号）一次通过（无
 // invalid_action_block、无修复回合）。
 func TestTeamPhase3InvalidActionRepairLoop(t *testing.T) {
 	t.Run("非法后修复合法并执行", func(t *testing.T) {
@@ -452,9 +452,9 @@ func TestTeamPhase3InvalidActionRepairLoop(t *testing.T) {
 		}
 		runID := env.createRun(t, teamID, `{"goal":"REPLYACTIONS:BAD3 连续失败验收","mode":"single"}`)
 		if !env.drive(t, 20*time.Second, func() bool {
-			return env.runDetail(t, teamID, runID)["status"] == "completed"
+			return env.runDetail(t, teamID, runID)["status"] == "failed"
 		}) {
-			t.Fatal("三次修复失败后 Run 应确定性收场（completed，不因动作失败而失败）")
+			t.Fatal("三次修复失败后 Run 必须以编排失败收场")
 		}
 		events := env.journalEvents(t)
 		if count := teamEventCount(events, team.EventInvalidActionBlock); count != 4 {
@@ -491,6 +491,15 @@ func TestTeamPhase3InvalidActionRepairLoop(t *testing.T) {
 			t.Fatalf("应恰 3 条修复消息（共 4 条提示词）: 修复=%d 总数=%d", repairCount, len(records))
 		}
 		detail := env.runDetail(t, teamID, runID)
+		if reason, _ := detail["stopReason"].(string); !strings.Contains(reason, "团队编排校验失败") {
+			t.Fatalf("Run 必须保留编排失败原因: %v", detail)
+		}
+		if last := teamTaskOf(t, detail, "actfix-lead-3"); last["status"] != "failed" || last["result"] == nil {
+			t.Fatalf("最后一次纠错必须失败且保留原始回复: %v", last)
+		}
+		if teamEventCount(events, team.EventRunCompleted) != 0 || teamEventCount(events, team.EventTaskFailed) != 1 {
+			t.Fatal("失败编排不能生成 run_completed，最后一次纠错应生成 task_failed")
+		}
 		if got := len(detail["tasks"].([]any)); got != 4 {
 			t.Fatalf("任务应为 根+3 修复回合 共 4 个: %d", got)
 		}
@@ -566,7 +575,7 @@ func writeTeamPhase3LongIDState(t *testing.T, dataDir string) (string, string) {
 }
 
 // TestTeamPhase3RepairIDOverflowFinal：修复 ID 超长（预置长 sourceTaskID）→
-// 首次失败即 final=true、violation 说明 ID 超长、不创建修复任务、Run 完成。
+// 首次失败即 final=true、violation 说明 ID 超长、不创建修复任务、Run 失败。
 func TestTeamPhase3RepairIDOverflowFinal(t *testing.T) {
 	dataDir := t.TempDir()
 	teamID, runID := writeTeamPhase3LongIDState(t, dataDir)
@@ -581,9 +590,9 @@ func TestTeamPhase3RepairIDOverflowFinal(t *testing.T) {
 		t.Fatalf("RecoverAll: %v", err)
 	}
 	if !env.drive(t, 20*time.Second, func() bool {
-		return env.runDetail(t, teamID, runID)["status"] == "completed"
+		return env.runDetail(t, teamID, runID)["status"] == "failed"
 	}) {
-		t.Fatal("超长修复 ID 的 Run 应确定性完成")
+		t.Fatal("超长修复 ID 的 Run 应确定性失败")
 	}
 	events := env.journalEvents(t)
 	if count := teamEventCount(events, team.EventInvalidActionBlock); count != 1 {

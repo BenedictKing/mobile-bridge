@@ -2976,7 +2976,7 @@ func TestLeadActionsInvalidBlockCreatesRepairTask(t *testing.T) {
 
 // TestLeadActionsRepairCapFinalAfterThreeRepairs §5.1 规则 3：最多 3 次修复
 // 回合；第 3 次修复仍失败 → invalid_action_block final=true，不再创建修复
-// 任务，结果按普通文本保留，每次失败都落 invalid_action_block。
+// 任务，任务与 Run 明确失败并保留原始回复，每次失败都落 invalid_action_block。
 func TestLeadActionsRepairCapFinalAfterThreeRepairs(t *testing.T) {
 	h := newDispatchHarness(t)
 	run := h.createAutoPlanRun(t)
@@ -3032,8 +3032,12 @@ func TestLeadActionsRepairCapFinalAfterThreeRepairs(t *testing.T) {
 	if last.ResultDetail == nil || !strings.Contains(last.ResultDetail.Result, invalidDelegateInner[:20]) {
 		t.Fatalf("final 后结果应按普通文本保留: %+v", last.ResultDetail)
 	}
-	// 全部任务终态后 run 正常 fold。
+	// 全部任务终态后必须以编排失败收场，不能用回复结束代替工作完成。
 	waitFor(t, "run fold", func() bool { return terminalRun(h.store.Run(run.ID).Status) })
+	fresh = h.store.Run(run.ID)
+	if fresh.Status != RunFailed || last.Status != TaskFailed || !strings.Contains(fresh.StopReason, "团队编排校验失败") {
+		t.Fatalf("非法动作耗尽纠错应明确失败: run=%s task=%s reason=%s", fresh.Status, last.Status, fresh.StopReason)
+	}
 }
 
 // TestLeadActionsNotParsedWithoutAutoPlan 安全边界判别：显式计划（非 AutoPlan）
