@@ -32,6 +32,9 @@ type Bridge struct {
 	Home       string
 	Executable string
 	IPC        *ipc.Desktop
+	CLIPath    string
+	cli        *cliRuntime
+	cliThreads map[string]string
 	mu         sync.Mutex
 	sessions   map[string]*Session
 	following  map[string]bool
@@ -73,6 +76,9 @@ func (b *Bridge) session(id string) *Session {
 // Watch attaches to a desktop conversation. Following is deliberately kept
 // active after the short wait: the owner may publish its first snapshot later.
 func (b *Bridge) Watch(id string, timeout time.Duration) (*Session, error) {
+	if b.IsCLI(id) {
+		return b.watchCLI(id)
+	}
 	if err := b.IPC.Connect(timeout); err != nil {
 		return nil, err
 	}
@@ -387,6 +393,9 @@ func (b *Bridge) handleDisconnect() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for _, session := range b.sessions {
+		if _, cli := b.cliThreads[session.ID]; cli {
+			continue
+		}
 		session.Connected = false
 		session.Error = "桌面会话连接已断开，正在等待重连"
 		session.Sequence++
@@ -403,6 +412,7 @@ func (b *Bridge) Close() {
 	b.followWG.Wait()
 	// An in-flight connect may have completed after the first Close.
 	b.IPC.Close()
+	b.closeCLI()
 }
 
 // Owner reports the desktop client id recorded for a followed session. The
@@ -435,6 +445,9 @@ func (b *Bridge) ownerAndError(session *Session) (string, string) {
 
 // Call sends a follower operation to the conversation owner.
 func (b *Bridge) Call(id, method string, params *jsoncompat.Object, timeout time.Duration) (*jsoncompat.Object, error) {
+	if b.IsCLI(id) {
+		return b.callCLI(id, method, params, timeout)
+	}
 	session, err := b.Watch(id, 1500*time.Millisecond)
 	if err != nil {
 		return nil, err
@@ -642,6 +655,9 @@ func (b *Bridge) UpdateSettings(id, modelName, effort string, fastMode *bool) (*
 }
 
 func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object) (*jsoncompat.Object, error) {
+	if b.IsCLI(id) && !strings.HasPrefix(requestID, "async:") {
+		return b.respondCLI(id, requestID, response)
+	}
 	if strings.HasPrefix(requestID, "async:") {
 		if result, err, found := b.existingAsyncReply(id, requestID, response); found {
 			return result, err

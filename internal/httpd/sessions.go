@@ -404,12 +404,25 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			return true
 		}
 		if activate, _ := body.(*jsoncompat.Object).MustGet("activate").(bool); activate {
-			if _, watchErr := h.server.Codex.Watch(threadID, 1500*time.Millisecond); watchErr != nil {
+			session, watchErr := h.server.Codex.Watch(threadID, 1500*time.Millisecond)
+			if watchErr != nil && !h.server.Codex.IsCLI(threadID) && h.server.Creations != nil {
+				if requestID, pending := h.server.Creations.pendingForTarget(threadID); pending != nil {
+					watchErr = h.server.useCodexCLI(requestID, threadID, pending.ProjectCwd)
+					if watchErr == nil {
+						session, watchErr = h.server.Codex.Watch(threadID, 1500*time.Millisecond)
+					}
+				}
+			}
+			if watchErr != nil {
 				h.fail(http.StatusConflict, errorBody(watchErr.Error()))
 				return true
 			}
 			if h.server.Creations != nil {
 				if requestID, pending := h.server.Creations.pendingForTarget(threadID); pending != nil {
+					if session == nil || h.server.Codex.Owner(session) == "" {
+						h.fail(http.StatusConflict, errorBody("目标会话尚未连接，迁移正文已保存；连接后再重试"))
+						return true
+					}
 					submissionID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("mobile-bridge:migrate:"+requestID)).String()
 					var retryErr error
 					if pending.Model != "" {
@@ -1283,7 +1296,7 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
-	view.Set("capabilities", h.server.codexCapabilities())
+	view.Set("capabilities", h.server.codexCapabilitiesFor(threadID))
 	h.server.codexSubagentView(threadID, view)
 	return view, "", true
 }
@@ -1376,7 +1389,7 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
-	view.Set("capabilities", h.server.codexCapabilities())
+	view.Set("capabilities", h.server.codexCapabilitiesFor(threadID))
 	h.server.codexSubagentView(threadID, view)
 
 	slot := h.server.projectionSlotFor(threadID)

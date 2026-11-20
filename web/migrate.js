@@ -3,6 +3,13 @@ const MIGRATE_SCOPES=[
   {key:'full',label:'完全复制历史'},
   {key:'main',label:'只复制主要历史'},
   {key:'latest',label:'只复制最新提问和结果'}];
+function migrationNotice(migration){
+  if(!migration)return '';
+  const text=value=>typeof BridgeI18n==='undefined'?value:BridgeI18n.t(value);
+  if(migration.state==='dispatching')return text('迁移发送结果待确认，请在目标 App 核实；不会自动重复发送。');
+  const warning=String(migration.warning||'').trim();
+  return text('迁移尚未发送，正文已保存。')+(warning?' '+text(warning):'');
+}
 class MigrateControl {
   constructor({root,request,onMigrated=()=>{},onError=()=>{},onBusy=()=>{},enabled=()=>true}){
     Object.assign(this,{root,request,onMigrated,onError,onBusy,enabled});
@@ -173,7 +180,7 @@ class MigrateControl {
       const body=this.body(kind,scope,options.id||this.newId(),extra);
       const result=await this.request(body);
       this.prepared=null;  // The target session is now a real migration.
-      this.onMigrated(result,label,body,operation);
+      await this.onMigrated(result,label,body,operation);
       return true;
     }catch(error){
       this.onError(error,operation);

@@ -291,6 +291,20 @@ func (s *Server) codexCapabilities() *jsoncompat.Array {
 	return array
 }
 
+func (s *Server) codexCapabilitiesFor(threadID string) *jsoncompat.Array {
+	capabilities := s.codexCapabilities()
+	if s.Codex == nil || !s.Codex.IsCLI(threadID) {
+		return capabilities
+	}
+	filtered := &jsoncompat.Array{}
+	for _, value := range capabilities.Items {
+		if value != "editMessage" && value != "fork" && value != "goals" {
+			filtered.Items = append(filtered.Items, value)
+		}
+	}
+	return filtered
+}
+
 // agentRoster mirrors Registry.kinds(): every enabled agent including codex,
 // sorted, as {kind,label} descriptors for /api/projects and timeline meta.
 func (s *Server) agentRoster() *jsoncompat.Array {
@@ -390,7 +404,7 @@ func (s *Server) View(threadID string) any {
 			view.Set("host", "local")
 			view.Set("hostLabel", "此电脑")
 			view.Set("agent", "codex")
-			view.Set("capabilities", s.codexCapabilities())
+			view.Set("capabilities", s.codexCapabilitiesFor(threadID))
 			s.codexSubagentView(threadID, view)
 			return view
 		}
@@ -472,6 +486,6 @@ func (s *Server) liveViewForBridge(threadID string) (any, bool) {
 	view.Set("host", "local")
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
-	view.Set("capabilities", s.codexCapabilities())
+	view.Set("capabilities", s.codexCapabilitiesFor(threadID))
 	return view, true
 }

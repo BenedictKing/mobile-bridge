@@ -29,8 +29,9 @@ type creationEntry struct {
 	Message        string  `json:"message,omitempty"`
 	// Model/Effort are the target settings chosen in the migrate dialog or
 	// resolved from Codex defaults; they are applied on every send path.
-	Model  string `json:"model,omitempty"`
-	Effort string `json:"effort,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Effort    string `json:"effort,omitempty"`
+	Execution string `json:"execution,omitempty"`
 }
 
 // creations deduplicates create retries by the phone's request id: the same
@@ -233,6 +234,37 @@ func (c *creations) pendingForTarget(targetID string) (string, *creationEntry) {
 		}
 	}
 	return "", nil
+}
+
+// migrationForTarget includes dispatching entries: an uncertain send must remain
+// visible after reload even though it is deliberately excluded from retries.
+func (c *creations) migrationForTarget(targetID string) *creationEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, entry := range c.entries {
+		if entry.ID == targetID && !entry.Sent && entry.Message != "" {
+			copy := *entry
+			return &copy
+		}
+	}
+	return nil
+}
+
+func (c *creations) setExecution(requestID, execution string) error {
+	return c.update(requestID, func(entry *creationEntry) { entry.Execution = execution })
+}
+
+func (c *creations) cliTargets() []*creationEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result := []*creationEntry{}
+	for _, entry := range c.entries {
+		if entry.Execution == "cli" && entry.ID != "" {
+			copy := *entry
+			result = append(result, &copy)
+		}
+	}
+	return result
 }
 
 func (c *creations) saveLocked() error {

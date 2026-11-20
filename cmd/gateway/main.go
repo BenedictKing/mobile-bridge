@@ -571,6 +571,7 @@ func runGateway(args []string) {
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_IPC") != "1" {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
 		server.Codex.AsyncReplyPath = filepath.Join(dataDir, "codex-question-replies.json")
+		server.Codex.CLIPath = filepath.Join(dataDir, "codex-cli.sock")
 		server.Codex.Executable = os.Getenv("GATEWAY_CODEX_BIN")
 		if server.Jev != nil {
 			server.Codex.AutoApprove = jevCodexApprovalHook(server.Jev)
@@ -949,6 +950,7 @@ func runGateway(args []string) {
 		log.Fatalf("creations ledger: %v", creationsErr)
 	}
 	server.Creations = creations
+	server.RegisterCodexCLIThreads()
 	// Durable feature ledgers: queued sends, hidden (deleted) sessions and
 	// fork origins survive restarts like Python's submissions/actions files.
 	queue, queueErr := httpd.LoadSubmissions(filepath.Join(dataDir, "submissions.json"))

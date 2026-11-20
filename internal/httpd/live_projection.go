@@ -114,7 +114,11 @@ func (s *Server) refreshProjectionLocked(threadID string, slot *projectionSlot, 
 			metadata.Set("host", "local")
 			metadata.Set("hostLabel", "此电脑")
 			metadata.Set("agent", "codex")
-			metadata.Set("capabilities", s.codexCapabilities())
+			metadata.Set("capabilities", s.codexCapabilitiesFor(threadID))
+			metadata.Set("executionOwner", "desktop")
+			if s.Codex.IsCLI(threadID) {
+				metadata.Set("executionOwner", "cli")
+			}
 			metadata.Set("connecting", false)
 			metadata.Set("activating", false)
 			metadata.Set("loadingHistory", false)
@@ -131,6 +135,7 @@ func (s *Server) refreshProjectionLocked(threadID string, slot *projectionSlot, 
 		if s.Forks != nil {
 			metadata.Set("forkedFrom", s.forkedFromMeta(threadID))
 		}
+		metadata.Set("migration", s.migrationMeta(threadID))
 		key := string(jsoncompat.EncodeCompact(metadata))
 		metadataChanged = key != cache.metadataKey
 		cache.metadata, cache.metadataKey, cache.activity = metadata, key, activity

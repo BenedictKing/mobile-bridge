@@ -36,6 +36,27 @@ function loadControl(overrides={}){
   return {control,root,requests,busy,completed,view};
 }
 
+test('migration stays busy until the target retry callback completes',async()=>{
+  let finish;
+  const retry=new Promise(resolve=>{finish=resolve;});
+  const {control}=loadControl({onMigrated:()=>retry});
+  const pending=control.migrate('codex');
+  await Promise.resolve();
+  assert.equal(control.busy,true);
+  assert.equal(await control.migrate('codex'),undefined);
+  finish();
+  assert.equal(await pending,true);
+  assert.equal(control.busy,false);
+});
+
+test('migration notices distinguish saved text from unconfirmed delivery',()=>{
+  const context={BridgeI18n:{t:value=>value}};
+  vm.runInNewContext(readFileSync(require.resolve('../web/migrate.js'),'utf8'),context);
+  assert.equal(context.migrationNotice(null),'');
+  assert.match(context.migrationNotice({state:'waiting_for_target',warning:'desktop unavailable'}),/正文已保存.*desktop unavailable/);
+  assert.match(context.migrationNotice({state:'dispatching'}),/结果待确认.*不会自动重复发送/);
+});
+
 test('migration targets exclude the current agent',()=>{
   const {control,root}=loadControl();
   assert.deepEqual(Array.from(control.targets(),agent=>agent.kind),['codex','kimi']);

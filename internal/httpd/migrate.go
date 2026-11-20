@@ -1,6 +1,7 @@
 package httpd
 
 import (
+	"errors"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,42 @@ import (
 // and injected as the new session's first turn.
 
 var migrationScopes = map[string]bool{"full": true, "main": true, "latest": true}
+
+func (s *Server) migrationMeta(threadID string) any {
+	if s.Creations == nil {
+		return nil
+	}
+	entry := s.Creations.migrationForTarget(threadID)
+	if entry == nil {
+		return nil
+	}
+	meta := jsoncompat.NewObject()
+	meta.Set("state", entry.State)
+	meta.Set("warning", entry.Warning)
+	return meta
+}
+
+// Restore execution routing without starting threads during gateway startup.
+func (s *Server) RegisterCodexCLIThreads() {
+	if s.Creations == nil || s.Codex == nil {
+		return
+	}
+	for _, entry := range s.Creations.cliTargets() {
+		s.Codex.RegisterCLI(entry.ID, entry.ProjectCwd)
+	}
+}
+
+func (s *Server) useCodexCLI(requestID, targetID, cwd string) error {
+	if s.Creations == nil {
+		return errors.New("Codex CLI 迁移需要持久化创建账本")
+	}
+	if err := s.Creations.setExecution(requestID, "cli"); err != nil {
+		return err
+	}
+	s.Codex.RegisterCLI(targetID, cwd)
+	_, err := s.Codex.Watch(targetID, 1500*time.Millisecond)
+	return err
+}
 
 // max messages / total chars / chars per entry, per scope. The totals stay
 // under send's 100k cap including header and footer (Python parity).
@@ -801,7 +838,25 @@ func (h *handler) handleMigrate(threadID string) {
 	// desktop App must own it before follower IPC can inject the transcript.
 	// Open it first and return promptly; the frontend retries after the target
 	// chat has been opened instead of holding the tunnel request for 90s.
-	if target == nil {
+	if target == nil && !h.server.Codex.IsCLI(createdID) {
+		// The desktop owner protocol is absent in newer Apps. Switch only this
+		// never-dispatched migration to the explicitly authorized official CLI.
+		if err := h.server.Codex.IPC.Connect(1500 * time.Millisecond); err != nil {
+			if cliErr := h.server.useCodexCLI(requestID, createdID, cwd); cliErr != nil {
+				if ledger != nil {
+					if saveErr := ledger.markWaiting(requestID, cliErr.Error()); saveErr != nil {
+						h.fail(http.StatusServiceUnavailable, errorBody(saveErr.Error()))
+						return
+					}
+				}
+				result.Set("warning", cliErr.Error())
+				result.Set("state", "waiting_for_target")
+				h.output(http.StatusOK, result, contentTypeJSON, "")
+				return
+			}
+		}
+	}
+	if target == nil && !h.server.Codex.IsCLI(createdID) {
 		entryState := ""
 		if ledger != nil {
 			if entry := ledger.lookup(requestID); entry != nil {

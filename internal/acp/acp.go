@@ -125,9 +125,18 @@ func StartSocket(path string) (*Process, error) {
 	if err != nil {
 		return nil, &Error{Message: fmt.Sprintf("无法连接 Agent Host：%s", err), Kind: KindUnavailable}
 	}
-	process := &Process{pending: map[string]chan Delivery{}, done: make(chan struct{}), stdin: conn, stdout: conn}
+	return StartTransport(conn, nil), nil
+}
+
+// StartTransport shares JSON-RPC correlation over a caller-owned transport.
+// Configure callbacks before starting the reader so early events cannot race it.
+func StartTransport(stream io.ReadWriteCloser, configure func(*Process)) *Process {
+	process := &Process{pending: map[string]chan Delivery{}, done: make(chan struct{}), stdin: stream, stdout: stream}
+	if configure != nil {
+		configure(process)
+	}
 	go process.readLoop()
-	return process, nil
+	return process
 }
 
 func (p *Process) send(message *jsoncompat.Object) error {

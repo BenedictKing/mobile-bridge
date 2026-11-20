@@ -43,6 +43,12 @@ func (s *Server) enrichTimeline(threadID string, view *jsoncompat.Object, result
 	if result == nil {
 		return nil
 	}
+	if meta, ok := result.MustGet("meta").(*jsoncompat.Object); ok {
+		meta.Set("migration", s.migrationMeta(threadID))
+		if s.Codex != nil && s.Codex.IsCLI(threadID) {
+			meta.Set("executionOwner", "cli")
+		}
+	}
 	cwd := viewCwd(view)
 	files := s.artifactFiles(threadID, view, cwd)
 	result.Set("files", artifacts.FilesPayload(files))
