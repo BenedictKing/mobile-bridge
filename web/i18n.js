@@ -773,6 +773,7 @@ const en={
   "正在加载桌面聊天…": "Loading desktop chat…",
   "正在自动连接；必要时会在电脑 Codex 中打开此聊天。": "Connecting automatically; this may open the chat in Codex on your computer.",
   "暂未连接，可先阅读历史或点击重新连接。": "Not connected yet. You can read history or reconnect.",
+  "暂未连接，可先阅读历史。": "Not connected yet. You can read history.",
   "暂时找不到 Codex 会话数据库，请打开电脑 Codex 后重试。": "Codex chat database is temporarily unavailable. Open desktop Codex and retry.",
   "Codex 会话数据库正在更新，请稍后重试。": "Codex is updating its chat database. Please retry shortly.",
   "暂时无法读取 Codex 会话数据库，请稍后重试或重新打开电脑 Codex。": "Cannot read the Codex chat database right now. Retry shortly or reopen desktop Codex.",

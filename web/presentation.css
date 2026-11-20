@@ -156,8 +156,8 @@ main{background:var(--page);overflow:hidden}
 .status{background:var(--soft);color:var(--green);font-size:12px;line-height:18px;padding:3px 8px;max-width:112px;overflow:hidden;text-overflow:ellipsis}
 .status.offline{background:var(--warning-bg);color:var(--warning-text)}
 .timeline{padding:24px max(24px,calc((100% - 780px)/2));scrollbar-width:thin;scrollbar-color:var(--control) transparent}
-.notice{background:var(--warning-bg);color:var(--warning-text);font-size:13px}
-.notice .plain{color:inherit}
+.notice{flex:none;display:block;background:var(--warning-bg);color:var(--warning-text);font-size:13px;overflow-wrap:anywhere}
+.notice .plain{min-height:0;padding:2px 4px;margin-left:4px;font:inherit;color:inherit;text-decoration:underline;text-underline-offset:3px}
 .timeline-row{margin-bottom:var(--message-gap)}
 .timeline-row.activity{margin:0 0 12px}
 .message{font-size:var(--message-size);line-height:var(--message-leading);margin:var(--message-gap) 0}
