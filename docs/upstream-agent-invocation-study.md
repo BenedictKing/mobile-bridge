@@ -23,7 +23,7 @@
 
 手机打开会话时先读 SQLite/rollout 历史，再通过 Unix socket 或 Windows named pipe 连接桌面 IPC。广播 follow 后，从匹配 `hostId + conversationId` 的快照识别 `ownerClientId`，之后只接受该 owner 的状态。发送、steer、interrupt、审批和设置分别走 `thread-follower-*` 白名单方法，不允许网页发起任意 RPC（`ARCHITECTURE.md:59-79`、`bridge/clients/codex/ipc.py`）。
 
-辅助能力刻意与执行通路分开：短期官方运行时用于 `model/list`、`skills/list`、空线程创建或本地 Goal 读写，不调用 `turn/start`，也不接管执行。创建空聊天完成 `thread/start → thread/name/set → thread/read` 并确认落盘后，再交回原 App；目录查询不会启动或恢复聊天（`ARCHITECTURE.md:47-57,103-109`）。
+辅助能力刻意与执行通路分开：短期官方运行时用于 `model/list`、`skills/list`、本地 Goal 读写，以及本地存储结构无法安全直写时的空线程创建回退；这些路径不调用 `turn/start`，也不接管执行。空聊天优先由网关新增单条 `session_meta` rollout 与对应索引，再由原 App 恢复并接管；目录查询不会启动或恢复聊天（`ARCHITECTURE.md:39-47`）。
 
 ### 2.2 Codex CLI：显式接入原生 app-server daemon
 

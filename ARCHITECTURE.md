@@ -20,7 +20,7 @@
 
 ## 会话发现
 
-本地通过只读 SQLite 连接读取 `$CODEX_HOME/state_*.sqlite`，筛选桌面聊天并排除子代理。尚无 IPC 快照时，可读取原始会话记录作为历史展示。WAL 模式且 `-wal` 缺失时，先复制到私有临时目录，并核对复制前后主文件的身份、大小和修改时间以及 WAL 仍不存在，再读取副本；并发变化时丢弃副本并等待重试。已有 WAL 时直接只读查询，保留最新提交。发现与历史读取不直接写入原数据库或会话文件；用户新建聊天时由官方运行时持久化新记录。
+本地通过只读 SQLite 连接读取 `$CODEX_HOME/state_*.sqlite`，筛选桌面聊天并排除子代理。尚无 IPC 快照时，可读取原始会话记录作为历史展示。WAL 模式且 `-wal` 缺失时，先复制到私有临时目录，并核对复制前后主文件的身份、大小和修改时间以及 WAL 仍不存在，再读取副本；并发变化时丢弃副本并等待重试。已有 WAL 时直接只读查询，保留最新提交。发现与历史读取不直接写入原数据库或会话文件；只有用户新建聊天会由网关新增独立的会话记录和索引行，已有记录始终只读。
 
 发现兼容 `Codex Desktop`、`codex_work_desktop`、网关创建来源 `codex_mobile_bridge` 与 `mobile_bridge_go`、CLI 来源 `codex_cli_rs`/`codex-tui`/`codex_exec`，以及 `originator` 为空且 `source` 为 `vscode`/`cli`/`exec` 的旧记录。列表与单会话读取使用同样的来源和子代理限制。
 
@@ -40,11 +40,11 @@ SSH 参数包含非交互认证、严格主机指纹检查和禁用额外转发�
 
 登录后的 `GET /api/projects` 返回 App 已保存的本机及 SSH 项目；`POST /api/sessions` 接受项目键或显式 `cwd`、名称和请求 UUID。服务端重新解析已保存项目；显式 `cwd` 仅用于本机创建，必须是当前电脑已存在的目录，并在创建前经 `os.Stat` 校验。客户端不能指定任意主机、程序路径或配置覆盖，SSH 创建仍使用已保存项目。创建接口沿用 Host、Origin、登录和 CSRF 校验。
 
-`internal/codex/create.go` 使用所选主机的官方运行时完成 `initialize → thread/start(ephemeral=false) → thread/name/set`，随后关闭辅助 stdio 进程。此路径不调用 `turn/start`，不会发送模型任务；也不再执行旧 Python 路径的 `thread/read(includeTurns=true)`。新线程使用该主机、工作目录的运行时默认配置，不克隆已有聊天的临时设置。
+`internal/codex/create.go` 优先由 `SessionStore.CreateThread` 在 `$CODEX_HOME/sessions/年/月/日/` 新建只含 `session_meta` 的 legacy rollout，并向现有 `state_*.sqlite` 插入同一 UUID 的新行，省掉临时 `app-server` 的冷启动与握手。标题同时写入 `name`/`title`；模型提供方、简单沙箱与审批设置读取 `config.toml` 根级 `model_provider`（缺省 `openai`）、`sandbox_mode`、`approval_policy`。启用 profile、复杂权限、历史或记忆配置、项目级配置覆盖或配置无法可靠解析时回退官方运行时，避免固化错误接入、权限或隐私偏好。写入前核对所有必填列；缺少现有数据库、遇到不认识的必填结构时，在任何写入前退回所选主机官方运行时的 `initialize → thread/start(ephemeral=false) → thread/name/set`。索引插入失败会清理本次新建的 rollout，不影响已有会话。此路径不调用 `turn/start`，不会发送模型任务；新线程使用工作目录的当前运行时默认配置，不克隆已有聊天的临时设置。
 
-创建结果按 UUID 写入网关自己的 `creations.json`，重试复用同一聊天；请求可能提交但结果未知时不自动重放。辅助进程退出后，通过 `codex://threads/<id>?hostId=...` 打开原桌面 App，桌面接管后才允许发送和审批。此步骤会切换桌面当前页面；打开失败保留已创建 ID。SSH 创建借助已有非交互 SSH 通道执行相同辅助代码，不在远端安装网关。
+创建结果按 UUID 写入网关自己的 `creations.json`，重试复用同一聊天；请求可能提交但结果未知时不自动重放。直接落盘完成（或回退路径的辅助进程退出）后，通过 `codex://threads/<id>?hostId=...` 打开原桌面 App，桌面接管后才允许发送和审批。此步骤会切换桌面当前页面；打开失败保留已创建 ID。SSH 创建借助已有非交互 SSH 通道执行相同辅助代码，不在远端安装网关。
 
-新建入口与原生 IPC 均受 App/运行时版本影响。Mac 空聊天创建和实际 App 接管已验证；Windows 及 SSH 创建目前只有模拟路径检查，不能视为实机通过。
+新建入口与原生 IPC 均受 App/运行时版本影响。官方运行时创建及 Mac 实际 App 接管已验证；直写记录另以隔离目录通过真实 `codex app-server` 的 `thread/resume` 回归，覆盖默认权限及 `workspace-write + never`，不发送模型任务。Windows 及 SSH 创建目前只有模拟路径检查，不能视为实机通过。
 
 ## 原生 IPC
 

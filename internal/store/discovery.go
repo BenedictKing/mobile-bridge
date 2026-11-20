@@ -17,8 +17,8 @@ import (
 
 var ErrUnavailable = errors.New("暂时无法读取 Codex 会话数据库，请稍后重试或重新打开电脑 Codex。")
 
-// SessionStore provides read-only access to Codex's state_*.sqlite index.
-// It never creates or writes the database.
+// SessionStore reads Codex's state_*.sqlite index. Discovery and history are
+// read-only; CreateThread is the sole write path and only inserts a new chat.
 type SessionStore struct {
 	Home string
 }

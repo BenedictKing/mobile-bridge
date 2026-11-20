@@ -12,14 +12,33 @@ import (
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/store"
 )
 
-// CreateConversation uses the short-lived Codex app-server protocol for the
-// one operation the desktop owner does not expose through follower IPC.
+// CreateConversation writes a new empty rollout directly when the local
+// index schema is understood, then lets the desktop resume it. Older or
+// unfamiliar stores fall back to the official app-server before any write.
 func (b *Bridge) CreateConversation(cwd, title string) (string, error) {
 	if b.Home == "" {
 		return "", errors.New("找不到 Codex 数据目录")
 	}
+	if cwd == "" {
+		cwd = b.Home
+	}
+	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		return "", errors.New("项目目录不存在，请先在电脑 App 中检查项目")
+	}
+	id, err := store.NewSessionStore(b.Home).CreateThread(cwd, title)
+	if err == nil {
+		return id, nil
+	}
+	if !errors.Is(err, store.ErrDirectCreateUnsupported) {
+		return "", err
+	}
+	return b.createConversationWithRuntime(cwd, title)
+}
+
+func (b *Bridge) createConversationWithRuntime(cwd, title string) (string, error) {
 	executable := b.Executable
 	if executable == "" {
 		executable = os.Getenv("GATEWAY_CODEX_BIN")
@@ -29,12 +48,6 @@ func (b *Bridge) CreateConversation(cwd, title string) (string, error) {
 	}
 	if executable == "" {
 		return "", errors.New("找不到 Codex 运行时，请在电脑端运行配置中指定路径")
-	}
-	if cwd == "" {
-		cwd = b.Home
-	}
-	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
-		return "", errors.New("项目目录不存在，请先在电脑 App 中检查项目")
 	}
 	command := exec.Command(executable, "app-server", "--listen", "stdio://")
 	command.Dir = cwd

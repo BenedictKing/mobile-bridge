@@ -81,8 +81,8 @@ func (b *Bridge) runtimeOperation(dir string, operation func(request func(string
 }
 
 // DeleteThread removes a saved thread through the short-lived app-server
-// (thread/delete). The rollout is deleted by Codex itself — the gateway never
-// touches ~/.codex files directly.
+// (thread/delete). Codex itself deletes the rollout; this operation never
+// rewrites or removes the session file behind the runtime's back.
 func (b *Bridge) DeleteThread(threadID string) error {
 	return b.runtimeOperation(b.Home, func(request func(string, any) (*jsoncompat.Object, error)) error {
 		_, err := request("thread/delete", map[string]any{"threadId": threadID})
