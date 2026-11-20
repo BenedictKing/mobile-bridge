@@ -2,6 +2,16 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"交给团队":"Send to team",
+"选择团队":"Choose a team",
+"任务内容":"Task",
+"发送任务":"Send task",
+"管理团队":"Manage teams",
+"正在加载团队…":"Loading teams…",
+"任务将由所选团队执行，可在团队对话中查看进度。":"The selected team will handle this task. Follow its progress in the team chat.",
+"请先移除附件后再交给团队，或在团队对话中发送附件。":"Remove attachments before sending to a team, or send them in the team chat.",
+"请输入 1–10000 字的任务。":"Enter a task between 1 and 10,000 characters.",
+"任务已交给团队：":"Task sent to team: ",
 "暂无事项":"No items",
 "执行历史":"Execution history",
 "执行记录":"Execution records",

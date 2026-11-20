@@ -1569,6 +1569,8 @@ function openQueueEditor(row,target,host){
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
 function syncSendButton(){
   const unavailable=!!state?.readOnly||sending||!state||state.loadingHistory||state.activating;
+  const dispatch=$('team-dispatch-button');
+  if(dispatch){dispatch.hidden=!!currentTeam||!!state?.readOnly;dispatch.disabled=unavailable||!currentId;}
   $('send').disabled=unavailable||!attachments.ready()||(!$('message').value.trim()&&!attachments.ids().length);
   $('send').dataset.mode=state?.status==='active'?'queue':'send';
   $('send').dataset.pending=String(sending);
@@ -2023,6 +2025,76 @@ function syncTeamComposer(){
   teamChat?.refreshRun();
 }
 $('team-settings-button').onclick=()=>teamChat?.openSettings();
+let teamDispatchSource=null,teamDispatchTeams=[],teamDispatchBusy=false,teamDispatchRequest=0;
+function syncTeamDispatch(){
+  $('team-dispatch-submit').disabled=teamDispatchBusy||!teamDispatchTeams.length||!$('team-dispatch-text').value.trim();
+  $('team-dispatch-submit').textContent=t(teamDispatchBusy?'正在提交…':'发送任务');
+  for(const id of ['team-dispatch-team','team-dispatch-text','team-dispatch-close','team-dispatch-manage'])$(id).disabled=teamDispatchBusy;
+}
+function saveTeamDispatchDraft(){
+  if(teamDispatchSource)sessionStorage.setItem('team-dispatch-draft:'+chatKey(teamDispatchSource.id,teamDispatchSource.host),JSON.stringify({sourceText:teamDispatchSource.text,text:$('team-dispatch-text').value,teamId:$('team-dispatch-team').value}));
+  syncTeamDispatch();
+}
+async function openTeamDispatch(){
+  if(currentTeam||sending||!currentId||!state||state.readOnly||state.loadingHistory||state.activating)return;
+  if(!attachments.ready()||attachments.ids().length){toast('请先移除附件后再交给团队，或在团队对话中发送附件。');return;}
+  const request=++teamDispatchRequest,project={key:state.project,cwd:state.cwd};
+  teamDispatchSource={id:currentId,host:currentHost,text:$('message').value};teamDispatchTeams=[];
+  let draft;try{draft=JSON.parse(sessionStorage.getItem('team-dispatch-draft:'+chatKey()));}catch{}
+  if(draft?.sourceText!==teamDispatchSource.text)draft=null;
+  $('team-dispatch-text').value=draft?.text??teamDispatchSource.text;
+  $('team-dispatch-team').replaceChildren(new Option(t('正在加载团队…'),''));
+  $('team-dispatch-error').textContent='';$('team-dispatch-manage').hidden=true;
+  syncTeamDispatch();$('team-dispatch-dialog').showModal();
+  try{
+    const value=await teamRequest('/api/teams');
+    if(request!==teamDispatchRequest)return;
+    teamDispatchTeams=(value.teams||[]).filter(team=>(team.members||[]).some(member=>member.id===team.leadId&&member.sessionId));
+    teamChat?.setTeams(value.teams||[]);renderList();renderTeamSidebarTeams();
+    $('team-dispatch-team').replaceChildren(...teamDispatchTeams.map(team=>new Option(team.name,team.id)));
+    const preferred=teamChat?.teamById(draft?.teamId)||teamChat?.teamForProject(project);
+    if(preferred&&teamDispatchTeams.some(team=>team.id===preferred.id))$('team-dispatch-team').value=preferred.id;
+    if(!teamDispatchTeams.length){$('team-dispatch-error').textContent=t('还没有团队。');$('team-dispatch-manage').hidden=false;}
+  }catch(error){if(request===teamDispatchRequest)$('team-dispatch-error').textContent=t(error.message);}
+  finally{if(request===teamDispatchRequest)syncTeamDispatch();}
+}
+async function submitTeamDispatch(event){
+  event.preventDefault();
+  const source=teamDispatchSource,team=teamDispatchTeams.find(row=>row.id===$('team-dispatch-team').value),text=$('team-dispatch-text').value;
+  if(teamDispatchBusy||!source||!team)return;
+  if(!text.trim()||[...text].length>10000){$('team-dispatch-error').textContent=t('请输入 1–10000 字的任务。');return;}
+  saveTeamDispatchDraft();
+  // 独立幂等键：网络失败、关闭重开或刷新后重试，不重复向团队派单。
+  const key='team-dispatch:'+chatKey(source.id,source.host)+':'+team.id;let pending;
+  try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}
+  if(!pending||pending.teamId!==team.id||pending.body?.text!==text){
+    const {teamIssueRoutingVersion,teamQueueVersion}=teamSubmissionFields(team.id);
+    const fields={teamIssueRoutingVersion};if(teamQueueVersion)fields.queueVersion=teamQueueVersion;
+    pending={teamId:team.id,body:{id:uuid(),text,mode:'send',workMode:'default',uiLocale:BridgeI18n.locale(),...fields}};
+  }
+  sessionStorage.setItem(key,JSON.stringify(pending));teamDispatchBusy=true;syncTeamDispatch();$('team-dispatch-error').textContent='';
+  try{
+    const result=await api('/api/teams/'+encodeURIComponent(team.id)+'/inputs',pending.body);
+    if(!['accepted','queued'].includes(result.status))throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));
+    sessionStorage.removeItem(key);
+    sessionStorage.removeItem('team-dispatch-draft:'+chatKey(source.id,source.host));
+    if(text===source.text){
+      const draftKey='draft:'+chatKey(source.id,source.host);
+      if(sessionStorage.getItem(draftKey)===source.text)sessionStorage.removeItem(draftKey);
+      if(currentId===source.id&&currentHost===source.host&&$('message').value===source.text)clearComposerDraft(source.id,source.host);
+    }
+    $('team-dispatch-dialog').close();toast(t('任务已交给团队：')+team.name);
+  }catch(error){if($('team-dispatch-dialog').open)$('team-dispatch-error').textContent=t(error.message);}
+  finally{teamDispatchBusy=false;syncTeamDispatch();syncSendButton();}
+}
+$('team-dispatch-button').onclick=()=>openTeamDispatch().catch(error=>toast(error.message));
+$('team-dispatch-form').onsubmit=submitTeamDispatch;
+$('team-dispatch-text').oninput=saveTeamDispatchDraft;
+$('team-dispatch-team').onchange=saveTeamDispatchDraft;
+$('team-dispatch-close').onclick=()=>{if(!teamDispatchBusy)$('team-dispatch-dialog').close();};
+$('team-dispatch-dialog').addEventListener('cancel',event=>{if(teamDispatchBusy)event.preventDefault();});
+$('team-dispatch-dialog').addEventListener('close',()=>{teamDispatchRequest++;teamDispatchSource=null;});
+$('team-dispatch-manage').onclick=()=>{$('team-dispatch-dialog').close();openTeamDashboard();};
 function createTeamDashboardShell(root){
   const page=el('section','team-dashboard-page');page.id='team-dashboard-page';page.hidden=true;
   const header=el('header','team-dashboard-header');
@@ -2040,7 +2112,6 @@ function createTeamDashboardShell(root){
 }
 function syncWorkspaceNavigation(){
   const teamOpen=(!!teamDashboardPage&&!teamDashboardPage.hidden)
-    ||!!currentTeam
     ||(!$('team-run').hidden&&!!openRunRoute);
   const teamsButton=$('teams-button'),chatsButton=$('chats-button');
   teamsButton?.classList.toggle('active',teamOpen);
