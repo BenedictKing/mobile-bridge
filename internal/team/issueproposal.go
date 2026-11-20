@@ -193,6 +193,9 @@ func validateIssueProposal(proposal *IssueProposal, input *TeamInput, teamID str
 	} else if linked {
 		status = IssueAssociationLinked
 	}
+	if input.Intent == InputIntentTask && status == IssueAssociationIgnored {
+		return nil, "", errors.New("用户明确要求执行任务，不能将整条任务标为 ignore；应关联执行事项，或明确 clarify 并向用户说明缺少什么")
+	}
 	return validated, status, nil
 }
 
@@ -480,10 +483,16 @@ func (l *InputLedger) IssueAssociationBriefing(teamID, inputID string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	input := l.inputs[inputID]
-	if input == nil || input.TeamID != teamID || !input.IssueRouting || input.AssociationStatus != IssueAssociationPending || input.AssociationProposalID != "" {
+	if input == nil || input.TeamID != teamID {
 		return ""
 	}
 	var builder strings.Builder
+	if input.Intent == InputIntentTask {
+		builder.WriteString("[Team task request]\n用户通过任务派发入口明确要求团队执行本条内容，不是仅转告一份状态报告。正文若是计划或既有结果说明，应结合引用文件与前轮目标确定待执行工作并通过 delegate 派发；不要因为正文写了「已完成」就 ignore 整条任务。只有确实无法确定要执行什么时才 clarify，并给用户可读的澄清问题。\n")
+	}
+	if !input.IssueRouting || input.AssociationStatus != IssueAssociationPending || input.AssociationProposalID != "" {
+		return builder.String()
+	}
 	if input.Historical {
 		builder.WriteString("[Team historical issue routing]\n")
 		builder.WriteString("这是从既有团队对话离线整理的历史原话。只归类主题，不要重新执行、委派或修改原要求。必须只输出 team-issues 归类块，不要输出 team-actions。\n")

@@ -92,7 +92,7 @@ func (h *handler) queueTeamInputValidate(threadID, rawGoal string, attachments [
 
 // acceptQueuedTeamInput 是两条入口（POST /inputs queueVersion:2 与主控会话
 // teamQueueVersion:2）的共用受理体：校验 → 账本 Accept（同 ID 幂等）→ 202。
-func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, rawGoal string, attachments []string, issueRouting bool) (*team.TeamInput, bool, error) {
+func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, rawGoal string, attachments []string, issueRouting bool, intents ...string) (*team.TeamInput, bool, error) {
 	if inputID == "" {
 		return nil, false, &teamInputError{http.StatusBadRequest, "缺少消息标识，请刷新后重试"}
 	}
@@ -101,7 +101,7 @@ func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, r
 		return nil, false, validateErr
 	}
 	capacity := teamRow.Policy.MaxPendingInputs
-	input, duplicate, err := h.server.TeamInputs.AcceptWithIssueRouting(teamRow.ID, inputID, goal, attachments, team.PolicyDigest(teamRow.Policy), capacity, issueRouting)
+	input, duplicate, err := h.server.TeamInputs.AcceptWithIssueRouting(teamRow.ID, inputID, goal, attachments, team.PolicyDigest(teamRow.Policy), capacity, issueRouting, intents...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -121,6 +121,9 @@ func (h *handler) outputQueuedTeamInput(input *team.TeamInput, duplicate bool) {
 	result.Set("inputId", input.ID)
 	result.Set("id", input.ID)
 	result.Set("teamId", input.TeamID)
+	if input.Intent != "" {
+		result.Set("intent", input.Intent)
+	}
 	result.Set("queueStatus", input.QueueStatus)
 	result.Set("associationStatus", input.AssociationStatus)
 	result.Set("issueRouting", input.IssueRouting)
@@ -142,6 +145,9 @@ func (h *handler) outputAcceptedTeamInput(input *team.TeamInput, duplicate bool)
 	result.Set("id", input.ID)
 	result.Set("inputId", input.ID)
 	result.Set("teamId", input.TeamID)
+	if input.Intent != "" {
+		result.Set("intent", input.Intent)
+	}
 	result.Set("queueStatus", input.QueueStatus)
 	result.Set("associationStatus", input.AssociationStatus)
 	result.Set("issueRouting", input.IssueRouting)
@@ -163,6 +169,9 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 	object.Set("inputId", input.ID)
 	object.Set("id", input.ID)
 	object.Set("teamId", input.TeamID)
+	if input.Intent != "" {
+		object.Set("intent", input.Intent)
+	}
 	object.Set("queueVersion", jsoncompat.Num(2))
 	object.Set("queueStatus", input.QueueStatus)
 	object.Set("routeStatus", input.RouteStatus)

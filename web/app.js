@@ -2070,7 +2070,7 @@ async function submitTeamDispatch(event){
   if(!pending||pending.teamId!==team.id||pending.body?.text!==text){
     const {teamIssueRoutingVersion,teamQueueVersion}=teamSubmissionFields(team.id);
     const fields={teamIssueRoutingVersion};if(teamQueueVersion)fields.queueVersion=teamQueueVersion;
-    pending={teamId:team.id,body:{id:uuid(),text,mode:'send',workMode:'default',uiLocale:BridgeI18n.locale(),...fields}};
+    pending={teamId:team.id,body:{id:uuid(),text,intent:'task',mode:'send',workMode:'default',uiLocale:BridgeI18n.locale(),...fields}};
   }
   sessionStorage.setItem(key,JSON.stringify(pending));teamDispatchBusy=true;syncTeamDispatch();$('team-dispatch-error').textContent='';
   try{

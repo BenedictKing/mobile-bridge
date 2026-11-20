@@ -78,6 +78,9 @@ var (
 // MaxTasksPerRun 的可调上限，容量与速率应依据真实负载再调）。
 const DefaultMaxPendingInputs = 64
 
+// InputIntentTask 表示用户通过任务派发入口明确要求执行，原始正文仍保持不变。
+const InputIntentTask = "task"
+
 // 阶段 3 默认值与常量（§5，docs/team-demand-queue-plan.md）。
 const (
 	// DefaultMaxActiveRuns 是每 Team 活跃 Run 准入上限的建议值。
@@ -133,6 +136,7 @@ type TeamInput struct {
 	Sequence               uint64           `json:"sequence"` // 每 Team 的接受序号（FIFO 依据）
 	Revision               int              `json:"revision"`
 	Text                   string           `json:"text"`
+	Intent                 string           `json:"intent,omitempty"`
 	AttachmentIDs          []string         `json:"attachmentIds,omitempty"`
 	ContentHash            string           `json:"contentHash"`
 	AcceptedAt             time.Time        `json:"acceptedAt"`
@@ -342,7 +346,15 @@ func (l *InputLedger) Accept(teamID, inputID, text string, attachments []string,
 }
 
 // AcceptWithIssueRouting 仅把携带 Lead 分类协议版本的输入标记为待归类。
-func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attachments []string, policyDigest string, capacity int, issueRouting bool) (*TeamInput, bool, error) {
+func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attachments []string, policyDigest string, capacity int, issueRouting bool, intents ...string) (*TeamInput, bool, error) {
+	intent := ""
+	if len(intents) > 0 {
+		intent = intents[0]
+	}
+	if intent != "" && intent != InputIntentTask {
+		return nil, false, errors.New("输入 intent 仅支持 task 或留空")
+	}
+	issueRouting = issueRouting || intent == InputIntentTask
 	if teamID == "" || inputID == "" {
 		return nil, false, errors.New("输入受理缺少团队或消息标识")
 	}
@@ -353,7 +365,7 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 		return nil, false, ErrNotFound
 	}
 	if existing := l.inputs[inputID]; existing != nil {
-		if existing.TeamID != teamID || existing.ContentHash != hash {
+		if existing.TeamID != teamID || existing.ContentHash != hash || existing.Intent != intent {
 			return nil, false, ErrInputContentMismatch
 		}
 		return existing.Clone(), true, nil
@@ -370,7 +382,7 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 	}
 	input := &TeamInput{
 		ID: inputID, TeamID: teamID, Sequence: sequence,
-		Revision: 1, Text: text, AttachmentIDs: append([]string(nil), attachments...),
+		Revision: 1, Text: text, Intent: intent, AttachmentIDs: append([]string(nil), attachments...),
 		ContentHash: hash, AcceptedAt: now, QueueStatus: InputQueued,
 		AssociationStatus: associationStatus,
 		IssueRouting:      issueRouting,
@@ -390,6 +402,9 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 	}
 	if issueRouting {
 		event.Payload["issueRouting"] = true
+	}
+	if intent != "" {
+		event.Payload["intent"] = intent
 	}
 	event.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":accept"
 	if err := l.commitLocked(event, func() {
@@ -980,7 +995,7 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		now := event.CreatedAt
 		input := &TeamInput{
 			ID: inputID, TeamID: teamID, Sequence: sequence,
-			Revision: 1, Text: text, AttachmentIDs: attachments, ContentHash: hash,
+			Revision: 1, Text: text, Intent: payloadString(event.Payload, "intent"), AttachmentIDs: attachments, ContentHash: hash,
 			AcceptedAt: now, QueueStatus: InputQueued,
 			AssociationStatus: IssueAssociationUnclassified,
 			IssueRouting:      payloadBool(event.Payload, "issueRouting"),

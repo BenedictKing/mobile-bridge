@@ -1030,13 +1030,22 @@ func (h *handler) handleTeamInputsCreate(teamID string) {
 		return
 	}
 	queueMode := stringField(body, "queueVersion") == teamQueueVersionGate
-	issueRouting := stringField(body, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate
+	intent := ""
+	if raw, exists := body.Get("intent"); exists {
+		var valid bool
+		intent, valid = raw.(string)
+		if !valid || intent != "" && intent != team.InputIntentTask {
+			h.fail(http.StatusBadRequest, errorBody("输入 intent 仅支持 task 或留空"))
+			return
+		}
+	}
+	issueRouting := stringField(body, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate || intent == team.InputIntentTask
 	if queueMode || issueRouting {
 		if h.server.TeamInputs == nil {
 			h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
 			return
 		}
-		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, teamLeadSessionID(teamRow), payload.id, payload.text, payload.attachments, issueRouting)
+		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, teamLeadSessionID(teamRow), payload.id, payload.text, payload.attachments, issueRouting, intent)
 		if acceptErr != nil {
 			h.failTeamInputError(acceptErr)
 			return

@@ -22,7 +22,7 @@ func (s *Service) ensureAutoPlanReductionLocked(state *runState, run *Run) bool 
 			continue
 		}
 		tasks = append(tasks, task)
-		if task.MemberID != team.LeadID && task.Status == TaskCompleted {
+		if (task.MemberID != team.LeadID || task.ExecutionContext == ExecutionContextLeadRun && !task.IssueClassificationOnly) && task.Status == TaskCompleted {
 			workerCompleted = true
 		}
 	}

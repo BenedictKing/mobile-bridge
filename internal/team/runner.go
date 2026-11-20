@@ -1749,6 +1749,7 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 			leadBriefing = s.LeadBriefing(team)
 		}
 		if !task.IssueClassificationOnly {
+			leadBriefing += s.continuationBriefing(run, task, policy)
 			leadBriefing += s.backgroundTaskBriefing(run, task.ID)
 		}
 		if s.inputs != nil {
@@ -2834,6 +2835,9 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 		task := findTaskIn(run, dispatch.taskID)
 		if task == nil || !task.IssueClassificationOnly {
 			actions, violations = ParseLeadActions(fullText, s.store.Team(run.TeamID), run, policy)
+			if len(violations) == 0 && len(actions) == 0 && ResultDisplayText(fullText) == "" {
+				violations = append(violations, emptyLeadReplyViolation)
+			}
 		}
 		if s.inputs != nil {
 			if task != nil {
@@ -2848,6 +2852,17 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 						}
 						violations = append(violations, issueViolations...)
 					}
+				}
+			}
+		}
+		hasDelegation := false
+		for _, action := range actions {
+			hasDelegation = hasDelegation || action.Type == ActionTypeDelegate
+		}
+		if s.inputs != nil && task != nil && !task.IssueClassificationOnly && len(violations) == 0 && !hasDelegation {
+			if inputID := issueInputIDForLeadTask(run, task); inputID != "" {
+				if input := s.inputs.Get(run.TeamID, inputID); input != nil && input.Intent == InputIntentTask && input.AssociationStatus != IssueAssociationClarification {
+					violations = append(violations, "任务派发请求尚未委派实际工作；请通过 delegate 执行，或明确 clarify 并给用户可读澄清，不得只回复收到")
 				}
 			}
 		}

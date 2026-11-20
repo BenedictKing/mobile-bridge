@@ -931,7 +931,7 @@ func actionRoundViolation(entry *jsoncompat.Object, policy TeamPolicy, ordinal i
 
 // actionSchemaInstruction 是 Lead 简报与修复提示共用的动作协议说明。
 func actionSchemaInstruction() string {
-	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象。只输出一个 team-actions 动作块；如果本回合另有 Issue 归类要求，必须同时先输出一个 team-issues 块，再输出动作块。回复只包含本回合要求的机器可读块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）、key 与 dependsOn（可选，仅 delegate：同一动作块内先实现后审查等先后关系用它们表达——key 是本批内的唯一别名，dependsOn 列出本批其它动作的 key 或本 Run 既有任务 ID，被依赖的动作先执行；不要用自然语言描述顺序代替依赖）、phase（可选，仅 delegate：阶段标签，implement 写任务必须依赖 phase=plan 的任务）、reviewOf（可选，仅审查 delegate：声明本条审查针对哪些任务——同批 key 或本 Run 任务 ID，被审实现完成后审查才派发，且审查结论绑定派发时的工作区版本）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
+	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象。只输出一个 team-actions 动作块；如果本回合另有 Issue 归类要求，必须同时先输出一个 team-issues 块，再输出动作块。需要派发时输出相应机器块；纯沟通或澄清必须给可读回复，不能只返回归类或空动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）、key 与 dependsOn（可选，仅 delegate：同一动作块内先实现后审查等先后关系用它们表达——key 是本批内的唯一别名，dependsOn 列出本批其它动作的 key 或本 Run 既有任务 ID，被依赖的动作先执行；不要用自然语言描述顺序代替依赖）、phase（可选，仅 delegate：阶段标签，implement 写任务必须依赖 phase=plan 的任务）、reviewOf（可选，仅审查 delegate：声明本条审查针对哪些任务——同批 key 或本 Run 任务 ID，被审实现完成后审查才派发，且审查结论绑定派发时的工作区版本）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
 }
 
 // BuildLeadBriefing 返回 autoPlan Lead 的任务级成员目录与动作协议。修复提示
@@ -1009,9 +1009,16 @@ func RepairPrompt(violations []string, attempt int) string {
 	for i, violation := range boundedViolations(violations) {
 		builder.WriteString(fmt.Sprintf("%d. %s\n", i+1, violation))
 	}
-	builder.WriteString("请重新输出修正后的动作块：" + actionSchemaInstruction())
+	if containsString(violations, emptyLeadReplyViolation) {
+		builder.WriteString("请根据当前用户消息和前轮目标处理：需要实质工作时通过 delegate 派发；无需执行或需要澄清时，必须给用户可读回复。不要只输出归类块或空动作块，也不要为了补格式伪造工作。\n")
+	} else {
+		builder.WriteString("请重新输出修正后的动作块：")
+	}
+	builder.WriteString(actionSchemaInstruction())
 	return builder.String()
 }
+
+const emptyLeadReplyViolation = "主控只返回机器归类或空动作块，既未派发工作也没有可读回复"
 
 // boundedViolations 把 violation 列表裁成有界形态：逐条先截 repairViolation
 // Runes 个 rune，条数超 repairMaxViolations 丢弃余下并附省略说明。invalid_

@@ -43,8 +43,9 @@ test('dispatches the draft to the project team without sending to the source cha
   const {context,nodes,calls,storage,toasts,open,submit}=setup();
   await open();assert.equal(nodes['team-dispatch-team'].value,'project-team');
   await submit();assert.equal(calls.length,1);
+  assert.equal(calls[0].body.intent,'task');
   assert.equal(calls[0].path,'/api/teams/project-team/inputs');
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].body)),{id:'request-1',text:'检查登录流程',mode:'send',workMode:'default',uiLocale:'zh',teamIssueRoutingVersion:'1'});
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].body)),{id:'request-1',text:'检查登录流程',intent:'task',mode:'send',workMode:'default',uiLocale:'zh',teamIssueRoutingVersion:'1'});
   assert.equal(context.currentId,'source-chat');assert.equal(context.currentTeam,null);
   assert.equal(nodes.message.value,'');assert.equal(storage.has('draft:local|source-chat'),false);
   assert.equal(nodes['team-dispatch-dialog'].open,false);assert.deepEqual(toasts,['任务已交给团队：项目团队']);
