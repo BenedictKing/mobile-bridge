@@ -1,12 +1,34 @@
 package acpagents
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func emptyEnv(string) string { return "" }
+
+func writeExecutableFixture(t *testing.T, path string) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var header [64]byte
+	if _, err := io.ReadFull(file, header[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, header[:], 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestSplitArgv(t *testing.T) {
 	cases := []struct{ input string }{
@@ -150,9 +172,7 @@ func TestDiscoverKimiViaHomeDirectoryLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	kimi := filepath.Join(bin, "kimi")
-	if err := os.WriteFile(kimi, []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutableFixture(t, kimi)
 	profiles := Discover(emptyEnv, home)
 	var found *Profile
 	for _, profile := range profiles {
@@ -232,9 +252,7 @@ func TestDiscoverOpencode(t *testing.T) {
 		t.Fatal(err)
 	}
 	executable := filepath.Join(bin, "opencode")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutableFixture(t, executable)
 	for _, profile := range Discover(emptyEnv, home) {
 		if profile.Kind == "opencode" {
 			copy := profile
@@ -261,5 +279,78 @@ func TestDiscoverOpencode(t *testing.T) {
 	}
 	if opencode.Command == nil || len(opencode.Command) != 2 || opencode.Command[0] != "/opt/opencode/bin/opencode" {
 		t.Fatalf("env argv=%v", opencode.Command)
+	}
+}
+
+func TestExecutableFile(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !executableFile(executable) {
+		t.Fatal("native executable was rejected")
+	}
+	if executableFile(t.TempDir()) {
+		t.Fatal("directory was accepted as an executable")
+	}
+	if runtime.GOOS == "windows" {
+		return // Unix execute bits and shebangs do not apply to Windows.
+	}
+	for _, test := range []struct {
+		name    string
+		content string
+		mode    os.FileMode
+		want    bool
+	}{
+		{"script", "#!/bin/sh\nexit 0\n", 0o700, true},
+		{"no execute permission", "#!/bin/sh\nexit 0\n", 0o600, false},
+		{"empty file", "", 0o700, false},
+		{"postinstall placeholder", "echo \"Error: postinstall script was not run.\" >&2\nexit 1\n", 0o700, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "agent")
+			if err := os.WriteFile(path, []byte(test.content), test.mode); err != nil {
+				t.Fatal(err)
+			}
+			if got := executableFile(path); got != test.want {
+				t.Fatalf("executableFile = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDiscoverOpencodeRejectsIncompleteInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reproduces a Unix package placeholder through symlinks")
+	}
+	home := t.TempDir()
+	localDir := filepath.Join(home, ".opencode", "bin")
+	pathDir := t.TempDir()
+	for _, dir := range []string{localDir, pathDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", pathDir)
+	placeholder := filepath.Join(t.TempDir(), "opencode.exe")
+	if err := os.WriteFile(placeholder, []byte("echo \"Error: postinstall script was not run.\" >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{localDir, pathDir} {
+		if err := os.Symlink(placeholder, filepath.Join(dir, "opencode")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if profile := opencodeProfile(emptyEnv, home); profile.Command != nil {
+		t.Fatalf("incomplete install was auto-enabled: %v", profile.Command)
+	}
+
+	// An invalid home-directory install must not hide a valid PATH install.
+	validDir := t.TempDir()
+	valid := filepath.Join(validDir, "opencode")
+	writeExecutableFixture(t, valid)
+	t.Setenv("PATH", validDir)
+	if profile := opencodeProfile(emptyEnv, home); len(profile.Command) != 2 || profile.Command[0] != valid {
+		t.Fatalf("valid PATH fallback was not used: %v", profile.Command)
 	}
 }

@@ -4,9 +4,11 @@
 package acpagents
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -138,7 +140,7 @@ func SplitArgv(value string) []string {
 }
 
 func lookupPath(name string) string {
-	if path, err := exec.LookPath(name); err == nil {
+	if path, err := exec.LookPath(name); err == nil && executableFile(path) {
 		return path
 	}
 	return ""
@@ -146,10 +148,46 @@ func lookupPath(name string) string {
 
 func localBinary(home, defaultRel, name string) string {
 	candidate := filepath.Join(home, filepath.FromSlash(defaultRel), name)
-	if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+	if executableFile(candidate) {
 		return candidate
 	}
 	return ""
+}
+
+// executableFile rejects incomplete installs without running the CLI. Go's
+// exec does not provide a shell's fallback for text files without a shebang,
+// including the placeholder left when a package's postinstall did not run.
+// Header checks are only a discovery filter, not a full loader validation.
+func executableFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	var header [4]byte
+	n, _ := io.ReadFull(file, header[:])
+	if runtime.GOOS != "windows" && n >= 2 && string(header[:2]) == "#!" {
+		return true
+	}
+	switch runtime.GOOS {
+	case "windows":
+		return n >= 2 && string(header[:2]) == "MZ"
+	case "linux":
+		return n == 4 && string(header[:]) == "\x7fELF"
+	case "darwin":
+		switch string(header[:n]) {
+		case "\xfe\xed\xfa\xce", "\xce\xfa\xed\xfe", "\xfe\xed\xfa\xcf", "\xcf\xfa\xed\xfe",
+			"\xca\xfe\xba\xbe", "\xbe\xba\xfe\xca", "\xca\xfe\xba\xbf", "\xbf\xba\xfe\xca":
+			return true
+		}
+		return false
+	default:
+		return n > 0
+	}
 }
 
 // discoverExecutable mirrors bridge/agents/acp.py: env override, then
