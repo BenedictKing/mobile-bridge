@@ -382,7 +382,7 @@ function renderNewChatProjects(){
   for(const project of rest)select.append(new Option(newChatOptionLabel(project),project.key));
   select.append(new Option(t('自定义项目目录…'),newChatCustomKey));
   if([...select.options].some(o=>o.value===previous))select.value=previous;
-  updateNewChatPin();
+  $('new-chat-project').onchange();
 }
 function updateNewChatPin(){
   const custom=newChatCustomSelected(),project=newChatProjects.find(p=>p.key===$('new-chat-project').value);

@@ -70,6 +70,49 @@ test('custom directory stays available without saved projects',async()=>{
   assert.equal(nodes['new-chat-error'].textContent,'');
 });
 
+test('filtering out saved projects shows a usable custom directory field',async()=>{
+  const {nodes,calls,open,customKey}=loadNewChat(savedData);
+  await open();
+  assert.equal(nodes['new-chat-custom-row'].hidden,true);
+  assert.equal(nodes['new-chat-path'].textContent,'/work');
+
+  nodes['new-chat-filter'].value='/tmp/movie-maker';nodes['new-chat-filter'].oninput();
+  assert.equal(nodes['new-chat-project'].value,customKey);
+  assert.equal(nodes['new-chat-custom-row'].hidden,false);
+  assert.equal(nodes['new-chat-path'].textContent,'');
+  assert.equal(nodes['new-chat-pin'].hidden,true);
+  assert.equal(nodes['new-chat-remove'].hidden,true);
+  assert.equal(nodes['new-chat-worktree-row'].hidden,false);
+
+  nodes['new-chat-custom-path'].value=' /tmp/movie-maker ';nodes['new-chat-custom-path'].oninput();
+  assert.equal(nodes['new-chat-path'].textContent,'/tmp/movie-maker');
+  nodes['new-chat-filter'].value='';nodes['new-chat-filter'].oninput();
+  assert.equal(nodes['new-chat-project'].value,customKey);
+  assert.equal(nodes['new-chat-custom-row'].hidden,false);
+  assert.equal(nodes['new-chat-custom-path'].value,' /tmp/movie-maker ');
+
+  await nodes['new-chat-form'].onsubmit({preventDefault(){}});
+  const created=calls.find(call=>call.path==='/api/sessions');
+  assert.equal(created.body.project,'/tmp/movie-maker');
+  assert.equal(created.body.cwd,'/tmp/movie-maker');
+});
+
+test('filtering to another saved project updates its path and worktree availability',async()=>{
+  const remote={key:'codex:remote',cwd:'/srv/remote-project',name:'remote-project',host:'ssh',hostLabel:'SSH',agent:'codex'};
+  const {nodes,open}=loadNewChat({...savedData,projects:[...savedData.projects,remote]});
+  await open();
+  nodes['new-chat-worktree'].checked=true;nodes['new-chat-worktree'].onchange();
+  assert.equal(nodes['new-chat-worktree-base-row'].hidden,false);
+
+  nodes['new-chat-filter'].value='remote-project';nodes['new-chat-filter'].oninput();
+  assert.equal(nodes['new-chat-project'].value,remote.key);
+  assert.equal(nodes['new-chat-custom-row'].hidden,true);
+  assert.equal(nodes['new-chat-path'].textContent,remote.cwd);
+  assert.equal(nodes['new-chat-worktree-row'].hidden,true);
+  assert.equal(nodes['new-chat-worktree-base-row'].hidden,true);
+  assert.equal(nodes['new-chat-worktree'].checked,false);
+});
+
 test('custom directory submits cwd and changes the idempotency key',async()=>{
   const {nodes,calls,storage,open,customKey}=loadNewChat(savedData);
   await open();
