@@ -218,13 +218,22 @@ class TeamCanvasController{
     },{passive:false});
     window.addEventListener('resize',()=>{if(this.root.hidden)return;this.syncCurrentRunButton();this.render();});
   }
+  visibleCurrentRun(){
+    const run=this.currentRun;if(!run)return null;
+    // 执行记录保留在历史中；终态 Run 只有仍关联画布内容时才显示为当前 Run。
+    const linked=(this.inputs||[]).some(input=>(input.runIds||[]).includes(run.id))
+      ||(this.issues||[]).some(issue=>(issue.runs||[]).some(row=>row.id===run.id));
+    return linked||this.activeRuns({runs:[run]}).length?run:null;
+  }
   syncCurrentRunButton(){
-    const run=this.currentRun,button=document.getElementById('team-canvas-current-run');if(!button)return;
+    const run=this.visibleCurrentRun(),button=document.getElementById('team-canvas-current-run');if(!button)return;
+    button.hidden=this.view==='board'||!run;
     button.disabled=!run;
     const status=run?this.t(typeof teamRunStatusLabel==='function'?teamRunStatusLabel(run.status):run.status):'';
     const full=run?this.t('当前 Run')+' · '+status:this.t('当前 Run'),compact=typeof window!=='undefined'&&typeof window.matchMedia==='function'&&window.matchMedia('(max-width:720px)').matches;
     button.textContent=run&&compact?'Run · '+status:full;button.title=full;
     if(run)button.dataset.status=run.status||'';else delete button.dataset.status;
+    if(!run&&this.detailMode==='current')this.closeDetail();
   }
   setCurrentRun(run,team=null){
     this.currentRun=run||null;
@@ -240,15 +249,15 @@ class TeamCanvasController{
   }
   restoreOpenDetail(){
     const restore=this.restoreDetail;if(!restore||this.detailRun||!this.current)return;
-    if(restore.mode==='current'&&this.currentRun?.id===restore.runId)this.openCurrentRun(null,restore.selection);
+    if(restore.mode==='current'&&this.visibleCurrentRun()?.id===restore.runId)this.openCurrentRun(null,restore.selection);
     else if(restore.mode==='issue'){
       const issue=this.issues.find(row=>row.id===restore.issueId);
       if(issue&&(issue.runs||[]).some(run=>run.id===restore.runId))this.openDetail(issue,null,restore.selection);
     }
   }
   openCurrentRun(trigger,selection=null){
-    if(!this.currentRun)return;
-    this.openLiveDetail({issue:null,run:this.currentRun,trigger,selection});
+    const run=this.visibleCurrentRun();if(!run)return;
+    this.openLiveDetail({issue:null,run,trigger,selection});
   }
   openLiveDetail({issue,run,trigger,selection}){
     document.getElementById('team-canvas-detail-error').textContent='';

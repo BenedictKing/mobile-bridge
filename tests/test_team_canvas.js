@@ -75,7 +75,7 @@ test('team view switching preserves canvas state and persists per team',()=>{
 test('compact canvas keeps the full current run status readable',()=>{
   const previousDocument=global.document,previousWindow=global.window,previousLabel=global.teamRunStatusLabel;
   const button={dataset:{}};global.document={getElementById:()=>button};global.window={matchMedia:()=>({matches:true})};global.teamRunStatusLabel=()=>'执行结束';
-  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{t:value=>value,restoreDetail:null});
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{t:value=>value,restoreDetail:null,inputs:[{runIds:['run']}],issues:[]});
   try{
     controller.setCurrentRun({id:'run',status:'completed'});
     assert.equal(button.textContent,'Run · 执行结束');assert.equal(button.title,'当前 Run · 执行结束');
@@ -118,6 +118,62 @@ test('standalone message deletion uses its version and refreshes only after succ
     await controller.deleteInput({inputId:'input'},button);
     assert.equal(controller.error.textContent,'仍有未结束的 Run');assert.equal(calls.length,0);assert.equal(button.disabled,false);
   }finally{global.window=previousWindow;}
+});
+
+test('deleting the last run-linked message removes the current run entry and detail',async t=>{
+  const previousDocument=global.document,previousWindow=global.window,button={dataset:{},hidden:false};
+  global.document={getElementById:()=>button};global.window={confirm:()=>true,matchMedia:()=>({matches:false})};
+  t.after(()=>{global.document=previousDocument;global.window=previousWindow;});
+  const input={inputId:'input',runIds:['run'],version:1},run={id:'run',status:'completed'};
+  let rows=[input],closed=0,opened=0;
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+    current:{id:'team'},generation:1,inputs:rows,issues:[],error:{},restoreDetail:null,view:'canvas',
+    request:async(path,options={})=>{
+      if(options.method==='DELETE'){rows=[];return{};}
+      return path.endsWith('/issues')?{issues:[]}:{inputs:rows};
+    },
+    render(){this.syncCurrentRunButton();this.lastRecords={};},
+    renderCurrentDetail(){},closeDetail(){closed++;this.detailMode=null;this.detailRun=null;},
+    openLiveDetail(){opened++;},
+  });
+  controller.setCurrentRun(run);
+  assert.equal(button.hidden,false);assert.equal(button.disabled,false);
+  controller.detailMode='current';controller.detailRun=run;
+  await controller.deleteInput(input,{disabled:false});
+  assert.equal(controller.inputs.length,0);
+  assert.equal(button.hidden,true);assert.equal(button.disabled,true);assert.equal(button.dataset.status,undefined);
+  assert.equal(controller.detailRun,null);assert.equal(closed,1);
+  controller.setCurrentRun({...run,version:2});controller.openCurrentRun();
+  await controller.refresh(true);
+  assert.equal(button.hidden,true,'历史 Run 的后续刷新不能恢复已删除消息的状态');assert.equal(opened,0);
+});
+
+test('current run visibility follows its own links and preserves unfinished runs',t=>{
+  const previousDocument=global.document,button={dataset:{}};
+  global.document={getElementById:()=>button};t.after(()=>{global.document=previousDocument;});
+  const controller=Object.assign(Object.create(TeamCanvasController.prototype),{
+    current:{id:'team'},t:value=>value,restoreDetail:null,view:'canvas',inputs:[],issues:[],
+  });
+  for(const status of ['completed','failed','cancelled','stopped','outcome_unknown']){
+    controller.inputs=[{inputId:'other',runIds:['other-run']}];controller.issues=[];
+    controller.setCurrentRun({id:'run',status});
+    assert.equal(button.hidden,true,status+' 的消息删除后，其他 Run 的消息不能让旧状态残留');
+    controller.inputs.push({inputId:'linked',runIds:['run','newer-run']});controller.syncCurrentRunButton();
+    assert.equal(button.hidden,false,'共享输入仍关联此 Run 时保留入口');
+    controller.inputs=[];controller.issues=[{id:'issue',runs:[{id:'run'}]}];controller.syncCurrentRunButton();
+    assert.equal(button.hidden,false,'关联事项存在时保留入口');
+    controller.issues=[];controller.syncCurrentRunButton();assert.equal(button.hidden,true);
+    controller.restoreDetail={mode:'current',runId:'run'};controller.restoreOpenDetail();
+    assert.equal(controller.detailRun,undefined,'重新打开空画布不能恢复已失去关联的 Run 详情');
+    controller.restoreDetail=null;
+  }
+  for(const status of ['created','running','waiting_input','paused']){
+    controller.setCurrentRun({id:'run',status});
+    assert.equal(button.hidden,false,status+' 在空画布中也要保留操作入口');assert.equal(button.disabled,false);
+  }
+  controller.view='board';controller.syncCurrentRunButton();assert.equal(button.hidden,true);
+  controller.view='canvas';controller.syncCurrentRunButton();assert.equal(button.hidden,false);
+  controller.setCurrentRun(null);assert.equal(button.hidden,true);assert.equal(button.dataset.status,undefined);
 });
 
 test('canvas uses persisted issue links and ignores stale revisions',()=>{
