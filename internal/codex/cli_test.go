@@ -25,6 +25,7 @@ type cliFixture struct {
 	connections []*websocket.Conn
 	thread      *jsoncompat.Object
 	home        string
+	onCall      func(*jsoncompat.Object) *jsoncompat.Object
 }
 
 func newCLIFixture(t *testing.T) (*Bridge, *cliFixture) {
@@ -67,9 +68,16 @@ func newCLIFixture(t *testing.T) (*Bridge, *cliFixture) {
 				}
 				f.mu.Lock()
 				f.calls = append(f.calls, message)
+				onCall := f.onCall
 				f.mu.Unlock()
 				if message.MustGet("method") == nil {
 					continue
+				}
+				if onCall != nil {
+					if response := onCall(message); response != nil {
+						f.send(connection, response)
+						continue
+					}
 				}
 				result := jsoncompat.NewObject()
 				switch message.MustGet("method") {
@@ -81,6 +89,10 @@ func newCLIFixture(t *testing.T) (*Bridge, *cliFixture) {
 					result.Set("thread", f.thread)
 					result.Set("model", "gpt-test")
 					result.Set("reasoningEffort", "high")
+				case "thread/list", "thread/backgroundTerminals/list":
+					result.Set("data", &jsoncompat.Array{})
+				case "thread/unsubscribe":
+					result.Set("status", "unsubscribed")
 				case "turn/start":
 					turn := object(map[string]any{"id": "cli-turn", "status": "inProgress", "items": &jsoncompat.Array{}})
 					item := object(map[string]any{"id": "reply", "type": "agentMessage", "text": ""})
@@ -127,7 +139,7 @@ func (f *cliFixture) operations(method string) []*jsoncompat.Object {
 
 func TestCLIMigrationSettingsStreamingAndReconnect(t *testing.T) {
 	b, f := newCLIFixture(t)
-	if _, err := b.Watch("cli-thread", time.Second); err != nil {
+	if _, err := b.WatchForWrite("cli-thread", time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.UpdateSettings("cli-thread", "chosen-model", "xhigh", nil); err != nil {
@@ -158,7 +170,7 @@ func TestCLIMigrationSettingsStreamingAndReconnect(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := b.Watch("cli-thread", time.Second); err != nil {
+	if _, err := b.WatchForWrite("cli-thread", time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.operations("thread/resume")) != 2 || len(f.operations("turn/start")) != 1 {
@@ -169,7 +181,7 @@ func TestCLIMigrationSettingsStreamingAndReconnect(t *testing.T) {
 func TestCLIRejectsMismatchedCwdBeforeResume(t *testing.T) {
 	b, f := newCLIFixture(t)
 	b.RegisterCLI("cli-thread", t.TempDir())
-	if _, err := b.Watch("cli-thread", time.Second); err == nil {
+	if _, err := b.WatchForWrite("cli-thread", time.Second); err == nil {
 		t.Fatal("mismatched cwd accepted")
 	}
 	if len(f.operations("thread/resume")) != 0 {
@@ -179,7 +191,7 @@ func TestCLIRejectsMismatchedCwdBeforeResume(t *testing.T) {
 
 func TestCLIApprovalUsesTheOriginalReverseRequest(t *testing.T) {
 	b, fixture := newCLIFixture(t)
-	if _, err := b.Watch("cli-thread", time.Second); err != nil {
+	if _, err := b.WatchForWrite("cli-thread", time.Second); err != nil {
 		t.Fatal(err)
 	}
 	b.cli.onRequest(object(map[string]any{
@@ -255,7 +267,7 @@ func TestCLISharedOfficialRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	b.RegisterCLI(id, cwd)
-	if _, err := b.Watch(id, time.Second); err != nil {
+	if _, err := b.WatchForWrite(id, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.UpdateSettings(id, "gpt-6.1-sol", "xhigh", nil); err != nil {
@@ -268,7 +280,7 @@ func TestCLISharedOfficialRuntime(t *testing.T) {
 	next.Executable, next.CLIPath = executable, b.CLIPath
 	next.RegisterCLI(id, cwd)
 	t.Cleanup(next.Close)
-	if _, err := next.Watch(id, time.Second); err != nil {
+	if _, err := next.WatchForWrite(id, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	state, _, connected, _ := next.Snapshot(id)

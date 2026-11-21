@@ -219,6 +219,9 @@ func NormalizeState(state *jsoncompat.Object, connected bool) *jsoncompat.Object
 	}
 	view.Set("effort", effort)
 	view.Set("connected", connected)
+	if state.MustGet("writerReleased") == true {
+		view.Set("writerReleased", true)
+	}
 	runtime := obj(state.MustGet("threadRuntimeStatus"))
 	status := any("idle")
 	if runtime != nil {

@@ -77,7 +77,7 @@ func (b *Bridge) session(id string) *Session {
 // active after the short wait: the owner may publish its first snapshot later.
 func (b *Bridge) Watch(id string, timeout time.Duration) (*Session, error) {
 	if b.IsCLI(id) {
-		return b.watchCLI(id)
+		return b.readCLI(id)
 	}
 	if err := b.IPC.Connect(timeout); err != nil {
 		return nil, err
@@ -117,6 +117,15 @@ func (b *Bridge) Watch(id string, timeout time.Duration) (*Session, error) {
 	case <-time.After(timeout):
 		return session, nil
 	}
+}
+
+// WatchForWrite explicitly acquires execution ownership. History/SSE readers
+// use Watch so observing an idle CLI thread never reacquires its writer lock.
+func (b *Bridge) WatchForWrite(id string, timeout time.Duration) (*Session, error) {
+	if b.IsCLI(id) {
+		return b.watchCLI(id)
+	}
+	return b.Watch(id, timeout)
 }
 
 func (b *Bridge) View(id string) (*jsoncompat.Object, bool) {

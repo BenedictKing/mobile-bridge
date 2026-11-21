@@ -1,6 +1,8 @@
 package codex
 
 import (
+	"time"
+
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
@@ -12,7 +14,7 @@ func cliTurn(turn *jsoncompat.Object) *jsoncompat.Object {
 	return copy
 }
 
-func (c *cliRuntime) applyThread(thread, settings *jsoncompat.Object) {
+func (c *cliRuntime) applyThread(thread, settings *jsoncompat.Object, connected bool) {
 	id := jsoncompat.PyStr(thread.MustGet("id"))
 	session := c.bridge.session(id)
 	c.bridge.mu.Lock()
@@ -49,7 +51,11 @@ func (c *cliRuntime) applyThread(thread, settings *jsoncompat.Object) {
 			state.Set(target, value)
 		}
 	}
-	session.Owner, session.Connected, session.Error = "cli", true, ""
+	session.Owner, session.Connected, session.Error = "", connected, ""
+	if connected {
+		session.Owner = "cli"
+		state.Set("writerReleased", false)
+	}
 	c.changedLocked(session)
 }
 
@@ -131,8 +137,29 @@ func (c *cliRuntime) onEvent(message *jsoncompat.Object) {
 		session.State = state
 	}
 	switch method {
+	case "thread/closed":
+		state.Set("threadRuntimeStatus", object(map[string]any{"type": "notLoaded"}))
+		c.detachedLocked(session)
 	case "thread/status/changed":
 		state.Set("threadRuntimeStatus", params.MustGet("status"))
+		if cliStatus(params.MustGet("status")) == "notLoaded" {
+			c.detachedLocked(session)
+		}
+	case "serverRequest/resolved":
+		requestID := jsoncompat.PyStr(params.MustGet("requestId"))
+		c.mu.Lock()
+		delete(c.pending, id+"\x00"+requestID)
+		c.mu.Unlock()
+		if requests := cliArray(state.MustGet("requests")); requests != nil {
+			remaining := &jsoncompat.Array{}
+			for _, raw := range requests.Items {
+				request, _ := raw.(*jsoncompat.Object)
+				if request == nil || jsoncompat.PyStr(request.MustGet("id")) != requestID {
+					remaining.Items = append(remaining.Items, raw)
+				}
+			}
+			state.Set("requests", remaining)
+		}
 	case "thread/tokenUsage/updated":
 		state.Set("latestTokenUsageInfo", params.MustGet("tokenUsage"))
 	case "turn/started", "turn/completed":
@@ -183,6 +210,9 @@ func (c *cliRuntime) onEvent(message *jsoncompat.Object) {
 			parts.Items[len(parts.Items)-1] = cliText(parts.Items[len(parts.Items)-1]) + delta
 		}
 	}
+	if _, subscribed := c.lastUsed[id]; subscribed {
+		c.lastUsed[id] = time.Now()
+	}
 	c.changedLocked(session)
 	c.bridge.mu.Unlock()
 }
@@ -217,6 +247,9 @@ func (c *cliRuntime) onRequest(message *jsoncompat.Object) {
 		state.Set("requests", requests)
 	}
 	requests.Items = append(requests.Items, jsoncompat.Clone(message))
+	if _, subscribed := c.lastUsed[id]; subscribed {
+		c.lastUsed[id] = time.Now()
+	}
 	c.changedLocked(session)
 	c.bridge.mu.Unlock()
 	go c.bridge.autoApprovePending(id)

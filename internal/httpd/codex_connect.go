@@ -12,7 +12,7 @@ import (
 // watchCodexForWrite may select CLI execution for an explicit send/reconnect.
 // History readers keep using Watch and never acquire a new execution owner.
 func (s *Server) watchCodexForWrite(threadID string) (*codex.Session, error) {
-	session, err := s.Codex.Watch(threadID, 1500*time.Millisecond)
+	session, err := s.Codex.WatchForWrite(threadID, 1500*time.Millisecond)
 	if err == nil || s.Codex.IsCLI(threadID) || !errors.Is(err, ipc.ErrUnavailable) || runtime.GOOS == "windows" {
 		return session, err
 	}
@@ -54,5 +54,5 @@ func (s *Server) watchCodexForWrite(threadID string) (*codex.Session, error) {
 		}
 		s.Codex.RegisterCLI(threadID, cwd)
 	}
-	return s.Codex.Watch(threadID, 1500*time.Millisecond)
+	return s.Codex.WatchForWrite(threadID, 1500*time.Millisecond)
 }

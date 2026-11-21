@@ -56,7 +56,7 @@ func (s *Server) useCodexCLI(requestID, targetID, cwd string) error {
 		return err
 	}
 	s.Codex.RegisterCLI(targetID, cwd)
-	_, err := s.Codex.Watch(targetID, 1500*time.Millisecond)
+	_, err := s.Codex.WatchForWrite(targetID, 1500*time.Millisecond)
 	return err
 }
 

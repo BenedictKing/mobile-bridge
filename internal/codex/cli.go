@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,14 +22,23 @@ type cliRuntime struct {
 	mu        sync.Mutex
 	process   *acp.Process
 	pending   map[string]*jsoncompat.Object
+	lastUsed  map[string]time.Time // guarded by bridge.mu
+	stop      chan struct{}
+	done      chan struct{}
+	stopOnce  sync.Once
 }
 
 func (b *Bridge) RegisterCLI(id, cwd string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.closing {
+		return
+	}
 	if b.cliThreads == nil {
 		b.cliThreads = map[string]string{}
-		b.cli = &cliRuntime{bridge: b, pending: map[string]*jsoncompat.Object{}}
+		b.cli = &cliRuntime{bridge: b, pending: map[string]*jsoncompat.Object{},
+			lastUsed: map[string]time.Time{}, stop: make(chan struct{}), done: make(chan struct{})}
+		go b.cli.maintain()
 	}
 	b.cliThreads[id] = cwd
 }
@@ -49,9 +59,21 @@ func (b *Bridge) watchCLI(id string) (*Session, error) {
 	}
 	c.attachMu.Lock()
 	defer c.attachMu.Unlock()
+	return b.watchCLILocked(id, c, cwd)
+}
+
+// The caller holds attachMu through the subsequent write, excluding release.
+func (b *Bridge) watchCLILocked(id string, c *cliRuntime, cwd string) (*Session, error) {
 	session := b.session(id)
 	b.mu.Lock()
+	if b.closing {
+		b.mu.Unlock()
+		return session, errors.New("网关正在关闭")
+	}
 	ready := session.Connected && session.Owner == "cli"
+	if ready {
+		c.lastUsed[id] = time.Now()
+	}
 	b.mu.Unlock()
 	if ready {
 		return session, nil
@@ -84,19 +106,73 @@ func (b *Bridge) watchCLI(id string) (*Session, error) {
 	}
 	resumed, err := c.request("thread/resume", object(map[string]any{"threadId": id, "excludeTurns": false}), 60*time.Second)
 	if err != nil {
+		if strings.Contains(err.Error(), "already has an active writer") {
+			err = errors.New("此聊天仍由另一个 Codex 应用占用；请在原应用关闭会话，等待写入锁释放后重试")
+		}
 		return session, err
 	}
 	loaded, _ := resumed.MustGet("thread").(*jsoncompat.Object)
 	if loaded == nil || loaded.MustGet("id") != id || !cliPathEqual(cliText(loaded.MustGet("cwd")), cwd) || loaded.MustGet("modelProvider") != thread.MustGet("modelProvider") {
 		return session, errors.New("Codex CLI 恢复结果与源会话不匹配")
 	}
-	c.applyThread(loaded, resumed)
+	c.applyThread(loaded, resumed, true)
+	b.mu.Lock()
+	c.lastUsed[id] = time.Now()
+	b.mu.Unlock()
 	return session, nil
+}
+
+func (b *Bridge) readCLI(id string) (*Session, error) {
+	b.mu.Lock()
+	c, cwd := b.cli, b.cliThreads[id]
+	b.mu.Unlock()
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+	session := b.session(id)
+	b.mu.Lock()
+	ready, closing := session.Connected && session.Owner == "cli", b.closing
+	b.mu.Unlock()
+	if closing {
+		return session, errors.New("网关正在关闭")
+	}
+	if ready {
+		return session, nil
+	}
+	_, err := c.readThread(id, cwd, 30*time.Second)
+	return session, err
+}
+
+// readThread observes native history without resuming or extending ownership.
+// The caller holds attachMu, so publishing the read cannot overwrite a resume.
+func (c *cliRuntime) readThread(id, cwd string, timeout time.Duration) (*jsoncompat.Object, error) {
+	if err := c.connect(); err != nil {
+		return nil, err
+	}
+	read, err := c.request("thread/read", object(map[string]any{"threadId": id, "includeTurns": true}), timeout)
+	if err != nil {
+		return nil, err
+	}
+	thread, _ := read.MustGet("thread").(*jsoncompat.Object)
+	if thread == nil || thread.MustGet("id") != id || !cliPathEqual(cliText(thread.MustGet("cwd")), cwd) {
+		return nil, errors.New("Codex CLI 会话身份或目录不匹配，未接管")
+	}
+	c.bridge.mu.Lock()
+	session := c.bridge.sessions[id]
+	connected := session != nil && session.Connected && session.Owner == "cli"
+	c.bridge.mu.Unlock()
+	c.applyThread(thread, nil, connected)
+	return read, nil
 }
 
 func (c *cliRuntime) connect() error {
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
+	c.bridge.mu.Lock()
+	closing := c.bridge.closing
+	c.bridge.mu.Unlock()
+	if closing {
+		return errors.New("网关正在关闭")
+	}
 	c.mu.Lock()
 	ready := c.process != nil
 	c.mu.Unlock()
@@ -212,6 +288,8 @@ func (b *Bridge) closeCLI() {
 	if c == nil {
 		return
 	}
+	c.stopOnce.Do(func() { close(c.stop) })
+	<-c.done
 	c.connectMu.Lock()
 	defer c.connectMu.Unlock()
 	c.mu.Lock()

@@ -10,10 +10,21 @@ import (
 )
 
 func (b *Bridge) callCLI(id, method string, params *jsoncompat.Object, timeout time.Duration) (*jsoncompat.Object, error) {
-	if _, err := b.watchCLI(id); err != nil {
+	b.mu.Lock()
+	c, cwd, closing := b.cli, b.cliThreads[id], b.closing
+	b.mu.Unlock()
+	if closing {
+		return nil, errors.New("网关正在关闭")
+	}
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+	if method == "thread-follower-load-complete-history" {
+		return c.readThread(id, cwd, timeout)
+	}
+	defer c.touch(id)
+	if _, err := b.watchCLILocked(id, c, cwd); err != nil {
 		return nil, err
 	}
-	c := b.cli
 	request := object(map[string]any{"threadId": id})
 	operation := ""
 	switch method {
@@ -79,15 +90,6 @@ func (b *Bridge) callCLI(id, method string, params *jsoncompat.Object, timeout t
 			b.mu.Unlock()
 		}
 		return result, err
-	case "thread-follower-load-complete-history":
-		request.Set("includeTurns", true)
-		result, err := c.request("thread/read", request, timeout)
-		if err == nil {
-			if thread, ok := result.MustGet("thread").(*jsoncompat.Object); ok {
-				c.applyThread(thread, nil)
-			}
-		}
-		return result, err
 	default:
 		return nil, errors.New("当前 Codex CLI 接管暂不支持此桌面操作")
 	}
@@ -125,6 +127,9 @@ func (b *Bridge) activeCLITurn(id string) string {
 
 func (b *Bridge) respondCLI(id, requestID string, response *jsoncompat.Object) (*jsoncompat.Object, error) {
 	c := b.cli
+	c.attachMu.Lock()
+	defer c.attachMu.Unlock()
+	defer c.touch(id)
 	key := id + "\x00" + requestID
 	c.mu.Lock()
 	pending, process := c.pending[key], c.process
