@@ -404,15 +404,7 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			return true
 		}
 		if activate, _ := body.(*jsoncompat.Object).MustGet("activate").(bool); activate {
-			session, watchErr := h.server.Codex.Watch(threadID, 1500*time.Millisecond)
-			if watchErr != nil && !h.server.Codex.IsCLI(threadID) && h.server.Creations != nil {
-				if requestID, pending := h.server.Creations.pendingForTarget(threadID); pending != nil {
-					watchErr = h.server.useCodexCLI(requestID, threadID, pending.ProjectCwd)
-					if watchErr == nil {
-						session, watchErr = h.server.Codex.Watch(threadID, 1500*time.Millisecond)
-					}
-				}
-			}
+			session, watchErr := h.server.watchCodexForWrite(threadID)
 			if watchErr != nil {
 				h.fail(http.StatusConflict, errorBody(watchErr.Error()))
 				return true
@@ -562,6 +554,16 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				for _, entry := range resolved {
 					skills = append(skills, codex.SkillInput{Name: entry["name"], Path: entry["path"]})
 				}
+			}
+			if _, connectErr := h.server.watchCodexForWrite(threadID); connectErr != nil {
+				if h.server.Queue != nil {
+					if saveErr := h.server.Queue.failEntry(threadID, id, connectErr.Error()); saveErr != nil {
+						h.fail(http.StatusInternalServerError, errorBody(saveErr.Error()))
+						return true
+					}
+				}
+				h.fail(http.StatusConflict, errorBody(connectErr.Error()))
+				return true
 			}
 			result, callErr := h.server.Codex.StartTurnWithOptions(threadID, id, text, mode, workMode, skills, attachments)
 			if callErr != nil {

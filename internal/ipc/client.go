@@ -3,7 +3,9 @@ package ipc
 import (
 	"errors"
 	"net"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
@@ -12,6 +14,10 @@ import (
 )
 
 var errDisconnected = errors.New("桌面连接已断开；请检查会话后再决定是否重发")
+
+// ErrUnavailable means no desktop listener exists, rather than a failed
+// initialization or a permission error on a running desktop connection.
+var ErrUnavailable = errors.New("Codex 桌面通信接口不可用；App 已打开时，当前版本可能不再提供此接口")
 
 // Desktop is the live length-prefixed IPC client used by the Codex owner.
 // It keeps request correlation and broadcast delivery separate so a stream
@@ -47,7 +53,10 @@ func (d *Desktop) Connect(timeout time.Duration) error {
 	d.mu.Unlock()
 	conn, err := transport.ConnectStream(d.Path, timeout)
 	if err != nil {
-		return errors.New("桌面 App 未连接，请打开 Codex App。")
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+			return ErrUnavailable
+		}
+		return err
 	}
 	d.mu.Lock()
 	d.conn, d.closed = conn, false

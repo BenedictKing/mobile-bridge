@@ -83,10 +83,7 @@ func (d *listDiscovery) refresh() {
 		if rows, err := sessionStore.List("", 100000, 0, false); err == nil {
 			for _, row := range rows {
 				id, _ := row.MustGet("id").(string)
-				title, _ := row.MustGet("title").(string)
-				if title == "" {
-					title, _ = row.MustGet("name").(string)
-				}
+				title := codexListTitle(row)
 				cwd, _ := row.MustGet("cwd").(string)
 				entries = append(entries, "codex\x00"+id+"\x00"+title+"\x00"+cwd)
 			}

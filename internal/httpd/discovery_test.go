@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	_ "modernc.org/sqlite"
 )
@@ -68,12 +70,31 @@ func TestListDiscoveryRevisionFolding(t *testing.T) {
 	}
 
 	// 重命名同样使版本自增。
-	if _, err := db.Exec(`UPDATE threads SET title = '改名' WHERE id = 'cli-1'`); err != nil {
+	if _, err := db.Exec(`UPDATE threads SET name = '改名' WHERE id = 'cli-1'`); err != nil {
 		t.Fatal(err)
 	}
 	discovery.refresh()
 	if revision := discovery.Revision(); revision != 3 {
 		t.Fatalf("rename revision=%d", revision)
+	}
+}
+
+func TestCodexSessionListUsesSavedDisplayName(t *testing.T) {
+	server, db := discoveryFixture(t)
+	if _, err := db.Exec(`UPDATE threads SET name = '检查已打开的 Codex app', title = '# Files mentioned by the user:' WHERE id = 'desktop-1'`); err != nil {
+		t.Fatal(err)
+	}
+	env := newConcurrencyHarness(t)
+	t.Cleanup(env.bridge.Close)
+	env.server.Store = server.Store
+	response := env.request(http.MethodGet, "/api/sessions?q="+url.QueryEscape("检查已打开"), "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list failed: %d %s", response.Code, response.Body.String())
+	}
+	value, _ := jsoncompat.Unmarshal(response.Body.Bytes())
+	rows := value.(*jsoncompat.Object).MustGet("sessions").(*jsoncompat.Array)
+	if len(rows.Items) != 1 || rows.Items[0].(*jsoncompat.Object).MustGet("title") != "检查已打开的 Codex app" {
+		t.Fatalf("list ignored the saved title: %s", response.Body.String())
 	}
 }
 

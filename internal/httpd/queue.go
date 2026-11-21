@@ -647,10 +647,13 @@ func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution
 }
 
 func (s *Server) dispatchCodexSubmission(threadID string, entry *submissionEntry) (dispatchOutcome, string) {
-	session, err := s.Codex.Watch(threadID, 1500*time.Millisecond)
+	session, err := s.watchCodexForWrite(threadID)
 	if err != nil || session == nil {
-		// No desktop IPC: the turn provably never started.
-		return outcomeRequeue, "请先在桌面 App 打开此聊天"
+		// No turn RPC was sent, so this submission can safely remain queued.
+		if err != nil {
+			return outcomeRequeue, err.Error()
+		}
+		return outcomeRequeue, "Codex 会话尚未连接"
 	}
 	if s.Codex.Owner(session) == "" {
 		return outcomeRequeue, s.Codex.ErrorOr(session, "请先在桌面 App 打开此聊天")
@@ -702,7 +705,7 @@ func (s *Server) threadConnected(threadID string, resolution acpResolution) bool
 	if s.Codex == nil {
 		return false
 	}
-	session, err := s.Codex.Watch(threadID, 1500*time.Millisecond)
+	session, err := s.watchCodexForWrite(threadID)
 	return err == nil && session != nil && s.Codex.Owner(session) != ""
 }
 
@@ -1067,6 +1070,21 @@ func (h *handler) recordDirectSend(threadID string, payload submissionPayload) (
 		return false, nil, err
 	}
 	if duplicate {
+		if entry.Status == SubFailed && entry.Mode != "queue" {
+			// A failed direct send provably never dispatched. Claim its retry
+			// atomically so concurrent retries still start at most one turn.
+			claimed := false
+			_, err := h.server.Queue.mutate(threadID, payload.id, func(current *submissionEntry) {
+				if current.Status == SubFailed {
+					current.Status, current.Error = SubUnknown, ""
+					claimed = true
+				}
+			})
+			if err != nil {
+				return false, nil, err
+			}
+			return !claimed, h.server.Queue.get(threadID, payload.id), nil
+		}
 		return true, entry, nil
 	}
 	return false, entry, nil

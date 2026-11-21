@@ -12,7 +12,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
-// Only explicitly migrated threads use this runtime. Merely listing desktop
+// Only explicitly selected threads use this runtime. Merely listing desktop
 // history never resumes a thread or starts a second execution owner.
 type cliRuntime struct {
 	bridge    *Bridge

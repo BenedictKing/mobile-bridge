@@ -1,12 +1,31 @@
 package ipc
 
 import (
+	"errors"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
+
+func TestMissingDesktopListenerReportsUnavailable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket fixture")
+	}
+	dir, err := os.MkdirTemp("", "mbipc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	desktop := NewDesktop(filepath.Join(dir, "missing.sock"))
+	if err := desktop.Connect(time.Second); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("missing listener must be distinguishable from a running App: %v", err)
+	}
+}
 
 func TestDesktopRequestRoundTripAndTimeoutCleanup(t *testing.T) {
 	clientConn, agentConn := net.Pipe()

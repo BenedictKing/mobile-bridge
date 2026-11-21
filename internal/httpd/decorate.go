@@ -134,11 +134,21 @@ func groupIdentity(projects *localProjects, sessionID, cwd string, byAssignment 
 	return "local|" + projectKey, projectName
 }
 
+// codexListTitle uses the saved display name before the first-message title,
+// matching Codex history and desktop thread snapshots.
+func codexListTitle(row *jsoncompat.Object) string {
+	if name := strings.TrimSpace(stringField(row, "name")); name != "" {
+		return name
+	}
+	return stringField(row, "title")
+}
+
 // decorateCodexRow mirrors AppHosts.decorate for the local codex host:
 // hostLabel, projectKey/projectName and the unified recency. Codex 的
 // projectKey 与分组身份一致（显式归属优先），groupKey/groupName 供列表
 // 分组与其他 Agent 合并到同一组。
 func decorateCodexRow(projects *localProjects, row *jsoncompat.Object) {
+	row.Set("title", codexListTitle(row))
 	cwd, _ := row.MustGet("cwd").(string)
 	id, _ := row.MustGet("id").(string)
 	key, name := groupIdentity(projects, id, cwd, true)

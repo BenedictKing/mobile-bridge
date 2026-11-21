@@ -30,6 +30,24 @@ func row(fields map[string]any) *jsoncompat.Object {
 	return object
 }
 
+func TestCodexListTitlePrefersSavedName(t *testing.T) {
+	for _, test := range []struct {
+		name any
+		want string
+	}{
+		{"检查已打开的 Codex app", "检查已打开的 Codex app"},
+		{nil, "首条消息"},
+		{"", "首条消息"},
+		{" \t", "首条消息"},
+	} {
+		item := row(map[string]any{"name": test.name, "title": "首条消息"})
+		decorateCodexRow(readLocalProjects(""), item)
+		if item.MustGet("title") != test.want {
+			t.Fatalf("name=%v title=%v want=%s", test.name, item.MustGet("title"), test.want)
+		}
+	}
+}
+
 func TestDecorateCodexRowMatchesAssignmentRootsAndFallbacks(t *testing.T) {
 	home := writeState(t, `{
 	  "local-projects": {
