@@ -173,6 +173,7 @@ func (s *Server) refreshProjectionLocked(threadID string, slot *projectionSlot, 
 		}
 	}
 	view.Set("sequence", jsoncompat.Num(projected))
+	view.Set("activeTurnId", activeViewTurn(view))
 	slot.timeline.Update(view)
 	cache.view, cache.sourceSequence = view, sequence
 	return view, kind, true

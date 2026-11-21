@@ -2,6 +2,10 @@
 // UI messages only. Never translate chat content, commands, model IDs or user input.
 const BridgeI18n=(()=>{
 const en={
+"移除本地记录":"Remove local record",
+"无法读取未确认命令，请检查浏览器存储后重试":"Could not read unconfirmed commands. Check browser storage and retry.",
+"无法保存未确认命令，尚未提交，请检查浏览器存储":"Could not save the command. It has not been submitted. Check browser storage.",
+"上一条命令尚未确认，请先重试或核实后移除本地记录":"The previous command is unconfirmed. Retry it or check its outcome before removing the local record.",
 "交给团队":"Send to team",
 "选择团队":"Choose a team",
 "任务内容":"Task",

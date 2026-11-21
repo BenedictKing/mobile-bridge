@@ -4,6 +4,7 @@ const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const vm=require('node:vm');
 const {WorkModes}=require('../web/modes.js');
+const {PendingCommands,MemoryStorage}=require('./helpers/pending_commands.js');
 
 class Node {
   constructor(tag='div') {this.tag=tag;this.children=[];this.hidden=false;this.disabled=false;this.value='';this.textContent='';this.open=false;this.dataset={};this.attributes={};this.classList={toggle(){}};}
@@ -121,6 +122,7 @@ function goalComposer({active=false,host='local'}={}){
     chatKey:()=> host+'|chat',sessionUrl:()=> '/api/sessions/chat/send?host='+host,uuid:()=> 'request-1',
     api:async(path,body)=>{calls.push({path,body});return{status:'accepted'};},bumpRecency(){},renderSkillPills(){},renderQueue(){},toast(){},saveDraft(){},syncSendButton(){},
   };
+  context.window.BridgePendingCommands=new PendingCommands(new MemoryStorage(),context.sessionStorage);
   vm.runInNewContext(source.slice(goalStart,goalEnd)+'\n'+source.slice(submitStart,submitEnd),context);
   return{nodes,calls,context};
 }
@@ -135,6 +137,17 @@ test('/goal submits its objective through the real composer path',async()=>{
   assert.equal(calls[0].body.mode,'send');
   assert.equal(nodes.message.value,'');
   assert.equal(context.workModes.selection,'goal');
+});
+
+test('an accepted send keeps a newer draft typed while its ACK was pending',async()=>{
+  const {nodes,context}=goalComposer();let acknowledge;
+  context.api=()=>new Promise(resolve=>{acknowledge=resolve;});
+  nodes.message.value='原消息';
+  const submission=context.$('composer').onsubmit({preventDefault(){}});
+  nodes.message.value='后来输入';context.sessionStorage.setItem('draft:local|chat','后来输入');
+  acknowledge({status:'accepted'});await submission;
+  assert.equal(nodes.message.value,'后来输入');
+  assert.equal(context.sessionStorage.getItem('draft:local|chat'),'后来输入');
 });
 
 test('/goal submits on remote hosts when the gateway advertises Goal fallback',async()=>{

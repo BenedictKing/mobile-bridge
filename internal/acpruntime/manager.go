@@ -12,16 +12,20 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acp"
 	"github.com/BenedictKing/mobile-bridge/internal/acpadapter"
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
+	"github.com/BenedictKing/mobile-bridge/internal/command"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/textutil"
+	"github.com/google/uuid"
 )
 
 type Session struct {
-	ID      string
-	Cwd     string
-	Process *acp.Process
-	View    *acpview.View
+	ID            string
+	Cwd           string
+	Process       *acp.Process
+	View          *acpview.View
+	Commands      *command.Ledger
+	responseEpoch string // guarded by mu; native callbacks live for one handle
 
 	// CreatedAtMs is immutable. Title follows session_info_update under mu after
 	// filtering synthetic transcript protocol titles.
@@ -164,6 +168,7 @@ type Manager struct {
 	Command     []string
 	HostSocket  string
 	AutoApprove ApprovalHook
+	Commands    *command.Ledger
 
 	// AutoContinue, when set, is invoked (in its own goroutine) every time a
 	// live turn settles — completion, failure or idle timeout — so the
@@ -779,6 +784,7 @@ func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, er
 		View: acpview.NewView(id, nil, cwd, m.now), active: true, mediaDir: m.MediaDir, usage: m.Usage, kind: m.Kind, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
+	session.Commands = m.Commands
 	session.modeOptionID = m.ModeOptionID
 	session.canonical = m.Canonical
 	session.View.ModeOption = m.ModeOptionID
@@ -970,6 +976,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	session.interactionReady = true
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
+	session.Commands = m.Commands
 	session.modeOptionID = m.ModeOptionID
 	session.canonical = m.Canonical
 	session.View.ModeOption = m.ModeOptionID
@@ -1637,6 +1644,13 @@ func (s *Session) CancelAndWait(timeout time.Duration) error {
 }
 
 func (s *Session) cancel(timeout time.Duration) error {
+	return s.cancelTurn("", timeout)
+}
+
+// CancelTurn binds a human Stop to its observed turn and waits for settlement.
+func (s *Session) CancelTurn(expected string) error { return s.cancelTurn(expected, 10*time.Second) }
+
+func (s *Session) cancelTurn(expected string, timeout time.Duration) error {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -1646,20 +1660,35 @@ func (s *Session) cancel(timeout time.Duration) error {
 		s.mu.Unlock()
 		return errors.New(ReadOnlySessionMessage)
 	}
+	if expected != "" {
+		turns, _ := s.View.Snapshot().MustGet("turns").(*jsoncompat.Array)
+		current := ""
+		if turns != nil && len(turns.Items) > 0 {
+			if turn, ok := turns.Items[len(turns.Items)-1].(*jsoncompat.Object); ok {
+				current, _ = turn.MustGet("id").(string)
+			}
+		}
+		if current != expected {
+			s.mu.Unlock()
+			return errors.New("任务已切换，未停止新的任务；请刷新聊天")
+		}
+	}
 	// Only a turn this gateway prompted owns the view. A desktop-driven turn
 	// is followed from the store; marking it cancelled locally would leave
 	// the phone showing 已停止 while the desktop keeps working.
 	running := s.promptRunning
 	promptDone := s.promptDone
-	s.promptRunning = false
+	// Keep the prompt ownership until awaitPrompt settles the old request.
+	// Otherwise a new prompt can start while its predecessor is still stopping.
+	if err := s.Process.Notify("session/cancel", sessionParams(s.ID)); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	if running {
 		s.View.EndTurn("cancelled")
 	}
 	s.signalLocked()
 	s.mu.Unlock()
-	if err := s.Process.Notify("session/cancel", sessionParams(s.ID)); err != nil {
-		return err
-	}
 	if timeout > 0 && running && promptDone != nil {
 		timer := time.NewTimer(timeout)
 		defer timer.Stop()
@@ -1672,7 +1701,15 @@ func (s *Session) cancel(timeout time.Duration) error {
 	return nil
 }
 
-func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
+func (s *Session) Respond(requestID string, response *jsoncompat.Object, commandIDs ...string) error {
+	commandID := ""
+	if len(commandIDs) > 0 {
+		commandID = commandIDs[0]
+	}
+	scope := "reply:" + s.kind + ":" + s.ID + ":" + requestID
+	if _, err, found := s.Commands.Replay(commandID, scope, response); found {
+		return err
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -1703,9 +1740,36 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object) error {
 	if respond == nil {
 		respond = s.Process.Respond
 	}
-	if err := respond(rawID, wire); err != nil {
+	if s.responseEpoch == "" {
+		s.responseEpoch = uuid.NewString()
+	}
+	turnID := ""
+	if turns, ok := s.View.Snapshot().MustGet("turns").(*jsoncompat.Array); ok && len(turns.Items) > 0 {
+		if turn, ok := turns.Items[len(turns.Items)-1].(*jsoncompat.Object); ok {
+			turnID, _ = turn.MustGet("id").(string)
+		}
+	}
+	target := scope + ":" + s.responseEpoch + ":" + command.Hash(map[string]any{"kind": s.pendingKinds[requestID], "params": params, "rawId": rawID, "turnId": turnID})
+	if commandID == "" {
+		commandID = target
+	}
+	_, replyErr := s.Commands.Run(command.Intent{ID: commandID, Scope: scope, Target: target, Payload: response}, func() (any, error) {
+		err := respond(rawID, wire)
+		// Only a newly delivered human response re-arms the budgets. Receipt
+		// replays and Jev responses must not produce another human-action effect.
+		if err == nil && len(commandIDs) > 0 {
+			s.autoContinueRuns = 0
+			s.switchResumeRuns = 0
+		}
 		var acpErr *acp.Error
-		if errors.As(err, &acpErr) && acpErr.Kind == acp.KindWriteUnknown {
+		if errors.As(err, &acpErr) && acpErr.Kind == acp.KindUnavailable {
+			err = command.Rejected(err)
+		}
+		return map[string]any{}, err
+	})
+	if err := replyErr; err != nil {
+		var acpErr *acp.Error
+		if errors.Is(err, command.ErrUnknown) || (errors.As(err, &acpErr) && acpErr.Kind == acp.KindWriteUnknown) {
 			if s.responseUnknown == nil {
 				s.responseUnknown = map[string]bool{}
 			}

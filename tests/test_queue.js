@@ -3,13 +3,14 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const vm=require('node:vm');
+const {PendingCommands,MemoryStorage}=require('./helpers/pending_commands.js');
 
 function queueHelpers(){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const start=source.indexOf('let queueOrderSync=null;');
   const end=source.indexOf('// waiting_input 任务卡',start);
   assert.ok(start>=0&&end>start,'queue helpers not found');
-  const context={};
+  const context={window:{BridgePendingCommands:new PendingCommands(new MemoryStorage())},chatKey:(id,host)=>host+'|'+id};
   vm.runInNewContext(source.slice(start,end)+'\nthis.unique=uniqueQueueRows;this.move=moveQueueRows;this.render=renderQueue;this.applyPending=applyPendingQueueOrder;this.pendingOrder=()=>queueOrderSync;',context);
   return{uniqueQueueRows:context.unique,moveQueueRows:context.move,renderQueue:context.render,context};
 }

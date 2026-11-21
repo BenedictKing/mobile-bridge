@@ -1772,6 +1772,18 @@ func releaseAgentTurn(t *testing.T, dir, key, sessionID string) {
 	}
 }
 
+// Lead execution uses a controlled session, distinct from the member's chat.
+// Release the actual dispatched turn instead of signalling its source chat.
+func releaseRunTaskTurn(t *testing.T, env *teamIntegrationEnv, teamID, runID, taskID, key string) {
+	t.Helper()
+	task := teamTaskOf(t, env.runDetail(t, teamID, runID), taskID)
+	sessionID, _ := task["dispatchSessionId"].(string)
+	if sessionID == "" {
+		t.Fatalf("任务 %s 尚无实际执行会话", taskID)
+	}
+	releaseAgentTurn(t, env.dataDir, key, sessionID)
+}
+
 // teamSessionTurnStatus 在会话快照里按 user 消息全文找到 turn 并返回其状态
 // （matchTurn 的测试侧镜像；找不到返回空串）。
 func teamSessionTurnStatus(session *acpruntime.Session, userText string) string {

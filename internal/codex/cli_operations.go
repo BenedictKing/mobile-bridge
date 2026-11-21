@@ -57,7 +57,11 @@ func (b *Bridge) callCLI(id, method string, params *jsoncompat.Object, timeout t
 		request.Set("expectedTurnId", b.activeCLITurn(id))
 		operation = "turn/steer"
 	case "thread-follower-interrupt-turn":
-		request.Set("turnId", b.activeCLITurn(id))
+		turnID := b.activeCLITurn(id)
+		if expected := cliText(params.MustGet("expectedTurnId")); expected != "" && expected != turnID {
+			return nil, errors.New("任务已切换，未停止新的任务；请刷新聊天")
+		}
+		request.Set("turnId", turnID)
 		operation = "turn/interrupt"
 	case "thread-follower-update-thread-settings":
 		settings, _ := params.MustGet("threadSettings").(*jsoncompat.Object)

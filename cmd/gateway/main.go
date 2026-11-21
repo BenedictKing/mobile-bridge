@@ -45,6 +45,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/claude"
 	"github.com/BenedictKing/mobile-bridge/internal/codebuddy"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
+	"github.com/BenedictKing/mobile-bridge/internal/command"
 	"github.com/BenedictKing/mobile-bridge/internal/conventions"
 	"github.com/BenedictKing/mobile-bridge/internal/dsh"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
@@ -430,6 +431,11 @@ func runGateway(args []string) {
 	authenticator := auth.NewAuth(config)
 	authenticator.EnablePersistence(dataDir)
 	server := httpd.New(authenticator, gateway.WebFS, port, instanceID)
+	commands, commandsErr := command.Open(filepath.Join(dataDir, "command-receipts.json"))
+	if commandsErr != nil {
+		log.Fatalf("command receipts: %v", commandsErr)
+	}
+	server.Commands = commands
 	if os.Getenv("GATEWAY_DISABLE_STORE") == "1" && os.Getenv("GATEWAY_DISABLE_IPC") == "1" {
 		server.Bridge = httpd.NewScriptedBridge()
 	}
@@ -570,6 +576,7 @@ func runGateway(args []string) {
 	}
 	if codexHome != "" && os.Getenv("GATEWAY_DISABLE_IPC") != "1" {
 		server.Codex = codex.New(codexHome, os.Getenv("GATEWAY_IPC_PATH"))
+		server.Codex.Commands = server.Commands
 		server.Codex.AsyncReplyPath = filepath.Join(dataDir, "codex-question-replies.json")
 		server.Codex.CLIPath = filepath.Join(dataDir, "codex-cli.sock")
 		server.Codex.Executable = os.Getenv("GATEWAY_CODEX_BIN")
@@ -651,6 +658,7 @@ func runGateway(args []string) {
 	}
 	if executable := os.Getenv("GATEWAY_ACP_BIN"); executable != "" {
 		server.ACP = acpruntime.New(executable)
+		server.ACP.Commands = server.Commands
 		server.ACPAgents = map[string]*acpruntime.Manager{"acp": server.ACP}
 	}
 	home := ""
@@ -696,6 +704,7 @@ func runGateway(args []string) {
 				manager.ModeOptionID = profile.ModeOptionID
 				manager.LazySessions = profile.LazySessions
 			}
+			manager.Commands = server.Commands
 			server.ACPAgents[kind] = manager
 		}
 		if server.ACP == nil {
@@ -738,6 +747,7 @@ func runGateway(args []string) {
 			continue
 		}
 		manager := acpruntime.NewCommand(profile.Command)
+		manager.Commands = server.Commands
 		manager.HostSocket = hostSockets[profile.Kind]
 		manager.Label = profile.Label
 		manager.Capabilities = profile.Capabilities

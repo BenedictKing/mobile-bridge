@@ -269,6 +269,7 @@ func (c *cliRuntime) disconnected(process *acp.Process) {
 	for id := range b.cliThreads {
 		if session := b.sessions[id]; session != nil {
 			session.Connected = false
+			session.ReplyEpoch = ""
 			session.Error = "Codex CLI 连接已断开，正在重新接入原运行时"
 			c.changedLocked(session)
 		}

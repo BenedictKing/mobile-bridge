@@ -10,7 +10,7 @@ var BridgeTransport={
   // instead of waiting out a backoff ladder or a silently stalled socket.
   channels:new Set(),
   wake(){for(const wake of [...BridgeTransport.channels])wake();},
-  subscribe(url,{onChanges,onReset,onDelta,onStatus,cursor}){
+  subscribe(url,{onChanges,onReset,onDelta,onStatus,onSynchronized,cursor}){
     let closed=false,failures=0,source=null,timer=null,polling=null,resume=null,lastId='',connecting=false,pacing=false,pollSession=0;
     function stop(){
       closed=true;BridgeTransport.channels.delete(wake);
@@ -58,15 +58,22 @@ var BridgeTransport={
       }catch{retry();}
       finally{connecting=false;}
     }
-    function sseHandler(kind){
+    let syncPoint=null;
+    function synchronized(){
+      if(closed||!syncPoint)return;
+      const applied=cursor?.()||{};
+      if(applied.epoch===syncPoint.epoch&&applied.after>=syncPoint.sequence){syncPoint=null;onSynchronized?.();onStatus?.('live');}
+    }
+    function sseHandler(kind,expectedSource){
       return message=>{
+        if(closed||source!==expectedSource)return;
         lastId=message.lastEventId||lastId;
         try{
           const page=JSON.parse(message.data);
           // delta frames patch rows in place (timeline.applyDelta); a frame
           // the timeline cannot apply falls back to a changes re-read there.
-          if(kind==='delta')onDelta?.(page);
-          else (kind==='reset'?onReset:onChanges)?.(page);
+          const applied=kind==='delta'?onDelta?.(page):(kind==='reset'?onReset:onChanges)?.(page);
+          Promise.resolve(applied).then(synchronized);
         }
         catch{/* A malformed frame never reaches apply; the next frame re-syncs. */}
       };
@@ -79,16 +86,19 @@ var BridgeTransport={
       // the resume cursor stay ours; ?since= replays what the browser would
       // have sent in Last-Event-ID on its own retry.
       const current=cursor?.()||{};
-      const since=lastId||(current.epoch&&current.after>=0?current.epoch+'.'+current.after:'');
-      const target=url('events')+(url('events').includes('?')?'&':'?')+'incremental=1'
+      const since=current.epoch&&current.after>=0?current.epoch+'.'+current.after:lastId;
+      const target=url('events')+(url('events').includes('?')?'&':'?')+'incremental=1&sync=1'
         +(since?'&since='+encodeURIComponent(since):'');
       source=BridgeConnection.eventSource(target);
-      source.addEventListener('ready',()=>{failures=0;});
-      source.addEventListener('changes',sseHandler('changes'));
-      source.addEventListener('delta',sseHandler('delta'));
-      source.addEventListener('reset',sseHandler('reset'));
+      const expectedSource=source;
+      syncPoint=null;
+      source.addEventListener('ready',()=>{if(source!==expectedSource)return;failures=0;onStatus?.('synchronizing');});
+      source.addEventListener('synchronized',message=>{if(closed||source!==expectedSource)return;try{syncPoint=JSON.parse(message.data);synchronized();}catch{}});
+      source.addEventListener('changes',sseHandler('changes',expectedSource));
+      source.addEventListener('delta',sseHandler('delta',expectedSource));
+      source.addEventListener('reset',sseHandler('reset',expectedSource));
       source.addEventListener('logout',unauthorized);
-      source.onerror=()=>{if(closed||!source)return;source.close();source=null;probe();};
+      source.onerror=()=>{if(closed||source!==expectedSource)return;source.close();source=null;probe();};
     }
     async function subscribePoll(){
       resume=subscribePoll;
@@ -114,6 +124,7 @@ var BridgeTransport={
           return probe();
         }
         (page&&page.reset?onReset:onChanges)?.(page);
+        onSynchronized?.();onStatus?.('live');
         pacing=true;
         await new Promise(resolve=>{timer=setTimeout(resolve,200);});
         pacing=false;timer=null;

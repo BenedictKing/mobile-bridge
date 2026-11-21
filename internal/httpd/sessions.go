@@ -279,6 +279,14 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return false
 	}
 	threadID, action := match[1], match[2]
+	if write && isThreadCommand(action) {
+		unlock, err := h.server.lockThreadCommand(h.request.Context(), threadID)
+		if err != nil {
+			h.fail(http.StatusRequestTimeout, errorBody("命令等待已取消"))
+			return true
+		}
+		defer unlock()
+	}
 	if action == "notifications" && h.server.NotificationDir != "" {
 		var value *jsoncompat.Object
 		if write {
@@ -525,6 +533,12 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				}
 			}
 			var attachments []codex.AttachmentInput
+			nativeAttempted := false
+			defer func() {
+				if !nativeAttempted && h.server.Queue != nil {
+					_ = h.server.Queue.failEntry(threadID, id, "提交校验未通过，消息尚未发送")
+				}
+			}()
 			if raw, ok := body.(*jsoncompat.Object).MustGet("attachments").(*jsoncompat.Array); ok {
 				for _, value := range raw.Items {
 					entry, ok := value.(*jsoncompat.Object)
@@ -565,12 +579,16 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				h.fail(http.StatusConflict, errorBody(connectErr.Error()))
 				return true
 			}
+			if h.queueBlockedDirect(threadID, readSubmissionPayload(body.(*jsoncompat.Object))) {
+				return true
+			}
+			nativeAttempted = true
 			result, callErr := h.server.Codex.StartTurnWithOptions(threadID, id, text, mode, workMode, skills, attachments)
 			if callErr != nil {
 				h.fail(http.StatusConflict, errorBody(callErr.Error()))
 			} else {
-				if h.server.Queue != nil {
-					h.server.Queue.setStatus(threadID, id, SubAccepted)
+				if !h.acceptDirectSubmission(threadID, id) {
+					return true
 				}
 				h.output(http.StatusOK, result, contentTypeJSON, "")
 			}
@@ -601,12 +619,8 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 			h.handleCodexMessageAction(threadID, acpKind, body.(*jsoncompat.Object))
 			return true
 		case "stop":
-			result, callErr := h.server.Codex.Interrupt(threadID)
-			if callErr != nil {
-				h.fail(http.StatusConflict, errorBody(callErr.Error()))
-			} else {
-				h.output(http.StatusOK, result, contentTypeJSON, "")
-			}
+			state, _, _, _ := h.server.Codex.Snapshot(threadID)
+			h.runStop(threadID, body.(*jsoncompat.Object), activeViewTurn(state), func(expected string) (any, error) { return h.server.Codex.Interrupt(threadID, expected) })
 			return true
 		case "settings":
 			modelName, _ := body.(*jsoncompat.Object).MustGet("model").(string)
@@ -639,9 +653,9 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 				requestID, _ = body.(*jsoncompat.Object).MustGet("id").(string)
 				response.Set("answers", body.(*jsoncompat.Object).MustGet("answers"))
 			}
-			result, callErr := h.server.Codex.Respond(threadID, requestID, response)
+			result, callErr := h.server.Codex.Respond(threadID, requestID, response, stringField(body.(*jsoncompat.Object), "commandId"))
 			if callErr != nil {
-				h.fail(http.StatusConflict, errorBody(callErr.Error()))
+				h.failControl(callErr)
 			} else {
 				h.output(http.StatusOK, result, contentTypeJSON, "")
 			}
@@ -868,7 +882,6 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			}
 			defer func() {
 				if dispatched {
-					h.server.Queue.setStatus(threadID, prior.ID, SubAccepted)
 					return
 				}
 				// Cleared once the busy branch has requeued: by then the queue
@@ -878,6 +891,10 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 					h.server.Queue.requeueEntry(threadID, requeueID, "消息未送达，已回到队列")
 				}
 			}()
+		}
+		if h.queueBlockedDirect(threadID, readSubmissionPayload(object)) {
+			requeueID = ""
+			return true
 		}
 		var attachmentFiles []acpadapter.FileSpec
 		if raw, ok := object.MustGet("attachments").(*jsoncompat.Array); ok {
@@ -934,6 +951,9 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			}
 			if injected {
 				dispatched = true
+				if !h.acceptDirectSubmission(threadID, stringField(object, "id")) {
+					return true
+				}
 				result := jsoncompat.NewObject()
 				result.Set("accepted", true)
 				result.Set("steered", true)
@@ -973,6 +993,9 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		callErr := session.PromptWithBlocks(text, extra, 3600*time.Second, attachmentFiles...)
 		if callErr == nil {
 			dispatched = true
+			if !h.acceptDirectSubmission(threadID, stringField(object, "id")) {
+				return true
+			}
 			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
 		} else if requeueID != "" && strings.Contains(callErr.Error(), "当前已有任务正在运行") {
 			// The agent refused the prompt because another turn is running
@@ -1001,11 +1024,7 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			h.fail(http.StatusConflict, errorBody(callErr.Error()))
 		}
 	case "stop":
-		if callErr := session.Cancel(); callErr != nil {
-			h.fail(http.StatusConflict, errorBody(callErr.Error()))
-		} else {
-			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
-		}
+		h.runStop(threadID, object, activeViewTurn(session.Snapshot()), func(expected string) (any, error) { return jsoncompat.NewObject(), session.CancelTurn(expected) })
 	case "respond", "input":
 		requestID, _ := object.MustGet("requestId").(string)
 		response := jsoncompat.NewObject()
@@ -1015,11 +1034,10 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		} else if raw, ok := object.MustGet("response").(*jsoncompat.Object); ok {
 			response = raw
 		}
-		if callErr := session.Respond(requestID, response); callErr != nil {
-			h.fail(http.StatusConflict, errorBody(callErr.Error()))
+		if callErr := session.Respond(requestID, response, stringField(object, "commandId")); callErr != nil {
+			h.failControl(callErr)
 		} else {
-			// A human answered a card; the auto-continue budget re-arms.
-			session.NoteHumanAction()
+			// Respond re-arms a human action once; Goal reconciles current state.
 			if goal, ok := h.server.gatewayGoalFor(kind, threadID); ok && goal.Status == acpgoal.StatusWaitingInput {
 				go h.server.GoalSettleACP(kind, session)
 			}
@@ -1274,7 +1292,9 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 		if resolution.session == nil {
 			return nil, resolution.kind, false
 		}
-		return h.server.acpViewState(resolution.kind, resolution.manager, resolution.session), resolution.kind, true
+		view := h.server.acpViewState(resolution.kind, resolution.manager, resolution.session)
+		view.Set("activeTurnId", activeViewTurn(view))
+		return view, resolution.kind, true
 	}
 	if h.server.Codex == nil {
 		return nil, "", false
@@ -1300,6 +1320,7 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 	view.Set("agent", "codex")
 	view.Set("capabilities", h.server.codexCapabilitiesFor(threadID))
 	h.server.codexSubagentView(threadID, view)
+	view.Set("activeTurnId", activeViewTurn(view))
 	return view, "", true
 }
 
@@ -1568,10 +1589,27 @@ func (h *handler) stream(bridge SessionBridge, threadID string, query map[string
 
 func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 	session *ScriptedSession, epoch string, sequence int) {
+	synchronize := queryValue(h.request.URL.Query(), "sync", "") == "1"
+	markSynchronized := func() bool {
+		if !synchronize {
+			return true
+		}
+		point := jsoncompat.NewObject()
+		point.Set("epoch", epoch)
+		point.Set("sequence", jsoncompat.Num(sequence))
+		if err := h.sseFrame("synchronized", point, ""); err != nil {
+			return false
+		}
+		synchronize = false
+		return true
+	}
 	welcome := jsoncompat.NewObject()
 	welcome.Set("epoch", session.Epoch)
 	welcome.Set("sequence", jsoncompat.Num(session.Sequence))
 	if err := h.sseFrame("ready", welcome, ""); err != nil {
+		return
+	}
+	if epoch == session.Epoch && sequence == session.Sequence && !markSynchronized() {
 		return
 	}
 	for {
@@ -1642,6 +1680,9 @@ func (h *handler) streamIncremental(bridge SessionBridge, threadID string,
 				parsed, _ := strconv.Atoi(sequenceNumber.String())
 				epoch, sequence = epochValue, parsed
 				if err := h.sseFrame(event, payload, epoch+"."+strconv.Itoa(sequence)); err != nil {
+					return
+				}
+				if !markSynchronized() {
 					return
 				}
 			}

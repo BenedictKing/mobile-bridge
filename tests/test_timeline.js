@@ -37,6 +37,48 @@ function setup(options={}){
   return{timeline,ids};
 }
 
+test('duplicate and stale delta frames cannot append text twice or regress a cursor',()=>{
+  const{timeline}=setup();timeline.epoch='e';timeline.sequence=4;
+  const row={key:'a',version:'v4',text:'once'};timeline.rows.set('a',{row,sequence:4});
+  timeline.applyDelta({epoch:'e',sequence:4,rows:[{key:'a',prevVersion:'v3',version:'v4',append:'once'}]});
+  timeline.applyDelta({epoch:'old',sequence:100,rows:[{key:'a',prevVersion:'v4',version:'v5',append:'wrong'}]});
+  assert.equal(row.text,'once');assert.equal(timeline.sequence,4);timeline.dispose();
+});
+
+test('one mismatched delta keeps all rows and the cursor unchanged until recovery',async()=>{
+  const{timeline}=setup();timeline.epoch='e';timeline.sequence=1;
+  const row={key:'a',version:'v1',text:'before'};timeline.rows.set('a',{row,sequence:1});
+  let recover;timeline.read=()=>new Promise(resolve=>{recover=resolve;});
+  timeline.apply=page=>{timeline.sequence=page.sequence;};
+  const done=timeline.applyDelta({epoch:'e',sequence:2,meta:{status:'active'},rows:[{key:'a',prevVersion:'v1',version:'v2',append:'after'},{key:'missing',prevVersion:'x',version:'y',append:'lost'}]});
+  assert.equal(row.text,'before');assert.equal(timeline.sequence,1);
+  recover({epoch:'e',sequence:2,rows:[],meta:{}});await done;
+  assert.equal(timeline.sequence,2);timeline.dispose();
+});
+
+test('an old delta recovery cannot reset a newer timeline generation',async()=>{
+  const{timeline}=setup();timeline.epoch='e';timeline.sequence=1;
+  let recover,applied=0;timeline.read=()=>new Promise(resolve=>{recover=resolve;});timeline.apply=()=>{applied++;};
+  const done=timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'missing',prevVersion:'x'}]});
+  timeline.generation++;timeline.epoch='new';timeline.sequence=3;
+  recover({epoch:'e',sequence:2,reset:true,rows:[],meta:{}});await done;
+  assert.equal(applied,0);assert.equal(timeline.epoch,'new');assert.equal(timeline.sequence,3);timeline.dispose();
+});
+
+test('an old full frame cannot overwrite metadata or files',()=>{
+  const{timeline}=setup();timeline.epoch='e';timeline.sequence=4;timeline.meta={status:'idle'};
+  timeline.apply({epoch:'e',sequence:3,rows:[],files:[{id:'old'}],meta:{status:'active'}});
+  assert.deepEqual(timeline.meta,{status:'idle'});assert.equal(timeline.files.size,0);timeline.dispose();
+});
+
+test('history already ahead of the live cursor cannot receive an older append',async()=>{
+  const{timeline}=setup();timeline.epoch='e';timeline.sequence=1;
+  const row={key:'a',version:'same-prefix',text:'newer'};timeline.rows.set('a',{row,sequence:5});
+  let recovered=0;timeline.read=async()=>{recovered++;return{epoch:'e',sequence:5};};timeline.apply=page=>{timeline.sequence=page.sequence;};
+  await timeline.applyDelta({epoch:'e',sequence:3,rows:[{key:'a',prevVersion:'same-prefix',version:'old',append:'old append'}]});
+  assert.equal(row.text,'newer');assert.equal(timeline.sequence,5);assert.equal(recovered,1);timeline.dispose();
+});
+
 function addUser(timeline,ids,key,text,top){
   const row={key,role:'user',text,order:timeline.rows.size};
   const node=new FakeNode();node.dataset.key=key;node.rect={top,bottom:top+80};

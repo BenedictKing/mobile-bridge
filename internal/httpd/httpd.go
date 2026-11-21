@@ -32,6 +32,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
+	"github.com/BenedictKing/mobile-bridge/internal/command"
 	"github.com/BenedictKing/mobile-bridge/internal/conventions"
 	"github.com/BenedictKing/mobile-bridge/internal/goal"
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
@@ -158,7 +159,8 @@ type Server struct {
 	// TeamChangesWait 是 changes 端点长轮询的等待上限（sessions.go 的
 	// sessionRouteChanges 同款 12s）。仅测试用：生产保持零值走默认。
 	TeamChangesWait time.Duration
-	queueMu         sync.Mutex // serializes queue dispatch passes
+	Commands        *command.Ledger
+	threadCommands  command.Serial
 	projectionsMu   sync.Mutex
 	projections     map[string]*projectionSlot // per-thread timeline + lock
 	artifactMu      sync.Mutex
@@ -433,6 +435,7 @@ var staticRoutes = map[string]staticRoute{
 	"/i18n.js":                    {"i18n.js", "text/javascript; charset=utf-8"},
 	"/icons.js":                   {"icons.js", "text/javascript; charset=utf-8"},
 	"/app.js":                     {"app.js", "text/javascript; charset=utf-8"},
+	"/pending-commands.js":        {"pending-commands.js", "text/javascript; charset=utf-8"},
 	"/modes.js":                   {"modes.js", "text/javascript; charset=utf-8"},
 	"/attachments.js":             {"attachments.js", "text/javascript; charset=utf-8"},
 	"/activity.js":                {"activity.js", "text/javascript; charset=utf-8"},

@@ -198,7 +198,7 @@ func TestTeamMemberOfflineDuringRunParksPendingTask(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("运行中下线普通成员失败: %d %s", response.Code, response.Body.String())
 	}
-	releaseAgentTurn(t, dataDir, "offline-mid", lead)
+	releaseRunTaskTurn(t, env, teamID, runID, "first", "offline-mid")
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		status := env.runDetail(t, teamID, runID)["status"]
 		return status == "waiting_input" || status == "completed" || status == "failed" || status == "stopped"
@@ -287,7 +287,7 @@ func TestTeamMemberRebindDuringRunUsesLatestSessionForPendingTask(t *testing.T) 
 	if response.Code != http.StatusOK {
 		t.Fatalf("运行中主动换绑失败: %d %s", response.Code, response.Body.String())
 	}
-	releaseAgentTurn(t, dataDir, "rebind-mid", lead)
+	releaseRunTaskTurn(t, env, teamID, runID, "first", "rebind-mid")
 	if !env.drive(t, teamIntegrationWait, func() bool {
 		return env.runDetail(t, teamID, runID)["status"] == "completed"
 	}) {

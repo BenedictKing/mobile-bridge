@@ -10,6 +10,7 @@ package httpd
 // replaying blindly.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -359,23 +360,50 @@ func (q *submissions) edit(threadID, submissionID, text string) (*submissionEntr
 	if trimmed == "" || len(text) > 100000 {
 		return nil, &queueMutationError{"请输入 1–100000 字的消息"}
 	}
-	if _, err := q.editableEntry(threadID, submissionID); err != nil {
-		return nil, err
-	}
-	ok, err := q.mutate(threadID, submissionID, func(entry *submissionEntry) {
+	return q.mutateEditable(threadID, submissionID, func(entry *submissionEntry) error {
 		entry.Text = text
 		entry.Status = SubQueued
 		entry.QueueAttempts = 0
 		entry.Error = ""
 		entry.LastQueueError = ""
+		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
+}
+
+// Check and mutation share the ledger mutex even for callers outside HTTP.
+func (q *submissions) mutateEditable(threadID, id string, change func(*submissionEntry) error) (*submissionEntry, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	entry := q.entries[submissionKey(threadID, id)]
+	if entry == nil || (entry.Status != SubQueued && entry.Status != SubFailed) {
 		return nil, errSubmissionGone
 	}
-	return q.get(threadID, submissionID), nil
+	previous := *entry
+	if err := change(entry); err != nil {
+		*entry = previous
+		return nil, err
+	}
+	if err := q.saveLocked(); err != nil {
+		*entry = previous
+		return nil, err
+	}
+	copy := *entry
+	return &copy, nil
+}
+
+func (q *submissions) claimDispatch(threadID, id string, manual bool) (*submissionEntry, error) {
+	return q.mutateEditable(threadID, id, func(entry *submissionEntry) error {
+		if !manual && entry.Status != SubQueued {
+			return errSubmissionGone
+		}
+		entry.Status = SubUnknown
+		if manual {
+			entry.QueueAttempts = 0
+			entry.Error = ""
+			entry.LastQueueError = ""
+		}
+		return nil
+	})
 }
 
 // reorder moves one queued entry before another queued entry in the same
@@ -464,10 +492,8 @@ func (q *submissions) reorder(threadID, submissionID, beforeID string) (*submiss
 
 // cancel mirrors cancel_queued.
 func (q *submissions) cancel(threadID, submissionID string) error {
-	if _, err := q.editableEntry(threadID, submissionID); err != nil {
-		return err
-	}
-	return q.setStatus(threadID, submissionID, SubCancelled)
+	_, err := q.mutateEditable(threadID, submissionID, func(entry *submissionEntry) error { entry.Status = SubCancelled; return nil })
+	return err
 }
 
 // ignore mirrors ignore_submission: only uncertain outcomes can be hidden.
@@ -716,13 +742,19 @@ func (s *Server) dispatchQueuedThread(threadID, kind string, session *acpruntime
 	if s.Queue == nil {
 		return
 	}
-	s.queueMu.Lock()
-	defer s.queueMu.Unlock()
+	unlock, err := s.lockThreadCommand(context.Background(), threadID)
+	if err != nil {
+		return
+	}
+	defer unlock()
 	var first *submissionEntry
 	for _, entry := range s.Queue.threadEntries(threadID) {
-		if entry.Status == SubQueued {
+		// An uncertain earlier write is not proof that the writer is idle.
+		if entry.Status == SubUnknown {
+			return
+		}
+		if first == nil && entry.Status == SubQueued {
 			first = entry
-			break
 		}
 	}
 	if first == nil {
@@ -738,8 +770,13 @@ func (s *Server) dispatchQueuedThread(threadID, kind string, session *acpruntime
 	if s.threadActive(threadID, resolution) {
 		return
 	}
-	if err := s.Queue.setStatus(threadID, first.ID, SubUnknown); err != nil {
-		log.Printf("队列派发前落账失败（thread=%s submission=%s）: %v", threadID, first.ID, err)
+	submissionID := first.ID
+	first, err = s.Queue.claimDispatch(threadID, submissionID, false)
+	if err != nil {
+		if err == errSubmissionGone {
+			return
+		}
+		log.Printf("队列派发前落账失败（thread=%s submission=%s）: %v", threadID, submissionID, err)
 		return
 	}
 	outcome, message := s.dispatchSubmission(threadID, resolution, first)
@@ -1135,9 +1172,7 @@ func (h *handler) handleQueueRoute(threadID string, body *jsoncompat.Object) {
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case "reorder":
 		beforeID := stringField(body, "beforeId")
-		h.server.queueMu.Lock()
 		entry, err := h.server.Queue.reorder(threadID, submissionID, beforeID)
-		h.server.queueMu.Unlock()
 		if err != nil {
 			status := http.StatusBadRequest
 			if isQueueStoreError(err) {
@@ -1180,9 +1215,7 @@ func (s *Server) interruptSubmissionTurn(threadID string, resolution acpResoluti
 // The queue lock keeps the cancellation's settle hook from dispatching another
 // entry between those two steps.
 func (h *handler) queueSendNow(threadID, submissionID string) {
-	h.server.queueMu.Lock()
-	defer h.server.queueMu.Unlock()
-
+	// The HTTP command entry already owns this thread's non-reentrant lock.
 	entry, err := h.server.Queue.editableEntry(threadID, submissionID)
 	if err != nil {
 		h.fail(http.StatusConflict, errorBody(err.Error()))
@@ -1205,14 +1238,13 @@ func (h *handler) queueSendNow(threadID, submissionID string) {
 			return
 		}
 	}
-	_, err = h.server.Queue.mutate(threadID, submissionID, func(entry *submissionEntry) {
-		entry.Status = SubUnknown
-		entry.QueueAttempts = 0
-		entry.Error = ""
-		entry.LastQueueError = ""
-	})
+	entry, err = h.server.Queue.claimDispatch(threadID, submissionID, true)
 	if err != nil {
-		h.fail(http.StatusInternalServerError, errorBody(err.Error()))
+		status := http.StatusInternalServerError
+		if err == errSubmissionGone {
+			status = http.StatusConflict
+		}
+		h.fail(status, errorBody(err.Error()))
 		return
 	}
 	outcome, message := h.server.dispatchSubmission(threadID, resolution, entry)

@@ -304,6 +304,7 @@ class ChatTimeline {
     finally{this.busy=false;if(!this.abort.signal.aborted){this.historyStatus();this.fillRecent();}}
   }
   apply(page,reset=false,history=false){
+    if(!history&&page.epoch===this.epoch&&page.sequence<this.sequence)return;
     const anchor=this.capture(),bottom=this.following;
     if(reset){this.generation++;this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.epoch=page.epoch;this.retryCount=0;}
     for(const file of page.files||[])this.files.set(file.id,file);
@@ -343,15 +344,16 @@ class ChatTimeline {
   // any row the phone does not hold at prevVersion) falls back to one changes
   // re-read, so the merge stays keyed+version safe.
   applyDelta(frame){
-    const anchor=this.capture(),bottom=this.following;
+    if(frame.epoch!==this.epoch||frame.sequence<=this.sequence)return;
     const cursor={after:this.sequence,epoch:this.epoch,start:this.before||''};
+    if((frame.rows||[]).some(delta=>{const entry=this.rows.get(delta.key);return !entry||entry.sequence>=frame.sequence||entry.row.version!==delta.prevVersion;}))return this.recoverDelta(cursor);
+    const anchor=this.capture(),bottom=this.following;
     this.sequence=frame.sequence;
     for(const file of frame.files||[])this.files.set(file.id,file);
     if(frame.meta){this.meta=frame.meta;this.renderMeta({...frame.meta,files:[...this.files.values()]});if(frame.meta.userIndex)this.userIndex=frame.meta.userIndex;}
-    let changed=false,mismatch=false;
+    let changed=false;
     for(const delta of frame.rows||[]){
       const entry=this.rows.get(delta.key);
-      if(!entry||entry.row.version!==delta.prevVersion){mismatch=true;continue;}
       entry.row.text+=delta.append;entry.row.version=delta.version;
       if(entry.sequence<frame.sequence)entry.sequence=frame.sequence;
       const cached=this.details.get(delta.key);
@@ -369,18 +371,24 @@ class ChatTimeline {
       if(old)old.node.replaceWith(node);
       this.nodes.set(delta.key,{node,stamp});
     }
-    if(mismatch){
-      // The frame is atomic, so the pre-frame cursor re-reads exactly the
-      // rows this delta could not apply; apply merges by key+version.
-      this.read('changes',cursor).then(page=>{
-        if(this.abort.signal.aborted)return;
-        if(page.reset||page.epoch!==this.epoch)this.apply(page,true);
-        else this.apply(page,false);
-      }).catch(()=>{});
-    }
     this.refreshActions();this.historyStatus();this.restore(anchor,bottom);
     this.renderUserJump([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order),bottom);
     if(!bottom&&changed){this.newer.textContent=this.pendingRequests?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
+  }
+  recoverDelta(cursor){
+    if(this.deltaRecovery)return this.deltaRecovery;
+    const generation=this.generation;
+    this.deltaRecovery=this.read('changes',cursor).then(page=>{
+      if(this.abort.signal.aborted||generation!==this.generation)return;
+      this.apply(page,!!page.reset||page.epoch!==this.epoch);
+    }).catch(()=>{
+      if(this.abort.signal.aborted||generation!==this.generation)return;
+      this.status(timelineText('重新连接中'));
+      this.subscription?.();this.subscription=null;
+      clearTimeout(this.startRetry);
+      this.startRetry=setTimeout(()=>{if(!this.abort.signal.aborted&&generation===this.generation)this.updates();},1000);
+    }).finally(()=>{this.deltaRecovery=null;});
+    return this.deltaRecovery;
   }
   renderRow(row,open){
     const activity=row.role==='activity',
@@ -566,6 +574,7 @@ class ChatTimeline {
     this.newer.textContent=timelineText(this.pendingRequests?'有待确认请求 ↓':'有新内容 ↓');
   }
   updates(){
+    this.subscription?.();
     // Live frames arrive via the shared transport (SSE when the gateway
     // advertises it, changes long-poll on tunnels). The cursor is re-read
     // per request so history expansion never strands a delta, and rows
@@ -576,6 +585,7 @@ class ChatTimeline {
       onChanges:page=>{if(this.abort.signal.aborted)return;this.apply(page,false);this.fillRecent();},
       onDelta:frame=>{if(this.abort.signal.aborted)return;this.applyDelta(frame);},
       onReset:page=>{if(this.abort.signal.aborted)return;this.apply(page,true);this.fillRecent();},
+      onSynchronized:()=>{if(!this.abort.signal.aborted)this.syncState='live';},
       onStatus:text=>{if(!this.abort.signal.aborted)this.status(text==='reconnecting'?timelineText('重新连接中'):text);},
       cursor:()=>({after:this.sequence,epoch:this.epoch,start:this.before||''})
     });

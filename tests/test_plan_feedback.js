@@ -3,6 +3,7 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const vm=require('node:vm');
+const {PendingCommands,MemoryStorage}=require('./helpers/pending_commands.js');
 
 class FakeNode {
   constructor(tag){this.tag=tag;this.children=[];this.dataset={};this.disabled=false;this.value='';}
@@ -22,13 +23,15 @@ function loadApproval(){
   const start=source.indexOf('function renderAcpApproval'),end=source.indexOf('function renderAcpInput',start);
   const elStart=source.indexOf('function el('),elEnd=source.indexOf('\n',elStart);
   const context={
+    window:{BridgePendingCommands:new PendingCommands(new MemoryStorage())},uuid:()=> 'command-1',chatKey:(id,host)=>host+'|'+id,
     currentId:'session',currentHost:'local',submittedRequestIds:new Set(),approvalBusy:0,
     document:{createElement:tag=>new FakeNode(tag)},t:value=>value,
     setLanguageBusy(){},sessionUrl:()=>'/respond',bumpRecency(){},riskBadge:()=>null,markRecommendation(){},
     renderMarkdown:(node,text)=>{node.renderedMarkdown=text;},
     api:async(path,body)=>{calls.push({path,body});return {};},
   };
-  vm.runInNewContext(source.slice(elStart,elEnd)+'\n'+source.slice(start,end)+'\nthis.renderAcpApproval=renderAcpApproval;',context);
+  const replyStart=source.indexOf('async function respondToRequest('),replyEnd=source.indexOf('async function retryLocalSubmission(',replyStart);
+  vm.runInNewContext(source.slice(elStart,elEnd)+'\n'+source.slice(replyStart,replyEnd)+'\n'+source.slice(start,end)+'\nthis.renderAcpApproval=renderAcpApproval;',context);
   return {calls,render:context.renderAcpApproval};
 }
 

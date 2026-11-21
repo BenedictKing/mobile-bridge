@@ -10,21 +10,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/command"
 	"github.com/BenedictKing/mobile-bridge/internal/ipc"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/transport"
+	"github.com/google/uuid"
 )
 
 type Session struct {
-	ID        string
-	Owner     string
-	State     any
-	Revision  any
-	Connected bool
-	Sequence  int
-	Error     string
-	Changed   chan struct{}
+	ReplyEpoch string // guarded by bridge.mu; reset when the native owner disconnects
+	ID         string
+	Owner      string
+	State      any
+	Revision   any
+	Connected  bool
+	Sequence   int
+	Error      string
+	Changed    chan struct{}
 }
 
 type Bridge struct {
@@ -32,6 +35,7 @@ type Bridge struct {
 	Home       string
 	Executable string
 	IPC        *ipc.Desktop
+	Commands   *command.Ledger
 	CLIPath    string
 	cli        *cliRuntime
 	cliThreads map[string]string
@@ -406,6 +410,7 @@ func (b *Bridge) handleDisconnect() {
 			continue
 		}
 		session.Connected = false
+		session.ReplyEpoch = ""
 		session.Error = "桌面会话连接已断开，正在等待重连"
 		session.Sequence++
 		close(session.Changed)
@@ -617,7 +622,7 @@ func (b *Bridge) EditLastUserTurn(id, turnID, text, serviceTier string) (*jsonco
 	return b.Call(id, "thread-follower-edit-last-user-turn", params, 90*time.Second)
 }
 
-func (b *Bridge) Interrupt(id string) (*jsoncompat.Object, error) {
+func (b *Bridge) Interrupt(id string, expectedTurnIDs ...string) (*jsoncompat.Object, error) {
 	state, _, _, _ := b.Snapshot(id)
 	if state == nil {
 		return nil, errors.New("请先在桌面 App 打开此聊天")
@@ -641,6 +646,9 @@ func (b *Bridge) Interrupt(id string) (*jsoncompat.Object, error) {
 	if turnID == "" {
 		return nil, errors.New("当前没有可停止的任务")
 	}
+	if len(expectedTurnIDs) > 0 && expectedTurnIDs[0] != "" && expectedTurnIDs[0] != turnID {
+		return nil, errors.New("任务已切换，未停止新的任务；请刷新聊天")
+	}
 	params := jsoncompat.NewObject()
 	params.Set("mode", "user-stop")
 	params.Set("expectedTurnId", turnID)
@@ -663,8 +671,21 @@ func (b *Bridge) UpdateSettings(id, modelName, effort string, fastMode *bool) (*
 	return b.Call(id, "thread-follower-update-thread-settings", params, 30*time.Second)
 }
 
-func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object) (*jsoncompat.Object, error) {
-	if b.IsCLI(id) && !strings.HasPrefix(requestID, "async:") {
+func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object, commandIDs ...string) (*jsoncompat.Object, error) {
+	commandID := ""
+	if len(commandIDs) > 0 {
+		commandID = commandIDs[0]
+	}
+	scope := "reply:codex:" + id + ":" + requestID
+	if raw, err, found := b.Commands.Replay(commandID, scope, response); found {
+		if err != nil {
+			return nil, err
+		}
+		value, err := jsoncompat.Unmarshal(raw)
+		result, _ := value.(*jsoncompat.Object)
+		return result, err
+	}
+	if b.Commands == nil && b.IsCLI(id) && !strings.HasPrefix(requestID, "async:") {
 		return b.respondCLI(id, requestID, response)
 	}
 	if strings.HasPrefix(requestID, "async:") {
@@ -698,6 +719,52 @@ func (b *Bridge) Respond(id, requestID string, response *jsoncompat.Object) (*js
 	if method == "bridge/requestUserInputAsync" {
 		return b.respondAsyncQuestion(id, requestID, pending, response)
 	}
+	if b.Commands != nil {
+		session := b.session(id)
+		b.mu.Lock()
+		if session.ReplyEpoch == "" {
+			session.ReplyEpoch = uuid.NewString()
+		}
+		epoch := session.ReplyEpoch
+		b.mu.Unlock()
+		// UI normalization omits native identity fields such as turnId. Hash
+		// the original request so a reused RPC id cannot consume an old receipt.
+		nativeParams := pending.MustGet("params")
+		if b.IsCLI(id) {
+			b.cli.mu.Lock()
+			if raw := b.cli.pending[id+"\x00"+requestID]; raw != nil {
+				nativeParams = jsoncompat.Clone(raw.MustGet("params"))
+			}
+			b.cli.mu.Unlock()
+		} else {
+			for _, value := range model.PendingRequests(state).Items {
+				if raw, ok := value.(*jsoncompat.Object); ok && jsoncompat.PyStr(raw.MustGet("id")) == requestID {
+					nativeParams = raw.MustGet("params")
+					break
+				}
+			}
+		}
+		target := scope + ":" + epoch + ":" + command.Hash(map[string]any{"method": method, "params": nativeParams})
+		if commandID == "" {
+			commandID = target
+		}
+		raw, err := b.Commands.Run(command.Intent{ID: commandID, Scope: scope, Target: target, Payload: response}, func() (any, error) {
+			if b.IsCLI(id) {
+				return b.respondCLI(id, requestID, response)
+			}
+			return b.respondDesktop(id, requestID, method, response)
+		})
+		if err != nil {
+			return nil, err
+		}
+		value, err := jsoncompat.Unmarshal(raw)
+		result, _ := value.(*jsoncompat.Object)
+		return result, err
+	}
+	return b.respondDesktop(id, requestID, method, response)
+}
+
+func (b *Bridge) respondDesktop(id, requestID, method string, response *jsoncompat.Object) (*jsoncompat.Object, error) {
 	mapping := map[string]string{
 		"item/commandExecution/requestApproval": "thread-follower-command-approval-decision",
 		"item/fileChange/requestApproval":       "thread-follower-file-approval-decision",
