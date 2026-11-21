@@ -63,6 +63,39 @@ func TestParseKinds(t *testing.T) {
 	if _, err := ParseKinds("codex,nope"); err == nil {
 		t.Fatal("unknown kind accepted")
 	}
+	if kinds, err := ParseKinds("acpagent,acpagent-review"); err != nil || len(kinds) != 2 {
+		t.Fatalf("acpagent=%v err=%v", kinds, err)
+	}
+}
+
+func TestAcpAgentProfilesAreOptIn(t *testing.T) {
+	byKind := func(env func(string) string) map[string]Profile {
+		profiles := map[string]Profile{}
+		for _, profile := range Discover(env, t.TempDir()) {
+			profiles[profile.Kind] = profile
+		}
+		return profiles
+	}
+	for _, kind := range []string{"acpagent", "acpagent-review"} {
+		if command := byKind(emptyEnv)[kind].Command; command != nil {
+			t.Fatalf("%s enabled without env: %v", kind, command)
+		}
+	}
+	env := map[string]string{
+		"ACP_AGENT_BIN":        `acp-agent acp --role member --state-dir "/data/acp agent"`,
+		"ACP_AGENT_REVIEW_BIN": "acp-agent acp --role reviewer",
+	}
+	profiles := byKind(func(key string) string { return env[key] })
+	member := profiles["acpagent"]
+	if len(member.Command) != 6 || member.Command[5] != "/data/acp agent" {
+		t.Fatalf("member argv=%v", member.Command)
+	}
+	if member.SteerMethod != "_session/steering" || member.EffortMap["none"] != "off" || member.EffortMap["max"] != "xhigh" {
+		t.Fatalf("member dialect=%+v", member)
+	}
+	if review := profiles["acpagent-review"]; len(review.Command) != 4 || review.Command[3] != "reviewer" {
+		t.Fatalf("review argv=%v", review.Command)
+	}
 }
 
 func TestDiscoverZcodeViaHomeMarker(t *testing.T) {

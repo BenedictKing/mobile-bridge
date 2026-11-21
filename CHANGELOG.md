@@ -4,6 +4,8 @@
 
 ### Added
 
+- **agents**：接入自建 acp-agent 运行时，新增 `acpagent`（执行成员）与 `acpagent-review`（审核成员）两个类型，分别由 `ACP_AGENT_BIN`、`ACP_AGENT_REVIEW_BIN` 给出完整启动命令后才启用，`auto` 不探测。补充当前任务走 `_session/steering`，思考档位映射到 acp-agent 的 `off|minimal|low|medium|high|xhigh`。用法与 `--state-dir` 约束见 README「多 Agent」。
+
 ### Changed / Fixed
 
 - **site**：官网与交互演示整体对齐当前网关 UI。`scripts/build-site-demo.py` 改为整目录镜像 `web/`（原先只叠加文件，退役面板与旧 vendor 会残留），重写 `site/demo-data/{web,scenes}.js` 夹具与场景路由：聊天、团队、审批、账号与接入、设置、迁移六个场景走现行 `openChat`/`openTeamChat`/对话详情，补 `/api/teams`、`/api/pool/*`、`/api/jev`、`/api/conventions`、`/api/changes` 等接口与团队 Run 投影；场景在应用完成首次路由后再执行，避免迟到的 `openChat` 关掉刚打开的对话框。首页移除 v1.3.0 演示视频、桌面 App 截图与文件/终端/Git/侧边聊天/分屏的旧文案，能力区改写为团队编排、多 Agent 会话、审批与 Jev、账号与账号池、迁移与压缩、引用与用量六项，首屏与账号、手机图库换成本次从真实界面（示例数据）重拍的截图，并清理 19 个失效素材。

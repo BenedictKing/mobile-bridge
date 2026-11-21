@@ -283,6 +283,14 @@ GATEWAY_AGENTS=codex,kimi,mcode,claude,dsh,zcode,opencode,workbuddy make serve
 
 前提是对应 CLI 已安装并位于 PATH（`kimi` / `mcode` / `npx`，Claude 经 `@agentclientprotocol/claude-agent-acp` 包装层接入，可用 `CLAUDE_ACP_BIN` 环境变量指定其他启动命令；DeepSeek 经 `@openma/deepseek-harness-acp` 包装层接入，可用 `DSH_ACP_BIN` 指定启动命令；ZCode 经 `zcode-acp-server` 包装层接入，可用 `ZCODE_ACP_BIN` 指定启动命令，凭据取自 `~/.zcode`，包装层需要 Node.js 22+；OpenCode 自带 ACP 子命令，经 `opencode acp` 接入，可用 `OPENCODE_BIN` 指定其他启动命令，须先用 `opencode auth login` 登录；WorkBuddy 经 `codebuddy --acp` 接入，可用 `CODEBUDDY_BIN` 指定 CLI 路径），且已完成各自登录（dsh 用 `dsh-acp login` 或 `DEEPSEEK_API_KEY` 环境变量；ZCode 在桌面 App 或 CLI 登录即可；WorkBuddy 在 WorkBuddy 桌面 App 或 CLI 登录即可）。网关会在进程内启动这些 Agent 的子进程，网页会话列表为每条会话标注所属 Agent；列表、历史、发送、审批、中断、排队与通知在多 Agent 间一致。补充当前任务、Skill、Fast 模式等能力按 Agent 支持情况自动隐藏；Goal 的 provider 分流见 `ARCHITECTURE.md` 的能力矩阵。新建聊天时 Agent 与项目两级独立选择，指向同一目录的项目跨 Agent 自动去重，也可以把一个 Agent 已有的本机项目目录交给另一个 Agent 创建会话。
 
+自建的 acp-agent 运行时只在显式配置后启用（`auto` 不会探测它），分执行成员 `acpagent` 与审核成员 `acpagent-review` 两个类型，因为角色由启动参数固定。环境变量给出完整启动命令；`--state-dir` 必须是绝对路径，且两个类型各用一个目录（共用时双方的 `session/list` 会列出对方会话）；团队任务建议调大默认的 40 次请求、30 分钟预算；模型凭据从 `--api-key-env` 指定的变量读取（默认 `MODEL_API_KEY`）。不建议让它担任团队 Lead。
+
+```sh
+ACP_AGENT_BIN='acp-agent acp --role member --state-dir /abs/acp-agent/member --base-url https://… --model MODEL_ID --max-requests 200 --max-duration-minutes 120' \
+ACP_AGENT_REVIEW_BIN='acp-agent acp --role reviewer --state-dir /abs/acp-agent/review --base-url https://… --model MODEL_ID' \
+make serve
+```
+
 Kimi、ZCode、MiniMax 与 WorkBuddy 另有多账号池，网页账号对话框按 Agent 分 tab，一次只读取当前 tab 的池：
 
 - **添加账号 / 重新登录**：直接在面板内完成（Kimi/MiniMax 为设备授权流，WorkBuddy 为扫码，ZCode 为网页 OAuth），不依赖 zcode-switcher 桌面版。

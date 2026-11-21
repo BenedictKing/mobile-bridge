@@ -56,13 +56,15 @@ func Discover(env func(string) string, home string) []Profile {
 		zcodeProfile(env, home),
 		opencodeProfile(env, home),
 		workbuddyProfile(env, home),
+		acpAgentProfile(env, "acpagent", "ACP Agent", "ACP_AGENT_BIN"),
+		acpAgentProfile(env, "acpagent-review", "ACP Agent Review", "ACP_AGENT_REVIEW_BIN"),
 	}
 }
 
 // KnownKind reports whether kind is a recognized agent kind (codex included).
 func KnownKind(kind string) bool {
 	switch kind {
-	case "codex", "kimi", "mcode", "claude", "dsh", "zcode", "opencode", "workbuddy":
+	case "codex", "kimi", "mcode", "claude", "dsh", "zcode", "opencode", "workbuddy", "acpagent", "acpagent-review":
 		return true
 	}
 	return false
@@ -95,7 +97,7 @@ func ParseKinds(value string) ([]string, error) {
 type agentsError struct{}
 
 func (agentsError) Error() string {
-	return "agents 支持 codex、kimi、mcode、claude、dsh、zcode、opencode、workbuddy，或 auto（自动探测本机已安装的）"
+	return "agents 支持 codex、kimi、mcode、claude、dsh、zcode、opencode、workbuddy、acpagent、acpagent-review，或 auto（自动探测本机已安装的）"
 }
 
 func errAgents() error { return agentsError{} }
@@ -340,6 +342,31 @@ func workbuddyProfile(env func(string) string, home string) Profile {
 		// codebuddy writes its transcript file (with the cwd session/list
 		// filters on) on the first message, not on session/new.
 		LazySessions: true,
+	}
+}
+
+// acpAgentProfile registers the self-hosted acp-agent runtime. It is opt-in
+// only: the launch needs a model endpoint, an absolute --state-dir and a
+// team role (member vs reviewer), so the env var carries the full argv,
+// e.g. `acp-agent acp --role member --state-dir /abs --base-url … --model …`.
+// A bare `acp-agent` on PATH never auto-enables it. The member and reviewer
+// kinds are separate because --role is fixed per process; give each its own
+// --state-dir, since session/list returns every session under that dir and
+// a shared dir would let one kind claim the other's sessions. Sessions
+// persist on session/new, so no lazy warm-up is needed.
+func acpAgentProfile(env func(string) string, kind, label, envVar string) Profile {
+	var argv []string
+	if command := env(envVar); command != "" {
+		argv = SplitArgv(command)
+	}
+	return Profile{
+		Kind: kind, Label: label,
+		Command:           argv,
+		InitializeTimeout: 30 * time.Second,
+		Capabilities:      []string{"steer"},
+		// acp-agent thinking levels: off|minimal|low|medium|high|xhigh.
+		EffortMap:   map[string]string{"none": "off", "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "xhigh", "ultra": "xhigh"},
+		SteerMethod: "_session/steering",
 	}
 }
 
