@@ -131,6 +131,7 @@ type WorkItem struct {
 
 // TeamInput 是一条已受理的团队输入（§3.1 最小字段）。
 type TeamInput struct {
+	PlanningVersion        int              `json:"planningVersion,omitempty"`
 	ID                     string           `json:"id"`
 	TeamID                 string           `json:"teamId"`
 	Sequence               uint64           `json:"sequence"` // 每 Team 的接受序号（FIFO 依据）
@@ -351,10 +352,24 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 	if len(intents) > 0 {
 		intent = intents[0]
 	}
+	return l.AcceptWithOptions(teamID, inputID, text, attachments, policyDigest, capacity, InputAcceptOptions{IssueRouting: issueRouting, Intent: intent})
+}
+
+type InputAcceptOptions struct {
+	IssueRouting    bool
+	Intent          string
+	PlanningVersion int
+}
+
+func (l *InputLedger) AcceptWithOptions(teamID, inputID, text string, attachments []string, policyDigest string, capacity int, options InputAcceptOptions) (*TeamInput, bool, error) {
+	intent, issueRouting := options.Intent, options.IssueRouting
+	if options.PlanningVersion < 0 || options.PlanningVersion > 1 {
+		return nil, false, errors.New("不支持的规划协议版本")
+	}
 	if intent != "" && intent != InputIntentTask {
 		return nil, false, errors.New("输入 intent 仅支持 task 或留空")
 	}
-	issueRouting = issueRouting || intent == InputIntentTask
+	issueRouting = issueRouting || intent == InputIntentTask || options.PlanningVersion == 1
 	if teamID == "" || inputID == "" {
 		return nil, false, errors.New("输入受理缺少团队或消息标识")
 	}
@@ -365,7 +380,7 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 		return nil, false, ErrNotFound
 	}
 	if existing := l.inputs[inputID]; existing != nil {
-		if existing.TeamID != teamID || existing.ContentHash != hash || existing.Intent != intent {
+		if existing.TeamID != teamID || existing.ContentHash != hash || existing.Intent != intent || existing.PlanningVersion != options.PlanningVersion {
 			return nil, false, ErrInputContentMismatch
 		}
 		return existing.Clone(), true, nil
@@ -383,7 +398,8 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 	input := &TeamInput{
 		ID: inputID, TeamID: teamID, Sequence: sequence,
 		Revision: 1, Text: text, Intent: intent, AttachmentIDs: append([]string(nil), attachments...),
-		ContentHash: hash, AcceptedAt: now, QueueStatus: InputQueued,
+		PlanningVersion: options.PlanningVersion,
+		ContentHash:     hash, AcceptedAt: now, QueueStatus: InputQueued,
 		AssociationStatus: associationStatus,
 		IssueRouting:      issueRouting,
 		PolicyDigest:      policyDigest, Version: 1,
@@ -405,6 +421,9 @@ func (l *InputLedger) AcceptWithIssueRouting(teamID, inputID, text string, attac
 	}
 	if intent != "" {
 		event.Payload["intent"] = intent
+	}
+	if options.PlanningVersion != 0 {
+		event.Payload["planningVersion"] = jsoncompat.Num(options.PlanningVersion)
 	}
 	event.IdempotencyKey = "team:" + teamID + ":input:" + inputID + ":accept"
 	if err := l.commitLocked(event, func() {
@@ -996,7 +1015,8 @@ func (l *InputLedger) applyInputEvent(event *Event) {
 		input := &TeamInput{
 			ID: inputID, TeamID: teamID, Sequence: sequence,
 			Revision: 1, Text: text, Intent: payloadString(event.Payload, "intent"), AttachmentIDs: attachments, ContentHash: hash,
-			AcceptedAt: now, QueueStatus: InputQueued,
+			PlanningVersion: payloadInt(event.Payload, "planningVersion"),
+			AcceptedAt:      now, QueueStatus: InputQueued,
 			AssociationStatus: IssueAssociationUnclassified,
 			IssueRouting:      payloadBool(event.Payload, "issueRouting"),
 			PolicyDigest:      payloadString(event.Payload, "policyDigest"), Version: 1,

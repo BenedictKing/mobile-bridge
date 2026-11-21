@@ -84,11 +84,19 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 			Ordinal: len(fresh.Tasks), Status: TaskPlanned, InstructionsHead: InstructionsHead(goal),
 			ExecutionContext: executionContext, DependsOn: dependsOn,
 		}
+		if sourceTaskID != "" {
+			source := findTaskIn(fresh, sourceTaskID)
+			task.WorkflowID, task.ExecutionThreadID = source.WorkflowID, source.ExecutionThreadID
+			task.WorkspaceID, task.WorkspaceMode, task.WriteLock = source.WorkspaceID, source.WorkspaceMode, source.WriteLock
+		}
 		task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
 		fresh.Tasks = append(fresh.Tasks, task)
 		if fresh.Status == RunWaitingInput || fresh.Status == RunPaused {
 			fresh.Status = RunDispatching
 			fresh.StopReason = ""
+		}
+		if fresh.Planning != nil && sourceTaskID == "" {
+			fresh.Planning.Status = "running"
 		}
 		payload := map[string]any{
 			"taskId": task.ID, "memberId": task.MemberID, "instructionsHead": task.InstructionsHead,
@@ -102,7 +110,12 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 			payload["prompt"] = task.Prompt
 			payload["dependsOn"] = append([]string(nil), task.DependsOn...)
 		}
-		return []*Event{newEvent(runID, EventTaskPlanned, "user", payload)}, true
+		addWorkflowTaskPayload(payload, &task)
+		events := []*Event{newEvent(runID, EventTaskPlanned, "user", payload)}
+		if fresh.Planning != nil {
+			events = append(events, planningEvent(fresh, "input-"+taskID))
+		}
+		return events, true
 	})
 	if decisionErr != nil {
 		return nil, false, decisionErr

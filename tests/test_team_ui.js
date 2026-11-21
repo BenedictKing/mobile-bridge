@@ -36,109 +36,40 @@ test('completed execution with an unconfirmed goal remains actionable',()=>{
   assert.match(text(row),/Execution ended/);assert.match(text(row),/Partially satisfied/);
 });
 
-test('goal assessment preserves drafts and retries the same operation without losing the original scope',async()=>{
-  const {renderTeamGoalReview}=require('../web/team.js');
-  const outcome={scope:{id:'issue-a',hash:'original-source'},evidenceHash:'evidence-1',status:'pending_confirmation',label:'结果待确认',reason:'待核对',canConfirm:true,
-    contract:{revision:2,deliverableKind:'answer',verify:{requirement:'not_required',reason:'咨询',status:'not_configured'},review:{requirement:'not_required',reason:'人工核对',status:'not_configured'},criteria:[{id:'original',text:'原始用户问题',state:'unknown'}]}};
-  const drafts=new Map(),sent=[];let updates=0;
-  const options={runVersion:8,drafts,submit:async body=>{sent.push(body);if(sent.length===1)throw Error('Network failed');return{version:9};},updated:()=>updates++};
-  const panel=renderTeamGoalReview(outcome,options);
-  const state=[...drafts.values()][0];state.reason='已核对答案';state.states.original='met';
-  const record=panel.querySelectorAll('button').find(n=>n.textContent==='Record assessment');
-  await record.listeners.click();
-  assert.equal(updates,0);assert.match(text(panel),/Network failed/);
-  await record.listeners.click();
-  assert.equal(updates,1);assert.equal(sent[0].id,sent[1].id,'请求结果未知时重试必须复用操作 ID');
-  assert.equal(sent[1].scopeId,'issue-a');assert.equal(sent[1].scopeHash,'original-source');assert.deepEqual(sent[1].states,{original:'met'});
-  renderTeamGoalReview(outcome,options);
-  assert.equal([...drafts.values()][0].reason,'已核对答案','轮询重绘保留输入');
-  renderTeamGoalReview({...outcome,evidenceHash:'evidence-2'},options);
-  assert.equal([...drafts.values()][0].states.original,'unknown','结果变化后必须重新核对');
-});
 function find(node,cls){const rows=[];const visit=current=>{if(String(current.className).split(/\s+/).includes(cls))rows.push(current);for(const child of current.children)visit(child);};visit(node);return rows;}
 function text(node){return node.textContent+node.children.map(text).join('');}
-
 function feedbackOutcome(overrides={}){
   return{scope:{id:'run',hash:'scope'},evidenceHash:'evidence',executionStatus:'completed',status:'pending_confirmation',label:'结果待确认',reason:'查看结果',canConfirm:true,
-    result:{text:'回答已经给出'},contract:{revision:1,deliverableKind:'result',verify:{requirement:'auto',status:'not_configured'},review:{requirement:'auto',status:'not_configured'},criteria:[{id:'original',text:'说明 Git 回撤机制',state:'unknown'}]},...overrides};
+    result:{text:'回答已经给出'},contract:{revision:1,verify:{requirement:'auto',status:'not_configured'},review:{requirement:'auto',status:'not_configured'}},...overrides};
 }
-
-test('result confirmation requires no acceptance setup or written explanation',async()=>{
-  const{renderTeamGoalReview}=require('../web/team.js'),sent=[],outcome=feedbackOutcome();
-  const panel=renderTeamGoalReview(outcome,{runVersion:4,drafts:new Map(),submit:async body=>sent.push(body)});
-  const settings=find(panel,'team-goal-contract')[0];assert.equal(settings.open,false,'高级条件默认收起');
-  const confirm=panel.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met');
-  assert.equal(confirm.disabled,false);await confirm.listeners.click();
-  assert.equal(sent.length,1);assert.equal(sent[0].action,'assess');assert.equal(sent[0].reason,'');
-  assert.deepEqual(sent[0].states,{original:'met'});assert.equal(sent[0].contract,undefined);
-  assert.ok(!text(panel).includes('Choose a deliverable type'));assert.ok(!text(panel).includes('Choose a check requirement'));
-});
-
-test('cancelled, failed and running executions show only their existing results',()=>{
-  const{renderTeamGoalReview}=require('../web/team.js');
-  for(const executionStatus of ['cancelled','failed','dispatching']){
-    const panel=renderTeamGoalReview(feedbackOutcome({executionStatus}),{runVersion:1,drafts:new Map()});
-    assert.equal(panel.querySelectorAll('select').length,0);assert.equal(panel.querySelectorAll('textarea').length,0);assert.equal(panel.querySelectorAll('button').length,0);
-    assert.match(text(panel),/回答已经给出/,'保留已有结果');assert.ok(!text(panel).includes('Result needs confirmation'));
+test('goal results are read-only and send supplementary requirements through chat',()=>{
+  const {renderTeamGoalReview}=require('../web/team.js');
+  for(const scope of [{id:'run',hash:'scope'},{id:'issue-a',hash:'scope'}]){
+    for(const executionStatus of ['completed','dispatching','waiting_input','failed','cancelled']){
+      const sent=[],drafts=new Map();
+      const panel=renderTeamGoalReview(feedbackOutcome({scope,executionStatus}),{drafts,submit:body=>sent.push(body)});
+      assert.match(text(panel),/回答已经给出/);
+      assert.match(text(panel),/Send additional requirements in team chat/);
+      for(const tag of ['textarea','select','button','fieldset'])assert.equal(panel.querySelectorAll(tag).length,0,tag+' form must be removed');
+      assert.equal(drafts.size,0);assert.equal(sent.length,0);
+    }
   }
-  const empty=renderTeamGoalReview(feedbackOutcome({executionStatus:'cancelled',result:null}),{drafts:new Map()});assert.equal(empty.hidden,true);
 });
-
-test('an active issue can close tracking without a run cancellation action',async()=>{
-  const{renderTeamGoalReview}=require('../web/team.js'),sent=[];
-  const outcome=feedbackOutcome({executionStatus:'dispatching',scope:{id:'issue-a',hash:'scope'}});
-  const drafts=new Map(),panel=renderTeamGoalReview(outcome,{runVersion:7,drafts,submit:async body=>sent.push(body)});
-  const buttons=panel.querySelectorAll('button');
-  assert.equal(buttons.find(button=>button.textContent==='Confirm requirements are met'),undefined);
-  assert.equal(buttons.find(button=>button.textContent==='Save completion criteria'),undefined);
-  const close=buttons.find(button=>button.textContent==='Close goal tracking');
-  assert.ok(close);[...drafts.values()][0].reason='不再需要追踪';await close.listeners.click();
-  assert.equal(sent.length,1);assert.equal(sent[0].action,'close');assert.equal(sent[0].scopeId,'issue-a');assert.equal(sent[0].reason,'不再需要追踪');
+test('empty unfinished results remain hidden',()=>{
+  const {renderTeamGoalReview}=require('../web/team.js');
+  assert.equal(renderTeamGoalReview(feedbackOutcome({executionStatus:'cancelled',result:null})).hidden,true);
 });
-
 test('workspace changes preserve the confirmed outcome and show both versions',()=>{
-  const{renderTeamGoalReview}=require('../web/team.js');
-  const outcome=feedbackOutcome({status:'satisfied',workspaceChange:{confirmedHead:'1234567890abcdef',currentHead:'abcdef1234567890',reason:'工作区版本已变化'}});
-  const panel=renderTeamGoalReview(outcome,{runVersion:4,drafts:new Map()});
+  const {renderTeamGoalReview}=require('../web/team.js');
+  const panel=renderTeamGoalReview(feedbackOutcome({status:'satisfied',workspaceChange:{confirmedHead:'1234567890abcdef',currentHead:'abcdef1234567890',reason:'工作区版本已变化'}}));
   assert.match(text(panel),/The workspace changed; the earlier assessment is preserved/);
   assert.match(text(panel),/1234567890ab → abcdef123456/);
 });
-
-test('shared task output is labelled in the goal result',()=>{
-  const{renderTeamGoalReview}=require('../web/team.js');
-  const outcome=feedbackOutcome({result:{text:'共享汇总',includesShared:true}});
-  const panel=renderTeamGoalReview(outcome,{runVersion:4,drafts:new Map()});
-  assert.match(text(panel),/Includes output from shared tasks/);
-});
-
-test('problem feedback preserves the original scope and needs only a concrete note',async()=>{
-  const{renderTeamGoalReview}=require('../web/team.js'),drafts=new Map(),sent=[];
-  const panel=renderTeamGoalReview(feedbackOutcome(),{runVersion:7,drafts,submit:async body=>sent.push(body)});
-  const feedback=panel.querySelectorAll('button').find(button=>button.textContent==='Report a problem');
-  await feedback.listeners.click();assert.equal(sent.length,0);assert.match(text(panel),/Describe what still needs/);
-  [...drafts.values()][0].reason='缺少未提交文件的回撤说明';await feedback.listeners.click();
-  assert.equal(sent[0].scopeHash,'scope');assert.deepEqual(sent[0].states,{original:'unmet'});assert.equal(sent[0].reason,'缺少未提交文件的回撤说明');
-});
-
-test('issue details omit problem feedback while preserving results and confirmation',async()=>{
-  const{renderTeamGoalReview}=require('../web/team.js'),sent=[];
-  const panel=renderTeamGoalReview(feedbackOutcome({scope:{id:'issue-a',hash:'scope'}}),{runVersion:7,drafts:new Map(),allowFeedback:false,submit:async body=>sent.push(body)});
-  assert.match(text(panel),/回答已经给出/);
-  assert.equal(panel.querySelectorAll('button').find(button=>button.textContent==='Report a problem'),undefined);
-  assert.ok(!text(panel).includes('Feedback or additional notes (optional)'));
-  const confirm=panel.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met');
-  assert.equal(confirm.disabled,false);await confirm.listeners.click();
-  assert.equal(sent.length,1);assert.equal(sent[0].reason,'');assert.deepEqual(sent[0].states,{original:'met'});
-});
-
-test('missing required evidence disables confirmation while allowing feedback',async()=>{
-  const{renderTeamGoalReview}=require('../web/team.js'),sent=[];
-  const panel=renderTeamGoalReview(feedbackOutcome({canConfirm:false,status:'pending_verification'}),{drafts:new Map(),submit:async body=>sent.push(body)});
-  const confirm=panel.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met');
-  assert.equal(confirm.disabled,true);await confirm.listeners.click();assert.equal(sent.length,0);
-  assert.equal(panel.querySelectorAll('button').find(button=>button.textContent==='Report a problem').disabled,false);
-  const satisfied=renderTeamGoalReview(feedbackOutcome({status:'satisfied'}),{drafts:new Map()});
-  assert.equal(satisfied.querySelectorAll('button').find(button=>button.textContent==='Confirm requirements are met').hidden,true,'已确认后不重复要求确认');
+test('shared output and real verification evidence remain visible',()=>{
+  const {renderTeamGoalReview}=require('../web/team.js');
+  const panel=renderTeamGoalReview(feedbackOutcome({result:{text:'共享汇总',includesShared:true},contract:{verify:{requirement:'required',status:'failed'},review:{requirement:'auto',status:'not_configured'}}}));
+  assert.match(text(panel),/Includes output from shared tasks/);assert.match(text(panel),/Did not pass/);
+  assert.equal(panel.querySelectorAll('button').length,0);
 });
 
 const team={id:'t1',name:'团队',leadId:'kimi',project:'codex:7015435b2c37',projectCwd:'/Users/me/mobile-bridge/',policy:{},members:[

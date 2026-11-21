@@ -5,7 +5,10 @@ package team
 // 不做任何 I/O——真实的派发、journal 记账与锁获取由 team-dispatch 执行；
 // LockRegistry 是唯一的可变状态（纯内存登记，cwd 由调用方解析传入）。
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 // LockRegistry 是项目级写锁的内存登记表（§6.4 规则 1/2）：cwd → 持锁任务。
 // Acquire/Release/Holder 并发安全；同一 cwd 同时最多一个持锁者。跨 Run 共享
@@ -54,7 +57,11 @@ func (l *LockRegistry) Holder(cwd string) string {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.holders[cwd]
+	holder := l.holders[cwd]
+	if at := strings.LastIndexByte(holder, 0); at >= 0 {
+		return holder[at+1:]
+	}
+	return holder
 }
 
 // depGroupVerdict 是依赖释放判定的唯一权威（§6.5 组语义，阶段二）——
@@ -206,7 +213,7 @@ func ReadyTasks(run *Run, policy TeamPolicy, inFlight int, memberBusy map[string
 			continue
 		}
 		released, blocked := depGroupVerdict(statuses, groups, task.DependsOn, run.CollectPolicy)
-		if blocked || !released || busy[task.MemberID] {
+		if blocked || !released || busy[taskLeaseKey(&task)] {
 			continue
 		}
 		if task.WriteLock != TaskWriteLockNone {
@@ -223,7 +230,7 @@ func ReadyTasks(run *Run, policy TeamPolicy, inFlight int, memberBusy map[string
 			}
 		}
 		ready = append(ready, task.ID)
-		busy[task.MemberID] = true
+		busy[taskLeaseKey(&task)] = true
 	}
 	return ready
 }

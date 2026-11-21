@@ -268,7 +268,7 @@ func (s *Service) accountDispatchLockedWithBriefingSession(state *runState, team
 
 	// ③ 写锁：exclusive 任务先取 cwd 级写锁（§6.4 规则 1/2）；取不到暂缓。
 	if task.WriteLock != TaskWriteLockNone {
-		if !s.locks.Acquire(cwd, task.ID) {
+		if !s.locks.Acquire(cwd, taskLockKey(run.ID, task.ID)) {
 			return nil, nil
 		}
 	}
@@ -384,14 +384,14 @@ func (s *Service) accountDispatchLockedWithBriefingSession(state *runState, team
 		return events, true
 	})
 	if err != nil {
-		s.locks.Release(cwd, task.ID)
+		s.locks.Release(cwd, taskLockKey(run.ID, task.ID))
 		return nil, fmt.Errorf("任务 %s 派发记账失败: %w", taskID, err)
 	}
 	if !applied {
 		// 任务已被并发置终态：释放刚获取的写锁、不登记 taskCwds、不入队
 		//（终态任务派发是零价值副作用——账本条目会成孤儿，3s worker 会把
 		// prompt 真正发给 Agent）。调用方按本轮放弃处理。
-		s.locks.Release(cwd, task.ID)
+		s.locks.Release(cwd, taskLockKey(run.ID, task.ID))
 		return nil, nil
 	}
 	state.taskCwds[taskID] = cwd
@@ -421,6 +421,7 @@ func composeTaskDispatchMessage(team *Team, run *Run, task *Task, policy TeamPol
 func composeTaskDispatchMessageWithBriefing(team *Team, run *Run, task *Task, policy TeamPolicy, leadBriefing string) composedTaskMessage {
 	context := BuildTaskContext(run, task, policy)
 	lead := BuildLeadBriefing(team, run, task, policy)
+	lead += goalPlanningBriefing(run, task)
 	leadTask := team != nil && run != nil && task != nil && run.AutoPlan &&
 		team.LeadID != "" && task.MemberID == team.LeadID && !task.Reduction &&
 		(task.ExecutionContext != ExecutionContextLeadRun || task.IssueClassificationOnly)
@@ -438,6 +439,14 @@ func composeTaskDispatchMessageWithBriefing(team *Team, run *Run, task *Task, po
 		// 记账的机器裁决一致，unknown 只能表述为「未取得裁决」——2026-11-07
 		// 真实 Run 里 Lead 曾把 unknown 摘要成「独立审查未发现问题」。
 		briefing += BuildDeliveryBriefing(team, run)
+	}
+	if run != nil && run.Planning != nil {
+		remaining := promptHardLimit - len(briefing) - len(task.Prompt) - len(assignedTaskHeader) - 2
+		if remaining > 0 && len(context.Text) > remaining {
+			contextPolicy := policy
+			contextPolicy.MaxContextChars = min(policy.MaxContextChars, remaining/4)
+			context = BuildTaskContext(run, task, contextPolicy)
+		}
 	}
 	message := ComposeTaskMessage(context.Text, task.Prompt)
 	if briefing != "" && context.Text == "" {

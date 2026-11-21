@@ -567,6 +567,16 @@ func applyJournalEventToRun(run *Run, event *Event) {
 				}
 				run.Goals[record.Scope.ID] = record
 			}
+		case EventGoalPlanning:
+			var state GoalPlanningState
+			raw, _ := json.Marshal(treeToGo(event.Payload["planning"]))
+			if err := json.Unmarshal(raw, &state); err == nil {
+				run.Planning = &state
+				if status := payloadString(event.Payload, "runStatus"); status != "" {
+					run.Status = status
+					run.StopReason = payloadString(event.Payload, "stopReason")
+				}
+			}
 		case EventRunWaitingInput:
 			run.Status = RunWaitingInput
 		case EventThreadBound:
@@ -590,6 +600,9 @@ func applyJournalEventToRun(run *Run, event *Event) {
 					thread.ProviderSessionID = payloadString(event.Payload, "providerSessionId")
 					if context := payloadString(event.Payload, "executionContext"); context != "" {
 						thread.ExecutionContext = context
+					}
+					if payloadBool(event.Payload, "verifyCleared") {
+						run.Verify = nil
 					}
 					if kind := payloadString(event.Payload, "agentKind"); kind != "" {
 						thread.AgentKind = kind
@@ -661,6 +674,8 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			actionKey := payloadString(event.Payload, "actionKey")
 			if actionKey != "" {
 				rebuilt := Action{
+					WorkflowID:   payloadString(event.Payload, "workflowId"),
+					WorkspaceID:  payloadString(event.Payload, "workspaceId"),
 					Type:         payloadString(event.Payload, "type"),
 					SourceTaskID: payloadString(event.Payload, "sourceTaskId"),
 					Round:        payloadInt(event.Payload, "round"),
@@ -743,6 +758,14 @@ func applyJournalEventToRun(run *Run, event *Event) {
 	}
 	switch event.Type {
 	case EventTaskPlanned:
+		task.WorkflowID = payloadString(event.Payload, "workflowId")
+		task.GoalFeedback = payloadBool(event.Payload, "goalFeedback")
+		if task.WorkflowID != "" || task.GoalFeedback {
+			task.ExecutionThreadID = payloadString(event.Payload, "executionThreadId")
+			task.WorkspaceID = payloadString(event.Payload, "workspaceId")
+			task.WorkspaceMode = payloadString(event.Payload, "workspaceMode")
+			task.WriteLock = payloadString(event.Payload, "writeLock")
+		}
 		if raw, exists := event.Payload["swarmTask"]; exists {
 			data, _ := json.Marshal(treeToGo(raw))
 			var saved Task
@@ -770,7 +793,7 @@ func applyJournalEventToRun(run *Run, event *Event) {
 		if refs := payloadStrings(event.Payload, "reviewOf"); len(refs) > 0 {
 			task.ReviewOf = refs
 		}
-		if task.Reduction || task.TriageFor != "" || payloadString(event.Payload, "sourceTaskId") != "" {
+		if task.Reduction || task.GoalFeedback || task.WorkflowID != "" || task.TriageFor != "" || payloadString(event.Payload, "sourceTaskId") != "" {
 			task.Prompt = payloadString(event.Payload, "prompt")
 			task.DependsOn = payloadStrings(event.Payload, "dependsOn")
 		}

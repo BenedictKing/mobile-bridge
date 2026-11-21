@@ -225,6 +225,10 @@ func buildReviewRepairTask(run *Run, team *Team, reviewTaskID string) (Task, boo
 	if task.MemberID == team.LeadID {
 		task.ExecutionContext = ExecutionContextLeadRun
 	}
+	if review.WorkflowID != "" {
+		task.WorkflowID, task.ExecutionThreadID = review.WorkflowID, review.ExecutionThreadID
+		task.WorkspaceID, task.WorkspaceMode = review.WorkspaceID, review.WorkspaceMode
+	}
 	task.InputHash = InputHashFor(&task, PolicyDigest(team.Policy), "")
 	return task, true
 }

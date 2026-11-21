@@ -123,14 +123,13 @@ function teamTaskSessionId(task,detail,member){
   return task.result?.sessionId||task.dispatchSessionId||thread?.providerSessionId||member?.sessionId||'';
 }
 
-// Run 与事项共用的目标核对入口；草稿留在控制器内，轮询重绘不会丢失用户输入。
-function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executionStatus=outcome.executionStatus,allowFeedback=true}){
+// Run 与事项共用的只读结果投影；补充需求统一由聊天入口归集。
+function renderTeamGoalReview(outcome,{executionStatus=outcome.executionStatus}={}){
   const t=BridgeI18n.t,node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
   const box=node('section',undefined,'team-goal-review');
   const reviewable=!executionStatus||executionStatus==='completed';
-  const closeOnly=!reviewable&&outcome.scope?.id&&outcome.scope.id!=='run';
-  if(!reviewable&&!closeOnly&&!outcome.result?.text){box.hidden=true;return box;}
-  if(reviewable||closeOnly)box.append(node('h3',t(outcome.label||'目标结果')),node('p',outcome.reason||'','muted'));
+  if(!reviewable&&!outcome.result?.text){box.hidden=true;return box;}
+  if(reviewable||outcome.result?.text)box.append(node('h3',t(outcome.label||'目标结果')),node('p',outcome.reason||'','muted'));
   if(outcome.result?.text){
     const result=node('details',undefined,'team-goal-result');result.open=true;
     result.append(node('summary',t(reviewable?'最终结果':'已有结果')));
@@ -146,74 +145,10 @@ function renderTeamGoalReview(outcome,{runVersion,drafts,submit,updated,executio
     const change=outcome.workspaceChange,confirmed=String(change.confirmedHead||'?').slice(0,12),current=String(change.currentHead||'?').slice(0,12);
     box.append(node('p',t('工作区已变化，确认时的结论仍保留。')+' '+confirmed+' → '+current+(change.reason?' · '+change.reason:''),'muted'));
   }
-  if(outcome.closed||(!reviewable&&!closeOnly))return box;
-  const key=outcome.scope.id+'|'+outcome.scope.hash+'|'+outcome.contract.revision;
-  let state=drafts.get(key);
-  if(!state||state.evidenceHash!==outcome.evidenceHash){
-    const c=outcome.contract,automatic=value=>!value||value==='unspecified'?'auto':value;
-    state={evidenceHash:outcome.evidenceHash,kind:c.deliverableKind==='unspecified'?'result':c.deliverableKind,verify:automatic(c.verify.requirement),verifyReason:c.verify.reason||'',review:automatic(c.review.requirement),reviewReason:c.review.reason||'',extra:'',reason:'',states:Object.fromEntries(c.criteria.map(item=>[item.id,item.state])),busy:false};
-    drafts.set(key,state);
-  }
-  const controls=[],error=node('p',state.error||'','error'),notice=node('p','','muted');
-  const field=(label,control,translate=true)=>{const wrap=node('label',undefined,'team-goal-field');wrap.append(node('span',translate?t(label):label),control);controls.push(control);return wrap;};
-  const select=(name,options,value,update)=>{const el=node('select');el.name=name;for(const [id,label] of options){const option=node('option',t(label));option.value=id;el.append(option);}el.value=value;el.addEventListener('change',()=>update(el.value));return el;};
-  const textArea=(value,update)=>{const el=node('textarea');el.rows=2;el.value=value;el.addEventListener('input',()=>update(el.value));return el;};
-  const settings=node('details',undefined,'team-goal-contract');settings.open=closeOnly;
-  settings.append(node('summary',t(closeOnly?'关闭事项追踪':'调整完成条件（可选）')));
-  if(reviewable){
-    settings.append(node('p',t('原始要求已保留，需要时可补充条件或调整检查方式。'),'muted'));
-    settings.append(field('交付类型',select('deliverableKind',[['result','任务结果'],['answer','咨询回答'],['investigation','调查分析'],['change','实现修改'],['operation','操作执行']],state.kind,value=>state.kind=value)));
-    const requirements=[['auto','跟随执行中的检查'],['required','必须通过'],['not_required','本次不需要']];
-    settings.append(field('验证要求',select('verifyRequirement',requirements,state.verify,value=>state.verify=value)));
-    const verifyReason=field('验证不适用的原因',textArea(state.verifyReason,value=>state.verifyReason=value));verifyReason.hidden=state.verify!=='not_required';settings.append(verifyReason);
-    settings.querySelector('select[name="verifyRequirement"]')?.addEventListener('change',()=>{verifyReason.hidden=state.verify!=='not_required';});
-    settings.append(field('审查要求',select('reviewRequirement',requirements,state.review,value=>state.review=value)));
-    const reviewReason=field('审查不适用的原因',textArea(state.reviewReason,value=>state.reviewReason=value));reviewReason.hidden=state.review!=='not_required';settings.append(reviewReason);
-    settings.querySelector('select[name="reviewRequirement"]')?.addEventListener('change',()=>{reviewReason.hidden=state.review!=='not_required';});
-    settings.append(field('补充完成条件（每行一项）',textArea(state.extra,value=>state.extra=value)));
-  }
-  const act=async(action,choice='')=>{
-    if(state.busy)return;
-    if(choice==='confirm'&&!outcome.canConfirm)return;
-    if(choice==='feedback'&&!state.reason.trim()){error.textContent=t('请说明结果还有哪些问题');return;}
-    const payload={action,version:runVersion,goalRevision:outcome.contract.revision,scopeId:outcome.scope.id,scopeHash:outcome.scope.hash,evidenceHash:outcome.evidenceHash,reason:state.reason};
-    if(action==='define'){
-      const criteria=outcome.contract.criteria.map(c=>({...c,state:'unknown'}));
-      const additions=state.extra.split('\n').map(s=>s.trim()).filter(Boolean);
-      for(const text of additions)criteria.push({id:'extra-'+(criteria.length+1),text,state:'unknown'});
-      payload.contract={deliverableKind:state.kind,criteria,verify:{requirement:state.verify,reason:state.verifyReason},review:{requirement:state.review,reason:state.reviewReason}};
-    }else if(action==='assess')payload.states=choice==='confirm'?Object.fromEntries(outcome.contract.criteria.map(item=>[item.id,'met'])):choice==='feedback'?{...state.states,original:'unmet'}:state.states;
-    const signature=JSON.stringify(payload);
-    if(state.pendingSignature!==signature){state.pendingSignature=signature;state.operationID=typeof uuid==='function'?uuid():crypto.randomUUID();}
-    payload.id=state.operationID;
-    state.busy=true;error.textContent='';notice.textContent=t('正在处理…');syncControls();
-    try{const result=await submit(payload);state.busy=false;state.error='';updated?.(result);}
-    catch(failure){state.error=failure.message||String(failure);error.textContent=state.error;notice.textContent='';}
-    finally{state.busy=false;syncControls();}
-  };
-  const button=(label,action,choice='')=>{const el=node('button',t(label));el.type='button';el.addEventListener('click',()=>act(action,choice));controls.push(el);return el;};
-  if(reviewable){
-    settings.append(button('保存完成条件','define'));
-    const checks=node('fieldset');checks.append(node('legend',t('逐项核对原始要求')));
-    for(const criterion of outcome.contract.criteria){
-      checks.append(field(criterion.text,select('criterion-'+criterion.id,[['unknown','待确认'],['met','满足'],['unmet','不满足']],state.states[criterion.id]||'unknown',value=>state.states[criterion.id]=value),false));
-    }
-    settings.append(checks,button('记录核对结论','assess'));
-  }
-  const close=button('关闭目标追踪','close');if(reviewable)settings.append(close);
-  const evidence=node('p',undefined,'muted');
   const labels={passed:'已通过',failed:'未通过',pending:'待执行',stale:'证据已过期',unknown:'未取得结论',not_configured:'未配置'};
-  const checkLabel=check=>check.requirement==='not_required'?t('本次不需要')+' · '+check.reason:t(labels[check.status]||'未配置');
-  const checksConfigured=[['验证',outcome.contract.verify],['审查',outcome.contract.review]].filter(([,check])=>check.requirement==='required'||check.status!=='not_configured');
-  if(checksConfigured.length){evidence.textContent=checksConfigured.map(([label,check])=>t(label)+' · '+checkLabel(check)).join(' / ');box.append(evidence);}
-  if(allowFeedback&&reviewable&&!outcome.canConfirm)box.append(node('p',t('当前结果或必要检查尚未就绪，可先反馈问题。'),'muted'));
-  if(allowFeedback||closeOnly)box.append(field(closeOnly?'关闭原因':'反馈或补充说明（可选）',textArea(state.reason,value=>state.reason=value)));
-  const confirm=button('确认符合要求','assess','confirm'),actions=node('div',undefined,'team-run-actions');
-  confirm.className='primary';confirm.hidden=outcome.status==='satisfied';actions.append(confirm);
-  if(allowFeedback)actions.append(button('反馈问题','assess','feedback'));
-  if(reviewable)box.append(actions,notice,error,settings);else box.append(close,notice,error);
-  function syncControls(){for(const el of controls)el.disabled=!!state.busy||el===confirm&&!outcome.canConfirm;}
-  syncControls();
+  const checks=[['验证',outcome.contract?.verify],['审查',outcome.contract?.review]].filter(([,check])=>check&&(check.requirement==='required'||check.status!=='not_configured'));
+  if(checks.length)box.append(node('p',checks.map(([label,check])=>t(label)+' · '+(check.requirement==='not_required'?t('本次不需要')+' · '+(check.reason||''):t(labels[check.status]||'未配置'))).join(' / '),'muted'));
+  if(!outcome.closed)box.append(node('p',t('补充需求请在团队聊天中发送，AI 会归集到对应工作流。'),'muted'));
   return box;
 }
 // 状态徽标：label 同时写进 data-i18n，切语言时 BridgeI18n.apply 可热刷新。
@@ -1538,7 +1473,6 @@ class TeamRunScreen{
     this.diffOpen=new Set();   // 已展开「查看改动」的 taskId
     this.actionNotice='';      // 动作成功提示（转发等），随下一次动作/打开清空
     this.questionState=new Map(); // questionId -> {busy,error,draft}：decision 卡本地态（帧重渲染不丢已填内容与错误）
-    this.goalDrafts=new Map();
     this.taskCleanup=new Map();   // taskId -> {busy,error,done}：工作区清理的就地反馈（错误照 forwardDialog 内联风格）
     this.taskActionKeys=new Map();// taskId -> actionKey：派生任务落地凭据（task_planned 载荷；Run detail 的任务对象不携带该字段）
     this.stats=null;         // /stats 快照：{loading,error,data}（进页拉一次+手动刷新）
@@ -2036,10 +1970,7 @@ class TeamRunScreen{
     const body=this.node('div',undefined,'team-run-body');
     if(detail.swarm&&typeof TeamSwarmPanel!=='undefined')body.append(new TeamSwarmPanel({run:detail,teamId:this.teamId,request:this.request,drafts:this.swarmDrafts,onChange:()=>this.scheduleRefetch(0)}).render());
     for(const outcome of detail.goalOutcomes||[]){
-      const generation=this.generation,url=this.runUrl('goal-review');
-      body.append(renderTeamGoalReview(outcome,{runVersion:detail.version,executionStatus:detail.status,drafts:this.goalDrafts,
-        submit:body=>this.request(url,{method:'POST',body}),
-        updated:result=>{if(this.generation!==generation)return;this.detail=result;this.meta=null;this.render();}}));
+      body.append(renderTeamGoalReview(outcome,{executionStatus:detail.status}));
     }
     if(this.stalled){
       // stall 顶部提示条（§6.3「20 分钟无成功只通知不停止」）：事件到达展示，

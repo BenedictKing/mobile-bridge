@@ -88,6 +88,9 @@ func BuildTaskContext(run *Run, task *Task, policy TeamPolicy) ContextResult {
 		} else {
 			content = dep.Result
 		}
+		if run.Planning != nil {
+			content = ResultDisplayText(content)
+		}
 		if dep.Status != TaskCompleted || strings.TrimSpace(content) == "" {
 			continue
 		}

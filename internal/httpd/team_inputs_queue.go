@@ -26,6 +26,8 @@ const teamQueueVersionGate = "2"
 // 新版画布消息使用持久输入账本，即使用户没有开启可选的排队发送开关。
 const teamIssueRoutingVersionGate = "1"
 
+const teamGoalPlanningVersionGate = "2"
+
 func (h *handler) handleTeamInputDelete(teamID, inputID string) {
 	if h.loadTeam(teamID) == nil {
 		return
@@ -93,6 +95,14 @@ func (h *handler) queueTeamInputValidate(threadID, rawGoal string, attachments [
 // acceptQueuedTeamInput 是两条入口（POST /inputs queueVersion:2 与主控会话
 // teamQueueVersion:2）的共用受理体：校验 → 账本 Accept（同 ID 幂等）→ 202。
 func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, rawGoal string, attachments []string, issueRouting bool, intents ...string) (*team.TeamInput, bool, error) {
+	intent := ""
+	if len(intents) > 0 {
+		intent = intents[0]
+	}
+	return h.acceptTeamInputWithOptions(teamRow, threadID, inputID, rawGoal, attachments, team.InputAcceptOptions{IssueRouting: issueRouting, Intent: intent})
+}
+
+func (h *handler) acceptTeamInputWithOptions(teamRow *team.Team, threadID, inputID, rawGoal string, attachments []string, options team.InputAcceptOptions) (*team.TeamInput, bool, error) {
 	if inputID == "" {
 		return nil, false, &teamInputError{http.StatusBadRequest, "缺少消息标识，请刷新后重试"}
 	}
@@ -101,7 +111,7 @@ func (h *handler) acceptQueuedTeamInput(teamRow *team.Team, threadID, inputID, r
 		return nil, false, validateErr
 	}
 	capacity := teamRow.Policy.MaxPendingInputs
-	input, duplicate, err := h.server.TeamInputs.AcceptWithIssueRouting(teamRow.ID, inputID, goal, attachments, team.PolicyDigest(teamRow.Policy), capacity, issueRouting, intents...)
+	input, duplicate, err := h.server.TeamInputs.AcceptWithOptions(teamRow.ID, inputID, goal, attachments, team.PolicyDigest(teamRow.Policy), capacity, options)
 	if err != nil {
 		return nil, false, err
 	}
@@ -127,6 +137,7 @@ func (h *handler) outputQueuedTeamInput(input *team.TeamInput, duplicate bool) {
 	result.Set("queueStatus", input.QueueStatus)
 	result.Set("associationStatus", input.AssociationStatus)
 	result.Set("issueRouting", input.IssueRouting)
+	result.Set("planningVersion", jsoncompat.Num(input.PlanningVersion))
 	result.Set("sequence", jsoncompat.Num(int(input.Sequence)))
 	result.Set("revision", jsoncompat.Num(input.Revision))
 	result.Set("text", input.Text)
@@ -151,6 +162,7 @@ func (h *handler) outputAcceptedTeamInput(input *team.TeamInput, duplicate bool)
 	result.Set("queueStatus", input.QueueStatus)
 	result.Set("associationStatus", input.AssociationStatus)
 	result.Set("issueRouting", input.IssueRouting)
+	result.Set("planningVersion", jsoncompat.Num(input.PlanningVersion))
 	result.Set("sequence", jsoncompat.Num(int(input.Sequence)))
 	result.Set("revision", jsoncompat.Num(input.Revision))
 	result.Set("text", input.Text)
@@ -181,6 +193,7 @@ func teamQueueInputProject(input *team.TeamInput) *jsoncompat.Object {
 	}
 	object.Set("associationStatus", associationStatus)
 	object.Set("issueRouting", input.IssueRouting)
+	object.Set("planningVersion", jsoncompat.Num(input.PlanningVersion))
 	if input.AssociationReason != "" {
 		object.Set("associationReason", input.AssociationReason)
 	}

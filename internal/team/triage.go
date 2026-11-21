@@ -84,6 +84,9 @@ func buildFailureTriageTask(run *Run, team *Team, failed *Task) Task {
 		fmt.Fprintf(&prompt, "- id=%s · name=%s · agent=%s\n", member.ID, truncateRunes(name, 120), member.AgentKind)
 	}
 	fmt.Fprintf(&prompt, "请只输出一个 delegate 动作：sourceTaskId 使用本分诊任务 ID %q，member 从上述成员中选择，task 写明接手后要重做的内容。", "lead-triage-"+fmt.Sprint(countFailureTriages(run)+1))
+	if failed.WorkflowID != "" {
+		fmt.Fprintf(&prompt, "workflowId 必须保留为 %q。", failed.WorkflowID)
+	}
 	prompt.WriteString("不要输出 summarize，不要把失败成员当作唯一候选；改派会保留原任务 ID 与依赖关系。")
 	text := prompt.String()
 	task := Task{
@@ -119,7 +122,7 @@ func failureRetriageTarget(run *Run, action *Action) (*Task, bool) {
 }
 
 func applyRetriage(run *Run, target *Task, action *Action, leadID string) []*Event {
-	applyTaskRetryAssignment(target, newRetriageAssignment(target, action, leadID))
+	applyTaskRetryAssignment(target, newRetriageAssignment(target, action, leadID, run.ID))
 	events := []*Event{retriageActionEvent(target, action, run, true)}
 	recovered := map[string]bool{target.ID: true}
 	for _, ordered := range sortTasksByOrdinal(run.Tasks) {
@@ -156,6 +159,9 @@ func retriageActionEvent(task *Task, action *Action, run *Run, reassigned bool) 
 		payload["instructionsHead"] = task.InstructionsHead
 		payload["writeLock"] = task.WriteLock
 		payload["executionContext"] = task.ExecutionContext
+		if task.WorkflowID != "" {
+			payload["executionThreadId"] = task.ExecutionThreadID
+		}
 	}
 	event := newEvent(run.ID, EventTaskRetryScheduled, "triage", payload)
 	event.IdempotencyKey = actionExecutionKey(run.TeamID, run.ID, action.ActionKey)
@@ -166,15 +172,16 @@ func retriageActionEvent(task *Task, action *Action, run *Run, reassigned bool) 
 }
 
 type taskRetryAssignment struct {
-	attempt          int
-	memberID         string
-	prompt           string
-	instructionsHead string
-	writeLock        string
-	executionContext string
+	attempt           int
+	memberID          string
+	prompt            string
+	instructionsHead  string
+	writeLock         string
+	executionContext  string
+	executionThreadID string
 }
 
-func newRetriageAssignment(task *Task, action *Action, leadID string) taskRetryAssignment {
+func newRetriageAssignment(task *Task, action *Action, leadID, runID string) taskRetryAssignment {
 	next := task.Attempt + 1
 	if next < firstAttempt {
 		next = firstAttempt
@@ -188,11 +195,15 @@ func newRetriageAssignment(task *Task, action *Action, leadID string) taskRetryA
 	if action.Member == leadID {
 		executionContext = ExecutionContextLeadRun
 	}
-	return taskRetryAssignment{
+	assignment := taskRetryAssignment{
 		attempt: next, memberID: action.Member, prompt: prompt,
 		instructionsHead: InstructionsHead(prompt), writeLock: writeLock,
 		executionContext: executionContext,
 	}
+	if task.WorkflowID != "" {
+		assignment.executionThreadID = workflowThreadID(runID, action.Member, task.WorkflowID)
+	}
+	return assignment
 }
 
 func retryAssignmentFromEvent(event *Event) taskRetryAssignment {
@@ -200,6 +211,7 @@ func retryAssignmentFromEvent(event *Event) taskRetryAssignment {
 		attempt: payloadInt(event.Payload, "attempt"), memberID: payloadString(event.Payload, "memberId"),
 		prompt: payloadString(event.Payload, "prompt"), instructionsHead: payloadString(event.Payload, "instructionsHead"),
 		writeLock: payloadString(event.Payload, "writeLock"), executionContext: payloadString(event.Payload, "executionContext"),
+		executionThreadID: payloadString(event.Payload, "executionThreadId"),
 	}
 }
 
@@ -221,6 +233,9 @@ func applyTaskRetryAssignment(task *Task, assignment taskRetryAssignment) {
 		task.InstructionsHead = assignment.instructionsHead
 		task.WriteLock = assignment.writeLock
 		task.ExecutionContext = assignment.executionContext
+		if assignment.executionThreadID != "" {
+			task.ExecutionThreadID = assignment.executionThreadID
+		}
 	}
 }
 

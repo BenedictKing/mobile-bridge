@@ -8,7 +8,7 @@ import (
 // continuationBriefing 为控制回合提供有界血缘摘要，不复制或执行旧动作信封。
 // 它与其他 Lead 简报一起进入派发哈希，并由 Task.SentText 固定首次派发内容。
 func (s *Service) continuationBriefing(run *Run, task *Task, policy TeamPolicy) string {
-	if run == nil || task == nil || run.ParentRunID == "" || task.IssueClassificationOnly || task.Reduction || task.ExecutionContext == ExecutionContextLeadRun || policy.MaxContextChars <= 0 {
+	if run == nil || task == nil || run.ParentRunID == "" || task.IssueClassificationOnly || (task.Reduction && !task.GoalFeedback) || task.ExecutionContext == ExecutionContextLeadRun || policy.MaxContextChars <= 0 {
 		return ""
 	}
 	var ancestors []*Run
@@ -59,6 +59,9 @@ func (s *Service) continuationBriefing(run *Run, task *Task, policy TeamPolicy) 
 			parent.ID, parent.Status, completed, total, boundedContinuationText(parent.Goal, 1400), boundedContinuationText(lastReply, 400))
 		if parent.StopReason != "" {
 			fmt.Fprintf(&builder, "结束原因：%s\n", boundedContinuationText(parent.StopReason, 240))
+		}
+		if parent.Planning != nil {
+			fmt.Fprintf(&builder, "既有 workflow 规划（聊天补充优先归集到相关分支，复用 ID 与有效成果）：%s\n", boundedContinuationText(goalPlanningSummary(parent.Planning), 1600))
 		}
 	}
 	return boundedContinuationText(builder.String(), budget)

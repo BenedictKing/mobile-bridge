@@ -61,6 +61,7 @@ const (
 // 派生任务写锁（§6.4 规则 3：纯读任务可 none 与写任务并行），request_context
 // 不创建任务、不接受该字段（validateActionEntry 拒绝）。
 var actionKnownFields = map[string]bool{
+	"workflowId": true, "workspaceId": true,
 	"type": true, "sourceTaskId": true, "round": true, "member": true,
 	"task": true, "fromTaskId": true, "writeLock": true, "review": true,
 	"key": true, "dependsOn": true, "reviewOf": true, "phase": true,
@@ -394,6 +395,8 @@ func ValidateActions(payload *jsoncompat.Object, team *Team, run *Run, policy Te
 		action.Round = actionRoundOf(entry)
 		action.Member, _ = entry.MustGet("member").(string)
 		action.Task, _ = entry.MustGet("task").(string)
+		action.WorkflowID, _ = entry.MustGet("workflowId").(string)
+		action.WorkspaceID, _ = entry.MustGet("workspaceId").(string)
 		phase, _ := entry.MustGet("phase").(string)
 		action.Phase = NormalizeTaskPhase(phase)
 		action.FromTaskID, _ = entry.MustGet("fromTaskId").(string)
@@ -490,6 +493,16 @@ func runHasUnfinishedExecution(team *Team, run *Run) bool {
 // 未覆盖的保持保守拒绝——审查先于实现完成启动的根因正是「都只依赖根
 // Lead」。reviewOf 版本绑定（阶段 5）上线后按方案替换为因果+版本双闸门。
 func validateActionReviewOrder(team *Team, run *Run, actions []Action, byKey map[string]string) []string {
+	if run != nil && run.Planning != nil {
+		var violations []string
+		for i := range actions {
+			if delegateActionIsReview(team, &actions[i]) && len(actions[i].ReviewOf) == 0 {
+				violations = append(violations, "workflow 审查必须用 reviewOf 声明被审任务；被审依赖完成后才能执行")
+			}
+		}
+		// reviewOf 在批级校验中解析，并由 buildActionTask 并入实际依赖。
+		return violations
+	}
 	hasExecution := false
 	reviews := make([]*Action, 0, 1)
 	batchExecutions := make([]string, 0, len(actions)) // 本批执行动作的派生任务 ID
@@ -587,6 +600,17 @@ func boundedViolationIDs(ids []string) []string {
 func validateActionEntry(entry *jsoncompat.Object, team *Team, run *Run, policy TeamPolicy, promptLimit, index int) []string {
 	var violations []string
 	ordinal := index + 1
+	for _, field := range []string{"workflowId", "workspaceId"} {
+		if raw, present := entry.Get(field); present {
+			if run.Planning == nil || entry.MustGet("type") != ActionTypeDelegate {
+				violations = append(violations, fmt.Sprintf("第 %d 条动作的 %s 仅用于新版规划的 delegate", ordinal, field))
+			}
+			value, valid := raw.(string)
+			if !valid || value == "" || len(value) > 64 || (field == "workflowId" && !ValidMemberID(value)) {
+				violations = append(violations, fmt.Sprintf("第 %d 条动作的 %s 无效", ordinal, field))
+			}
+		}
+	}
 	for _, key := range entry.Keys() {
 		if !actionKnownFields[key] {
 			violations = append(violations, fmt.Sprintf("第 %d 条动作包含无法识别的字段 %q", ordinal, key))
@@ -934,6 +958,15 @@ func actionSchemaInstruction() string {
 	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象。只输出一个 team-actions 动作块；如果本回合另有 Issue 归类要求，必须同时先输出一个 team-issues 块，再输出动作块。需要派发时输出相应机器块；纯沟通或澄清必须给可读回复，不能只返回归类或空动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）、key 与 dependsOn（可选，仅 delegate：同一动作块内先实现后审查等先后关系用它们表达——key 是本批内的唯一别名，dependsOn 列出本批其它动作的 key 或本 Run 既有任务 ID，被依赖的动作先执行；不要用自然语言描述顺序代替依赖）、phase（可选，仅 delegate：阶段标签，implement 写任务必须依赖 phase=plan 的任务）、reviewOf（可选，仅审查 delegate：声明本条审查针对哪些任务——同批 key 或本 Run 任务 ID，被审实现完成后审查才派发，且审查结论绑定派发时的工作区版本）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
 }
 
+func actionSchemaForRun(run *Run) string {
+	instruction := actionSchemaInstruction()
+	if run == nil || run.Planning == nil {
+		return instruction
+	}
+	instruction = strings.Replace(instruction, "对象形如 {\"actions\": [...]}；", "对象形如 {\"plan\": {...}, \"actions\": [...], \"feedback\": {...}}；plan/feedback 按目标规划协议提供，每条 delegate 必须带 workflowId，workspaceId 仅可引用该 workflow 已登记工作区；", 1)
+	return instruction
+}
+
 // BuildLeadBriefing 返回 autoPlan Lead 的任务级成员目录与动作协议。修复提示
 // 已自带协议，普通成员和显式计划不注入；内容只依赖持久配置，保证确定性。
 func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) string {
@@ -976,25 +1009,42 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 	}
 	builder.WriteString("tags 是用户维护的 Agent 或模型能力提示；制定工作流和选择成员时应参考 tags 与 agent 类型，但不要臆测未标注的能力。\n")
 	if reviewer := team.ReviewerMemberID(); reviewer != "" && reviewer != team.LeadID {
-		builder.WriteString("默认评审也是可执行任务的普通成员：实现、排查等执行任务委派给它时必须写 review=false，独立审查任务才写 review=true。审查应尽量由未参与实现的成员完成；没有合适的独立评审时明确说明未审查，不要伪造评审结论。审查动作必须单独成批：不要与普通执行任务放在同一动作块，也不要在实现任务尚未全部完成时委派审查——需要等实现后再审查时，先给 Lead 自己委派后续任务，等实现完成、后续 Lead 任务取得结果后再单独输出审查动作。\n")
+		builder.WriteString("默认评审也是可执行任务的普通成员：实现、排查等执行任务委派给它时必须写 review=false，独立审查任务才写 review=true。审查应尽量由未参与实现的成员完成；没有合适的独立评审时明确说明未审查，不要伪造评审结论。")
+		if run.Planning == nil {
+			builder.WriteString("审查动作必须单独成批：不要与普通执行任务放在同一动作块，也不要在实现任务尚未全部完成时委派审查——需要等实现后再审查时，先给 Lead 自己委派后续任务，等实现完成、后续 Lead 任务取得结果后再单独输出审查动作。\n")
+		} else {
+			builder.WriteString("每个 workflow 的审查必须用 reviewOf 引用对应实现任务；网关会等待被审任务完成并绑定版本，无需等待无关分支。\n")
+		}
 	}
-	builder.WriteString("默认把一件可独立验收的交付交给一个成员从需求到结果闭环完成；不要按产品、架构、前端、后端、测试等工序横切接力，也不要因为任务较大或需要分批就转交。只有交付物彼此独立且规范或权限不同，或确需独立审查时才拆分成员。接手任务的成员必须自己完成；缺少上下文时用 request_context 引用原始任务续读，不要只转发摘要。\n")
+	if run.Planning == nil {
+		builder.WriteString("默认把一件可独立验收的交付交给一个成员从需求到结果闭环完成；不要按产品、架构、前端、后端、测试等工序横切接力，也不要因为任务较大或需要分批就转交。只有交付物彼此独立且规范或权限不同，或确需独立审查时才拆分成员。接手任务的成员必须自己完成；缺少上下文时用 request_context 引用原始任务续读，不要只转发摘要。\n")
+	} else {
+		builder.WriteString("按完整目标拆分可独立验收的 workflows，优先同时派发没有真实依赖的分支；每个分支自己完成实现与验证。不要把整个大目标交成单个串行实现任务，也不要按工序横切接力。\n")
+	}
 	builder.WriteString("你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须先通过 delegate 分派，不得在主控回合中不经委派直接执行。Lead 也是默认执行成员，允许 delegate 给自己；后续 Lead 执行任务应按任务内容直接完成，不要仅为转交而再次委派。Lead 自己的 delegate 也可用于汇总结果和继续规划。需要编排时，")
-	builder.WriteString(actionSchemaInstruction())
+	builder.WriteString(actionSchemaForRun(run))
 	builder.WriteString("\n")
 	if policy.AutoDispatch {
 		builder.WriteString("当前 autoDispatch=true：delegate 与 request_context 校验通过后可自动执行；summarize 由 Lead 汇总。\n")
 	} else {
 		builder.WriteString("当前 autoDispatch=false：delegate 与 request_context 只生成待确认预览，不会自动执行；summarize 仍可执行。\n")
 	}
-	builder.WriteString("如果需要等成员结果后由 Lead 汇总或继续规划，请在首批动作中同时给 Lead 自己一条 delegate 作为后续任务；不要在该批动作中直接混用 summarize。后续 Lead 任务取得结果后，再输出 summarize。\n")
+	if run.Planning == nil {
+		builder.WriteString("如果需要等成员结果后由 Lead 汇总或继续规划，请在首批动作中同时给 Lead 自己一条 delegate 作为后续任务；不要在该批动作中直接混用 summarize。后续 Lead 任务取得结果后，再输出 summarize。\n")
+	} else {
+		builder.WriteString("网关会在本批任务结束后自动派发目标评估，无需创建仅为汇总的 Lead delegate。评估未完成时必须继续补缺口；round 是动作标签，不是目标完成结论。\n")
+	}
 	actionLimit := policy.MaxTasksPerRun
 	if actionLimit > maxActionsPerBlock {
 		actionLimit = maxActionsPerBlock
 	}
 	fmt.Fprintf(&builder, "当前限制：round 为 1–%d；整个 Run 最多 %d 条任务；单个动作块最多 %d 条动作；团队最多 %d 个在途任务。\n",
 		policy.MaxRounds, policy.MaxTasksPerRun, actionLimit, policy.MaxParallelTasks)
-	fmt.Fprintf(&builder, "单个动作对象示例（仅展示格式，不是要求立即创建任务；把 member_id 替换为上方真实 ID，并按上述说明加上动作信封）：\n{\"type\":\"delegate\",\"sourceTaskId\":%q,\"round\":1,\"member\":\"member_id\",\"task\":\"只读检查并汇报结果\",\"writeLock\":\"none\"}\n", task.ID)
+	workflowField := ""
+	if run.Planning != nil {
+		workflowField = ",\"workflowId\":\"已定义的workflow ID\""
+	}
+	fmt.Fprintf(&builder, "单个动作对象示例（仅展示格式，不是要求立即创建任务；把 member_id 替换为上方真实 ID，并按上述说明加上动作信封）：\n{\"type\":\"delegate\",\"sourceTaskId\":%q,\"round\":1,\"member\":\"member_id\",\"task\":\"只读检查并汇报结果\",\"writeLock\":\"none\"%s}\n", task.ID, workflowField)
 	return builder.String()
 }
 
@@ -1371,7 +1421,7 @@ func ValidateExecutableWithDeps(run *Run, team *Team, policy TeamPolicy, action 
 	// 的动作可能延迟执行（崩溃恢复窗口、策略变更），执行期按当时快照复判，
 	// 与解析期同一口径——审查动作必须显式依赖（resolvedDeps）覆盖全部未完成
 	// 执行任务，否则等实现完成后单独委派。
-	if delegateActionIsReview(team, action) {
+	if delegateActionIsReview(team, action) && run.Planning == nil {
 		var uncovered []string
 		for i := range run.Tasks {
 			task := &run.Tasks[i]
@@ -1441,10 +1491,14 @@ func ValidateExecutableWithDeps(run *Run, team *Team, policy TeamPolicy, action 
 				return false, fmt.Sprintf("任务数已达上限 %d，无法创建派生任务", policy.MaxTasksPerRun)
 			}
 		}
-		if memberBusy != nil && memberBusy[targetMember] {
+		lease := targetMember
+		if action.WorkflowID != "" {
+			lease = actionLeaseKey(run, action)
+		}
+		if action.WorkflowID == "" && memberBusy != nil && memberBusy[lease] {
 			return false, fmt.Sprintf("成员 %s 在本 Run 中已有运行中的任务", targetMember)
 		}
-		if pre != nil && pre.teamInFlight >= 0 && pre.teamInFlight >= policy.MaxParallelTasks {
+		if action.WorkflowID == "" && pre != nil && pre.teamInFlight >= 0 && pre.teamInFlight >= policy.MaxParallelTasks {
 			return false, fmt.Sprintf("团队并发已满（上限 %d 个在途任务），无法创建派生任务", policy.MaxParallelTasks)
 		}
 	}
@@ -1511,7 +1565,7 @@ func buildActionTaskWithKeys(run *Run, team *Team, action *Action, batchKeys map
 		}
 		if !explicit {
 			deps = append(deps, action.SourceTaskID)
-			if action.Member == team.LeadID {
+			if action.Member == team.LeadID && action.WorkflowID == "" {
 				for i := range run.Tasks {
 					status := run.Tasks[i].Status
 					if run.Tasks[i].MemberID != team.LeadID && !run.Tasks[i].Reduction &&
@@ -1567,6 +1621,8 @@ func buildActionTaskWithKeys(run *Run, team *Team, action *Action, batchKeys map
 		MemberID:         memberID,
 		Prompt:           prompt,
 		Phase:            action.Phase,
+		WorkflowID:       action.WorkflowID,
+		WorkspaceID:      action.WorkspaceID,
 		Attempt:          0,
 		Ordinal:          ordinal + 1,
 		DependsOn:        deps,
@@ -1577,6 +1633,15 @@ func buildActionTaskWithKeys(run *Run, team *Team, action *Action, batchKeys map
 		Status:           TaskPlanned,
 		InstructionsHead: InstructionsHead(prompt),
 		Reduction:        action.Type == ActionTypeSummarize,
+	}
+	if workflow := planningWorkflow(run.Planning, action.WorkflowID); workflow != nil && workflow.WorkspaceID != "" {
+		task.WorkspaceID = workflow.WorkspaceID
+	}
+	if task.WorkspaceID != "" {
+		task.WorkspaceMode = WorkspaceIsolatedWorktree
+	}
+	if task.WorkflowID != "" {
+		task.ExecutionThreadID = workflowThreadID(run.ID, memberID, task.WorkflowID)
 	}
 	if memberID == team.LeadID {
 		task.ExecutionContext = ExecutionContextLeadRun

@@ -426,6 +426,11 @@ func (s *Service) createRunWithOptions(team *Team, runID, goal, mode, collect st
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
+	if autoPlan && !issueClassificationOnly && !team.Policy.SwarmEnabled && s.inputs != nil {
+		if input := s.inputs.Get(team.ID, run.ID); input != nil && input.PlanningVersion == 1 {
+			run.Planning = &GoalPlanningState{Version: 1, MaxIterations: 3, Status: "planning"}
+		}
+	}
 	// 先记账：payload 只含有界字段（instructionsHead 而非全量 prompt，
 	// §10.3「事件流只推送有界 payload」）。teamId/goal 供 team-runs.json
 	// 损坏后的 journal 重建（§8.1 快照可重建；goal 已过 10000 字校验）；
@@ -457,6 +462,9 @@ func (s *Service) createRunWithOptions(team *Team, runID, goal, mode, collect st
 	}
 	created := newEvent(run.ID, EventRunCreated, "user", createdPayload)
 	events := []*Event{created}
+	if run.Planning != nil {
+		events = append(events, planningEvent(run, "created"))
+	}
 	for i := range plan.Tasks {
 		task := &plan.Tasks[i]
 		payload := map[string]any{
@@ -964,6 +972,7 @@ func (s *Service) executePlannedAction(state *runState, team *Team, policy TeamP
 			if task.Review != nil {
 				payload["review"] = *task.Review
 			}
+			addWorkflowTaskPayload(payload, &task)
 			event := newEvent(fresh.ID, EventTaskPlanned, "runner", payload)
 			event.IdempotencyKey = actionExecutionKey(fresh.TeamID, fresh.ID, action.ActionKey)
 			events = []*Event{event}
@@ -1139,12 +1148,12 @@ func memberBusyOf(run *Run, pendingDispatch map[string]bool) map[string]bool {
 	for i := range run.Tasks {
 		switch run.Tasks[i].Status {
 		case TaskDispatching, TaskRunning:
-			busy[run.Tasks[i].MemberID] = true
+			busy[taskLeaseKey(&run.Tasks[i])] = true
 		}
 	}
 	for taskID := range pendingDispatch {
 		if task := findTaskIn(run, taskID); task != nil {
-			busy[task.MemberID] = true
+			busy[taskLeaseKey(task)] = true
 		}
 	}
 	return busy
@@ -1329,7 +1338,7 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 	// 记账，防重复选中）。
 	for taskID := range state.pendingDispatch {
 		if task := findTaskIn(run, taskID); task != nil {
-			memberBusy[task.MemberID] = true
+			memberBusy[taskLeaseKey(task)] = true
 		}
 	}
 	// Team 级并发护栏（评审遗留②）：inFlight 从「本 Run 快照 + 本 Run 派发
@@ -1360,7 +1369,7 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 		for i := range sibling.Tasks {
 			if sibling.Tasks[i].Status == TaskDispatching || sibling.Tasks[i].Status == TaskRunning {
 				inFlight++
-				memberBusy[sibling.Tasks[i].MemberID] = true
+				memberBusy[taskLeaseKey(&sibling.Tasks[i])] = true
 				siblingInFlight = true
 			}
 		}
@@ -1415,7 +1424,7 @@ func (s *Service) passDispatch(state *runState, cwdByTask map[string]string) boo
 		s.teamPending[run.TeamID]++
 		memberID := ""
 		if task := findTaskIn(run, taskID); task != nil {
-			memberID = task.MemberID
+			memberID = taskLeaseKey(task)
 			members := s.teamMemberPending[run.TeamID]
 			if members == nil {
 				members = map[string]int{}
@@ -1596,7 +1605,11 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		s.failDispatch(state, runID, taskID, "历史归类要求独立 Lead 执行会话，但网关未装配执行会话端口")
 		return
 	}
-	independentExecution := task.ExecutionContext == ExecutionContextLeadRun && s.ExecutionSessions != nil
+	if task.WorkflowID != "" && s.ExecutionSessions == nil {
+		s.stopTaskBlocked(state, runID, taskID, OutcomeWorkspaceUnresolvable, "workflow 需要独立执行会话能力，当前网关未装配")
+		return
+	}
+	independentExecution := (task.ExecutionContext == ExecutionContextLeadRun || task.WorkflowID != "") && s.ExecutionSessions != nil
 	if swarmReviewArtifact(run, task.ID) != nil {
 		independentExecution = false
 	}
@@ -1630,6 +1643,9 @@ func (s *Service) executeDispatch(state *runState, team *Team, policy TeamPolicy
 		}
 		var createErr error
 		provisionRunID := run.ID
+		if task.WorkflowID != "" {
+			provisionRunID += "-workflow-" + task.WorkflowID
+		}
 		if run.Swarm != nil && swarmWorker(team, task) {
 			provisionRunID += "-" + task.ID
 		}
@@ -1921,7 +1937,7 @@ func (s *Service) adoptWatchersLocked(state *runState, team *Team, run *Run, pol
 			if _, held := state.taskCwds[task.ID]; !held {
 				sessionID := taskProviderSessionID(run, task, member)
 				if cwd := s.resolver.Cwd(sessionID); cwd != "" {
-					if s.locks.Acquire(cwd, task.ID) {
+					if s.locks.Acquire(cwd, taskLockKey(run.ID, task.ID)) {
 						state.taskCwds[task.ID] = cwd
 					} else {
 						log.Printf("team run %s 收养任务 %s 时 %s 的写锁已被任务 %s 持有，跳过登记（重启前并发的既成事实）",
@@ -2007,7 +2023,7 @@ func (s *Service) adoptWorkspaceWatchers(state *runState, candidates []isolatedA
 		state.mu.Lock()
 		if candidate.task.WriteLock != TaskWriteLockNone {
 			if _, held := state.taskCwds[candidate.task.ID]; !held {
-				if s.locks.Acquire(path, candidate.task.ID) {
+				if s.locks.Acquire(path, taskLockKey(state.runID, candidate.task.ID)) {
 					state.taskCwds[candidate.task.ID] = path
 				} else {
 					log.Printf("team run %s 收养 isolated 任务 %s 时 %s 的写锁已被任务 %s 持有，跳过登记（重启前并发的既成事实）",
@@ -2706,6 +2722,7 @@ func (s *Service) completeTask(state *runState, runID, taskID string, result *Ta
 				"review":           true, "reviewRepairFor": taskID,
 			})
 			planned.IdempotencyKey = reviewRepairPlannedKey(fresh.TeamID, fresh.ID, repair.ID)
+			addWorkflowTaskPayload(planned.Payload, &repair)
 			return append(events, planned), true
 		})
 	if applied && writeCompletes {
@@ -2830,12 +2847,17 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 	// MaxResultChars 截断，尾部标记会丢，必须用全文（actions.go）。
 	var actions []Action
 	var violations []string
+	var planningUpdate *GoalPlanningState
 	if run := s.store.Run(state.runID); run != nil {
 		fullText := AssistantFullText(turn)
 		task := findTaskIn(run, dispatch.taskID)
 		if task == nil || !task.IssueClassificationOnly {
-			actions, violations = ParseLeadActions(fullText, s.store.Team(run.TeamID), run, policy)
-			if len(violations) == 0 && len(actions) == 0 && ResultDisplayText(fullText) == "" {
+			if run.Planning != nil {
+				actions, planningUpdate, violations = parsePlanningReply(fullText, s.store.Team(run.TeamID), run, task, policy)
+			} else {
+				actions, violations = ParseLeadActions(fullText, s.store.Team(run.TeamID), run, policy)
+			}
+			if len(violations) == 0 && len(actions) == 0 && ResultDisplayText(fullText) == "" && (task == nil || !task.GoalFeedback) {
 				violations = append(violations, emptyLeadReplyViolation)
 			}
 		}
@@ -2859,7 +2881,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 		for _, action := range actions {
 			hasDelegation = hasDelegation || action.Type == ActionTypeDelegate
 		}
-		if s.inputs != nil && task != nil && !task.IssueClassificationOnly && len(violations) == 0 && !hasDelegation {
+		if s.inputs != nil && task != nil && !task.IssueClassificationOnly && !task.GoalFeedback && len(violations) == 0 && !hasDelegation {
 			if inputID := issueInputIDForLeadTask(run, task); inputID != "" {
 				if input := s.inputs.Get(run.TeamID, inputID); input != nil && input.Intent == InputIntentTask && input.AssociationStatus != IssueAssociationClarification {
 					violations = append(violations, "任务派发请求尚未委派实际工作；请通过 delegate 执行，或明确 clarify 并给用户可读澄清，不得只回复收到")
@@ -2953,6 +2975,12 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 			}
 			if !final {
 				prompt := RepairPrompt(violations, attempt)
+				if fresh.Planning != nil {
+					prompt = strings.Replace(prompt, actionSchemaInstruction(), actionSchemaForRun(fresh), 1)
+					if source.GoalFeedback {
+						prompt += "\n" + goalFeedbackInstruction
+					}
+				}
 				if s.inputs != nil && source != nil {
 					if inputID := issueInputIDForLeadTask(fresh, source); inputID != "" {
 						if source.IssueClassificationOnly {
@@ -2979,6 +3007,8 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 					InstructionsHead:        InstructionsHead(prompt),
 					ExecutionContext:        ExecutionContextLeadControl,
 					IssueClassificationOnly: source.IssueClassificationOnly,
+					GoalFeedback:            source.GoalFeedback,
+					Reduction:               source.GoalFeedback,
 				}
 				if repair.IssueClassificationOnly {
 					repair.ExecutionContext = ExecutionContextLeadRun
@@ -2997,12 +3027,28 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 						"round":                   jsoncompat.Num(fresh.Round),
 					})
 					event.IdempotencyKey = key
+					addWorkflowTaskPayload(event.Payload, &repair)
 					events = append(events, event)
 				}
 			}
 		case leadDriven:
-			for i := range actions {
-				action := actions[i]
+			toExecute := actions
+			if planningUpdate != nil {
+				fresh.Planning = cloneGoalPlanning(planningUpdate)
+				if fresh.Planning.Status == "continue" && (fresh.Planning.Iteration >= fresh.Planning.MaxIterations || fresh.Planning.NoProgress >= 2) {
+					fresh.Planning.Status = "blocked"
+					fresh.Planning.Blockers = append(fresh.Planning.Blockers, "达到目标续做轮次上限或连续两轮没有可验证进展")
+					toExecute = nil
+				}
+				event := planningEvent(fresh, dispatch.taskID)
+				if fresh.Planning.Status == "continue" && fresh.Verify != nil {
+					fresh.Verify = nil
+					event.Payload["verifyCleared"] = true
+				}
+				events = append(events, event)
+			}
+			for i := range toExecute {
+				action := toExecute[i]
 				fresh.PendingActions = append(fresh.PendingActions, action)
 				if action.Round > fresh.Round {
 					fresh.Round = action.Round
@@ -3021,6 +3067,10 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				// 有界 payload（§10.3）：任务正文只带 240 rune 头；空可选键不落。
 				if action.Member != "" {
 					payload["member"] = action.Member
+				}
+				if action.WorkflowID != "" {
+					payload["workflowId"] = action.WorkflowID
+					payload["workspaceId"] = action.WorkspaceID
 				}
 				if action.Task != "" {
 					payload["taskHead"] = InstructionsHead(action.Task)
@@ -3461,7 +3511,7 @@ func (s *Service) markRunning(state *runState, runID, taskID, sessionID, turnID 
 // releaseTaskLockLocked 释放任务占用的项目写锁。
 func (s *Service) releaseTaskLockLocked(state *runState, taskID string) {
 	if cwd, held := state.taskCwds[taskID]; held {
-		s.locks.Release(cwd, taskID)
+		s.locks.Release(cwd, taskLockKey(state.runID, taskID))
 		delete(state.taskCwds, taskID)
 	}
 }
@@ -3471,7 +3521,7 @@ func (s *Service) releaseTaskLockLocked(state *runState, taskID string) {
 // 的中间路径绝不能调用——锁的存续必须与任务的在途状态一致。
 func (s *Service) releaseAllTaskLocksLocked(state *runState) {
 	for taskID, cwd := range state.taskCwds {
-		s.locks.Release(cwd, taskID)
+		s.locks.Release(cwd, taskLockKey(state.runID, taskID))
 	}
 	state.taskCwds = map[string]string{}
 }
@@ -3786,6 +3836,24 @@ func (s *Service) Resume(runID string) (*Run, error) {
 	if run.Status != RunWaitingInput && run.Status != RunPaused {
 		return nil, fmt.Errorf("%w: 当前状态 %s", ErrRunNotWaiting, run.Status)
 	}
+	if run.Status == RunWaitingInput && run.Planning != nil && strings.HasPrefix(run.StopReason, "goal_loop: ") {
+		if run.Planning.Iteration >= run.Planning.MaxIterations || len(run.Tasks) >= policyOf(s.store.Team(run.TeamID)).MaxTasksPerRun {
+			return nil, fmt.Errorf("%w: 目标续做上限已到，请通过聊天发送补充需求启动后续修订", ErrRunNotWaiting)
+		}
+		if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+			if fresh.Status != RunWaitingInput {
+				return nil, false
+			}
+			fresh.Status, fresh.StopReason = RunDispatching, ""
+			fresh.Planning.Status, fresh.Planning.NoProgress = "continue", 0
+			return []*Event{planningEvent(fresh, fmt.Sprintf("resume-%d", fresh.Version))}, true
+		}); err != nil {
+			return nil, err
+		}
+		s.resetStallClockLocked(state)
+		s.startLoopLocked(state)
+		return s.store.Run(runID), nil
+	}
 	if run.Status == RunPaused {
 		// paused 续跑（§12 工作项 4）：commitRun 推回执行态 + startLoopLocked
 		// 重启循环。有意行为（resume 前写明，测试钉住）：startLoopLocked 每次启
@@ -3853,6 +3921,28 @@ func (s *Service) Resume(runID string) (*Run, error) {
 	if strings.HasPrefix(run.StopReason, StopReasonBudgetExhausted) {
 		if err := s.resumeBudgetLocked(state, run); err != nil {
 			return nil, err
+		}
+	}
+	// 预算等停靠可能落在最后一个执行回合结束与首次目标评估之间。
+	// 全任务 completed 仍不能通过 PlanResume 直接宣布未验收目标完成。
+	if run.Planning != nil && len(run.Planning.Criteria) > 0 && run.Planning.Status != "complete" {
+		allCompleted := true
+		for _, task := range run.Tasks {
+			allCompleted = allCompleted && task.Status == TaskCompleted
+		}
+		if allCompleted {
+			if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+				if fresh.Status != RunWaitingInput {
+					return nil, false
+				}
+				fresh.Status, fresh.StopReason = RunDispatching, ""
+				return []*Event{planningEvent(fresh, fmt.Sprintf("resume-%d", fresh.Version))}, true
+			}); err != nil {
+				return nil, err
+			}
+			s.resetStallClockLocked(state)
+			s.startLoopLocked(state)
+			return s.store.Run(runID), nil
 		}
 	}
 	transitions, ok := PlanResume(run)

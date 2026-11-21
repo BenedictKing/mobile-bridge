@@ -349,17 +349,18 @@ func DefaultPolicy() TeamPolicy {
 // completed 时先过闸门再终局，绝不采信 Agent 的口头成功声明；Verify 持久化
 // 闸门结果，resume 清空后重跑即复验。
 type Run struct {
-	Swarm         *SwarmState `json:"swarm,omitempty"`
-	ID            string      `json:"id"`
-	TeamID        string      `json:"teamId"`
-	Goal          string      `json:"goal"`
-	Mode          string      `json:"mode,omitempty"`
-	CollectPolicy string      `json:"collectPolicy,omitempty"`
-	AutoPlan      bool        `json:"autoPlan,omitempty"`
-	Status        string      `json:"status"`
-	StopReason    string      `json:"stopReason,omitempty"`
-	Round         int         `json:"round"`
-	PlanHash      string      `json:"planHash"`
+	Planning      *GoalPlanningState `json:"planning,omitempty"`
+	Swarm         *SwarmState        `json:"swarm,omitempty"`
+	ID            string             `json:"id"`
+	TeamID        string             `json:"teamId"`
+	Goal          string             `json:"goal"`
+	Mode          string             `json:"mode,omitempty"`
+	CollectPolicy string             `json:"collectPolicy,omitempty"`
+	AutoPlan      bool               `json:"autoPlan,omitempty"`
+	Status        string             `json:"status"`
+	StopReason    string             `json:"stopReason,omitempty"`
+	Round         int                `json:"round"`
+	PlanHash      string             `json:"planHash"`
 	// ParentRunID 是 amend 修订链的父 Run（§6.4.1/§10.2 amend 段，阶段三）：
 	// 创建新 Run、绝不改写父 Run 的 journal；父 Run 的可复用前驱结果按
 	// inputHash 匹配导入（amend.go），随 run_created payload 落账供
@@ -440,6 +441,8 @@ type VerifyResult struct {
 // 或上下文合成的任何变更都不再让在途任务错认 turn。HTTP 投影不外发（§10.3
 // 有界 payload，teams.go teamRunDetail 显式剔除）。
 type Task struct {
+	WorkflowID              string   `json:"workflowId,omitempty"`
+	GoalFeedback            bool     `json:"goalFeedback,omitempty"`
 	ID                      string   `json:"id"`
 	MemberID                string   `json:"memberId"`
 	Prompt                  string   `json:"prompt"`
@@ -533,6 +536,8 @@ type TaskResult struct {
 // 动作的幂等键（team:{t}:run:{r}:action:{sourceTaskID}:{round}:{index}）；
 // Reason 在 rejected 时非空。
 type Action struct {
+	WorkflowID   string `json:"workflowId,omitempty"`
+	WorkspaceID  string `json:"workspaceId,omitempty"`
 	Type         string `json:"type"`
 	SourceTaskID string `json:"sourceTaskId"`
 	Round        int    `json:"round"`
@@ -636,8 +641,9 @@ var teamKnownFields = map[string]bool{
 // deliveryStatus 是已移除的验收状态：仍列为已知字段，旧快照读入时直接丢弃，
 // 不进 extra 原样回写。
 var runKnownFields = map[string]bool{
-	"swarm": true,
-	"id":    true, "teamId": true, "goal": true, "mode": true,
+	"planning": true,
+	"swarm":    true,
+	"id":       true, "teamId": true, "goal": true, "mode": true,
 	"collectPolicy": true, "autoPlan": true, "status": true, "deliveryStatus": true,
 	"stopReason": true, "round": true, "planHash": true, "parentRunId": true,
 	"scheduledFrom": true, "budgetCeiling": true,
@@ -653,6 +659,7 @@ var verifyResultKnownFields = map[string]bool{
 }
 
 var taskKnownFields = map[string]bool{
+	"workflowId": true, "goalFeedback": true,
 	"id": true, "memberId": true, "prompt": true, "phase": true, "issueClassificationOnly": true, "attachments": true, "inputHash": true,
 	"attempt": true, "siteId": true, "ordinal": true, "dependsOn": true,
 	"broadcastGroup": true, "workspaceMode": true, "workspaceId": true,
@@ -815,6 +822,13 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 	object.Set("id", r.ID)
 	object.Set("teamId", r.TeamID)
 	object.Set("goal", r.Goal)
+	if r.Planning != nil {
+		raw, err := json.Marshal(r.Planning)
+		if err == nil {
+			value, _ := jsoncompat.Unmarshal(raw)
+			object.Set("planning", value)
+		}
+	}
 	if r.Mode != "" {
 		object.Set("mode", r.Mode)
 	}
@@ -1005,6 +1019,7 @@ func (r *Run) Clone() *Run {
 		return nil
 	}
 	copied := *r
+	copied.Planning = cloneGoalPlanning(r.Planning)
 	copied.Swarm = cloneSwarm(r.Swarm)
 	if r.Goals != nil {
 		copied.Goals = make(map[string]*GoalRecord, len(r.Goals))
@@ -1100,6 +1115,12 @@ func (t *Task) jsonObject() *jsoncompat.Object {
 	}
 	if t.WorkspaceID != "" {
 		object.Set("workspaceId", t.WorkspaceID)
+	}
+	if t.WorkflowID != "" {
+		object.Set("workflowId", t.WorkflowID)
+	}
+	if t.GoalFeedback {
+		object.Set("goalFeedback", true)
 	}
 	// BaseRevision（isolated worktree 首派基线，§6.4 规则 4）必须落盘：
 	// 重启恢复的 workspace_lost 对账与 diff 数据面都依赖它，漏序列化会让

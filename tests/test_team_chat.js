@@ -442,7 +442,7 @@ test('cancelling first team lead picker returns null without creating a team',as
 });
 
 test('team submission fields always enter autoPlan orchestration without a mode selector',()=>{
-  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1'});
+  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'2'});
   const html=require('node:fs').readFileSync(require.resolve('../web/index.html'),'utf8');
   const app=require('node:fs').readFileSync(require.resolve('../web/app.js'),'utf8');
   assert.equal(html.includes('id="team-message-mode"'),false);
@@ -546,6 +546,8 @@ test('workflow station title prefers the prompt over the internal id',()=>{
   // 主控站点保留角色名，没有提示词时回落到任务 id。
   assert.equal(teamWorkflowTaskTitle({id:'lead',prompt:'汇总成果'}),'负责人');
   assert.equal(teamWorkflowTaskTitle({id:'custom'}),'custom');
+  assert.equal(teamWorkflowTaskTitle({id:'branch',workflowId:'b',workflowTitle:'导出',prompt:'补齐导出验收'}),'[导出] 补齐导出验收');
+  assert.equal(teamWorkflowTaskTitle({id:'lead-goal-check-1',goalFeedback:true}),'目标评估与续做');
 });
 
 test('workflow counts come from the tasks, not from the run status',()=>{
@@ -672,10 +674,10 @@ async function withQueueStorage(entries,run){
 
 test('submission fields opt into the persistent queue per team',async()=>{
   await withQueueStorage({'teamQueueMode:team-1':'1'},()=>{
-    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1',teamQueueVersion:'2'});
-    assert.deepEqual(teamSubmissionFields('team-2'),{teamMode:'team',teamId:'team-2',teamIssueRoutingVersion:'1'});
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'2',teamQueueVersion:'2'});
+    assert.deepEqual(teamSubmissionFields('team-2'),{teamMode:'team',teamId:'team-2',teamIssueRoutingVersion:'2'});
   });
-  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1'});
+  assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'2'});
 });
 
 test('queue panel lists inputs with reasons, work items and queued actions',async()=>{
@@ -751,11 +753,11 @@ test('send queue selection owns the persistent mode without a second toggle',asy
     }});
     controller.setTeams(teams);controller.open(teams[0]);await flush();
     controller.setQueueMode(true);await flush();
-    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1',teamQueueVersion:'2'});
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'2',teamQueueVersion:'2'});
     assert.equal(find(root,'team-queue-panel').length,1);
     assert.equal(find(root,'team-queue-toggle').length,0);
     controller.setQueueMode(false);
-    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'1'});
+    assert.deepEqual(teamSubmissionFields('team-1'),{teamMode:'team',teamId:'team-1',teamIssueRoutingVersion:'2'});
     assert.equal(find(root,'team-queue-panel').length,0);
   });
   const app=require('node:fs').readFileSync(require.resolve('../web/app.js'),'utf8');

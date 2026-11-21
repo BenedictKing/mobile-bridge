@@ -364,6 +364,18 @@ func (s *Service) applyVerifyVerdictLocked(state *runState, runID string) {
 	if run == nil || run.Verify == nil || run.Status != RunReducing {
 		return
 	}
+	if run.Planning != nil && len(run.Planning.Criteria) > 0 && (run.Verify.ExitCode != 0 || run.Planning.Status != "complete") {
+		if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {
+			if fresh.Status != RunReducing {
+				return nil, false
+			}
+			fresh.Status, fresh.Planning.Status = RunDispatching, "running"
+			return []*Event{planningEvent(fresh, fmt.Sprintf("verify-%d", fresh.Version))}, true
+		}); err != nil {
+			log.Printf("team run %s 验证结果回送目标评估失败: %v", runID, err)
+		}
+		return
+	}
 	if run.Verify.ExitCode != 0 {
 		stopReason := fmt.Sprintf("%s（退出码 %d）", StopReasonVerifyFailed, run.Verify.ExitCode)
 		if err := s.commitRun(runID, func(fresh *Run) ([]*Event, bool) {

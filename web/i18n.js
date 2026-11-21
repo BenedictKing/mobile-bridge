@@ -86,6 +86,8 @@ const en={
 "审查不适用的原因":"Why review is not required",
 "补充完成条件（每行一项）":"Additional criteria (one per line)",
 "保存完成条件":"Save completion criteria",
+"补充需求请在团队聊天中发送，AI 会归集到对应工作流。":"Send additional requirements in team chat; AI will route them to the relevant workflow.",
+"目标评估与续做":"Evaluate goals and continue work",
 "逐项核对原始要求":"Check each original requirement",
 "满足":"Satisfied",
 "不满足":"Not satisfied",

@@ -294,9 +294,11 @@ func TestRouterExplicitFollowUpUsesOriginalExecutionThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.acceptInput(t, "in-follow", "补上错误态")
+	h.service.inputs.mu.Lock()
 	h.service.inputs.inputs["in-follow"].ExplicitTarget = true
 	h.service.inputs.inputs["in-follow"].TargetRunID = run.ID
 	h.service.inputs.inputs["in-follow"].TargetTaskID = "dev-task"
+	h.service.inputs.mu.Unlock()
 	if routed := h.service.RoutePendingInputs(h.team.ID); routed != 1 {
 		t.Fatal("显式追问应完成路由")
 	}
@@ -319,10 +321,12 @@ func TestRouterExplicitFollowUpSupportsPipelineRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.acceptInput(t, "in-pipeline-follow", "继续处理边界情况")
+	h.service.inputs.mu.Lock()
 	input := h.service.inputs.inputs["in-pipeline-follow"]
 	input.ExplicitTarget = true
 	input.TargetRunID = run.ID
 	input.TargetTaskID = "delivery"
+	h.service.inputs.mu.Unlock()
 	if routed := h.service.RoutePendingInputs(h.team.ID); routed != 1 {
 		t.Fatal("显式计划中的任务追问也应直达执行成员")
 	}

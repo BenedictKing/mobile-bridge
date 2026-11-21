@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +52,39 @@ func TestTeamInputsTaskIntentPreservedValidatedAndIdempotent(t *testing.T) {
 		bad := env.postTeamInput(teamID, fmt.Sprintf(`{"id":"8bbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee","text":"任务","intent":%s}`, intent))
 		if bad.Code != http.StatusBadRequest {
 			t.Fatalf("非法意图 %s 应明确拒绝: %d %s", intent, bad.Code, bad.Body.String())
+		}
+	}
+}
+
+func TestTeamGoalPlanningVersionThroughChatAndTaskInputs(t *testing.T) {
+	env := newTeamTestEnv(t, "queued", true)
+	teamID, _ := env.createTeam(t)
+	env.server.TeamInputs = team.LoadInputLedger(filepath.Join(env.dataDir, "inputs.json"), nil)
+	for index, viaChat := range []bool{false, true} {
+		id := fmt.Sprintf("9aaaaaa%d-bbbb-4ccc-8ddd-eeeeeeeeeeee", index)
+		body := fmt.Sprintf(`{"id":%q,"teamId":%q,"text":"补充现有 workflow 的验收要求","teamIssueRoutingVersion":"2"}`, id, teamID)
+		path := "/api/teams/" + teamID + "/inputs"
+		if viaChat {
+			path = "/api/sessions/" + env.sessionID + "/send?host=local"
+		}
+		response := env.request(http.MethodPost, path, body)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("新版入口未受理：%d %s", response.Code, response.Body.String())
+		}
+		var accepted map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &accepted); err != nil {
+			t.Fatal(err)
+		}
+		input := env.server.TeamInputs.Get(teamID, id)
+		if input == nil || input.PlanningVersion != 1 || !input.IssueRouting || accepted["planningVersion"] != float64(1) {
+			t.Fatalf("新版规划与聊天归集必须同时启用：%+v %v", input, accepted)
+		}
+		if replay := env.request(http.MethodPost, path, body); replay.Code != http.StatusAccepted {
+			t.Fatal("同消息重试应幂等")
+		}
+		legacy := strings.Replace(body, `"teamIssueRoutingVersion":"2"`, `"teamIssueRoutingVersion":"1"`, 1)
+		if response := env.request(http.MethodPost, path, legacy); response.Code != http.StatusConflict {
+			t.Fatalf("同 ID 不能切换规划协议：%d", response.Code)
 		}
 	}
 }

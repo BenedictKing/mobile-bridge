@@ -12,7 +12,7 @@ function teamQueueModeEnabled(teamID){
   return !!store&&teamID&&store.getItem('teamQueueMode:'+teamID)==='1';
 }
 function teamSubmissionFields(teamID){
-  const fields={teamMode:'team',teamId:teamID,teamIssueRoutingVersion:'1'};
+  const fields={teamMode:'team',teamId:teamID,teamIssueRoutingVersion:'2'};
   if(teamQueueModeEnabled(teamID))fields.teamQueueVersion='2';
   return fields;
 }
@@ -148,6 +148,7 @@ function teamWorkflowStages(tasks){
 // teamWorkflowTaskTitle 取轨道上展示的任务标题：优先提示词首行——任务 id
 // 只是内部标识（lead-d1-0 这类），对用户没有意义；首行过长交给 CSS 两行截断。
 function teamWorkflowTaskTitle(task){
+  if(task.goalFeedback)return t_safe('目标评估与续做');
   if(task.id==='lead')return t_safe('负责人');
   const text=String(task.instructionsHead||task.prompt||'');
   let line=(text.split(/\r?\n/).find(row=>row.trim())||'').trim().replace(/^[#>\-*\s]+/,'');
@@ -159,7 +160,8 @@ function teamWorkflowTaskTitle(task){
     .map(token=>token.length>26&&/^[\x21-\x7E]+$/.test(token)?token.slice(0,14)+'…'+token.slice(-10):token)
     .join(' ')
     .replace(/^(?:在|对|到|from|at|in)\s+/i,'').trim();
-  return line||task.id||t_safe('任务');
+  const title=line||task.id||t_safe('任务'),workflow=task.workflowTitle||task.workflowId;
+  return workflow?'['+workflow+'] '+title:title;
 }
 
 // teamWorkflowCounts 把任务按展示语义分桶：Run 的 status 只表示编排走到哪，

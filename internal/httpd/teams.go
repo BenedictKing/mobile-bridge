@@ -954,13 +954,17 @@ func (h *handler) handleTeamConversationSend(threadID string, object *jsoncompat
 	// 持久输入队列分流（阶段 1，§3.2）：teamQueueVersion:2 的会话发送先落
 	// 输入账本（202 queued），旧客户端继续走「立即给 runId」的同步路径。
 	queueMode := stringField(object, "teamQueueVersion") == teamQueueVersionGate
-	issueRouting := stringField(object, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate
+	planningVersion := 0
+	if stringField(object, "teamIssueRoutingVersion") == teamGoalPlanningVersionGate {
+		planningVersion = 1
+	}
+	issueRouting := stringField(object, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate || planningVersion == 1
 	if queueMode || issueRouting {
 		if h.server.TeamInputs == nil {
 			h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
 			return true
 		}
-		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, threadID, payload.id, payload.text, payload.attachments, issueRouting)
+		input, duplicate, acceptErr := h.acceptTeamInputWithOptions(teamRow, threadID, payload.id, payload.text, payload.attachments, team.InputAcceptOptions{IssueRouting: issueRouting, PlanningVersion: planningVersion})
 		if acceptErr != nil {
 			h.failTeamInputError(acceptErr)
 			return true
@@ -1039,13 +1043,17 @@ func (h *handler) handleTeamInputsCreate(teamID string) {
 			return
 		}
 	}
-	issueRouting := stringField(body, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate || intent == team.InputIntentTask
+	planningVersion := 0
+	if stringField(body, "teamIssueRoutingVersion") == teamGoalPlanningVersionGate {
+		planningVersion = 1
+	}
+	issueRouting := stringField(body, "teamIssueRoutingVersion") == teamIssueRoutingVersionGate || intent == team.InputIntentTask || planningVersion == 1
 	if queueMode || issueRouting {
 		if h.server.TeamInputs == nil {
 			h.fail(http.StatusConflict, errorBody("当前网关未启用输入队列"))
 			return
 		}
-		input, duplicate, acceptErr := h.acceptQueuedTeamInput(teamRow, teamLeadSessionID(teamRow), payload.id, payload.text, payload.attachments, issueRouting, intent)
+		input, duplicate, acceptErr := h.acceptTeamInputWithOptions(teamRow, teamLeadSessionID(teamRow), payload.id, payload.text, payload.attachments, team.InputAcceptOptions{IssueRouting: issueRouting, Intent: intent, PlanningVersion: planningVersion})
 		if acceptErr != nil {
 			h.failTeamInputError(acceptErr)
 			return
@@ -2746,6 +2754,13 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 			}
 			taskID := stringField(task, "id")
 			if model := tasksByID[taskID]; model != nil {
+				if run.Planning != nil && model.WorkflowID != "" {
+					for _, workflow := range run.Planning.Workflows {
+						if workflow.ID == model.WorkflowID {
+							task.Set("workflowTitle", workflow.Title)
+						}
+					}
+				}
 				if independence := team.ReviewIndependence(run, teamRow, model); independence != nil {
 					task.Set("reviewIndependence", *independence)
 				}

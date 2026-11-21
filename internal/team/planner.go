@@ -500,6 +500,13 @@ func PlanHash(mode, collect, goal string, tasks []Task) string {
 // 上下文重算并落 journal——同一任务槽出现两个不同哈希即 input_hash_mismatch。
 func InputHashFor(task *Task, policyDigest, contextText string) string {
 	object := jsoncompat.NewObject()
+	if task.WorkflowID != "" {
+		object.Set("workflowId", task.WorkflowID)
+		object.Set("workspaceId", task.WorkspaceID)
+	}
+	if task.GoalFeedback {
+		object.Set("goalFeedback", true)
+	}
 	object.Set("memberId", task.MemberID)
 	object.Set("prompt", task.Prompt)
 	if task.Phase != "" {

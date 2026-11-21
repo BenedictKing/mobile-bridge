@@ -11,6 +11,9 @@ const autoReductionPrompt = "请汇总本次团队执行成果，形成面向用
 // ensureAutoPlanReductionLocked 在 autoPlan 成功终局前强制补一次 Lead 收尾。
 // 返回 true 表示本轮已补任务或记账失败需要重试，调用方不得按旧快照 fold。
 func (s *Service) ensureAutoPlanReductionLocked(state *runState, run *Run) bool {
+	if run.Planning != nil && len(run.Planning.Criteria) > 0 {
+		return s.ensureGoalFeedbackLocked(state, run)
+	}
 	team := s.store.Team(run.TeamID)
 	if !run.AutoPlan || team == nil || team.LeadID == "" || hasReductionTask(run.Tasks) {
 		return false

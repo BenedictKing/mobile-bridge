@@ -155,6 +155,22 @@ func GoalEvidenceHash(run *Run) string {
 }
 
 func FinalGoalResult(run *Run) *GoalResultRef {
+	if run.Planning != nil && len(run.Planning.Checks) > 0 {
+		for i := len(run.Tasks) - 1; i >= 0; i-- {
+			task := &run.Tasks[i]
+			if task.GoalFeedback && task.Status == TaskCompleted {
+				text := goalPlanningSummary(run.Planning)
+				if readable := ResultDisplayText(task.Result); readable != "" {
+					text += "\n" + readable
+				}
+				ref := &GoalResultRef{TaskID: task.ID, Text: truncateRunes(text, 12000), Truncated: len([]rune(text)) > 12000, Attempt: task.Attempt, SubmissionID: task.SubmissionID}
+				if detail := task.ResultDetail; detail != nil {
+					ref.SessionID, ref.TurnID = detail.SessionID, detail.TurnID
+				}
+				return ref
+			}
+		}
+	}
 	var candidates []*Task
 	var reduction *Task
 	for i := range run.Tasks {
@@ -424,6 +440,42 @@ func evaluateGoal(run *Run, teamRow *Team, scope GoalScope, issueRecord *GoalRec
 		}
 		if record != nil {
 			out.Reason = "目标或执行证据已变化，请重新核对结果。"
+		}
+	}
+	if run.Planning != nil && scope.ID == "run" && record == nil {
+		out.Contract.Criteria = nil
+		for _, criterion := range run.Planning.Criteria {
+			projected := GoalCriterion{ID: criterion.ID, Text: criterion.Text, State: "unknown"}
+			for _, check := range run.Planning.Checks {
+				if check.ID == criterion.ID {
+					projected.State = check.State
+				}
+			}
+			out.Contract.Criteria = append(out.Contract.Criteria, projected)
+		}
+		if len(run.Planning.Criteria) == 0 {
+			out.Contract.Criteria = DefaultGoalContract(scope).Criteria
+		} else if run.Planning.Status != "complete" {
+			out.CanConfirm = false
+			if run.Status != RunCancelled {
+				if out.Status != "pending_verification" {
+					out.Status = "unassessed"
+					if len(run.Planning.Checks) > 0 {
+						out.Status = "unsatisfied"
+						for _, check := range run.Planning.Checks {
+							if check.State == "met" {
+								out.Status = "partial"
+							}
+						}
+					}
+				}
+				out.Reason = "目标尚未完成，执行后将继续评估缺口。"
+				if run.Status == RunWaitingInput {
+					out.Reason = run.StopReason
+				}
+			}
+		} else if out.CanConfirm {
+			out.Status, out.AssessedBy, out.Reason = "satisfied", "lead", "规划验收条件均已有完成证据。"
 		}
 	}
 	out.Label = GoalOutcomeLabels[out.Status]

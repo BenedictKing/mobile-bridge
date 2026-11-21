@@ -41,6 +41,7 @@ var graphStatusPrecedence = []string{
 // 恒 1）；taskIds 按快照序保留真实执行任务，供会话跳转和定位使用；
 // resultHead/truncated 是最新一次执行的有界结果摘要。
 type RunGraphNode struct {
+	WorkflowID string   `json:"workflowId,omitempty"`
 	ID         string   `json:"id"`
 	Label      string   `json:"label"`
 	Status     string   `json:"status"`
@@ -177,6 +178,10 @@ func BuildRunGraph(run *Run, teamRow *Team) RunGraph {
 			AgentKinds: []string{},
 			DependsOn:  []string{},
 			RunCount:   1,
+		}
+		node.WorkflowID = builder.tasks[0].WorkflowID
+		if workflow := planningWorkflow(run.Planning, node.WorkflowID); workflow != nil {
+			node.Label = workflow.Title + " · " + builder.id
 		}
 		for _, task := range builder.tasks {
 			node.TaskIDs = append(node.TaskIDs, task.ID)
