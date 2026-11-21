@@ -11,7 +11,7 @@ function extract({team=false,defaultCompact}={}){
   const start=source.indexOf('const COMPACT_PROMPTS=');
   const end=source.indexOf('function compactGateway',start);
   assert.ok(start>=0&&end>start,'composer command block not found in app.js');
-  const context={t:value=>value,currentTeam:team,state:{agent:'kimi',agents:[{kind:'kimi'}]},window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
+  const context={t:value=>value,currentId:'chat',currentTeam:team,state:{id:'chat',agent:'kimi',agents:[{kind:'kimi'}]},window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
   vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.parseMigrateCommand=parseMigrateCommand;this.runMigrateCommand=runMigrateCommand;this.runGatewayCompact=runGatewayCompact;this.transcriptMaintenanceAvailable=transcriptMaintenanceAvailable;this.compactAvailable=compactAvailable;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;this.nativeCompactPrompt=nativeCompactPrompt;',context);
   return context;
 }
@@ -115,7 +115,7 @@ test('migrate command suggestions include the current agent as gateway compactio
 
 test('transcript migration and gateway compaction allow an active source with pending requests',async()=>{
   const flow=extract();
-  flow.state={agent:'kimi',status:'active',connected:true,readOnly:false,requests:[{id:'approval'}]};
+  flow.state={id:'chat',agent:'kimi',status:'active',connected:true,readOnly:false,requests:[{id:'approval'}]};
   assert.equal(flow.transcriptMaintenanceAvailable(),true);
   assert.equal(flow.compactAvailable(),false);
   flow.state.status='idle';
@@ -124,9 +124,11 @@ test('transcript migration and gateway compaction allow an active source with pe
   flow.state.requests=[];
   assert.equal(flow.compactAvailable(),true);
   flow.state.connected=false;
-  assert.equal(flow.transcriptMaintenanceAvailable(),false);
+  assert.equal(flow.transcriptMaintenanceAvailable(),true);
+  assert.equal(flow.compactAvailable(),false);
   flow.state.connected=true;flow.state.readOnly=true;
-  assert.equal(flow.transcriptMaintenanceAvailable(),false);
+  assert.equal(flow.transcriptMaintenanceAvailable(),true);
+  assert.equal(flow.compactAvailable(),false);
 
   const calls=[];
   flow.currentId='chat';flow.currentTeam=null;flow.$=()=>({textContent:''});
@@ -139,7 +141,7 @@ test('transcript migration and gateway compaction allow an active source with pe
 test('migrate command validates the target and delegates with instructions',async()=>{
   const flow=extract(),calls=[],messages=[];
   flow.toast=message=>messages.push(message);
-  flow.state={agent:'kimi',status:'active',connected:true,readOnly:false,requests:[{id:'approval'}],agents:[{kind:'kimi'},{kind:'zcode'}]};
+  flow.state={id:'chat',agent:'kimi',status:'active',connected:true,readOnly:false,requests:[{id:'approval'}],agents:[{kind:'kimi'},{kind:'zcode'}]};
   flow.migrateControl={migrate:async(...args)=>{calls.push(args);return true;}};
   assert.equal(await flow.runMigrateCommand({agent:'',scope:'main'}),false);
   assert.equal(await flow.runMigrateCommand({agent:'codex',scope:'main'}),false);

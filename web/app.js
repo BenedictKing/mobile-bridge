@@ -893,8 +893,9 @@ function renderContextUsage(view){
   node.textContent='· '+(stale?'~':'')+formatTokenCount(used)+'/'+formatTokenCount(size);
   node.title=(stale?t('上次记录的上下文用量：'):t('上下文用量：'))+used.toLocaleString(locale)+' / '+size.toLocaleString(locale)+' tokens · '+percent+'%';
 }
-function transcriptMaintenanceAvailable(){return !!state?.connected&&!state.readOnly;}
-function compactAvailable(){return transcriptMaintenanceAvailable()&&state.status==='idle'&&!(state.requests||[]).length;}
+// 转录迁移只读取源历史；原生压缩才需要源会话的写连接。
+function transcriptMaintenanceAvailable(){return !!currentId&&state?.id===currentId&&!state.loadingHistory;}
+function compactAvailable(){return transcriptMaintenanceAvailable()&&state.connected&&!state.readOnly&&state.status==='idle'&&!(state.requests||[]).length;}
 function selectCompactMethod(method){if(!['native','gateway'].includes(method))return;if(compactMethod!==method){compactScope='';$('compact-instructions').value='';}compactMethod=method;$('compact-error').textContent='';renderCompactState();}
 function selectCompactScope(scope){if(!COMPACT_PROMPTS[scope]||!compactMethod)return;compactScope=scope;$('compact-error').textContent='';renderCompactState();}
 function renderCompactState(){
@@ -1051,13 +1052,13 @@ async function runMigrateCommand(command){
   if(!command?.agent){toast('用法：/migrate <目标Agent> [full|main|latest] [后续指示]');return false;}
   const target=(state?.agents||[]).find(agent=>agent?.kind===command.agent);
   if(!target){toast('目标 Agent 未启用：'+command.agent);return false;}
-  if(!transcriptMaintenanceAvailable()){toast('当前会话未连接或为只读，暂时无法迁移');return false;}
+  if(!transcriptMaintenanceAvailable()){toast('会话历史尚未就绪，暂时无法迁移');return false;}
   const operation=command.agent===state?.agent?'compact':'migrate';
   return !!(await migrateControl?.migrate(command.agent,command.scope,operation,{instructions:command.instructions}));
 }
 async function runGatewayCompact(scope,instructions=''){
   if(!COMPACT_PROMPTS[scope]||!currentId)return false;
-  if(!transcriptMaintenanceAvailable()){toast('当前会话未连接或为只读，暂时无法压缩');return false;}
+  if(!transcriptMaintenanceAvailable()){toast('会话历史尚未就绪，暂时无法压缩');return false;}
   $('compact-error').textContent='';
   const options={instructions};
   if(currentTeam){

@@ -212,7 +212,7 @@ test('chat details allow transcript operations while only native compaction wait
   const nodes=Object.fromEntries(['compact-instructions-field','compact-confirm','compact-native-hint','compact-native-scopes','compact-gateway'].map(id=>[id,node()]));
   const methods=[node()],nativeScopes=[node()],gatewayScopes=[node()];
   const context={
-    state:{status:'active',connected:true,readOnly:false,requests:[{id:'approval'}]},compactMethod:'gateway',compactScope:'main',
+    currentId:'source',state:{id:'source',status:'active',connected:true,readOnly:false,requests:[{id:'approval'}]},compactMethod:'gateway',compactScope:'main',
     compactChat:{busy:false},migrateControl:{busy:false,render(){}},$:id=>nodes[id],
     document:{querySelectorAll:selector=>selector==='[data-compact-method]'?methods:selector==='[data-compact]'?nativeScopes:gatewayScopes},
   };
@@ -223,6 +223,50 @@ test('chat details allow transcript operations while only native compaction wait
   context.compactMethod='native';context.renderCompactState();
   assert.equal(nodes['compact-confirm'].disabled,true);
   assert.equal(nativeScopes[0].disabled,true);
+});
+
+function loadMigrationCommands(view={}){
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8'),notices=[];
+  const availability=source.slice(source.indexOf('function transcriptMaintenanceAvailable'),source.indexOf('function selectCompactMethod'));
+  const command=source.slice(source.indexOf('async function runMigrateCommand'),source.indexOf('async function runGatewayCompact'));
+  const context={currentId:'source',state:{id:'source',agent:'claude',status:'idle',connected:false,readOnly:false,agents:[{kind:'kimi'}],...view},toast:text=>notices.push(text)};
+  vm.runInNewContext(availability+'\n'+command,context);
+  const loaded=loadControl({enabled:()=>context.transcriptMaintenanceAvailable()});
+  context.migrateControl=loaded.control;
+  return {...loaded,context,notices};
+}
+
+test('loaded disconnected and read-only history can migrate from details and commands',async()=>{
+  for(const view of [{connected:false},{connected:false,readOnly:true},{connected:true,readOnly:true}]){
+    const {context,root,requests,notices}=loadMigrationCommands(view);
+    assert(root.querySelectorAll('button').every(button=>!button.disabled));
+    assert.equal(context.compactAvailable(),false,'native compaction still needs a writable connection');
+    find(root,button=>button.dataset.agent==='kimi').onclick();
+    await find(root,button=>button.dataset.scope==='main').onclick();
+    assert.equal(byClass(root,'migrate-start')[0].disabled,false);
+    await byClass(root,'migrate-start')[0].onclick();
+    assert.equal(requests[0].phase,'prepare');
+    assert.equal(requests[1].agent,'kimi');
+    assert.equal(await context.runMigrateCommand({agent:'kimi',scope:'main',instructions:'还有没有遗漏'}),true);
+    assert.equal(requests[2].instructions,'还有没有遗漏');
+    assert.deepEqual(notices,[]);
+  }
+});
+
+test('migration waits for the current history and still checks target availability',async()=>{
+  const {context,control,root,requests,notices}=loadMigrationCommands({loadingHistory:true});
+  assert(root.querySelectorAll('button').every(button=>button.disabled));
+  assert.equal(await context.runMigrateCommand({agent:'kimi'}),false);
+  assert.equal(requests.length,0);
+  context.state.loadingHistory=false;context.state.id='previous';
+  assert.equal(context.transcriptMaintenanceAvailable(),false);
+  context.state.id='source';context.currentId=null;
+  assert.equal(context.transcriptMaintenanceAvailable(),false);
+  context.currentId='source';control.render();
+  assert(root.querySelectorAll('button').every(button=>!button.disabled));
+  assert.equal(await context.runMigrateCommand({agent:'disabled'}),false);
+  assert.equal(requests.length,0);
+  assert.match(notices.at(-1),/目标 Agent 未启用/);
 });
 
 test('dismissing the dialog abandons a prepared session and resets the picker',async()=>{
