@@ -634,6 +634,7 @@ const en={
   "语言": "Language",
   "强调色": "Accent color",
   "橄榄绿": "Olive",
+  "石墨": "Graphite",
   "蓝色": "Blue",
   "绿色": "Green",
   "紫色": "Purple",

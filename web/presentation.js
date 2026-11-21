@@ -1,12 +1,16 @@
 'use strict';
 // Appearance is local to this browser; no desktop or account settings are changed.
 const ChatAppearance=(()=>{
-  const defaults={theme:'system',accent:'#38450f',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',defaultCompact:'main',showReasoning:true,showProcess:true,showAccounts:true};
+  // Graphite is the brand default. Settings saved before palette 2 still carry the old
+  // default '#38450f' and are migrated once; olive picked afterwards is kept as a preset.
+  const defaults={palette:2,theme:'system',accent:'#1f2023',fontSize:16,codeSize:13,density:'standard',enterMode:'newline',defaultCompact:'main',showReasoning:true,showProcess:true,showAccounts:true};
+  const legacyAccent='#38450f';
   const compactLevels=['bare','full','main','latest','gateway','gateway-full','gateway-latest'];
   function normalize(value={}){
     if(!value||typeof value!=='object')value={};
-    return {theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
-      accent:/^#[0-9a-f]{6}$/i.test(value.accent)?value.accent:defaults.accent,
+    const accent=/^#[0-9a-f]{6}$/i.test(value.accent)?value.accent.toLowerCase():defaults.accent;
+    return {palette:2,theme:['system','light','dark'].includes(value.theme)?value.theme:defaults.theme,
+      accent:value.palette!==2&&accent===legacyAccent?defaults.accent:accent,
       fontSize:Number.isInteger(value.fontSize)&&value.fontSize>=14&&value.fontSize<=20?value.fontSize:defaults.fontSize,
       codeSize:Number.isInteger(value.codeSize)&&value.codeSize>=11&&value.codeSize<=17?value.codeSize:defaults.codeSize,
       density:['compact','standard','relaxed'].includes(value.density)?value.density:defaults.density,
@@ -21,14 +25,17 @@ const ChatAppearance=(()=>{
     return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;
   }
   function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
+  // text: accent tuned to 4.5:1 on the page. fill: buttons/swatches keep the chosen accent,
+  // except dark accents on the dark page, which would vanish, so they use the tuned tone.
   function colors(accent,dark){
-    const background=dark?'#191a1f':'#ffffff';
+    const background=dark?'#16171a':'#fdfcfa';
     let text=accent;
     const rgb=accent.match(/[0-9a-f]{2}/gi).map(v=>parseInt(v,16));
     for(let step=1;contrast(text,background)<4.5&&step<=20;step++){
       text='#'+rgb.map(v=>Math.round(v+((dark?255:0)-v)*step/20).toString(16).padStart(2,'0')).join('');
     }
-    return {text,ink:contrast(accent,'#ffffff')>=contrast(accent,'#000000')?'#ffffff':'#000000'};
+    const fill=dark&&contrast(accent,background)<3?text:accent;
+    return {text,fill,ink:contrast(fill,'#ffffff')>=contrast(fill,'#000000')?'#ffffff':'#000000'};
   }
   return {defaults,normalize,colors};
 })();
@@ -60,20 +67,24 @@ if(typeof document!=='undefined')(()=>{
   function save(){try{localStorage.setItem(key,JSON.stringify(settings));}catch{}}
   function apply(){
     const dark=settings.theme==='dark'||settings.theme==='system'&&system.matches;
-    const colors=ChatAppearance.colors(settings.accent,dark);
+    const colors=ChatAppearance.colors(settings.accent,dark),brand=settings.accent===ChatAppearance.defaults.accent;
     root.dataset.theme=dark?'dark':'light';root.dataset.density=settings.density;
     root.dataset.showAccounts=String(settings.showAccounts);
     root.dataset.enterMode=settings.enterMode;
     get('appearance-accounts').checked=settings.showAccounts;
     root.dataset.showReasoning=String(settings.showReasoning);root.dataset.showProcess=String(settings.showProcess);
     if(typeof chatTimeline!=='undefined')chatTimeline?.setVisibility(settings);
-    root.style.setProperty('--accent',settings.accent);
-    root.style.setProperty('--accent-ink',colors.ink);
-    root.style.setProperty('--green',colors.text);
-    root.style.setProperty('--soft',settings.accent+(dark?'29':'12'));
+    // The brand accent is defined per theme in presentation.css (graphite / ivory).
+    if(brand)for(const name of ['--accent','--accent-ink','--green','--soft'])root.style.removeProperty(name);
+    else{
+      root.style.setProperty('--accent',colors.fill);
+      root.style.setProperty('--accent-ink',colors.ink);
+      root.style.setProperty('--green',colors.text);
+      root.style.setProperty('--soft',colors.fill+(dark?'24':'12'));
+    }
     root.style.setProperty('--message-size',settings.fontSize+'px');
     root.style.setProperty('--code-size',settings.codeSize+'px');
-    document.querySelector('meta[name="theme-color"]').content=dark?'#121310':'#ecebe7';
+    document.querySelector('meta[name="theme-color"]').content=dark?'#0e0f11':'#f2f0eb';
     try{window.MobileBridgeNative?.setTheme(dark);}catch{}
     for(const [id,value] of Object.entries({theme:settings.theme,accent:settings.accent,font:settings.fontSize,code:settings.codeSize,density:settings.density}))get('appearance-'+id).value=value;
     get('appearance-font-value').textContent=settings.fontSize+' px';get('appearance-code-value').textContent=settings.codeSize+' px';
