@@ -572,6 +572,9 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			raw, _ := json.Marshal(treeToGo(event.Payload["planning"]))
 			if err := json.Unmarshal(raw, &state); err == nil {
 				run.Planning = &state
+				if payloadBool(event.Payload, "verifyCleared") {
+					run.Verify = nil
+				}
 				if status := payloadString(event.Payload, "runStatus"); status != "" {
 					run.Status = status
 					run.StopReason = payloadString(event.Payload, "stopReason")
@@ -600,9 +603,6 @@ func applyJournalEventToRun(run *Run, event *Event) {
 					thread.ProviderSessionID = payloadString(event.Payload, "providerSessionId")
 					if context := payloadString(event.Payload, "executionContext"); context != "" {
 						thread.ExecutionContext = context
-					}
-					if payloadBool(event.Payload, "verifyCleared") {
-						run.Verify = nil
 					}
 					if kind := payloadString(event.Payload, "agentKind"); kind != "" {
 						thread.AgentKind = kind

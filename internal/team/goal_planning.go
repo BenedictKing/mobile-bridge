@@ -140,6 +140,9 @@ func parsePlanningReply(fullText string, team *Team, run *Run, source *Task, pol
 		if !feedbackPresent {
 			return nil, nil, []string{"目标评估缺少 feedback，不能用普通汇总代替验收和续做决定"}
 		}
+		if goalFeedbackIsStale(run, source) {
+			return nil, nil, []string{"目标评估已过期：评估开始后新增了执行任务，请等待新任务完成后重新评估"}
+		}
 		var feedback planningFeedback
 		if err := decodePlanningValue(feedbackValue, &feedback); err != nil {
 			return nil, nil, []string{"feedback 不是有效评估：" + err.Error()}
@@ -159,6 +162,25 @@ func parsePlanningReply(fullText string, team *Team, run *Run, source *Task, pol
 		state.Status = "running"
 	}
 	return actions, state, nil
+}
+
+// goalFeedbackIsStale 判断评估任务创建后是否出现了新的执行任务。
+// 评估任务的 DependsOn 是它开始时的任务快照；任何未被快照覆盖的任务都
+// 可能改变验收结论，旧评估不能再关闭目标或覆盖新的阻塞状态。
+func goalFeedbackIsStale(run *Run, feedbackTask *Task) bool {
+	if run == nil || feedbackTask == nil || !feedbackTask.GoalFeedback {
+		return false
+	}
+	snapshot := make(map[string]bool, len(feedbackTask.DependsOn))
+	for _, taskID := range feedbackTask.DependsOn {
+		snapshot[taskID] = true
+	}
+	for _, task := range run.Tasks {
+		if task.ID != feedbackTask.ID && !snapshot[task.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 func planningWorkflow(state *GoalPlanningState, id string) *PlanningWorkflow {

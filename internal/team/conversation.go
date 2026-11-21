@@ -15,7 +15,7 @@ func (s *Service) CreateConversationAmendRun(team *Team, parentRunID, runID, goa
 	if parent == nil || parent.TeamID != team.ID {
 		return nil, fmt.Errorf("%w: run=%s", ErrNotFound, parentRunID)
 	}
-	if !terminalRun(parent.Status) {
+	if !terminalRun(parent.Status) && !goalLoopRequiresAmend(parent, team.Policy) {
 		return nil, fmt.Errorf("%w: 当前 Run 尚未结束，后续消息应追加到原 Run", ErrRunNotWaiting)
 	}
 	return s.createRun(team, runID, goal, ModeSingle, "", nil, nil, true, "", parentRunID, attachments)
@@ -95,8 +95,10 @@ func (s *Service) FollowUpConversationRun(team *Team, runID, taskID, goal string
 			fresh.Status = RunDispatching
 			fresh.StopReason = ""
 		}
-		if fresh.Planning != nil && sourceTaskID == "" {
+		if fresh.Planning != nil {
 			fresh.Planning.Status = "running"
+			fresh.Planning.Blockers = nil
+			fresh.StopReason = ""
 		}
 		payload := map[string]any{
 			"taskId": task.ID, "memberId": task.MemberID, "instructionsHead": task.InstructionsHead,

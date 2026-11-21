@@ -2952,6 +2952,17 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 			withdrawTaskQuestions(fresh, dispatch.taskID, questionWithdrawTaskTerminal, "watcher")...)
 		switch {
 		case leadDriven && len(violations) > 0:
+			if source.GoalFeedback && goalFeedbackIsStale(fresh, source) {
+				// 评估开始后有新任务加入，旧结论只作无效事实记录，不创建
+				// 另一个同样过期的 actfix 任务。新任务全部收尾后，fold 会
+				// 重新创建下一轮目标评估。
+				fresh.Planning.Status = "running"
+				fresh.Planning.Blockers = nil
+				fresh.Planning.Remaining = nil
+				fresh.StopReason = ""
+				events = append(events, planningEvent(fresh, dispatch.taskID))
+				break
+			}
 			root := actionRepairRoot(dispatch.taskID)
 			if final && s.inputs != nil && source != nil {
 				if inputID := issueInputIDForLeadTask(fresh, source); inputID != "" {

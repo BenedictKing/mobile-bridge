@@ -541,3 +541,97 @@ func TestGoalWorkflowSameTaskIDsAcrossRunsCannotShareWriteLock(t *testing.T) {
 		t.Fatal("取消首个 Run 必须释放正确的锁归属")
 	}
 }
+
+func TestGoalWorkflowStaleEvaluationCannotCompleteAfterSupplement(t *testing.T) {
+	h, _, run := newGoalWorkflowRun(t)
+	startGoalBranches(t, h, run, goalTestPlan(), workflowAction("lead", "a"))
+	a, entryA := waitGoalTaskEntry(t, h, run.ID, "lead-d1-0")
+	completeGoalEntry(h, a, entryA, "A 已完成")
+	check, entryCheck := waitGoalTaskEntry(t, h, run.ID, "lead-goal-check-1")
+	const followUpID = "input-stale-evaluation"
+	if _, _, err := h.service.FollowUpConversationRun(h.team, run.ID, followUpID, "补充修复 A 并重新验证", nil, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	followUp, entryFollowUp := waitGoalTaskEntry(t, h, run.ID, followUpID)
+	feedback := &planningFeedback{Status: "complete", Checks: []PlanningCheck{{ID: "all", State: "met", EvidenceTaskIDs: []string{a.ID}}}}
+	completeGoalEntry(h, check, entryCheck, workflowReply(nil, feedback))
+	waitFor(t, "旧评估结算", func() bool { return h.taskOf(run.ID, check.ID).Status == TaskCompleted })
+	if fresh := h.store.Run(run.ID); fresh.Planning.Status == "complete" {
+		t.Fatal("评估期间新增任务后，旧评估不能关闭目标")
+	}
+	completeGoalEntry(h, followUp, entryFollowUp, "")
+	check2, _ := waitGoalTaskEntry(t, h, run.ID, "lead-goal-check-2")
+	if check2.GoalFeedback && h.store.Run(run.ID).Status == RunCompleted {
+		t.Fatal("补充任务空结果后必须重新评估，不能直接完成")
+	}
+}
+
+func TestGoalWorkflowPlanningReplayClearsVerification(t *testing.T) {
+	run := &Run{ID: "replay", TeamID: "team", Status: RunDispatching, VerifyCommand: []string{"make", "check"},
+		Planning: &GoalPlanningState{Version: 1, Status: "continue"},
+		Verify:   &VerifyResult{ExitCode: 7, OutputHead: "旧检查失败"}}
+	event := planningEvent(run, "lead-goal-check-1")
+	event.Payload["verifyCleared"] = true
+	applyJournalEventToRun(run, event)
+	if run.Verify != nil {
+		t.Fatalf("目标规划事件重放必须清除旧验证结果：verify=%+v", run.Verify)
+	}
+}
+
+func TestGoalWorkflowBlockedTargetedFollowUpResumesPlanning(t *testing.T) {
+	h, _, run := newGoalWorkflowRun(t)
+	startGoalBranches(t, h, run, goalTestPlan(), workflowAction("lead", "a"))
+	a, entryA := waitGoalTaskEntry(t, h, run.ID, "lead-d1-0")
+	completeGoalEntry(h, a, entryA, "A 等待外部条件")
+	check, entryCheck := waitGoalTaskEntry(t, h, run.ID, "lead-goal-check-1")
+	feedback := &planningFeedback{Status: "blocked", Checks: []PlanningCheck{{ID: "all", State: "unmet"}}, Blockers: []string{"外部条件未就绪"}}
+	completeGoalEntry(h, check, entryCheck, workflowReply(nil, feedback))
+	waitGoalStatus(t, h, run.ID, RunWaitingInput)
+	const followUpID = "input-targeted-unblock"
+	if _, _, err := h.service.FollowUpConversationRun(h.team, run.ID, followUpID, "条件已就绪，请继续这个 workflow", nil, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	followUp, entryFollowUp := waitGoalTaskEntry(t, h, run.ID, followUpID)
+	fresh := h.store.Run(run.ID)
+	if fresh.Planning.Status != "running" || fresh.StopReason != "" || fresh.Status == RunWaitingInput {
+		t.Fatalf("具体 workflow 追问必须清除旧阻塞并恢复执行：status=%s planning=%s reason=%q", fresh.Status, fresh.Planning.Status, fresh.StopReason)
+	}
+	completeGoalEntry(h, followUp, entryFollowUp, "A 已修复并验证")
+	check2, _ := waitGoalTaskEntry(t, h, run.ID, "lead-goal-check-2")
+	if !check2.GoalFeedback {
+		t.Fatal("解除阻塞后应重新进入目标评估")
+	}
+}
+
+func TestGoalWorkflowTaskLimitChatStartsAmendRun(t *testing.T) {
+	h := newDispatchHarness(t)
+	h.team.Policy.AutoDispatch = true
+	if err := h.store.SaveTeam(h.team); err != nil {
+		t.Fatal(err)
+	}
+	ledger := LoadInputLedger(filepath.Join(t.TempDir(), "inputs.json"), h.journal)
+	h.service.SetInputs(ledger)
+	parentID := "exhausted"
+	parent := &Run{ID: parentID, TeamID: h.team.ID, Goal: "完成完整目标", AutoPlan: true, Mode: ModeSingle,
+		Status: RunWaitingInput, StopReason: "goal_loop: 任务数量已达上限，目标尚未验收完成",
+		Planning: &GoalPlanningState{Version: 1, Status: "continue", Iteration: 3, MaxIterations: 3,
+			Criteria: goalTestPlan().Criteria, Workflows: goalTestPlan().Workflows}}
+	for i := 0; i < h.team.Policy.MaxTasksPerRun; i++ {
+		parent.Tasks = append(parent.Tasks, Task{ID: fmt.Sprintf("done-%d", i), MemberID: "dev", Status: TaskCompleted, Result: "已有成果"})
+	}
+	if err := h.store.SaveRun(parent); err != nil {
+		t.Fatal(err)
+	}
+	const inputID = "9ccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if _, _, err := ledger.AcceptWithOptions(h.team.ID, inputID, "继续补齐未完成目标", nil, "policy", 64, InputAcceptOptions{PlanningVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if routed := h.service.RoutePendingInputs(h.team.ID); routed != 1 {
+		t.Fatalf("达到原 Run 上限后聊天输入应路由到修订 Run，实际 routed=%d", routed)
+	}
+	fresh := h.store.Run(inputID)
+	input := ledger.Get(h.team.ID, inputID)
+	if fresh == nil || fresh.ParentRunID != parentID || input.QueueStatus != InputRouted || input.RouteStatus != "amend" || input.TargetRunID != inputID {
+		t.Fatalf("修订 Run 血缘或输入路由错误：run=%+v input=%+v", fresh, input)
+	}
+}

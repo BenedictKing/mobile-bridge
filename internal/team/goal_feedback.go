@@ -127,6 +127,15 @@ func (s *Service) ensureGoalFeedbackLocked(state *runState, run *Run) bool {
 	return true
 }
 
+// goalLoopRequiresAmend 表示当前自动规划 Run 已无法在原 Run 中继续追加
+// 任务。聊天输入应创建带 parentRunId 的新修订 Run，保留旧 Run 的证据链。
+func goalLoopRequiresAmend(run *Run, policy TeamPolicy) bool {
+	if run == nil || run.Status != RunWaitingInput || run.Planning == nil || !strings.HasPrefix(run.StopReason, "goal_loop: ") {
+		return false
+	}
+	return len(run.Tasks) >= policy.MaxTasksPerRun || run.Planning.Iteration >= run.Planning.MaxIterations
+}
+
 func (s *Service) parkGoalPlanningLocked(state *runState, run *Run, reason string) bool {
 	if reason == "" {
 		reason = "目标未完成，需要用户处理阻塞"

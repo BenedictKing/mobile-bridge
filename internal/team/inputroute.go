@@ -126,7 +126,7 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded boo
 		}
 		active := make([]*Run, 0, 1)
 		for _, run := range runs {
-			if !terminalRun(run.Status) {
+			if !terminalRun(run.Status) && !goalLoopRequiresAmend(run, team.Policy) {
 				active = append(active, run)
 			}
 		}
@@ -137,8 +137,15 @@ func (s *Service) routeOneInput(team *Team, input *TeamInput, budgetExceeded boo
 				waitReason = "追问目标不存在，请刷新 Run 后重新选择任务"
 				break
 			}
-			kind, runID, taskID = "follow_up", input.TargetRunID, ConversationTaskID(input.ID)
-			sourceTaskID = input.TargetTaskID
+			if goalLoopRequiresAmend(targetRun, team.Policy) {
+				// 原 Run 已达到自动续做上限，具体任务入口也必须遵守
+				// 同一修订语义，不能再次把输入塞回已满的 Run。
+				kind, runID, taskID, parentRunID = "amend", input.ID, "lead", targetRun.ID
+				sourceTaskID = ""
+			} else {
+				kind, runID, taskID = "follow_up", input.TargetRunID, ConversationTaskID(input.ID)
+				sourceTaskID = input.TargetTaskID
+			}
 		case len(active) > 1:
 			waitReason = "团队有多个未结束的 Run，请先在 Run 详情页收敛目标（完成或取消）后重试"
 		case len(active) == 1:
