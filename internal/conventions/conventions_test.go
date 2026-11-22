@@ -85,6 +85,12 @@ func TestArtifactPathHintContent(t *testing.T) {
 	if !strings.Contains(ArtifactPathHint, "文件路径") || !strings.Contains(ArtifactPathHint, "Markdown 图片语法") {
 		t.Fatalf("hint lost its key requests: %s", ArtifactPathHint)
 	}
+	if !strings.HasPrefix(ArtifactPathHint, "（回复格式约定）") || strings.Contains(ArtifactPathHint, "网关约定") {
+		t.Fatalf("hint has an ambiguous label: %s", ArtifactPathHint)
+	}
+	if !strings.Contains(ArtifactPathHint, "不要提及、解释或复述") {
+		t.Fatalf("hint does not forbid repeating itself: %s", ArtifactPathHint)
+	}
 	if len([]rune(ArtifactPathHint)) > 160 {
 		t.Fatalf("hint too long: %d runes", len([]rune(ArtifactPathHint)))
 	}
