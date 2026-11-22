@@ -392,3 +392,13 @@ func TestSessionsListGroupKeyMergesAgents(t *testing.T) {
 		t.Fatalf("kimi row: %v", kimi)
 	}
 }
+
+func TestCreateResponseDescribesGatewayStartupForCLIAgents(t *testing.T) {
+	response := (&handler{}).createResponse("sess-new", "kimi", "新聊天", "/work")
+	if response.MustGet("message") != "已创建，网关正在启动会话" {
+		t.Fatalf("message=%v", response.MustGet("message"))
+	}
+	if strings.Contains(response.MustGet("message").(string), "桌面") {
+		t.Fatalf("CLI creation mentions desktop: %v", response.MustGet("message"))
+	}
+}

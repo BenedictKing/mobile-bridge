@@ -789,6 +789,7 @@ const en={
   "连接以继续": "Connect to continue",
   "正在加载桌面聊天…": "Loading desktop chat…",
   "正在自动连接；必要时会在电脑 Codex 中打开此聊天。": "Connecting automatically; this may open the chat in Codex on your computer.",
+  "已创建，网关正在启动会话": "Chat created. The gateway is starting the session.",
   "暂未连接，可先阅读历史或点击重新连接。": "Not connected yet. You can read history or reconnect.",
   "暂未连接，可先阅读历史。": "Not connected yet. You can read history.",
   "会话已空闲释放，发送时会重新连接。": "Idle session released. Sending will reconnect it.",

@@ -229,7 +229,7 @@ function loadMigrationCommands(view={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8'),notices=[];
   const availability=source.slice(source.indexOf('function transcriptMaintenanceAvailable'),source.indexOf('function selectCompactMethod'));
   const command=source.slice(source.indexOf('async function runMigrateCommand'),source.indexOf('async function runGatewayCompact'));
-  const context={currentId:'source',state:{id:'source',agent:'claude',status:'idle',connected:false,readOnly:false,agents:[{kind:'kimi'}],...view},toast:text=>notices.push(text)};
+  const context={currentId:'source',state:{agent:'claude',status:'idle',connected:false,readOnly:false,agents:[{kind:'kimi'}],...view},toast:text=>notices.push(text)};
   vm.runInNewContext(availability+'\n'+command,context);
   const loaded=loadControl({enabled:()=>context.transcriptMaintenanceAvailable()});
   context.migrateControl=loaded.control;

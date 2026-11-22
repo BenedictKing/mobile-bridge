@@ -161,3 +161,17 @@ test('hidden projects are not restored from pins',async()=>{
   assert.equal(nodes['new-chat-project'].options.length,1);
   assert.equal(nodes['new-chat-project'].value,customKey);
 });
+
+test('CLI agents use gateway connection wording instead of desktop wording',async()=>{
+  const {nodes,open}=loadNewChat({projects:[{key:'kimi:abc',cwd:'/work',name:'work',host:'local',agent:'kimi'}],agents:[{kind:'kimi',label:'Kimi'}]});
+  await open();
+  assert.match(nodes['new-chat-desc'].textContent,/网关会直接启动/);
+  assert.doesNotMatch(nodes['new-chat-desc'].textContent,/桌面|电脑会打开/);
+
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8');
+  const start=source.indexOf('function usesDesktopRuntime'),end=source.indexOf('function renderState',start);
+  const context={};vm.runInNewContext(source.slice(start,end)+'\nthis.usesDesktopRuntime=usesDesktopRuntime;',context);
+  assert.equal(context.usesDesktopRuntime({agent:'kimi'}),false);
+  assert.equal(context.usesDesktopRuntime({agent:'codex',executionOwner:'cli'}),false);
+  assert.equal(context.usesDesktopRuntime({agent:'codex',executionOwner:'desktop'}),true);
+});

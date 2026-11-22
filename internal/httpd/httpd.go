@@ -1315,9 +1315,8 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 	return result, nil
 }
 
-// createResponse builds the POST /api/sessions reply: for codex the desktop
-// App takes over execution via its codex:// scheme — without it the phone
-// cannot attach to the new thread.
+// createResponse builds the POST /api/sessions reply: Codex opens through the
+// desktop App's codex:// scheme, while CLI agents are started by the gateway.
 func (h *handler) createResponse(id, kind, title, cwd string) *jsoncompat.Object {
 	result := jsoncompat.NewObject()
 	result.Set("id", id)
@@ -1337,7 +1336,7 @@ func (h *handler) createResponse(id, kind, title, cwd string) *jsoncompat.Object
 	}
 	result.Set("agent", kind)
 	result.Set("opened", true)
-	result.Set("message", "已创建，正在连接桌面 App")
+	result.Set("message", "已创建，网关正在启动会话")
 	return result
 }
 
