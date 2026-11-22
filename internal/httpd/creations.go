@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -29,9 +30,12 @@ type creationEntry struct {
 	Message        string  `json:"message,omitempty"`
 	// Model/Effort are the target settings chosen in the migrate dialog or
 	// resolved from Codex defaults; they are applied on every send path.
-	Model     string `json:"model,omitempty"`
-	Effort    string `json:"effort,omitempty"`
-	Execution string `json:"execution,omitempty"`
+	Model           string `json:"model,omitempty"`
+	Effort          string `json:"effort,omitempty"`
+	Execution       string `json:"execution,omitempty"`
+	SourceID        string `json:"sourceId,omitempty"`
+	SourceNotice    string `json:"sourceNotice,omitempty"`
+	SourceOperation string `json:"sourceOperation,omitempty"`
 }
 
 // creations deduplicates create retries by the phone's request id: the same
@@ -128,6 +132,14 @@ func (c *creations) markSent(requestID string) error {
 		entry.Sent = true
 		entry.State = "sent"
 		entry.Warning = ""
+	})
+}
+
+func (c *creations) setSourceNotice(requestID, sourceID, notice, operation string) error {
+	return c.update(requestID, func(entry *creationEntry) {
+		entry.SourceID = sourceID
+		entry.SourceNotice = notice
+		entry.SourceOperation = operation
 	})
 }
 
@@ -248,6 +260,34 @@ func (c *creations) migrationForTarget(targetID string) *creationEntry {
 		}
 	}
 	return nil
+}
+
+type sourceCreationNotice struct {
+	requestID string
+	text      string
+	operation string
+	at        float64
+}
+
+func (c *creations) sourceNotices(sourceID string) []sourceCreationNotice {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	notices := []sourceCreationNotice{}
+	for requestID, entry := range c.entries {
+		if entry.Sent && entry.SourceID == sourceID && entry.SourceNotice != "" {
+			notices = append(notices, sourceCreationNotice{
+				requestID: requestID, text: entry.SourceNotice,
+				operation: entry.SourceOperation, at: entry.At,
+			})
+		}
+	}
+	sort.Slice(notices, func(i, j int) bool {
+		if notices[i].at == notices[j].at {
+			return notices[i].requestID < notices[j].requestID
+		}
+		return notices[i].at < notices[j].at
+	})
+	return notices
 }
 
 func (c *creations) setExecution(requestID, execution string) error {

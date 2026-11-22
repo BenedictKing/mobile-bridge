@@ -136,6 +136,7 @@ func (s *Server) refreshProjectionLocked(threadID string, slot *projectionSlot, 
 			metadata.Set("forkedFrom", s.forkedFromMeta(threadID))
 		}
 		metadata.Set("migration", s.migrationMeta(threadID))
+		metadata.Set("sourceMaintenance", s.sourceMaintenanceMeta(threadID))
 		key := string(jsoncompat.EncodeCompact(metadata))
 		metadataChanged = key != cache.metadataKey
 		cache.metadata, cache.metadataKey, cache.activity = metadata, key, activity
@@ -163,6 +164,7 @@ func (s *Server) refreshProjectionLocked(threadID string, slot *projectionSlot, 
 	for _, key := range cache.metadata.Keys() {
 		view.Set(key, jsoncompat.Clone(cache.metadata.MustGet(key)))
 	}
+	injectSourceMaintenance(view)
 	// Independent metadata changes need a projection revision too. Never assign
 	// an old source sequence to a newer snapshot or move a client's cursor back.
 	projected := sequence

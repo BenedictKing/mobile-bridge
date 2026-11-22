@@ -10,6 +10,7 @@ const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecuti
 const sleepRow=row=>row.role==='activity'&&row.kind==='sleep';
 const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row)||sleepRow(row));
 const steeredRow=row=>row.role==='activity'&&(row.kind==='steered'||row.title==='steered');
+const maintenanceRow=row=>row.role==='activity'&&(row.kind==='gatewayMigration'||row.kind==='gatewayCompaction');
 const reasoningRow=row=>row.role==='activity'&&(row.kind==='reasoning'||row.kind==='agentThought');
 const approvalReviewRow=row=>row.role==='activity'&&(row.kind==='automaticApprovalReview'||row.title==='automaticApprovalReview');
 const approvalReviewStatus=status=>timelineText({approved:'已批准',allow:'已批准',denied:'已拒绝',rejected:'已拒绝',deny:'已拒绝',inProgress:'审查中',pending:'审查中',completed:'审查已结束',failed:'审查失败',interrupted:'已中断',cancelled:'已取消'}[status]||'状态待同步');
@@ -91,6 +92,7 @@ const toolLabel=title=>{
 // Heading label for one row; plan rows surface live completion counts.
 const rowLabel=(row,text=row.text)=>{
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
+  if(maintenanceRow(row))return row.text;
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
   if(approvalReviewRow(row))return timelineText('自动审批审查')+(row.status?' · '+approvalReviewStatus(row.status):'');
   if(compactionRow(row))return timelineText('上下文压缩')+' · '+compactionStatusText(compactionContent(row,text).status);
@@ -156,7 +158,7 @@ class ChatTimeline {
   setViewportLocked(locked){this.viewportLocked=!!locked;if(this.viewportLocked){this.viewport.scrollTop=0;this.lastTop=0;this.anchor=null;this.following=true;}}
   rowVisible(row){
     if(this.hideInternalTeamMessages&&internalTeamProtocolRow(row))return false;
-    if(row.role==='user'||row.role==='error')return true;
+    if(row.role==='user'||row.role==='error'||maintenanceRow(row))return true;
     if(reasoningRow(row))return this.showReasoning;
     if(row.role==='activity'||row.phase==='commentary')return this.showProcess;
     return true;
@@ -392,10 +394,10 @@ class ChatTimeline {
   }
   renderRow(row,open){
     const activity=row.role==='activity',
-          steered=steeredRow(row),
+          steered=steeredRow(row),maintenance=maintenanceRow(row),
           planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
-          node=document.createElement(activity&&!steered?'details':'div');
-    node.className=activity?'activity timeline-row'+(steered?' status-event':''):'message timeline-row '+row.role;
+          node=document.createElement(activity&&!steered&&!maintenance?'details':'div');
+    node.className=activity?'activity timeline-row'+((steered||maintenance)?' status-event':''):'message timeline-row '+row.role;
     if(activity&&row.kind)node.dataset.kind=row.kind;
     // CSS 以 data-tool（而非具体 kind）区分工具行：所有管线的工具调用折叠态一致。
     if(toolRow(row))node.dataset.tool='';
@@ -416,7 +418,7 @@ class ChatTimeline {
       }
       node.append(heading);
     }
-    if(steered)return node;
+    if(steered||maintenance)return node;
     const reasoning=reasoningRow(row);
     const body=document.createElement(activity&&!planEntries&&!reasoning?'pre':'div');
     body.className=activity?(planEntries?'activity-body plan-body':reasoning?'activity-body message-body reasoning-body':'activity-body'):'message-body';

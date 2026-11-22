@@ -44,6 +44,39 @@ func TestMigrationStateSurvivesReloadAndUncertainDispatch(t *testing.T) {
 	}
 }
 
+func TestSourceMaintenanceSurvivesReloadAndIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "creations.json")
+	ledger := mustLoadCreations(t, path)
+	_, _, err := ledger.begin("migration-1", &creationEntry{ID: "target", At: 123})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.setSourceNotice("migration-1", "source", "网关压缩已完成：后续请在新会话继续。", "compact"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.markSent("migration-1"); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Creations: mustLoadCreations(t, path)}
+	view := jsoncompat.NewObject()
+	server.annotateSourceMaintenance("source", view)
+	server.annotateSourceMaintenance("source", view)
+	turns := view.MustGet("turns").(*jsoncompat.Array)
+	if len(turns.Items) != 1 || view.MustGet("sourceMaintenance") != nil {
+		t.Fatalf("source notice must be one internal turn: %s", jsoncompat.EncodeCompact(view))
+	}
+	turn := turns.Items[0].(*jsoncompat.Object)
+	message := turn.MustGet("messages").(*jsoncompat.Array).Items[0].(*jsoncompat.Object)
+	if message.MustGet("kind") != "gatewayCompaction" || message.MustGet("text") != "网关压缩已完成：后续请在新会话继续。" {
+		t.Fatalf("wrong source notice: %s", jsoncompat.EncodeCompact(message))
+	}
+	other := jsoncompat.NewObject()
+	server.annotateSourceMaintenance("other", other)
+	if other.MustGet("turns") != nil {
+		t.Fatal("source notice leaked to another chat")
+	}
+}
+
 func TestTimelineIncludesPendingMigrationWithoutLiveConnection(t *testing.T) {
 	ledger := mustLoadCreations(t, "")
 	_, _, err := ledger.begin("migration-1", &creationEntry{

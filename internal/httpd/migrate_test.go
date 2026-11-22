@@ -193,6 +193,11 @@ func TestMigrateAcrossAgents(t *testing.T) {
 		t.Fatalf("retry duplicated work: creates=%d prompts=%d",
 			counterValue(t, kimiCreates), counterValue(t, kimiPrompts))
 	}
+	source := request(http.MethodGet, "/api/sessions/zcode-0", "")
+	if source.Code != http.StatusOK || strings.Count(source.Body.String(), "会话迁移已完成") != 1 ||
+		!strings.Contains(source.Body.String(), "Kimi") || !strings.Contains(source.Body.String(), "kimi-0") {
+		t.Fatalf("source history must contain exactly one migration notice: %s", source.Body.String())
+	}
 
 	// The same request id cannot migrate different content.
 	conflict := request(http.MethodPost, "/api/sessions/zcode-0/migrate",
@@ -241,6 +246,14 @@ func TestMigrateAcrossAgents(t *testing.T) {
 	}
 	if creates, prompts := counterValue(t, zcodeCreates), counterValue(t, zcodePrompts); creates != 2 || prompts != 2 {
 		t.Fatalf("zcode counters creates=%d prompts=%d", creates, prompts)
+	}
+	source = request(http.MethodGet, "/api/sessions/zcode-0", "")
+	if strings.Count(source.Body.String(), "网关压缩已完成") != 1 || !strings.Contains(source.Body.String(), "zcode-1") {
+		t.Fatalf("source history must contain the gateway compaction notice: %s", source.Body.String())
+	}
+	compacted := request(http.MethodGet, "/api/sessions/zcode-1", "")
+	if strings.Contains(compacted.Body.String(), "会话迁移已完成") || strings.Contains(compacted.Body.String(), "网关压缩已完成") {
+		t.Fatalf("gateway notices must not become model transcript content: %s", compacted.Body.String())
 	}
 }
 

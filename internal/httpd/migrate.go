@@ -38,6 +38,86 @@ func (s *Server) migrationMeta(threadID string) any {
 	return meta
 }
 
+func (s *Server) sourceMaintenanceMeta(threadID string) *jsoncompat.Array {
+	result := &jsoncompat.Array{}
+	if s.Creations == nil {
+		return result
+	}
+	for _, notice := range s.Creations.sourceNotices(threadID) {
+		item := jsoncompat.NewObject()
+		item.Set("requestId", notice.requestID)
+		item.Set("text", notice.text)
+		item.Set("operation", notice.operation)
+		result.Items = append(result.Items, item)
+	}
+	return result
+}
+
+func injectSourceMaintenance(view *jsoncompat.Object) {
+	notices, _ := view.MustGet("sourceMaintenance").(*jsoncompat.Array)
+	view.Delete("sourceMaintenance")
+	if notices == nil || len(notices.Items) == 0 {
+		return
+	}
+	turns, _ := view.MustGet("turns").(*jsoncompat.Array)
+	if turns == nil {
+		turns = &jsoncompat.Array{}
+		view.Set("turns", turns)
+	}
+	existing := map[string]bool{}
+	for _, value := range turns.Items {
+		if turn, ok := value.(*jsoncompat.Object); ok {
+			existing[stringField(turn, "id")] = true
+		}
+	}
+	for _, value := range notices.Items {
+		notice, ok := value.(*jsoncompat.Object)
+		if !ok {
+			continue
+		}
+		id := "gateway-maintenance:" + stringField(notice, "requestId")
+		if existing[id] {
+			continue
+		}
+		operation := stringField(notice, "operation")
+		kind := "gatewayMigration"
+		if operation == "compact" {
+			kind = "gatewayCompaction"
+		}
+		message := jsoncompat.NewObject()
+		message.Set("id", id)
+		message.Set("role", "activity")
+		message.Set("kind", kind)
+		message.Set("title", kind)
+		message.Set("status", "completed")
+		message.Set("text", stringField(notice, "text"))
+		turn := jsoncompat.NewObject()
+		turn.Set("id", id)
+		turn.Set("status", "completed")
+		turn.Set("messages", &jsoncompat.Array{Items: []any{message}})
+		turns.Items = append(turns.Items, turn)
+		existing[id] = true
+	}
+}
+
+func (s *Server) annotateSourceMaintenance(threadID string, view *jsoncompat.Object) {
+	view.Set("sourceMaintenance", s.sourceMaintenanceMeta(threadID))
+	injectSourceMaintenance(view)
+}
+
+func migrationSourceNotice(uiLocale, operation, targetLabel, title, targetID string) string {
+	if normalizeUILocale(uiLocale) == "en-US" {
+		if operation == "compact" {
+			return "Gateway compaction completed: a new session, “" + title + "” (" + targetID + "), was created. This original session is unchanged; continue in the new session."
+		}
+		return "Migration completed: this chat was copied to a new " + targetLabel + " session, “" + title + "” (" + targetID + "). This original session is unchanged; continue in the new session."
+	}
+	if operation == "compact" {
+		return "网关压缩已完成：已创建新会话「" + title + "」（" + targetID + "）。原会话历史保留不变，后续请在新会话继续。"
+	}
+	return "会话迁移已完成：已迁移到 " + targetLabel + " 的新会话「" + title + "」（" + targetID + "）。原会话历史保留不变，后续请在新会话继续。"
+}
+
 // Restore execution routing without starting threads during gateway startup.
 func (s *Server) RegisterCodexCLIThreads() {
 	if s.Creations == nil || s.Codex == nil {
@@ -215,6 +295,10 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 					continue
 				}
 				role, _ := message.MustGet("role").(string)
+				kind := stringField(message, "kind")
+				if role == "activity" && (kind == "gatewayMigration" || kind == "gatewayCompaction") {
+					continue
+				}
 				text := strings.TrimSpace(migrationText(stringField(message, "text")))
 				if role == "user" && (strings.HasPrefix(text, "<command-name>") || strings.HasPrefix(text, "<local-command-stdout>")) {
 					// Claude persists local CLI commands as user records even though
@@ -507,6 +591,7 @@ func (h *handler) migrationSourceView(threadID, scope string) *jsoncompat.Object
 			view.Set("hostLabel", "此电脑")
 			view.Set("agent", "codex")
 			h.server.codexSubagentView(threadID, view)
+			h.server.annotateSourceMaintenance(threadID, view)
 			return view
 		}
 	}
@@ -618,12 +703,24 @@ func (h *handler) handleMigrate(threadID string) {
 		h.fail(http.StatusConflict, errorBody("找不到这个会话，请稍后刷新列表"))
 		return
 	}
-	sourceLabel := "Codex"
+	sourceKind, sourceLabel := "codex", "Codex"
 	if resolution := h.server.resolveACP(threadID); resolution.manager != nil {
+		sourceKind = resolution.kind
 		sourceLabel = resolution.manager.Label
 		if sourceLabel == "" {
 			sourceLabel = resolution.kind
 		}
+	}
+	targetLabel := "Codex"
+	if target != nil {
+		targetLabel = target.Label
+		if targetLabel == "" {
+			targetLabel = targetKind
+		}
+	}
+	operation := "migrate"
+	if targetKind == sourceKind {
+		operation = "compact"
 	}
 
 	cwd, _ := view.MustGet("cwd").(string)
@@ -807,6 +904,11 @@ func (h *handler) handleMigrate(threadID string) {
 
 	message := migrationMessage(sourceLabel, view, uiLocale, scope, instructions)
 	if ledger != nil {
+		notice := migrationSourceNotice(uiLocale, operation, targetLabel, title, createdID)
+		if err := ledger.setSourceNotice(requestID, threadID, notice, operation); err != nil {
+			h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
+			return
+		}
 		if err := ledger.setMessage(requestID, message); err != nil {
 			h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
 			return

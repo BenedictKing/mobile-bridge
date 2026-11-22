@@ -198,6 +198,7 @@ func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session 
 	for _, key := range metadata.Keys() {
 		view.Set(key, metadata.MustGet(key))
 	}
+	s.annotateSourceMaintenance(session.ID, view)
 	return view
 }
 
@@ -406,6 +407,7 @@ func (s *Server) View(threadID string) any {
 			view.Set("agent", "codex")
 			view.Set("capabilities", s.codexCapabilitiesFor(threadID))
 			s.codexSubagentView(threadID, view)
+			s.annotateSourceMaintenance(threadID, view)
 			return view
 		}
 	}
@@ -487,5 +489,6 @@ func (s *Server) liveViewForBridge(threadID string) (any, bool) {
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
 	view.Set("capabilities", s.codexCapabilitiesFor(threadID))
+	s.annotateSourceMaintenance(threadID, view)
 	return view, true
 }

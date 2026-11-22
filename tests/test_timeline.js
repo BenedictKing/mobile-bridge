@@ -296,6 +296,22 @@ test('steered event is a readable status without raw JSON',()=>{
   timeline.dispose();
 });
 
+test('gateway migration and compaction stay visible as source-chat status records',()=>{
+  for(const kind of ['gatewayMigration','gatewayCompaction']){
+    const{timeline}=setup();
+    const text=kind==='gatewayMigration'?'会话迁移已完成：后续请在新会话继续。':'网关压缩已完成：后续请在新会话继续。';
+    const row={key:kind,role:'activity',kind,title:kind,status:'completed',text};
+    const node=timeline.renderRow(row,false);
+    assert.equal(node.tagName,'DIV');
+    assert.match(node.className,/status-event/);
+    assert.equal(node.children.length,1);
+    assert.equal(node.children[0].textContent,text);
+    timeline.showProcess=false;
+    assert.equal(timeline.rowVisible(row),true,'maintenance records do not depend on tool activity visibility');
+    timeline.dispose();
+  }
+});
+
 test('sleep rows show readable durations without exposing raw JSON',async()=>{
   const{timeline}=setup();
   const full=JSON.stringify({type:'sleep',id:'call-internal',durationMs:45000});
