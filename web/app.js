@@ -599,9 +599,17 @@ function renderPermissionState(){
   button.hidden=!permissionState.supported;
   if(!permissionState.supported)return;
   const select=$('permission-select');select.replaceChildren();
-  for(const option of permissionState.options||[])select.append(new Option(option.name||option.value,option.value));
+  for(const option of permissionState.options||[])select.append(new Option(t(option.name||option.value),option.value));
   select.value=permissionState.current||'';
+  $('permission-plan-note').hidden=!permissionState.planActive;
+  renderPermissionDescription();
 }
+// 网关为各 Agent 维护的模式说明（区分 AI 审核与规则审核、失败时是拒绝还是询问）。
+function renderPermissionDescription(){
+  const value=$('permission-select').value,option=(permissionState.options||[]).find(item=>item.value===value);
+  $('permission-description').textContent=option?.description?t(option.description):'';
+}
+$('permission-select').onchange=renderPermissionDescription;
 async function loadPermissionSettings(id=currentId,host=currentHost){
   const target=id,targetHost=host;
   // 请求版本：迟到的旧响应不得覆盖新响应（权限面板可能在打开中被重复加载）。
@@ -626,7 +634,7 @@ $('permission-button').onclick=async()=>{
   const loaded=await loadPermissionSettings();
   if(!$('permission-dialog').open||key!==chatKey()||!loaded)return;
   $('permission-select').disabled=false;$('permission-save').disabled=false;
-  $('permission-select').value=permissionState.current||'';
+  $('permission-select').value=permissionState.current||'';renderPermissionDescription();
 };
 $('permission-form').onsubmit=async event=>{
   event.preventDefault();
@@ -634,7 +642,7 @@ $('permission-form').onsubmit=async event=>{
   $('permission-save').disabled=true;$('permission-error').textContent='';
   try{
     permissionState=await api(sessionUrl(id,'permissions',host),{mode});
-    renderPermissionState();$('permission-dialog').close();toast(t('权限已更新'));
+    renderPermissionState();$('permission-dialog').close();toast(t(permissionState.planActive?'权限将在退出计划后生效':'权限已更新'));
   }catch(error){$('permission-error').textContent=t(error.message);}
   finally{$('permission-save').disabled=false;}
 };

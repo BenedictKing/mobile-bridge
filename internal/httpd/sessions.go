@@ -963,11 +963,7 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			// promptRequired: the turn ended in the race window; send normally.
 		}
 		if workMode == "plan" || workMode == "default" {
-			modeID := workMode
-			if mapped, ok := manager.ModeMap[workMode]; ok {
-				modeID = mapped
-			}
-			if modeErr := session.SetMode(modeID); modeErr != nil {
+			if modeErr := session.ApplyWorkMode(workMode, manager.ModeMap); modeErr != nil {
 				h.fail(http.StatusBadRequest, errorBody(modeErr.Error()))
 				return true
 			}

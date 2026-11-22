@@ -50,6 +50,10 @@ type Session struct {
 	// modeOptionID mirrors Manager.ModeOptionID: non-empty routes SetMode to
 	// that config option (dsh's collaboration_mode).
 	modeOptionID string
+	// prePlanMode is the permission preset (auto, acceptEdits, yolo…) a
+	// modes-carrying agent was in when the phone switched it to plan; leaving
+	// plan restores it instead of forcing the agent's manual default.
+	prePlanMode string
 	// lastActivity moves on every agent signal (streamed updates, reverse
 	// requests); the prompt idle timeout measures against it.
 	lastActivity time.Time
@@ -1449,103 +1453,6 @@ func (s *Session) NoteHumanAction() {
 	s.mu.Unlock()
 }
 
-// Permissions exposes DeepSeek Harness's modes object as permission presets.
-// Other agents use the same ACP surface for collaboration modes, so their
-// mobile permission control stays hidden.
-func (s *Session) Permissions() *jsoncompat.Object {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.permissionsLocked()
-}
-
-func (s *Session) permissionsLocked() *jsoncompat.Object {
-	result := jsoncompat.NewObject()
-	result.Set("supported", false)
-	options := &jsoncompat.Array{}
-	result.Set("options", options)
-	result.Set("current", nil)
-	if s.kind != "dsh" || s.modes == nil {
-		return result
-	}
-	available, _ := s.modes.MustGet("availableModes").(*jsoncompat.Array)
-	if available == nil {
-		return result
-	}
-	for _, item := range available.Items {
-		mode, ok := item.(*jsoncompat.Object)
-		if !ok {
-			continue
-		}
-		id, _ := mode.MustGet("id").(string)
-		if id == "" {
-			continue
-		}
-		name, _ := mode.MustGet("name").(string)
-		if name == "" {
-			name = id
-		}
-		option := jsoncompat.NewObject()
-		option.Set("value", id)
-		option.Set("name", name)
-		if description, _ := mode.MustGet("description").(string); description != "" {
-			option.Set("description", description)
-		}
-		options.Items = append(options.Items, option)
-	}
-	result.Set("supported", len(options.Items) > 0)
-	if current, _ := s.modes.MustGet("currentModeId").(string); current != "" {
-		result.Set("current", current)
-	}
-	return result
-}
-
-// SetPermission switches a DeepSeek Harness permission preset without
-// touching the collaboration_mode config option used by work modes.
-func (s *Session) SetPermission(modeID string) error {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return errors.New("Agent 进程已退出；操作结果未知")
-	}
-	if s.readOnly {
-		s.mu.Unlock()
-		return errors.New(ReadOnlySessionMessage)
-	}
-	state := s.permissionsLocked()
-	if supported, _ := state.MustGet("supported").(bool); !supported {
-		s.mu.Unlock()
-		return errors.New("当前 Agent 不支持移动端权限模式设置")
-	}
-	current, _ := state.MustGet("current").(string)
-	available := false
-	options, _ := state.MustGet("options").(*jsoncompat.Array)
-	for _, item := range options.Items {
-		option, _ := item.(*jsoncompat.Object)
-		if value, _ := option.MustGet("value").(string); value == modeID {
-			available = true
-			break
-		}
-	}
-	s.mu.Unlock()
-	if !available {
-		return errors.New("当前 Agent 不支持此权限模式")
-	}
-	if current == modeID {
-		return nil
-	}
-	params := jsoncompat.NewObject()
-	params.Set("sessionId", s.ID)
-	params.Set("modeId", modeID)
-	if _, err := s.Process.Request("session/set_mode", params, 30*time.Second); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.modes.Set("currentModeId", modeID)
-	s.signalLocked()
-	s.mu.Unlock()
-	return nil
-}
-
 // SetMode switches the session's work mode (AcpAdapter._set_mode port):
 // the requested id must be advertised, and a no-op when already current.
 // Agents that skip the legacy modes object (opencode advertises modes as a
@@ -2892,6 +2799,9 @@ func (s *Session) onNotification(message *jsoncompat.Object) {
 		s.Title = cleaned
 		s.View.Title = cleaned
 	} else if updateKind == "current_mode_update" && s.modes != nil {
+		previous, _ := s.modes.MustGet("currentModeId").(string)
+		next, _ := params.MustGet("currentModeId").(string)
+		s.notePlanEntryLocked(previous, next)
 		s.modes.Set("currentModeId", params.MustGet("currentModeId"))
 	} else if updateKind == "usage_update" {
 		// The agent reports the context it is working against; remember it so

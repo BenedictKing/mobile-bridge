@@ -650,11 +650,7 @@ func (s *Server) dispatchACPSubmission(threadID string, resolution acpResolution
 		}
 	}
 	if entry.WorkMode == "plan" || entry.WorkMode == "default" {
-		modeID := entry.WorkMode
-		if mapped, ok := manager.ModeMap[entry.WorkMode]; ok {
-			modeID = mapped
-		}
-		if modeErr := session.SetMode(modeID); modeErr != nil {
+		if modeErr := session.ApplyWorkMode(entry.WorkMode, manager.ModeMap); modeErr != nil {
 			return outcomeFailed, modeErr.Error()
 		}
 	}

@@ -707,12 +707,19 @@ for line in sys.stdin:
 func TestPermissionsDoNotReuseCollaborationModes(t *testing.T) {
 	modes := jsoncompat.NewObject()
 	modes.Set("currentModeId", "default")
-	session := &Session{kind: "kimi", modes: modes}
+	available := &jsoncompat.Array{}
+	for _, id := range []string{"default", "plan"} {
+		mode := jsoncompat.NewObject()
+		mode.Set("id", id)
+		available.Items = append(available.Items, mode)
+	}
+	modes.Set("availableModes", available)
+	session := &Session{kind: "opencode", modes: modes}
 	if supported, _ := session.Permissions().MustGet("supported").(bool); supported {
-		t.Fatal("Kimi collaboration modes exposed as permissions")
+		t.Fatal("a default/plan-only modes list exposed as permissions")
 	}
 	if err := session.SetPermission("default"); err == nil {
-		t.Fatal("Kimi collaboration mode accepted as a permission preset")
+		t.Fatal("collaboration mode accepted as a permission preset")
 	}
 }
 
