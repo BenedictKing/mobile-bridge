@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
@@ -115,6 +118,67 @@ func TestApplyServeFlagsRejectsUnknownAndMissingValue(t *testing.T) {
 	}
 	if err := applyServeFlags([]string{"--port"}); err == nil {
 		t.Fatal("missing value accepted")
+	}
+}
+
+func TestClaudeTranscriptFollowsExternalUpdatesAfterAttach(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip(err)
+	}
+	script := `import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get("method"); ident=m.get("id")
+ if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
+ elif method == "session/load": result={"sessionId":m.get("params",{}).get("sessionId")}
+ else: result={}
+ print(json.dumps({"jsonrpc":"2.0","id":ident,"result":result}),flush=True)
+`
+	agent := filepath.Join(t.TempDir(), "agent.py")
+	if err := os.WriteFile(agent, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	const sessionID = "claude-external-update"
+	transcript := filepath.Join(root, "project", sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	initial := `{"type":"user","cwd":"/work","message":{"role":"user","content":"第一问"}}` + "\n" +
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"第一条回复"}]}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := acpruntime.NewCommand([]string{python, "-u", agent})
+	manager.Kind = "claude"
+	manager.NativeInterval = time.Hour
+	configureClaudeTranscript(manager, root, "")
+	defer manager.Close()
+	if _, err := manager.OpenHistory(sessionID, "/work"); err != nil {
+		t.Fatal(err)
+	}
+	live, err := manager.Attach(sessionID, "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.ReadOnly() {
+		t.Fatal("attach left the session read-only")
+	}
+	file, err := os.OpenFile(transcript, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"CLI 后续回复"}]}}` + "\n"
+	if _, err := file.WriteString(update); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	live.RefreshNative()
+	if encoded := string(jsoncompat.EncodeCompact(live.Snapshot())); !strings.Contains(encoded, "CLI 后续回复") {
+		t.Fatalf("attached view did not follow transcript: %s", encoded)
 	}
 }
 

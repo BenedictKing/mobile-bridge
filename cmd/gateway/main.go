@@ -381,6 +381,12 @@ func applyServeFlags(args []string) error {
 	return nil
 }
 
+func configureClaudeTranscript(manager *acpruntime.Manager, root, mediaDir string) {
+	reader := claude.TranscriptReader(root, mediaDir)
+	manager.Native = reader
+	manager.NativeTranscript = reader
+}
+
 func runGateway(args []string) {
 	if err := applyServeFlags(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -876,7 +882,7 @@ func runGateway(args []string) {
 		manager.NativeMeta = claude.MetaReader(claudeRoot)
 		manager.NativeList = func() []*jsoncompat.Object { return claude.ListSessions(claudeRoot) }
 		manager.NativeListExclusive = true
-		manager.NativeTranscript = claude.TranscriptReader(claudeRoot, filepath.Join(dataDir, "agent-media"))
+		configureClaudeTranscript(manager, claudeRoot, filepath.Join(dataDir, "agent-media"))
 	}
 	if manager := server.ACPAgents["opencode"]; manager != nil && !scriptedMode {
 		if source, err := opencode.OpenSource(opencode.DBPath(os.Getenv, home)); err == nil {
