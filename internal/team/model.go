@@ -120,9 +120,10 @@ const (
 	// 归执行流，重建语义归本包）；invalid_action_block 是解析/校验失败事实
 	// （payload {taskId, attempt, final, round, violations}，每次失败一条，
 	// final=true 表示修复回路耗尽按普通文本收场）。
-	EventActionProposed     = "action_proposed"
-	EventActionRejected     = "action_rejected"
-	EventInvalidActionBlock = "invalid_action_block"
+	EventActionProposed          = "action_proposed"
+	EventActionRejected          = "action_rejected"
+	EventInvalidActionBlock      = "invalid_action_block"
+	EventRunCollaborationPattern = "run_collaboration_pattern"
 	// EventTaskCacheHit 是 amend 缓存命中的入账事实（§6.4.1/§10.2 amend 段，
 	// 阶段三，amend.go 是唯一写入方）：payload {taskId, parentRunId,
 	// parentTaskId, inputHash, sessionId, turnId, result, resultChars,
@@ -349,18 +350,19 @@ func DefaultPolicy() TeamPolicy {
 // completed 时先过闸门再终局，绝不采信 Agent 的口头成功声明；Verify 持久化
 // 闸门结果，resume 清空后重跑即复验。
 type Run struct {
-	Planning      *GoalPlanningState `json:"planning,omitempty"`
-	Swarm         *SwarmState        `json:"swarm,omitempty"`
-	ID            string             `json:"id"`
-	TeamID        string             `json:"teamId"`
-	Goal          string             `json:"goal"`
-	Mode          string             `json:"mode,omitempty"`
-	CollectPolicy string             `json:"collectPolicy,omitempty"`
-	AutoPlan      bool               `json:"autoPlan,omitempty"`
-	Status        string             `json:"status"`
-	StopReason    string             `json:"stopReason,omitempty"`
-	Round         int                `json:"round"`
-	PlanHash      string             `json:"planHash"`
+	Planning             *GoalPlanningState `json:"planning,omitempty"`
+	Swarm                *SwarmState        `json:"swarm,omitempty"`
+	ID                   string             `json:"id"`
+	TeamID               string             `json:"teamId"`
+	Goal                 string             `json:"goal"`
+	CollaborationPattern string             `json:"collaborationPattern,omitempty"`
+	Mode                 string             `json:"mode,omitempty"`
+	CollectPolicy        string             `json:"collectPolicy,omitempty"`
+	AutoPlan             bool               `json:"autoPlan,omitempty"`
+	Status               string             `json:"status"`
+	StopReason           string             `json:"stopReason,omitempty"`
+	Round                int                `json:"round"`
+	PlanHash             string             `json:"planHash"`
 	// ParentRunID 是 amend 修订链的父 Run（§6.4.1/§10.2 amend 段，阶段三）：
 	// 创建新 Run、绝不改写父 Run 的 journal；父 Run 的可复用前驱结果按
 	// inputHash 匹配导入（amend.go），随 run_created payload 落账供
@@ -644,7 +646,7 @@ var runKnownFields = map[string]bool{
 	"planning": true,
 	"swarm":    true,
 	"id":       true, "teamId": true, "goal": true, "mode": true,
-	"collectPolicy": true, "autoPlan": true, "status": true, "deliveryStatus": true,
+	"collectPolicy": true, "collaborationPattern": true, "autoPlan": true, "status": true, "deliveryStatus": true,
 	"stopReason": true, "round": true, "planHash": true, "parentRunId": true,
 	"scheduledFrom": true, "budgetCeiling": true,
 	"tasks": true, "pendingActions": true, "pendingQuestions": true,
@@ -822,6 +824,9 @@ func (r *Run) jsonObject() *jsoncompat.Object {
 	object.Set("id", r.ID)
 	object.Set("teamId", r.TeamID)
 	object.Set("goal", r.Goal)
+	if r.CollaborationPattern != "" {
+		object.Set("collaborationPattern", r.CollaborationPattern)
+	}
 	if r.Planning != nil {
 		raw, err := json.Marshal(r.Planning)
 		if err == nil {

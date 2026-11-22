@@ -1,8 +1,11 @@
 package team
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 )
 
 func TestBuildRunCollaborationProjectsObservedDAG(t *testing.T) {
@@ -100,5 +103,123 @@ func TestBuildRunCollaborationSanitizesMarkdownFields(t *testing.T) {
 	}
 	if !strings.Contains(collaboration.RawMarkdown, "Lead Injected") || !strings.Contains(collaboration.RawMarkdown, "Dev Member") {
 		t.Fatalf("sanitized names must remain readable:\n%s", collaboration.RawMarkdown)
+	}
+}
+
+func TestBuildRunCollaborationUsesDeclaredPattern(t *testing.T) {
+	teamRow := &Team{LeadID: "lead", Members: []TeamMember{{ID: "lead", Role: RoleLead}, {ID: "dev", Role: RoleMember}}}
+	run := &Run{CollaborationPattern: CollaborationPatternFanOutAndSynthesize, Tasks: []Task{
+		{ID: "plan", MemberID: "lead"},
+		{ID: "work", MemberID: "dev", DependsOn: []string{"plan"}},
+	}}
+	collaboration := BuildRunCollaboration(run, teamRow)
+	if collaboration.Pattern != CollaborationPatternFanOutAndSynthesize || collaboration.PatternSource != CollaborationPatternSourceLead {
+		t.Fatalf("valid Lead declaration must win: %+v", collaboration)
+	}
+	if !strings.Contains(collaboration.RawMarkdown, "collaborate_pattern: fan-out-and-synthesize") {
+		t.Fatalf("declaration must reach raw Markdown:\n%s", collaboration.RawMarkdown)
+	}
+	run.CollaborationPattern = "invalid"
+	collaboration = BuildRunCollaboration(run, teamRow)
+	if collaboration.Pattern != CollaborationPatternCustomDAG || collaboration.PatternSource != CollaborationPatternSourceObserved {
+		t.Fatalf("invalid persisted values must fall back to observation: %+v", collaboration)
+	}
+}
+
+func TestRunCollaborationPatternPersistenceAndJournalRebuild(t *testing.T) {
+	run := &Run{ID: "run-pattern", CollaborationPattern: CollaborationPatternFanOutAndSynthesize}
+	raw, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Run
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.CollaborationPattern != run.CollaborationPattern || decoded.Clone().CollaborationPattern != run.CollaborationPattern {
+		t.Fatalf("declaration must survive JSON and Clone: %+v", decoded)
+	}
+	for _, pattern := range []string{CollaborationPatternTournament, CollaborationPatternLoopUntilDone, "custom-dag"} {
+		applyJournalEventToRun(&decoded, &Event{Type: EventRunCollaborationPattern, Payload: map[string]any{"collaborationPattern": pattern}})
+	}
+	if decoded.CollaborationPattern != CollaborationPatternLoopUntilDone {
+		t.Fatalf("journal rebuild must keep the latest valid declaration: %q", decoded.CollaborationPattern)
+	}
+}
+
+func collaborationTurn(text string) *jsoncompat.Object {
+	turn := jsoncompat.NewObject()
+	turn.Set("id", "turn-pattern")
+	turn.Set("status", "completed")
+	turn.Set("stopReason", "end_turn")
+	message := jsoncompat.NewObject()
+	message.Set("role", "assistant")
+	message.Set("text", text)
+	messages := &jsoncompat.Array{Items: []any{message}}
+	turn.Set("messages", messages)
+	return turn
+}
+
+func TestSettleLeadTaskPersistsCollaborationPattern(t *testing.T) {
+	h := newActionsExecHarness(t)
+	run := &Run{ID: "run-ex", TeamID: h.team.ID, Goal: "协作", AutoPlan: true, Status: RunDispatching, Tasks: []Task{
+		{ID: "lead", MemberID: "lead", Status: TaskRunning},
+	}}
+	state := h.saveExecRun(t, run)
+	dispatch := &taskDispatch{taskID: "lead", sessionID: "s-lead", submissionID: "sub-lead"}
+	settle := func(pattern string) bool {
+		text := "规划说明\n<team-actions>{\"collaborationPattern\":\"" + pattern + "\",\"actions\":[]}</team-actions>"
+		return h.service.settleLeadTaskLocked(state, dispatch, h.team.Policy, collaborationTurn(text), &TaskResult{SessionID: "s-lead", TurnID: "turn-pattern", Result: "规划说明"})
+	}
+	if !settle(CollaborationPatternFanOutAndSynthesize) {
+		t.Fatal("valid declaration must settle")
+	}
+	fresh := h.store.Run(run.ID)
+	if fresh.CollaborationPattern != CollaborationPatternFanOutAndSynthesize || len(h.eventsOf(t, EventRunCollaborationPattern)) != 1 {
+		t.Fatalf("first declaration must persist once: %+v", fresh)
+	}
+	fresh.Tasks = append(fresh.Tasks, Task{ID: "lead-next", MemberID: "lead", Status: TaskRunning})
+	if err := h.store.SaveRun(fresh); err != nil {
+		t.Fatal(err)
+	}
+	dispatch.taskID = "lead-next"
+	if !settle(CollaborationPatternFanOutAndSynthesize) || len(h.eventsOf(t, EventRunCollaborationPattern)) != 1 {
+		t.Fatal("identical declaration must not append another event")
+	}
+	fresh = h.store.Run(run.ID)
+	fresh.Tasks = append(fresh.Tasks, Task{ID: "lead-final", MemberID: "lead", Status: TaskRunning})
+	if err := h.store.SaveRun(fresh); err != nil {
+		t.Fatal(err)
+	}
+	dispatch.taskID = "lead-final"
+	if !settle(CollaborationPatternTournament) {
+		t.Fatal("later declaration must settle")
+	}
+	fresh = h.store.Run(run.ID)
+	if fresh.CollaborationPattern != CollaborationPatternTournament || len(h.eventsOf(t, EventRunCollaborationPattern)) != 2 {
+		t.Fatalf("latest declaration must win with one event per change: %+v", fresh)
+	}
+	protocol := BuildRunCollaboration(fresh, h.team)
+	if protocol.Pattern != CollaborationPatternTournament || protocol.PatternSource != CollaborationPatternSourceLead {
+		t.Fatalf("settled declaration must reach RunDetail projection: %+v", protocol)
+	}
+}
+
+func TestSettleLeadTaskRejectsInvalidCollaborationPattern(t *testing.T) {
+	h := newActionsExecHarness(t)
+	run := &Run{ID: "run-ex", TeamID: h.team.ID, AutoPlan: true, Status: RunDispatching, Tasks: []Task{
+		{ID: "lead", MemberID: "lead", Status: TaskRunning},
+	}}
+	state := h.saveExecRun(t, run)
+	text := "规划说明\n<team-actions>{\"collaborationPattern\":\"custom-dag\",\"actions\":[]}</team-actions>"
+	if !h.service.settleLeadTaskLocked(state, &taskDispatch{taskID: "lead"}, h.team.Policy, collaborationTurn(text), &TaskResult{Result: "规划说明"}) {
+		t.Fatal("invalid declaration must enter the existing repair path")
+	}
+	fresh := h.store.Run(run.ID)
+	if fresh.CollaborationPattern != "" || len(h.eventsOf(t, EventRunCollaborationPattern)) != 0 {
+		t.Fatalf("invalid declaration must not persist: %+v", fresh)
+	}
+	if findTaskIn(fresh, "actfix-lead-1") == nil {
+		t.Fatalf("invalid declaration must create a bounded repair task: %+v", fresh.Tasks)
 	}
 }

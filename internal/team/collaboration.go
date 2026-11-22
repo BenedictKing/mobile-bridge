@@ -6,9 +6,27 @@ import (
 )
 
 const (
-	CollaborationPatternCustomDAG   = "custom-dag"
-	CollaborationPatternSingleAgent = "single-agent"
+	CollaborationPatternCustomDAG               = "custom-dag"
+	CollaborationPatternSingleAgent             = "single-agent"
+	CollaborationPatternClassifyAndAct          = "classify-and-act"
+	CollaborationPatternFanOutAndSynthesize     = "fan-out-and-synthesize"
+	CollaborationPatternAdversarialVerification = "adversarial-verification"
+	CollaborationPatternTournament              = "tournament"
+	CollaborationPatternLoopUntilDone           = "loop-until-done"
+	CollaborationPatternSourceObserved          = "observed-dag"
+	CollaborationPatternSourceLead              = "lead-declared"
 )
+
+var declaredCollaborationPatterns = map[string]bool{
+	CollaborationPatternClassifyAndAct: true, CollaborationPatternFanOutAndSynthesize: true,
+	CollaborationPatternAdversarialVerification: true, CollaborationPatternTournament: true,
+	CollaborationPatternLoopUntilDone: true,
+}
+
+// ValidDeclaredCollaborationPattern reports whether Lead may declare value.
+func ValidDeclaredCollaborationPattern(value string) bool {
+	return declaredCollaborationPatterns[value]
+}
 
 // RunCollaborationParticipant describes one member's observed role in a Run.
 type RunCollaborationParticipant struct {
@@ -24,6 +42,7 @@ type RunCollaborationParticipant struct {
 type RunCollaboration struct {
 	SchemaVersion int                           `json:"schemaVersion"`
 	Pattern       string                        `json:"pattern"`
+	PatternSource string                        `json:"patternSource"`
 	TaskGoal      string                        `json:"taskGoal"`
 	Orchestrator  *RunCollaborationParticipant  `json:"orchestrator,omitempty"`
 	Members       []RunCollaborationParticipant `json:"members"`
@@ -130,6 +149,11 @@ func BuildRunCollaboration(run *Run, teamRow *Team) *RunCollaboration {
 	}
 	if len(order) > 1 {
 		collaboration.Pattern = CollaborationPatternCustomDAG
+	}
+	collaboration.PatternSource = CollaborationPatternSourceObserved
+	if ValidDeclaredCollaborationPattern(run.CollaborationPattern) {
+		collaboration.Pattern = run.CollaborationPattern
+		collaboration.PatternSource = CollaborationPatternSourceLead
 	}
 	collaboration.RawMarkdown = collaborationMarkdown(collaboration, participants)
 	return collaboration

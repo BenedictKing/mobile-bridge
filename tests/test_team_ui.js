@@ -391,6 +391,10 @@ test('collaboration protocol renders member relationships and source with legacy
   assert.match(text(box),/Reports to: Coordinator/);
   assert.match(text(box),/Protocol source/);
   assert.match(text(find(box,'team-collaboration-source')[0]),/collaborate_pattern: custom-dag/);
+  screen.detail.collaboration.pattern='fan-out-and-synthesize';
+  screen.detail.collaboration.patternSource='lead-declared';
+  assert.match(text(screen.renderCollaboration()),/Fan out and synthesize/);
+  assert.match(text(screen.renderCollaboration()),/Lead-declared pattern; the DAG remains the source of execution dependencies/);
   screen.detail={};assert.equal(screen.renderCollaboration(),null);
   screen.detail={collaboration:{schemaVersion:2}};assert.equal(screen.renderCollaboration(),null,'未知协议版本必须安全隐藏');
 });

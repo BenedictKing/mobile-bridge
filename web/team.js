@@ -18,6 +18,11 @@
    依赖 BridgeConnection 选择传输与 CSRF，以及 app.js 的 showLogin（仅运行时引用）。 */
 
 const TEAM_ROLE_LABELS={lead:'负责人',member:'成员',reviewer:'评审'};
+const TEAM_COLLABORATION_PATTERN_LABELS={
+  'custom-dag':'自定义 DAG','single-agent':'单 Agent','classify-and-act':'分类执行',
+  'fan-out-and-synthesize':'并行汇总','adversarial-verification':'对抗验证',
+  'tournament':'多候选择优','loop-until-done':'循环改进',
+};
 /* 任务停靠分类（task_stopped/task_failed payload 的 outcome，§6.3 错误策略表）：
    quota/auth/not_configured 类停靠落 run waiting_input，处理后 resume 重派。 */
 const TEAM_TASK_OUTCOME_LABELS={rate_limited:'触发限流',quota:'额度不足',auth:'成员认证失败',not_configured:'成员未配置',context_overflow:'上下文超限',transient:'临时错误'};
@@ -1803,11 +1808,12 @@ class TeamRunScreen{
     const data=this.detail&&this.detail.collaboration;
     if(!data||data.schemaVersion!==1)return null;
     const t=BridgeI18n.t,box=this.node('details',undefined,'team-collaboration');
-    const pattern=data.pattern==='custom-dag'?t('自定义 DAG'):data.pattern==='single-agent'?t('单 Agent'):String(data.pattern||'');
+    const pattern=t(TEAM_COLLABORATION_PATTERN_LABELS[data.pattern]||data.pattern||'');
     const revision=typeof data.revision==='number'?' · r'+data.revision:'';
     const summary=this.node('summary',t('协作协议')+' · '+pattern+revision);
     box.append(summary);
-    box.append(this.node('p',t('只读投影，不参与调度'),'muted'));
+    const patternNote=data.patternSource==='lead-declared'?t('Lead 声明的模式；实际依赖仍由 DAG 决定'):t('只读投影，不参与调度');
+    box.append(this.node('p',patternNote,'muted'));
     const participants=[data.orchestrator,...(Array.isArray(data.members)?data.members:[])].filter(member=>member&&member.memberId);
     const names=new Map(participants.map(member=>[member.memberId,member.name||member.memberId]));
     const relations=ids=>(Array.isArray(ids)?ids:[]).map(id=>names.get(id)||id).join(t('、'))||t('无');

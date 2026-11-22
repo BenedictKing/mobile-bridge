@@ -618,6 +618,35 @@ func TestParseLeadActionsOrdinaryReply(t *testing.T) {
 	}
 }
 
+func TestParseLeadCollaborationPattern(t *testing.T) {
+	patterns := []string{
+		CollaborationPatternClassifyAndAct, CollaborationPatternFanOutAndSynthesize,
+		CollaborationPatternAdversarialVerification, CollaborationPatternTournament, CollaborationPatternLoopUntilDone,
+	}
+	for _, pattern := range patterns {
+		text := `<team-actions>{"collaborationPattern":` + fmt.Sprintf("%q", pattern) + `,"actions":[]}</team-actions>`
+		got, violations := parseLeadCollaborationPattern(text)
+		if got != pattern || len(violations) != 0 {
+			t.Fatalf("合法声明 %s 解析失败: got=%q violations=%v", pattern, got, violations)
+		}
+		if _, violations = ParseLeadActions(text, testTeam(), actionsRunFixture(), DefaultPolicy()); len(violations) != 0 {
+			t.Fatalf("声明字段不得被动作 schema 拒绝: %v", violations)
+		}
+	}
+	for _, text := range []string{
+		`<team-actions>{"collaborationPattern":"custom-dag","actions":[]}</team-actions>`,
+		`<team-actions>{"collaborationPattern":"","actions":[]}</team-actions>`,
+		`<team-actions>{"collaborationPattern":1,"actions":[]}</team-actions>`,
+	} {
+		if pattern, violations := parseLeadCollaborationPattern(text); pattern != "" || len(violations) == 0 {
+			t.Fatalf("非法声明必须失败: text=%s pattern=%q violations=%v", text, pattern, violations)
+		}
+	}
+	if pattern, violations := parseLeadCollaborationPattern("普通回复"); pattern != "" || len(violations) != 0 {
+		t.Fatalf("无动作块不应产生声明或错误: %q %v", pattern, violations)
+	}
+}
+
 // TestAutoPlanAndActionsPersistRoundTrip autoPlan 与扩展 Action 字段经
 // JSON 账本（team-runs.json）无损往返：漏 runKnownFields/jsonObject 键会让
 // 重启后解析闸门静默关闭或动作事实丢失。
@@ -1370,6 +1399,7 @@ func TestBuildLeadBriefing(t *testing.T) {
 		"不得在主控回合中不经委派直接执行", "Lead 也是默认执行成员，允许 delegate 给自己",
 		"一件可独立验收的交付交给一个成员", "不要按产品、架构、前端、后端、测试等工序横切接力",
 		"缺少上下文时用 request_context 引用原始任务续读",
+		"collaborationPattern", "fan-out-and-synthesize", "adversarial-verification", "声明只表达规划意图",
 		"默认评审也是可执行任务的普通成员", "review=false", "review=true", "不要伪造评审结论",
 	} {
 		if !strings.Contains(briefing, want) {

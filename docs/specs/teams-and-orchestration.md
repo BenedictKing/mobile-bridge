@@ -56,15 +56,27 @@
 
 RunDetail 提供 `collaboration` 只读投影，把当前执行快照表示为一份 `team.md` 及对应的结构化数据。它用于统一展示团队目标、主控、实际参与成员和交接关系，不是新的调度输入。
 
-1. 协议仅从当前 Team/Run/Task 快照派生，不新增持久状态、journal 事件、任务或通知；读取协议不得触发派发、唤醒、状态推进或成员变更。
+1. 投影仅从当前 Team/Run/Task 快照派生；读取协议不得触发派发、唤醒、状态推进或成员变更。Lead 显式声明模式的持久化规则见 §3.4，不属于读取副作用。
 2. `schemaVersion` 当前为 1，`revision` 使用 Run `version`。前端在 RunDetail 刷新后整体替换协议，不本地拼接增量事件，也不把旧 revision 当作当前计划。
 3. `taskGoal` 来自 Run 目标，`orchestrator` 来自 Team `leadId`；`members` 只包含当前 Run 实际承担任务的非 Lead 成员，不把团队里未参与本 Run 的成员写入协议。Lead 只在 `orchestrator` 声明一次，即使没有单独执行任务也保留协调身份。
 4. 成员关系使用稳定 `memberId`。`receiveFrom` 来自任务直接 `dependsOn` 的上游成员，`reportTo` 来自直接使用该成员任务作为依赖的下游成员；忽略自引用和不存在的任务引用，不从自然语言猜测交接。
-5. 协议包含多个参与者时统一标记为 `custom-dag`，只有一个参与者时标记为 `single-agent`；无执行任务的 Lead 仍计入协调参与者。这些值描述已观察到的执行形状，不得把普通 DAG 猜测成 `classify-and-act`、`fan-out-and-synthesize`、`adversarial-verification`、`tournament` 或 `loop-until-done`。
+5. 未显式声明模式时，协议包含多个参与者则标记为 `custom-dag`，只有一个参与者则标记为 `single-agent`；无执行任务的 Lead 仍计入协调参与者。这些观察值描述实际执行形状，不得把普通 DAG 猜测成五种声明式模式。`patternSource=observed-dag` 表示观察回退，`lead-declared` 表示采用 Lead 声明。
 6. `rawMarkdown` 与结构化字段由同一次纯函数调用生成。文档中的显示名必须在本协议内唯一；名称重复时附加成员 ID，关系仍由服务端按成员 ID 计算。角色沿用 `lead`、`member`、`reviewer`，不把标签冒充本次任务职责。
 7. Run 或 Lead 引用不完整时保留已知任务与成员关系，不虚构 Orchestrator；nil Run 不生成协议。数组字段使用空数组而非 null。
-8. Run 页在阶段图后提供可折叠的协议视图，展示模式、revision、成员职责与交接关系以及 `rawMarkdown`。旧网关没有 `collaboration` 字段时隐藏该视图，阶段图、任务卡和交付证据仍按原方式工作。
+8. Run 页在阶段图后提供可折叠的协议视图，展示模式、来源、revision、成员职责与交接关系以及 `rawMarkdown`。旧网关没有 `collaboration` 字段时隐藏该视图，缺少 `patternSource` 时按观察投影展示，阶段图、任务卡和交付证据仍按原方式工作。
 9. 该投影是展示协议，不是权限边界，也不要求 Agent 再次读取或遵守一份重复提示词。现有 `<team-actions>`、DAG、审查验证和完成判定仍是唯一执行事实来源。
+
+### 3.4 Lead 显式声明协作模式
+
+autoPlan Lead 可在 `<team-actions>` 顶层声明 `collaborationPattern`，把本次规划意图写入 Run；显式 Plan 仍以其 DAG 为事实，不通过该通道改写。
+
+1. 可选值为 `classify-and-act`、`fan-out-and-synthesize`、`adversarial-verification`、`tournament`、`loop-until-done`。字段必须原样匹配，大小写、空白或其他值均拒绝；省略表示保留已有声明，不能用空串清除。
+2. Lead 只在模式明确或需要修订时声明，不要求每个动作块重复。规划提示应说明：分类路由才用 `classify-and-act`，独立分支后合并才用 `fan-out-and-synthesize`，独立质疑才用 `adversarial-verification`，同题多候选择优才用 `tournament`，有明确质量门槛和退出决策者的反复修订才用 `loop-until-done`。单 Agent 能完成时不为形式而组队。
+3. 非规划对象允许 `actions` 与 `collaborationPattern` 两个顶层字段；目标规划对象允许 `plan`、`actions`、`feedback` 与 `collaborationPattern`。非法模式与任一动作错误一样使整个动作块校验失败，不落声明、不执行动作，进入现有有界修复。
+4. 合法声明与 Lead 任务终态、动作事实在同一个 `commitRun` 中原子提交。Run 持久化 `collaborationPattern`，并追加专用 journal 事件；后续合法声明采用 latest-wins，重复相同声明不重复写事件。快照损坏后的 journal 重建必须恢复最后一次声明。
+5. 声明只表达规划意图，不强制拓扑、不创建额外任务、不唤醒成员，也不替代 `dependsOn`、`reviewOf`、独立审查或验证。实际执行与声明不一致时不得篡改任务事实来迎合标签；用户通过 `patternSource` 和阶段图分别查看意图与事实。
+6. `BuildRunCollaboration` 优先使用合法持久声明，未声明的历史 Run 和新 Run 继续使用 §3.3 的观察回退。声明值进入 `rawMarkdown` frontmatter，revision 随同一 Run 提交递增。
+7. 验收至少覆盖：五种值、非法值整块拒绝、空动作块声明、重复声明幂等、后续声明覆盖、Run 序列化与 Clone、journal 重建、旧 Run 回退，以及提示词和前端来源展示。
 
 验收至少覆盖：扇出与汇总关系、重复成员名消歧、自引用和未知依赖、单成员 Run、nil Team/缺失 Lead、空数组、Markdown 与结构化数据一致，以及旧网关字段缺失时的前端回退。
 

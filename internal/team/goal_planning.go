@@ -95,7 +95,7 @@ func parsePlanningReply(fullText string, team *Team, run *Run, source *Task, pol
 		return nil, nil, violations
 	}
 	for _, key := range payload.Keys() {
-		if key != "actions" && key != "plan" && key != "feedback" {
+		if key != "actions" && key != "plan" && key != "feedback" && key != "collaborationPattern" {
 			return nil, nil, []string{"规划对象包含未识别字段：" + key}
 		}
 	}

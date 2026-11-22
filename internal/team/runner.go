@@ -2848,6 +2848,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 	var actions []Action
 	var violations []string
 	var planningUpdate *GoalPlanningState
+	collaborationPattern := ""
 	if run := s.store.Run(state.runID); run != nil {
 		fullText := AssistantFullText(turn)
 		task := findTaskIn(run, dispatch.taskID)
@@ -2856,6 +2857,9 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				actions, planningUpdate, violations = parsePlanningReply(fullText, s.store.Team(run.TeamID), run, task, policy)
 			} else {
 				actions, violations = ParseLeadActions(fullText, s.store.Team(run.TeamID), run, policy)
+			}
+			if len(violations) == 0 {
+				collaborationPattern, violations = parseLeadCollaborationPattern(fullText)
 			}
 			if len(violations) == 0 && len(actions) == 0 && ResultDisplayText(fullText) == "" && (task == nil || !task.GoalFeedback) {
 				violations = append(violations, emptyLeadReplyViolation)
@@ -3043,6 +3047,12 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				}
 			}
 		case leadDriven:
+			if collaborationPattern != "" && fresh.CollaborationPattern != collaborationPattern {
+				fresh.CollaborationPattern = collaborationPattern
+				events = append(events, newEvent(fresh.ID, EventRunCollaborationPattern, "lead", map[string]any{
+					"collaborationPattern": collaborationPattern,
+				}))
+			}
 			toExecute := actions
 			if planningUpdate != nil {
 				fresh.Planning = cloneGoalPlanning(planningUpdate)

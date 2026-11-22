@@ -353,8 +353,8 @@ func ValidateActions(payload *jsoncompat.Object, team *Team, run *Run, policy Te
 	}
 	var violations []string
 	for _, key := range payload.Keys() {
-		if key != "actions" {
-			violations = append(violations, fmt.Sprintf("动作块对象包含无法识别的字段 %q（合法字段只有 actions）", key))
+		if key != "actions" && key != "collaborationPattern" {
+			violations = append(violations, fmt.Sprintf("动作块对象包含无法识别的字段 %q（合法字段只有 actions 与 collaborationPattern）", key))
 		}
 	}
 	rawActions, has := payload.Get("actions")
@@ -955,7 +955,7 @@ func actionRoundViolation(entry *jsoncompat.Object, policy TeamPolicy, ordinal i
 
 // actionSchemaInstruction 是 Lead 简报与修复提示共用的动作协议说明。
 func actionSchemaInstruction() string {
-	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象。只输出一个 team-actions 动作块；如果本回合另有 Issue 归类要求，必须同时先输出一个 team-issues 块，再输出动作块。需要派发时输出相应机器块；纯沟通或澄清必须给可读回复，不能只返回归类或空动作块。对象形如 {\"actions\": [...]}；每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）、key 与 dependsOn（可选，仅 delegate：同一动作块内先实现后审查等先后关系用它们表达——key 是本批内的唯一别名，dependsOn 列出本批其它动作的 key 或本 Run 既有任务 ID，被依赖的动作先执行；不要用自然语言描述顺序代替依赖）、phase（可选，仅 delegate：阶段标签，implement 写任务必须依赖 phase=plan 的任务）、reviewOf（可选，仅审查 delegate：声明本条审查针对哪些任务——同批 key 或本 Run 任务 ID，被审实现完成后审查才派发，且审查结论绑定派发时的工作区版本）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
+	return "放在成对的 team-actions 开始与结束标记之间，标记之间是单个 JSON 对象。只输出一个 team-actions 动作块；如果本回合另有 Issue 归类要求，必须同时先输出一个 team-issues 块，再输出动作块。需要派发时输出相应机器块；纯沟通或澄清必须给可读回复，不能只返回归类或空动作块。对象形如 {\"collaborationPattern\":\"fan-out-and-synthesize\",\"actions\": [...]}；顶层 collaborationPattern 可选，只在协作模式明确或需要修订时声明，省略会保留已有声明。允许 classify-and-act（分类后路由）、fan-out-and-synthesize（独立分支后合并）、adversarial-verification（独立质疑验证）、tournament（同题多候选择优）、loop-until-done（有明确质量门槛和退出决策者的反复修订）；声明只表达规划意图，不替代 dependsOn、reviewOf 或验证，也不要为了形式把单 Agent 可完成的工作拆成团队。每条动作只使用这些字段：type（delegate / request_context / summarize）、sourceTaskId（本 Run 内已存在的任务 ID）、round（1 到最大轮次之间的整数）、member 与 task（delegate 和 request_context 必填：member 必须是团队里存在且启用的成员 ID，task 是具体任务内容）、fromTaskId（request_context 必填：指向本 Run 内已完成的任务）、writeLock（可选，仅 delegate/summarize：默认按任务类型决定，纯读任务可声明 none 与写任务并行）、review（可选，仅 delegate：true 表示独立审查，false 表示普通执行；默认评审成员未声明时按 true 兼容旧任务）、key 与 dependsOn（可选，仅 delegate：同一动作块内先实现后审查等先后关系用它们表达——key 是本批内的唯一别名，dependsOn 列出本批其它动作的 key 或本 Run 既有任务 ID，被依赖的动作先执行；不要用自然语言描述顺序代替依赖）、phase（可选，仅 delegate：阶段标签，implement 写任务必须依赖 phase=plan 的任务）、reviewOf（可选，仅审查 delegate：声明本条审查针对哪些任务——同批 key 或本 Run 任务 ID，被审实现完成后审查才派发，且审查结论绑定派发时的工作区版本）。不要输出上述之外的字段；动作块只用于确实需要执行的自动动作，不要为无需执行的步骤伪造任务。"
 }
 
 func actionSchemaForRun(run *Run) string {
@@ -963,7 +963,7 @@ func actionSchemaForRun(run *Run) string {
 	if run == nil || run.Planning == nil {
 		return instruction
 	}
-	instruction = strings.Replace(instruction, "对象形如 {\"actions\": [...]}；", "对象形如 {\"plan\": {...}, \"actions\": [...], \"feedback\": {...}}；plan/feedback 按目标规划协议提供，每条 delegate 必须带 workflowId，workspaceId 仅可引用该 workflow 已登记工作区；", 1)
+	instruction = strings.Replace(instruction, "对象形如 {\"collaborationPattern\":\"fan-out-and-synthesize\",\"actions\": [...]}；", "对象形如 {\"plan\": {...}, \"collaborationPattern\":\"fan-out-and-synthesize\", \"actions\": [...], \"feedback\": {...}}；plan/feedback 按目标规划协议提供，每条 delegate 必须带 workflowId，workspaceId 仅可引用该 workflow 已登记工作区；", 1)
 	return instruction
 }
 
@@ -1195,6 +1195,26 @@ func ParseLeadActions(fullText string, team *Team, run *Run, policy TeamPolicy) 
 		return nil, decodeViolations
 	}
 	return ValidateActions(payload, team, run, policy)
+}
+
+func parseLeadCollaborationPattern(fullText string) (string, []string) {
+	inner, violations := ExtractActionBlock(fullText)
+	if len(violations) > 0 || inner == "" {
+		return "", violations
+	}
+	payload, violations := decodeActionPayload(inner)
+	if len(violations) > 0 {
+		return "", violations
+	}
+	raw, present := payload.Get("collaborationPattern")
+	if !present {
+		return "", nil
+	}
+	pattern, ok := raw.(string)
+	if !ok || !ValidDeclaredCollaborationPattern(pattern) {
+		return "", []string{"collaborationPattern 必须是 classify-and-act、fan-out-and-synthesize、adversarial-verification、tournament、loop-until-done 之一"}
+	}
+	return pattern, nil
 }
 
 // stripActionBlocks 剥离文本中成对的 <team-actions> 动作块（§7.2 移除重复

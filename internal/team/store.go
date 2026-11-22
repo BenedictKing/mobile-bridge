@@ -665,6 +665,10 @@ func applyJournalEventToRun(run *Run, event *Event) {
 			verify.HeadRevision = payloadString(event.Payload, "headRevision")
 			verify.DiffHash = payloadString(event.Payload, "diffHash")
 			run.Verify = verify
+		case EventRunCollaborationPattern:
+			if pattern := payloadString(event.Payload, "collaborationPattern"); ValidDeclaredCollaborationPattern(pattern) {
+				run.CollaborationPattern = pattern
+			}
 		case EventActionProposed:
 			// Lead 自动动作的入账事实（§5.1，阶段三）：重建默认 Round=1，
 			// 轮次以事件载荷的 round 增载（max 语义，0=缺省不动）。任务正文
