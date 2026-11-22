@@ -16,7 +16,7 @@
 
 > 社区项目，与 OpenAI 无隶属关系。支持 macOS 和 Windows，依赖 Codex App 的内部 IPC；各平台的实测范围见 [验证记录](VERIFICATION.md)。App 更新后可能需要适配。
 
-网关整体结构与关键状态见 [项目级运行图册](docs/system-runtime-diagrams.md)；团队编排的执行/恢复流程与状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)。
+网关整体结构与关键状态见 [项目级运行图册](docs/system-runtime-diagrams.md)；团队编排的执行/恢复流程与状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)。各功能域的现行行为、异常边界与验收标准见 [特性文档总索引](docs/specs/README.md)。
 
 ## 消息编辑、分支与复制
 

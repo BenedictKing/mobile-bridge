@@ -1,6 +1,6 @@
 # 实现说明
 
-当前 Go 网关的总体结构及关键状态见 [项目级运行图册](docs/system-runtime-diagrams.md)；团队编排的组件、执行/恢复流程与持久状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)。两份图册均与规划文档中的后续能力分开。
+当前 Go 网关的总体结构及关键状态见 [项目级运行图册](docs/system-runtime-diagrams.md)；团队编排的组件、执行/恢复流程与持久状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)。两份图册均与规划文档中的后续能力分开。各功能域的现行特性契约见 [特性文档总索引](docs/specs/README.md)。
 
 团队执行状态与用户目标达成分别判定，具体见 [Run 执行状态与目标达成契约](docs/team-run-outcome-contract.md)。`goal_reviewed` 随 Run journal 保存按事项范围的完成条件、证据绑定和用户判断；Task.completed / Run.completed 仅表示执行事实，事项 resolved 需要当前目标的有效确认。
 
@@ -224,7 +224,7 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 
 源会话只读：`Bridge.migrate` 先阻塞附接取到规范化 view，`migration_transcript` 按 scope 摊平转录。目标项目默认按源会话 cwd 匹配目标 adapter 的 `projects()`；本机源匹配不到时自动以源目录在目标上创建（合成与 `AcpAdapter.projects()` 同构的 resolved 项目，key 为 `kind:sha256(cwd)[:12]`，结果带 `projectCreated: true`，目标随后列出该会话即自然收录该目录），远端源的 cwd 是远端路径、无法在本机目标上创建，仍报错并要求显式传 `project`。新会话经目标 `create_chat`（按请求 id 幂等）创建，转录作为首条消息经 `send` 注入（submission id 由请求 id 派生，重试不会重复创建或重复发送）。注入失败（如 codex 桌面尚未加载新会话）不视为迁移失败：返回 `{status: 'created', sent: false, warning}`，会话已可用。源会话保持不变。
 
-聊天详情把“迁移到其他 Agent”和“上下文压缩”分成前后平级的独立区域。迁移与网关转录压缩都会创建新会话，只要求源会话已连接且可写，源会话运行中或存在待答请求时仍可使用；Agent 原生压缩在当前会话发送新提示，因此仍要求空闲且无待答请求。“迁移到其他 Agent”按 view 注入的 `agents` 列表显示当前以外的已启用 Agent，选择目标后再选择复制范围；迁移设置与两种压缩都允许填写可选后续指示。快捷命令 `/migrate <目标Agent> [full|main|latest] [后续指示]` 复用同一迁移接口，缺省 `main` 与目标默认模型，不走模型设置预备步骤，目标必须是当前以外的已启用 Agent；`/<目标Agent>` 是等价简写，只对启用列表中的 Agent 拦截，其他斜杠文本仍按普通消息处理。“上下文压缩”要求先显式选择执行方式，不默认调用任何压缩：`Agent 原生压缩` 在当前会话通过既有 `send` 发送 `/compact <对应保留策略>`，有指示时追加“压缩完成后”的用户指示段落；`网关转录压缩` 直接显示复制范围，固定以当前 Agent 调用上述迁移接口创建转录新会话，并通过 `instructions` 传递指示，不承担跨 Agent 迁移入口。快捷命令 `/compress [gateway] [scope] [后续指示]` 复用同一路径。原生压缩的未知送达结果不自动重试；任一压缩或迁移请求期间，相关操作均禁止重复提交。
+聊天详情把“迁移到其他 Agent”和“上下文压缩”分成前后平级的独立区域。迁移与网关转录压缩都会创建新会话，只要求源会话历史已加载且当前展示仍对应该会话；源会话只读、离线、运行中或存在待答请求时也可使用；Agent 原生压缩在当前会话发送新提示，因此仍要求空闲且无待答请求。“迁移到其他 Agent”按 view 注入的 `agents` 列表显示当前以外的已启用 Agent，选择目标后再选择复制范围；迁移设置与两种压缩都允许填写可选后续指示。快捷命令 `/migrate <目标Agent> [full|main|latest] [后续指示]` 复用同一迁移接口，缺省 `main` 与目标默认模型，不走模型设置预备步骤，目标必须是当前以外的已启用 Agent；`/<目标Agent>` 是等价简写，只对启用列表中的 Agent 拦截，其他斜杠文本仍按普通消息处理。“上下文压缩”要求先显式选择执行方式，不默认调用任何压缩：`Agent 原生压缩` 在当前会话通过既有 `send` 发送 `/compact <对应保留策略>`，有指示时追加“压缩完成后”的用户指示段落；`网关转录压缩` 直接显示复制范围，固定以当前 Agent 调用上述迁移接口创建转录新会话，并通过 `instructions` 传递指示，不承担跨 Agent 迁移入口。快捷命令 `/compress [gateway] [scope] [后续指示]` 复用同一路径。原生压缩的未知送达结果不自动重试；任一压缩或迁移请求期间，相关操作均禁止重复提交。
 
 ### 能力矩阵
 
@@ -234,9 +234,9 @@ Agent Host（`cmd/agent-host` + `internal/acphost`）：把某个 ACP Agent 的�
 | 模型与档位切换 | ✓ | ✓（configOptions） | ✓（configOptions，按模型动态增删） | ✓（configOptions：model + effort） | ✓（configOptions：model + effort，off/low/high/max） | ✓（configOptions：model + thought，词表按模型变化） | ✓（configOptions：`provider/model` + 按模型 effort 变体） | ✗（未验证） |
 | 新建会话 | ✓ | ✓ | ✓ | ✓（创建进程保活至首条消息落盘） | ✓ | ✓（创建进程保活至首条消息，惰性占位） | ✓ | ✓ |
 | 计划模式 | ✓ | ✓ | ✓ | ✓ | ✓（collaboration_mode 配置项，非 session/set_mode） | ✓（default 映射为 yolo） | ✓（`mode` 配置项走 set_config_option 回退，default 映射为 build） | ✗（未验证） |
-| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✗（前端隐藏，后端拒绝） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） | ✗（无扩展 RPC） | ✗（未验证） |
+| steer（补充当前任务） | ✓ | ✗（前端隐藏，后端拒绝） | ✓（扩展 RPC） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✓（`_session/steering`，promptRequired 回落普通发送） | ✗（上游 ≥0.16 已删除） | ✗（无扩展 RPC） | ✗（未验证） |
 | goal 模式 | ✓（原生） | ✓（网关托管） | ✓（扩展 RPC） | ✓（网关托管） | ✓（网关托管） | ✓（网关托管） | ✓（网关托管） | ✓（网关托管） |
-| rename/fork | ✓ | ✗ | ✗（fork 有扩展，v1 不开放） | ✗ | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（fork 有 `session/fork`，v1 不开放） | ✗（未验证） |
+| rename/fork | ✓ | fork（网关合成） | fork（网关合成） | fork（网关合成） | fork（网关合成） | fork（网关合成） | fork（网关合成） | ✗（未验证） |
 | Skill 选择 | ✓ | ✓（available_commands 斜杠命令，每次一条） | ✗ | ✗ | ✗ | ✗ | ✓（available_commands_update 斜杠命令，每次一条） | ✗ |
 | Fast 模式/账号切换 | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | 账号池（多账号切换） | 只读 | ✓ | ✓ | ✗ | ✗ | ✓ | ✗ | ✓（保守门控） |
