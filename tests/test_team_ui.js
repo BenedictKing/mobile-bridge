@@ -378,6 +378,23 @@ test('graph renders positioned DOM nodes and SVG edges without duplicate depende
   delete global.matchMedia;
 });
 
+test('collaboration protocol renders member relationships and source with legacy fallback',()=>{
+  const screen=new TeamRunScreen({root:new FakeNode('div'),request:async()=>({})});
+  screen.detail={collaboration:{schemaVersion:1,pattern:'custom-dag',revision:4,
+    orchestrator:{memberId:'kimi',name:'Coordinator',role:'lead',receiveFrom:['buddy'],reportTo:[]},
+    members:[{memberId:'buddy',name:'Researcher',role:'member',receiveFrom:['kimi'],reportTo:['kimi']}],
+    rawMarkdown:'---\ncollaborate_pattern: custom-dag\n---\n\n## Task Goal\n\nInvestigate'}};
+  const box=screen.renderCollaboration();
+  assert.match(text(box),/Collaboration protocol · Custom DAG · r4/);
+  assert.match(text(box),/Read-only projection; not used for scheduling/);
+  assert.match(text(box),/Receives from: Coordinator/);
+  assert.match(text(box),/Reports to: Coordinator/);
+  assert.match(text(box),/Protocol source/);
+  assert.match(text(find(box,'team-collaboration-source')[0]),/collaborate_pattern: custom-dag/);
+  screen.detail={};assert.equal(screen.renderCollaboration(),null);
+  screen.detail={collaboration:{schemaVersion:2}};assert.equal(screen.renderCollaboration(),null,'未知协议版本必须安全隐藏');
+});
+
 test('run screen places the execution graph before secondary statistics',()=>{
   const root=new FakeNode('div'),screen=new TeamRunScreen({root,request:async()=>({})});
   screen.detail={id:'r1',status:'running',tasks:[]};screen.stats={loading:false};

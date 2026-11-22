@@ -376,7 +376,7 @@ main{background:var(--page);overflow:hidden}
 .session-indicator.unknown{background:var(--muted)}
 .session-indicator.waiting{background:var(--warning-text)}
 :root[data-show-accounts=false] #accounts-button{display:none}
-.team-card,.task-card,.team-stats,.team-graph{background:var(--raised);border-color:var(--line);border-radius:var(--r-md)}
+.team-card,.task-card,.team-stats,.team-graph,.team-collaboration{background:var(--raised);border-color:var(--line);border-radius:var(--r-md)}
 .team-run-head{background:var(--page);border-color:var(--line)}
 .team-run-body{scrollbar-width:thin;scrollbar-color:var(--control) transparent}
 .team-member,.team-badge{font-size:12px}

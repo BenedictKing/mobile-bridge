@@ -2734,6 +2734,13 @@ func (h *handler) teamRunDetail(run *team.Run) *jsoncompat.Object {
 		return jsoncompat.NewObject()
 	}
 	teamRow := h.server.TeamStore.Team(run.TeamID)
+	if collaboration := team.BuildRunCollaboration(run, teamRow); collaboration != nil {
+		if encoded, marshalErr := json.Marshal(collaboration); marshalErr == nil {
+			if projected, unmarshalErr := jsoncompat.Unmarshal(encoded); unmarshalErr == nil {
+				detail.Set("collaboration", projected)
+			}
+		}
+	}
 	if run.Swarm != nil {
 		detail.Set("swarm", h.swarmProject(run))
 	}

@@ -1799,6 +1799,37 @@ class TeamRunScreen{
     box.append(this.node('p',t('Token 按任务归因暂不支持。'),'muted'));
     return box;
   }
+  renderCollaboration(){
+    const data=this.detail&&this.detail.collaboration;
+    if(!data||data.schemaVersion!==1)return null;
+    const t=BridgeI18n.t,box=this.node('details',undefined,'team-collaboration');
+    const pattern=data.pattern==='custom-dag'?t('自定义 DAG'):data.pattern==='single-agent'?t('单 Agent'):String(data.pattern||'');
+    const revision=typeof data.revision==='number'?' · r'+data.revision:'';
+    const summary=this.node('summary',t('协作协议')+' · '+pattern+revision);
+    box.append(summary);
+    box.append(this.node('p',t('只读投影，不参与调度'),'muted'));
+    const participants=[data.orchestrator,...(Array.isArray(data.members)?data.members:[])].filter(member=>member&&member.memberId);
+    const names=new Map(participants.map(member=>[member.memberId,member.name||member.memberId]));
+    const relations=ids=>(Array.isArray(ids)?ids:[]).map(id=>names.get(id)||id).join(t('、'))||t('无');
+    const list=this.node('div',undefined,'team-collaboration-members');
+    for(const member of participants){
+      const row=this.node('section',undefined,'team-collaboration-member');
+      const head=this.node('div',undefined,'team-collaboration-member-head');
+      head.append(this.node('strong',member.name||member.memberId));
+      head.append(this.node('span',t(TEAM_ROLE_LABELS[member.role]||member.role||'member'),'team-member'));
+      row.append(head);
+      row.append(this.node('p',t('接收自')+t('：')+relations(member.receiveFrom),'muted'));
+      row.append(this.node('p',t('汇报给')+t('：')+relations(member.reportTo),'muted'));
+      list.append(row);
+    }
+    if(!participants.length)list.append(this.node('p',t('当前 Run 还没有实际参与成员。'),'muted'));
+    box.append(list);
+    const source=this.node('details',undefined,'team-collaboration-source');
+    source.append(this.node('summary',t('协议原文')));
+    source.append(this.node('pre',String(data.rawMarkdown||'')));
+    box.append(source);
+    return box;
+  }
   renderGraph(){
     if(!this.graph||this.graph.loading||this.graph.error||!this.graph.data)return null;
     const nodes=Array.isArray(this.graph.data.nodes)?this.graph.data.nodes.filter(node=>node&&typeof node.id==='string'):[];
@@ -2014,6 +2045,8 @@ class TeamRunScreen{
     // 回退平铺列表——图是补充视图，缺省时任务卡照常渲染。
     const graphSection=this.renderGraph();
     if(graphSection)body.append(graphSection);
+    const collaboration=this.renderCollaboration();
+    if(collaboration)body.append(collaboration);
     // 统计是次要信息，排在执行路径之后；404（旧网关）整块不显示。
     if(this.stats)body.append(this.renderStats());
     const tasks=detail.tasks||[];
