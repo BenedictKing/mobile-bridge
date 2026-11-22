@@ -55,6 +55,22 @@ func outcomeAnswers(choice, probabilities string, reversible, needsHuman, unsafe
 		choice, distribution, numFloat(reversible).String(), numFloat(needsHuman).String(), numFloat(unsafe).String())
 }
 
+func TestApprovalQuestionsTreatRoutineDevelopmentAsReversible(t *testing.T) {
+	questions := approvalQuestions(defaultPolicy, "session/request_permission", nil)
+	reversible := questions.MustGet("reversible").(*jsoncompat.Object)
+	instructions := reversible.MustGet("instructions").(string)
+	for _, want := range []string{"project-local builds", "Do not lower the score merely because a package-manager script executes"} {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("reversible instructions missing %q: %s", want, instructions)
+		}
+	}
+	criteria := reversible.MustGet("criteria").(*jsoncompat.Object)
+	positive := criteria.MustGet("true").(string)
+	if !strings.Contains(positive, "generated build/test outputs") || !strings.Contains(positive, "fully reversible") {
+		t.Fatalf("routine development outputs must be explicitly reversible: %s", positive)
+	}
+}
+
 func TestAutoResponseMapsSafeACPRecommendation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
