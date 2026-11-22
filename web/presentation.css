@@ -207,6 +207,7 @@ main{background:var(--page);overflow:hidden}
 .activity:not([data-tool]):not([data-command]):not([data-kind=fileChange]):not([data-kind=subagent]):not([data-approval-status=approved]):not([open]) .activity-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden;max-height:none}
 .activity[data-command][data-command-status=failed]>summary{color:var(--error)}
 .activity[data-command]>summary{overflow-wrap:anywhere}
+.activity[data-kind=taskNotification]>summary{overflow-wrap:anywhere}.activity[data-kind=taskNotification][data-severity=warning]>summary{color:var(--warning-text)}.activity[data-kind=taskNotification][data-severity=error]>summary{color:var(--error)}
 .activity summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .activity-body{max-height:60vh;overflow:auto}
 /* 长命令、长 URL 整段无空格也换行展示，不再右缘硬切或出现横向滚动。 */

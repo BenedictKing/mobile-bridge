@@ -1405,6 +1405,7 @@ const en={
   "部分统计不可用": "some counts unavailable",
   "开始压缩": "Start compaction",
   "已向进行中的对话补充指示": "Instructions added to the running conversation",
+  "后台任务通知": "Background task notice",
   "已截断": "truncated",
   "继续显示": "Show more",
   "仅显示新增内容": "File too large for a line-by-line diff; new content only.",

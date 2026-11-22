@@ -6,6 +6,23 @@ const timelineText=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(s
 const TOOL_ROW_KINDS=/^(toolCall|tool_call|storedToolEvent|mcpToolCall|dynamicToolCall)$/;
 // userIndex contains only user rows and omits role, so recognize its protocol entries by prefix too.
 const internalTeamProtocolRow=row=>(row?.role==='user'||row?.role==null)&&/^\s*\[(?:Team delegation|Team context|Team review|Team historical issue routing|Team issue routing|Team account quotas|Team background tasks)\]/i.test(String(row.text||''));
+// Kimi 把后台任务事件作为 origin=task 的回合注入，正文是 <notification …> 包裹的纯文本。
+// 按系统通知展示：不当作用户发言，不进入跳转列表，也不提供编辑/分支。
+// 截断预览可能缺少闭合标签，因此只要求开头是通知且闭合标签之后没有其他正文。
+const taskNotice=(row,text=row?.text)=>{
+  if(row?.role!=='user'&&row?.role!=null)return null;
+  const match=String(text||'').match(/^\s*<notification\b([^>]*)>([\s\S]*?)(?:<\/notification>\s*)?$/);
+  if(!match||match[2].includes('</notification>'))return null;
+  const attrs={};for(const [,key,value] of match[1].matchAll(/([\w:-]+)="([^"]*)"/g))attrs[key]=value;
+  let title='',severity=attrs.severity||'';const lines=[];
+  for(const line of match[2].trim().split('\n')){
+    const field=line.match(/^\s*(Title|Severity)\s*:\s*(.*?)\s*$/i);
+    if(field&&/^title$/i.test(field[1])&&!title){title=field[2];continue;}
+    if(field&&!severity)severity=field[2];
+    lines.push(line);
+  }
+  return {title:title||attrs.type||'',severity:severity.toLowerCase().replace(/[^a-z]/g,''),text:lines.join('\n').trim()};
+};
 const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecution)$/.test(row.kind)||row.toolKind==='execute');
 const sleepRow=row=>row.role==='activity'&&row.kind==='sleep';
 const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row)||sleepRow(row));
@@ -91,6 +108,8 @@ const toolLabel=title=>{
 
 // Heading label for one row; plan rows surface live completion counts.
 const rowLabel=(row,text=row.text)=>{
+  const notice=taskNotice(row,text);
+  if(notice)return timelineText('后台任务通知')+(notice.title?' · '+notice.title:'');
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   if(maintenanceRow(row))return row.text;
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
@@ -190,7 +209,7 @@ class ChatTimeline {
     const merged=new Map();
     if(this.userIndex)for(const entry of this.userIndex)merged.set(entry.key,entry);
     for(const row of ordered)if(row.role==='user')merged.set(row.key,row);
-    const rows=[...merged.values()].filter(row=>!this.hideInternalTeamMessages||!internalTeamProtocolRow(row));
+    const rows=[...merged.values()].filter(row=>!taskNotice(row)&&(!this.hideInternalTeamMessages||!internalTeamProtocolRow(row)));
     this.userJump.hidden=!rows.length;this.userJumpCount.textContent=rows.length?String(rows.length):'';
     this.userJumpList.replaceChildren();this.userJumpButtons.clear();
     for(const [index,row] of rows.entries()){
@@ -393,12 +412,13 @@ class ChatTimeline {
     return this.deltaRecovery;
   }
   renderRow(row,open){
-    const activity=row.role==='activity',
+    const notice=taskNotice(row),activity=row.role==='activity'||!!notice,
           steered=steeredRow(row),maintenance=maintenanceRow(row),
           planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
           node=document.createElement(activity&&!steered&&!maintenance?'details':'div');
     node.className=activity?'activity timeline-row'+((steered||maintenance)?' status-event':''):'message timeline-row '+row.role;
     if(activity&&row.kind)node.dataset.kind=row.kind;
+    if(notice){node.dataset.kind='taskNotification';if(notice.severity)node.dataset.severity=notice.severity;}
     // CSS 以 data-tool（而非具体 kind）区分工具行：所有管线的工具调用折叠态一致。
     if(toolRow(row))node.dataset.tool='';
     if(commandRow(row)){node.dataset.command='';node.dataset.commandStatus=commandState(row);}
@@ -443,7 +463,10 @@ class ChatTimeline {
         }
         body.append(list);body.hidden=false;more.hidden=true;
       }else{
-        if(sleepRow(row)){
+        if(notice){
+          heading.textContent=rowLabel(row,text);
+          body.textContent=taskNotice(row,text)?.text??text;
+        }else if(sleepRow(row)){
           body.textContent=sleepContent(row,text);
         }else if(approvalReviewRow(row)){
           node.dataset.approvalStatus=approvedReview(row,text)?'approved':'';
@@ -471,7 +494,7 @@ class ChatTimeline {
       finally{more.disabled=false;}
     };
     more.onclick=load;node.append(body,more);paint();
-    if(row.role==='user'||row.role==='assistant'){
+    if(!notice&&(row.role==='user'||row.role==='assistant')){
       const actions=document.createElement('div');actions.className='message-actions';
       if((row.text||'').trim()){
         const copy=document.createElement('button');copy.type='button';copy.className='plain message-copy';copy.textContent=timelineText('复制');copy.onclick=()=>window.BridgeClipboard?.copy(()=>this.fullText(row),copy);actions.append(copy);

@@ -287,6 +287,37 @@ test('scrolling away from the latest message shows a persistent jump-to-latest b
   timeline.dispose();
 });
 
+test('Kimi background task notifications render as notices instead of user prompts',()=>{
+  const{timeline,ids}=setup();
+  const text='<notification id="task:bash-1:lost" category="task" type="task.lost" source_kind="background_task" source_id="bash-1">\nTitle: Background process lost\nSeverity: warning\nWall time: 6366.357 seconds\n运行本地工作台 lost.\n</notification>';
+  const row={key:'n1',role:'user',turnId:'t2',editable:true,text};
+  const node=timeline.renderRow(row,false);
+  assert.equal(node.tagName,'DETAILS');
+  assert.equal(node.dataset.kind,'taskNotification');
+  assert.equal(node.dataset.severity,'warning');
+  assert.equal(node.children[0].textContent,'后台任务通知 · Background process lost');
+  assert.equal(node.children[1].textContent,'Severity: warning\nWall time: 6366.357 seconds\n运行本地工作台 lost.');
+  assert.ok(!node.children.some(child=>child.className==='message-actions'),'notices offer no copy/edit/branch actions');
+  assert.equal(timeline.rowVisible(row),true);
+  timeline.userIndex=[{key:'n1',text},{key:'u1',text:'真实问题'}];
+  timeline.renderUserJump([]);
+  assert.deepEqual(ids['user-jump-list'].children.map(button=>button.dataset.key),['u1']);
+  timeline.dispose();
+});
+
+test('notification-like user text stays a normal prompt',()=>{
+  const{timeline}=setup();
+  for(const text of ['请解释 <notification>标签','<notification>a</notification> 之后还有正文']){
+    const node=timeline.renderRow({key:'u',role:'user',text},false);
+    assert.equal(node.tagName,'DIV');
+    assert.match(node.className,/message timeline-row user/);
+  }
+  const bare=timeline.renderRow({key:'n',role:'user',text:'<notification>后台任务已停止</notification>'},false);
+  assert.equal(bare.children[0].textContent,'后台任务通知');
+  assert.equal(bare.children[1].textContent,'后台任务已停止');
+  timeline.dispose();
+});
+
 test('steered event is a readable status without raw JSON',()=>{
   const{timeline}=setup();
   const node=timeline.renderRow({role:'activity',kind:'steered',title:'steered',text:'{"type":"steered","id":"internal"}'},false);
