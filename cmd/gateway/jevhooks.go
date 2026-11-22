@@ -22,11 +22,12 @@ const watchedWithin = 2 * time.Minute
 
 // jevApprovalHook wraps one Jev evaluation with the session approval cache,
 // the decision journal and the decision audit log. Cards Jev assessed but did
-// not approve come back annotated so the phone shows the verdict.
+// not approve come back annotated so the phone shows the verdict; a failed
+// assessment with ladder rungs left asks the runtime to retry.
 func jevApprovalHook(settings *jev.Settings, agent string) acpruntime.ApprovalHook {
-	return func(sessionID, requestID, method string, params *jsoncompat.Object) *acpruntime.ApprovalVerdict {
-		decision := jevEvaluate(settings, agent, sessionID, requestID, method, params)
-		verdict := &acpruntime.ApprovalVerdict{Response: decision.Response}
+	return func(sessionID, requestID, method string, params *jsoncompat.Object, attempt int) *acpruntime.ApprovalVerdict {
+		decision := jevEvaluate(settings, agent, sessionID, requestID, method, params, attempt)
+		verdict := &acpruntime.ApprovalVerdict{Response: decision.Response, Retry: decision.Retrying}
 		if annotation := jev.Annotate(method, params, decision); annotation != nil {
 			verdict.Assessment = annotation.Assessment
 			verdict.RecommendOption = annotation.RecommendOption
@@ -37,15 +38,16 @@ func jevApprovalHook(settings *jev.Settings, agent string) acpruntime.ApprovalHo
 
 // jevCodexApprovalHook is the Codex bridge's response-only variant: Codex
 // re-normalizes its desktop snapshot on every read, so there is no pending
-// card to annotate yet.
+// card to annotate yet. A nil reply releases the claim, so the next snapshot
+// change evaluates the card again.
 func jevCodexApprovalHook(settings *jev.Settings) func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
 	return func(sessionID, requestID, method string, params *jsoncompat.Object) *jsoncompat.Object {
-		return jevEvaluate(settings, "codex", sessionID, requestID, method, params).Response
+		return jevEvaluate(settings, "codex", sessionID, requestID, method, params, 0).Response
 	}
 }
 
-func jevEvaluate(settings *jev.Settings, agent, sessionID, requestID, method string, params *jsoncompat.Object) jev.Decision {
-	decision := settings.EvaluateSession(agent, sessionID, requestID, method, params)
+func jevEvaluate(settings *jev.Settings, agent, sessionID, requestID, method string, params *jsoncompat.Object, attempt int) jev.Decision {
+	decision := settings.EvaluateSessionAttempt(agent, sessionID, requestID, method, params, attempt)
 	response := "-"
 	if decision.Response != nil {
 		response = string(jsoncompat.EncodeCompact(decision.Response))
@@ -54,10 +56,10 @@ func jevEvaluate(settings *jev.Settings, agent, sessionID, requestID, method str
 	if failure == "" {
 		failure = "-"
 	}
-	log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 结果=%s 错误=%s 和=%.2f 阈值=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 请求=%q",
-		agent, sessionID, requestID, method, decision.Reason, failure,
+	log.Printf("Jev 审批: agent=%s session=%s request=%s method=%s 尝试=%d 结果=%s 错误=%s 和=%.2f 阈值=%.2f 可逆=%.2f 置信=%.2f 建议=%s 回应=%s 重试=%t 请求=%q",
+		agent, sessionID, requestID, method, attempt+1, decision.Reason, failure,
 		decision.NegativeSum, decision.Threshold, decision.Reversible, decision.Confidence, decision.Recommend,
-		response, jev.SubjectPrefix(params))
+		response, decision.Retrying, jev.SubjectPrefix(params))
 	return decision
 }
 

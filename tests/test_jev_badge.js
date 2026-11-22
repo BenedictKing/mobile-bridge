@@ -50,6 +50,13 @@ test('a failed Jev assessment leaves an explicit manual-fallback trace',()=>{
   assert.equal(reason.textContent,'未自动审核：已转人工确认');
 });
 
+test('a failed assessment still being retried invites a manual answer',()=>{
+  const badge=loadBadge()({id:'r',assessment:{source:'jev',riskLabel:'unknown',reason:'assess_failed',retrying:true,attempt:0}},params);
+  const [risk,reason]=badge.children;
+  assert.equal(risk.textContent,'Jev 评估超时，正在重试');
+  assert.equal(reason.textContent,'可直接手动确认，不必等待');
+});
+
 test('threshold holds show both numbers',()=>{
   const badge=loadBadge()({id:'r',assessment:{source:'jev',riskLabel:'elevated',confidence:0.18,reversible:0.93,reason:'recommend_review'}},params);
   assert.equal(badge.children[1].textContent,'未自动审核：Jev 建议人工查看');

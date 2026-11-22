@@ -965,6 +965,8 @@ const en={
   "Jev 建议人工查看": "Jev recommends a manual review",
   "Jev 建议拒绝": "Jev recommends declining",
   "Jev 评估失败": "Jev assessment failed",
+  "Jev 评估超时，正在重试": "Jev assessment timed out, retrying",
+  "可直接手动确认，不必等待": "You can answer now without waiting",
   "未自动审核：已转人工确认": "Not auto-approved: manual confirmation required",
   "永久授权需手动确认": "Permanent grants need a manual tap",
   "风险倾向": "Risk lean",

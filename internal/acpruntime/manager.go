@@ -75,6 +75,8 @@ type Session struct {
 	// stream — which may already carry the backend id — is not dropped.
 	canonical   func(id string) string
 	autoApprove ApprovalHook
+	// approvalPause overrides approvalRetryPause when positive (tests).
+	approvalPause time.Duration
 	// autoContinue runs asynchronously once a live turn settles; the gateway
 	// installs it to resume unfinished work. autoContinueRuns is the
 	// consecutive-resume budget any human action re-arms.
@@ -154,14 +156,23 @@ type Subagents interface {
 // ApprovalVerdict is what the auto-approve hook returns for one permission
 // request: a native Response to submit, or — when Jev assessed the card but
 // did not approve it — the Assessment and RecommendOption the phone renders.
-// Nil, or a verdict with neither, leaves the card untouched.
+// Retry asks for another attempt while the card is still pending (a failed
+// assessment with rungs left). Nil, or a verdict with neither, leaves the
+// card untouched.
 type ApprovalVerdict struct {
 	Response        *jsoncompat.Object
 	Assessment      *jsoncompat.Object
 	RecommendOption string
+	Retry           bool
 }
 
-type ApprovalHook func(sessionID, requestID, method string, params *jsoncompat.Object) *ApprovalVerdict
+// ApprovalHook evaluates one permission request; attempt counts the retries
+// of the same card from zero.
+type ApprovalHook func(sessionID, requestID, method string, params *jsoncompat.Object, attempt int) *ApprovalVerdict
+
+// approvalRetryPause spaces retries so a fast failure (refused connection,
+// 5xx) does not spin through the ladder in a burst.
+const approvalRetryPause = 2 * time.Second
 
 type Manager struct {
 	Executable  string
@@ -2943,17 +2954,44 @@ func (s *Session) onRequest(message *jsoncompat.Object, respond func(any)) {
 	s.signalLocked()
 	s.mu.Unlock()
 	if s.autoApprove != nil && (method == "session/request_permission" || method == "session/requestPermission") {
-		go func() {
-			verdict := s.autoApprove(s.ID, requestID, method, params)
-			if verdict == nil {
-				return
-			}
-			if verdict.Response != nil && s.Respond(requestID, verdict.Response) == nil {
-				return
-			}
-			s.annotateRequest(requestID, verdict)
-		}()
+		go s.runAutoApprove(requestID, method, params)
 	}
+}
+
+// runAutoApprove drives the Jev hook for one card. The card is already on the
+// phone, so the user can answer at any time; a failed assessment is retried
+// (the hook widens its deadline per attempt) only while the card stays
+// pending, and whichever settles it first — a later verdict or the user —
+// ends the loop.
+func (s *Session) runAutoApprove(requestID, method string, params *jsoncompat.Object) {
+	for attempt := 0; ; attempt++ {
+		verdict := s.autoApprove(s.ID, requestID, method, params, attempt)
+		if verdict == nil {
+			return
+		}
+		if verdict.Response != nil && s.Respond(requestID, verdict.Response) == nil {
+			return
+		}
+		s.annotateRequest(requestID, verdict)
+		if !verdict.Retry {
+			return
+		}
+		pause := approvalRetryPause
+		if s.approvalPause > 0 {
+			pause = s.approvalPause
+		}
+		time.Sleep(pause)
+		if !s.requestPending(requestID) {
+			return
+		}
+	}
+}
+
+func (s *Session) requestPending(requestID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, pending := s.pending[requestID]
+	return pending && !s.closed
 }
 
 // annotateRequest pins a Jev verdict onto a still-pending card and pushes it

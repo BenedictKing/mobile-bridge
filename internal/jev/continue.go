@@ -85,7 +85,7 @@ func (s *Settings) ContinueAssess(context *jsoncompat.Object) *ContinueAssessmen
 	payload.Set("model", config.MustGet("model"))
 	payload.Set("state", context)
 	payload.Set("questions", continueQuestions())
-	value, err := s.post(config, key, payload)
+	value, err := s.post(config, key, payload, assessTimeout(0))
 	if err != nil {
 		return nil
 	}

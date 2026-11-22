@@ -1109,8 +1109,14 @@ function assessmentBadge(request){
   const a=request?.assessment;
   if(!a||a.source!=='jev')return null;
   if(a.reason==='assess_failed'){
+    // The gateway keeps retrying with longer deadlines while the card waits;
+    // the user may answer at any time, whichever comes first wins.
     const box=document.createDocumentFragment();
-    box.append(el('p','approval-risk risk-elevated',t('Jev 评估失败')),el('p','approval-context jev-reason',t('未自动审核：已转人工确认')));
+    if(a.retrying){
+      box.append(el('p','approval-risk risk-low',t('Jev 评估超时，正在重试')),el('p','approval-context jev-reason',t('可直接手动确认，不必等待')));
+    }else{
+      box.append(el('p','approval-risk risk-elevated',t('Jev 评估失败')),el('p','approval-context jev-reason',t('未自动审核：已转人工确认')));
+    }
     return box;
   }
   const labels={routine:'常规操作',low:'低风险',elevated:'中风险',high:'高风险'};

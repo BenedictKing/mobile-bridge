@@ -35,6 +35,12 @@ func Annotate(method string, params *jsoncompat.Object, d Decision) *Annotation 
 	assessment.Set("recommend", d.Recommend)
 	assessment.Set("reason", d.Reason)
 	assessment.Set("approved", d.Approved)
+	if d.Reason == "assess_failed" {
+		// The phone tells "still retrying, tap if you like" apart from
+		// "gave up, your call"; attempt is zero-based.
+		assessment.Set("retrying", d.Retrying)
+		assessment.Set("attempt", d.Attempt)
+	}
 	return &Annotation{Assessment: assessment, RecommendOption: recommendedOption(method, params, d.Recommend)}
 }
 

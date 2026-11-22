@@ -131,7 +131,7 @@ func TestNoteHumanActionRearmsWithoutPrompt(t *testing.T) {
 func TestAutoApproveReceivesSessionContext(t *testing.T) {
 	session := &Session{ID: "sess-approve", View: acpview.NewView("sess-approve", nil, "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{})}
 	seen := make(chan [3]string, 1)
-	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object) *ApprovalVerdict {
+	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object, attempt int) *ApprovalVerdict {
 		seen <- [3]string{sessionID, requestID, method}
 		return nil
 	}
@@ -161,7 +161,7 @@ func TestAutoApproveVerdictAnnotatesPendingCard(t *testing.T) {
 	assessment := jsoncompat.NewObject()
 	assessment.Set("source", "jev")
 	assessment.Set("reason", "low_confidence")
-	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object) *ApprovalVerdict {
+	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object, attempt int) *ApprovalVerdict {
 		return &ApprovalVerdict{Assessment: assessment, RecommendOption: "approve_once"}
 	}
 	request := jsoncompat.NewObject()
@@ -187,4 +187,76 @@ func TestAutoApproveVerdictAnnotatesPendingCard(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("verdict never reached the pending card")
+}
+
+func retrySession(id string) *Session {
+	return &Session{ID: id, View: acpview.NewView(id, nil, "/work", func() float64 { return 1 }), pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{})}
+}
+
+func permissionRequest(id string) *jsoncompat.Object {
+	request := jsoncompat.NewObject()
+	request.Set("id", id)
+	request.Set("method", "session/request_permission")
+	request.Set("params", jsoncompat.NewObject())
+	return request
+}
+
+func failedAssessment() *jsoncompat.Object {
+	assessment := jsoncompat.NewObject()
+	assessment.Set("source", "jev")
+	assessment.Set("reason", "assess_failed")
+	return assessment
+}
+
+func TestAutoApproveRetriesFailedAssessmentWhilePending(t *testing.T) {
+	session := retrySession("sess-retry")
+	session.approvalPause = time.Millisecond
+	attempts := make(chan int, 8)
+	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object, attempt int) *ApprovalVerdict {
+		attempts <- attempt
+		return &ApprovalVerdict{Assessment: failedAssessment(), Retry: attempt < 2}
+	}
+	session.onRequest(permissionRequest("perm-retry"), func(any) { t.Error("failed assessments must leave the card pending") })
+	for want := 0; want <= 2; want++ {
+		select {
+		case got := <-attempts:
+			if got != want {
+				t.Fatalf("attempt = %d, want %d", got, want)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("attempt %d never ran", want)
+		}
+	}
+	select {
+	case extra := <-attempts:
+		t.Fatalf("retry continued past a verdict without Retry: attempt %d", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestAutoApproveRetryStopsOnceUserAnswers(t *testing.T) {
+	session := retrySession("sess-answered")
+	session.approvalPause = 50 * time.Millisecond
+	attempts := make(chan int, 8)
+	session.autoApprove = func(sessionID, requestID, method string, params *jsoncompat.Object, attempt int) *ApprovalVerdict {
+		attempts <- attempt
+		if attempt == 0 {
+			// The user answers on the phone while Jev is still failing.
+			session.mu.Lock()
+			delete(session.pending, requestID)
+			session.mu.Unlock()
+		}
+		return &ApprovalVerdict{Assessment: failedAssessment(), Retry: true}
+	}
+	session.onRequest(permissionRequest("perm-answered"), func(any) {})
+	select {
+	case <-attempts:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first attempt never ran")
+	}
+	select {
+	case extra := <-attempts:
+		t.Fatalf("retry ran after the card was answered: attempt %d", extra)
+	case <-time.After(300 * time.Millisecond):
+	}
 }

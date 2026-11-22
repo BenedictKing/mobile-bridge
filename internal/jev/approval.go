@@ -29,6 +29,23 @@ const (
 	declineUnsafeAt = 0.6
 )
 
+// assessTimeouts is the per-attempt deadline ladder for a live approval: the
+// first try stays snappy, and while the card waits on the phone a failed
+// assessment is retried with longer deadlines up to a 30s ceiling. One-shot
+// assessments (trial, continue, goal) use only the first rung.
+var assessTimeouts = []time.Duration{4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second}
+
+// assessTimeout clamps attempt onto the ladder.
+func assessTimeout(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt >= len(assessTimeouts) {
+		attempt = len(assessTimeouts) - 1
+	}
+	return assessTimeouts[attempt]
+}
+
 // Decision is the auditable outcome of one auto-approval evaluation: what
 // Jev said (when it was asked), why the gateway did or did not auto-approve,
 // and the native response to submit. Categories carries the per-policy-class
@@ -47,6 +64,10 @@ type Decision struct {
 	Recommend   string
 	TopCategory string
 	Response    *jsoncompat.Object
+	// Attempt is the zero-based try on the timeout ladder; Retrying marks a
+	// failed assessment that will be tried again while the card is pending.
+	Attempt  int
+	Retrying bool
 }
 
 // Evaluate runs the auto-approval policy for one permission request and
@@ -66,16 +87,16 @@ func (s *Settings) Evaluate(method string, params *jsoncompat.Object) Decision {
 	if !isApprovalMethod(method) {
 		return Decision{Reason: "unsupported_method"}
 	}
-	return s.evaluate(config, key, method, params)
+	return s.evaluate(config, key, method, params, assessTimeout(0))
 }
 
 // evaluate is the assessment itself, past the enable/key/method gates: one
 // remote call, then the gate order recommend → negative sum → reversibility
 // → confidence → native response mapping.
-func (s *Settings) evaluate(config *jsoncompat.Object, key, method string, params *jsoncompat.Object) Decision {
+func (s *Settings) evaluate(config *jsoncompat.Object, key, method string, params *jsoncompat.Object, timeout time.Duration) Decision {
 	policy, _, _ := parsePolicyValue(config.MustGet("policy"))
 	threshold := number(config.MustGet("threshold"), defaultThreshold)
-	assessment, err := s.assess(config, key, method, params, policy)
+	assessment, err := s.assess(config, key, method, params, policy, timeout)
 	if err != nil {
 		return Decision{Reason: "assess_failed", Threshold: threshold, Error: err.Error()}
 	}
@@ -183,7 +204,7 @@ func (s *Settings) TrialEvaluate(method string, params *jsoncompat.Object) (Deci
 	if !isApprovalMethod(method) {
 		return Decision{Reason: "unsupported_method"}, nil
 	}
-	return s.evaluate(config, key, method, params), nil
+	return s.evaluate(config, key, method, params, assessTimeout(0)), nil
 }
 
 // EvaluateSession runs the approval policy for one live permission request,
@@ -197,6 +218,20 @@ func (s *Settings) TrialEvaluate(method string, params *jsoncompat.Object) (Deci
 // that entered the evaluation chain (cache hits included) lands in the
 // decision journal; the pre-evaluation early exits never do.
 func (s *Settings) EvaluateSession(agent, sessionID, requestID, method string, params *jsoncompat.Object) Decision {
+	return s.EvaluateSessionAttempt(agent, sessionID, requestID, method, params, 0)
+}
+
+// EvaluateSessionAttempt is EvaluateSession on rung attempt of the timeout
+// ladder. A failed assessment with rungs left comes back Retrying so the
+// caller can try again while the card still waits for the user.
+func (s *Settings) EvaluateSessionAttempt(agent, sessionID, requestID, method string, params *jsoncompat.Object, attempt int) Decision {
+	decision := s.evaluateSession(agent, sessionID, requestID, method, params, attempt)
+	decision.Attempt = attempt
+	decision.Retrying = decision.Reason == "assess_failed" && attempt+1 < len(assessTimeouts)
+	return decision
+}
+
+func (s *Settings) evaluateSession(agent, sessionID, requestID, method string, params *jsoncompat.Object, attempt int) Decision {
 	if params == nil {
 		params = jsoncompat.NewObject()
 	}
@@ -238,14 +273,14 @@ func (s *Settings) EvaluateSession(agent, sessionID, requestID, method string, p
 			// recommendation (fresh option ids on every card): treat the hit
 			// as a miss rather than replying with a stale optionId.
 		}
-		decision := s.evaluate(config, key, method, params)
+		decision := s.evaluate(config, key, method, params, assessTimeout(attempt))
 		if decision.Approved {
 			s.cache.store(fingerprint, agent, sessionID, method, subject, decision)
 		}
 		s.recordDecision(agent, sessionID, requestID, method, decision, params)
 		return decision
 	}
-	decision := s.evaluate(config, key, method, params)
+	decision := s.evaluate(config, key, method, params, assessTimeout(attempt))
 	s.recordDecision(agent, sessionID, requestID, method, decision, params)
 	return decision
 }
@@ -313,12 +348,12 @@ type assessment struct {
 // policy verdict. The outcome answer must carry a full probability
 // distribution over every policy category (mirroring the reference client's
 // normalizeAnswer); anything short of that fails closed instead of guessing.
-func (s *Settings) assess(config *jsoncompat.Object, key, method string, params *jsoncompat.Object, policy []Category) (*assessment, error) {
+func (s *Settings) assess(config *jsoncompat.Object, key, method string, params *jsoncompat.Object, policy []Category, timeout time.Duration) (*assessment, error) {
 	payload := jsoncompat.NewObject()
 	payload.Set("model", config.MustGet("model"))
 	payload.Set("state", assessmentState(method, params))
 	payload.Set("questions", approvalQuestions(policy, method, params))
-	value, err := s.post(config, key, payload)
+	value, err := s.post(config, key, payload, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +439,7 @@ func noulAnswer(answers *jsoncompat.Object, key string) (float64, bool) {
 
 // post sends one assessment request through the optional proxy and decodes
 // the JSON reply. Authorization carries the key; it never reaches a payload.
-func (s *Settings) post(config *jsoncompat.Object, key string, payload *jsoncompat.Object) (any, error) {
+func (s *Settings) post(config *jsoncompat.Object, key string, payload *jsoncompat.Object, timeout time.Duration) (any, error) {
 	body := jsoncompat.EncodeCompact(payload)
 	base, _ := config.MustGet("baseUrl").(string)
 	endpoint, err := url.Parse(strings.TrimRight(base, "/") + "/v1/systemone")
@@ -417,7 +452,7 @@ func (s *Settings) post(config *jsoncompat.Object, key string, payload *jsoncomp
 	}
 	request.Header.Set("Authorization", "Bearer "+key)
 	request.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 4 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	if proxy, _ := config.MustGet("proxy").(string); proxy != "" {
 		if parsed, parseErr := url.Parse(proxy); parseErr == nil {
 			client.Transport = &http.Transport{Proxy: http.ProxyURL(parsed)}

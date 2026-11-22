@@ -68,7 +68,7 @@ func (s *Settings) GoalAssess(context GoalContext) (*GoalAssessment, error) {
 	payload.Set("model", config.MustGet("model"))
 	payload.Set("state", context.state())
 	payload.Set("questions", goalQuestions())
-	value, err := s.post(config, key, payload)
+	value, err := s.post(config, key, payload, assessTimeout(0))
 	if err != nil {
 		return nil, err
 	}
