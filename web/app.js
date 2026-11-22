@@ -14,6 +14,43 @@ function syncDocumentTitle(){
 }
 const submittedRequestIds=new Set();
 const sessionActivity=new SessionActivity();
+// 本设备系统通知：浏览器走 Notification API，安卓 App 走 MobileBridgeNative。
+// 页面或 App 进程存活期间才轮询提醒；关闭网页后的通知仍由 Bark/ntfy 通道负责。
+function renderLocalNotify(){
+  const status=window.localNotify?.state()||{supported:false,enabled:false,message:''};
+  $('local-notify').checked=status.enabled;
+  $('local-notify').disabled=!status.supported;
+  $('local-notify-note').textContent=status.message;
+}
+window.localNotify=new LocalNotify({t,onChange:renderLocalNotify});
+$('local-notify').onchange=async()=>{
+  const box=$('local-notify');
+  box.disabled=true;
+  const wanted=box.checked;
+  await window.localNotify.setEnabled(wanted);
+  box.disabled=!window.localNotify.state().supported;
+  renderLocalNotify();
+};
+// 点击安卓通知后由原生带回会话标识；浏览器点击走 local-notify 自己的 hash 跳转。
+// 未登录时不能消费原生暂存，否则冷启动派发会抢在登录前丢掉目标会话。
+function consumeNativeChat(fallback=null){
+  if($('app').hidden)return null;
+  try{
+    const native=window.MobileBridgeNative;
+    if(!native?.consumePendingChat)return fallback;
+    return JSON.parse(native.consumePendingChat()||'null')||fallback;
+  }catch{return fallback;}
+}
+window.addEventListener('mobilebridge-open-chat',event=>{
+  const pending=consumeNativeChat(event.detail||null);
+  if(pending?.id)openChat(pending.id,pending.host||'local').catch(error=>toast(error.message));
+});
+window.addEventListener('mobilebridge-notification-permission',()=>{
+  // 原生授权返回后同步权限标记，local-notify 的等待回调也会处理同一事件。
+  try{const native=window.MobileBridgeNative;if(native?.notifications)window.localNotify.permission=native.notificationPermission();}catch{}
+  renderLocalNotify();
+});
+renderLocalNotify();
 const recentInteractions=new Map();
 function bumpRecency(id,host,at=Date.now()){
   const key=chatKey(id,host);recentInteractions.set(key,Math.max(at,recentInteractions.get(key)||0));
@@ -99,7 +136,8 @@ function renderActivity(){for(const button of document.querySelectorAll('.sessio
   if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-hidden','true');const label=el('span','session-activity-label',t(indicator.label));button.querySelector('strong').prepend(label,dot);}
 }}
 async function refreshActivity(){
-  if(activityBusy||$('app').hidden||document.hidden)return;activityBusy=true;
+  // 后台标签页默认省流；本设备系统通知开启时仍需轮询才能发现待确认与完成。
+  if(activityBusy||$('app').hidden||(document.hidden&&!window.localNotify?.enabled))return;activityBusy=true;
   const hosts={};for(const row of listRows)(hosts[row.host]??=[]).push(row.id);
   try{const result=await api('/api/activity',{hosts,visible:visibleChat()});
     if(!$('app').hidden){
@@ -111,6 +149,10 @@ async function refreshActivity(){
         else if(result.listRevision!==listRevision){listRevision=result.listRevision;loadList(true).catch(e=>toast(e.message));}
       }
       sessionActivity.update(result.sessions,visibleChat());for(const row of result.sessions)if(row.recency)bumpRecency(row.id,row.host,row.recency);renderActivity();
+      for(const event of sessionActivity.localNotifications(result.sessions,visibleChat(),document.hidden)){
+        const chat=listRows.find(row=>row.id===event.id&&row.host===event.host);
+        window.localNotify?.notify({key:event.key,title:event.kind==='requests'?t('需要你的确认'):event.kind==='completed'?t('运行完毕'):t('运行已结束'),body:chat?.title||t('Mobile / Bridge'),host:event.host,id:event.id});
+      }
     }
   }catch{}finally{activityBusy=false;}
 }
@@ -157,6 +199,9 @@ async function enter(){
   else if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId,true);
   else if(teamRoute){const team=teamChat?.teamById(teamRoute.teamId);if(team)openTeamChat(team);else toast('团队不存在或已删除');}
   else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}
+  // 冷启动点击安卓系统通知：原生把目标会话暂存到页面登录之后再交付。
+  const pending=consumeNativeChat();
+  if(pending?.id)await openChat(pending.id,pending.host||'local');
   await list;
 }
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=loginErrorText(error);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
@@ -1940,6 +1985,7 @@ $('phone-language').onchange=()=>{
   if(state){approvalStamp='';renderState(state);[...$('approvals').querySelectorAll('input,textarea,select')].forEach((node,i)=>{if(replies[i]){node.value=replies[i].value;node.checked=replies[i].checked;if(node.tagName==='SELECT')node.dispatchEvent(new Event('change'));}});}
   else syncDocumentTitle();
   renderNotificationState();
+  renderLocalNotify();
   if(chatTimeline)chatTimeline.relabel();messageActions.relabel();
   window.BridgePresentation?.relabel();attachments.render();renderActivity();
   renderSkillPills();if(catalogData)renderSkills();updateSkillSuggestions();

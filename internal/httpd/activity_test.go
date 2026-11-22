@@ -12,6 +12,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/auth"
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 )
 
 func TestActivityAndJevRoutesUseAuthenticatedGoState(t *testing.T) {
@@ -68,6 +69,13 @@ func TestACPActivityIncludesTurnAndPendingRequests(t *testing.T) {
 	csrf, _ := session.MustGet("csrf").(string)
 	server := New(authenticator, fsys{}, 8790, "instance")
 	server.ACPAgents = map[string]*acpruntime.Manager{"kimi": manager}
+	server.NotificationDir = t.TempDir()
+	override := jsoncompat.NewObject()
+	override.Set("requests", "off")
+	override.Set("completion", "on")
+	if _, err := notifications.NewPolicyManager(server.NotificationDir).Chat("local", "km-feature", override); err != nil {
+		t.Fatal(err)
+	}
 	request := func(target, body string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8790"+target, strings.NewReader(body))
@@ -94,7 +102,8 @@ func TestACPActivityIncludesTurnAndPendingRequests(t *testing.T) {
 	live.View.Requests = append(live.View.Requests, jsoncompat.NewObject())
 	response := request("/api/activity", `{"hosts":{"local":["km-feature"]}}`)
 	body := response.Body.String()
-	for _, needle := range []string{`"turnId":`, `"turnStatus": "completed"`, `"pendingRequests": 1`, `"pending": true`, `"recency": ` + strconv.FormatInt(live.LastActivity(), 10)} {
+	for _, needle := range []string{`"turnId":`, `"turnStatus": "completed"`, `"pendingRequests": 1`, `"pending": true`, `"recency": ` + strconv.FormatInt(live.LastActivity(), 10),
+		`"notify": {`, `"requests": false`, `"completion": true`} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("activity missing %s: %s", needle, body)
 		}

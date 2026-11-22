@@ -104,15 +104,41 @@ func (m *PolicyManager) Chat(host, id string, value *jsoncompat.Object) (*jsonco
 			return nil, err
 		}
 	}
-	defaults := map[string]bool{}
-	defaults["requests"], _ = policies.MustGet("requests").(bool)
-	defaults["completion"], _ = policies.MustGet("completion").(bool)
+	requests, completion := effective(policies, choices)
 	result := jsoncompat.NewObject()
 	result.Set("available", len(Channels(ReadSettings(m.DataDir)).Keys()) > 0)
-	result.Set("watching", choices.MustGet("requests") == "on" || choices.MustGet("completion") == "on" || (choices.MustGet("requests") == "inherit" && defaults["requests"]) || (choices.MustGet("completion") == "inherit" && defaults["completion"]))
-	result.Set("notifyOnRequest", choices.MustGet("requests") == "on" || (choices.MustGet("requests") == "inherit" && defaults["requests"]))
-	result.Set("notifyOnCompletion", choices.MustGet("completion") == "on" || (choices.MustGet("completion") == "inherit" && defaults["completion"]))
+	result.Set("watching", requests || completion)
+	result.Set("notifyOnRequest", requests)
+	result.Set("notifyOnCompletion", completion)
 	result.Set("requests", choices.MustGet("requests"))
 	result.Set("completion", choices.MustGet("completion"))
 	return result, nil
+}
+
+// Effective resolves one chat's request/completion switches from a Snapshot:
+// a per-chat on/off overrides the global default, inherit (or no row) follows it.
+func Effective(policies *jsoncompat.Object, host, id string) (requests, completion bool) {
+	var choices *jsoncompat.Object
+	if chats, _ := policies.MustGet("chats").(*jsoncompat.Object); chats != nil {
+		choices, _ = chats.MustGet(host + "|" + id).(*jsoncompat.Object)
+	}
+	return effective(policies, choices)
+}
+
+func effective(policies, choices *jsoncompat.Object) (requests, completion bool) {
+	resolve := func(key string) bool {
+		var choice any
+		if choices != nil {
+			choice = choices.MustGet(key)
+		}
+		switch choice {
+		case "on":
+			return true
+		case "off":
+			return false
+		}
+		flag, _ := policies.MustGet(key).(bool)
+		return flag
+	}
+	return resolve("requests"), resolve("completion")
 }

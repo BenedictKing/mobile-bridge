@@ -57,6 +57,10 @@ public final class MainActivity extends Activity {
     private static final int FILE_CHOOSER = 41;
     private static final int LOCAL_NETWORK_PERMISSION = 42;
     private static final int DOWNLOAD_PERMISSION = 43;
+    private static final int NOTIFICATION_PERMISSION = 44;
+    private static final String NOTIFICATION_CHANNEL = "chat";
+    private static final String EXTRA_CHAT_HOST = "chat-host";
+    private static final String EXTRA_CHAT_ID = "chat-id";
     // 与 web/presentation.css 的 --page / --text / --muted / --error / --accent 保持一致。
     private static final int ACCENT = 0xff4664ed;
     private static final int[] LIGHT = {0xffffffff, 0xff20242c, 0xff626975, 0xffb43838, 0xffe3e6ec};
@@ -90,6 +94,10 @@ public final class MainActivity extends Activity {
     private String selectedGatewayId = "";
     private String activeGatewayId = "";
     private boolean syncingGatewaySelector;
+    // 点击系统通知带来的目标会话。冷启动时页面尚未登录，先留在原生侧，由网页
+    // enter() 通过 consumePendingChat() 取走；页面已加载时直接派事件。
+    private String pendingChatHost = "";
+    private String pendingChatId = "";
     private int connectionGeneration;
     private boolean dark;
     // 网页在 JS 线程读取当前线路，主线程写入；整体替换一个 JSON 串，避免读到半更新的 mode/host。
@@ -148,6 +156,14 @@ public final class MainActivity extends Activity {
         GatewayProfile active = findGateway(activeGatewayId);
         if (active == null || active.origin.isEmpty()) showSettings(null);
         else connect();
+        handleChatIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleChatIntent(intent);
     }
 
     private LinearLayout buildSettingsPanel() {
@@ -517,6 +533,134 @@ public final class MainActivity extends Activity {
                 applyTheme();
             });
         }
+
+        // 能力探测：旧版本 APK 没有这些方法，网页会把本设备通知标为不支持。
+        @JavascriptInterface
+        public String notifications() {
+            return "supported";
+        }
+
+        @JavascriptInterface
+        public String notificationPermission() {
+            return MainActivity.this.notificationPermission();
+        }
+
+        @JavascriptInterface
+        public void setNotificationsEnabled(boolean value) {
+            main.post(() -> {
+                if (!value) {
+                    notificationManager().cancelAll();
+                    return;
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_PERMISSION);
+                    return;
+                }
+                dispatchNotificationPermission();
+            });
+        }
+
+        @JavascriptInterface
+        public void notify(String payload) {
+            main.post(() -> showChatNotification(payload));
+        }
+
+        @JavascriptInterface
+        public void openChat(String host, String id) {
+            main.post(() -> {
+                if (webView != null) webView.bringToFront();
+            });
+        }
+
+        @JavascriptInterface
+        public String consumePendingChat() {
+            try {
+                if (pendingChatId.isEmpty()) return "";
+                JSONObject chat = new JSONObject().put("host", pendingChatHost).put("id", pendingChatId);
+                pendingChatHost = "";
+                pendingChatId = "";
+                return chat.toString();
+            } catch (Exception impossible) {
+                return "";
+            }
+        }
+    }
+
+    private android.app.NotificationManager notificationManager() {
+        return (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+    }
+
+    private String notificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            // 未申请过与已拒绝都按 default 交给网页提示，申请结果回调后再细分。
+            return shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS) ? "denied" : "default";
+        }
+        return notificationManager().areNotificationsEnabled() ? "granted" : "denied";
+    }
+
+    private void dispatchNotificationPermission() {
+        String permission = notificationPermission();
+        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('mobilebridge-notification-permission',{detail:{permission:'"
+            + permission + "'}}))", null);
+    }
+
+    private void showChatNotification(String payload) {
+        try {
+            if (!"granted".equals(notificationPermission())) return;
+            JSONObject data = new JSONObject(payload);
+            String host = data.optString("host", "local");
+            String id = data.optString("id");
+            if (id.isEmpty()) return;
+            String key = data.optString("key", host + "|" + id);
+            String title = data.optString("title", getString(android.R.string.dialog_alert_title));
+            String body = data.optString("body");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                notificationManager().createNotificationChannel(new android.app.NotificationChannel(
+                    NOTIFICATION_CHANNEL, "聊天提醒", android.app.NotificationManager.IMPORTANCE_HIGH));
+            }
+            Intent open = new Intent(this, MainActivity.class)
+                .putExtra(EXTRA_CHAT_HOST, host)
+                .putExtra(EXTRA_CHAT_ID, id);
+            android.app.PendingIntent tap = android.app.PendingIntent.getActivity(this, key.hashCode(), open,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+            android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new android.app.Notification.Builder(this, NOTIFICATION_CHANNEL)
+                : new android.app.Notification.Builder(this);
+            builder.setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(new android.app.Notification.BigTextStyle().bigText(body))
+                .setAutoCancel(true)
+                .setContentIntent(tap);
+            // 同一会话同一事件重复投递时替换旧通知，避免通知栏堆积。
+            notificationManager().notify(key.hashCode(), builder.build());
+        } catch (Exception ignored) {
+            // 通知失败不能影响聊天主流程。
+        }
+    }
+
+    private void handleChatIntent(Intent intent) {
+        if (intent == null) return;
+        String id = intent.getStringExtra(EXTRA_CHAT_ID);
+        if (id == null || id.isEmpty()) return;
+        pendingChatHost = intent.getStringExtra(EXTRA_CHAT_HOST);
+        if (pendingChatHost == null || pendingChatHost.isEmpty()) pendingChatHost = "local";
+        pendingChatId = id;
+        intent.removeExtra(EXTRA_CHAT_ID);
+        // 页面已加载时直接打开；冷启动则等网页 enter() 拉取 consumePendingChat()。
+        if (publicLoaded) dispatchPendingChat();
+    }
+
+    private void dispatchPendingChat() {
+        if (pendingChatId.isEmpty() || webView == null) return;
+        try {
+            JSONObject chat = new JSONObject().put("host", pendingChatHost).put("id", pendingChatId);
+            // 只派发，不在这里消费；网页确认已登录后才通过 consumePendingChat() 取走。
+            webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('mobilebridge-open-chat',{detail:"
+                + chat + "}))", null);
+        } catch (Exception ignored) {}
     }
 
     private void applyTheme() {
@@ -655,6 +799,8 @@ public final class MainActivity extends Activity {
                 pendingRecovery = null;
                 if (recovery != null) recovery.close();
                 recovery = null;
+                // defer 脚本在 onPageFinished 前后执行，稍后再派发通知点击的会话。
+                main.postDelayed(MainActivity.this::dispatchPendingChat, 500);
             }
 
             @Override
@@ -825,6 +971,10 @@ public final class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == NOTIFICATION_PERMISSION) {
+            dispatchNotificationPermission();
+            return;
+        }
         if (requestCode != DOWNLOAD_PERMISSION) return;
         Runnable request = pendingDownload;
         pendingDownload = null;

@@ -439,6 +439,7 @@ var staticRoutes = map[string]staticRoute{
 	"/modes.js":                   {"modes.js", "text/javascript; charset=utf-8"},
 	"/attachments.js":             {"attachments.js", "text/javascript; charset=utf-8"},
 	"/activity.js":                {"activity.js", "text/javascript; charset=utf-8"},
+	"/local-notify.js":            {"local-notify.js", "text/javascript; charset=utf-8"},
 	"/fast-mode.js":               {"fast-mode.js", "text/javascript; charset=utf-8"},
 	"/accounts.js":                {"accounts.js", "text/javascript; charset=utf-8"},
 	"/pool.js":                    {"pool.js", "text/javascript; charset=utf-8"},
@@ -831,6 +832,19 @@ func (h *handler) handleMethod(write bool) {
 		if err := h.server.observeActivity(rows, visible); err != nil {
 			h.fail(http.StatusInternalServerError, errorBody(err.Error()))
 			return
+		}
+		// 网页据此决定本设备系统通知是否弹出，与 Bark/ntfy 共用同一份聊天策略。
+		policies := notifications.NewPolicyManager(h.server.NotificationDir).Snapshot()
+		for _, item := range rows.Items {
+			if row, _ := item.(*jsoncompat.Object); row != nil {
+				host, _ := row.MustGet("host").(string)
+				id, _ := row.MustGet("id").(string)
+				requests, completion := notifications.Effective(policies, host, id)
+				notify := jsoncompat.NewObject()
+				notify.Set("requests", requests)
+				notify.Set("completion", completion)
+				row.Set("notify", notify)
+			}
 		}
 		result := jsoncompat.NewObject()
 		result.Set("sessions", rows)
