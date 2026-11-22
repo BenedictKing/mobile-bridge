@@ -2521,6 +2521,12 @@ func (s *Session) followNative(stop <-chan struct{}) {
 	}
 }
 
+// RefreshNative reconciles a view on demand. HTTP reads use this as a
+// recovery path when the background poller missed a native notification.
+func (s *Session) RefreshNative() {
+	s.syncNative()
+}
+
 // syncNative folds one native snapshot into the view. The ACP view stays
 // authoritative while a prompt this gateway sent is running; the store is
 // only consulted for turns the desktop drives.

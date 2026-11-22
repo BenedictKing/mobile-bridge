@@ -332,6 +332,44 @@ func TestConcurrentNativeReadsCannotRollBackNewerProgress(t *testing.T) {
 	}
 }
 
+func TestKimiPromptOnlyNotificationChainStaysVisible(t *testing.T) {
+	home, wire := kimiNativeWire(t, `{"type":"turn.prompt","input":"原始问题","origin":{"kind":"user"}}
+{"type":"turn.ended","reason":"completed"}
+{"type":"turn.prompt","input":"<notification>第一个后台任务</notification>","origin":{"kind":"task"}}
+`)
+	session := nativeSession()
+	session.kind = "kimi"
+	session.native = kimi.TranscriptReader(home)
+	session.syncNative()
+	if session.View.Status != "active" {
+		t.Fatal("initial native task is not active")
+	}
+	session.View.BeginTurn("继续")
+	session.View.EndTurn("end_turn")
+	appendKimiNativeWire(t, wire, `{"type":"turn.ended","reason":"completed"}
+{"type":"turn.prompt","input":"继续","origin":{"kind":"user"}}
+{"type":"turn.ended","reason":"completed","stopReason":"prompt_only"}
+{"type":"turn.prompt","input":"<notification>第二个后台任务</notification>","origin":{"kind":"task"}}
+{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"正在处理第二个任务"}}}
+`)
+	session.syncNative()
+	if session.View.Status != "active" || !strings.Contains(string(jsoncompat.EncodeCompact(session.View.TipTurn())), "正在处理第二个任务") {
+		t.Fatalf("first prompt_only chain did not follow native task: status=%s tip=%s", session.View.Status, jsoncompat.EncodeCompact(session.View.TipTurn()))
+	}
+	session.View.BeginTurn("继续")
+	session.View.EndTurn("end_turn")
+	appendKimiNativeWire(t, wire, `{"type":"turn.ended","reason":"completed"}
+{"type":"turn.prompt","input":"继续","origin":{"kind":"user"}}
+{"type":"turn.ended","reason":"completed","stopReason":"prompt_only"}
+{"type":"turn.prompt","input":"<notification>第三个后台任务</notification>","origin":{"kind":"task"}}
+{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"正在处理第三个任务"}}}
+`)
+	session.syncNative()
+	if session.View.Status != "active" || !strings.Contains(string(jsoncompat.EncodeCompact(session.View.TipTurn())), "正在处理第三个任务") {
+		t.Fatalf("second prompt_only chain did not follow native task: status=%s tip=%s", session.View.Status, jsoncompat.EncodeCompact(session.View.TipTurn()))
+	}
+}
+
 func TestSharedKimiReaderAllowsFreshHistoryAfterLiveClose(t *testing.T) {
 	home, _ := kimiNativeWire(t, `{"type":"turn.prompt","input":"原始问题","origin":{"kind":"user"}}
 {"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"答复"}}}

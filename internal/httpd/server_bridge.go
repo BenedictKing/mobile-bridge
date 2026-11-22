@@ -181,6 +181,7 @@ func acpSessionMessage(err error) string {
 // child agents decorate the view when the agent has a subagent store; a
 // roster change bumps the session sequence so projections rebuild.
 func (s *Server) acpViewState(kind string, manager *acpruntime.Manager, session *acpruntime.Session) *jsoncompat.Object {
+	session.RefreshNative()
 	var activity subagents.Activity
 	if manager.Subagents != nil {
 		activity = manager.Subagents.Activity(session.ID)
