@@ -80,6 +80,55 @@ func TestAutoContinuePromptEnforcesBudget(t *testing.T) {
 	waitSettled(t, session)
 }
 
+func TestAutoContinuePromptIfCurrentRejectsStaleTurn(t *testing.T) {
+	python, path := fakeAgentScript(t)
+	manager := NewCommand([]string{python, "-u", path})
+	defer manager.Close()
+	session, err := manager.Open("sess-stale-continue", "/work", 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Prompt("开始", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	waitSettled(t, session)
+	staleTurn := stringField(session.View.TipTurn(), "id")
+	session.mu.Lock()
+	session.View.Status = "active"
+	session.mu.Unlock()
+	if err := session.AutoContinuePromptIfCurrent(staleTurn, "继续", time.Hour); err == nil {
+		t.Fatal("native activity did not reject automatic continuation")
+	}
+	session.mu.Lock()
+	runs := session.autoContinueRuns
+	session.View.Status = "idle"
+	session.mu.Unlock()
+	if runs != 0 {
+		t.Fatal("rejected continuation consumed the automatic budget")
+	}
+	session.mu.Lock()
+	session.pending["request-1"] = jsoncompat.NewObject()
+	session.mu.Unlock()
+	if err := session.AutoContinuePromptIfCurrent(staleTurn, "继续", time.Hour); err == nil {
+		t.Fatal("pending request did not reject automatic continuation")
+	}
+	session.mu.Lock()
+	delete(session.pending, "request-1")
+	session.mu.Unlock()
+	if err := session.Prompt("新任务", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	waitSettled(t, session)
+	if err := session.AutoContinuePromptIfCurrent(staleTurn, "继续", time.Hour); err == nil {
+		t.Fatal("stale assessment continued a newer turn")
+	}
+	currentTurn := stringField(session.View.TipTurn(), "id")
+	if err := session.AutoContinuePromptIfCurrent(currentTurn, "继续", time.Hour); err != nil {
+		t.Fatalf("current turn rejected automatic continuation: %v", err)
+	}
+	waitSettled(t, session)
+}
+
 func TestAutoContinueHookFiresOnSettledTurns(t *testing.T) {
 	python, path := fakeAgentScript(t)
 	manager := NewCommand([]string{python, "-u", path})

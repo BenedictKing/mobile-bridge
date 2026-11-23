@@ -84,11 +84,16 @@ type Session struct {
 	autoApprove ApprovalHook
 	// approvalPause overrides approvalRetryPause when positive (tests).
 	approvalPause time.Duration
-	// autoContinue runs asynchronously once a live turn settles; the gateway
-	// installs it to resume unfinished work. autoContinueRuns is the
-	// consecutive-resume budget any human action re-arms.
-	autoContinue     func(*Session)
-	autoContinueRuns int
+	// autoContinue runs asynchronously once a live turn or gateway-owned Kimi
+	// notification chain settles. autoContinueRuns is the consecutive-resume
+	// budget any human action re-arms.
+	autoContinue           func(*Session)
+	autoContinueRuns       int
+	autoContinueTimer      *time.Timer
+	autoContinueGeneration uint64
+	// autoContinueDelay overrides the settlement debounce in tests.
+	autoContinueDelay time.Duration
+	kimiAutoChain     bool
 	// switchResumeRuns is the account-pool switch-resume budget: a turn that
 	// died on an exhausted quota may be resumed after a credential swap at
 	// most MaxSwitchResume times in a row, re-armed by any human action.
@@ -101,8 +106,8 @@ type Session struct {
 	nativeInterval time.Duration
 	retryStatus    func(sessionID string) (*jsoncompat.Object, error)
 	retrying       *jsoncompat.Object
-	// nativeSettle runs when a desktop-driven turn stops running, so queued
-	// phone messages dispatch exactly like after a gateway-sent turn.
+	// nativeSettle runs when a native turn stops running, so queued phone
+	// messages dispatch exactly like after a gateway-sent turn.
 	nativeSettle func(*Session)
 	// nativeLagSince debounces a settled ACP tip against a store that still
 	// reports the same prompt running: the store may merely lag the final
@@ -236,9 +241,9 @@ type Manager struct {
 	NativeInterval time.Duration
 	// NativeClose releases the native store when the manager shuts down.
 	NativeClose func() error
-	// NativeSettle runs when a desktop-driven native turn settles. The
-	// gateway chains the queue dispatcher here; auto-continue deliberately
-	// stays off — a turn the user drives on the desktop is not ours to resume.
+	// NativeSettle runs when a native turn settles and dispatches queued work.
+	// Automatic continuation is scheduled separately for gateway-owned Kimi
+	// notification chains; desktop-driven turns are not ours to resume.
 	NativeSettle func(*Session)
 	// NativeMeta fills list-row facts the agent wrapper omits: DSH sessions
 	// the desktop app owns carry no title in dsh-acp's session/list and a
@@ -1091,6 +1096,10 @@ func (s *Session) AutoContinuePrompt(text string, idleTimeout time.Duration) err
 	return s.prompt(text, nil, idleTimeout, budgetAutoContinue)
 }
 
+func (s *Session) AutoContinuePromptIfCurrent(turnID, text string, idleTimeout time.Duration) error {
+	return s.promptTurn(turnID, text, nil, idleTimeout, budgetAutoContinue)
+}
+
 // GoalPrompt draws its step budget from the persistent gateway Goal store.
 func (s *Session) GoalPrompt(text string, idleTimeout time.Duration) error {
 	return s.prompt(text, nil, idleTimeout, budgetGoal)
@@ -1102,6 +1111,10 @@ func (s *Session) GoalPrompt(text string, idleTimeout time.Duration) error {
 // budget stays intact for genuine stalls.
 func (s *Session) ResumeAfterSwitchPrompt(text string, idleTimeout time.Duration) error {
 	return s.prompt(text, nil, idleTimeout, budgetSwitchResume)
+}
+
+func (s *Session) ResumeAfterSwitchPromptIfCurrent(turnID, text string, idleTimeout time.Duration) error {
+	return s.promptTurn(turnID, text, nil, idleTimeout, budgetSwitchResume)
 }
 
 // WarmupPrompt is the throwaway first turn sent to a freshly created session
@@ -1132,6 +1145,10 @@ const (
 )
 
 func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
+	return s.promptTurn("", text, extra, idleTimeout, budget, files...)
+}
+
+func (s *Session) promptTurn(expectedTurn, text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
 	attachments := make([]*jsoncompat.Object, 0, len(files))
 	for _, file := range files {
 		attachment := jsoncompat.NewObject()
@@ -1156,6 +1173,14 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 		s.mu.Unlock()
 		return errors.New("当前已有任务正在运行")
 	}
+	if expectedTurn != "" {
+		tip := s.View.TipTurn()
+		if s.View.Status == "active" || len(s.pending) > 0 || tip == nil || stringField(tip, "id") != expectedTurn {
+			s.mu.Unlock()
+			return errors.New("任务已变化，取消自动继续")
+		}
+	}
+	s.cancelAutoContinueLocked()
 	warmup := budget == budgetWarmup
 	switch budget {
 	case budgetAutoContinue:
@@ -1201,6 +1226,11 @@ func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout ti
 	params.Set("sessionId", s.ID)
 	params.Set("prompt", &jsoncompat.Array{Items: items})
 	ident, channel, submitErr := s.Process.Submit("session/prompt", params)
+	if submitErr == nil && s.kind == "kimi" && !warmup {
+		s.mu.Lock()
+		s.kimiAutoChain = true
+		s.mu.Unlock()
+	}
 	if submitErr != nil {
 		s.mu.Lock()
 		s.promptRunning = false
@@ -1241,7 +1271,7 @@ func (s *Session) awaitPrompt(ident string, channel <-chan acp.Delivery, idleTim
 			s.syncNative()
 		}
 		if !warmup {
-			s.fireAutoContinue()
+			s.scheduleAutoContinue()
 		}
 	}()
 	defer close(promptDone)
@@ -1336,6 +1366,59 @@ func refusalFailure(result *jsoncompat.Object) string {
 func (s *Session) fireAutoContinue() {
 	if s.autoContinue != nil {
 		go s.autoContinue(s)
+	}
+}
+
+func (s *Session) cancelAutoContinueLocked() {
+	s.autoContinueGeneration++
+	if s.autoContinueTimer != nil {
+		s.autoContinueTimer.Stop()
+		s.autoContinueTimer = nil
+	}
+}
+
+func (s *Session) scheduleAutoContinue() {
+	if s.kind != "kimi" || s.native == nil {
+		s.fireAutoContinue()
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scheduleAutoContinueLocked()
+}
+
+func (s *Session) scheduleAutoContinueLocked() {
+	s.cancelAutoContinueLocked()
+	if !s.kimiAutoChain || s.closed || s.readOnly || s.promptRunning || s.View.Status == "active" || s.autoContinue == nil {
+		return
+	}
+	delay := s.autoContinueDelay
+	if delay <= 0 {
+		delay = 2 * s.nativeInterval
+	}
+	if delay <= 0 {
+		delay = 3 * time.Second
+	}
+	generation := s.autoContinueGeneration
+	s.autoContinueTimer = time.AfterFunc(delay, func() { s.fireScheduledAutoContinue(generation) })
+}
+
+func (s *Session) fireScheduledAutoContinue(generation uint64) {
+	s.syncNative()
+	s.mu.Lock()
+	if generation != s.autoContinueGeneration || s.autoContinueTimer == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.autoContinueTimer = nil
+	if !s.kimiAutoChain || s.closed || s.readOnly || s.promptRunning || s.View.Status == "active" {
+		s.mu.Unlock()
+		return
+	}
+	hook := s.autoContinue
+	s.mu.Unlock()
+	if hook != nil {
+		go hook(s)
 	}
 }
 
@@ -1453,6 +1536,7 @@ func (s *Session) NoteHumanAction() {
 	s.mu.Lock()
 	s.autoContinueRuns = 0
 	s.switchResumeRuns = 0
+	s.cancelAutoContinueLocked()
 	s.mu.Unlock()
 }
 
@@ -1681,6 +1765,7 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object, command
 		if err == nil && len(commandIDs) > 0 {
 			s.autoContinueRuns = 0
 			s.switchResumeRuns = 0
+			s.cancelAutoContinueLocked()
 		}
 		var acpErr *acp.Error
 		if errors.As(err, &acpErr) && acpErr.Kind == acp.KindUnavailable {
@@ -2449,8 +2534,8 @@ func (s *Session) RefreshNative() {
 }
 
 // syncNative folds one native snapshot into the view. The ACP view stays
-// authoritative while a prompt this gateway sent is running; the store is
-// only consulted for turns the desktop drives.
+// authoritative while a prompt this gateway sent is running; the store then
+// reconciles desktop turns and Kimi notification chains.
 func (s *Session) syncNative() {
 	// The poller and ACP settle path may both read. Apply them in read order.
 	s.nativeSyncMu.Lock()
@@ -2505,6 +2590,9 @@ func (s *Session) syncNative() {
 		s.signalViewLocked()
 	}
 	settled := (wasActive || taskAhead) && s.View.Status != "active"
+	if s.kimiAutoChain && (changed || settled) {
+		s.scheduleAutoContinueLocked()
+	}
 	hook := s.nativeSettle
 	s.mu.Unlock()
 	if settled && hook != nil {
@@ -2692,6 +2780,8 @@ func (s *Session) Close() {
 	}
 	s.closed = true
 	s.active = false
+	s.kimiAutoChain = false
+	s.cancelAutoContinueLocked()
 	if s.nativeStop != nil {
 		close(s.nativeStop)
 		s.nativeStop = nil

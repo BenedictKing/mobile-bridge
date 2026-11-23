@@ -256,7 +256,7 @@ func TestNativeLagGuardRechecksConsumedSnapshot(t *testing.T) {
 	}
 }
 
-func TestKimiPromptSettlementFoldsNotificationBeforeHook(t *testing.T) {
+func TestKimiPromptSettlementWaitsForNotificationChain(t *testing.T) {
 	home, wire := kimiNativeWire(t, `{"type":"turn.prompt","input":"原始问题","origin":{"kind":"user"}}
 {"type":"turn.ended","reason":"completed"}
 `)
@@ -272,19 +272,107 @@ func TestKimiPromptSettlementFoldsNotificationBeforeHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	session.mu.Lock()
+	session.autoContinueDelay = 20 * time.Millisecond
+	session.mu.Unlock()
 	appendKimiNativeWire(t, wire, `{"type":"turn.prompt","input":"<notification>任务已停止</notification>","origin":{"kind":"task"}}
 {"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"还在处理"}}}
 `)
 	if err := session.Prompt("继续", time.Second); err != nil {
 		t.Fatal(err)
 	}
+	waitSettled(t, session)
 	select {
 	case status := <-seen:
-		if status != "active" {
-			t.Fatalf("settle hook saw %s before the native notification was folded", status)
+		t.Fatalf("notification chain settled early with status %s", status)
+	case <-time.After(50 * time.Millisecond):
+	}
+	appendKimiNativeWire(t, wire, `{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"原生任务的最终结果"}}}
+{"type":"turn.ended","reason":"completed"}
+`)
+	session.syncNative()
+	select {
+	case status := <-seen:
+		if status != "idle" {
+			t.Fatalf("native chain settle hook saw status %s", status)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("ACP settlement hook did not run")
+		t.Fatal("native notification chain settlement did not run")
+	}
+}
+
+func TestKimiNativeNotificationCancelsPendingSettle(t *testing.T) {
+	home, wire := kimiNativeWire(t, `{"type":"turn.prompt","input":"原始问题","origin":{"kind":"user"}}
+{"type":"turn.ended","reason":"completed"}
+`)
+	python, path := fakeAgentScript(t)
+	manager := NewCommand([]string{python, "-u", path})
+	manager.Kind = "kimi"
+	manager.Native = kimi.TranscriptReader(home)
+	manager.NativeInterval = time.Hour
+	seen := make(chan struct{}, 1)
+	manager.AutoContinue = func(*Session) { seen <- struct{}{} }
+	defer manager.Close()
+	session, err := manager.Open("sess-1", "/w", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.mu.Lock()
+	session.autoContinueDelay = 40 * time.Millisecond
+	session.mu.Unlock()
+	if err := session.Prompt("继续", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	waitSettled(t, session)
+	deadline := time.Now().Add(time.Second)
+	for {
+		session.mu.Lock()
+		pending := session.autoContinueTimer != nil
+		session.mu.Unlock()
+		if pending {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ACP settlement was not scheduled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	appendKimiNativeWire(t, wire, `{"type":"turn.prompt","input":"<notification>迟到的后台任务</notification>","origin":{"kind":"task"}}
+{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"继续处理"}}}
+`)
+	session.syncNative()
+	select {
+	case <-seen:
+		t.Fatal("late native notification did not cancel the stale settlement")
+	case <-time.After(80 * time.Millisecond):
+	}
+	appendKimiNativeWire(t, wire, `{"type":"turn.ended","reason":"completed"}
+`)
+	session.syncNative()
+	select {
+	case <-seen:
+	case <-time.After(time.Second):
+		t.Fatal("final native notification did not settle the chain")
+	}
+}
+
+func TestKimiDesktopNativeSettleDoesNotAutoContinue(t *testing.T) {
+	session := nativeSession()
+	session.kind = "kimi"
+	session.readOnly = true
+	session.desktopOwned = true
+	seen := make(chan struct{}, 1)
+	session.autoContinue = func(*Session) { seen <- struct{}{} }
+	running := &acpview.NativeSnapshot{TurnOrigins: []string{"task"}, Turns: []*jsoncompat.Object{nativeTurn("t1", "inProgress", "后台通知")}}
+	session.native = func(string) (*acpview.NativeSnapshot, error) { return running, nil }
+	session.syncNative()
+	done := &acpview.NativeSnapshot{TurnOrigins: []string{"task"}, Turns: []*jsoncompat.Object{nativeTurn("t1", "completed", "后台通知")}}
+	session.native = func(string) (*acpview.NativeSnapshot, error) { return done, nil }
+	session.syncNative()
+	select {
+	case <-seen:
+		t.Fatal("desktop native turn triggered automatic continuation")
+	default:
 	}
 }
 

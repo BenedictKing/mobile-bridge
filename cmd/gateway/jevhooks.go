@@ -119,13 +119,16 @@ func jevContinueHookMode(settings *jev.Settings, agent string, afterSwitch bool)
 		if session.IdleFor() > watchedWithin {
 			return
 		}
-		continuePrompt := session.AutoContinuePrompt
+		turnID := jsoncompat.PyStr(context.MustGet("turnId"))
+		var err error
 		if afterSwitch {
-			continuePrompt = session.ResumeAfterSwitchPrompt
+			err = session.ResumeAfterSwitchPromptIfCurrent(turnID, "继续", time.Hour)
+		} else {
+			err = session.AutoContinuePromptIfCurrent(turnID, "继续", time.Hour)
 		}
-		if err := continuePrompt("继续", time.Hour); err != nil {
+		if err != nil {
 			log.Printf("Jev 自动继续发送失败: agent=%s session=%s turn=%s error=%s",
-				agent, session.ID, jsoncompat.PyStr(context.MustGet("turnId")), err.Error())
+				agent, session.ID, turnID, err.Error())
 			return
 		}
 		log.Printf("Jev 自动继续已发送: agent=%s session=%s turn=%s 原因=%s",
