@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const vm=require('node:vm');
 
-function loadOpenChat({historyRead=()=>Promise.resolve()}={}){
+function loadOpenChat({historyRead=()=>Promise.resolve(),sessionRows=[]}={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const invalidateStart=source.indexOf('function invalidatePendingChatOpen()');
   const invalidateEnd=source.indexOf('\nfunction closeDetailView',invalidateStart);
@@ -24,7 +24,7 @@ function loadOpenChat({historyRead=()=>Promise.resolve()}={}){
     notificationState:{available:false,watching:false,notifyOnCompletion:false},
     teamChat:{teamForSession:id=>id==='team-session'?{id:'team'}:null,teamById:id=>id==='team'?{id:'team'}:null,open:noop},
     BridgeLazy:{load:()=>Promise.resolve()},chatRunSource:()=>null,syncChatRunSource:noop,syncWorkspaceNavigation:noop,
-    teamQueueModeEnabled:()=>false,$:()=>node,document:{querySelectorAll:()=>[]},messageActions:{pending:false,dialog:node},
+    teamQueueModeEnabled:()=>false,$:()=>node,document:{querySelectorAll:()=>sessionRows},messageActions:{pending:false,dialog:node},
     saveDraft:noop,closeSkillSuggestions:noop,renderAPKDownload:noop,syncDocumentTitle:noop,
     workModes:{open:noop},attachments:{open:noop},renderPermissionState:noop,renderCompactState:noop,renderNotificationState:noop,
     sessionStorage:{getItem:()=>null},renderSkillPills:noop,submittedRequestIds:new Set(),selectionQuote:null,
@@ -35,8 +35,27 @@ function loadOpenChat({historyRead=()=>Promise.resolve()}={}){
   };
   vm.createContext(context);
   vm.runInContext(source.slice(invalidateStart,invalidateEnd)+'\n'+source.slice(start,end),context);
-  return {context,node,routes};
+  return {context,node,routes,sessionRows};
 }
+
+function sessionRow(dataset){
+  const classes=new Set();
+  return {dataset,classes,classList:{toggle(name,selected){if(selected)classes.add(name);else classes.delete(name);}}};
+}
+
+test('opening a team selects its project entry and leaving clears it',async()=>{
+  const teamEntry=sessionRow({teamId:'team'}),chatEntry=sessionRow({id:'regular-chat',host:'local'});
+  const {context}=loadOpenChat({sessionRows:[teamEntry,chatEntry]});
+  context.ensureTeamCanvas=()=>Promise.resolve();
+
+  await context.openChat('team-session','local','team');
+  assert.equal(teamEntry.classes.has('selected'),true);
+  assert.equal(chatEntry.classes.has('selected'),false);
+
+  await context.openChat('regular-chat','local');
+  assert.equal(teamEntry.classes.has('selected'),false);
+  assert.equal(chatEntry.classes.has('selected'),true);
+});
 
 test('a late team canvas load cannot override a newer chat selection',async()=>{
   const {context}=loadOpenChat();
