@@ -56,7 +56,7 @@ test('default team background stays distinct from the selected conversation',()=
   assert.match(css,/\.session\.selected,\.team-sidebar-item\.selected\{background:var\(--raised\)/);
   assert.match(css,/\.default-team,\.default-team\.selected\{background:var\(--soft\)\}/);
   assert.match(css,/:root\[data-theme=dark\] \.default-team,:root\[data-theme=dark\] \.default-team\.selected\{background:var\(--active\)\}/);
-  assert.match(css,/\.default-team\.selected\{border-color:color-mix\(in srgb,var\(--accent\) 24%,transparent\)\}/);
+  assert.match(css,/\.default-team\.selected\{border-color:color-mix\(in srgb,var\(--accent\) 50%,transparent\);box-shadow:var\(--shadow-2\),inset 3px 0 var\(--accent\)\}/);
 });
 
 test('project groups hide only the pinned team lead from conversation history',()=>{
