@@ -12,7 +12,7 @@ class FakeClassList{
 class FakeNode{
   constructor(tag='div'){
     this.tagName=tag.toUpperCase();this.children=[];this.dataset={};this.className='';this.classList=new FakeClassList(this);
-    this.attributes={};this.hidden=false;this.textContent='';this.scrollTop=0;this.scrollHeight=2000;this.clientHeight=600;
+    this.attributes={};this.style={};this.hidden=false;this.textContent='';this.scrollTop=0;this.scrollHeight=2000;this.clientHeight=600;
     this.rect={top:100,bottom:700};this.listeners=new Map();
   }
   append(...nodes){this.children.push(...nodes);}
@@ -37,6 +37,16 @@ function setup(options={}){
   return{timeline,ids};
 }
 
+function setupRecovery(){
+  const fixture=setup(),container=fixture.ids.messages;
+  container.insertBefore=(node,before)=>{
+    const prior=container.children.indexOf(node);if(prior>=0)container.children.splice(prior,1);
+    const index=container.children.indexOf(before);container.children.splice(index<0?container.children.length:index,0,node);
+    node.replaceWith=replacement=>{const index=container.children.indexOf(node);if(index>=0)container.children.splice(index,1,replacement);};
+  };
+  return fixture;
+}
+
 test('duplicate and stale delta frames cannot append text twice or regress a cursor',()=>{
   const{timeline}=setup();timeline.epoch='e';timeline.sequence=4;
   const row={key:'a',version:'v4',text:'once'};timeline.rows.set('a',{row,sequence:4});
@@ -54,6 +64,94 @@ test('one mismatched delta keeps all rows and the cursor unchanged until recover
   assert.equal(row.text,'before');assert.equal(timeline.sequence,1);
   recover({epoch:'e',sequence:2,rows:[],meta:{}});await done;
   assert.equal(timeline.sequence,2);timeline.dispose();
+});
+
+test('delta recovery reads again until it covers frames received while awaiting the first snapshot',async()=>{
+  const{timeline}=setupRecovery();timeline.epoch='e';timeline.sequence=1;
+  const reads=[],replies=[];timeline.read=(action,cursor)=>{reads.push({...cursor});return new Promise(resolve=>replies.push(resolve));};
+  const first=timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'a',prevVersion:'v1',version:'v2',append:'A'}]});
+  const second=timeline.applyDelta({epoch:'e',sequence:3,rows:[{key:'a',prevVersion:'v2',version:'v3',append:'B'}]});
+  assert.equal(first,second);
+  replies[0]({epoch:'e',sequence:2,meta:{},rows:[{key:'a',role:'assistant',order:1,text:'A',version:'v2'}]});await Promise.resolve();
+  assert.deepEqual(reads.map(cursor=>cursor.after),[1,2]);
+  replies[1]({epoch:'e',sequence:3,meta:{},rows:[{key:'a',role:'assistant',order:1,text:'AB',version:'v3'}]});await first;
+  assert.equal(timeline.sequence,3);assert.equal(timeline.rows.get('a').row.text,'AB');timeline.dispose();
+});
+
+test('a delta arriving after the recovered snapshot can apply before promise cleanup',async()=>{
+  const{timeline}=setupRecovery();timeline.epoch='e';timeline.sequence=1;
+  let reply;timeline.read=()=>new Promise(resolve=>{reply=resolve;});
+  const done=timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'a',prevVersion:'v1',version:'v2',append:'A'}]});
+  reply({epoch:'e',sequence:2,meta:{},rows:[{key:'a',role:'assistant',order:1,text:'A',version:'v2'}]});await Promise.resolve();
+  timeline.applyDelta({epoch:'e',sequence:3,rows:[{key:'a',prevVersion:'v2',version:'v3',append:'B'}]});await done;
+  assert.equal(timeline.sequence,3);assert.equal(timeline.rows.get('a').row.text,'AB');timeline.dispose();
+});
+
+for(const kind of ['delta','changes'])test('a valid '+kind+' frame cannot advance past a delta recovery gap',async()=>{
+  const{timeline}=setupRecovery();timeline.epoch='e';
+  timeline.apply({epoch:'e',sequence:1,meta:{},rows:[{key:'b',role:'assistant',order:0,text:'before',version:'v1'}]});
+  const reads=[],replies=[];timeline.read=(action,cursor)=>{reads.push(cursor.after);return new Promise(resolve=>replies.push(resolve));};
+  const done=timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'a',prevVersion:'v1',version:'v2',append:'A'}]});
+  if(kind==='delta')timeline.applyDelta({epoch:'e',sequence:3,rows:[{key:'b',prevVersion:'v1',version:'v2',append:'B'}]});
+  else timeline.apply({epoch:'e',sequence:3,meta:{},rows:[{key:'b',role:'assistant',order:0,text:'beforeB',version:'v2'}]});
+  assert.equal(timeline.sequence,1);assert.equal(timeline.rows.get('b').row.text,'before');
+  replies[0]({epoch:'e',sequence:2,meta:{},rows:[{key:'a',role:'assistant',order:1,text:'A',version:'v2'}]});await Promise.resolve();
+  replies[1]({epoch:'e',sequence:3,meta:{},rows:[{key:'b',role:'assistant',order:0,text:'beforeB',version:'v2'}]});await done;
+  assert.deepEqual(reads,[1,2]);assert.equal(timeline.rows.get('a').row.text,'A');assert.equal(timeline.rows.get('b').row.text,'beforeB');assert.equal(timeline.sequence,3);timeline.dispose();
+});
+
+test('history from a newer snapshot merges rows without advancing over a live recovery gap',async()=>{
+  const{timeline}=setupRecovery();timeline.epoch='e';timeline.sequence=1;
+  const reads=[],replies=[];timeline.read=(action,cursor)=>{reads.push(cursor.after);return new Promise(resolve=>replies.push(resolve));};
+  const done=timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'a',prevVersion:'v1',version:'v2',append:'A'}]});
+  timeline.applyDelta({epoch:'e',sequence:3,rows:[{key:'a',prevVersion:'v2',version:'v3',append:'B'}]});
+  timeline.apply({epoch:'e',sequence:4,meta:{},rows:[{key:'historical',role:'assistant',order:0,text:'newer historical snapshot',version:'v4'}]},false,true);
+  assert.equal(timeline.sequence,1);assert.equal(timeline.rows.get('historical').sequence,4);
+  replies[0]({epoch:'e',sequence:2,meta:{},rows:[{key:'a',role:'assistant',order:1,text:'A',version:'v2'}]});await Promise.resolve();
+  replies[1]({epoch:'e',sequence:3,meta:{},rows:[{key:'a',role:'assistant',order:1,text:'AB',version:'v3'}]});await done;
+  assert.deepEqual(reads,[1,2]);assert.equal(timeline.sequence,3);assert.equal(timeline.rows.get('a').row.text,'AB');assert.equal(timeline.rows.get('historical').row.text,'newer historical snapshot');timeline.dispose();
+});
+
+test('reset starts a new recovery without an old response or cleanup replacing it',async()=>{
+  const{timeline}=setupRecovery();timeline.epoch='e';timeline.sequence=1;
+  const replies=[];timeline.read=()=>new Promise(resolve=>replies.push(resolve));
+  const old=timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'old',prevVersion:'v1'}]});
+  timeline.apply({epoch:'new',sequence:1,meta:{},rows:[]},true);
+  const current=timeline.applyDelta({epoch:'new',sequence:2,rows:[{key:'new',prevVersion:'v1'}]});
+  replies[0]({epoch:'e',sequence:2,meta:{},rows:[{key:'old',role:'assistant',order:0,text:'old',version:'v2'}]});await old;
+  assert.equal(timeline.deltaRecovery,current);assert.equal(timeline.rows.has('old'),false);
+  replies[1]({epoch:'new',sequence:2,meta:{},rows:[{key:'new',role:'assistant',order:0,text:'new',version:'v2'}]});await current;
+  assert.equal(timeline.rows.get('new').row.text,'new');assert.equal(timeline.epoch,'new');timeline.dispose();
+});
+
+test('disposing during delta recovery discards the response without another read',async()=>{
+  const{timeline}=setup();timeline.epoch='e';timeline.sequence=1;
+  let reply,reads=0;timeline.read=()=>{reads++;return new Promise(resolve=>{reply=resolve;});};
+  const done=timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'a',prevVersion:'v1'}]});
+  timeline.applyDelta({epoch:'e',sequence:3,rows:[{key:'a',prevVersion:'v2'}]});timeline.dispose();
+  reply({epoch:'e',sequence:2,meta:{},rows:[]});await done;
+  assert.equal(reads,1);assert.equal(timeline.sequence,1);assert.equal(timeline.deltaRecovery,null);
+});
+
+test('a recovery snapshot without progress reconnects instead of reading indefinitely',async()=>{
+  const statuses=[],{timeline}=setupRecovery();timeline.status=text=>statuses.push(text);timeline.epoch='e';timeline.sequence=1;
+  let reads=0,closed=0;timeline.subscription=()=>{closed++;};timeline.read=async()=>{reads++;return{epoch:'e',sequence:1,meta:{},rows:[]};};
+  await timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'a',prevVersion:'v1'}]});
+  assert.equal(reads,1);assert.equal(timeline.sequence,1);assert.equal(closed,1);assert.deepEqual(statuses,['重新连接中']);timeline.dispose();
+});
+
+test('transport receives the recovery promise and waits until every deferred frame is applied',async()=>{
+  const{timeline}=setupRecovery();timeline.epoch='e';timeline.sequence=1;
+  let handlers;const previous=global.BridgeTransport;
+  global.BridgeTransport={subscribe(url,value){handlers=value;return()=>{};}};
+  try{
+    timeline.updates();const replies=[];timeline.read=()=>new Promise(resolve=>replies.push(resolve));
+    const done=handlers.onDelta({epoch:'e',sequence:2,rows:[{key:'a',prevVersion:'v1'}]});
+    const deferred=handlers.onChanges({epoch:'e',sequence:3,meta:{},rows:[]});assert.equal(done,deferred);
+    let synchronized=false;done.then(()=>{synchronized=true;});
+    replies[0]({epoch:'e',sequence:2,meta:{},rows:[]});await Promise.resolve();assert.equal(synchronized,false);
+    replies[1]({epoch:'e',sequence:3,meta:{},rows:[]});await done;assert.equal(synchronized,true);assert.equal(timeline.sequence,3);
+  }finally{timeline.dispose();if(previous===undefined)delete global.BridgeTransport;else global.BridgeTransport=previous;}
 });
 
 test('an old delta recovery cannot reset a newer timeline generation',async()=>{
@@ -285,6 +383,86 @@ test('scrolling away from the latest message shows a persistent jump-to-latest b
   assert.equal(ids.newer.hidden,true);
   assert.equal(ids.newer.textContent,'跳转到最后 ↓');
   timeline.dispose();
+});
+
+const annotationPrefix='Response annotations:\n\nEach item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include ::codex-annotation{index="N" id="ID"}, where N is its one-based array position and ID is its exact id (omit the id attribute if absent). Do not use unstructured annotation labels.\n\n';
+const annotatedMessage=(items,request='不需要')=>annotationPrefix+'<response-annotations>'+JSON.stringify(items)+'</response-annotations>\n\nMy request:\n\n'+request;
+
+test('Codex response annotations display literal selections, every comment and the user request',async()=>{
+  const rendered=[],{timeline,ids}=setup({renderText(node,text){node.textContent=text;rendered.push(text);}});
+  const raw=annotatedMessage([{id:'internal-id',text:'<img src=x onerror=alert(1)>\n所选回复',comment:'第一条 **评论**',source:{messageId:'private-message',startOffset:1,endOffset:20}},{text:'第二条选择',comment:'第二条评论'}],'不需要\n\n保留其他正文。');
+  const row={key:'u1',role:'user',text:raw,version:'v1'},node=timeline.renderRow(row,false),body=node.children[1];
+  assert.equal(body.classList.contains('markdown-body'),true);
+  assert.deepEqual(body.children.map(child=>child.tagName),['BLOCKQUOTE','DIV','BLOCKQUOTE','DIV','DIV']);
+  assert.equal(body.children[0].textContent,'<img src=x onerror=alert(1)>\n所选回复');
+  assert.equal(body.children[0].style.whiteSpace,'pre-wrap');assert.equal(body.children[0].children.length,0);
+  assert.deepEqual(rendered,['第一条 **评论**','第二条评论','不需要\n\n保留其他正文。']);
+  timeline.rows.set(row.key,{row,sequence:1});assert.equal(row.text,raw);assert.equal(await timeline.fullText(row),raw);
+  timeline.renderUserJump([row]);assert.equal(ids['user-jump-list'].children[0].children[1].textContent,'不需要 保留其他正文。');
+  timeline.dispose();
+});
+
+for(let level=1;level<=6;level++)test('annotation labels support Markdown heading level '+level,()=>{
+  const rendered=[],{timeline,ids}=setup({renderText(node,text){node.textContent=text;rendered.push(text);}});
+  const raw=annotatedMessage([{text:'所选回复'}]).replace(/^Response annotations:/,'#'.repeat(level)+' Response annotations:').replace('\nMy request:\n','\n'+'#'.repeat(7-level)+' My request:\n'),row={key:'u',role:'user',text:raw};
+  const node=timeline.renderRow(row,false);assert.equal(node.children[1].children[0].tagName,'BLOCKQUOTE');assert.equal(node.children[1].children[0].textContent,'所选回复');assert.deepEqual(rendered,['不需要']);
+  timeline.renderUserJump([row]);assert.equal(ids['user-jump-list'].children[0].children[1].textContent,'不需要');assert.equal(row.text,raw);timeline.dispose();
+});
+
+test('annotation labels support strong text and headings containing strong text',()=>{
+  for(const [responseLabel,requestLabel] of [['**Response annotations:**','**My request:**'],['## **Response annotations:**','# **My request:**']]){
+    const rendered=[],{timeline}=setup({renderText(node,text){rendered.push(text);}}),raw=annotatedMessage([{text:'所选回复',comment:'评论'}]).replace(/^Response annotations:/,responseLabel).replace('\nMy request:\n','\n'+requestLabel+'\n');
+    const node=timeline.renderRow({key:'u',role:'user',text:raw},false);assert.equal(node.children[1].children[0].textContent,'所选回复');assert.deepEqual(rendered,['评论','不需要']);timeline.dispose();
+  }
+});
+
+test('invalid or incomplete annotation envelopes and ordinary messages preserve their entire text',()=>{
+  const valid=annotatedMessage([{text:'selection'}]),cases=[
+    valid.replace('Each item contains','Additional user prose. Each item contains'),
+    valid.replace('[{"text":"selection"}]','invalid JSON'),
+    annotatedMessage([{text:42}]),annotatedMessage([{text:'selection',comment:{text:'comment'}}]),
+    valid.replace('</response-annotations>',''),valid.replace('My request:','More user text:'),
+    '普通正文\n'+valid,
+    valid.replace(/^Response annotations:/,'#Response annotations:'),valid.replace(/^Response annotations:/,'####### Response annotations:'),
+    '    '+valid,'```text\n'+valid+'\n```',valid.replace('</response-annotations>\n\n','</response-annotations>\n\n其他正文\n\n'),
+  ];
+  for(const text of cases){
+    const rendered=[],{timeline}=setup({renderText(node,text){rendered.push(text);}});
+    const node=timeline.renderRow({key:'u',role:'user',text},false);
+    assert.deepEqual(rendered,[text]);assert.equal(node.children[1].children.length,0);assert.equal(node.children[1].classList.contains('markdown-body'),false);timeline.dispose();
+  }
+  const rendered=[],{timeline}=setup({renderText(node,text){rendered.push(text);}});
+  timeline.renderRow({key:'assistant',role:'assistant',text:valid},false);assert.deepEqual(rendered,[valid]);timeline.dispose();
+});
+
+test('annotation rendering preserves indentation and all request text after the wrapper',()=>{
+  const rendered=[],{timeline}=setup({renderText(node,text){rendered.push(text);}}),request='    indented code\n\n正文\n<response-annotations>用户原文</response-annotations>';
+  timeline.renderRow({key:'u',role:'user',text:annotatedMessage([{text:'selection'}],request)},false);
+  assert.deepEqual(rendered,[request]);timeline.dispose();
+});
+
+test('annotation Markdown code-copy suppliers return each rendered fragment while message copy stays raw',async()=>{
+  const fragments=[],{timeline}=setup({renderText(node,text,files,fullText){fragments.push({text,fullText});}});
+  const comment='评论\n```js\ncommentCode();\n```',request='请求\n```sh\nrequest-code\n```',raw=annotatedMessage([{text:'所选回复',comment}],request),row={key:'u',role:'user',version:'v1',text:raw};
+  timeline.rows.set(row.key,{row,sequence:1});timeline.renderRow(row,false);
+  assert.deepEqual(fragments.map(fragment=>fragment.text),[comment,request]);
+  assert.equal(await fragments[0].fullText(),comment);assert.equal(await fragments[1].fullText(),request);assert.equal(await timeline.fullText(row),raw);timeline.dispose();
+});
+
+test('truncated annotations remain raw until all detail pages arrive, then update the jump label',async()=>{
+  const rendered=[],{timeline,ids}=setup({renderText(node,text){node.textContent=text;rendered.push(text);}});timeline.epoch='e';
+  const raw=annotatedMessage([{id:'hidden',text:'所选回复',comment:'用户评论'}]),cut=raw.indexOf('</response-annotations>')+5;
+  const row={key:'u',role:'user',version:'v1',text:raw.slice(0,cut),truncated:true},node=timeline.renderRow(row,false),body=node.children[1],more=node.children[2];
+  node.isConnected=true;timeline.rows.set(row.key,{row,sequence:1});timeline.nodes.set(row.key,{node,stamp:''});
+  const pages=[{version:'v1',offset:0,text:raw.slice(0,cut),next:cut},{version:'v1',offset:cut,text:raw.slice(cut),next:null}];
+  timeline.read=async()=>pages.shift();
+  assert.deepEqual(rendered,[raw.slice(0,cut)]);assert.equal(body.classList.contains('markdown-body'),false);await more.onclick();assert.equal(body.children.length,0);
+  await more.onclick();assert.deepEqual(body.children.map(child=>child.tagName),['BLOCKQUOTE','DIV','DIV']);
+  assert.equal(body.classList.contains('markdown-body'),true);
+  assert.equal(body.children[0].textContent,'所选回复');assert.equal(body.children[1].textContent,'用户评论');assert.equal(body.children[2].textContent,'不需要');
+  assert.equal(ids['user-jump-list'].children[0].children[1].textContent,'不需要');
+  timeline.read=async()=>({key:row.key,version:'v1',offset:0,text:raw,next:null});
+  assert.equal(await timeline.fullText(row),raw);assert.equal(row.text,raw.slice(0,cut));timeline.dispose();
 });
 
 test('Kimi background task notifications render as notices instead of user prompts',()=>{

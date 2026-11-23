@@ -23,6 +23,18 @@ const taskNotice=(row,text=row?.text)=>{
   }
   return {title:title||attrs.type||'',severity:severity.toLowerCase().replace(/[^a-z]/g,''),text:lines.join('\n').trim()};
 };
+// 只解开 Codex 的完整回复批注信封，普通正文或截断内容不作猜测。
+const responseAnnotationInstructions='Each item contains text selected from an earlier Codex response and may include a user comment. Treat items as Annotation 1, Annotation 2, and so on in array order. Use every selection as context and address every comment. For every annotation you address, include ::codex-annotation{index="N" id="ID"}, where N is its one-based array position and ID is its exact id (omit the id attribute if absent). Do not use unstructured annotation labels.';
+const responseAnnotations=(row,text=row?.text)=>{
+  if(row?.role!=='user'&&row?.role!=null)return null;
+  const match=String(text||'').match(/^(?:[ \t]*\r?\n)* {0,3}(?:#{1,6}[ \t]+)?(?:\*\*Response annotations:\*\*|Response annotations:)[ \t]*\r?\n\s*([\s\S]*?)\s*<response-annotations>\s*([\s\S]*?)\s*<\/response-annotations>[ \t]*\r?\n(?:[ \t]*\r?\n)* {0,3}(?:#{1,6}[ \t]+)?(?:\*\*My request:\*\*|My request:)[ \t]*\r?\n(?:\r?\n)?([\s\S]*)$/);
+  if(!match||match[1].trim().replace(/\s+/g,' ')!==responseAnnotationInstructions)return null;
+  try{
+    const items=JSON.parse(match[2]);
+    if(!Array.isArray(items)||!items.length||items.some(item=>!item||typeof item!=='object'||typeof item.text!=='string'||(item.comment!==undefined&&typeof item.comment!=='string')))return null;
+    return {items,request:match[3]};
+  }catch{return null;}
+};
 const commandRow=row=>row.role==='activity'&&(/^(commandExecution|CommandExecution)$/.test(row.kind)||row.toolKind==='execute');
 const sleepRow=row=>row.role==='activity'&&row.kind==='sleep';
 const toolRow=row=>row.role==='activity'&&(TOOL_ROW_KINDS.test(row.kind)||commandRow(row)||sleepRow(row));
@@ -213,7 +225,8 @@ class ChatTimeline {
     this.userJump.hidden=!rows.length;this.userJumpCount.textContent=rows.length?String(rows.length):'';
     this.userJumpList.replaceChildren();this.userJumpButtons.clear();
     for(const [index,row] of rows.entries()){
-      const label=(row.text||'').trim().replace(/\s+/g,' ')||timelineText('用户消息');
+      const detail=this.details.get(row.key),annotations=(detail?detail.next===null:!row.truncated)?responseAnnotations(row,detail?.text??row.text):null;
+      const label=(annotations?(annotations.request||annotations.items.map(item=>item.comment||item.text).join(' ')):(row.text||'')).trim().replace(/\s+/g,' ')||timelineText('用户消息');
       const button=document.createElement('button');button.type='button';button.className='user-jump-item';button.dataset.key=row.key;button.title=label;
       const number=document.createElement('span');number.className='user-jump-index';number.textContent=String(index+1);
       const text=document.createElement('span');text.className='user-jump-text';text.textContent=label;
@@ -326,6 +339,8 @@ class ChatTimeline {
   }
   apply(page,reset=false,history=false){
     if(!history&&page.epoch===this.epoch&&page.sequence<this.sequence)return;
+    if(reset){this.deltaRecoveryState=null;this.deltaRecovery=null;}
+    else if(!history&&this.deltaRecoveryState&&!this.deltaRecoveryState.applying)return this.recoverDelta({after:this.sequence,epoch:this.epoch,start:this.before||''},page.sequence);
     const anchor=this.capture(),bottom=this.following;
     if(reset){this.generation++;this.rows.clear();this.nodes.clear();this.details.clear();this.files.clear();this.container.replaceChildren();this.epoch=page.epoch;this.retryCount=0;}
     for(const file of page.files||[])this.files.set(file.id,file);
@@ -367,7 +382,7 @@ class ChatTimeline {
   applyDelta(frame){
     if(frame.epoch!==this.epoch||frame.sequence<=this.sequence)return;
     const cursor={after:this.sequence,epoch:this.epoch,start:this.before||''};
-    if((frame.rows||[]).some(delta=>{const entry=this.rows.get(delta.key);return !entry||entry.sequence>=frame.sequence||entry.row.version!==delta.prevVersion;}))return this.recoverDelta(cursor);
+    if(this.deltaRecoveryState||(frame.rows||[]).some(delta=>{const entry=this.rows.get(delta.key);return !entry||entry.sequence>=frame.sequence||entry.row.version!==delta.prevVersion;}))return this.recoverDelta(cursor,frame.sequence);
     const anchor=this.capture(),bottom=this.following;
     this.sequence=frame.sequence;
     for(const file of frame.files||[])this.files.set(file.id,file);
@@ -396,20 +411,36 @@ class ChatTimeline {
     this.renderUserJump([...this.rows.values()].map(x=>x.row).sort((a,b)=>a.order-b.order),bottom);
     if(!bottom&&changed){this.newer.textContent=this.pendingRequests?timelineText('有待确认请求 ↓'):timelineText('有新内容 ↓');this.newer.hidden=false;}
   }
-  recoverDelta(cursor){
-    if(this.deltaRecovery)return this.deltaRecovery;
-    const generation=this.generation;
-    this.deltaRecovery=this.read('changes',cursor).then(page=>{
-      if(this.abort.signal.aborted||generation!==this.generation)return;
-      this.apply(page,!!page.reset||page.epoch!==this.epoch);
-    }).catch(()=>{
-      if(this.abort.signal.aborted||generation!==this.generation)return;
+  recoverDelta(cursor,sequence){
+    const generation=this.generation,existing=this.deltaRecoveryState;
+    if(existing&&existing.generation===generation&&existing.epoch===this.epoch){existing.sequence=Math.max(existing.sequence,sequence);return existing.promise;}
+    // 恢复期间不让其他实时帧越过缺口；记录它们的最高游标，再从已应用位置追齐。
+    const recovery={generation,epoch:this.epoch,sequence,applying:false};
+    this.deltaRecoveryState=recovery;
+    const active=()=>!this.abort.signal.aborted&&generation===this.generation&&this.epoch===recovery.epoch&&this.deltaRecoveryState===recovery;
+    const release=()=>{if(this.deltaRecoveryState===recovery){this.deltaRecoveryState=null;this.deltaRecovery=null;}};
+    const read=async()=>{
+      let next=cursor;
+      while(active()){
+        const page=await this.read('changes',next);
+        if(!active())return;
+        recovery.applying=true;
+        try{this.apply(page,!!page.reset||page.epoch!==this.epoch);}finally{recovery.applying=false;}
+        if(!active())return;
+        if(this.sequence>=recovery.sequence){release();return;}
+        if(this.sequence<=next.after)throw Error('Delta recovery did not advance');
+        next={after:this.sequence,epoch:this.epoch,start:this.before||''};
+      }
+    };
+    recovery.promise=read().catch(()=>{
+      if(!active())return;
       this.status(timelineText('重新连接中'));
       this.subscription?.();this.subscription=null;
       clearTimeout(this.startRetry);
       this.startRetry=setTimeout(()=>{if(!this.abort.signal.aborted&&generation===this.generation)this.updates();},1000);
-    }).finally(()=>{this.deltaRecovery=null;});
-    return this.deltaRecovery;
+    }).finally(release);
+    this.deltaRecovery=recovery.promise;
+    return recovery.promise;
   }
   renderRow(row,open){
     const notice=taskNotice(row),activity=row.role==='activity'||!!notice,
@@ -463,7 +494,15 @@ class ChatTimeline {
         }
         body.append(list);body.hidden=false;more.hidden=true;
       }else{
-        if(notice){
+        const annotations=(detail?detail.next===null:!row.truncated)?responseAnnotations(row,text):null;
+        body.classList.toggle('markdown-body',!!annotations);
+        if(annotations){
+          for(const item of annotations.items){
+            const quote=document.createElement('blockquote');quote.style.whiteSpace='pre-wrap';quote.textContent=item.text;body.append(quote);
+            if(item.comment){const comment=document.createElement('div');this.renderText(comment,item.comment,[...this.files.values()],()=>item.comment);body.append(comment);}
+          }
+          if(annotations.request){const request=document.createElement('div');this.renderText(request,annotations.request,[...this.files.values()],()=>annotations.request);body.append(request);}
+        }else if(notice){
           heading.textContent=rowLabel(row,text);
           body.textContent=taskNotice(row,text)?.text??text;
         }else if(sleepRow(row)){
@@ -490,6 +529,7 @@ class ChatTimeline {
         if(this.abort.signal.aborted||!node.isConnected||this.rows.get(row.key)?.row.version!==detail.version)return;
         for(const file of detail.files||[])this.files.set(file.id,file);
         this.details.set(row.key,{version:detail.version,text:(detail.offset?prior?.text||'':'')+detail.text,next:detail.next});paint();
+        if(row.role==='user')this.renderUserJump([...this.rows.values()].map(entry=>entry.row).sort((a,b)=>a.order-b.order),this.following);
       }catch(e){if(!this.abort.signal.aborted){more.hidden=false;more.textContent=timelineText('读取失败，点击重试');}}
       finally{more.disabled=false;}
     };
@@ -607,8 +647,8 @@ class ChatTimeline {
     // Delta frames only ever carry appends onto versions this client holds;
     // applyDelta re-reads changes itself when one does not line up.
     this.subscription=BridgeTransport.subscribe(this.url,{
-      onChanges:page=>{if(this.abort.signal.aborted)return;this.apply(page,false);this.fillRecent();},
-      onDelta:frame=>{if(this.abort.signal.aborted)return;this.applyDelta(frame);},
+      onChanges:page=>{if(this.abort.signal.aborted)return;const applied=this.apply(page,false);this.fillRecent();return applied;},
+      onDelta:frame=>{if(this.abort.signal.aborted)return;return this.applyDelta(frame);},
       onReset:page=>{if(this.abort.signal.aborted)return;this.apply(page,true);this.fillRecent();},
       onSynchronized:()=>{if(!this.abort.signal.aborted)this.syncState='live';},
       onStatus:text=>{if(!this.abort.signal.aborted)this.status(text==='reconnecting'?timelineText('重新连接中'):text);},

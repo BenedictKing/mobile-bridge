@@ -54,6 +54,9 @@ type Session struct {
 	// modes-carrying agent was in when the phone switched it to plan; leaving
 	// plan restores it instead of forcing the agent's manual default.
 	prePlanMode string
+	// pendingPermissionMode is an explicit phone choice made during plan. It
+	// survives native mode changes until a normal send applies it successfully.
+	pendingPermissionMode string
 	// lastActivity moves on every agent signal (streamed updates, reverse
 	// requests); the prompt idle timeout measures against it.
 	lastActivity time.Time

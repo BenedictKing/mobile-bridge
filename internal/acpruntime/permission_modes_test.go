@@ -14,7 +14,7 @@ import (
 // fakeModeAgent starts a scripted ACP agent advertising the given modes and
 // config options. Every session/set_mode and session/set_config_option call
 // is appended to the returned log so tests can assert what reached the wire.
-func fakeModeAgent(t *testing.T, kind, modes, options string) (*Session, string) {
+func fakeModeAgent(t *testing.T, kind, modes, options string, rejectModes ...string) (*Session, string) {
 	t.Helper()
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -22,14 +22,21 @@ func fakeModeAgent(t *testing.T, kind, modes, options string) (*Session, string)
 	}
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "calls.log")
+	rejectMode := ""
+	if len(rejectModes) > 0 {
+		rejectMode = rejectModes[0]
+	}
 	script := `import json,sys
 LOG=` + "'" + logPath + "'" + `
+REJECT=` + "'" + rejectMode + "'" + `
 for line in sys.stdin:
  m=json.loads(line); method=m.get("method"); ident=m.get("id"); params=m.get("params") or {}
  if method == "initialize": result={"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake"},"authMethods":[]}
  elif method == "session/new": result={"sessionId":"sess-modes","modes":json.loads('` + modes + `'),"configOptions":json.loads('` + options + `')}
  elif method == "session/set_mode":
   open(LOG,"a").write("set_mode "+params.get("modeId","")+"\n"); result={}
+  if params.get("modeId") == REJECT:
+   print(json.dumps({"jsonrpc":"2.0","id":ident,"error":{"code":-32602,"message":"permission mode rejected"}}),flush=True); continue
  elif method == "session/set_config_option":
   open(LOG,"a").write("set_config_option "+params.get("configId","")+"="+str(params.get("value",""))+"\n"); result={}
  else: result={}
@@ -78,6 +85,48 @@ func TestDefaultWorkModeKeepsAgentAutoMode(t *testing.T) {
 	}
 }
 
+func TestDefaultWorkModeWithoutSurfaceDoesNotSendModeRPC(t *testing.T) {
+	for _, kind := range []string{"acpagent", "acpagent-review"} {
+		t.Run(kind, func(t *testing.T) {
+			session, log := fakeModeAgent(t, kind, `null`, `[{"id":"model","category":"model","currentValue":"model-a"}]`)
+			if err := session.ApplyWorkMode("default", nil); err != nil {
+				t.Fatalf("normal send without modes: %v", err)
+			}
+			if err := session.ApplyWorkMode("plan", nil); err == nil {
+				t.Fatal("unsupported plan mode was accepted")
+			}
+			if calls := wireCalls(t, log); len(calls) != 0 {
+				t.Fatalf("agent without mode surface received mode RPCs: %v", calls)
+			}
+		})
+	}
+}
+
+func TestDefaultWorkModeStillUsesAdvertisedConfigSurface(t *testing.T) {
+	for _, test := range []struct {
+		kind, optionID, category, target string
+	}{
+		{kind: "opencode", optionID: "mode", category: "mode", target: "build"},
+		{kind: "dsh", optionID: "collaboration_mode", target: "default"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			options := `[{"id":"` + test.optionID + `","category":"` + test.category + `","currentValue":"plan","options":[{"value":"plan"},{"value":"` + test.target + `"}]}]`
+			session, log := fakeModeAgent(t, test.kind, `null`, options)
+			if test.kind == "dsh" {
+				session.mu.Lock()
+				session.modeOptionID = test.optionID
+				session.mu.Unlock()
+			}
+			if err := session.ApplyWorkMode("default", map[string]string{"default": test.target}); err != nil {
+				t.Fatal(err)
+			}
+			if calls := wireCalls(t, log); strings.Join(calls, ",") != "set_config_option_"+test.optionID+"="+test.target {
+				t.Fatalf("normal send skipped advertised work-mode option: %v", calls)
+			}
+		})
+	}
+}
+
 func TestLeavingPlanRestoresPriorPermission(t *testing.T) {
 	session, log := fakeModeAgent(t, "claude", claudeModes, `[]`)
 	if err := session.ApplyWorkMode("plan", nil); err != nil {
@@ -118,11 +167,10 @@ func TestPermissionPickedDuringPlanAppliesOnExit(t *testing.T) {
 	}
 }
 
-func TestAgentEnteredPlanRemembersPriorPermission(t *testing.T) {
-	session, log := fakeModeAgent(t, "claude", claudeModes, `[]`)
+func notifyMode(session *Session, mode string) {
 	update := jsoncompat.NewObject()
 	update.Set("sessionUpdate", "current_mode_update")
-	update.Set("currentModeId", "plan")
+	update.Set("currentModeId", mode)
 	params := jsoncompat.NewObject()
 	params.Set("sessionId", session.ID)
 	params.Set("update", update)
@@ -130,11 +178,112 @@ func TestAgentEnteredPlanRemembersPriorPermission(t *testing.T) {
 	message.Set("method", "session/update")
 	message.Set("params", params)
 	session.onNotification(message)
+}
+
+func TestPermissionPickedDuringPlanSurvivesNativeModeChanges(t *testing.T) {
+	for _, test := range []struct {
+		name, choice, nativeMode string
+		reenterPlan              bool
+	}{
+		{name: "native exit", choice: "acceptEdits", nativeMode: "auto"},
+		{name: "native reentry", choice: "acceptEdits", nativeMode: "bypassPermissions", reenterPlan: true},
+		{name: "explicit original preset", choice: "auto", nativeMode: "default"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session, log := fakeModeAgent(t, "claude", claudeModes, `[]`)
+			if err := session.ApplyWorkMode("plan", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := session.SetPermission(test.choice); err != nil {
+				t.Fatal(err)
+			}
+			notifyMode(session, test.nativeMode)
+			if test.reenterPlan {
+				notifyMode(session, "plan")
+			}
+			if err := session.ApplyWorkMode("default", nil); err != nil {
+				t.Fatal(err)
+			}
+			if current := currentPermission(session); current != test.choice {
+				t.Fatalf("permission=%v, want saved choice %s", current, test.choice)
+			}
+			if calls := wireCalls(t, log); strings.Join(calls, ",") != "set_mode_plan,set_mode_"+test.choice {
+				t.Fatalf("wire calls=%v", calls)
+			}
+		})
+	}
+}
+
+func TestAgentEnteredPlanRemembersPriorPermission(t *testing.T) {
+	session, log := fakeModeAgent(t, "claude", claudeModes, `[]`)
+	notifyMode(session, "plan")
 	if err := session.ApplyWorkMode("default", nil); err != nil {
 		t.Fatal(err)
 	}
 	if calls := wireCalls(t, log); strings.Join(calls, ",") != "set_mode_auto" {
 		t.Fatalf("leaving agent-entered plan should restore auto: %v", calls)
+	}
+}
+
+func TestNativePlanExitWithoutPermissionChoiceKeepsNativePreset(t *testing.T) {
+	session, log := fakeModeAgent(t, "claude", claudeModes, `[]`)
+	if err := session.ApplyWorkMode("plan", nil); err != nil {
+		t.Fatal(err)
+	}
+	notifyMode(session, "default")
+	if err := session.ApplyWorkMode("default", nil); err != nil {
+		t.Fatal(err)
+	}
+	if current := currentPermission(session); current != "default" {
+		t.Fatalf("native preset replaced: %v", current)
+	}
+	if calls := wireCalls(t, log); strings.Join(calls, ",") != "set_mode_plan" {
+		t.Fatalf("ordinary send overwrote native mode: %v", calls)
+	}
+}
+
+func TestDeferredPermissionFailureRetainsChoiceForRetry(t *testing.T) {
+	session, log := fakeModeAgent(t, "claude", claudeModes, `[]`, "acceptEdits")
+	if err := session.ApplyWorkMode("plan", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPermission("acceptEdits"); err != nil {
+		t.Fatal(err)
+	}
+	notifyMode(session, "auto")
+	for range 2 {
+		if err := session.ApplyWorkMode("default", nil); err == nil || !strings.Contains(err.Error(), "permission mode rejected") {
+			t.Fatalf("normal send did not propagate permission failure: %v", err)
+		}
+	}
+	if current := currentPermission(session); current != "auto" {
+		t.Fatalf("failed permission was reported as applied: %v", current)
+	}
+	if calls := wireCalls(t, log); strings.Join(calls, ",") != "set_mode_plan,set_mode_acceptEdits,set_mode_acceptEdits" {
+		t.Fatalf("failed deferred choice was lost: %v", calls)
+	}
+}
+
+func TestPermissionPickedAfterNativeExitReplacesDeferredChoice(t *testing.T) {
+	session, log := fakeModeAgent(t, "claude", claudeModes, `[]`)
+	if err := session.ApplyWorkMode("plan", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SetPermission("acceptEdits"); err != nil {
+		t.Fatal(err)
+	}
+	notifyMode(session, "auto")
+	if err := session.SetPermission("default"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.ApplyWorkMode("default", nil); err != nil {
+		t.Fatal(err)
+	}
+	if current := currentPermission(session); current != "default" {
+		t.Fatalf("new explicit choice replaced by old deferred choice: %v", current)
+	}
+	if calls := wireCalls(t, log); strings.Join(calls, ",") != "set_mode_plan,set_mode_default" {
+		t.Fatalf("old deferred choice was replayed: %v", calls)
 	}
 }
 

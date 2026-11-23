@@ -2822,6 +2822,30 @@ func (s *Service) settlesLeadActions(state *runState, taskID string) bool {
 	return team != nil && team.LeadID != "" && task.MemberID == team.LeadID && !strings.HasPrefix(task.ID, "lead-auto-reduce")
 }
 
+// 旧版本的目标评估纠错任务未保存依赖；只恢复原评估快照与先前纠错回合，
+// 不吸收评估开始后追加的执行任务，保持过期判断的边界。
+func goalFeedbackWithSnapshot(run *Run, task *Task) *Task {
+	if task == nil || !task.GoalFeedback || len(task.DependsOn) > 0 {
+		return task
+	}
+	rootID := actionRepairRoot(task.ID)
+	root := findTaskIn(run, rootID)
+	if rootID == task.ID || root == nil || !root.GoalFeedback {
+		return task
+	}
+	view := *task
+	view.DependsOn = append([]string(nil), root.DependsOn...)
+	for _, previous := range run.Tasks {
+		if previous.ID == task.ID {
+			break
+		}
+		if previous.GoalFeedback && actionRepairRoot(previous.ID) == rootID && !containsString(view.DependsOn, previous.ID) {
+			view.DependsOn = append(view.DependsOn, previous.ID)
+		}
+	}
+	return &view
+}
+
 // settleLeadTaskLocked 结算 AutoPlan Run 中 Lead 任务的 completed 回复（§5.1，
 // 调用方约定与 Cancel/Resume 相同的锁形：本函数自行短暂持有 state.mu）。把
 // 「任务 completed 事实 + 动作事实」在单个 commitRun 内原子落账（§3.1 原则
@@ -2851,7 +2875,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 	collaborationPattern := ""
 	if run := s.store.Run(state.runID); run != nil {
 		fullText := AssistantFullText(turn)
-		task := findTaskIn(run, dispatch.taskID)
+		task := goalFeedbackWithSnapshot(run, findTaskIn(run, dispatch.taskID))
 		if task == nil || !task.IssueClassificationOnly {
 			if run.Planning != nil {
 				actions, planningUpdate, violations = parsePlanningReply(fullText, s.store.Team(run.TeamID), run, task, policy)
@@ -2906,13 +2930,18 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 		if terminalRun(fresh.Status) {
 			return nil, false
 		}
-		source := findTaskIn(fresh, dispatch.taskID)
+		source := goalFeedbackWithSnapshot(fresh, findTaskIn(fresh, dispatch.taskID))
 		team := s.store.Team(fresh.TeamID)
 		leadDriven := fresh.AutoPlan && source != nil && !isAutoReductionTask(source) && team != nil &&
 			team.LeadID != "" && source.MemberID == team.LeadID
+		invalid := violations
+		staleFeedback := source != nil && source.GoalFeedback && goalFeedbackIsStale(fresh, source)
+		if staleFeedback && len(invalid) == 0 {
+			invalid = []string{"目标评估已过期：评估开始后新增了执行任务，请等待新任务完成后重新评估"}
+		}
 		attempt, repairID, final := 0, "", false
-		list := boundedViolations(violations)
-		if leadDriven && len(violations) > 0 {
+		list := boundedViolations(invalid)
+		if leadDriven && len(invalid) > 0 && !staleFeedback {
 			root := actionRepairRoot(dispatch.taskID)
 			attempt = nextActionRepairAttempt(fresh, root)
 			repairID = actionRepairID(root, attempt)
@@ -2955,8 +2984,8 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 		events = append(events,
 			withdrawTaskQuestions(fresh, dispatch.taskID, questionWithdrawTaskTerminal, "watcher")...)
 		switch {
-		case leadDriven && len(violations) > 0:
-			if source.GoalFeedback && goalFeedbackIsStale(fresh, source) {
+		case leadDriven && len(invalid) > 0:
+			if staleFeedback {
 				// 评估开始后有新任务加入，旧结论只作无效事实记录，不创建
 				// 另一个同样过期的 actfix 任务。新任务全部收尾后，fold 会
 				// 重新创建下一轮目标评估。
@@ -2989,7 +3018,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				events = append(events, event)
 			}
 			if !final {
-				prompt := RepairPrompt(violations, attempt)
+				prompt := RepairPrompt(invalid, attempt)
 				if fresh.Planning != nil {
 					prompt = strings.Replace(prompt, actionSchemaInstruction(), actionSchemaForRun(fresh), 1)
 					if source.GoalFeedback {
@@ -2999,7 +3028,7 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				if s.inputs != nil && source != nil {
 					if inputID := issueInputIDForLeadTask(fresh, source); inputID != "" {
 						if source.IssueClassificationOnly {
-							prompt = IssueAssociationRepairPrompt(violations, attempt)
+							prompt = IssueAssociationRepairPrompt(invalid, attempt)
 						}
 						prompt += "\n" + s.inputs.IssueAssociationBriefing(fresh.TeamID, inputID)
 					}
@@ -3028,8 +3057,10 @@ func (s *Service) settleLeadTaskLocked(state *runState, dispatch *taskDispatch, 
 				if repair.IssueClassificationOnly {
 					repair.ExecutionContext = ExecutionContextLeadRun
 				}
-				// 创建期确定性字段（与 planner 同口径）：修复任务无依赖，
-				// 创建期与派发期的 InputHash 相同（contextText 恒空串）。
+				if repair.GoalFeedback {
+					repair.DependsOn = append(append([]string(nil), source.DependsOn...), source.ID)
+				}
+				// 创建期哈希与 planner 同口径；派发时另计实际依赖上下文。
 				repair.InputHash = InputHashFor(&repair, PolicyDigest(team.Policy), "")
 				fresh.Tasks = append(fresh.Tasks, repair)
 				if key := actionRepairPlannedKey(fresh.TeamID, fresh.ID, repairID); !recorded[key] {

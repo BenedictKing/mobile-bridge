@@ -108,6 +108,9 @@ func (s *Session) permissionSurfaceLocked() permissionSurface {
 	if surface.current == planModeID {
 		surface.inPlan = true
 		surface.current = s.prePlanMode
+		if s.pendingPermissionMode != "" {
+			surface.current = s.pendingPermissionMode
+		}
 	}
 	return surface
 }
@@ -214,13 +217,15 @@ func (s *Session) SetPermission(modeID string) error {
 		s.mu.Unlock()
 		return errors.New("当前 Agent 不支持此权限模式")
 	}
-	if surface.current == modeID {
+	if surface.inPlan {
+		s.pendingPermissionMode = modeID
+		s.signalLocked()
 		s.mu.Unlock()
 		return nil
 	}
-	if surface.inPlan {
-		s.prePlanMode = modeID
-		s.signalLocked()
+	pending := s.pendingPermissionMode
+	if surface.current == modeID {
+		s.pendingPermissionMode = ""
 		s.mu.Unlock()
 		return nil
 	}
@@ -237,6 +242,9 @@ func (s *Session) SetPermission(modeID string) error {
 	}
 	s.mu.Lock()
 	s.modes.Set("currentModeId", modeID)
+	if s.pendingPermissionMode == pending {
+		s.pendingPermissionMode = ""
+	}
 	if !surface.modesOnly {
 		// The modes slot doubles as the view's collaboration mode here.
 		s.View.SetMode(modeID)
@@ -249,9 +257,9 @@ func (s *Session) SetPermission(modeID string) error {
 // ApplyWorkMode moves the session into or out of plan for one phone send.
 // modeMap translates the bridge's plan/default ids (zcode default→yolo,
 // opencode default→build). On modes-surface agents "default" means "not
-// plan": outside plan it is a no-op, so the user's permission preset (Claude
-// auto, Kimi yolo, ZCode guarded…) survives every message; leaving plan
-// restores the preset that was active before it.
+// plan": it preserves the agent's preset unless the phone picked a new one
+// during plan. That choice is applied before the next normal send, including
+// after a native plan exit. Without a work-mode surface normal sends are no-ops.
 func (s *Session) ApplyWorkMode(workMode string, modeMap map[string]string) error {
 	target := workMode
 	if mapped, ok := modeMap[workMode]; ok {
@@ -264,7 +272,15 @@ func (s *Session) ApplyWorkMode(workMode string, modeMap map[string]string) erro
 	s.mu.Lock()
 	if s.modeOptionID != "" || s.modes == nil {
 		// Collaboration lives in a dedicated option (dsh) or a plan/build
-		// option (opencode): the toggle is the whole surface.
+		// option (opencode). Agents without either can still accept prompts.
+		option := findCategory(s.configOptions, "mode")
+		if s.modeOptionID != "" {
+			option = findOption(s.configOptions, s.modeOptionID)
+		}
+		if workMode == "default" && option == nil {
+			s.mu.Unlock()
+			return nil
+		}
 		s.mu.Unlock()
 		return s.SetMode(target)
 	}
@@ -276,23 +292,25 @@ func (s *Session) ApplyWorkMode(workMode string, modeMap map[string]string) erro
 		s.mu.Unlock()
 		return s.SetMode(target)
 	}
-	if current != "" && current != planID {
+	pending := s.pendingPermissionMode
+	if pending != "" {
+		target = pending
+	} else if current != "" && current != planID {
 		s.mu.Unlock()
 		return nil
-	}
-	restore := s.prePlanMode != ""
-	if restore {
+	} else if s.prePlanMode != "" {
 		target = s.prePlanMode
 	}
 	s.mu.Unlock()
 	if err := s.SetMode(target); err != nil {
 		return err
 	}
-	if restore {
-		s.mu.Lock()
-		s.prePlanMode = ""
-		s.mu.Unlock()
+	s.mu.Lock()
+	s.prePlanMode = ""
+	if s.pendingPermissionMode == pending {
+		s.pendingPermissionMode = ""
 	}
+	s.mu.Unlock()
 	return nil
 }
 

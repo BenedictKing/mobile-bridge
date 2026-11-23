@@ -14,11 +14,14 @@ func cliTurn(turn *jsoncompat.Object) *jsoncompat.Object {
 	return copy
 }
 
-func (c *cliRuntime) applyThread(thread, settings *jsoncompat.Object, connected bool) {
+func (c *cliRuntime) applyThread(thread, settings *jsoncompat.Object, connected bool, sequence int) bool {
 	id := jsoncompat.PyStr(thread.MustGet("id"))
 	session := c.bridge.session(id)
 	c.bridge.mu.Lock()
 	defer c.bridge.mu.Unlock()
+	if session.Sequence != sequence {
+		return false // Retry a snapshot that raced with a native event.
+	}
 	state, _ := session.State.(*jsoncompat.Object)
 	if state == nil {
 		state = jsoncompat.NewObject()
@@ -36,6 +39,9 @@ func (c *cliRuntime) applyThread(thread, settings *jsoncompat.Object, connected 
 	}
 	state.Set("threadRuntimeStatus", thread.MustGet("status"))
 	if turns := cliArray(thread.MustGet("turns")); turns != nil {
+		// Full snapshots are authoritative for native rollback and deletion.
+		// Incremental events still merge through mergeCLITurn below.
+		state.Set("turns", &jsoncompat.Array{})
 		for _, raw := range turns.Items {
 			if turn, ok := raw.(*jsoncompat.Object); ok {
 				mergeCLITurn(state, turn)
@@ -57,6 +63,7 @@ func (c *cliRuntime) applyThread(thread, settings *jsoncompat.Object, connected 
 		state.Set("writerReleased", false)
 	}
 	c.changedLocked(session)
+	return true
 }
 
 func mergeCLITurn(state, incoming *jsoncompat.Object) *jsoncompat.Object {

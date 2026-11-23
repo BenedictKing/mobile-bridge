@@ -104,6 +104,9 @@ func (b *Bridge) watchCLILocked(id string, c *cliRuntime, cwd string) (*Session,
 			}
 		}
 	}
+	b.mu.Lock()
+	sequence := session.Sequence
+	b.mu.Unlock()
 	resumed, err := c.request("thread/resume", object(map[string]any{"threadId": id, "excludeTurns": false}), 60*time.Second)
 	if err != nil {
 		if strings.Contains(err.Error(), "already has an active writer") {
@@ -115,7 +118,12 @@ func (b *Bridge) watchCLILocked(id string, c *cliRuntime, cwd string) (*Session,
 	if loaded == nil || loaded.MustGet("id") != id || !cliPathEqual(cliText(loaded.MustGet("cwd")), cwd) || loaded.MustGet("modelProvider") != thread.MustGet("modelProvider") {
 		return session, errors.New("Codex CLI 恢复结果与源会话不匹配")
 	}
-	c.applyThread(loaded, resumed, true)
+	if !c.applyThread(loaded, resumed, true, sequence) {
+		// Resume succeeded; refresh its snapshot without resuming a second time.
+		if _, err := c.readThreadSnapshot(id, cwd, 30*time.Second, resumed, true); err != nil {
+			return session, err
+		}
+	}
 	b.mu.Lock()
 	c.lastUsed[id] = time.Now()
 	b.mu.Unlock()
@@ -148,20 +156,37 @@ func (c *cliRuntime) readThread(id, cwd string, timeout time.Duration) (*jsoncom
 	if err := c.connect(); err != nil {
 		return nil, err
 	}
-	read, err := c.request("thread/read", object(map[string]any{"threadId": id, "includeTurns": true}), timeout)
-	if err != nil {
-		return nil, err
-	}
-	thread, _ := read.MustGet("thread").(*jsoncompat.Object)
-	if thread == nil || thread.MustGet("id") != id || !cliPathEqual(cliText(thread.MustGet("cwd")), cwd) {
-		return nil, errors.New("Codex CLI 会话身份或目录不匹配，未接管")
-	}
 	c.bridge.mu.Lock()
 	session := c.bridge.sessions[id]
 	connected := session != nil && session.Connected && session.Owner == "cli"
 	c.bridge.mu.Unlock()
-	c.applyThread(thread, nil, connected)
-	return read, nil
+	return c.readThreadSnapshot(id, cwd, timeout, nil, connected)
+}
+
+func (c *cliRuntime) readThreadSnapshot(id, cwd string, timeout time.Duration, settings *jsoncompat.Object, connected bool) (*jsoncompat.Object, error) {
+	session := c.bridge.session(id)
+	deadline := time.Now().Add(timeout)
+	for attempt := 0; attempt < 3; attempt++ {
+		c.bridge.mu.Lock()
+		sequence := session.Sequence
+		c.bridge.mu.Unlock()
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		read, err := c.request("thread/read", object(map[string]any{"threadId": id, "includeTurns": true}), remaining)
+		if err != nil {
+			return nil, err
+		}
+		thread, _ := read.MustGet("thread").(*jsoncompat.Object)
+		if thread == nil || thread.MustGet("id") != id || !cliPathEqual(cliText(thread.MustGet("cwd")), cwd) {
+			return nil, errors.New("Codex CLI 会话身份或目录不匹配，未接管")
+		}
+		if c.applyThread(thread, settings, connected && cliStatus(thread.MustGet("status")) != "notLoaded", sequence) {
+			return read, nil
+		}
+	}
+	return nil, errors.New("Codex 会话在读取期间持续更新，请稍后重试")
 }
 
 func (c *cliRuntime) connect() error {
