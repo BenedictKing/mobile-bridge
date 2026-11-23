@@ -1247,6 +1247,9 @@ button,.session,.mode-option,.workspace-switch-item{transition:background-color 
 .session,.team-sidebar-item{border-color:transparent}
 .session:hover,.team-sidebar-item:hover{background:color-mix(in srgb,var(--text) 5%,transparent)}
 .session.selected,.team-sidebar-item.selected{background:var(--raised);border-color:transparent;box-shadow:var(--shadow-1)}
+.default-team,.default-team.selected{background:var(--soft)}
+:root[data-theme=dark] .default-team,:root[data-theme=dark] .default-team.selected{background:var(--active)}
+.default-team.selected{border-color:color-mix(in srgb,var(--accent) 24%,transparent)}
 .agent-badge{color:var(--muted);background:color-mix(in srgb,var(--text) 6%,transparent);font-weight:600;letter-spacing:.04em}
 .search{border-radius:var(--r-md)}
 

@@ -51,6 +51,14 @@ test('project groups retain their default team entry',()=>{
   assert.equal(find(sessions,'session').length,2);
 });
 
+test('default team background stays distinct from the selected conversation',()=>{
+  const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
+  assert.match(css,/\.session\.selected,\.team-sidebar-item\.selected\{background:var\(--raised\)/);
+  assert.match(css,/\.default-team,\.default-team\.selected\{background:var\(--soft\)\}/);
+  assert.match(css,/:root\[data-theme=dark\] \.default-team,:root\[data-theme=dark\] \.default-team\.selected\{background:var\(--active\)\}/);
+  assert.match(css,/\.default-team\.selected\{border-color:color-mix\(in srgb,var\(--accent\) 24%,transparent\)\}/);
+});
+
 test('project groups hide only the pinned team lead from conversation history',()=>{
   const team={id:'team-1',name:'work团队'};
   const listRows=[
