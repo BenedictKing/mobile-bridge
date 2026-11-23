@@ -375,7 +375,7 @@
 .team-delivery-summary{margin:8px 0 0;font-size:12px;color:var(--muted);white-space:pre-wrap;word-break:break-word}
 .team-delivery-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .team-delivery-actions button{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);color:var(--green);padding:8px 12px;font-size:12px}
-/* 未选中的团队入口用白底：--soft 与 .session.selected 同色，会被误读成选中态。 */
+/* 团队入口保留基础描边与间距；独立底色和选中态由最终列表层级统一覆盖。 */
 .default-team{border:1px solid var(--line);background:var(--raised);margin-bottom:8px}
 .default-team strong{color:var(--green)}
 .team-settings-dialog{width:min(94vw,620px)}
@@ -394,6 +394,10 @@
 .team-member-role{border-radius:var(--r-sm);background:var(--soft);color:var(--green);padding:2px 6px;font-size:10px;white-space:nowrap}
 .team-settings-tags-hint{font-size:11px;margin-bottom:8px}
 .team-member-tags{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex:1;min-width:0;margin:0;padding:5px;border:1px solid var(--control);border-radius:var(--r-md);background:var(--surface);transition:border-color .15s ease,box-shadow .15s ease}
+.team-tag-presets{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.team-tag-preset{min-height:30px;padding:3px 10px;border:1px dashed var(--control);border-radius:999px;background:transparent;color:var(--muted);font-size:11px}
+.team-tag-preset:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.team-member-advisor{grid-column:1/-1;display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--muted)}
 .team-member-tags:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent)}
 .picker .team-member-tags input:not([type=checkbox]):not([type=range]){width:auto;flex:1 1 140px;min-width:9ch;max-width:100%;min-height:34px;margin:0;padding:6px 4px;border:0;border-radius:0;background:transparent;font-size:12px;box-shadow:none}
 .team-member-tags input:focus-visible{outline:none;box-shadow:none}

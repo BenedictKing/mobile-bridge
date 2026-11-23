@@ -126,13 +126,18 @@ func NewGoalScope(id, text string) GoalScope {
 
 // RunGoalScope 包含本轮追加的原始输入；后续反馈不能静默沿用旧确认。
 func RunGoalScope(run *Run) GoalScope {
+	return NewGoalScope("run", RunGoalScopeText(run))
+}
+
+// RunGoalScopeText 是 Run 目标加本轮追加的用户原始输入（按追加顺序）。
+func RunGoalScopeText(run *Run) string {
 	texts := []string{run.Goal}
 	for _, task := range run.Tasks {
 		if isUserInputTask(&task) {
 			texts = append(texts, task.Prompt)
 		}
 	}
-	return NewGoalScope("run", strings.Join(texts, "\n\n"))
+	return strings.Join(texts, "\n\n")
 }
 
 // isUserInputTask 判定任务是否承载用户在 Run 内追加的聊天输入。

@@ -94,6 +94,10 @@ func defaultReviewWriteLock(team *Team, memberID, writeLock string, review ...*b
 	if reviewer := team.ReviewerMemberID(); !execution && reviewer != "" && reviewer != team.LeadID && memberID == reviewer {
 		return TaskWriteLockNone
 	}
+	// 方案顾问只出方案，缺省同样只读。
+	if memberID != team.LeadID && team.memberRole(memberID) == RoleAdvisor {
+		return TaskWriteLockNone
+	}
 	return ""
 }
 
@@ -268,6 +272,9 @@ func BuildDeliveryBriefing(team *Team, run *Run) string {
 			fmt.Fprintf(&builder, "- 审查任务 %s：已完成，机器裁决=未通过。\n", task.ID)
 		default:
 			fmt.Fprintf(&builder, "- 审查任务 %s（状态 %s）：机器裁决=未取得裁决。摘要只能表述为「未取得裁决」，不得写成已通过或未通过。\n", task.ID, task.Status)
+		}
+		if note := readOnlyWriteNote(team, task); note != "" {
+			builder.WriteString("  " + note + "\n")
 		}
 	}
 	if !found {

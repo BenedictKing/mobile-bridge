@@ -573,6 +573,8 @@ function teamReviewerMemberID(team){
   if(team.reviewerId)return team.reviewerId;
   return (team.members||[]).find(member=>member.enabled&&member.role==='reviewer')?.id||'';
 }
+// 常用能力标签预设：主控按标签选人，统一措辞比自由文本更易匹配。
+const TEAM_TAG_PRESETS=['前端/视觉','后端/算法','代码审查','浏览器操作','方案顾问','文案顾问'];
 class TeamSettingsDialog{
   constructor({request,onChange,onCompactLead,onResetLead}){this.request=request;this.onChange=onChange;this.onCompactLead=onCompactLead;this.onResetLead=onResetLead;this._dialog=null;this.team=null;this.agents=[];this.busy=false;this.error='';this.draftTags=new Map();this.draftText=new Map();}
   node(tag,text,cls){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(cls)node.className=cls;return node;}
@@ -635,6 +637,7 @@ class TeamSettingsDialog{
       info.append(this.node('strong',teamSettingsMemberLabel(member)));
       const roleLabels=[member.id===team.leadId?t_safe('主控'):t_safe('成员')];
       if(member.id===reviewerID)roleLabels.push(t_safe('评审'));
+      if(member.role==='advisor')roleLabels.push(t_safe('只读顾问'));
       info.append(this.node('span',roleLabels.join(' · ')+(member.available===false?' · '+t_safe('不可用'):''),'team-member-role'));
       // 能力标签：胶囊内 × 只改草稿，「保存标签」统一落库，
       // 避免误触立即改写主控看到的成员目录。
@@ -690,7 +693,24 @@ class TeamSettingsDialog{
         addTags(this.parseDraftTags(value,true).tags);syncSave();
       };
       for(const tag of draftTags())tagsField.append(chipFor(tag));
-      tagsField.append(tagsInput,saveTags);info.append(tagsField);row.append(info);
+      tagsField.append(tagsInput,saveTags);info.append(tagsField);
+      // 常用能力预设：点选只加入草稿，仍需「保存标签」；已有的预设隐藏。
+      const presets=this.node('div',undefined,'team-tag-presets');
+      for(const preset of TEAM_TAG_PRESETS){
+        if(draftTags().includes(preset))continue;
+        const chip=this.button('＋ '+preset,()=>{addTags([preset]);chip.remove();});
+        chip.className='team-tag-preset';chip.disabled=this.busy;presets.append(chip);
+      }
+      if(presets.children.length)info.append(presets);
+      if(member.id!==team.leadId){
+        // 只读顾问：默认评审已承担审查语义，不同时兼任顾问。
+        const advisorLabel=this.node('label',undefined,'team-member-advisor');
+        const advisor=document.createElement('input');advisor.type='checkbox';advisor.checked=member.role==='advisor';
+        advisor.disabled=this.busy||member.id===reviewerID;
+        advisor.onchange=()=>this.changeRole(member.id,advisor.checked?'advisor':'member');
+        advisorLabel.append(advisor,this.node('span',t_safe('只读顾问（只出方案，不改文件）')));info.append(advisorLabel);
+      }
+      row.append(info);
       if(member.id!==team.leadId){const remove=this.button(t_safe('移除'),()=>this.removeMember(member.id));remove.disabled=this.busy;remove.className='team-member-remove';row.append(remove);}
       memberSection.append(row);
     }
@@ -699,7 +719,7 @@ class TeamSettingsDialog{
     const candidates=this.agents;
     const select=document.createElement('select');select.className='team-add-agent';select.disabled=this.busy;
     for(const agent of candidates)select.append(new Option(agent.label||agent.kind,agent.kind));
-    const role=document.createElement('select');role.className='team-add-role';role.disabled=this.busy;role.append(new Option(t_safe('成员'),'member'),new Option(t_safe('评审'),'reviewer'));
+    const role=document.createElement('select');role.className='team-add-role';role.disabled=this.busy;role.append(new Option(t_safe('成员'),'member'),new Option(t_safe('评审'),'reviewer'),new Option(t_safe('只读顾问'),'advisor'));
     const add=this.button(t_safe('＋ 添加 Agent'),()=>this.addMember(select.value,role.value));
     add.disabled=this.busy||!candidates.length;
     const addRow=this.node('div',undefined,'team-settings-add');addRow.append(select,role,add);memberSection.append(addRow);
@@ -714,6 +734,10 @@ class TeamSettingsDialog{
     const current=teamReviewerMemberID(this.team);
     if(memberID===current)return;
     await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id),{method:'PATCH',body:{reviewerId:memberID,version:this.team.version}}));
+  }
+  async changeRole(memberID,role){
+    const member=(this.team.members||[]).find(item=>item.id===memberID);if(!member||member.role===role)return;
+    await this.mutate(()=>this.request('/api/teams/'+encodeURIComponent(this.team.id)+'/members/'+encodeURIComponent(memberID),{method:'PATCH',body:{role,version:this.team.version}}));
   }
   async changeTags(memberID,tags){
     const member=(this.team.members||[]).find(item=>item.id===memberID);if(!member)return;

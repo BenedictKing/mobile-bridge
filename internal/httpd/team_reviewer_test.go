@@ -139,3 +139,21 @@ func TestTeamDefaultReviewerClearFallsBackToReviewerRole(t *testing.T) {
 		t.Fatalf("没有显式默认评审且没有 reviewer 角色时才应关闭评审: %+v", stored)
 	}
 }
+
+func TestTeamMemberAdvisorRoleAccepted(t *testing.T) {
+	env := newTeamIntegrationEnv(t, t.TempDir())
+	lead := env.createMemberSession(t, "lead-sess", "主控")
+	adv := env.createMemberSession(t, "adv-sess", "顾问")
+	teamID := env.createTeamWithMembers(t, `[{"id":"lead","sessionId":"`+lead+`","role":"lead"},{"id":"adv","sessionId":"`+adv+`","role":"advisor"}]`)
+	if !env.store.Team(teamID).HasAdvisor() {
+		t.Fatal("创建团队时应接受 advisor 角色")
+	}
+	response := env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/adv", `{"role":"member","version":1}`)
+	if response.Code != http.StatusOK || env.store.Team(teamID).HasAdvisor() {
+		t.Fatalf("应可取消顾问角色: %d %s", response.Code, response.Body.String())
+	}
+	response = env.request(http.MethodPatch, "/api/teams/"+teamID+"/members/adv", `{"role":"advisor","version":2}`)
+	if response.Code != http.StatusOK || !env.store.Team(teamID).HasAdvisor() {
+		t.Fatalf("应可设为顾问角色: %d %s", response.Code, response.Body.String())
+	}
+}

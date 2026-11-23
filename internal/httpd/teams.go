@@ -629,7 +629,7 @@ func (h *handler) handleMemberUpdate(teamID, memberID string) {
 	if raw, exists := body.Get("role"); exists {
 		role := objectString(raw)
 		switch role {
-		case team.RoleLead, team.RoleMember, team.RoleReviewer:
+		case team.RoleLead, team.RoleMember, team.RoleReviewer, team.RoleAdvisor:
 			member.Role = role
 		default:
 			h.fail(http.StatusBadRequest, errorBody("成员角色无效："+role))
@@ -3532,7 +3532,7 @@ func (h *handler) validateTeamMember(entry *jsoncompat.Object, index int) error 
 		return fmt.Errorf("成员 %s 的备注名过长：最多 120 字", id)
 	}
 	switch role := stringField(entry, "role"); role {
-	case "", team.RoleLead, team.RoleMember, team.RoleReviewer:
+	case "", team.RoleLead, team.RoleMember, team.RoleReviewer, team.RoleAdvisor:
 	default:
 		return fmt.Errorf("成员 %s 的角色无效：%s", id, role)
 	}

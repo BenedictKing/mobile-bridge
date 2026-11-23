@@ -11,7 +11,7 @@ const goalPlanningInstruction = "\n[Goal workflow planning]\n先明确完整原�
 
 const goalFeedbackInstruction = "你是目标评估与续做控制回合。逐项核对完整原目标、计划验收条件、实际产物与执行结果。任务 completed 仅表示回合结束；只有进度说明、空结果、降级产物或未验证声明不能作为完成证据。返回一个 team-actions 对象，包含 feedback 与 actions；可以在块外给用户可读说明。feedback={\"status\":\"continue/complete/blocked\",\"checks\":[{\"id\":\"条件ID\",\"state\":\"met/unmet/unknown\",\"evidenceTaskIds\":[\"已完成且有可读结果的任务ID\"],\"reason\":\"具体依据\"}],\"remaining\":[\"尚未完成的具体工作\"],\"blockers\":[\"权限、环境或外部资源阻塞\"]}。只有全部条件有证据满足、remaining/blockers 为空时才 complete，actions=[]。未完成且仍有可推进工作时 continue，并在 actions 中派发下一批独立 workflow；只补缺口，保留有效成果，不重复全部工作。审查不通过时只针对其中的阻塞问题派发返工，「建议」不构成返工理由；返工任务要求同时补一条能拦住同类错误的测试或检查。同一 workflow 自用户最近一次输入以来审查不通过达到 2 次后，不再为它派发返工，改为在 blockers 中列出剩余阻塞问题，交用户决定。某些外部步骤阻塞时继续其余可推进部分。只有无法再推进时 blocked，actions=[]，明确需要用户处理什么。不要只做最终汇总，不要缩小目标、提高预算或自行解除用户停止。"
 
-func goalPlanningBriefing(run *Run, task *Task) string {
+func goalPlanningBriefing(team *Team, run *Run, task *Task) string {
 	if run == nil || run.Planning == nil || task == nil || task.WorkflowID != "" || task.ExecutionContext == ExecutionContextLeadRun || task.IssueClassificationOnly || (task.Reduction && !task.GoalFeedback) {
 		return ""
 	}
@@ -24,7 +24,17 @@ func goalPlanningBriefing(run *Run, task *Task) string {
 		var facts strings.Builder
 		for _, executed := range run.Tasks {
 			text := ResultDisplayText(executed.Result)
-			fmt.Fprintf(&facts, "taskId=%s workflowId=%s status=%s resultPresent=%t · %s\n", executed.ID, executed.WorkflowID, executed.Status, text != "", truncateRunes(text, 240))
+			verdict := ""
+			if executed.ResultDetail != nil && executed.ResultDetail.ReviewVerdict != "" {
+				verdict = " reviewVerdict=" + executed.ResultDetail.ReviewVerdict
+				if executed.ReviewVerdictStale {
+					verdict += "(stale)"
+				}
+			}
+			fmt.Fprintf(&facts, "taskId=%s workflowId=%s status=%s%s resultPresent=%t · %s\n", executed.ID, executed.WorkflowID, executed.Status, verdict, text != "", truncateRunes(text, 240))
+			if note := readOnlyWriteNote(team, &executed); note != "" {
+				facts.WriteString(note + "\n")
+			}
 			if executed.ExecutionContext == ExecutionContextLeadControl && !executed.GoalFeedback {
 				fmt.Fprintf(&facts, "控制输入：%s\n", truncateRunes(executed.Prompt, 1000))
 			}

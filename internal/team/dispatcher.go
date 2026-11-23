@@ -421,14 +421,14 @@ func composeTaskDispatchMessage(team *Team, run *Run, task *Task, policy TeamPol
 func composeTaskDispatchMessageWithBriefing(team *Team, run *Run, task *Task, policy TeamPolicy, leadBriefing string) composedTaskMessage {
 	context := BuildTaskContext(run, task, policy)
 	lead := BuildLeadBriefing(team, run, task, policy)
-	lead += goalPlanningBriefing(run, task)
+	lead += goalPlanningBriefing(team, run, task)
 	leadTask := team != nil && run != nil && task != nil && run.AutoPlan &&
 		team.LeadID != "" && task.MemberID == team.LeadID && !task.Reduction &&
 		(task.ExecutionContext != ExecutionContextLeadRun || task.IssueClassificationOnly)
 	if lead != "" || (leadTask && leadBriefing != "") {
 		lead += leadBriefing
 	}
-	briefing := lead + BuildReviewBriefing(team, task)
+	briefing := lead + BuildReviewBriefing(team, task) + BuildMemberBriefing(team, run, task)
 	briefing += SwarmBriefing(run, task)
 	if task.IssueClassificationOnly {
 		briefing = leadBriefing

@@ -171,6 +171,29 @@ test('team settings renders capability tags as capsules removable before save',a
   assert.deepEqual(find(settings.body,'team-member-save-tags').map(button=>button.disabled),[true,true]);
 });
 
+test('team settings offers capability presets and toggles read-only advisor',async()=>{
+  const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['代码审查']:[]}))};
+  const patches=[];
+  const settings=new TeamSettingsDialog({request:async(path,options={})=>{
+    if(path==='/api/teams/team-1'&&!options.method)return team;
+    if(path==='/api/projects')return{agents:[]};
+    if(path==='/api/teams/team-1/members/dev'){patches.push(options.body);return{...team,version:3,members:team.members.map(member=>member.id==='dev'?{...member,...options.body}:member)};}
+    throw new Error('unexpected request '+path);
+  }});
+  await settings.open(team);
+  const presets=find(settings.body,'team-tag-presets');
+  assert.equal(presets.length,2);
+  assert(!presets[1].children.some(chip=>chip.textContent.includes('代码审查')),'已有的预设不再重复提供');
+  presets[1].children.find(chip=>chip.textContent.includes('后端/算法')).onclick();
+  assert.deepEqual(find(settings.body,'team-tag-chip').map(chip=>chip.children[0].textContent),['代码审查','后端/算法']);
+  assert.equal(find(settings.body,'team-member-save-tags')[1].disabled,false);
+  const toggles=find(settings.body,'team-member-advisor');
+  assert.equal(toggles.length,1,'主控不提供顾问开关');
+  const checkbox=toggles[0].children[0];checkbox.checked=true;checkbox.onchange();await flush();
+  assert.deepEqual(patches,[{role:'advisor',version:2}]);
+  assert.match(find(settings.body,'team-member-role')[1].textContent,/只读顾问/);
+});
+
 test('team settings enables save only when typed or committed tags change the member',async()=>{
   const team={...teams[0],version:2,members:teams[0].members.map(member=>({...member,tags:member.id==='dev'?['前端']:[]}))};
   let patch=null;
