@@ -718,9 +718,23 @@ func TestZcodeMonitorNormalizePercentageOnly(t *testing.T) {
 }
 
 func TestZcodeQueryQuotaFlow(t *testing.T) {
+	const deviceMid = "device-mid-for-billing"
+	home := t.TempDir()
+	t.Setenv("ZCODE_HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, "v2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "v2", "telemetry-state.json"), []byte(`{"deviceMid":"`+deviceMid+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	var billingHits, monitorHits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/billing/") && r.Header.Get("X-Device-Mid") != deviceMid {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":3001,"msg":"parameter error"}`))
+			return
+		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/billing/current"):
 			billingHits++
@@ -774,6 +788,9 @@ func TestZcodeQueryQuotaMonitorFallback(t *testing.T) {
 			if r.Header.Get("authorization") != "bigmodel-key-1234567890123" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
+			}
+			if r.Header.Get("X-Device-Mid") != "" {
+				t.Error("monitor must not get the ZCode device header")
 			}
 			_, _ = w.Write([]byte(`{"code":200,"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","usage":100,"currentValue":97}]}}`))
 			return

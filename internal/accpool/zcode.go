@@ -414,6 +414,33 @@ func parseJSONObject(text string) map[string]any {
 
 // --- quota fetching (quota.js) ------------------------------------------------
 
+func zcodeDeviceMid() string {
+	home := zcodeHome()
+	if home == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(home, "v2", "telemetry-state.json"))
+	if err != nil {
+		return ""
+	}
+	var state struct {
+		DeviceMid string `json:"deviceMid"`
+	}
+	if json.Unmarshal(raw, &state) != nil {
+		return ""
+	}
+	deviceMid := strings.TrimSpace(state.DeviceMid)
+	if deviceMid == "" {
+		return ""
+	}
+	for _, r := range deviceMid {
+		if r < 0x20 || r > 0x7e {
+			return ""
+		}
+	}
+	return deviceMid
+}
+
 func zcodeBillingURL(base string) string {
 	parsed, err := url.Parse(base)
 	if err != nil {
@@ -428,8 +455,9 @@ func zcodeBillingURL(base string) string {
 
 // zcodeGet performs one authorized GET against a JSON endpoint with the
 // shared 15s client. bearer selects the "Bearer " prefix (billing) versus a
-// bare token (BigModel monitor, which 401s a duplicated scheme).
-func zcodeGet(ctx context.Context, endpoint, token string, bearer bool) ([]byte, int, error) {
+// bare token (BigModel monitor, which 401s a duplicated scheme). deviceMid is
+// set only for ZCode billing requests.
+func zcodeGet(ctx context.Context, endpoint, token string, bearer bool, deviceMid string) ([]byte, int, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, 0, err
@@ -440,6 +468,9 @@ func zcodeGet(ctx context.Context, endpoint, token string, bearer bool) ([]byte,
 	} else {
 		request.Header.Set("accept", "application/json")
 		request.Header.Set("authorization", token)
+	}
+	if deviceMid != "" {
+		request.Header.Set("X-Device-Mid", deviceMid)
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
@@ -468,9 +499,10 @@ func zcodeGet(ctx context.Context, endpoint, token string, bearer bool) ([]byte,
 // 429 backoff (0.5s / 1.5s / 4s).
 func fetchZcodeBilling(ctx context.Context, endpoint, token string) (map[string]any, error) {
 	backoffs := []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond, 4 * time.Second}
+	deviceMid := zcodeDeviceMid()
 	var lastErr error
 	for attempt := 0; ; attempt++ {
-		body, status, err := zcodeGet(ctx, endpoint, token, true)
+		body, status, err := zcodeGet(ctx, endpoint, token, true, deviceMid)
 		if err == nil {
 			var decoded map[string]any
 			if jsonErr := json.Unmarshal(body, &decoded); jsonErr != nil {
@@ -541,7 +573,7 @@ func fetchZcodeBillingPair(ctx context.Context, token string) (*Quota, error) {
 // fetchZcodeMonitor queries one BigModel monitor endpoint; the payload must
 // carry code == 200 and a data object to count as usable.
 func fetchZcodeMonitor(ctx context.Context, endpoint, token string) (map[string]any, error) {
-	body, _, err := zcodeGet(ctx, endpoint, token, false)
+	body, _, err := zcodeGet(ctx, endpoint, token, false, "")
 	if err != nil {
 		return nil, err
 	}
@@ -1504,7 +1536,7 @@ func (f *zcodeOAuthFlow) poll(ctx context.Context) (map[string]any, error) {
 		if !now.Before(f.deadline) {
 			return nil, errors.New("登录超时，请重试")
 		}
-		body, status, err := zcodeGet(ctx, pollURL, f.pollToken, true)
+		body, status, err := zcodeGet(ctx, pollURL, f.pollToken, true, "")
 		if err != nil {
 			// 4xx（408/429 除外）是致命的；其余（网络抖动、5xx）下一周期重试。
 			if status >= 400 && status < 500 &&
@@ -1644,7 +1676,7 @@ func waitZcodeBillingReady(ctx context.Context, jwt string) (bool, error) {
 // zcodeBillingHasPlans probes billing/current once: 2xx with a non-empty
 // /data/plans array counts as ready.
 func zcodeBillingHasPlans(ctx context.Context, jwt string) (bool, error) {
-	body, _, err := zcodeGet(ctx, zcodeBillingReadyURL, jwt, true)
+	body, _, err := zcodeGet(ctx, zcodeBillingReadyURL, jwt, true, zcodeDeviceMid())
 	if err != nil {
 		return false, err
 	}
