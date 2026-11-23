@@ -51,11 +51,12 @@ test('project groups retain their default team entry',()=>{
   assert.equal(find(sessions,'session').length,2);
 });
 
-test('default team background stays distinct from the selected conversation',()=>{
+test('default team uses a distinct selected background in light and dark themes',()=>{
   const css=readFileSync(require.resolve('../web/presentation.css'),'utf8');
   assert.match(css,/\.session\.selected,\.team-sidebar-item\.selected\{background:var\(--raised\)/);
-  assert.match(css,/\.default-team,\.default-team\.selected\{background:var\(--soft\)\}/);
-  assert.match(css,/:root\[data-theme=dark\] \.default-team,:root\[data-theme=dark\] \.default-team\.selected\{background:var\(--active\)\}/);
+  assert.match(css,/\.default-team\{background:var\(--soft\)\}/);
+  assert.match(css,/\.default-team\.selected\{background:color-mix\(in srgb,var\(--signal\) 14%,var\(--surface\)\)\}/);
+  assert.match(css,/:root\[data-theme=dark\] \.default-team\.selected\{background:color-mix\(in srgb,var\(--signal\) 22%,var\(--raised\)\)\}/);
   assert.match(css,/\.default-team\.selected\{border-color:color-mix\(in srgb,var\(--accent\) 50%,transparent\);box-shadow:var\(--shadow-2\),inset 3px 0 var\(--accent\)\}/);
 });
 
