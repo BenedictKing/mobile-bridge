@@ -28,6 +28,7 @@ function loadNav({compact=true}={}){
   const calls=[];
   const nodes={app:new FakeNode(),chat:new FakeNode(),welcome:new FakeNode(),'team-run':new FakeNode()};
   const context={
+    openChatRequest:0,
     location:{hash:'',pathname:'/',search:''},
     history:{
       pushState(state,title,url){calls.push(['push',url]);this.state=state;context.location.hash=url.startsWith('#')?url:'';},

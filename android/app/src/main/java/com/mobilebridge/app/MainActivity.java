@@ -61,6 +61,7 @@ public final class MainActivity extends Activity {
     private static final String NOTIFICATION_CHANNEL = "chat";
     private static final String EXTRA_CHAT_HOST = "chat-host";
     private static final String EXTRA_CHAT_ID = "chat-id";
+    private static final String EXTRA_GATEWAY_ID = "gateway-id";
     // 与 web/presentation.css 的 --page / --text / --muted / --error / --accent 保持一致。
     private static final int ACCENT = 0xff4664ed;
     private static final int[] LIGHT = {0xffffffff, 0xff20242c, 0xff626975, 0xffb43838, 0xffe3e6ec};
@@ -98,6 +99,7 @@ public final class MainActivity extends Activity {
     // enter() 通过 consumePendingChat() 取走；页面已加载时直接派事件。
     private String pendingChatHost = "";
     private String pendingChatId = "";
+    private String pendingChatGatewayId = "";
     private int connectionGeneration;
     private boolean dark;
     // 网页在 JS 线程读取当前线路，主线程写入；整体替换一个 JSON 串，避免读到半更新的 mode/host。
@@ -580,6 +582,7 @@ public final class MainActivity extends Activity {
                 JSONObject chat = new JSONObject().put("host", pendingChatHost).put("id", pendingChatId);
                 pendingChatHost = "";
                 pendingChatId = "";
+                pendingChatGatewayId = "";
                 return chat.toString();
             } catch (Exception impossible) {
                 return "";
@@ -614,6 +617,7 @@ public final class MainActivity extends Activity {
             String id = data.optString("id");
             if (id.isEmpty()) return;
             String key = data.optString("key", host + "|" + id);
+            String notificationKey = activeGatewayId + "|" + key;
             String title = data.optString("title", getString(android.R.string.dialog_alert_title));
             String body = data.optString("body");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -622,8 +626,9 @@ public final class MainActivity extends Activity {
             }
             Intent open = new Intent(this, MainActivity.class)
                 .putExtra(EXTRA_CHAT_HOST, host)
-                .putExtra(EXTRA_CHAT_ID, id);
-            android.app.PendingIntent tap = android.app.PendingIntent.getActivity(this, key.hashCode(), open,
+                .putExtra(EXTRA_CHAT_ID, id)
+                .putExtra(EXTRA_GATEWAY_ID, activeGatewayId);
+            android.app.PendingIntent tap = android.app.PendingIntent.getActivity(this, notificationKey.hashCode(), open,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
             android.app.Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new android.app.Notification.Builder(this, NOTIFICATION_CHANNEL)
@@ -635,7 +640,7 @@ public final class MainActivity extends Activity {
                 .setAutoCancel(true)
                 .setContentIntent(tap);
             // 同一会话同一事件重复投递时替换旧通知，避免通知栏堆积。
-            notificationManager().notify(key.hashCode(), builder.build());
+            notificationManager().notify(notificationKey.hashCode(), builder.build());
         } catch (Exception ignored) {
             // 通知失败不能影响聊天主流程。
         }
@@ -648,13 +653,38 @@ public final class MainActivity extends Activity {
         pendingChatHost = intent.getStringExtra(EXTRA_CHAT_HOST);
         if (pendingChatHost == null || pendingChatHost.isEmpty()) pendingChatHost = "local";
         pendingChatId = id;
+        String requestedGatewayId = intent.getStringExtra(EXTRA_GATEWAY_ID);
+        pendingChatGatewayId = requestedGatewayId == null || requestedGatewayId.isEmpty()
+            ? activeGatewayId : requestedGatewayId;
         intent.removeExtra(EXTRA_CHAT_ID);
+        intent.removeExtra(EXTRA_GATEWAY_ID);
+        if (requestedGatewayId != null && !requestedGatewayId.isEmpty()) {
+            GatewayProfile target = NotificationGatewayTarget.resolve(gateways, requestedGatewayId);
+            if (target == null) {
+                clearPendingChat();
+                showSettings("通知对应的网关已删除，请从现有网关重新打开会话。");
+                return;
+            }
+            if (!target.id.equals(activeGatewayId)) {
+                selectedGatewayId = target.id;
+                refreshGatewayEditor();
+                connect();
+                return;
+            }
+        }
         // 页面已加载时直接打开；冷启动则等网页 enter() 拉取 consumePendingChat()。
         if (publicLoaded) dispatchPendingChat();
     }
 
+    private void clearPendingChat() {
+        pendingChatHost = "";
+        pendingChatId = "";
+        pendingChatGatewayId = "";
+    }
+
     private void dispatchPendingChat() {
         if (pendingChatId.isEmpty() || webView == null) return;
+        if (!pendingChatGatewayId.isEmpty() && !pendingChatGatewayId.equals(activeGatewayId)) return;
         try {
             JSONObject chat = new JSONObject().put("host", pendingChatHost).put("id", pendingChatId);
             // 只派发，不在这里消费；网页确认已登录后才通过 consumePendingChat() 取走。
@@ -740,6 +770,8 @@ public final class MainActivity extends Activity {
     }
 
     private void connect() {
+        if (!pendingChatId.isEmpty() && !pendingChatGatewayId.isEmpty()
+            && !pendingChatGatewayId.equals(selectedGatewayId)) clearPendingChat();
         URI origin;
         try {
             origin = normalizeOrigin(urlInput.getText().toString().trim());

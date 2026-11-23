@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id),t=BridgeI18n.t;
 let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false;
+let openChatRequest=0;
 let currentHost='local', listRows=[], projectDirectory=[], listGeneration=0, listLoading=false, listHasMore=false;
 let chatTimeline=null;
 BridgeConnection.onchange=()=>{BridgeTransport.wake?.();chatTimeline?.refill?.();refreshActivity();};
@@ -577,7 +578,9 @@ function showDetailRoute(hash){
   if(!compactLayout()||location.hash||detailPushed)history.replaceState(routeState,'',hash);
   else{history.pushState(null,'',hash);detailPushed=true;}
 }
+function invalidatePendingChatOpen(){openChatRequest++;}
 function closeDetailView(){
+  invalidatePendingChatOpen();
   if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();
   $('team-run').hidden=true;openRunRoute='';
   $('app').classList.remove('chat-open','team-open');
@@ -616,11 +619,14 @@ $('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();
 // 选中消息正文即可引用评论：只读会话不给这个入口，避免往禁用输入框里塞文字。
 const selectionQuote=BridgeSelection.attach({root:$('messages'),textarea:$('message'),enabled:()=>!!currentId&&!state?.readOnly,notify:toast});
 async function openChat(id,host="local",teamId=""){
+  const request=++openChatRequest;
   const nextTeam=host==='local'&&!chatRunSource(id,host)?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
   try{await BridgeLazy.load('markdown');}
-  catch(error){toast(t('消息渲染组件加载失败，请重新打开聊天重试：')+error.message);return false;}
+  catch(error){if(request===openChatRequest)toast(t('消息渲染组件加载失败，请重新打开聊天重试：')+error.message);return false;}
+  if(request!==openChatRequest)return false;
   if(nextTeam)try{await ensureTeamCanvas();}
-  catch(error){toast(t('团队画布加载失败，请重新打开团队聊天重试：')+error.message);return false;}
+  catch(error){if(request===openChatRequest)toast(t('团队画布加载失败，请重新打开团队聊天重试：')+error.message);return false;}
+  if(request!==openChatRequest)return false;
   if(teamDashboardPage&&!teamDashboardPage.hidden)hideTeamDashboard({fromRoute:true});
   currentTeam=nextTeam;
   syncChatRunSource(id,host);
@@ -641,6 +647,7 @@ if(currentTeam)chatTimeline?.setViewportLocked(true);
   // Opening a chat activates its original owner while saved history paints.
   api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
   await reading;
+  if(request!==openChatRequest)return false;
   if(!timeline.abort.signal.aborted){teamCanvas?.afterHistoryRead();loadNotificationState(id,host);loadPermissionSettings(id,host);}
   return true;
 }
@@ -2309,6 +2316,7 @@ function renderTeamDashboardSummary(panel=teamsPanel){
 }
 function openTeamDashboard({fromRoute=false}={}){
   if(!teamDashboardPage)return;
+  invalidatePendingChatOpen();
   loadGraphLayout();
   if(fromRoute)teamDashboardPushed=!!history.state?.teamDashboard;
   else if(location.hash!=='#teams'){
@@ -2382,6 +2390,7 @@ function closeTeamRunView(){
 }
 function openTeamRun(teamId,runId,fromRoute=false,taskId=''){
   if(!teamRunScreen)return;
+  invalidatePendingChatOpen();
   loadGraphLayout();loadSwarmPanel();
   const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
   openRunRoute='#run='+encodeURIComponent(teamId)+'/'+encodeURIComponent(runId);
