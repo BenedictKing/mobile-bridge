@@ -152,8 +152,9 @@ func TestReviewerExecutionAndReviewAreDistinct(t *testing.T) {
 	if got := composeTaskDispatchMessage(team, run, execution, team.Policy).text; strings.Contains(got, "[Team review]") {
 		t.Fatalf("执行任务不得注入审查协议:\n%s", got)
 	}
-	if got := composeTaskDispatchMessage(team, run, review, team.Policy).text; !strings.Contains(got, "[Team review]") {
-		t.Fatalf("审查任务缺少裁决协议:\n%s", got)
+	if got := composeTaskDispatchMessage(team, run, review, team.Policy).text; !strings.Contains(got, "[Team review]") ||
+		!strings.Contains(got, "「阻塞问题」只收能写出具体触发场景") || !strings.Contains(got, "没有阻塞问题时写 <team-review>passed</team-review>") {
+		t.Fatalf("审查任务缺少分级裁决协议:\n%s", got)
 	}
 	action := &Action{Type: ActionTypeDelegate, SourceTaskID: "lead", Round: 1, Member: "rev", Task: "实现", Review: reviewFlag(false)}
 	if task := buildActionTask(run, team, action); task.WriteLock != TaskWriteLockExclusive || IsReviewTask(team, &task) {

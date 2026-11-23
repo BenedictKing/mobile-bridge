@@ -183,6 +183,27 @@ func goalFeedbackIsStale(run *Run, feedbackTask *Task) bool {
 	return false
 }
 
+// maxFailedReviewsPerWorkflow 是同一 workflow 自用户最近一次输入以来允许的
+// 审查不通过次数；达到后不再自动返工，交用户决定，避免审查—返工无限往复。
+const maxFailedReviewsPerWorkflow = 2
+
+// failedReviewsSinceUserInput 统计 workflow 在最近一次用户输入之后的审查不通过
+// 次数。run.Tasks 按创建顺序追加；用户追加输入视为重新授权，计数归零。
+func failedReviewsSinceUserInput(run *Run, workflowID string) int {
+	failed := 0
+	for i := range run.Tasks {
+		task := &run.Tasks[i]
+		if isUserInputTask(task) {
+			failed = 0
+			continue
+		}
+		if task.WorkflowID == workflowID && task.Status == TaskCompleted && task.ResultDetail != nil && task.ResultDetail.ReviewVerdict == ReviewVerdictFailed {
+			failed++
+		}
+	}
+	return failed
+}
+
 func planningWorkflow(state *GoalPlanningState, id string) *PlanningWorkflow {
 	if state != nil {
 		for i := range state.Workflows {
@@ -294,6 +315,14 @@ func applyPlanningFeedback(state *GoalPlanningState, run *Run, feedback planning
 		}
 		if len(feedback.Remaining) == 0 || !hasDelegate {
 			return fmt.Errorf("continue 必须明确剩余工作并派发至少一个实际 delegate")
+		}
+		for _, action := range actions {
+			if action.Type != ActionTypeDelegate {
+				continue
+			}
+			if failed := failedReviewsSinceUserInput(run, action.WorkflowID); failed >= maxFailedReviewsPerWorkflow {
+				return fmt.Errorf("workflow %s 自用户最近一次输入以来已有 %d 次审查不通过，不再自动返工：不要为它派发任务；其他 workflow 仍可 continue，否则用 blocked 在 blockers 中列出剩余阻塞问题，交用户决定接受现状还是继续返工", action.WorkflowID, failed)
+			}
 		}
 	case "blocked":
 		if len(feedback.Blockers) == 0 || len(actions) > 0 {

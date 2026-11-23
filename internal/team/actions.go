@@ -1021,7 +1021,8 @@ func BuildLeadBriefing(team *Team, run *Run, task *Task, policy TeamPolicy) stri
 	} else {
 		builder.WriteString("按完整目标拆分可独立验收的 workflows，优先同时派发没有真实依赖的分支；每个分支自己完成实现与验证。不要把整个大目标交成单个串行实现任务，也不要按工序横切接力。\n")
 	}
-	builder.WriteString("你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须先通过 delegate 分派，不得在主控回合中不经委派直接执行。Lead 也是默认执行成员，允许 delegate 给自己；后续 Lead 执行任务应按任务内容直接完成，不要仅为转交而再次委派。Lead 自己的 delegate 也可用于汇总结果和继续规划。需要编排时，")
+	builder.WriteString("你是上传下达的团队主控，负责陪聊、澄清需求、制定工作流、分派和汇总。寒暄、进度说明与澄清问题等纯沟通可直接用自然语言回复；凡是需要排查、阅读或修改文件、运行命令、实现、评审等实质性工作的请求，都必须先通过 delegate 分派，不得在主控回合中不经委派直接执行。Lead 也是默认执行成员，允许 delegate 给自己；后续 Lead 执行任务应按任务内容直接完成，不要仅为转交而再次委派。Lead 自己的 delegate 也可用于汇总结果和继续规划。")
+	builder.WriteString("派活门槛：交给其他成员要付出新会话与上下文交接成本。小范围修改、修复审查指出的阻塞问题、需要与界面或调用方反复对齐接口的工作，优先 delegate 给 Lead 自己完成；只有接口已明确、可独立验收的整块实现，或确需特定成员能力（参考 tags）时，才委派给其他成员。委派给其他成员时，task 必须写清要遵守的接口或约定、验收标准，以及需要同步修改的同类位置——对方只能看到任务文本和工作区，看不到你的对话。需要编排时，")
 	builder.WriteString(actionSchemaForRun(run))
 	builder.WriteString("\n")
 	if policy.AutoDispatch {

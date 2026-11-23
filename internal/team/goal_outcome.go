@@ -128,11 +128,16 @@ func NewGoalScope(id, text string) GoalScope {
 func RunGoalScope(run *Run) GoalScope {
 	texts := []string{run.Goal}
 	for _, task := range run.Tasks {
-		if strings.HasPrefix(task.ID, "input-") && task.ExecutionContext == ExecutionContextLeadControl {
+		if isUserInputTask(&task) {
 			texts = append(texts, task.Prompt)
 		}
 	}
 	return NewGoalScope("run", strings.Join(texts, "\n\n"))
+}
+
+// isUserInputTask 判定任务是否承载用户在 Run 内追加的聊天输入。
+func isUserInputTask(task *Task) bool {
+	return strings.HasPrefix(task.ID, "input-") && task.ExecutionContext == ExecutionContextLeadControl
 }
 
 // GoalEvidenceHash 不包含评估记录或 Run.Version，重复确认不改变证据身份。

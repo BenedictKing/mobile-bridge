@@ -635,3 +635,26 @@ func TestGoalWorkflowTaskLimitChatStartsAmendRun(t *testing.T) {
 		t.Fatalf("修订 Run 血缘或输入路由错误：run=%+v input=%+v", fresh, input)
 	}
 }
+
+func TestGoalWorkflowReviewLoopCapDefersToUser(t *testing.T) {
+	state := &GoalPlanningState{Criteria: []PlanningCriterion{{ID: "all", Text: "完整交付"}}, Workflows: []PlanningWorkflow{{ID: "a"}, {ID: "b"}}}
+	failedReview := func(id string) Task {
+		return Task{ID: id, MemberID: "rev", WorkflowID: "a", Status: TaskCompleted, Result: "阻塞问题…", ResultDetail: &TaskResult{ReviewVerdict: ReviewVerdictFailed}}
+	}
+	run := &Run{Tasks: []Task{failedReview("r1"), {ID: "fix", WorkflowID: "a", Status: TaskCompleted, Result: "已修复"}, failedReview("r2")}}
+	feedback := planningFeedback{Status: "continue", Checks: []PlanningCheck{{ID: "all", State: "unmet"}}, Remaining: []string{"修复审查问题"}}
+	err := applyPlanningFeedback(cloneGoalPlanning(state), run, feedback, []Action{workflowAction("lead", "a")})
+	if err == nil || !strings.Contains(err.Error(), "blocked") {
+		t.Fatalf("同一 workflow 审查不通过达到上限后应交用户决定，实际 %v", err)
+	}
+	if err := applyPlanningFeedback(cloneGoalPlanning(state), run, feedback, []Action{workflowAction("lead", "b")}); err != nil {
+		t.Fatalf("其他 workflow 不受审查轮数上限影响：%v", err)
+	}
+	run.Tasks = append(run.Tasks, Task{ID: "input-1", MemberID: "lead", ExecutionContext: ExecutionContextLeadControl, Status: TaskCompleted, Prompt: "再审一轮"})
+	if err := applyPlanningFeedback(cloneGoalPlanning(state), run, feedback, []Action{workflowAction("lead", "a")}); err != nil {
+		t.Fatalf("用户追加输入后应重新允许返工：%v", err)
+	}
+	if !strings.Contains(goalFeedbackInstruction, fmt.Sprintf("达到 %d 次", maxFailedReviewsPerWorkflow)) {
+		t.Fatal("评估提示词中的审查轮数必须与硬校验上限一致")
+	}
+}

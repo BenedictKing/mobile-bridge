@@ -103,11 +103,17 @@ func BuildReviewBriefing(team *Team, task *Task) string {
 	if !IsReviewTask(team, task) {
 		return ""
 	}
+	// 分级口径：只有可复现的阻塞问题才判不通过，建议不触发返工——否则审查会
+	// 在边缘情况上无限往复（每轮总能再挑出几条）。
 	briefing := "[Team review]\n你是本团队的评审成员，本任务只做审查，不要修改文件。" +
-		"审查结束后，请在回复的最后一行单独输出裁决：通过写 " +
+		"把发现的问题分两节列出：「阻塞问题」只收能写出具体触发场景（什么输入或状态 → 产生什么错误结果）、" +
+		"且影响正确性、数据、安全或验收条件的问题，每条附文件位置与场景；" +
+		"风格、命名、可选优化、难以触发的极端情况和仅凭推测的风险一律列为「建议」。" +
+		"不要为了显得严格把建议升级为阻塞问题。" +
+		"审查结束后，请在回复的最后一行单独输出裁决：没有阻塞问题时写 " +
 		reviewVerdictOpenTag + ReviewVerdictPassed + reviewVerdictCloseTag +
-		"，不通过写 " + reviewVerdictOpenTag + ReviewVerdictFailed + reviewVerdictCloseTag +
-		"，并在前文列出问题。\n"
+		"（建议照常列出，不构成返工理由），有阻塞问题时写 " + reviewVerdictOpenTag + ReviewVerdictFailed + reviewVerdictCloseTag +
+		"。\n"
 	// 版本绑定说明（阶段 5，§6）：声明 reviewOf 的审查告知被审对象与绑定
 	// 语义——裁决基于当前工作区实际内容；之后的再次写入会使本裁决过期。
 	if task != nil && len(task.ReviewOf) > 0 {

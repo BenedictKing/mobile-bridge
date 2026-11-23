@@ -1399,6 +1399,7 @@ func TestBuildLeadBriefing(t *testing.T) {
 		"不得在主控回合中不经委派直接执行", "Lead 也是默认执行成员，允许 delegate 给自己",
 		"一件可独立验收的交付交给一个成员", "不要按产品、架构、前端、后端、测试等工序横切接力",
 		"缺少上下文时用 request_context 引用原始任务续读",
+		"派活门槛", "优先 delegate 给 Lead 自己完成", "需要同步修改的同类位置",
 		"collaborationPattern", "fan-out-and-synthesize", "adversarial-verification", "声明只表达规划意图",
 		"默认评审也是可执行任务的普通成员", "review=false", "review=true", "不要伪造评审结论",
 	} {
