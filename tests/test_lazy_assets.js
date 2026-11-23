@@ -49,7 +49,16 @@ test('markdown dependencies finish before the renderer and styles load in parall
   assert.deepEqual(requests.slice(0,4),[
     '/vendor/katex/katex.min.css','/vendor/markdown-it.min.js','/vendor/katex/katex.min.js','/vendor/texmath.js',
   ]);
-  assert.equal(requests[4],'/markdown.js');
+  assert.deepEqual(requests.slice(4),['/diff.js','/markdown.js']);
+});
+
+test('team canvas reuses graph layout and swarm stays independent',async()=>{
+  const {loader,requests}=harness();
+  await loader.load('graph');
+  await loader.load('teamCanvas');
+  assert.deepEqual(requests,['/vendor/dagre.min.js','/team-canvas.js']);
+  await loader.load('swarm');
+  assert.deepEqual(requests,['/vendor/dagre.min.js','/team-canvas.js','/team-swarm.js']);
 });
 
 test('a failed final resource retries without downloading successful dependencies again',async()=>{

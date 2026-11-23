@@ -6,9 +6,11 @@ const BridgeLazy=(()=>{
     markdown:{
       styles:['/vendor/katex/katex.min.css'],
       scripts:['/vendor/markdown-it.min.js','/vendor/katex/katex.min.js','/vendor/texmath.js'],
-      after:['/markdown.js'],
+      after:['/diff.js','/markdown.js'],
     },
     graph:{scripts:['/vendor/dagre.min.js']},
+    teamCanvas:{scripts:['/vendor/dagre.min.js','/team-canvas.js']},
+    swarm:{scripts:['/team-swarm.js']},
   };
   function createLazyLoader(doc){
     const resources=new Map(),loading=new Map();

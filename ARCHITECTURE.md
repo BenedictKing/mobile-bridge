@@ -129,7 +129,7 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 
 静态网页由 `internal/httpd/static_assets.go` 在创建 Server 时从嵌入 FS 装配：JS/CSS 经 Go minifier 压缩一次，按最终内容生成哈希地址并重写 `index.html` 引用；旧地址继续可用。HTML 使用 `no-store`，原始地址通过 ETag 重新验证，哈希地址使用 `private, max-age=31536000, immutable`。所有静态响应保留统一安全头并按 Accept-Encoding 使用预生成 gzip；条件命中返回 304。装配失败由静态请求显式报告 500，不混用其他来源或半成品资源。
 
-`web/lazy.js` 统一管理非首屏资源：生产 HTML 的非执行 JSON 清单把延迟组的原始 URL 映射到同次装配的哈希 URL。账号面板在点击入口后初始化，Markdown/KaTeX 在打开聊天前加载，Dagre 在团队视图按需加载并保留无图形库时的列表回退。加载器按依赖顺序去重，失败项可在下次进入时重试，不清空已成功的资源，也不触发任何业务写请求。既有脚本仍保持经典全局/CommonJS 兼容层，没有把本轮拆包等同于框架或 ES Module 全量重写。开发期可用锁定的 TypeScript 依赖解析全部自有 JS，并对以 `@ts-check` 显式纳入的文件执行 `checkJs`；新加载器已纳入，既有动态模块按类型收敛进度逐步增加。该检查不进入 Go 构建或网关运行链路。
+`web/lazy.js` 统一管理非首屏资源：生产 HTML 的非执行 JSON 清单把延迟组的原始 URL 映射到同次装配的哈希 URL。账号面板在点击入口后初始化，Markdown/KaTeX 与 Diff 在打开聊天前加载，Dagre 和团队画布在团队会话打开前初始化，Swarm 在进入 Run 详情后按需加载；普通团队 Lead 深链也经过画布初始化，图布局保留无图形库时的列表回退。加载器按依赖顺序去重，失败项可在下次进入时重试，不清空已成功的资源，也不触发任何业务写请求。既有脚本仍保持经典全局/CommonJS 兼容层，没有把本轮拆包等同于框架或 ES Module 全量重写。开发期可用锁定的 TypeScript 依赖解析全部自有 JS，并对以 `@ts-check` 显式纳入的文件执行 `checkJs`；新加载器、`SessionActivity` 与 `PendingCommands` 已纳入，既有动态模块按类型收敛进度逐步增加。该检查不进入 Go 构建或网关运行链路。
 
 聊天内容、事件流、长轮询和附件接口均需要登录。文件访问仅允许当前聊天引用的本地工作目录或 visualizations 文件，并校验解析后的真实路径及大小；例外是运行时事件产生的 ImageView 条目（桌面截图可在工作目录之外），其路径按事件记录受信。远端文件不映射到 本机文件系统。
 

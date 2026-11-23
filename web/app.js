@@ -616,10 +616,13 @@ $('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();
 // 选中消息正文即可引用评论：只读会话不给这个入口，避免往禁用输入框里塞文字。
 const selectionQuote=BridgeSelection.attach({root:$('messages'),textarea:$('message'),enabled:()=>!!currentId&&!state?.readOnly,notify:toast});
 async function openChat(id,host="local",teamId=""){
+  const nextTeam=host==='local'&&!chatRunSource(id,host)?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
   try{await BridgeLazy.load('markdown');}
-  catch(error){toast(t('消息渲染组件加载失败，请重新打开聊天重试：')+error.message);return;}
+  catch(error){toast(t('消息渲染组件加载失败，请重新打开聊天重试：')+error.message);return false;}
+  if(nextTeam)try{await ensureTeamCanvas();}
+  catch(error){toast(t('团队画布加载失败，请重新打开团队聊天重试：')+error.message);return false;}
   if(teamDashboardPage&&!teamDashboardPage.hidden)hideTeamDashboard({fromRoute:true});
-  currentTeam=host==='local'&&!chatRunSource(id,host)?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
+  currentTeam=nextTeam;
   syncChatRunSource(id,host);
   $('app').classList.remove('team-open');
   syncWorkspaceNavigation();
@@ -639,6 +642,7 @@ if(currentTeam)chatTimeline?.setViewportLocked(true);
   api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
   await reading;
   if(!timeline.abort.signal.aborted){teamCanvas?.afterHistoryRead();loadNotificationState(id,host);loadPermissionSettings(id,host);}
+  return true;
 }
 let permissionState={supported:false,options:[],current:null},permissionRequest=0;
 function renderPermissionState(){
@@ -2132,22 +2136,31 @@ const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatControll
     if(result&&currentTeam?.id===team.id&&currentId!==result.sessionId)await openChat(result.sessionId,'local',team.id);
   }catch(error){toast(error.message);}
 }});
-const teamCanvas=typeof TeamCanvasController==='undefined'?null:new TeamCanvasController({root:$('team-canvas'),request:teamRequest,
-  openRun:(teamId,runId,options)=>openTeamRun(teamId,runId,false,options?.taskId),
-  openSession:(sessionId,source)=>openRunConversation(sessionId,{...source,returnTo:'canvas'}),notify:toast});
-globalThis.BridgeTeamCanvas=teamCanvas;
+let teamCanvas=null;
+globalThis.BridgeTeamCanvas=null;
+async function ensureTeamCanvas(){
+  await BridgeLazy.load('teamCanvas');
+  if(teamCanvas)return;
+  teamCanvas=new TeamCanvasController({root:$('team-canvas'),request:teamRequest,
+    openRun:(teamId,runId,options)=>openTeamRun(teamId,runId,false,options?.taskId),
+    openSession:(sessionId,source)=>openRunConversation(sessionId,{...source,returnTo:'canvas'}),notify:toast});
+  globalThis.BridgeTeamCanvas=teamCanvas;
+}
+function loadSwarmPanel(){
+  if(typeof TeamSwarmPanel!=='undefined')return;
+  BridgeLazy.load('swarm').then(()=>teamRunScreen?.render()).catch(error=>toast(t('Swarm 面板加载失败，Run 详情仍可使用；下次打开 Run 时重试：')+error.message));
+}
 function loadGraphLayout(){
   if(globalThis.dagre)return;
   BridgeLazy.load('graph').then(()=>{teamsPanel?.render();teamRunScreen?.render();teamChat?.render();}).catch(error=>toast(t('图布局加载失败，已使用列表；下次进入团队视图时重试：')+error.message));
 }
 async function openTeamChat(team){
-  loadGraphLayout();
   const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
   if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
   const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
   if(fromDashboard){hideTeamDashboard({fromRoute:true});teamDashboardNavigation=true;teamRunReturnsToDashboard=false;}
   $('teams-dialog').close();
-  await openChat(lead.sessionId,'local',team.id);
+  if((await openChat(lead.sessionId,'local',team.id))===false)return;
   // 团队会话复用 Lead 会话：openChat 已按列表→详情压过栈，这里只把 hash 换成
   // #team=，转发/通知落 URL 时能还原成团队视图。
   showDetailRoute('#team='+encodeURIComponent(team.id));
@@ -2369,7 +2382,7 @@ function closeTeamRunView(){
 }
 function openTeamRun(teamId,runId,fromRoute=false,taskId=''){
   if(!teamRunScreen)return;
-  loadGraphLayout();
+  loadGraphLayout();loadSwarmPanel();
   const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
   openRunRoute='#run='+encodeURIComponent(teamId)+'/'+encodeURIComponent(runId);
   if(fromRoute&&history.state?.teamRunReturnToDashboard)teamRunReturnsToDashboard=true;

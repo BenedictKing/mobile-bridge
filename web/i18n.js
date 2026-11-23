@@ -2280,6 +2280,8 @@ const en={
   "消息渲染组件加载失败，请重新打开聊天重试：": "Message rendering failed to load. Reopen the chat to retry: ",
   "账号面板加载失败，请再次点击重试：": "The account panel failed to load. Click again to retry: ",
   "图布局加载失败，已使用列表；下次进入团队视图时重试：": "Graph layout failed to load. Showing the list; reenter the team view to retry: ",
+  "团队画布加载失败，请重新打开团队聊天重试：": "The team canvas failed to load. Reopen the team chat to retry: ",
+  "Swarm 面板加载失败，Run 详情仍可使用；下次打开 Run 时重试：": "The Swarm panel failed to load. Run details remain available; reopen the run to retry: ",
   "完成后解锁：": "Unlocks after completion: ",
   "没有下游任务": "No downstream tasks",
   "定位任务": "Locate task"

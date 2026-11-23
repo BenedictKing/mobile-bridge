@@ -201,7 +201,7 @@ func TestEmbeddedProductionManifestMapsDeferredAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	deferred := []string{
-		"/account.js", "/accounts.js", "/pool.js", "/markdown.js",
+		"/account.js", "/accounts.js", "/pool.js", "/markdown.js", "/diff.js", "/team-canvas.js", "/team-swarm.js",
 		"/vendor/markdown-it.min.js", "/vendor/katex/katex.min.js", "/vendor/katex/katex.min.css",
 		"/vendor/texmath.js", "/vendor/dagre.min.js",
 	}

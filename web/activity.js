@@ -1,4 +1,5 @@
 'use strict';
+// @ts-check
 class SessionActivity {
   constructor(){this.rows={};}
   id(row){return row.host+'|'+row.id;}

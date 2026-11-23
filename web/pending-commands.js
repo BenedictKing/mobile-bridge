@@ -1,4 +1,5 @@
 'use strict';
+// @ts-check
 // Each intent has its own storage key: another tab cannot replace its identity.
 class PendingCommands{
   constructor(storage,legacy){this.storage=storage;this.legacy=legacy;this.prefix='bridge.pending.v1:';}
