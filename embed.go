@@ -3,8 +3,8 @@ package mobilebridge
 
 import "embed"
 
-// WebFS holds web/ verbatim; the Go gateway serves it exactly like the
-// Python gateway serves the directory (no build step, same file names).
+// WebFS holds the web/ sources verbatim. The HTTP server prepares compressed
+// production responses in memory, so building the gateway still needs only Go.
 //
 //go:embed web
 var WebFS embed.FS

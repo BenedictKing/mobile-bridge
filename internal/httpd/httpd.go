@@ -16,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -93,6 +92,7 @@ type Server struct {
 	HiddenProjects   *hiddenProjects
 	Forks            *forkLedger
 	WebFS            fs.FS
+	assets           *staticAssetSet
 	InstanceID       string
 	Port             int
 	LocalHosts       map[string]bool // "127.0.0.1:port", "localhost:port"
@@ -193,6 +193,7 @@ func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Se
 		directGrants:  newDirectGrantStore(),
 		projections:   map[string]*projectionSlot{},
 		artifactCache: map[string]*artifactMemo{}, desktopPaths: map[string]map[string]string{}}
+	server.assets = prepareStaticAssets(webFS)
 	server.Bridge = server
 	return server
 }
@@ -511,33 +512,8 @@ func (h *handler) handleMethod(write bool) {
 		return
 	}
 	path := h.request.URL.Path
-	if !write {
-		if route, ok := staticRoutes[path]; ok {
-			if data, err := fs.ReadFile(h.server.WebFS, "web/"+route.file); err == nil {
-				h.output(http.StatusOK, data, route.contentType, "")
-				return
-			}
-		}
-		if strings.HasPrefix(path, "/vendor/") {
-			name := strings.TrimPrefix(path, "/")
-			if name == pathpkg.Clean(name) && !strings.Contains(name, "..") {
-				if data, err := fs.ReadFile(h.server.WebFS, "web/"+name); err == nil {
-					contentType := "application/octet-stream"
-					switch filepath.Ext(name) {
-					case ".js":
-						contentType = "text/javascript; charset=utf-8"
-					case ".css":
-						contentType = "text/css; charset=utf-8"
-					case ".woff", ".woff2":
-						contentType = "font/" + strings.TrimPrefix(filepath.Ext(name), ".")
-					case ".ttf":
-						contentType = "font/ttf"
-					}
-					h.output(http.StatusOK, data, contentType, "")
-					return
-				}
-			}
-		}
+	if !write && h.serveStatic() {
+		return
 	}
 	switch {
 	case !write && path == "/api/auth":

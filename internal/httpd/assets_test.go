@@ -1,6 +1,8 @@
 package httpd
 
 import (
+	"compress/gzip"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -101,6 +103,101 @@ func TestEmbeddedLoginShellReferencesAreServed(t *testing.T) {
 				t.Fatalf("shell asset %s status=%d, must serve embedded bytes before login", target, response.Code)
 			}
 		})
+	}
+}
+
+func TestEmbeddedProductionAssetsAreHashedAndCompressed(t *testing.T) {
+	server := New(auth.NewAuth(auth.Config{Mode: "password"}), mobilebridge.WebFS, 8790, "instance")
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790/", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("index status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
+	}
+	references := regexp.MustCompile(`<(?:script|link)\b[^>]*(?:src|href)="([^"]+)"`).FindAllSubmatch(response.Body.Bytes(), -1)
+	if len(references) == 0 {
+		t.Fatal("production shell has no assets")
+	}
+	hashed := regexp.MustCompile(`^(.+)\.[0-9a-f]{12}(\.(?:js|css|png|webmanifest))$`)
+	rawBytes, productionBytes := 0, 0
+	checkedScripts := 0
+	for _, reference := range references {
+		target := string(reference[1])
+		t.Run(target, func(t *testing.T) {
+			assetURL, err := url.Parse(target)
+			if err != nil || assetURL.IsAbs() || assetURL.RawQuery != "" {
+				t.Fatalf("unexpected production asset %q", target)
+			}
+			matches := hashed.FindStringSubmatch(assetURL.Path)
+			if matches == nil {
+				t.Fatalf("asset is not content hashed: %s", target)
+			}
+			originalPath := matches[1] + matches[2]
+			raw, err := mobilebridge.WebFS.ReadFile("web" + originalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790"+target, nil)
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != staticImmutableCache {
+				t.Fatalf("asset status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
+			}
+			rawBytes += len(raw)
+			productionBytes += response.Body.Len()
+			if response.Body.Len() > len(raw) {
+				t.Fatalf("production asset grew from %d to %d bytes", len(raw), response.Body.Len())
+			}
+			if strings.HasSuffix(originalPath, ".js") {
+				checkedScripts++
+			}
+			etag := response.Header().Get("ETag")
+			if etag == "" {
+				t.Fatal("asset has no ETag")
+			}
+			conditional := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790"+target, nil)
+			conditional.Header.Set("If-None-Match", etag)
+			notModified := httptest.NewRecorder()
+			server.ServeHTTP(notModified, conditional)
+			if notModified.Code != http.StatusNotModified || notModified.Body.Len() != 0 {
+				t.Fatalf("conditional status=%d body=%d", notModified.Code, notModified.Body.Len())
+			}
+			compressed := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790"+target, nil)
+			compressed.Header.Set("Accept-Encoding", "gzip")
+			gzipped := httptest.NewRecorder()
+			server.ServeHTTP(gzipped, compressed)
+			if gzipped.Header().Get("Content-Encoding") == "gzip" {
+				reader, err := gzip.NewReader(gzipped.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				unpacked, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(unpacked) != response.Body.String() {
+					t.Fatal("gzip content differs from production asset")
+				}
+			}
+		})
+	}
+	if checkedScripts < 20 || productionBytes >= rawBytes {
+		t.Fatalf("insufficient production coverage: scripts=%d raw=%d production=%d", checkedScripts, rawBytes, productionBytes)
+	}
+	t.Logf("production shell assets: raw=%d production=%d", rawBytes, productionBytes)
+}
+
+func TestStaticAssetAssemblyFailureIsExplicit(t *testing.T) {
+	web := fstest.MapFS{
+		"web/index.html": &fstest.MapFile{Data: []byte(`<script src="/app.js"></script>`)},
+		"web/app.js":     &fstest.MapFile{Data: []byte(`const {`)},
+	}
+	server := New(auth.NewAuth(auth.Config{Mode: "none"}), web, 8790, "instance")
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790/", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "静态资源装配失败") {
+		t.Fatalf("broken assets status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

@@ -8,8 +8,10 @@ require (
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/klauspost/compress v1.18.6
 	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/tdewolff/minify/v2 v2.25.0
 	golang.org/x/crypto v0.58.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.50.0
 	modernc.org/sqlite v1.60.1
 )
 
@@ -20,7 +22,7 @@ require (
 	github.com/miekg/dns v1.1.27 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/net v0.60.0 // indirect
+	github.com/tdewolff/parse/v2 v2.25.0 // indirect
 	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

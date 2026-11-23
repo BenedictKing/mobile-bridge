@@ -127,6 +127,8 @@ Windows 自动发现用户目录中的 App 运行时、常见安装目录、MSIX
 
 账号密码采用 PBKDF2-HMAC-SHA256，登录 Cookie 使用 HttpOnly、SameSite，HTTPS 入口加 Secure。Host 和 Origin 必须在允许列表；写操作还需 CSRF 令牌（预认证的 `/api/login`、`/api/pair` 除外，二者依赖强制 Origin 校验）；`GET /` 的跨站导航（`Sec-Fetch-Mode: navigate`）放行静态页面，API 仍受保护。
 
+静态网页由 `internal/httpd/static_assets.go` 在创建 Server 时从嵌入 FS 装配：JS/CSS 经 Go minifier 压缩一次，按最终内容生成哈希地址并重写 `index.html` 引用；旧地址继续可用。HTML 使用 `no-store`，原始地址通过 ETag 重新验证，哈希地址使用 `private, max-age=31536000, immutable`。所有静态响应保留统一安全头并按 Accept-Encoding 使用预生成 gzip；条件命中返回 304。装配失败由静态请求显式报告 500，不混用其他来源或半成品资源。
+
 聊天内容、事件流、长轮询和附件接口均需要登录。文件访问仅允许当前聊天引用的本地工作目录或 visualizations 文件，并校验解析后的真实路径及大小；例外是运行时事件产生的 ImageView 条目（桌面截图可在工作目录之外），其路径按事件记录受信。远端文件不映射到 本机文件系统。
 
 ## 模块
