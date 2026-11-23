@@ -25,7 +25,7 @@ GRADLE := JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home
 
 .PHONY: help build-matrix build-gateway build-gateway-package build-agent-host android-build build-ios serve \
 	install dev-cert start start-agent-host stop stop-agent-host restart status logs uninstall conformance \
-	test test-race check
+	test test-race check check-web
 
 # 各目标行内 ## 注释即帮助文案，此处自动汇总。
 help: ## 显示本帮助（make 默认目标）
@@ -203,6 +203,9 @@ test: ## 单元测试（go test ./...）
 # 数据竞争。首次运行需编译竞态插桩，耗时明显长于 make test。
 test-race: ## 竞态检测回归（go test -race ./...）
 	go test -race -count=1 ./...
+
+check-web: ## 前端解析、已纳入文件的 checkJs 与 Node 行为测试（先 npm ci）
+	npm run check:web
 
 # 提交前门禁：编译、vet、单测、竞态一次跑全（HTTP golden 对拍另见
 # make conformance，需要 python3）。

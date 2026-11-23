@@ -1,0 +1,11 @@
+{
+  "name": "mobile-bridge-web",
+  "private": true,
+  "scripts": {
+    "test:web": "node --test tests/test_*.js",
+    "check:web": "tsc -p tsconfig.json && npm run test:web"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

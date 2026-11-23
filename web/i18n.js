@@ -2277,6 +2277,9 @@ const en={
   "待分派": "Unassigned",
   "等待：": "Waiting for: ",
   "前置已满足": "All dependencies completed",
+  "消息渲染组件加载失败，请重新打开聊天重试：": "Message rendering failed to load. Reopen the chat to retry: ",
+  "账号面板加载失败，请再次点击重试：": "The account panel failed to load. Click again to retry: ",
+  "图布局加载失败，已使用列表；下次进入团队视图时重试：": "Graph layout failed to load. Showing the list; reenter the team view to retry: ",
   "完成后解锁：": "Unlocks after completion: ",
   "没有下游任务": "No downstream tasks",
   "定位任务": "Locate task"

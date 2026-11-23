@@ -436,6 +436,7 @@ var staticRoutes = map[string]staticRoute{
 	"/i18n.js":                    {"i18n.js", "text/javascript; charset=utf-8"},
 	"/icons.js":                   {"icons.js", "text/javascript; charset=utf-8"},
 	"/app.js":                     {"app.js", "text/javascript; charset=utf-8"},
+	"/lazy.js":                    {"lazy.js", "text/javascript; charset=utf-8"},
 	"/pending-commands.js":        {"pending-commands.js", "text/javascript; charset=utf-8"},
 	"/modes.js":                   {"modes.js", "text/javascript; charset=utf-8"},
 	"/attachments.js":             {"attachments.js", "text/javascript; charset=utf-8"},

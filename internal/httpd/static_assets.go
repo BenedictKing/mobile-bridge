@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -93,6 +94,20 @@ func prepareStaticAssets(webFS fs.FS) *staticAssetSet {
 			pattern := regexp.MustCompile(`"` + regexp.QuoteMeta(original) + `(?:\?[^"]*)?"`)
 			index = pattern.ReplaceAll(index, []byte(`"`+production+`"`))
 		}
+		deferredPaths := map[string]string{}
+		for original, production := range productionPaths {
+			if staticMediaType(original) != "" && !bytes.Contains(index, []byte(`"`+production+`"`)) {
+				deferredPaths[original] = production
+			}
+		}
+		manifest, marshalErr := json.Marshal(deferredPaths)
+		if marshalErr != nil {
+			assets.err = fmt.Errorf("marshal static asset manifest: %w", marshalErr)
+			return assets
+		}
+		marker := []byte(`<script id="bridge-assets" type="application/json">{}</script>`)
+		replacement := []byte(`<script id="bridge-assets" type="application/json">` + string(manifest) + `</script>`)
+		index = bytes.Replace(index, marker, replacement, 1)
 		assets.add("/", index, "text/html; charset=utf-8", "no-store")
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		assets.err = err

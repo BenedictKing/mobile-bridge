@@ -2,6 +2,7 @@ package httpd
 
 import (
 	"compress/gzip"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -185,6 +186,45 @@ func TestEmbeddedProductionAssetsAreHashedAndCompressed(t *testing.T) {
 		t.Fatalf("insufficient production coverage: scripts=%d raw=%d production=%d", checkedScripts, rawBytes, productionBytes)
 	}
 	t.Logf("production shell assets: raw=%d production=%d", rawBytes, productionBytes)
+}
+
+func TestEmbeddedProductionManifestMapsDeferredAssets(t *testing.T) {
+	server := New(auth.NewAuth(auth.Config{Mode: "password"}), mobilebridge.WebFS, 8790, "instance")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790/", nil))
+	match := regexp.MustCompile(`<script id="bridge-assets" type="application/json">([^<]+)</script>`).FindSubmatch(response.Body.Bytes())
+	if match == nil {
+		t.Fatal("production shell has no deferred asset manifest")
+	}
+	var manifest map[string]string
+	if err := json.Unmarshal(match[1], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	deferred := []string{
+		"/account.js", "/accounts.js", "/pool.js", "/markdown.js",
+		"/vendor/markdown-it.min.js", "/vendor/katex/katex.min.js", "/vendor/katex/katex.min.css",
+		"/vendor/texmath.js", "/vendor/dagre.min.js",
+	}
+	if len(manifest) != len(deferred) {
+		t.Errorf("manifest contains %d assets, want %d: %v", len(manifest), len(deferred), manifest)
+	}
+	hashed := regexp.MustCompile(`^(.+)\.[0-9a-f]{12}(\.(?:js|css))$`)
+	for _, original := range deferred {
+		production := manifest[original]
+		if !hashed.MatchString(production) {
+			t.Errorf("deferred asset %q has unhashed production URL %q", original, production)
+			continue
+		}
+		if strings.Contains(response.Body.String(), `src="`+original+`"`) || strings.Contains(response.Body.String(), `href="`+original+`"`) {
+			t.Errorf("deferred asset %q is still eagerly referenced", original)
+		}
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8790"+production, nil)
+		assetResponse := httptest.NewRecorder()
+		server.ServeHTTP(assetResponse, request)
+		if assetResponse.Code != http.StatusOK || assetResponse.Header().Get("Cache-Control") != staticImmutableCache || assetResponse.Body.Len() == 0 {
+			t.Errorf("deferred asset %q status=%d cache=%q bytes=%d", production, assetResponse.Code, assetResponse.Header().Get("Cache-Control"), assetResponse.Body.Len())
+		}
+	}
 }
 
 func TestStaticAssetAssemblyFailureIsExplicit(t *testing.T) {

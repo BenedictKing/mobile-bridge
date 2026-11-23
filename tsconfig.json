@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "none",
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "allowUmdGlobalAccess": true
+  },
+  "include": ["web/**/*.js", "web/**/*.d.ts"],
+  "exclude": ["web/vendor"]
+}

@@ -82,8 +82,8 @@ async function goalAction(action,payload) {
 const workModes=new WorkModes({select:$('work-mode'),control:$('work-mode-button'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
   onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload),
   onContinue:payload=>goalAction('continue',payload),onComplete:payload=>goalAction('complete',payload),onReview:payload=>goalAction('review',payload)});
-const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
-$('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
+let accountPanel=null,accountsPanel=null,poolTabSections=[],activePool=0,accountsLoading=false;
+$('account-details').ontoggle=()=>{if($('account-details').open)accountPanel?.refresh();};
 const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),enabled:()=>transcriptMaintenanceAvailable()&&!compactChat.busy,
   request:body=>api(sessionUrl(currentId,'migrate',currentHost),body),
   onBusy:()=>renderCompactState(),
@@ -185,7 +185,7 @@ function renderLoginStatus(status=loginStatus){
   $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):failed?t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。'):'';
   $('login-button').disabled=loginStatus.blocked;
 }
-function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;if(typeof teamDashboardPage!=='undefined'&&teamDashboardPage)teamDashboardPage.hidden=true;if(typeof teamsPanel!=='undefined')teamsPanel?.stopPolling();document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
+function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel?.clear();chatTimeline?.dispose();chatTimeline=null;if(typeof teamDashboardPage!=='undefined'&&teamDashboardPage)teamDashboardPage.hidden=true;if(typeof teamsPanel!=='undefined')teamsPanel?.stopPolling();document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
 async function start(){
   const auth=await api('/api/auth');BridgeConnection.configure(auth);
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();
@@ -616,6 +616,8 @@ $('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();
 // 选中消息正文即可引用评论：只读会话不给这个入口，避免往禁用输入框里塞文字。
 const selectionQuote=BridgeSelection.attach({root:$('messages'),textarea:$('message'),enabled:()=>!!currentId&&!state?.readOnly,notify:toast});
 async function openChat(id,host="local",teamId=""){
+  try{await BridgeLazy.load('markdown');}
+  catch(error){toast(t('消息渲染组件加载失败，请重新打开聊天重试：')+error.message);return;}
   if(teamDashboardPage&&!teamDashboardPage.hidden)hideTeamDashboard({fromRoute:true});
   currentTeam=host==='local'&&!chatRunSource(id,host)?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
   syncChatRunSource(id,host);
@@ -1992,7 +1994,7 @@ $('phone-language').value=BridgeI18n.language();
 $('phone-language').onchange=()=>{
   if(approvalBusy||creatingChat)return;
   const replies=[...$('approvals').querySelectorAll('input,textarea,select')].map(node=>({value:node.value,checked:node.checked}));
-  BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();teamCanvas?.render();renderListMode();renderList();
+  BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel?.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();teamCanvas?.render();renderListMode();renderList();
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   renderLoginStatus();
   for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','toast'])$(id).textContent=t($(id).textContent);
@@ -2060,21 +2062,32 @@ $('delete-chat').onclick=async()=>{
   finally{deleteChatBusy=false;$('delete-chat').disabled=false;}
 };
 
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
-const poolPanels=typeof PoolPanel==='undefined'?[]:[
-  new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{}),readLogin:()=>api('/api/pool/kimi/login')}),
-  new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{}),readLogin:()=>api('/api/pool/zcode/login')}),
-  new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{}),readLogin:()=>api('/api/pool/minimax/login')}),
-  new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'CodeBuddy / WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
-];
-// 账号池 tab：Codex 标签就是上方的真实切换面板（原只读列表与它重复，已去掉），
-// 其余每个 ACP 池各一个标签；一次只显示、只刷新当前标签，并记住上次选的标签。
-const poolTabSections=[
-  ...(accountsPanel?[{key:'codex',label:'Codex',root:$('codex-access'),refresh:()=>accountsPanel.refresh()}]:[]),
-  ...poolPanels.map(panel=>({key:panel.kind,label:panel.label,root:panel.root,refresh:()=>panel.refresh()}))
-];
-let activePool=0;
-try{activePool=Math.max(0,poolTabSections.findIndex(section=>section.key===localStorage.getItem('bridge-pool-tab')));}catch{}
+function initializeAccounts(){
+  accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
+  accountsPanel=new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
+  const poolPanels=[
+    new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{}),readLogin:()=>api('/api/pool/kimi/login')}),
+    new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{}),readLogin:()=>api('/api/pool/zcode/login')}),
+    new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{}),readLogin:()=>api('/api/pool/minimax/login')}),
+    new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'CodeBuddy / WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
+  ];
+  // 账号池 tab：Codex 标签就是上方的真实切换面板，其余每个 ACP 池各一个标签。
+  poolTabSections=[
+    {key:'codex',label:'Codex',root:$('codex-access'),refresh:()=>accountsPanel.refresh()},
+    ...poolPanels.map(panel=>({key:panel.kind,label:panel.label,root:panel.root,refresh:()=>panel.refresh()})),
+  ];
+  try{activePool=Math.max(0,poolTabSections.findIndex(section=>section.key===localStorage.getItem('bridge-pool-tab')));}catch{}
+  const bar=$('pool-tabs');
+  for(const [index,section] of poolTabSections.entries()){
+    const button=document.createElement('button');
+    button.type='button';button.className='pool-tab';button.textContent=section.label;button.id='pool-tab-'+section.key;
+    button.setAttribute('role','tab');button.setAttribute('aria-controls',section.root.id);section.root.setAttribute('aria-labelledby',button.id);
+    button.onclick=()=>selectPoolTab(index);
+    button.onkeydown=event=>{const step={ArrowRight:1,ArrowLeft:-1}[event.key];if(!step)return;event.preventDefault();const next=(index+step+poolTabSections.length)%poolTabSections.length;selectPoolTab(next);poolTabSections[next].button.focus();};
+    bar.append(button);section.button=button;
+  }
+  selectPoolTab(activePool,false);
+}
 function selectPoolTab(index,refresh=true){
   activePool=index;
   for(const [other,section] of poolTabSections.entries()){
@@ -2084,25 +2097,17 @@ function selectPoolTab(index,refresh=true){
   try{localStorage.setItem('bridge-pool-tab',poolTabSections[index].key);}catch{}
   if(refresh)poolTabSections[index].refresh();
 }
-{
-  const bar=$('pool-tabs');
-  for(const [index,section] of poolTabSections.entries()){
-    const button=document.createElement('button');
-    button.type='button';
-    button.className='pool-tab';
-    button.textContent=section.label;
-    button.id='pool-tab-'+section.key;
-    button.setAttribute('role','tab');
-    button.setAttribute('aria-controls',section.root.id);
-    section.root.setAttribute('aria-labelledby',button.id);
-    button.onclick=()=>selectPoolTab(index);
-    button.onkeydown=event=>{const step={ArrowRight:1,ArrowLeft:-1}[event.key];if(!step)return;event.preventDefault();const next=(index+step+poolTabSections.length)%poolTabSections.length;selectPoolTab(next);poolTabSections[next].button.focus();};
-    bar.append(button);
-    section.button=button;
-  }
-  if(poolTabSections.length)selectPoolTab(activePool,false);
+async function openAccounts(){
+  if(accountsLoading)return;
+  accountsLoading=true;$('accounts-button').disabled=true;
+  try{
+    await BridgeLazy.load('accounts');
+    if(!accountsPanel)initializeAccounts();
+    $('accounts-dialog').showModal();poolTabSections[activePool]?.refresh();
+  }catch(error){toast(t('账号面板加载失败，请再次点击重试：')+error.message);}
+  finally{accountsLoading=false;$('accounts-button').disabled=false;}
 }
-if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();poolTabSections[activePool]?.refresh();};
+$('accounts-button').onclick=()=>openAccounts();
 
 // Team 编排：主控聊天复用 Lead 会话；独立 Run 页继续承载高级编排。
 const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatController({root:$('team-workflow'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),onChange:team=>{
@@ -2131,7 +2136,12 @@ const teamCanvas=typeof TeamCanvasController==='undefined'?null:new TeamCanvasCo
   openRun:(teamId,runId,options)=>openTeamRun(teamId,runId,false,options?.taskId),
   openSession:(sessionId,source)=>openRunConversation(sessionId,{...source,returnTo:'canvas'}),notify:toast});
 globalThis.BridgeTeamCanvas=teamCanvas;
+function loadGraphLayout(){
+  if(globalThis.dagre)return;
+  BridgeLazy.load('graph').then(()=>{teamsPanel?.render();teamRunScreen?.render();teamChat?.render();}).catch(error=>toast(t('图布局加载失败，已使用列表；下次进入团队视图时重试：')+error.message));
+}
 async function openTeamChat(team){
+  loadGraphLayout();
   const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
   if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
   const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
@@ -2286,6 +2296,7 @@ function renderTeamDashboardSummary(panel=teamsPanel){
 }
 function openTeamDashboard({fromRoute=false}={}){
   if(!teamDashboardPage)return;
+  loadGraphLayout();
   if(fromRoute)teamDashboardPushed=!!history.state?.teamDashboard;
   else if(location.hash!=='#teams'){
     history.pushState({teamDashboard:true},'','#teams');teamDashboardPushed=true;
@@ -2358,6 +2369,7 @@ function closeTeamRunView(){
 }
 function openTeamRun(teamId,runId,fromRoute=false,taskId=''){
   if(!teamRunScreen)return;
+  loadGraphLayout();
   const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
   openRunRoute='#run='+encodeURIComponent(teamId)+'/'+encodeURIComponent(runId);
   if(fromRoute&&history.state?.teamRunReturnToDashboard)teamRunReturnsToDashboard=true;
