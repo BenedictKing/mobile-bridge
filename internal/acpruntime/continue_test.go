@@ -93,10 +93,11 @@ func TestAutoContinuePromptIfCurrentRejectsStaleTurn(t *testing.T) {
 	}
 	waitSettled(t, session)
 	staleTurn := stringField(session.View.TipTurn(), "id")
+	generation := session.AutoContinueGeneration()
 	session.mu.Lock()
 	session.View.Status = "active"
 	session.mu.Unlock()
-	if err := session.AutoContinuePromptIfCurrent(staleTurn, "继续", time.Hour); err == nil {
+	if err := session.AutoContinuePromptIfCurrent(staleTurn, generation, "继续", time.Hour); err == nil {
 		t.Fatal("native activity did not reject automatic continuation")
 	}
 	session.mu.Lock()
@@ -109,7 +110,7 @@ func TestAutoContinuePromptIfCurrentRejectsStaleTurn(t *testing.T) {
 	session.mu.Lock()
 	session.pending["request-1"] = jsoncompat.NewObject()
 	session.mu.Unlock()
-	if err := session.AutoContinuePromptIfCurrent(staleTurn, "继续", time.Hour); err == nil {
+	if err := session.AutoContinuePromptIfCurrent(staleTurn, generation, "继续", time.Hour); err == nil {
 		t.Fatal("pending request did not reject automatic continuation")
 	}
 	session.mu.Lock()
@@ -119,11 +120,17 @@ func TestAutoContinuePromptIfCurrentRejectsStaleTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitSettled(t, session)
-	if err := session.AutoContinuePromptIfCurrent(staleTurn, "继续", time.Hour); err == nil {
+	if err := session.AutoContinuePromptIfCurrent(staleTurn, generation, "继续", time.Hour); err == nil {
 		t.Fatal("stale assessment continued a newer turn")
 	}
 	currentTurn := stringField(session.View.TipTurn(), "id")
-	if err := session.AutoContinuePromptIfCurrent(currentTurn, "继续", time.Hour); err != nil {
+	generation = session.AutoContinueGeneration()
+	session.NoteHumanAction()
+	if err := session.AutoContinuePromptIfCurrent(currentTurn, generation, "继续", time.Hour); err == nil {
+		t.Fatal("human action did not invalidate the pending assessment")
+	}
+	generation = session.AutoContinueGeneration()
+	if err := session.AutoContinuePromptIfCurrent(currentTurn, generation, "继续", time.Hour); err != nil {
 		t.Fatalf("current turn rejected automatic continuation: %v", err)
 	}
 	waitSettled(t, session)

@@ -74,6 +74,30 @@ func TestTranscriptReaderResetAndInitialStaleTurn(t *testing.T) {
 	}
 }
 
+func TestTranscriptSourceLoadFreshBypassesUnchangedCache(t *testing.T) {
+	home := t.TempDir()
+	wire := filepath.Join(home, "sessions", "workspace", "sess-fresh", "agents", "main", "wire.jsonl")
+	if err := os.MkdirAll(filepath.Dir(wire), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wire, []byte(`{"type":"turn.prompt","input":"问题","origin":"user"}
+{"type":"turn.ended","reason":"completed"}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader := NewTranscriptReader(home)
+	if snapshot, err := reader.Load("sess-fresh"); err != nil || snapshot == nil {
+		t.Fatalf("initial load=%v err=%v", snapshot, err)
+	}
+	if snapshot, err := reader.Load("sess-fresh"); err != nil || snapshot != nil {
+		t.Fatalf("unchanged load=%v err=%v, want cached nil", snapshot, err)
+	}
+	fresh, err := reader.LoadFresh("sess-fresh")
+	if err != nil || fresh == nil || len(fresh.Turns) != 1 {
+		t.Fatalf("fresh load=%v err=%v", fresh, err)
+	}
+}
+
 func TestTranscriptReaderDeduplicatesUserCopies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wire.jsonl")
 	content := `{"type":"turn.prompt","promptId":"p1","input":"开始","origin":{"kind":"user"}}

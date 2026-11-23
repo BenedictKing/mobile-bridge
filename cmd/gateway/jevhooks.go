@@ -86,6 +86,7 @@ func jevContinueHookMode(settings *jev.Settings, agent string, afterSwitch bool)
 			// an active poll — not sessions merely list-polled.
 			return
 		}
+		settleGeneration := session.AutoContinueGeneration()
 		snapshot := session.Snapshot()
 		if requests, _ := snapshot.MustGet("requests").(*jsoncompat.Array); requests != nil && len(requests.Items) > 0 {
 			// Pending approvals or questions own the next step.
@@ -122,9 +123,9 @@ func jevContinueHookMode(settings *jev.Settings, agent string, afterSwitch bool)
 		turnID := jsoncompat.PyStr(context.MustGet("turnId"))
 		var err error
 		if afterSwitch {
-			err = session.ResumeAfterSwitchPromptIfCurrent(turnID, "继续", time.Hour)
+			err = session.ResumeAfterSwitchPromptIfCurrent(turnID, settleGeneration, "继续", time.Hour)
 		} else {
-			err = session.AutoContinuePromptIfCurrent(turnID, "继续", time.Hour)
+			err = session.AutoContinuePromptIfCurrent(turnID, settleGeneration, "继续", time.Hour)
 		}
 		if err != nil {
 			log.Printf("Jev 自动继续发送失败: agent=%s session=%s turn=%s error=%s",

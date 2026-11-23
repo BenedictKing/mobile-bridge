@@ -47,6 +47,16 @@ func (r *TranscriptSource) Reset(sessionID string) {
 }
 
 func (r *TranscriptSource) Load(sessionID string) (*acpview.NativeSnapshot, error) {
+	return r.load(sessionID, false)
+}
+
+// LoadFresh bypasses change detection for a one-off state check immediately
+// before an automatic continuation is submitted.
+func (r *TranscriptSource) LoadFresh(sessionID string) (*acpview.NativeSnapshot, error) {
+	return r.load(sessionID, true)
+}
+
+func (r *TranscriptSource) load(sessionID string, force bool) (*acpview.NativeSnapshot, error) {
 	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) {
 		return nil, nil
 	}
@@ -61,7 +71,7 @@ func (r *TranscriptSource) Load(sessionID string) (*acpview.NativeSnapshot, erro
 	previous, seen := r.signatures[sessionID]
 	pending := r.pending[sessionID]
 	stale := time.Since(info.ModTime()) >= historyStaleAfter
-	if seen && previous == signature {
+	if seen && previous == signature && !force {
 		if !pending || !stale {
 			return nil, nil
 		}

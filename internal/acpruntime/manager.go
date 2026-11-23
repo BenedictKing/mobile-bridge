@@ -5,6 +5,7 @@ package acpruntime
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -102,6 +103,7 @@ type Session struct {
 	// store) for turns the desktop app drives, so the phone follows them
 	// instead of showing only the ACP replay. nativeStop ends the poller.
 	native         func(sessionID string) (*acpview.NativeSnapshot, error)
+	nativeFresh    func(sessionID string) (*acpview.NativeSnapshot, error)
 	nativeStop     chan struct{}
 	nativeInterval time.Duration
 	retryStatus    func(sessionID string) (*jsoncompat.Object, error)
@@ -234,6 +236,9 @@ type Manager struct {
 	// started in the desktop app must be followed from this store or the phone
 	// sees it minutes late. Nil disables native following.
 	Native func(sessionID string) (*acpview.NativeSnapshot, error)
+	// NativeFresh bypasses a reader's unchanged-snapshot cache for the final
+	// automatic-continuation guard. Nil falls back to Native.
+	NativeFresh func(sessionID string) (*acpview.NativeSnapshot, error)
 	// NativeReset drops the store's per-session change cache so a freshly
 	// attached handle always rebuilds once.
 	NativeReset func(sessionID string)
@@ -1096,8 +1101,8 @@ func (s *Session) AutoContinuePrompt(text string, idleTimeout time.Duration) err
 	return s.prompt(text, nil, idleTimeout, budgetAutoContinue)
 }
 
-func (s *Session) AutoContinuePromptIfCurrent(turnID, text string, idleTimeout time.Duration) error {
-	return s.promptTurn(turnID, text, nil, idleTimeout, budgetAutoContinue)
+func (s *Session) AutoContinuePromptIfCurrent(turnID string, generation uint64, text string, idleTimeout time.Duration) error {
+	return s.promptTurnIfCurrent(turnID, generation, text, idleTimeout, budgetAutoContinue)
 }
 
 // GoalPrompt draws its step budget from the persistent gateway Goal store.
@@ -1113,8 +1118,16 @@ func (s *Session) ResumeAfterSwitchPrompt(text string, idleTimeout time.Duration
 	return s.prompt(text, nil, idleTimeout, budgetSwitchResume)
 }
 
-func (s *Session) ResumeAfterSwitchPromptIfCurrent(turnID, text string, idleTimeout time.Duration) error {
-	return s.promptTurn(turnID, text, nil, idleTimeout, budgetSwitchResume)
+func (s *Session) ResumeAfterSwitchPromptIfCurrent(turnID string, generation uint64, text string, idleTimeout time.Duration) error {
+	return s.promptTurnIfCurrent(turnID, generation, text, idleTimeout, budgetSwitchResume)
+}
+
+// AutoContinueGeneration identifies the settle evaluation currently allowed
+// to submit. Human actions and newly observed native activity invalidate it.
+func (s *Session) AutoContinueGeneration() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autoContinueGeneration
 }
 
 // WarmupPrompt is the throwaway first turn sent to a freshly created session
@@ -1145,10 +1158,29 @@ const (
 )
 
 func (s *Session) prompt(text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
-	return s.promptTurn("", text, extra, idleTimeout, budget, files...)
+	return s.promptTurn("", nil, text, extra, idleTimeout, budget, files...)
 }
 
-func (s *Session) promptTurn(expectedTurn, text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
+func (s *Session) promptTurnIfCurrent(expectedTurn string, generation uint64, text string, idleTimeout time.Duration, budget promptBudget) error {
+	kimiNative := s.kind == "kimi" && s.native != nil
+	if kimiNative {
+		// Keep native reconciliation serialized until promptRunning is claimed and
+		// the ACP request is submitted, so a poll cannot slip between validation
+		// and the state transition.
+		s.nativeSyncMu.Lock()
+		if err := s.syncNativeLocked(true); err != nil {
+			s.nativeSyncMu.Unlock()
+			s.retryAutoContinue(generation, false)
+			return fmt.Errorf("无法确认 Kimi 原生任务已空闲：%w", err)
+		}
+	}
+	if kimiNative {
+		defer s.nativeSyncMu.Unlock()
+	}
+	return s.promptTurn(expectedTurn, &generation, text, nil, idleTimeout, budget)
+}
+
+func (s *Session) promptTurn(expectedTurn string, expectedGeneration *uint64, text string, extra []*jsoncompat.Object, idleTimeout time.Duration, budget promptBudget, files ...acpadapter.FileSpec) error {
 	attachments := make([]*jsoncompat.Object, 0, len(files))
 	for _, file := range files {
 		attachment := jsoncompat.NewObject()
@@ -1175,7 +1207,8 @@ func (s *Session) promptTurn(expectedTurn, text string, extra []*jsoncompat.Obje
 	}
 	if expectedTurn != "" {
 		tip := s.View.TipTurn()
-		if s.View.Status == "active" || len(s.pending) > 0 || tip == nil || stringField(tip, "id") != expectedTurn {
+		if expectedGeneration != nil && *expectedGeneration != s.autoContinueGeneration ||
+			s.View.Status == "active" || len(s.pending) > 0 || tip == nil || stringField(tip, "id") != expectedTurn {
 			s.mu.Unlock()
 			return errors.New("任务已变化，取消自动继续")
 		}
@@ -1392,19 +1425,41 @@ func (s *Session) scheduleAutoContinueLocked() {
 	if !s.kimiAutoChain || s.closed || s.readOnly || s.promptRunning || s.View.Status == "active" || s.autoContinue == nil {
 		return
 	}
-	delay := s.autoContinueDelay
-	if delay <= 0 {
-		delay = 2 * s.nativeInterval
-	}
-	if delay <= 0 {
-		delay = 3 * time.Second
-	}
+	delay := s.autoContinueSettleDelayLocked()
 	generation := s.autoContinueGeneration
 	s.autoContinueTimer = time.AfterFunc(delay, func() { s.fireScheduledAutoContinue(generation) })
 }
 
+func (s *Session) autoContinueSettleDelayLocked() time.Duration {
+	if s.autoContinueDelay > 0 {
+		return s.autoContinueDelay
+	}
+	delay := 3 * time.Second
+	if pollDelay := 2 * s.nativeInterval; pollDelay > delay {
+		delay = pollDelay
+	}
+	return delay
+}
+
+func (s *Session) retryAutoContinue(generation uint64, timerFired bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if generation != s.autoContinueGeneration {
+		return
+	}
+	if timerFired {
+		s.autoContinueTimer = nil
+	}
+	if s.autoContinueTimer == nil {
+		s.scheduleAutoContinueLocked()
+	}
+}
+
 func (s *Session) fireScheduledAutoContinue(generation uint64) {
-	s.syncNative()
+	if err := s.syncNativeForAutoContinue(); err != nil {
+		s.retryAutoContinue(generation, true)
+		return
+	}
 	s.mu.Lock()
 	if generation != s.autoContinueGeneration || s.autoContinueTimer == nil {
 		s.mu.Unlock()
@@ -2432,6 +2487,7 @@ func (m *Manager) startNative(session *Session) {
 		return
 	}
 	session.native = m.Native
+	session.nativeFresh = m.NativeFresh
 	session.nativeSettle = m.NativeSettle
 	session.retryStatus = m.RetryStatus
 	m.startPoller(session)
@@ -2540,31 +2596,50 @@ func (s *Session) syncNative() {
 	// The poller and ACP settle path may both read. Apply them in read order.
 	s.nativeSyncMu.Lock()
 	defer s.nativeSyncMu.Unlock()
+	_ = s.syncNativeLocked(false)
+}
+
+func (s *Session) syncNativeForAutoContinue() error {
+	s.nativeSyncMu.Lock()
+	defer s.nativeSyncMu.Unlock()
+	return s.syncNativeLocked(true)
+}
+
+func (s *Session) syncNativeLocked(requireFresh bool) error {
 	loader := s.native
+	if requireFresh && s.nativeFresh != nil {
+		loader = s.nativeFresh
+	}
 	if loader == nil {
-		return
+		if requireFresh {
+			return errors.New("Kimi 原生会话读取器不可用")
+		}
+		return nil
 	}
 	s.mu.Lock()
 	paused := s.closed || s.promptRunning
 	s.mu.Unlock()
 	if paused {
-		return
+		return nil
 	}
 	snapshot, err := loader(s.ID)
 	if err != nil {
-		return
+		return err
+	}
+	if requireFresh && (snapshot == nil || len(snapshot.Turns) == 0) {
+		return errors.New("Kimi 原生会话状态尚未可用")
 	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	if snapshot != nil {
 		s.nativeDeferred = snapshot
 	}
 	if s.promptRunning || s.nativeDeferred == nil {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	snapshot = s.nativeDeferred
 	wasActive := s.View.Status == "active"
@@ -2598,6 +2673,7 @@ func (s *Session) syncNative() {
 	if settled && hook != nil {
 		go hook(s)
 	}
+	return nil
 }
 
 func (s *Session) syncRetry() {

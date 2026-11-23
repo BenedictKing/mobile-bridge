@@ -844,6 +844,7 @@ func runGateway(args []string) {
 		manager.NativeListExclusive = true
 		reader := kimi.NewTranscriptReader(kimiHome)
 		manager.Native = reader.Load
+		manager.NativeFresh = reader.LoadFresh
 		manager.NativeTranscript = reader.Load
 		manager.NativeReset = reader.Reset
 		manager.NativeSettle = func(session *acpruntime.Session) {

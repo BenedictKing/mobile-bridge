@@ -263,7 +263,9 @@ func TestKimiPromptSettlementWaitsForNotificationChain(t *testing.T) {
 	python, path := fakeAgentScript(t)
 	manager := NewCommand([]string{python, "-u", path})
 	manager.Kind = "kimi"
-	manager.Native = kimi.TranscriptReader(home)
+	reader := kimi.NewTranscriptReader(home)
+	manager.Native = reader.Load
+	manager.NativeFresh = reader.LoadFresh
 	manager.NativeInterval = time.Hour
 	seen := make(chan string, 1)
 	manager.AutoContinue = func(session *Session) { seen <- stringField(session.Snapshot(), "status") }
@@ -301,6 +303,61 @@ func TestKimiPromptSettlementWaitsForNotificationChain(t *testing.T) {
 	}
 }
 
+func TestKimiAutoContinueSettleDelayCoversThreeSecondsAndTwoPolls(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		override time.Duration
+		want     time.Duration
+	}{
+		{name: "default poll", interval: 800 * time.Millisecond, want: 3 * time.Second},
+		{name: "1500ms poll", interval: 1500 * time.Millisecond, want: 3 * time.Second},
+		{name: "slow poll", interval: 2 * time.Second, want: 4 * time.Second},
+		{name: "test override", interval: time.Hour, override: 25 * time.Millisecond, want: 25 * time.Millisecond},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := nativeSession()
+			session.nativeInterval = test.interval
+			session.autoContinueDelay = test.override
+			if got := session.autoContinueSettleDelayLocked(); got != test.want {
+				t.Fatalf("settle delay=%s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestKimiAutoContinueRefreshRejectsNewNativeTurn(t *testing.T) {
+	session := nativeSession()
+	session.kind = "kimi"
+	session.kimiAutoChain = true
+	settled := nativeTurn("t1", "completed", "原始任务")
+	initial := &acpview.NativeSnapshot{TurnOrigins: []string{"user"}, Turns: []*jsoncompat.Object{settled}}
+	if !session.View.ApplyNative(initial) {
+		t.Fatal("initial native snapshot was not applied")
+	}
+	session.nativeBootstrapped = true
+	session.nativeTurns = 1
+	running := &acpview.NativeSnapshot{
+		TurnOrigins: []string{"user", "task"},
+		Turns: []*jsoncompat.Object{
+			nativeTurn("t1", "completed", "原始任务"),
+			nativeTurn("t2", "inProgress", "迟到的后台通知"),
+		},
+	}
+	session.native = func(string) (*acpview.NativeSnapshot, error) { return running, nil }
+	generation := session.AutoContinueGeneration()
+	if err := session.AutoContinuePromptIfCurrent("t1", generation, "继续", time.Hour); err == nil {
+		t.Fatal("automatic continuation submitted while native Kimi task was running")
+	}
+	if session.View.Status != "active" || stringField(session.View.TipTurn(), "id") != "t2" {
+		t.Fatalf("latest native turn was not reconciled: status=%s tip=%s", session.View.Status, stringField(session.View.TipTurn(), "id"))
+	}
+	if session.autoContinueRuns != 0 {
+		t.Fatal("rejected continuation consumed the automatic budget")
+	}
+}
+
 func TestKimiNativeNotificationCancelsPendingSettle(t *testing.T) {
 	home, wire := kimiNativeWire(t, `{"type":"turn.prompt","input":"原始问题","origin":{"kind":"user"}}
 {"type":"turn.ended","reason":"completed"}
@@ -308,7 +365,9 @@ func TestKimiNativeNotificationCancelsPendingSettle(t *testing.T) {
 	python, path := fakeAgentScript(t)
 	manager := NewCommand([]string{python, "-u", path})
 	manager.Kind = "kimi"
-	manager.Native = kimi.TranscriptReader(home)
+	reader := kimi.NewTranscriptReader(home)
+	manager.Native = reader.Load
+	manager.NativeFresh = reader.LoadFresh
 	manager.NativeInterval = time.Hour
 	seen := make(chan struct{}, 1)
 	manager.AutoContinue = func(*Session) { seen <- struct{}{} }
