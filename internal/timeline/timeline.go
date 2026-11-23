@@ -34,6 +34,7 @@ const (
 var rowWhitelist = [...]string{
 	"role", "kind", "toolKind", "status", "title", "phase", "requestId",
 	"subagentId", "subagentType", "subagentDescription", "subagentPrompt", "stopReason",
+	"backgroundTask", "backgroundTaskSummary",
 }
 
 // rowFingerprint covers every view input a row's record derives from, in

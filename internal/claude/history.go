@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -67,7 +68,7 @@ func (r *historyReader) load(sessionID string) (*acpview.NativeSnapshot, error) 
 	}
 	r.mu.Lock()
 	r.signatures[sessionID] = signature
-	r.pending[sessionID] = nativeHistoryActive(snapshot)
+	r.pending[sessionID] = nativeHistoryActive(snapshot) || backgroundHistoryPending(snapshot)
 	r.mu.Unlock()
 	return snapshot, nil
 }
@@ -106,6 +107,7 @@ func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnaps
 	defer file.Close()
 	sessionID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	builder := acpview.NewNativeBuilder(sessionID)
+	backgroundTasks := map[string]string{}
 	cwd := ""
 	scanner := bufio.NewScanner(io.LimitReader(file, historyMaxBytes))
 	scanner.Buffer(make([]byte, 0, 64<<10), historyMaxLineBytes)
@@ -137,7 +139,17 @@ func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnaps
 		titleText := ""
 		switch kind {
 		case "user":
-			titleText = applyClaudeUser(builder, content)
+			origin, _ := event.MustGet("origin").(*jsoncompat.Object)
+			originKind := ""
+			if origin != nil {
+				originKind, _ = origin.MustGet("kind").(string)
+			}
+			if originKind == "task-notification" {
+				if applyBackgroundTaskNotification(builder, content, backgroundTasks) {
+					continue
+				}
+			}
+			titleText = applyClaudeUser(builder, content, backgroundTasks)
 		case "assistant":
 			applyClaudeAssistant(builder, message, content)
 		}
@@ -150,7 +162,28 @@ func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnaps
 	if err := scanner.Err(); err != nil {
 		return nil, "", err
 	}
+	if stale {
+		for _, toolID := range backgroundTasks {
+			builder.BackgroundTask(toolID, "outcome_unknown", "后台任务长时间没有新记录，结果待确认；未自动重试。")
+		}
+	}
 	return builder.Snapshot(stale), cwd, nil
+}
+
+func backgroundHistoryPending(snapshot *acpview.NativeSnapshot) bool {
+	for _, turn := range snapshot.Turns {
+		messages, _ := turn.MustGet("messages").(*jsoncompat.Array)
+		if messages == nil {
+			continue
+		}
+		for _, value := range messages.Items {
+			message, _ := value.(*jsoncompat.Object)
+			if message != nil && message.MustGet("backgroundTask") == true && message.MustGet("status") == "inProgress" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func nativeHistoryActive(snapshot *acpview.NativeSnapshot) bool {
@@ -161,7 +194,7 @@ func nativeHistoryActive(snapshot *acpview.NativeSnapshot) bool {
 	return status == "inProgress"
 }
 
-func applyClaudeUser(builder *acpview.NativeBuilder, content any) string {
+func applyClaudeUser(builder *acpview.NativeBuilder, content any, backgroundTasks map[string]string) string {
 	if text, ok := content.(string); ok {
 		return foldUserText(builder, text)
 	}
@@ -178,7 +211,14 @@ func applyClaudeUser(builder *acpview.NativeBuilder, content any) string {
 		hasToolResult = true
 		id, _ := block.MustGet("tool_use_id").(string)
 		failed, _ := block.MustGet("is_error").(bool)
-		builder.ToolResult(id, block.MustGet("content"), failed)
+		result := block.MustGet("content")
+		if taskID := backgroundTaskID(result); taskID != "" && id != "" {
+			backgroundTasks[taskID] = id
+			builder.ToolResult(id, result, failed)
+			builder.BackgroundTask(id, "in_progress", "命令已转入后台，Claude 将在完成后继续。")
+		} else {
+			builder.ToolResult(id, result, failed)
+		}
 	}
 	if hasToolResult {
 		return ""
@@ -194,6 +234,65 @@ func applyClaudeUser(builder *acpview.NativeBuilder, content any) string {
 		}
 	}
 	return foldUserText(builder, text, attachments...)
+}
+
+var backgroundTaskIDPattern = regexp.MustCompile(`(?m)^Command running in background with ID: ([^\s.]+)`)
+var backgroundExitCodePattern = regexp.MustCompile(`\bexit code (-?[0-9]+)\b`)
+
+func backgroundTaskID(content any) string {
+	match := backgroundTaskIDPattern.FindStringSubmatch(acpview.Text(content))
+	if len(match) < 2 {
+		return ""
+	}
+	return match[1]
+}
+
+func applyBackgroundTaskNotification(builder *acpview.NativeBuilder, content any, backgroundTasks map[string]string) bool {
+	text := acpview.Text(content)
+	if !strings.Contains(text, "<task-notification>") {
+		return false
+	}
+	taskID := notificationTag(text, "task-id")
+	toolUseID := notificationTag(text, "tool-use-id")
+	if toolUseID == "" {
+		toolUseID = backgroundTasks[taskID]
+	}
+	if toolUseID == "" {
+		return false
+	}
+	delete(backgroundTasks, taskID)
+	status := "outcome_unknown"
+	summary := notificationTag(text, "summary")
+	switch notificationTag(text, "status") {
+	case "completed":
+		status = "completed"
+		if match := backgroundExitCodePattern.FindStringSubmatch(summary); len(match) == 2 && match[1] != "0" {
+			status = "failed"
+		}
+	case "failed":
+		status = "failed"
+	}
+	if summary == "" {
+		summary = "后台任务已结束，等待 Claude 继续处理。"
+	} else {
+		summary = "后台任务结果：" + summary
+	}
+	builder.BackgroundTask(toolUseID, status, summary)
+	return true
+}
+
+func notificationTag(text, name string) string {
+	open, close := "<"+name+">", "</"+name+">"
+	start := strings.Index(text, open)
+	if start < 0 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(text[start:], close)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
 }
 
 // foldUserText handles one user-side text. Claude Code echoes a user

@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,72 @@ func TestTranscriptReaderSettlesInterruptedTail(t *testing.T) {
 	marker := snapshot.Turns[1].MustGet("messages").(*jsoncompat.Array)
 	if len(marker.Items) != 1 || marker.Items[0].(*jsoncompat.Object).MustGet("text") != "[Request interrupted by user]" {
 		t.Fatalf("marker turn=%v", marker)
+	}
+}
+
+func TestTranscriptReaderProjectsBackgroundTaskLifecycle(t *testing.T) {
+	root := t.TempDir()
+	const id = "session-background-task"
+	path := filepath.Join(root, "project", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	events := []map[string]any{
+		{"type": "user", "uuid": "u1", "parentUuid": "root", "cwd": "/work", "message": map[string]any{"role": "user", "content": "跑完整门禁"}},
+		{"type": "assistant", "uuid": "a1", "parentUuid": "u1", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "tool_use", "id": "bash-use-1", "name": "Bash", "input": map[string]any{"command": "GOFLAGS=-p=2 make check"}}}}},
+		{"type": "user", "uuid": "u2", "parentUuid": "a1", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "bash-use-1", "content": []any{map[string]any{"type": "text", "text": "Command running in background with ID: task-123"}}}}}},
+		{"type": "user", "uuid": "u3", "parentUuid": "u2", "origin": map[string]any{"kind": "task-notification", "producer": "session-task", "runId": "run-1"}, "message": map[string]any{"role": "user", "content": "<task-notification>\n<task-id>task-123</task-id>\n<tool-use-id>bash-use-1</tool-use-id>\n<output-file>/private/tmp/private-output</output-file>\n<status>completed</status>\n<summary>Background command completed (exit code 0)</summary>\n</task-notification>"}},
+	}
+	lines := make([]string, 0, len(events))
+	for _, event := range events {
+		data, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(data))
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(strings.Join(lines[:3], "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	running, _, err := readHistory(path, false, "")
+	if err != nil || running == nil {
+		t.Fatalf("running snapshot=%v err=%v", running, err)
+	}
+	tool := running.Turns[0].MustGet("messages").(*jsoncompat.Array).Items[1].(*jsoncompat.Object)
+	if tool.MustGet("backgroundTask") != true || tool.MustGet("status") != "inProgress" {
+		t.Fatalf("background launch not visible: %s", jsoncompat.EncodeCompact(tool))
+	}
+	stale, _, err := readHistory(path, true, "")
+	if err != nil || stale == nil {
+		t.Fatalf("stale snapshot=%v err=%v", stale, err)
+	}
+	staleTool := stale.Turns[0].MustGet("messages").(*jsoncompat.Array).Items[1].(*jsoncompat.Object)
+	if staleTool.MustGet("status") != "outcome_unknown" {
+		t.Fatalf("missing completion must become unknown: %s", jsoncompat.EncodeCompact(staleTool))
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := readHistory(path, false, "")
+	if err != nil || snapshot == nil || len(snapshot.Turns) != 1 {
+		t.Fatalf("snapshot=%v err=%v", snapshot, err)
+	}
+	messages := snapshot.Turns[0].MustGet("messages").(*jsoncompat.Array)
+	if len(messages.Items) != 2 {
+		t.Fatalf("want original prompt and updated Bash row: %s", jsoncompat.EncodeCompact(messages))
+	}
+	status := messages.Items[1].(*jsoncompat.Object)
+	if status.MustGet("role") != "activity" || status.MustGet("backgroundTask") != true || status.MustGet("status") != "completed" {
+		t.Fatalf("background task completed projection=%s", jsoncompat.EncodeCompact(status))
+	}
+	text, _ := status.MustGet("backgroundTaskSummary").(string)
+	if !strings.Contains(text, "exit code 0") || strings.Contains(text, "/private/tmp") {
+		t.Fatalf("unsafe or incomplete summary %q", text)
+	}
+	projected := string(jsoncompat.EncodeCompact(snapshot.Turns[0]))
+	if strings.Contains(projected, "<task-notification>") || strings.Contains(projected, "task-123") {
+		t.Fatalf("raw notification leaked into conversation: %s", projected)
 	}
 }
 

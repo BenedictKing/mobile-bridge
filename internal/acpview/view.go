@@ -654,6 +654,12 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 		if status := getDefault(update, "status", nil); jsoncompat.Truthy(status) {
 			message.Set("status", statusMap(status))
 		}
+		if jsoncompat.Truthy(update.MustGet("backgroundTask")) {
+			message.Set("backgroundTask", true)
+			if summary, ok := update.MustGet("backgroundTaskSummary").(string); ok {
+				message.Set("backgroundTaskSummary", summary)
+			}
+		}
 		if toolKind, ok := update.MustGet("kind").(string); ok && toolKind != "" {
 			message.Set("toolKind", toolKind)
 		}

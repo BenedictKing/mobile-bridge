@@ -111,6 +111,24 @@ func (b *NativeBuilder) ToolResult(id string, content any, failed bool) {
 	b.view.OnUpdate(update)
 }
 
+func (b *NativeBuilder) BackgroundTask(id, status, summary string) {
+	if id == "" {
+		return
+	}
+	content := jsoncompat.NewObject()
+	content.Set("type", "text")
+	content.Set("text", summary)
+	update := jsoncompat.NewObject()
+	update.Set("sessionUpdate", "tool_call_update")
+	update.Set("toolCallId", id)
+	update.Set("title", "后台任务")
+	update.Set("status", status)
+	update.Set("backgroundTask", true)
+	update.Set("backgroundTaskSummary", summary)
+	update.Set("content", &jsoncompat.Array{Items: []any{content}})
+	b.view.OnUpdate(update)
+}
+
 func (b *NativeBuilder) SetModel(model string) {
 	if model != "" {
 		b.view.Model = model

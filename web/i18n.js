@@ -1458,6 +1458,7 @@ const en={
   "开始压缩": "Start compaction",
   "已向进行中的对话补充指示": "Instructions added to the running conversation",
   "后台任务通知": "Background task notice",
+  "后台任务": "Background task",
   "已截断": "truncated",
   "继续显示": "Show more",
   "仅显示新增内容": "File too large for a line-by-line diff; new content only.",

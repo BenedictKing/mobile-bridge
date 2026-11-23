@@ -483,6 +483,22 @@ test('Kimi background task notifications render as notices instead of user promp
   timeline.dispose();
 });
 
+test('Claude background task status stays visible and updates without looking like a user prompt',()=>{
+  const{timeline}=setup();
+  const running={key:'claude-bg',role:'activity',kind:'toolCall',title:'Bash',text:'GOFLAGS=-p=2 make check',status:'inProgress',backgroundTask:true,backgroundTaskSummary:'命令已转入后台，Claude 将在完成后继续。'};
+  const node=timeline.renderRow(running,false);
+  assert.equal(node.tagName,'DIV');
+  assert.equal(node.children[0].textContent,'后台任务 · 进行中');
+  assert.equal(node.children[1].textContent,running.backgroundTaskSummary);
+  timeline.showProcess=false;
+  assert.equal(timeline.rowVisible(running),true);
+  const completed={...running,status:'completed',backgroundTaskSummary:'后台任务结果：Background command completed (exit code 0)'};
+  const done=timeline.renderRow(completed,false);
+  assert.equal(done.children[0].textContent,'后台任务 · 已完成');
+  assert.equal(done.children[1].textContent,completed.backgroundTaskSummary);
+  timeline.dispose();
+});
+
 test('notification-like user text stays a normal prompt',()=>{
   const{timeline}=setup();
   for(const text of ['请解释 <notification>标签','<notification>a</notification> 之后还有正文']){

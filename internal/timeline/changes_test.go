@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -28,6 +29,17 @@ func rowByTitle(page *jsoncompat.Object, title string) *jsoncompat.Object {
 		}
 	}
 	return nil
+}
+
+func TestBackgroundTaskMetadataSurvivesProjectionAndRefresh(t *testing.T) {
+	tl := New(func() string { return "background-epoch" })
+	for index, summary := range []string{"后台任务仍在运行", "后台任务结果已确认"} {
+		updateWith(t, tl, `{"sequence":`+strconv.Itoa(index+1)+`,"turns":[{"id":"t1","status":"completed","messages":[{"id":"m1","role":"activity","kind":"toolCall","title":"后台任务","text":"make check","backgroundTask":true,"backgroundTaskSummary":"`+summary+`"}]}]}`)
+		row := rowByTitle(tl.Page(20, ""), "后台任务")
+		if row == nil || row.MustGet("backgroundTask") != true || row.MustGet("backgroundTaskSummary") != summary {
+			t.Fatalf("background metadata lost or reused: %v", row)
+		}
+	}
 }
 
 // Structured change entries and command exit codes ride through to the row

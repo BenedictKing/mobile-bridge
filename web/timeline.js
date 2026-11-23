@@ -122,6 +122,7 @@ const toolLabel=title=>{
 const rowLabel=(row,text=row.text)=>{
   const notice=taskNotice(row,text);
   if(notice)return timelineText('后台任务通知')+(notice.title?' · '+notice.title:'');
+  if(row.backgroundTask)return timelineText('后台任务')+' · '+timelineText(({inProgress:'进行中',completed:'已完成',failed:'失败',outcome_unknown:'结果待确认'})[row.status]||'状态待同步');
   if(row.role!=='activity')return row.role==='user'?timelineText('你'):timelineText('执行错误');
   if(maintenanceRow(row))return row.text;
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
@@ -189,6 +190,7 @@ class ChatTimeline {
   setViewportLocked(locked){this.viewportLocked=!!locked;if(this.viewportLocked){this.viewport.scrollTop=0;this.lastTop=0;this.anchor=null;this.following=true;}}
   rowVisible(row){
     if(this.hideInternalTeamMessages&&internalTeamProtocolRow(row))return false;
+    if(row.backgroundTask)return true;
     if(row.role==='user'||row.role==='error'||maintenanceRow(row))return true;
     if(reasoningRow(row))return this.showReasoning;
     if(row.role==='activity'||row.phase==='commentary')return this.showProcess;
@@ -446,20 +448,21 @@ class ChatTimeline {
     const notice=taskNotice(row),activity=row.role==='activity'||!!notice,
           steered=steeredRow(row),maintenance=maintenanceRow(row),
           planEntries=activity&&row.kind==='plan'&&row.entries?.length?row.entries:null,
-          node=document.createElement(activity&&!steered&&!maintenance?'details':'div');
+          node=document.createElement(activity&&!steered&&!maintenance&&!row.backgroundTask?'details':'div');
     node.className=activity?'activity timeline-row'+((steered||maintenance)?' status-event':''):'message timeline-row '+row.role;
     if(activity&&row.kind)node.dataset.kind=row.kind;
+    if(row.backgroundTask)node.dataset.backgroundTask='';
     if(notice){node.dataset.kind='taskNotification';if(notice.severity)node.dataset.severity=notice.severity;}
     // CSS 以 data-tool（而非具体 kind）区分工具行：所有管线的工具调用折叠态一致。
-    if(toolRow(row))node.dataset.tool='';
-    if(commandRow(row)){node.dataset.command='';node.dataset.commandStatus=commandState(row);}
-    const heading=document.createElement(activity&&!steered?'summary':'span');heading.className=activity?'':'who';
+    if(toolRow(row)&&!row.backgroundTask)node.dataset.tool='';
+    if(commandRow(row)&&!row.backgroundTask){node.dataset.command='';node.dataset.commandStatus=commandState(row);}
+    const heading=document.createElement(activity&&!steered&&!row.backgroundTask?'summary':'span');heading.className=activity?'':'who';
     // 助手消息不再逐条标注 Agent：一条会话只属于一个 Agent，身份在标题栏展示。
     if(activity||row.role==='user'||row.role==='error'){
       heading.textContent=rowLabel(row);
       // 命令按结构化结果显示图标；失败即使缺退出码也保留。
       const commandResult=commandRow(row)?commandState(row):'',commandFailed=commandResult==='failed';
-      if(activity&&(typeof row.exitCode==='number'||commandFailed||commandResult==='completed')){
+      if(activity&&!row.backgroundTask&&(typeof row.exitCode==='number'||commandFailed||commandResult==='completed')){
         const failed=commandFailed||(typeof row.exitCode==='number'&&row.exitCode!==0);
         const exit=document.createElement('span');
         exit.className='diff-exit '+(failed?'fail':'ok');
@@ -477,7 +480,7 @@ class ChatTimeline {
     const cached=this.details.get(row.key);
     if(cached&&cached.version!==row.version)this.details.delete(row.key);
     const paint=()=>{
-      const detail=this.details.get(row.key),text=detail?.text??row.text;
+      const detail=this.details.get(row.key),text=row.backgroundTask?(row.backgroundTaskSummary||row.text):(detail?.text??row.text);
       body.replaceChildren();
       if(planEntries){
         // The structured checklist replaces the plain-text preview; its
