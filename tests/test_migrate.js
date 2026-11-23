@@ -229,7 +229,7 @@ function loadMigrationCommands(view={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8'),notices=[];
   const availability=source.slice(source.indexOf('function transcriptMaintenanceAvailable'),source.indexOf('function selectCompactMethod'));
   const command=source.slice(source.indexOf('async function runMigrateCommand'),source.indexOf('async function runGatewayCompact'));
-  const context={currentId:'source',state:{agent:'claude',status:'idle',connected:false,readOnly:false,agents:[{kind:'kimi'}],...view},toast:text=>notices.push(text)};
+  const context={currentId:'source',compactChat:{busy:false},state:{agent:'claude',status:'idle',connected:false,readOnly:false,agents:[{kind:'kimi'}],...view},toast:text=>notices.push(text)};
   vm.runInNewContext(availability+'\n'+command,context);
   const loaded=loadControl({enabled:()=>context.transcriptMaintenanceAvailable()});
   context.migrateControl=loaded.control;
@@ -258,9 +258,11 @@ test('migration waits for the current history and still checks target availabili
   assert(root.querySelectorAll('button').every(button=>button.disabled));
   assert.equal(await context.runMigrateCommand({agent:'kimi'}),false);
   assert.equal(requests.length,0);
-  context.state.loadingHistory=false;context.state.id='previous';
-  assert.equal(context.transcriptMaintenanceAvailable(),false);
-  context.state.id='source';context.currentId=null;
+  // 视图 id 是 Agent 原生会话 id（Kimi 首回合后 sess_* 替换占位 session_*），
+  // 与列表 id 不同不应再拦截迁移。
+  context.state.loadingHistory=false;context.state.id='sess_17f133a2-native';
+  assert.equal(context.transcriptMaintenanceAvailable(),true);
+  context.currentId=null;
   assert.equal(context.transcriptMaintenanceAvailable(),false);
   context.currentId='source';control.render();
   assert(root.querySelectorAll('button').every(button=>!button.disabled));
@@ -306,4 +308,21 @@ test('dismissing during a running confirm never abandons the session being sent'
   release();
   await running;
   assert.deepEqual(requests.map(body=>body.phase),['prepare',undefined]);
+});
+
+test('slash migration reports why nothing happened instead of staying silent',async()=>{
+  for(const kind of ['busy','no-view']){
+    const source=readFileSync(require.resolve('../web/app.js'),'utf8'),notices=[];
+    const availability=source.slice(source.indexOf('function transcriptMaintenanceAvailable'),source.indexOf('function selectCompactMethod'));
+    const command=source.slice(source.indexOf('async function runMigrateCommand'),source.indexOf('async function runGatewayCompact'));
+    const context={
+      currentId:'source',state:{id:'source',agent:'claude',status:'idle',agents:[{kind:'kimi'}]},
+      compactChat:{busy:false},toast:text=>notices.push(text),
+    };
+    // 不依赖沙箱全局对象上的 migrateControl：直接在函数体里绑定 stub。
+    const stub=kind==='busy'?'{busy:true}':'{busy:false,migrate:()=>undefined}';
+    vm.runInNewContext('const migrateControl='+stub+';\n'+availability+'\n'+command,context);
+    assert.equal(await context.runMigrateCommand({agent:'kimi',scope:'main'}),false);
+    assert.equal(notices.length,1,kind+' 应给出一条说明');
+  }
 });

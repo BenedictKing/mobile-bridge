@@ -11,7 +11,7 @@ function extract({team=false,defaultCompact}={}){
   const start=source.indexOf('const COMPACT_PROMPTS=');
   const end=source.indexOf('function compactGateway',start);
   assert.ok(start>=0&&end>start,'composer command block not found in app.js');
-  const context={t:value=>value,currentId:'chat',currentTeam:team,state:{id:'chat',agent:'kimi',agents:[{kind:'kimi'}]},window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
+  const context={t:value=>value,currentId:'chat',compactChat:{busy:false},currentTeam:team,state:{id:'chat',agent:'kimi',agents:[{kind:'kimi'}]},window:{BridgePresentation:{defaultCompact:()=>defaultCompact}}};
   vm.runInNewContext(source.slice(start,end)+'\nthis.composerCommandRows=composerCommandRows;this.parseTeamCommand=parseTeamCommand;this.parseCompactCommand=parseCompactCommand;this.parsePlainCommand=parsePlainCommand;this.parseMigrateCommand=parseMigrateCommand;this.runMigrateCommand=runMigrateCommand;this.runGatewayCompact=runGatewayCompact;this.transcriptMaintenanceAvailable=transcriptMaintenanceAvailable;this.compactAvailable=compactAvailable;this.resolveDefaultCompact=resolveDefaultCompact;this.defaultCompactPreference=defaultCompactPreference;this.nativeCompactPrompt=nativeCompactPrompt;',context);
   return context;
 }
@@ -47,8 +47,11 @@ test('native compaction appends optional instructions without changing the bare 
 
 test('plain chats parse /new as new-chat, /new stays un-interceptable via compact',()=>{
   const {parsePlainCommand,parseCompactCommand}=extract();
-  same(parsePlainCommand('/new'),{kind:'newchat'});
+  same(parsePlainCommand('/new'),{kind:'newchat',agent:''});
+  same(parsePlainCommand('/new kimi'),{kind:'newchat',agent:'kimi'});
   assert.equal(parsePlainCommand('/new 顺便'),null);
+  assert.equal(parsePlainCommand('/new 未启用agent'),null);
+  assert.equal(parsePlainCommand('/new unknown-agent'),null,'未启用的 Agent 名不当作 /new 命令');
   same(parsePlainCommand('/compress'),{kind:'native',scope:'main'});
   assert.equal(parseCompactCommand('/new'),null);
 });
