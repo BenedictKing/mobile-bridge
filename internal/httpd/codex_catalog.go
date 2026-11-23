@@ -21,20 +21,23 @@ import (
 // handleCodexCatalog serves GET catalog for codex-owned threads: models with
 // fast-mode metadata folded with the live thread's model/effort/provider,
 // or the Skill list filtered and paged.
+// emptyCatalog is the catalog of a session without a readable runtime
+// catalog: the client keeps the model and Skill controls hidden.
+func emptyCatalog(query map[string][]string) *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	result.Set("kind", queryValue(query, "kind", "models"))
+	result.Set("models", &jsoncompat.Array{})
+	result.Set("skills", &jsoncompat.Array{})
+	result.Set("selectedSkills", &jsoncompat.Array{})
+	result.Set("total", jsoncompat.Num(0))
+	result.Set("currentModel", nil)
+	result.Set("currentEffort", nil)
+	return result
+}
+
 func (h *handler) handleCodexCatalog(threadID string, query map[string][]string) {
-	empty := func() {
-		result := jsoncompat.NewObject()
-		result.Set("kind", queryValue(query, "kind", "models"))
-		result.Set("models", &jsoncompat.Array{})
-		result.Set("skills", &jsoncompat.Array{})
-		result.Set("selectedSkills", &jsoncompat.Array{})
-		result.Set("total", jsoncompat.Num(0))
-		result.Set("currentModel", nil)
-		result.Set("currentEffort", nil)
-		h.output(http.StatusOK, result, contentTypeJSON, "")
-	}
 	if h.server.Codex == nil {
-		empty()
+		h.output(http.StatusOK, emptyCatalog(query), contentTypeJSON, "")
 		return
 	}
 	offset := intQuery(query, "offset", 0)

@@ -131,6 +131,13 @@ func sqlValue(value any) any {
 		return json.Number(fmt.Sprintf("%d", typed))
 	case float64:
 		return json.Number(fmt.Sprintf("%g", typed))
+	case json.Number:
+		// Remote rows arrive as JSON, where an integral REAL column prints
+		// as "1763000000.0"; local rows carry such values as integers.
+		if parsed, err := typed.Float64(); err == nil && parsed == float64(int64(parsed)) {
+			return json.Number(fmt.Sprintf("%d", int64(parsed)))
+		}
+		return typed
 	default:
 		return value
 	}
@@ -138,9 +145,6 @@ func sqlValue(value any) any {
 
 // List returns desktop-owned, non-subagent thread metadata in recency order.
 func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*jsoncompat.Object, error) {
-	if limit < 0 || offset < 0 {
-		return nil, errors.New("分页参数无效")
-	}
 	db, err := s.open()
 	if err != nil {
 		return nil, err
@@ -150,6 +154,25 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 	if err != nil {
 		return nil, err
 	}
+	fields, statement, args, err := listPlan(columns, query, limit, offset, archived)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.Query(statement, args...)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	return scanObjects(rows, fields)
+}
+
+// listPlan builds the thread query both stores share: the local store runs it
+// against the desktop database, RemoteStore ships it to a read-only helper on
+// another computer. Columns the schema lacks are left out, so an older remote
+// index still lists what it has.
+func listPlan(columns map[string]bool, query string, limit, offset int, archived bool) ([]string, string, []any, error) {
+	if limit < 0 || offset < 0 {
+		return nil, "", nil, errors.New("分页参数无效")
+	}
 	available := []string{"id", "name", "title", "cwd", "updated_at", "updated_at_ms", "recency_at", "recency_at_ms", "model_provider", "model", "originator", "source", "archived", "is_pinned"}
 	fields := []string{}
 	for _, field := range available {
@@ -158,7 +181,7 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 		}
 	}
 	if !columns["id"] {
-		return nil, ErrUnavailable
+		return nil, "", nil, ErrUnavailable
 	}
 	where := []string{}
 	args := []any{}
@@ -213,11 +236,7 @@ func (s *SessionStore) List(query string, limit, offset int, archived bool) ([]*
 	}
 	statement += " ORDER BY " + recency + " DESC, id DESC LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
-	rows, err := db.Query(statement, args...)
-	if err != nil {
-		return nil, ErrUnavailable
-	}
-	return scanObjects(rows, fields)
+	return fields, statement, args, nil
 }
 
 // Get returns one user-facing thread row, rejecting subagent rows that are
@@ -227,6 +246,12 @@ func (s *SessionStore) Get(threadID string) (*jsoncompat.Object, error) {
 	if err != nil {
 		return nil, err
 	}
+	return userFacingRow(object)
+}
+
+// userFacingRow applies Get's owner whitelist to a thread row however it was
+// read (local database or remote helper).
+func userFacingRow(object *jsoncompat.Object) (*jsoncompat.Object, error) {
 	originator, _ := object.MustGet("originator").(string)
 	source, _ := object.MustGet("source").(string)
 	if !userFacingThread(originator, source) {

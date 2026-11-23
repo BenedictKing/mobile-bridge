@@ -252,6 +252,24 @@ func (h *handler) sseFrame(event string, payload any, cursor string) error {
 		string(jsoncompat.EncodeCompact(payload)) + "\n\n")
 }
 
+// unsupportedPermissions is the permission panel of a runtime without
+// mobile permission modes: the client keeps the control hidden.
+func unsupportedPermissions() *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	result.Set("supported", false)
+	result.Set("options", &jsoncompat.Array{})
+	result.Set("current", nil)
+	return result
+}
+
+// noPendingInput answers an input read when no question is waiting.
+func noPendingInput() *jsoncompat.Object {
+	result := jsoncompat.NewObject()
+	result.Set("waiting", false)
+	result.Set("inputs", &jsoncompat.Array{})
+	return result
+}
+
 // handleSessionRoutes dispatches THREAD_ROUTE actions after the auth gate.
 // Returns false when the path is not a session route.
 func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path string,
@@ -387,11 +405,7 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return true
 	}
 	if !write && action == "permissions" {
-		result := jsoncompat.NewObject()
-		result.Set("supported", false)
-		result.Set("options", &jsoncompat.Array{})
-		result.Set("current", nil)
-		h.output(http.StatusOK, result, contentTypeJSON, "")
+		h.output(http.StatusOK, unsupportedPermissions(), contentTypeJSON, "")
 		return true
 	}
 	if write && action == "permissions" {
@@ -399,10 +413,7 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		return true
 	}
 	if !write && action == "input" {
-		result := jsoncompat.NewObject()
-		result.Set("waiting", false)
-		result.Set("inputs", &jsoncompat.Array{})
-		h.output(http.StatusOK, result, contentTypeJSON, "")
+		h.output(http.StatusOK, noPendingInput(), contentTypeJSON, "")
 		return true
 	}
 	if write && action == "reconnect" && h.server.Codex != nil {
@@ -1528,18 +1539,7 @@ func (h *handler) stream(bridge SessionBridge, threadID string, query map[string
 		}
 	}
 	session := bridge.Session(threadID)
-	header := h.writer.Header()
-	header.Set("Cache-Control", "no-store")
-	header.Set("X-Content-Type-Options", "nosniff")
-	header.Set("Referrer-Policy", "no-referrer")
-	header.Set("X-Frame-Options", "DENY")
-	header.Set("Content-Security-Policy", h.contentSecurityPolicy())
-	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-	header.Set("Content-Type", "text/event-stream; charset=utf-8")
-	header.Set("X-Accel-Buffering", "no")
-	header.Set("Connection", "close")
-	h.writer.WriteHeader(http.StatusOK)
-	h.closeConnection = true
+	h.beginEventStream()
 	if incremental {
 		h.streamIncremental(bridge, threadID, session, epoch, sequence)
 		return
@@ -1581,6 +1581,23 @@ func (h *handler) stream(bridge SessionBridge, threadID string, query map[string
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// beginEventStream writes the SSE response head shared by every /events
+// endpoint.
+func (h *handler) beginEventStream() {
+	header := h.writer.Header()
+	header.Set("Cache-Control", "no-store")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("Referrer-Policy", "no-referrer")
+	header.Set("X-Frame-Options", "DENY")
+	header.Set("Content-Security-Policy", h.contentSecurityPolicy())
+	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	header.Set("Content-Type", "text/event-stream; charset=utf-8")
+	header.Set("X-Accel-Buffering", "no")
+	header.Set("Connection", "close")
+	h.writer.WriteHeader(http.StatusOK)
+	h.closeConnection = true
 }
 
 func (h *handler) streamIncremental(bridge SessionBridge, threadID string,

@@ -86,7 +86,7 @@ func selectPreloadSessions(rows *jsoncompat.Array) []preloadSession {
 // Codex already has a store-backed history view and is deliberately not attached.
 func (s *Server) PreloadRecentSessions() {
 	h := &handler{server: s}
-	result, err := h.sessionList(map[string][]string{})
+	result, err := h.sessionList(map[string][]string{}, false)
 	if err != nil {
 		log.Printf("会话预热: 读取会话列表失败: %v", err)
 		return

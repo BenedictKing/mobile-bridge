@@ -21,22 +21,29 @@ type localProjects struct {
 	assignments map[string]string   // session id -> assigned project id
 }
 
-func readLocalProjects(codexHome string) *localProjects {
-	projects := &localProjects{names: map[string]string{}, roots: map[string][]string{},
-		assignments: map[string]string{}}
+// readGlobalState parses the desktop App's .codex-global-state.json; nil when
+// it is missing or unreadable.
+func readGlobalState(codexHome string) *jsoncompat.Object {
 	if codexHome == "" {
-		return projects
+		return nil
 	}
 	raw, err := os.ReadFile(filepath.Join(codexHome, ".codex-global-state.json"))
 	if err != nil {
-		return projects
+		return nil
 	}
 	value, err := jsoncompat.Unmarshal(raw)
 	if err != nil {
-		return projects
+		return nil
 	}
-	root, ok := value.(*jsoncompat.Object)
-	if !ok {
+	root, _ := value.(*jsoncompat.Object)
+	return root
+}
+
+func readLocalProjects(codexHome string) *localProjects {
+	projects := &localProjects{names: map[string]string{}, roots: map[string][]string{},
+		assignments: map[string]string{}}
+	root := readGlobalState(codexHome)
+	if root == nil {
 		return projects
 	}
 	if items, ok := root.MustGet("local-projects").(*jsoncompat.Object); ok {

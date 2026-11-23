@@ -10,7 +10,7 @@
 
 Continue **existing chats in the desktop Codex App** from your phone browser, or create an empty chat in a saved project or a custom local directory.
 
-The phone and desktop use the same chat. Read replies, send messages, choose models and Skills, and respond to pending confirmations. Local tasks continue on the original computer; SSH tasks continue on the original server. Each chat keeps its model provider and authentication settings.
+The phone and desktop use the same chat. Read replies, send messages, choose models and Skills, and respond to pending confirmations. Local tasks continue on the original computer. Each chat keeps its model provider and authentication settings. SSH sessions saved in the desktop app can currently only be listed and read on the phone; sending from them is not available yet.
 
 **Your phone does not need to sign in to the same OpenAI account as the desktop.** The gateway has its own username/password login and an explicit passwordless option. Connect over LAN, a temporary HTTPS tunnel, or your own reverse proxy.
 

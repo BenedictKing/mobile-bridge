@@ -170,6 +170,12 @@ type Server struct {
 	subagentOnce    sync.Once
 	codexSubagents  *subagents.Flattener
 	discovery       *listDiscovery
+	// SSH 远端读取（remote_hosts.go）：每主机一个只读 reader 与失败退避；
+	// remoteRun 仅测试替换，生产为 nil 走 store.SSHRunner。
+	remoteMu     sync.Mutex
+	remoteStores map[string]*store.RemoteStore
+	remoteFailed map[string]remoteFailure
+	remoteRun    store.RemoteRunner
 	// queueWorker / idleSweeper / uploadGC 是 Python maintain loop 的几部分
 	// （3s 排队派发、30s 空闲会话清扫、60s 过期上传清理）的启停句柄（§12
 	// 阶段四：补停止通道，关停序列可优雅退出）。main.go 在任何 ServeHTTP
@@ -567,7 +573,7 @@ func (h *handler) handleMethod(write bool) {
 		if h.session(write) == nil {
 			return
 		}
-		result, err := h.sessionList(h.request.URL.Query())
+		result, err := h.sessionList(h.request.URL.Query(), true)
 		if err != nil {
 			h.fail(http.StatusConflict, errorBody(err.Error()))
 			return
@@ -610,6 +616,10 @@ func (h *handler) handleMethod(write bool) {
 		explicitCwd := cwd != ""
 		if cwd == "" {
 			cwd = h.resolveProjectCwd(body.MustGet("project"))
+		}
+		if cwd == "" && readAppHosts(h.server.CodexHome).isProjectKey(project) {
+			h.fail(http.StatusConflict, errorBody("SSH 项目暂不支持在手机端新建聊天，请在电脑 App 中创建"))
+			return
 		}
 		if cwd == "" {
 			h.fail(http.StatusBadRequest, errorBody("请选择电脑 App 中已保存的项目"))
@@ -1143,6 +1153,9 @@ func (h *handler) handleMethod(write bool) {
 			return
 		}
 		query := map[string][]string(h.request.URL.Query())
+		if host := queryValue(query, "host", "local"); host != "local" && h.handleRemoteSessionRoute(host, write, path, query) {
+			return
+		}
 		if h.handleGoalHTTP(write, path) {
 			return
 		}
@@ -1185,7 +1198,9 @@ func splitACPOwned(agents map[string]*acpruntime.Manager, ids []string) (owned, 
 	return owned, remaining
 }
 
-func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, error) {
+// sessionList merges local Codex, SSH hosts (only when remote is set: the
+// startup warm-up must never reach over SSH) and ACP agents into one page.
+func (h *handler) sessionList(query map[string][]string, remote bool) (*jsoncompat.Object, error) {
 	text := queryValue(query, "q", "")
 	if len([]rune(text)) > 200 {
 		text = string([]rune(text)[:200])
@@ -1221,6 +1236,15 @@ func (h *handler) sessionList(query map[string][]string) (*jsoncompat.Object, er
 		}
 	}
 	unavailable := &jsoncompat.Array{}
+	if remote && (agent == "" || agent == "codex") {
+		rows, failed := h.server.remoteSessionRows(text, 100+offset, archived)
+		for _, row := range rows {
+			sessions.Items = append(sessions.Items, row)
+		}
+		for _, entry := range failed {
+			unavailable.Items = append(unavailable.Items, entry)
+		}
+	}
 	acpAgents := h.server.ACPAgents
 	if len(acpAgents) == 0 && h.server.ACP != nil {
 		acpAgents = map[string]*acpruntime.Manager{"acp": h.server.ACP}
@@ -1360,7 +1384,8 @@ func (h *handler) resolveProjectCwd(key any) string {
 // projectListLimit caps how many recent projects /api/projects returns. Saved
 // desktop projects are returned in addition to this window. Internal callers
 // (resolveProjectCwd, migration targets) pass 0 for the full list so projects
-// that aged out of the recent window still resolve by key.
+// that aged out of the recent window still resolve by key; that list is local
+// only, so a saved SSH project never resolves to a local working directory.
 const projectListLimit = 30
 
 type projectEntry struct {
@@ -1483,6 +1508,7 @@ func (h *handler) projectList(limit int) *jsoncompat.Object {
 			entries = append(entries, entry)
 			visible[filepath.Clean(cwd)] = true
 		}
+		entries = append(entries, readAppHosts(h.server.CodexHome).projectEntries()...)
 	}
 	projects := &jsoncompat.Array{}
 	for _, entry := range entries {
