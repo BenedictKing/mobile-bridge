@@ -5,10 +5,13 @@ package uploads
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +24,10 @@ import (
 const (
 	MaxFile  = 20 * 1024 * 1024
 	MaxThumb = 1024 * 1024
+
+	// DefaultRetention is how long an unreferenced phone upload survives
+	// before Collect removes it (Python's uploads.collect default of 7 days).
+	DefaultRetention = 7 * 24 * time.Hour
 )
 
 var safeName = regexp.MustCompile(`^[^\\/\x00-\x1f\x7f]+$`)
@@ -289,6 +296,103 @@ func (m *Manager) writeMeta(thread, id string, row *jsoncompat.Object) error {
 		return err
 	}
 	return os.Rename(tmp, m.metaPath(thread, id))
+}
+
+// Collect removes uploads older than retention unless protected says a pending
+// submission still needs them (Python's uploads.collect, keyed by thread and
+// attachment id). Unreadable metadata is left alone, and a directory that
+// cannot be removed keeps its metadata. It returns how many uploads went away.
+func (m *Manager) Collect(retention time.Duration, protected func(thread, id string) bool, now time.Time) int {
+	removed := 0
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	threads, err := os.ReadDir(m.Root)
+	if err != nil {
+		return 0
+	}
+	for _, thread := range threads {
+		if !thread.IsDir() || !safeThread.MatchString(thread.Name()) {
+			continue
+		}
+		entries, err := os.ReadDir(filepath.Join(m.Root, thread.Name()))
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			id := uploadID(entry.Name())
+			if id == "" || (protected != nil && protected(thread.Name(), id)) ||
+				!expired(m.metaPath(thread.Name(), id), now.Add(-retention)) {
+				continue
+			}
+			if err := os.RemoveAll(m.folder(thread.Name(), id)); err != nil {
+				log.Printf("上传清理失败（thread=%s id=%s）: %v", thread.Name(), id, err)
+				continue
+			}
+			if err := os.Remove(m.metaPath(thread.Name(), id)); err != nil && !os.IsNotExist(err) {
+				log.Printf("上传清理失败（thread=%s id=%s）: %v", thread.Name(), id, err)
+				continue
+			}
+			removed++
+		}
+		// rmdir only succeeds on an emptied thread directory; anything left
+		// (protected uploads, unreadable rows, stray files) keeps it in place.
+		_ = os.Remove(filepath.Join(m.Root, thread.Name()))
+	}
+	return removed
+}
+
+// uploadID returns the attachment id behind a metadata file name, or "" for
+// anything else found in a thread directory.
+func uploadID(name string) string {
+	if !strings.HasSuffix(name, ".json") {
+		return ""
+	}
+	id := strings.TrimSuffix(name, ".json")
+	if _, err := uuid.Parse(id); err != nil {
+		return ""
+	}
+	return id
+}
+
+// expired reports whether an upload was created before cutoff. A missing or
+// damaged metadata row is never expired; a row without createdAt falls back to
+// the file's modification time.
+func expired(meta string, cutoff time.Time) bool {
+	info, err := os.Stat(meta)
+	if err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(meta)
+	if err != nil {
+		return false
+	}
+	value, err := jsoncompat.Unmarshal(raw)
+	row, _ := value.(*jsoncompat.Object)
+	if err != nil || row == nil {
+		return false
+	}
+	created := float64(info.ModTime().Unix())
+	if stored, ok := row.Get("createdAt"); ok {
+		if created, ok = numberValue(stored); !ok {
+			return false
+		}
+	}
+	return created <= float64(cutoff.Unix())
+}
+
+func numberValue(value any) (float64, bool) {
+	switch number := value.(type) {
+	case json.Number:
+		parsed, err := strconv.ParseFloat(number.String(), 64)
+		return parsed, err == nil
+	case float64:
+		return number, true
+	case int64:
+		return float64(number), true
+	case int:
+		return float64(number), true
+	}
+	return 0, false
 }
 
 func public(row *jsoncompat.Object) *jsoncompat.Object {

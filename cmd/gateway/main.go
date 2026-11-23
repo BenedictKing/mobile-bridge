@@ -975,6 +975,9 @@ func runGateway(args []string) {
 		log.Fatalf("submissions ledger: %v", queueErr)
 	}
 	server.Queue = queue
+	// 过期上传清理要靠提交账本判断哪些附件仍被待处理发送引用，故在账本
+	// 加载后启动。
+	server.StartUploadGC()
 	activity, activityErr := httpd.LoadActivity(filepath.Join(dataDir, "session-activity.json"))
 	if activityErr != nil {
 		log.Fatalf("session activity ledger: %v", activityErr)
@@ -1172,10 +1175,11 @@ func runGateway(args []string) {
 	}
 	// 后台循环按序优雅退出（§12 阶段四：此前 queue worker 与 idle sweeper 是
 	// 裸 ticker goroutine，进程关停只能靠整体退出）：HTTP 已停 → 队列 worker
-	// → 空闲 sweeper → team 对账 reconciler → 定时触发 → 会话发现；其余
-	// 收尾随后。
+	// → 空闲 sweeper → 过期上传清理 → team 对账 reconciler → 定时触发 →
+	// 会话发现；其余收尾随后。
 	server.StopQueueWorker()
 	server.StopIdleSweeper()
+	server.StopUploadGC()
 	server.Teams.StopReconciler()
 	// 定时触发器优雅退出（ctx 取消 + 等待循环返回，仿 accpool Poller）：
 	// sweep 中断处即停，进行中的触发留标记，重启后按 journal 回扫收尾。

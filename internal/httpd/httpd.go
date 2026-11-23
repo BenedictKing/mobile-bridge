@@ -170,12 +170,13 @@ type Server struct {
 	subagentOnce    sync.Once
 	codexSubagents  *subagents.Flattener
 	discovery       *listDiscovery
-	// queueWorker / idleSweeper 是 Python maintain loop 的两半（3s 排队派发
-	// 与 30s 空闲会话清扫）的启停句柄（§12 阶段四：补停止通道，关停序列
-	// 可优雅退出）。main.go 在任何 ServeHTTP 之前 Start、HTTP 关停后 Stop，
-	// 与 discovery 同款无锁装配惯例。
+	// queueWorker / idleSweeper / uploadGC 是 Python maintain loop 的几部分
+	// （3s 排队派发、30s 空闲会话清扫、60s 过期上传清理）的启停句柄（§12
+	// 阶段四：补停止通道，关停序列可优雅退出）。main.go 在任何 ServeHTTP
+	// 之前 Start、HTTP 关停后 Stop，与 discovery 同款无锁装配惯例。
 	queueWorker *maintainLoop
 	idleSweeper *maintainLoop
+	uploadGC    *maintainLoop
 }
 
 func New(authenticator *auth.Auth, webFS fs.FS, port int, instanceID string) *Server {

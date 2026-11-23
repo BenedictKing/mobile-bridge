@@ -27,6 +27,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpruntime"
 	"github.com/BenedictKing/mobile-bridge/internal/codex"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
 )
 
@@ -897,6 +898,69 @@ func (s *Server) StartIdleSweeper() {
 func (s *Server) StopIdleSweeper() {
 	if loop := s.idleSweeper; loop != nil {
 		s.idleSweeper = nil
+		loop.close()
+	}
+}
+
+// protectedUploads keys the attachments that pending submissions still need,
+// by "thread\x00id"（Python _upload_gc 的 queued/unknown/accepted/failed 集合；
+// failed 保留是因为失败项可沿用原请求身份重试）。
+func (q *submissions) protectedUploads() map[string]bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	protected := map[string]bool{}
+	for _, key := range q.order {
+		entry := q.entries[key]
+		if entry == nil {
+			continue
+		}
+		switch entry.Status {
+		case SubQueued, SubUnknown, SubAccepted, SubFailed:
+		default:
+			continue
+		}
+		for _, id := range entry.Attachments {
+			protected[entry.ThreadID+"\x00"+id] = true
+		}
+	}
+	return protected
+}
+
+// collectUploadsAt removes local uploads past retention that no pending
+// submission references, and returns how many went away.
+func (s *Server) collectUploadsAt(now time.Time) int {
+	if s.Uploads == nil || s.Queue == nil {
+		return 0
+	}
+	protected := s.Queue.protectedUploads()
+	return s.Uploads.Collect(uploads.DefaultRetention, func(thread, id string) bool {
+		return protected[thread+"\x00"+id]
+	}, now)
+}
+
+// StartUploadGC 每 60s 清理超过保留期且没有待处理提交引用的本地上传
+// （Python _upload_gc）。StopUploadGC 停止循环（幂等，同步等待在途一轮收尾）；
+// 重复调用无副作用。
+func (s *Server) StartUploadGC() {
+	if s.Uploads == nil || s.Queue == nil || s.uploadGC != nil {
+		return
+	}
+	s.uploadGC = newMaintainLoop(time.Minute, func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("上传清理异常: %v\n%s", recovered, debug.Stack())
+			}
+		}()
+		if removed := s.collectUploadsAt(time.Now()); removed > 0 {
+			log.Printf("已清理 %d 个过期上传", removed)
+		}
+	})
+}
+
+// StopUploadGC 停止过期上传清理循环（幂等；停止后可重新 Start）。
+func (s *Server) StopUploadGC() {
+	if loop := s.uploadGC; loop != nil {
+		s.uploadGC = nil
 		loop.close()
 	}
 }
