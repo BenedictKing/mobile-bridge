@@ -2,6 +2,8 @@ package acpview
 
 import (
 	"log"
+	"path/filepath"
+	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/planstore"
@@ -57,6 +59,59 @@ func (v *View) trackPlan(id, content string) planRevision {
 		}
 	}
 	return revision
+}
+
+const kimiPlanPathPrefix = "Plan saved to: "
+
+// kimiPlanInput 识别 Kimi acp-server 的计划审阅请求：它不带 rawInput.plan，
+// 而是把 "Plan saved to: <path>\n\n<plan>" 作为首个内容块，末块固定为
+// "Requesting approval to …"，选项为 plan_approve/plan_revise/…。
+// 返回与 rawInput 同形的 {plan, planId}；planId 取计划文件名，跨修订稳定。
+func kimiPlanInput(params, toolCall *jsoncompat.Object) *jsoncompat.Object {
+	if params == nil || toolCall == nil {
+		return nil
+	}
+	if title, _ := toolCall.MustGet("title").(string); title != "ExitPlanMode" || !hasOption(params, "plan_revise") {
+		return nil
+	}
+	blocks := arr(toolCall.MustGet("content"))
+	if blocks == nil || len(blocks.Items) < 2 {
+		return nil
+	}
+	plan := FlattenOutput(&jsoncompat.Array{Items: blocks.Items[:1]})
+	path := ""
+	if rest, ok := strings.CutPrefix(plan, kimiPlanPathPrefix); ok {
+		path, plan, _ = strings.Cut(rest, "\n\n")
+	}
+	if strings.TrimSpace(plan) == "" {
+		return nil
+	}
+	input := jsoncompat.NewObject()
+	input.Set("plan", plan)
+	if id := strings.TrimSuffix(filepath.Base(strings.TrimSpace(path)), ".md"); path != "" && id != "" && id != "." {
+		input.Set("planId", id)
+	}
+	return input
+}
+
+// KimiPlanPermission 报告该权限请求是否为 Kimi 内容块形态的计划审阅。
+// Kimi 对这种请求不读取回应里的修改意见，需要网关代为转交。
+func KimiPlanPermission(params *jsoncompat.Object) bool {
+	if params == nil {
+		return false
+	}
+	return kimiPlanInput(params, obj(params.MustGet("toolCall"))) != nil
+}
+
+func hasOption(params *jsoncompat.Object, optionID string) bool {
+	if list := arr(params.MustGet("options")); list != nil {
+		for _, item := range list.Items {
+			if option := obj(item); option != nil && option.MustGet("optionId") == optionID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func requestPlanID(toolCall, planInput *jsoncompat.Object, requestID string) string {

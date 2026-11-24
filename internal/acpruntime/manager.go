@@ -1843,10 +1843,14 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object, command
 	if commandID == "" {
 		commandID = target
 	}
+	delivered := false
 	_, replyErr := s.Commands.Run(command.Intent{ID: commandID, Scope: scope, Target: target, Payload: response}, func() (any, error) {
 		err := respond(rawID, wire)
 		// Only a newly delivered human response re-arms the budgets. Receipt
 		// replays and Jev responses must not produce another human-action effect.
+		if err == nil {
+			delivered = true
+		}
 		if err == nil && len(commandIDs) > 0 {
 			s.autoContinueRuns = 0
 			s.switchResumeRuns = 0
@@ -1871,6 +1875,7 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object, command
 		s.mu.Unlock()
 		return err
 	}
+	relay := kimiPlanFeedback(s.kind, s.pendingKinds[requestID], params, response)
 	delete(s.pending, requestID)
 	delete(s.pendingIDs, requestID)
 	delete(s.pendingKinds, requestID)
@@ -1878,6 +1883,42 @@ func (s *Session) Respond(requestID string, response *jsoncompat.Object, command
 	s.View.RemovePermission(requestID)
 	s.signalLocked()
 	s.mu.Unlock()
+	if relay != "" && delivered {
+		return s.relayFeedback(relay)
+	}
+	return nil
+}
+
+// FeedbackRelayError 表示审批回应已送达，但随后转交修改意见失败。
+type FeedbackRelayError struct{ Err error }
+
+func (e *FeedbackRelayError) Error() string {
+	return "修改意见未能转交给 Agent：" + e.Err.Error()
+}
+func (e *FeedbackRelayError) Unwrap() error { return e.Err }
+
+// kimiPlanFeedback 返回需由网关代为转交的计划修改意见。Kimi acp-server 把
+// plan_revise 映射为 {decision:rejected, selectedLabel:Revise}，从不读取
+// outcome.text，模型只会收到 "User requested revisions"。
+func kimiPlanFeedback(kind, requestKind string, params, response *jsoncompat.Object) string {
+	if kind != "kimi" || requestKind != "permission" || response.MustGet("optionId") != "plan_revise" ||
+		!acpview.KimiPlanPermission(params) {
+		return ""
+	}
+	text, _ := response.MustGet("text").(string)
+	return strings.TrimSpace(text)
+}
+
+// relayFeedback 停下 Agent 拿到"需修订"后自行继续的回合，再把意见作为下一条
+// 用户消息发出，确保修订基于意见而不是盲改。仅在首次送达回应后调用，重放不会重复发送。
+func (s *Session) relayFeedback(text string) error {
+	err := s.CancelAndWait(10 * time.Second)
+	if err == nil {
+		err = s.Prompt(text, 3600*time.Second)
+	}
+	if err != nil {
+		return &FeedbackRelayError{Err: err}
+	}
 	return nil
 }
 

@@ -1093,16 +1093,23 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 				planParams = session.RequestParams(requestID)
 			}
 		}
-		if callErr := session.Respond(requestID, response, stringField(object, "commandId")); callErr != nil {
+		callErr := session.Respond(requestID, response, stringField(object, "commandId"))
+		var relayErr *acpruntime.FeedbackRelayError
+		if callErr != nil && !errors.As(callErr, &relayErr) {
 			h.failControl(callErr)
-		} else {
-			h.recordPlanFeedback(kind, session.ID, planParams, planFeedback)
-			// Respond re-arms a human action once; Goal reconciles current state.
-			if goal, ok := h.server.gatewayGoalFor(kind, threadID); ok && goal.Status == acpgoal.StatusWaitingInput {
-				go h.server.GoalSettleACP(kind, session)
-			}
-			h.output(http.StatusOK, jsoncompat.NewObject(), contentTypeJSON, "")
+			return true
 		}
+		h.recordPlanFeedback(kind, session.ID, planParams, planFeedback)
+		// Respond re-arms a human action once; Goal reconciles current state.
+		if goal, ok := h.server.gatewayGoalFor(kind, threadID); ok && goal.Status == acpgoal.StatusWaitingInput {
+			go h.server.GoalSettleACP(kind, session)
+		}
+		result := jsoncompat.NewObject()
+		if relayErr != nil {
+			// 审批已送达、仅修改意见未转交：意见仍计入历史，但不能按失败重试。
+			result.Set("warning", relayErr.Error())
+		}
+		h.output(http.StatusOK, result, contentTypeJSON, "")
 	case "settings":
 		modelName, _ := object.MustGet("model").(string)
 		effort, _ := object.MustGet("effort").(string)

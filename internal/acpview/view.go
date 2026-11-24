@@ -315,6 +315,11 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 	}
 	toolCall := obj(truthyOr(params.MustGet("toolCall"), any(jsoncompat.NewObject())))
 	planInput := permissionPlanInput(toolCall.MustGet("rawInput"))
+	kimiPlan := false
+	if planInput == nil {
+		planInput = kimiPlanInput(params, toolCall)
+		kimiPlan = planInput != nil
+	}
 	if planInput != nil {
 		content, _ := planInput.MustGet("plan").(string)
 		entryParams.Set("planContent", content)
@@ -331,7 +336,8 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 		}
 	}
 	text := flattenContentText(toolCall.MustGet("content"))
-	if text == "" && planInput != nil {
+	// Kimi 的内容块只是计划文件路径+正文+固定请求语，正文即审阅对象。
+	if (text == "" || kimiPlan) && planInput != nil {
 		text, _ = planInput.MustGet("plan").(string)
 	}
 	if text != "" {

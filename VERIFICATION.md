@@ -1,3 +1,12 @@
+## Kimi 计划审阅识别与修改意见转交（2026-11-25，本地验证）
+
+- 真实验收发现阻断问题：Kimi 的 ExitPlanMode 审批在手机上只是普通权限卡，前三阶段的版本、批注、历史完全不生效。查 Kimi 会话 `wire.jsonl` 与其 acp-server 实现确认：计划审阅请求不带 `rawInput.plan`，正文以 `Plan saved to: <path>\n\n<plan>` 形式放在首个 `toolCall.content` 块，末块是固定请求语，选项为 `plan_approve/plan_revise/plan_reject_and_exit`。
+- 网关识别该形态并复用既有计划投影：`planContent` 为去掉路径与请求语的正文，`planId` 取计划文件名（Kimi 每轮重新生成 toolCallId，文件名跨修订稳定），版本链、Diff、批注与历史因此直接生效；其他工具、无 Revise 选项或缺少 `toolCall` 的异常请求不受影响。
+- 修订意见此前到不了模型：Kimi 把 `plan_revise` 映射为 `{decision:rejected, selectedLabel:"Revise"}`，从不读取 `outcome.text`，模型只收到 "User requested revisions. Plan mode remains active."。现在仅对 Kimi 该形态请求，网关在回应送达后先取消这个会盲改的回合，再把意见（前端已格式化为编号批注+全局意见）作为下一条用户消息发出，意见因此可见于时间线。转交只在真正送达回应后执行，命令重放不重复发送；取消或发送失败时审批仍然生效，HTTP 返回 200 + `warning`，前端展示该提示而不重试。
+- 测试：`acpview` 覆盖 Kimi 形态投影、planId 稳定、相同正文不递增、修订带上一版、非计划请求与缺 `toolCall` 请求不误判；`httpd` 用复刻 Kimi 报文的伪 Agent 走完整 HTTP 链路，覆盖计划卡元数据、批注按服务端版本落盘、取消盲改回合、意见送达及重放不重复。
+- 验证：`go build ./...`、`go vet ./...`、`go test -count=1 ./...` 全量通过，`go test -race -count=1 ./...` 全量 42 个包通过，最后改动后对 acpview/acpruntime/httpd 复跑 race 亦通过；`npm run check:web` 类型检查及 427 项测试通过。全量单测首轮 `TestTeamIntegration2FirstSuccessEarlyStop` 等待超时，单独复跑与 httpd 全量复跑均通过，判定为并发时序抖动。
+- 未覆盖：真实 Kimi 端到端与真机未验收，需要重新构建并重启 8787 网关；重启前已存在的计划卡仍是普通权限卡。识别与转交依赖 Kimi 当前报文形态，Kimi 若改为读取 `outcome.text` 或更改报文，需要同步调整。
+
 ## 压缩启动与账号切换等待优化（2026-11-25，本地验证）
 
 - 用户确认压缩目标最终能开始，只是等待约一两分钟。只读查看当前网关与原生历史，确认截图对应源会话的压缩账本已送达，新 Claude 会话正在执行；没有重复提交压缩或切换真实账号。

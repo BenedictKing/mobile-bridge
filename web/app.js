@@ -1304,7 +1304,7 @@ function renderAcpApproval(request){
   let busy=submittedRequestIds.has(request.id);
   async function submit(response,extra){
     if(busy)return;busy=true;approvalBusy++;setLanguageBusy();actions.querySelectorAll('button').forEach(b=>b.disabled=true);error.textContent='';
-    try{await respondToRequest(id,host,request,response,extra);review?.clear();bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
+    try{const result=await respondToRequest(id,host,request,response,extra);review?.clear();bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));if(result?.warning)error.textContent=result.warning;}
     catch(e){error.textContent=t(e.message);busy=false;actions.querySelectorAll('button').forEach(b=>b.disabled=false);}
     finally{approvalBusy--;setLanguageBusy();}
   }
