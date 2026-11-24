@@ -209,6 +209,7 @@ func TestAddPermissionSurfacesStructuredPlan(t *testing.T) {
 	rawInput.Set("allowedPrompts", &jsoncompat.Array{Items: []any{allowed}})
 	toolCall := jsoncompat.NewObject()
 	toolCall.Set("title", "Plan approval")
+	toolCall.Set("toolCallId", "tool-plan")
 	toolCall.Set("rawInput", rawInput)
 	content := jsoncompat.NewObject()
 	content.Set("type", "text")
@@ -232,6 +233,48 @@ func TestAddPermissionSurfacesStructuredPlan(t *testing.T) {
 	}
 	if prompts := entryParams.MustGet("allowedPrompts").(*jsoncompat.Array); len(prompts.Items) != 1 {
 		t.Fatalf("allowed prompts were not preserved: %s", jsoncompat.EncodeCompact(entryParams))
+	}
+	if entryParams.MustGet("planId") != "tool-plan" || entryParams.MustGet("planVersion").(json.Number).String() != "1" {
+		t.Fatalf("plan version identity was not exposed: %s", jsoncompat.EncodeCompact(entryParams))
+	}
+	if hash, _ := entryParams.MustGet("planHash").(string); len(hash) != 64 {
+		t.Fatalf("plan hash = %q", hash)
+	}
+}
+
+func TestPlanRevisionsSurviveReplayAndExposePreviousContent(t *testing.T) {
+	view := NewView("sess-1", "Demo", "/work", func() float64 { return 1 })
+	update := func(content string) {
+		event := jsoncompat.NewObject()
+		event.Set("sessionUpdate", "plan_update")
+		plan := jsoncompat.NewObject()
+		plan.Set("planId", "plan-1")
+		plan.Set("content", content)
+		event.Set("plan", plan)
+		view.OnUpdate(event)
+	}
+	approve := func(requestID string) *jsoncompat.Object {
+		rawInput := jsoncompat.NewObject()
+		rawInput.Set("planId", "plan-1")
+		rawInput.Set("plan", "second")
+		toolCall := jsoncompat.NewObject()
+		toolCall.Set("rawInput", rawInput)
+		params := jsoncompat.NewObject()
+		params.Set("toolCall", toolCall)
+		view.AddPermission(requestID, params)
+		requests := view.Snapshot().MustGet("requests").(*jsoncompat.Array)
+		return requests.Items[len(requests.Items)-1].(*jsoncompat.Object).MustGet("params").(*jsoncompat.Object)
+	}
+	update("first")
+	update("first")
+	update("second")
+	params := approve("req-1")
+	if params.MustGet("planVersion").(json.Number).String() != "2" || params.MustGet("previousPlanContent") != "first" {
+		t.Fatalf("plan revision = %s", jsoncompat.EncodeCompact(params))
+	}
+	replayed := approve("req-2")
+	if replayed.MustGet("planVersion").(json.Number).String() != "2" || replayed.MustGet("planHash") != params.MustGet("planHash") {
+		t.Fatalf("identical plan replay advanced revision: %s", jsoncompat.EncodeCompact(replayed))
 	}
 }
 

@@ -10,6 +10,10 @@ func TestNormalizeACPPlanPermissionRetainsPresentationFields(t *testing.T) {
 	params := jsoncompat.NewObject()
 	params.Set("text", "计划摘要")
 	params.Set("planContent", "# 计划详情")
+	params.Set("planId", "plan-1")
+	params.Set("planVersion", jsoncompat.Num(2))
+	params.Set("planHash", "abc123")
+	params.Set("previousPlanContent", "# 旧计划")
 	params.Set("allowedPrompts", &jsoncompat.Array{Items: []any{"run tests"}})
 	params.Set("command", "")
 	params.Set("options", &jsoncompat.Array{})
@@ -19,7 +23,7 @@ func TestNormalizeACPPlanPermissionRetainsPresentationFields(t *testing.T) {
 	request.Set("params", params)
 
 	result := obj(NormalizeRequest(request).MustGet("params"))
-	for _, key := range []string{"text", "planContent", "allowedPrompts", "command", "options"} {
+	for _, key := range []string{"text", "planContent", "planId", "planVersion", "planHash", "previousPlanContent", "allowedPrompts", "command", "options"} {
 		if _, ok := result.Get(key); !ok {
 			t.Errorf("normalized params dropped %q", key)
 		}

@@ -269,5 +269,5 @@ window.BridgeDiff = (() => {
     dialog.showModal();
   }
 
-  return {fileCards, summaryCard, open, displayPath, lineStats};
+  return {fileCards, summaryCard, open, displayPath, lineStats, pairRows};
 })();

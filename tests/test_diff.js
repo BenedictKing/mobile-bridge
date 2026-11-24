@@ -32,6 +32,14 @@ function changes(count) {
   }));
 }
 
+test('plan diff reuses line pairing with old and new line numbers', () => {
+  const result = loadDiff().pairRows('first\nold\nlast', 'first\nnew\nlast');
+  assert.equal(result.degraded, false);
+  assert.deepEqual(Array.from(result.rows, row => row.kind), ['context', 'del', 'add', 'context']);
+  assert.equal(result.rows[1].oldNo, 2);
+  assert.equal(result.rows[2].newNo, 2);
+});
+
 test('turn diff summary starts collapsed and shows aggregate line counts', () => {
   const card = loadDiff().summaryCard(changes(5), '', () => {});
   assert.equal(card.tagName, 'DETAILS');

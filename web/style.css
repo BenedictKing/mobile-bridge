@@ -132,6 +132,12 @@
 .diff-line.del code{color:var(--diff-del-ink)}
 .diff-line.hunk{color:var(--muted);background:var(--surface);padding:2px 8px;margin:4px 0}
 .diff-more{display:block;margin:10px auto 2px}
+.plan-revision-meta{margin:6px 0;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.plan-revision-diff{margin:10px 0;font-size:12px}
+.plan-revision-diff>summary{cursor:pointer;color:var(--muted);padding:6px 0}
+.plan-revision-diff-view{max-height:50dvh}
+.plan-revision-context{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:3px 8px;background:var(--surface)}
+.plan-revision-context>summary{cursor:pointer;color:var(--muted);white-space:normal;padding:3px 0}
 
 .apk-download{flex:none;display:flex;align-items:center;gap:12px;margin:10px max(24px,calc((100% - 760px)/2)) 0;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--soft);color:var(--green);text-decoration:none}
 .apk-download-icon{display:grid;place-items:center;width:32px;height:32px;flex:none;border-radius:50%;background:var(--green);color:var(--page);font-size:20px}

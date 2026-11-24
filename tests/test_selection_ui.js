@@ -42,7 +42,7 @@ function matches(node,sel){
 }
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
-function setup({sameRow=true,insideButton=false,readOnly=false}={}){
+function setup({sameRow=true,insideButton=false,readOnly=false,messageOnly=true,plainContent=false}={}){
   const body=new FakeElement('body');
   const messages=new FakeElement('div');
   const row=(key)=>{
@@ -56,6 +56,11 @@ function setup({sameRow=true,insideButton=false,readOnly=false}={}){
   };
   const first=row('r1'),second=row('r2');
   let start=first.text,end=(sameRow?first:second).text;
+  if(plainContent){
+    const content=new FakeElement('div');content.className='plan-content';
+    const text={nodeType:3,parentElement:content,textContent:'计划原文'};
+    content.append(text);messages.append(content);start=text;end=text;
+  }
   if(insideButton){
     const button=new FakeElement('button');button.className='message-copy';button.textContent='复制';
     const label={nodeType:3,parentElement:button,textContent:'复制'};
@@ -82,7 +87,7 @@ function setup({sameRow=true,insideButton=false,readOnly=false}={}){
   global.document=document;global.window=window;
   const textarea=new FakeElement('textarea');textarea.readOnly=readOnly;
   const notes=[];
-  BridgeSelection.attach({root:messages,textarea,enabled:()=>true,notify:message=>notes.push(message)});
+  BridgeSelection.attach({root:messages,textarea,enabled:()=>true,notify:message=>notes.push(message),messageOnly});
   const bar=body.children[body.children.length-1];
   const button=bar.children[0];
   return {document,selection,textarea,bar,button,notes,messages};
@@ -131,6 +136,15 @@ test('已有草稿时引用接在草稿之后',async()=>{
   await sleep(220);
   env.bar.fire('click',{target:env.button});
   assert.equal(env.textarea.value,'先帮我看看这段\n\n> 原文内容\n\n');
+});
+
+test('计划正文无需消息行身份也能生成选区引用',async()=>{
+  const env=setup({messageOnly:false,plainContent:true});
+  env.document.emit('selectionchange');
+  await sleep(220);
+  assert.equal(env.bar.hidden,false);
+  env.bar.fire('click',{target:env.button});
+  assert.equal(env.textarea.value,'> 原文内容\n\n');
 });
 
 test('只读会话只提示，不往输入框里塞文字',async()=>{

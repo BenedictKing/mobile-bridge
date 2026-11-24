@@ -31,8 +31,27 @@ function loadApproval(){
     api:async(path,body)=>{calls.push({path,body});return {};},
   };
   const replyStart=source.indexOf('async function respondToRequest('),replyEnd=source.indexOf('async function retryLocalSubmission(',replyStart);
-  vm.runInNewContext(source.slice(elStart,elEnd)+'\n'+source.slice(replyStart,replyEnd)+'\n'+source.slice(start,end)+'\nthis.renderAcpApproval=renderAcpApproval;',context);
+  const planReview=readFileSync(require.resolve('../web/plan-review.js'),'utf8');
+  vm.runInNewContext(planReview+'\n'+source.slice(elStart,elEnd)+'\n'+source.slice(replyStart,replyEnd)+'\n'+source.slice(start,end)+'\nthis.renderAcpApproval=renderAcpApproval;',context);
   return {calls,render:context.renderAcpApproval};
+}
+
+function loadCodexPlanApproval(){
+  const source=readFileSync(require.resolve('../web/app.js'),'utf8'),calls=[];
+  const start=source.indexOf('function renderPlanApproval'),end=source.indexOf('async function ignoreSubmission',start);
+  const elStart=source.indexOf('function el('),elEnd=source.indexOf('\n',elStart);
+  const context={
+    window:{BridgePendingCommands:new PendingCommands(new MemoryStorage())},uuid:()=> 'command-1',chatKey:(id,host)=>host+'|'+id,
+    currentId:'session',currentHost:'local',submittedRequestIds:new Set(),approvalBusy:0,
+    document:{createElement:tag=>new FakeNode(tag)},t:value=>value,
+    setLanguageBusy(){},sessionUrl:()=>'/respond',bumpRecency(){},renderMarkdown:(node,text)=>{node.renderedMarkdown=text;},
+    workModes:{selection:'plan',render(){}},sessionStorage:{setItem(){}},
+    api:async(path,body)=>{calls.push({path,body});return {};},
+  };
+  const replyStart=source.indexOf('async function respondToRequest('),replyEnd=source.indexOf('async function retryLocalSubmission(',replyStart);
+  const planReview=readFileSync(require.resolve('../web/plan-review.js'),'utf8');
+  vm.runInNewContext(planReview+'\n'+source.slice(elStart,elEnd)+'\n'+source.slice(replyStart,replyEnd)+'\n'+source.slice(start,end)+'\nthis.renderPlanApproval=renderPlanApproval;',context);
+  return {calls,render:context.renderPlanApproval};
 }
 
 const request=()=>({id:'request-1',params:{options:[
@@ -81,6 +100,30 @@ test('ACP structured plan renders as Markdown without a duplicate command block'
   assert.equal(body.renderedMarkdown,plan);
   assert.equal(card.children.some(node=>node.className==='approval-command'),false);
   assert.equal(operations.children[1].children[0].textContent,'run server tests (Bash)');
+});
+
+test('ACP revision feedback includes the displayed plan version',async()=>{
+  const {calls,render}=loadApproval(),value=request();
+  value.params.planContent='# 计划';
+  value.params.planId='plan-1';value.params.planVersion=2;value.params.planHash='a'.repeat(64);
+  const card=render(value),input=card.querySelectorAll('textarea')[0],revise=card.querySelectorAll('button').find(button=>button.textContent==='Revise');
+  input.value='> 第一步\n\n补充错误处理';revise.onclick();
+  await new Promise(resolve=>setImmediate(resolve));
+  const text=calls[0].body.response.text;
+  assert.ok(text.includes('Plan-Version: 2'));
+  assert.ok(text.includes('Plan-SHA256: '+'a'.repeat(64)));
+  assert.ok(text.endsWith('> 第一步\n\n补充错误处理'));
+});
+
+test('Codex plan revision uses the same version-bound feedback',async()=>{
+  const {calls,render}=loadCodexPlanApproval();
+  const card=render({id:'request-1',params:{planContent:'# 计划',planId:'turn-1',planVersion:3,planHash:'b'.repeat(64)}});
+  const input=card.querySelectorAll('textarea')[0],revise=card.querySelectorAll('button').find(button=>button.textContent==='按照修改意见继续规划');
+  input.value='补充验收标准';revise.onclick();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls[0].body.response.action,'revise');
+  assert.ok(calls[0].body.response.text.includes('Plan-Version: 3'));
+  assert.ok(calls[0].body.response.text.endsWith('补充验收标准'));
 });
 
 test('other ACP plan options keep their original response shape',async()=>{

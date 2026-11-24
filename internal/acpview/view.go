@@ -35,11 +35,13 @@ type View struct {
 	ordinal       int
 	toolIndex     map[string]*jsoncompat.Object
 	questionTools map[string]bool
+	planRevisions planRevisions
 }
 
 func NewView(sessionID string, title, cwd any, now func() float64) *View {
 	return &View{SessionID: sessionID, Title: title, Cwd: cwd, Status: "idle",
-		Now: now, toolIndex: map[string]*jsoncompat.Object{}, questionTools: map[string]bool{}}
+		Now: now, toolIndex: map[string]*jsoncompat.Object{}, questionTools: map[string]bool{},
+		planRevisions: planRevisions{}}
 }
 
 func questionTitle(value any) bool {
@@ -311,7 +313,16 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 	toolCall := obj(truthyOr(params.MustGet("toolCall"), any(jsoncompat.NewObject())))
 	planInput := permissionPlanInput(toolCall.MustGet("rawInput"))
 	if planInput != nil {
-		entryParams.Set("planContent", planInput.MustGet("plan"))
+		content, _ := planInput.MustGet("plan").(string)
+		entryParams.Set("planContent", content)
+		planID := requestPlanID(toolCall, planInput, requestID)
+		revision := v.planRevisions.track(planID, content)
+		entryParams.Set("planId", planID)
+		entryParams.Set("planVersion", jsoncompat.Num(revision.Number))
+		entryParams.Set("planHash", revision.Hash)
+		if revision.Number > 1 {
+			entryParams.Set("previousPlanContent", revision.Previous)
+		}
 		if allowed, ok := planInput.Get("allowedPrompts"); ok {
 			entryParams.Set("allowedPrompts", jsoncompat.Clone(allowed))
 		}
@@ -704,6 +715,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			return
 		}
 		content, _ := payload.MustGet("content").(string)
+		v.planRevisions.track(planID, content)
 		turn := v.assistantTurn()
 		var plan *jsoncompat.Object
 		for _, item := range messages(turn).Items {

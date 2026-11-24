@@ -18,9 +18,9 @@ var requestFields = []struct {
 	{"item/permissions/requestApproval", []string{"reason", "permissions"}},
 	{"item/tool/requestUserInput", []string{"questions"}},
 	{"tool/requestUserInput", []string{"questions"}},
-	{"item/plan/requestImplementation", []string{"turnId", "planContent"}},
+	{"item/plan/requestImplementation", []string{"turnId", "planContent", "planId", "planVersion", "planHash", "previousPlanContent"}},
 	{"mcpServer/elicitation/request", []string{"serverName", "message", "mode", "requestedSchema"}},
-	{"acp/requestPermission", []string{"title", "command", "text", "planContent", "allowedPrompts", "options"}},
+	{"acp/requestPermission", []string{"title", "command", "text", "planContent", "planId", "planVersion", "planHash", "previousPlanContent", "allowedPrompts", "options"}},
 	{"acp/requestInput", []string{"message", "schema"}},
 }
 

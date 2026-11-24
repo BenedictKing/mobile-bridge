@@ -30,7 +30,7 @@ const BridgeSelection=(()=>{
     return node.nodeType===1?node:node.parentElement||null;
   }
 
-  function attach({root,textarea,notify,enabled}){
+  function attach({root,textarea,notify,enabled,messageOnly=true}){
     if(!root||!textarea)return null;
     const bar=document.createElement('div');
     bar.className='selection-bar';bar.hidden=true;bar.setAttribute('role','toolbar');
@@ -56,9 +56,11 @@ const BridgeSelection=(()=>{
       if(!start||!end||!root.contains(start)||!root.contains(end))return null;
       if(start.closest('button')||end.closest('button'))return null;
       if(start.closest('.message-actions')||end.closest('.message-actions'))return null;
-      const row=start.closest('[data-key]');
-      if(!row||row!==end.closest('[data-key]'))return null;
-      if(!start.closest('.message-body,.activity-body'))return null;
+      if(messageOnly){
+        const row=start.closest('[data-key]');
+        if(!row||row!==end.closest('[data-key]'))return null;
+        if(!start.closest('.message-body,.activity-body'))return null;
+      }
       const {text,truncated}=clampText(selection.toString());
       if(!text)return null;
       const rect=range.getBoundingClientRect();
@@ -108,22 +110,36 @@ const BridgeSelection=(()=>{
       }
       schedule();
     };
-    document.addEventListener('selectionchange',onSelectionChange);
-    // 手机长按选词后 selectionchange 未必立刻跟上手指，touchend 再补一次定位。
-    root.addEventListener('touchend',schedule,{passive:true});
-    document.addEventListener('pointerdown',event=>{if(!bar.contains(event.target))hide();},true);
-    document.addEventListener('scroll',()=>{if(Date.now()>=armedUntil)hide();},{capture:true,passive:true});
-    window.addEventListener('resize',hide,{passive:true});
-    // 三种按下事件都记一次「刚点过浮条」：老 WebView 不一定派发 pointerdown。
-    for(const type of ['pointerdown','touchstart','mousedown'])bar.addEventListener(type,()=>{armedUntil=Date.now()+1200;},{passive:true});
-    bar.addEventListener('click',event=>{
+    const onPointerDown=event=>{if(!bar.contains(event.target))hide();};
+    const onScroll=()=>{if(Date.now()>=armedUntil)hide();};
+    const onBarPress=()=>{armedUntil=Date.now()+1200;};
+    const onBarClick=event=>{
       if(!comment.contains(event.target))return;
       const picked=current;
       armedUntil=0;hide();
       if(picked)insert(picked);
-    });
+    };
+    document.addEventListener('selectionchange',onSelectionChange);
+    // 手机长按选词后 selectionchange 未必立刻跟上手指，touchend 再补一次定位。
+    root.addEventListener('touchend',schedule,{passive:true});
+    document.addEventListener('pointerdown',onPointerDown,true);
+    document.addEventListener('scroll',onScroll,{capture:true,passive:true});
+    window.addEventListener('resize',hide,{passive:true});
+    // 三种按下事件都记一次「刚点过浮条」：老 WebView 不一定派发 pointerdown。
+    for(const type of ['pointerdown','touchstart','mousedown'])bar.addEventListener(type,onBarPress,{passive:true});
+    bar.addEventListener('click',onBarClick);
 
-    return {close:hide};
+    function destroy(){
+      clearTimeout(timer);hide();
+      document.removeEventListener?.('selectionchange',onSelectionChange);
+      document.removeEventListener?.('pointerdown',onPointerDown,true);
+      document.removeEventListener?.('scroll',onScroll,{capture:true});
+      window.removeEventListener?.('resize',hide);
+      root.removeEventListener?.('touchend',schedule);
+      for(const type of ['pointerdown','touchstart','mousedown'])bar.removeEventListener?.(type,onBarPress);
+      bar.removeEventListener?.('click',onBarClick);bar.remove?.();
+    }
+    return {close:hide,destroy};
   }
 
   return {attach,quoteBlock,appendQuote,clampText,MAX_CHARS};
