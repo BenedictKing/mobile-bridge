@@ -109,6 +109,33 @@ func TestNormalizeStateKeepsDistinctSendsUntilTheirReplay(t *testing.T) {
 	}
 }
 
+func TestNormalizeStateDropsHarnessOnlyUserMessages(t *testing.T) {
+	state := normalizeFixture(t, `{"turns":[
+		{"turnId":"t1","status":"completed","items":[
+			{"id":"env","type":"userMessage","content":[{"type":"input_text",
+			"text":"<environment_context>\n  <current_date>2026-11-25</current_date>\n</environment_context>"}]},
+			{"id":"a1","type":"agentMessage","text":"回复"}]},
+		{"turnId":"t2","status":"completed","items":[
+			{"id":"mixed","type":"userMessage","content":[{"type":"input_text",
+			"text":"<environment_context>\n  <current_date>2026-11-25</current_date>\n</environment_context>\n\n真正的请求"}]},
+			{"id":"reminder","type":"userMessage","content":[{"type":"text",
+			"text":"<system-reminder>内部</system-reminder>"}]},
+			{"id":"image","type":"userMessage","content":[{"type":"input_text",
+			"text":"<environment_context>x</environment_context>"},{"type":"localImage","path":"/photo.png"}]}]}
+	]}`)
+	view := NormalizeState(state, true)
+	users := normalizedUsers(view)
+	if len(users) != 2 {
+		t.Fatalf("harness-only rows must drop, real content must stay: %s", jsoncompat.EncodeCompact(view))
+	}
+	if users[0].MustGet("id") != "mixed" || users[0].MustGet("text") != "真正的请求" {
+		t.Fatalf("mixed message = %v text %v", users[0].MustGet("id"), users[0].MustGet("text"))
+	}
+	if users[1].MustGet("id") != "image" || len(arr(users[1].MustGet("attachments")).Items) != 1 {
+		t.Fatal("attachment-carrying user row must survive the empty-text filter")
+	}
+}
+
 func TestNormalizeStateReconcilesCanonicalHistory(t *testing.T) {
 	state := normalizeFixture(t, `{"turnHistory":{"kind":"canonical","history":{
 		"entitiesByKey":{

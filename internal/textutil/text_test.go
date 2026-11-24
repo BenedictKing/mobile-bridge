@@ -37,6 +37,28 @@ Another internal note.
 	}
 }
 
+func TestStripInternalRemindersEnvironmentContext(t *testing.T) {
+	harnessOnly := `<environment_context>
+  <current_date>2026-11-25</current_date>
+  <timezone>Asia/Shanghai</timezone>
+  <filesystem><workspace_roots><root>/work</root></workspace_roots></filesystem>
+</environment_context>`
+	if got := StripInternalReminders(harnessOnly); got != "" {
+		t.Fatalf("harness-only context = %q", got)
+	}
+	mixed := harnessOnly + "\n\n产生了bug 压缩后的对话无法开始"
+	if got := StripInternalReminders(mixed); got != "产生了bug 压缩后的对话无法开始" {
+		t.Fatalf("mixed content = %q", got)
+	}
+	plain := "讨论 <environment_context> 标签的用法"
+	if got := StripInternalReminders(plain); got != plain {
+		t.Fatalf("unclosed mention must stay: %q", got)
+	}
+	if got := TitleFromText(harnessOnly); got != "" {
+		t.Fatalf("harness-only title = %q", got)
+	}
+}
+
 func TestTitleFromTextStripsProtocolWrappers(t *testing.T) {
 	cases := []struct{ name, input, want string }{
 		{"attributed caveat", `<system-reminder data-role="command-caveat">Caveat: generated locally.</system-reminder>`, ""},

@@ -10,6 +10,11 @@ import (
 // CodeBuddy/Claude local-command caveat `<system-reminder data-role="command-caveat">`.
 var internalReminder = regexp.MustCompile(`(?s)<system-reminder(?:\s[^>]*)?>.*?</system-reminder>`)
 
+// environmentContext matches the Codex harness `<environment_context>` blocks
+// replayed as user messages (session start, day rollover); they are runtime
+// metadata, never a user question.
+var environmentContext = regexp.MustCompile(`(?s)<environment_context(?:\s[^>]*)?>.*?</environment_context>`)
+
 // localCommandBlock matches the slash-command wrappers Claude-style CLIs
 // persist as user messages; none of them is a user question, so titles skip them.
 var localCommandBlock = regexp.MustCompile(`(?s)<(command-name|command-message|command-args|local-command-stdout|local-command-stderr)>.*?</(?:command-name|command-message|command-args|local-command-stdout|local-command-stderr)>`)
@@ -77,6 +82,7 @@ func transcriptTitle(text string) (string, bool) {
 // phone timeline. It never changes prompts sent to an agent.
 func StripInternalReminders(text string) string {
 	cleaned := internalReminder.ReplaceAllString(text, "")
+	cleaned = environmentContext.ReplaceAllString(cleaned, "")
 	if cleaned == text {
 		return text
 	}

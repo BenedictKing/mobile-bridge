@@ -105,7 +105,18 @@ func NormalizeState(state *jsoncompat.Object, connected bool) *jsoncompat.Object
 					messages.Items = append(messages.Items, NormalizeItem(item))
 				}
 			} else {
-				messages.Items = append(messages.Items, normalizeTurnItem(item, jsoncompat.PyStr(turn.MustGet("status"))))
+				row := normalizeTurnItem(item, jsoncompat.PyStr(turn.MustGet("status")))
+				// Go-side display filter: harness-only injections (Codex
+				// environment_context, Kimi system-reminder) normalize to empty
+				// user rows. Drop them so they neither render a blank bubble
+				// nor count as the turn's user message; rows with attachments
+				// stay because the attachment is real content.
+				if (kind == "userMessage" || kind == "steeringUserMessage") &&
+					row.MustGet("text") == "" &&
+					len(orEmptyArray(row.MustGet("attachments")).Items) == 0 {
+					continue
+				}
+				messages.Items = append(messages.Items, row)
 			}
 		}
 		hasUser := false
