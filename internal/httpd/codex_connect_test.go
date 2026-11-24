@@ -21,12 +21,17 @@ import (
 )
 
 type ordinaryCLIFixture struct {
-	env     *concurrencyHarness
-	cwd     string
-	resumes atomic.Int32
-	sends   atomic.Int32
-	active  atomic.Bool
-	unknown bool
+	env            *concurrencyHarness
+	cwd            string
+	resumes        atomic.Int32
+	sends          atomic.Int32
+	active         atomic.Bool
+	loaded         atomic.Bool
+	writerBusy     atomic.Bool
+	background     atomic.Bool
+	busyDescendant atomic.Bool
+	unsubscribes   atomic.Int32
+	unknown        bool
 }
 
 func newOrdinaryCLIFixture(t *testing.T, active, unknown bool) *ordinaryCLIFixture {
@@ -96,6 +101,9 @@ func (f *ordinaryCLIFixture) startRuntime(t *testing.T) {
 				thread.Set("modelProvider", "openai")
 				status := jsoncompat.NewObject()
 				status.Set("type", "notLoaded")
+				if f.loaded.Load() {
+					status.Set("type", "idle")
+				}
 				thread.Set("status", status)
 				turn := jsoncompat.NewObject()
 				turn.Set("id", "old-turn")
@@ -116,10 +124,39 @@ func (f *ordinaryCLIFixture) startRuntime(t *testing.T) {
 					result.Set("thread", thread)
 				case "thread/resume":
 					f.resumes.Add(1)
+					if f.writerBusy.Load() {
+						response := jsoncompat.NewObject()
+						response.Set("id", message.MustGet("id"))
+						errorMessage := jsoncompat.NewObject()
+						errorMessage.Set("code", jsoncompat.Num(-32000))
+						errorMessage.Set("message", "already has an active writer")
+						response.Set("error", errorMessage)
+						_ = websocket.Message.Send(connection, string(jsoncompat.EncodeCompact(response)))
+						continue
+					}
+					f.loaded.Store(true)
 					status.Set("type", "idle")
 					result.Set("thread", thread)
 					result.Set("model", "original-model")
 					result.Set("reasoningEffort", "xhigh")
+				case "thread/unsubscribe":
+					f.unsubscribes.Add(1)
+					f.loaded.Store(false)
+					result.Set("status", "unsubscribed")
+				case "thread/backgroundTerminals/list", "thread/list":
+					rows := &jsoncompat.Array{}
+					if message.MustGet("method") == "thread/backgroundTerminals/list" && f.background.Load() {
+						rows.Items = append(rows.Items, jsoncompat.NewObject())
+					}
+					if message.MustGet("method") == "thread/list" && f.busyDescendant.Load() {
+						child := jsoncompat.NewObject()
+						child.Set("id", "child")
+						childStatus := jsoncompat.NewObject()
+						childStatus.Set("type", "active")
+						child.Set("status", childStatus)
+						rows.Items = append(rows.Items, child)
+					}
+					result.Set("data", rows)
 				case "turn/start":
 					f.sends.Add(1)
 					if f.unknown {
@@ -141,7 +178,7 @@ func (f *ordinaryCLIFixture) startRuntime(t *testing.T) {
 	t.Cleanup(func() { server.Close(); listener.Close() })
 }
 
-func TestOrdinaryCodexCLIFallbackAndRecovery(t *testing.T) {
+func TestOrdinaryCodexCLIExplicitHandoffAndRecovery(t *testing.T) {
 	for _, reconnectFirst := range []bool{false, true} {
 		name := "send"
 		if reconnectFirst {
@@ -154,6 +191,10 @@ func TestOrdinaryCodexCLIFallbackAndRecovery(t *testing.T) {
 			read := env.request("GET", base+"/timeline", "")
 			if read.Code != http.StatusOK || env.bridge.IsCLI(env.threadID) || f.resumes.Load() != 0 {
 				t.Fatalf("history acquired an execution owner: %d %s", read.Code, read.Body.String())
+			}
+			handoff := env.request("POST", base+"/execution", `{"target":"cli"}`)
+			if handoff.Code != http.StatusOK || f.sends.Load() != 0 {
+				t.Fatalf("handoff failed or sent a message: %d %s", handoff.Code, handoff.Body.String())
 			}
 			if reconnectFirst {
 				var wg sync.WaitGroup
@@ -208,7 +249,7 @@ func TestOrdinaryCodexCLIFallbackAndRecovery(t *testing.T) {
 func TestOrdinaryCodexCLIRefusesUnfinishedHistory(t *testing.T) {
 	f := newOrdinaryCLIFixture(t, true, false)
 	base := "/api/sessions/" + f.env.threadID
-	response := f.env.request("POST", base+"/reconnect", `{"activate":true}`)
+	response := f.env.request("POST", base+"/execution", `{"target":"cli"}`)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "历史仍显示执行中") {
 		t.Fatalf("unfinished history was taken over: %d %s", response.Code, response.Body.String())
 	}
@@ -223,6 +264,10 @@ func TestOrdinaryCodexCLIRefusesUnfinishedHistory(t *testing.T) {
 	// Once the original runtime has finished, retrying the same phone draft
 	// must send it once, rather than return a failed duplicate as success.
 	f.active.Store(false)
+	response = f.env.request("POST", base+"/execution", `{"target":"cli"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("handoff after settlement failed: %s", response.Body.String())
+	}
 	var wg sync.WaitGroup
 	for range 4 {
 		wg.Go(func() {
@@ -241,6 +286,9 @@ func TestOrdinaryCodexCLIRefusesUnfinishedHistory(t *testing.T) {
 func TestOrdinaryCodexCLIUnknownSendIsNotReplayed(t *testing.T) {
 	f := newOrdinaryCLIFixture(t, false, true)
 	base := "/api/sessions/" + f.env.threadID
+	if response := f.env.request("POST", base+"/execution", `{"target":"cli"}`); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
 	body := `{"id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","text":"发送一次"}`
 	first := f.env.request("POST", base+"/send", body)
 	if first.Code != http.StatusConflict || f.sends.Load() != 1 {
@@ -296,8 +344,8 @@ func TestOrdinaryCodexCLIDoesNotTakeOverBrokenDesktopHandshake(t *testing.T) {
 func TestOrdinaryCodexCLILedgerFailureDoesNotAttach(t *testing.T) {
 	f := newOrdinaryCLIFixture(t, false, false)
 	f.env.server.Creations.path = filepath.Join(t.TempDir(), "missing", "creations.json")
-	response := f.env.request("POST", "/api/sessions/"+f.env.threadID+"/reconnect", `{"activate":true}`)
-	if response.Code != http.StatusConflict || f.env.bridge.IsCLI(f.env.threadID) || f.resumes.Load() != 0 {
+	response := f.env.request("POST", "/api/sessions/"+f.env.threadID+"/execution", `{"target":"cli"}`)
+	if response.Code != http.StatusConflict || f.env.bridge.IsCLI(f.env.threadID) || f.resumes.Load() != 1 || f.unsubscribes.Load() != 1 {
 		t.Fatalf("failed persistence left an unrecorded owner: %d %s", response.Code, response.Body.String())
 	}
 }

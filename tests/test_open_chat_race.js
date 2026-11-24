@@ -57,6 +57,14 @@ test('opening a team selects its project entry and leaving clears it',async()=>{
   assert.equal(chatEntry.classes.has('selected'),true);
 });
 
+test('opening Codex history does not activate an execution writer',async()=>{
+  const {context}=loadOpenChat();
+  const calls=[];
+  context.api=(...args)=>{calls.push(args);return Promise.resolve();};
+  await context.openChat('saved-codex');
+  assert.equal(calls.some(([url])=>url.endsWith('/reconnect')),false);
+});
+
 test('a late team canvas load cannot override a newer chat selection',async()=>{
   const {context}=loadOpenChat();
   let releaseCanvas,markCanvasStarted;

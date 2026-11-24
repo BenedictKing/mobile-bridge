@@ -302,8 +302,15 @@ func (b *Bridge) handleEvent(message *jsoncompat.Object) {
 	if id == "" || change == nil {
 		return
 	}
+	if b.IsCLI(id) {
+		return
+	}
 	session := b.session(id)
 	b.mu.Lock()
+	if _, cli := b.cliThreads[id]; cli {
+		b.mu.Unlock()
+		return
+	}
 	if owner, ok := message.MustGet("sourceClientId").(string); ok && session.Owner != "" && owner != session.Owner {
 		b.mu.Unlock()
 		return
@@ -436,6 +443,20 @@ func (b *Bridge) Owner(session *Session) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return session.Owner
+}
+
+// ExecutionOwner reports a connected writer, independently of the selected route.
+func (b *Bridge) ExecutionOwner(id string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	session := b.sessions[id]
+	if session == nil || !session.Connected || session.Owner == "" {
+		return ""
+	}
+	if session.Owner == "cli" {
+		return "cli"
+	}
+	return "desktop"
 }
 
 // ErrorOr returns the followed session's recorded connection error, or

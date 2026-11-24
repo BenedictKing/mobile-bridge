@@ -202,7 +202,7 @@ func TestMigrateCodexDefaultsPersistAndApplyBeforeSend(t *testing.T) {
 			extra = `,"phase":"` + phase + `"`
 		}
 		return request(http.MethodPost, "/api/sessions/source-0/migrate",
-			`{"agent":"codex","scope":"main","id":"`+requestID+`"`+extra+`}`)
+			`{"agent":"codex","execution":"desktop","scope":"main","id":"`+requestID+`"`+extra+`}`)
 	}
 	prepared := migrate("prepare")
 	if prepared.Code != http.StatusOK || !strings.Contains(prepared.Body.String(), `"currentModel": "gpt-6-astra"`) ||

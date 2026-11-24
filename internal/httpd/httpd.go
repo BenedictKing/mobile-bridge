@@ -597,6 +597,21 @@ func (h *handler) handleMethod(write bool) {
 		}
 		body := value.(*jsoncompat.Object)
 		agent, _ := body.MustGet("agent").(string)
+		execution := ""
+		if agent == "codex" || agent == "" && h.server.Codex != nil {
+			execution = stringField(body, "execution")
+			if execution == "" {
+				execution = defaultCodexExecution()
+			}
+			if execution != "cli" && execution != "desktop" || execution == "cli" && !codex.CLISupported() {
+				h.fail(http.StatusBadRequest, errorBody("当前平台不支持所选 Codex 执行方"))
+				return
+			}
+			if execution == "cli" && h.server.Creations == nil {
+				h.fail(http.StatusServiceUnavailable, errorBody("网关 CLI 执行需要持久化创建账本"))
+				return
+			}
+		}
 		// Validation mirrors service.Bridge.create_chat: the request id is a
 		// UUID, the title is 1–120 chars, the project must resolve to a real
 		// directory (explicit cwd or a known project key).
@@ -657,19 +672,22 @@ func (h *handler) handleMethod(write bool) {
 		ledger := h.server.Creations
 		if ledger != nil {
 			entry, claimed, claimErr := ledger.begin(requestID, &creationEntry{Agent: agent, Project: project, Title: title,
-				Host: "local", At: ledger.now()})
+				Host: "local", ProjectCwd: cwd, Execution: execution, At: ledger.now()})
 			if claimErr != nil {
 				h.fail(http.StatusServiceUnavailable, errorBody(claimErr.Error()))
 				return
 			}
 			if !claimed {
-				if entry.Agent != agent || entry.Project != project || entry.Title != title {
+				if entry.Agent != agent || entry.Project != project || entry.Title != title || entry.Execution != "" && entry.Execution != execution {
 					h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
 					return
 				}
 				if entry.ID == "" {
 					h.fail(http.StatusConflict, errorBody("上次创建结果尚不确定，请先刷新聊天列表并检查电脑 App，避免重复创建"))
 					return
+				}
+				if h.server.Creations.executionForTarget(entry.ID) == "cli" {
+					h.server.Codex.RegisterCLI(entry.ID, cwd)
 				}
 				h.output(http.StatusOK, h.createResponse(entry.ID, kind, title, cwd), contentTypeJSON, "")
 				return
@@ -704,6 +722,9 @@ func (h *handler) handleMethod(write bool) {
 				h.fail(http.StatusServiceUnavailable, errorBody(err.Error()))
 				return
 			}
+		}
+		if execution == "cli" {
+			h.server.Codex.RegisterCLI(created, cwd)
 		}
 		h.output(http.StatusOK, h.createResponse(created, kind, title, cwd), contentTypeJSON, "")
 	case write && path == "/api/activity":
@@ -1341,6 +1362,12 @@ func (h *handler) createResponse(id, kind, title, cwd string) *jsoncompat.Object
 	result.Set("host", "local")
 	if kind == "" || kind == "codex" {
 		result.Set("agent", "codex")
+		h.server.annotateCodexExecution(id, result)
+		if h.server.codexExecutionTarget(id) == "cli" {
+			result.Set("opened", false)
+			result.Set("message", "聊天已创建，由网关 CLI 执行；发送消息后开始任务")
+			return result
+		}
 		if codex.OpenInDesktop(id) == nil {
 			result.Set("opened", true)
 			result.Set("message", "已创建，正在连接桌面 App")

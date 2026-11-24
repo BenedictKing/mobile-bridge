@@ -104,3 +104,51 @@ func TestCLIWriterHandoffOfficialRuntime(t *testing.T) {
 		t.Fatal("history read became a second execution owner")
 	}
 }
+
+func TestExplicitHandoffOfficialRuntime(t *testing.T) {
+	if os.Getenv("GATEWAY_CODEX_INTEGRATION") != "1" {
+		t.Skip("set GATEWAY_CODEX_INTEGRATION=1 to verify explicit handoff")
+	}
+	home, cwd := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("thread_unload_delay_secs = 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := isolatedOfficialCLI(t, home, cwd)
+	if _, err := first.cli.request("thread/start", object(map[string]any{"cwd": cwd, "ephemeral": true}), 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	id, err := first.CreateConversation(cwd, "explicit handoff fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.RegisterCLI(id, cwd)
+	if _, err := first.WatchForWrite(id, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	second := isolatedOfficialCLI(t, home, cwd)
+	persisted := false
+	if err := second.ClaimCLI(id, cwd, func() error { persisted = true; return nil }); err == nil || !strings.Contains(err.Error(), "另一个 Codex 应用占用") || persisted || second.IsCLI(id) {
+		t.Fatalf("conflicting handoff changed routing: %v persisted=%v", err, persisted)
+	}
+	if err := first.HandOffCLI(id, cwd, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if first.IsCLI(id) || first.ExecutionOwner(id) != "" {
+		t.Fatal("handoff retained first runtime ownership")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err = second.ClaimCLI(id, cwd, func() error { persisted = true; return nil })
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("released thread could not be claimed: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	view, _, connected, _ := second.Snapshot(id)
+	if !persisted || !connected || view.MustGet("id") != id || !cliPathEqual(cliText(view.MustGet("cwd")), cwd) {
+		t.Fatal("handoff lost the original conversation identity")
+	}
+}

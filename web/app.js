@@ -456,8 +456,8 @@ $('new-chat-remove').onclick=async()=>{
   }catch(error){toast(error.message);}
   finally{button.disabled=false;}
 };
-// Codex chats open in the desktop App; ACP agents are spawned by the gateway.
-function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'选择已保存项目或输入自定义目录来创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。':'选择已保存项目或输入自定义目录来创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
+// New Codex chats use the gateway runtime without taking over the desktop App.
+function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'选择项目创建空聊天，由网关 Codex CLI 执行。发送消息后开始任务；Windows 使用桌面 App。':'选择已保存项目或输入自定义目录来创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 $('new-chat').onclick=()=>openNewChat();
@@ -642,12 +642,13 @@ if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dial
 teamCanvas?.open(currentTeam);
 if(currentTeam)chatTimeline?.setViewportLocked(true);
   window.BridgePresentation?.openChat();
+  $('execution-error').textContent='';
   startCatalog();
   const reading=timeline.start();
-  // Opening a chat activates its original owner while saved history paints.
-  api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
   await reading;
   if(request!==openChatRequest)return false;
+  // Codex history reads never reacquire a writer; ACP keeps its native load path.
+  if(state?.agent&&state.agent!=='codex')api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
   if(!timeline.abort.signal.aborted){teamCanvas?.afterHistoryRead();loadNotificationState(id,host);loadPermissionSettings(id,host);}
   return true;
 }
@@ -1169,11 +1170,11 @@ async function runComposerMaintenance(command){
     if(accepted)clearComposerDraft(target,targetHost);
   }finally{sending=false;syncSendButton();}
 }
-function usesDesktopRuntime(view){return view?.agent==='codex'&&view.executionOwner!=='cli';}
+function usesDesktopRuntime(view){return view?.agent==='codex'&&(view.executionTarget||view.executionOwner)!=='cli';}
 function renderState(view){view=applyPendingQueueOrder(view);state=view;const desktopRuntime=usesDesktopRuntime(view);renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){if(sessionActivity.read(chatKey()))api(sessionUrl(currentId,'read',currentHost),{}).catch(()=>{});renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';
 const migrationText=migrationNotice(view.migration);$('notice').hidden=view.connected&&!migrationText;$('notice-text').textContent=migrationText||(view.activating?(desktopRuntime?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(desktopRuntime?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||(view.writerReleased?t('会话已空闲释放，发送时会重新连接。'):t('暂未连接，可先阅读历史。')));const workingSpan=$('working').querySelector('span');if(workingSpan){workingSpan.textContent=retrying?(retrying.statusCode===429?t('模型服务繁忙（429），正在自动重试'):t('模型请求失败，正在自动重试'))+retryCount+'…':agentName+t(' 正在工作…');workingSpan.title=retrying?.errorMessage||'';}$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected||readOnly;
   // 运行中统一排队；需要立即执行时在排队消息中操作。
-  if(view.executionOwner==='cli')$('execution-host').textContent=t('由本机 Codex CLI 执行');
+  renderExecutionState(view);
   const sendMode=view.status==='active'?'queue':'send';$('send-mode').value=sendMode;syncTeamQueueMode($('send-mode').value);
   syncSendButton();$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();syncSendButton();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,sendMode,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t(view.readOnlyHint||'此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('readonly-upgrade').hidden=!!view.readOnlyHint;$('work-mode-button').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);updateSkillSuggestions();syncTeamComposer();syncDocumentTitle();}
 function syncTeamQueueMode(mode){
@@ -1743,6 +1744,44 @@ document.querySelectorAll('[data-compact]').forEach(button=>button.onclick=()=>s
 document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.onclick=()=>selectCompactScope(button.dataset.gatewayCompact));
 $('compact-confirm').onclick=()=>{if(!compactScope)return;if(compactMethod==='native')compactChat(compactScope);else if(compactMethod==='gateway')compactGateway(compactScope);};
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});toast(t('已请求加载完整历史'));}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
+let switchingExecution=false;
+function renderExecutionState(view){
+  const codex=view.agent==='codex',target=view.executionTarget||view.executionOwner||'desktop';
+  const label=t(target==='cli'?'网关 Codex CLI':'桌面 Codex App');
+  if(codex){
+    $('chat-context').textContent=chatProjectLabel(view)+' · '+label;
+    $('execution-host').textContent=t('执行方：')+label;
+    $('execution-status').textContent=t('执行方：')+label+' · '+t(view.executionOwner?'已连接':'未连接');
+  }
+  $('execution-control').hidden=!codex||view.host!=='local'||view.readOnly||!view.executionSwitchSupported;
+  const button=$('execution-switch');
+  button.textContent=t(target==='cli'?'交给桌面执行':'交给网关执行');
+  button.disabled=switchingExecution||sending||view.status==='active'||(view.requests||[]).length>0||(view.submissions||[]).some(row=>row.status==='queued'||row.status==='unknown');
+}
+$('execution-switch').onclick=async()=>{
+  if(switchingExecution||!currentId)return;
+  const id=currentId,host=currentHost,target=usesDesktopRuntime(state)?'cli':'desktop';
+  switchingExecution=true;renderExecutionState(state);$('execution-error').textContent='';
+  try{
+    await api(sessionUrl(id,'execution',host),{target});
+    if(currentId===id&&currentHost===host){
+      const view=await api(sessionUrl(id,'',host));
+      if(currentId===id&&currentHost===host)renderState(view);
+    }
+    toast(t(target==='cli'?'已交给网关执行，失败消息可另行重试':'已交给桌面，请在 App 中继续'));
+  }catch(error){
+    if(currentId===id&&currentHost===host){
+      $('execution-error').textContent=t(error.message);
+      try{
+        const view=await api(sessionUrl(id,'',host));
+        if(currentId===id&&currentHost===host)renderState(view);
+      }catch{}
+    }else toast(error.message);
+  }finally{
+    switchingExecution=false;
+    if(state)renderExecutionState(state);
+  }
+};
 $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});toast(t('会话已重新连接'));}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
 $('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话；请勿同时在桌面端继续此会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());

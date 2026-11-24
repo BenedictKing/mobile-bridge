@@ -138,6 +138,10 @@ func (c *cliRuntime) onEvent(message *jsoncompat.Object) {
 	}
 	session := c.bridge.session(id)
 	c.bridge.mu.Lock()
+	if _, selected := c.bridge.cliThreads[id]; !selected {
+		c.bridge.mu.Unlock()
+		return
+	}
 	state, _ := session.State.(*jsoncompat.Object)
 	if state == nil {
 		state = object(map[string]any{"id": id})
@@ -238,11 +242,16 @@ func (c *cliRuntime) onRequest(message *jsoncompat.Object) {
 		return
 	}
 	requestID := jsoncompat.PyStr(message.MustGet("id"))
+	session := c.bridge.session(id)
+	c.bridge.mu.Lock()
+	if _, selected := c.bridge.cliThreads[id]; !selected {
+		c.bridge.mu.Unlock()
+		c.rejectRequest(message)
+		return
+	}
 	c.mu.Lock()
 	c.pending[id+"\x00"+requestID] = message
 	c.mu.Unlock()
-	session := c.bridge.session(id)
-	c.bridge.mu.Lock()
 	state, _ := session.State.(*jsoncompat.Object)
 	if state == nil {
 		state = object(map[string]any{"id": id})

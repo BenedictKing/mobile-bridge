@@ -407,6 +407,7 @@ func (s *Server) View(threadID string) any {
 			view.Set("hostLabel", "此电脑")
 			view.Set("agent", "codex")
 			view.Set("capabilities", s.codexCapabilitiesFor(threadID))
+			s.annotateCodexExecution(threadID, view)
 			s.codexSubagentView(threadID, view)
 			s.annotateSourceMaintenance(threadID, view)
 			return view
@@ -490,6 +491,7 @@ func (s *Server) liveViewForBridge(threadID string) (any, bool) {
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
 	view.Set("capabilities", s.codexCapabilitiesFor(threadID))
+	s.annotateCodexExecution(threadID, view)
 	s.annotateSourceMaintenance(threadID, view)
 	return view, true
 }

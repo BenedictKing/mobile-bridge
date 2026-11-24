@@ -30,7 +30,7 @@ func (s *Server) lockThreadCommand(ctx context.Context, threadID string) (func()
 
 func isThreadCommand(action string) bool {
 	switch action {
-	case "send", "stop", "respond", "input", "settings", "queue", "reconnect", "message-action", "rename", "permissions", "goal", "delete":
+	case "send", "stop", "respond", "input", "settings", "queue", "reconnect", "execution", "message-action", "rename", "permissions", "goal", "delete":
 		return true
 	}
 	return false

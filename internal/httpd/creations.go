@@ -290,21 +290,66 @@ func (c *creations) sourceNotices(sourceID string) []sourceCreationNotice {
 	return notices
 }
 
-func (c *creations) setExecution(requestID, execution string) error {
-	return c.update(requestID, func(entry *creationEntry) { entry.Execution = execution })
-}
-
 func (c *creations) cliTargets() []*creationEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	result := []*creationEntry{}
+	seen := map[string]bool{}
 	for _, entry := range c.entries {
-		if entry.Execution == "cli" && entry.ID != "" {
-			copy := *entry
+		if entry.ID != "" && !seen[entry.ID] {
+			selected := c.executionEntryLocked(entry.ID)
+			if selected == nil || selected.Execution != "cli" {
+				continue
+			}
+			seen[entry.ID] = true
+			copy := *selected
 			result = append(result, &copy)
 		}
 	}
 	return result
+}
+
+// An explicit handoff supersedes legacy creation and CLI fallback records.
+func (c *creations) executionEntryLocked(id string) *creationEntry {
+	if entry := c.entries["codex-execution:"+id]; entry != nil {
+		return entry
+	}
+	for _, entry := range c.entries {
+		if entry.ID == id && entry.Execution == "cli" {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (c *creations) executionForTarget(id string) string {
+	if c == nil {
+		return "desktop"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry := c.executionEntryLocked(id); entry != nil {
+		return entry.Execution
+	}
+	return "desktop"
+}
+
+func (c *creations) setTargetExecution(id, cwd, execution string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := "codex-execution:" + id
+	prior := c.entries[key]
+	c.entries[key] = &creationEntry{Agent: "codex", ID: id, ProjectCwd: cwd,
+		Host: "local", Execution: execution, At: c.now()}
+	if err := c.saveLocked(); err != nil {
+		if prior == nil {
+			delete(c.entries, key)
+		} else {
+			c.entries[key] = prior
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *creations) saveLocked() error {

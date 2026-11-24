@@ -30,7 +30,7 @@ import (
 )
 
 var threadRoute = regexp.MustCompile(
-	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input|read))?$`)
+	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|execution|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input|read))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
 var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status|continue|complete|review)$`)
@@ -392,6 +392,14 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		h.handleACPMessageAction(acpKind, acpManager, threadID, body.(*jsoncompat.Object))
 		return true
 	}
+	if action == "execution" {
+		if acpManager != nil || h.server.Codex == nil {
+			h.fail(http.StatusConflict, errorBody("当前 Agent 不支持 Codex 执行交接"))
+		} else {
+			h.handleCodexExecution(threadID, write)
+		}
+		return true
+	}
 	if acpManager != nil {
 		if h.handleACPRoute(acpKind, acpManager, threadID, action, write, query) {
 			return true
@@ -679,7 +687,12 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 		}
 	}
 	if !write && action == "" {
-		if view, _, ok := h.liveView(threadID); ok {
+		view, _, ok := h.liveView(threadID)
+		if !ok && h.server.Store != nil {
+			view, _ = h.server.View(threadID).(*jsoncompat.Object)
+			ok = view != nil && view.MustGet("id") == threadID
+		}
+		if ok {
 			if len(h.server.acpAgentSet()) > 0 {
 				view.Set("agents", h.server.agentRoster())
 			}
@@ -1326,6 +1339,7 @@ func (h *handler) liveView(threadID string) (*jsoncompat.Object, string, bool) {
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
 	view.Set("capabilities", h.server.codexCapabilitiesFor(threadID))
+	h.server.annotateCodexExecution(threadID, view)
 	h.server.codexSubagentView(threadID, view)
 	view.Set("activeTurnId", activeViewTurn(view))
 	return view, "", true
@@ -1420,6 +1434,7 @@ func (h *handler) historicalTimeline(threadID, action string, query map[string][
 	view.Set("hostLabel", "此电脑")
 	view.Set("agent", "codex")
 	view.Set("capabilities", h.server.codexCapabilitiesFor(threadID))
+	h.server.annotateCodexExecution(threadID, view)
 	h.server.codexSubagentView(threadID, view)
 
 	slot := h.server.projectionSlotFor(threadID)

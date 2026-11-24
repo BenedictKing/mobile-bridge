@@ -158,14 +158,7 @@ func (c *cliRuntime) releaseThread(id string, now time.Time) error {
 		return nil
 	}
 	if status != "notLoaded" {
-		response, err := c.lifecycleRequest("thread/unsubscribe", object(map[string]any{"threadId": id}))
-		if err == nil {
-			switch response.MustGet("status") {
-			case "unsubscribed", "notSubscribed", "notLoaded":
-			default:
-				err = errors.New("Codex 返回了无效的取消订阅状态")
-			}
-		}
+		err := c.unsubscribe(id)
 		if err != nil {
 			// A timeout may have unsubscribed successfully. Require a fresh resume
 			// before writing, while retaining the retry for a possibly live owner.

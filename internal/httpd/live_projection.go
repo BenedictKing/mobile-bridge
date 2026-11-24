@@ -115,10 +115,7 @@ func (s *Server) refreshProjectionLocked(threadID string, slot *projectionSlot, 
 			metadata.Set("hostLabel", "此电脑")
 			metadata.Set("agent", "codex")
 			metadata.Set("capabilities", s.codexCapabilitiesFor(threadID))
-			metadata.Set("executionOwner", "desktop")
-			if s.Codex.IsCLI(threadID) {
-				metadata.Set("executionOwner", "cli")
-			}
+			s.annotateCodexExecution(threadID, metadata)
 			metadata.Set("connecting", false)
 			metadata.Set("activating", false)
 			metadata.Set("loadingHistory", false)

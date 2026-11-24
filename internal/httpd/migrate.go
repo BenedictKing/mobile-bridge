@@ -1,7 +1,6 @@
 package httpd
 
 import (
-	"errors"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -126,18 +125,6 @@ func (s *Server) RegisterCodexCLIThreads() {
 	for _, entry := range s.Creations.cliTargets() {
 		s.Codex.RegisterCLI(entry.ID, entry.ProjectCwd)
 	}
-}
-
-func (s *Server) useCodexCLI(requestID, targetID, cwd string) error {
-	if s.Creations == nil {
-		return errors.New("Codex CLI 迁移需要持久化创建账本")
-	}
-	if err := s.Creations.setExecution(requestID, "cli"); err != nil {
-		return err
-	}
-	s.Codex.RegisterCLI(targetID, cwd)
-	_, err := s.Codex.WatchForWrite(targetID, 1500*time.Millisecond)
-	return err
 }
 
 // max messages / total chars / chars per entry, per scope. The totals stay
@@ -819,16 +806,35 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 
+	execution := ""
+	if target == nil {
+		execution = stringField(body, "execution")
+		if execution == "" {
+			execution = defaultCodexExecution()
+		}
+		if execution != "cli" && execution != "desktop" || execution == "cli" && !codex.CLISupported() {
+			h.fail(http.StatusBadRequest, errorBody("当前平台不支持所选 Codex 执行方"))
+			return
+		}
+		if ledger == nil && execution == "cli" {
+			h.fail(http.StatusServiceUnavailable, errorBody("Codex CLI 迁移需要持久化创建账本"))
+			return
+		}
+	}
 	createdID := ""
 	alreadySent := false
 	if ledger != nil {
 		entry, claimed, claimErr := ledger.begin(requestID, &creationEntry{Agent: targetKind, Project: projectKey,
-			ProjectCwd: cwd, ProjectCreated: projectCreated, Title: title, Host: "local", At: ledger.now(), State: "creating"})
+			ProjectCwd: cwd, ProjectCreated: projectCreated, Title: title, Host: "local", Execution: execution, At: ledger.now(), State: "creating"})
 		if claimErr != nil {
 			h.fail(http.StatusServiceUnavailable, errorBody(claimErr.Error()))
 			return
 		}
 		if !claimed {
+			if target == nil && stringField(body, "execution") != "" && entry.Execution != "" && entry.Execution != execution {
+				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同执行方"))
+				return
+			}
 			if entry.Agent != targetKind || entry.Project != projectKey || entry.Title != title ||
 				!migrationProjectMatches(entry, targetKind, projectKey, cwd) {
 				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
@@ -964,27 +970,10 @@ func (h *handler) handleMigrate(threadID string) {
 			return
 		}
 	}
-	// Codex creates the thread through a short-lived app-server, but the
-	// desktop App must own it before follower IPC can inject the transcript.
-	// Open it first and return promptly; the frontend retries after the target
-	// chat has been opened instead of holding the tunnel request for 90s.
-	if target == nil && !h.server.Codex.IsCLI(createdID) {
-		// The desktop owner protocol is absent in newer Apps. Switch only this
-		// never-dispatched migration to the explicitly authorized official CLI.
-		if err := h.server.Codex.IPC.Connect(1500 * time.Millisecond); err != nil {
-			if cliErr := h.server.useCodexCLI(requestID, createdID, cwd); cliErr != nil {
-				if ledger != nil {
-					if saveErr := ledger.markWaiting(requestID, cliErr.Error()); saveErr != nil {
-						h.fail(http.StatusServiceUnavailable, errorBody(saveErr.Error()))
-						return
-					}
-				}
-				result.Set("warning", cliErr.Error())
-				result.Set("state", "waiting_for_target")
-				h.output(http.StatusOK, result, contentTypeJSON, "")
-				return
-			}
-		}
+	// Creation chooses the execution target; an unavailable desktop never
+	// silently converts an existing migration to CLI execution.
+	if target == nil && h.server.Creations.executionForTarget(createdID) == "cli" {
+		h.server.Codex.RegisterCLI(createdID, cwd)
 	}
 	if target == nil && !h.server.Codex.IsCLI(createdID) {
 		entryState := ""

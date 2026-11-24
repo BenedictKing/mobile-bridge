@@ -507,6 +507,9 @@ func fastModeOf(request func(method string, params any) (*jsoncompat.Object, err
 		return unavailable, nil
 	}
 	account := objOf(authResult.MustGet("account"))
+	if account == nil {
+		return unavailable, nil
+	}
 	kind, _ := account.MustGet("type").(string)
 	requires, ok := authResult.MustGet("requiresOpenaiAuth").(bool)
 	if kind != "chatgpt" || !ok || !requires {

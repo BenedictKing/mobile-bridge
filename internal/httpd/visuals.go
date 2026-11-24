@@ -45,8 +45,8 @@ func (s *Server) enrichTimeline(threadID string, view *jsoncompat.Object, result
 	}
 	if meta, ok := result.MustGet("meta").(*jsoncompat.Object); ok {
 		meta.Set("migration", s.migrationMeta(threadID))
-		if s.Codex != nil && s.Codex.IsCLI(threadID) {
-			meta.Set("executionOwner", "cli")
+		if stringField(view, "agent") == "codex" {
+			s.annotateCodexExecution(threadID, meta)
 		}
 	}
 	cwd := viewCwd(view)
