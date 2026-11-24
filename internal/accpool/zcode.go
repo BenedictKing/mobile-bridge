@@ -29,10 +29,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// ZCode billing endpoints, aligned with zcode-switcher's src/quota.js. They
-// are package variables so tests can point them at a stub server.
+// The Start Plan balance endpoint returns both plan and quota data. It is a
+// package variable so tests can point it at a stub server.
 var (
-	zcodeBillingCurrentURL = "https://zcode.z.ai/api/v1/zcode-plan/billing/current"
 	zcodeBillingBalanceURL = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance"
 	// BigModel monitor endpoints are the fallback for apiKeys that belong to
 	// the open.bigmodel.cn / api.z.ai systems (zcode.z.ai billing 401s them).
@@ -45,7 +44,7 @@ var (
 	zcodeResetBaseURL = "https://zcode.z.ai/api/v1/coding-plan/reset"
 )
 
-// The ZCode client sends app_version + platform with billing/current; the
+// The ZCode client sends app_version + platform with billing/balance; the
 // server routes plan versions on them and may answer empty plans otherwise.
 const (
 	zcodeClientAppVersion = "4.1.10"
@@ -508,6 +507,18 @@ func fetchZcodeBilling(ctx context.Context, endpoint, token string) (map[string]
 			if jsonErr := json.Unmarshal(body, &decoded); jsonErr != nil {
 				return nil, fmt.Errorf("响应不是有效 JSON: %w", jsonErr)
 			}
+			if success, ok := decoded["success"].(bool); ok && !success {
+				return nil, errors.New("billing 响应 success=false")
+			}
+			if code, present := decoded["code"]; present && code != nil {
+				if value, ok := toFloat(code); !ok || value != 0 {
+					message := strings.TrimSpace(stringValue(decoded, "msg"))
+					if message == "" {
+						message = fmt.Sprintf("code=%v", code)
+					}
+					return nil, fmt.Errorf("billing 响应失败: %s", message)
+				}
+			}
 			return decoded, nil
 		}
 		lastErr = err
@@ -520,7 +531,7 @@ func fetchZcodeBilling(ctx context.Context, endpoint, token string) (map[string]
 	}
 }
 
-// queryZcodeQuota tries each candidate token against the billing endpoints;
+// queryZcodeQuota tries each candidate token against the balance endpoint;
 // when every candidate answered 401/403 it waits 1.5s and retries the first
 // token once (first-activation lag), then falls back to the BigModel monitor
 // endpoints. All-401 at the end means the account needs a fresh login.
@@ -529,11 +540,18 @@ func queryZcodeQuota(ctx context.Context, tokens []string) (*Quota, error) {
 		return nil, errors.New("该账号快照里未找到可用于查询额度的 token")
 	}
 	var lastErr error
+	var emptyBillingQuota *Quota
 	authFailures := 0
 	for _, token := range tokens {
-		quota, err := fetchZcodeBillingPair(ctx, token)
+		quota, err := fetchZcodeBillingQuota(ctx, token)
 		if err == nil {
-			return quota, nil
+			if len(quota.Limits) > 0 {
+				return quota, nil
+			}
+			if emptyBillingQuota == nil {
+				emptyBillingQuota = quota
+			}
+			continue
 		}
 		lastErr = err
 		if isAuthFailed(err) {
@@ -542,8 +560,11 @@ func queryZcodeQuota(ctx context.Context, tokens []string) (*Quota, error) {
 	}
 	if authFailures == len(tokens) {
 		if sleepCtx(ctx, 1500*time.Millisecond) == nil {
-			if quota, err := fetchZcodeBillingPair(ctx, tokens[0]); err == nil {
-				return quota, nil
+			if quota, err := fetchZcodeBillingQuota(ctx, tokens[0]); err == nil {
+				if len(quota.Limits) > 0 {
+					return quota, nil
+				}
+				emptyBillingQuota = quota
 			} else {
 				lastErr = err
 			}
@@ -552,22 +573,21 @@ func queryZcodeQuota(ctx context.Context, tokens []string) (*Quota, error) {
 	if quota, err := queryZcodeMonitor(ctx, tokens); err == nil && quota != nil {
 		return quota, nil
 	}
+	if emptyBillingQuota != nil {
+		return emptyBillingQuota, nil
+	}
 	if authFailures == len(tokens) {
 		return nil, &authFailedError{message: "该账号 Token 已过期，请删除后重新登录"}
 	}
 	return nil, lastErr
 }
 
-func fetchZcodeBillingPair(ctx context.Context, token string) (*Quota, error) {
-	current, err := fetchZcodeBilling(ctx, zcodeBillingURL(zcodeBillingCurrentURL), token)
+func fetchZcodeBillingQuota(ctx context.Context, token string) (*Quota, error) {
+	balance, err := fetchZcodeBilling(ctx, zcodeBillingURL(zcodeBillingBalanceURL), token)
 	if err != nil {
 		return nil, err
 	}
-	balance, err := fetchZcodeBilling(ctx, zcodeBillingBalanceURL, token)
-	if err != nil {
-		return nil, err
-	}
-	return normalizeZcodeQuota(current, balance), nil
+	return normalizeZcodeQuota(balance), nil
 }
 
 // fetchZcodeMonitor queries one BigModel monitor endpoint; the payload must
@@ -766,8 +786,8 @@ func quotaWindow(name string, used, limit float64, resetAt any) *WindowQuota {
 
 // extractPlanTier replicates the ZCode client plan labeling: active plans
 // whose id/name contains max/pro/lite/start (Max first to avoid fuzzy hits).
-func extractPlanTier(currentData map[string]any) string {
-	current := unwrapData(currentData)
+func extractPlanTier(balanceData map[string]any) string {
+	current := unwrapData(balanceData)
 	plans, _ := current["plans"].([]any)
 	matchActive := func(keywords ...string) bool {
 		for _, item := range plans {
@@ -797,16 +817,15 @@ func extractPlanTier(currentData map[string]any) string {
 	return ""
 }
 
-// normalizeZcodeQuota folds billing/current + billing/balance into the pool's
-// Quota shape: every balance item becomes one window, with a synthetic total
-// window when only aggregate numbers exist.
-func normalizeZcodeQuota(currentData, balanceData map[string]any) *Quota {
+// normalizeZcodeQuota folds billing/balance into the pool's Quota shape:
+// every balance item becomes one window, with a synthetic total window when
+// only aggregate numbers exist. Plan metadata comes from the same response.
+func normalizeZcodeQuota(balanceData map[string]any) *Quota {
 	quota := &Quota{Limits: []*WindowQuota{}}
-	current := unwrapData(currentData)
 	balance := unwrapData(balanceData)
 
 	pool := map[string]float64{}
-	flattenNumbers(map[string]any{"current": current, "balance": balance}, "", pool)
+	flattenNumbers(map[string]any{"balance": balance}, "", pool)
 	total, okTotal := sumByLeafName(pool, "total_units")
 	if !okTotal {
 		total, okTotal = firstByLeafName(pool, "total", "totalQuota", "totalCredits", "quotaTotal", "amountTotal", "creditTotal")
@@ -850,7 +869,7 @@ func normalizeZcodeQuota(currentData, balanceData map[string]any) *Quota {
 	if len(quota.Limits) == 0 && okTotal && total > 0 && okUsed {
 		quota.Limits = append(quota.Limits, quotaWindow("总额度", used, total, nil))
 	}
-	quota.LevelName = extractPlanTier(currentData)
+	quota.LevelName = extractPlanTier(balanceData)
 	return quota
 }
 
@@ -1363,7 +1382,7 @@ var (
 	zcodeBusinessLoginURL   = "https://api.z.ai/api/auth/z/login"
 	// The login flow's billing-ready probe reports the desktop-arm platform
 	// tag (unlike the quota path's win32-x64).
-	zcodeBillingReadyURL = "https://zcode.z.ai/api/v1/zcode-plan/billing/current?app_version=4.1.10&platform=darwin-arm64"
+	zcodeBillingReadyURL = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=4.1.10&platform=darwin-arm64"
 	// Progressive billing-ready delays (~4 minutes total), best effort.
 	zcodeBillingReadyDelays = []time.Duration{
 		time.Second, 3 * time.Second, 6 * time.Second, 15 * time.Second,
@@ -1673,7 +1692,7 @@ func waitZcodeBillingReady(ctx context.Context, jwt string) (bool, error) {
 	return false, nil
 }
 
-// zcodeBillingHasPlans probes billing/current once: 2xx with a non-empty
+// zcodeBillingHasPlans probes billing/balance once: 2xx with a non-empty
 // /data/plans array counts as ready.
 func zcodeBillingHasPlans(ctx context.Context, jwt string) (bool, error) {
 	body, _, err := zcodeGet(ctx, zcodeBillingReadyURL, jwt, true, zcodeDeviceMid())

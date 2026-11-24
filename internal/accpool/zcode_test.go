@@ -446,32 +446,27 @@ func TestZcodeSwitchReadsOutgoingSlotAfterDesktopStop(t *testing.T) {
 	}
 }
 
-func TestZcodeValidateLoginUsesCurrentOnly(t *testing.T) {
-	var currentHits, balanceHits int
+func TestZcodeValidateLoginUsesBalanceOnly(t *testing.T) {
+	var balanceHits int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/current":
-			currentHits++
-			_, _ = w.Write([]byte(`{"data":{"plans":[]}}`))
-		case "/balance":
-			balanceHits++
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"code":3001,"msg":"parameter error"}`))
-		default:
+		if r.URL.Path != "/balance" {
 			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		balanceHits++
+		_, _ = w.Write([]byte(`{"data":{"plans":[],"balances":[]}}`))
 	}))
 	defer server.Close()
-	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
-	zcodeBillingCurrentURL, zcodeBillingBalanceURL = server.URL+"/current", server.URL+"/balance"
-	t.Cleanup(func() { zcodeBillingCurrentURL, zcodeBillingBalanceURL = restoreCurrent, restoreBalance })
+	restoreBalance := zcodeBillingBalanceURL
+	zcodeBillingBalanceURL = server.URL + "/balance"
+	t.Cleanup(func() { zcodeBillingBalanceURL = restoreBalance })
 	target := &Account{Credentials: `{"zcodejwttoken":"valid-token-1234567890123456"}`}
 	if err := zcodeValidateLogin(context.Background(), target); err != nil {
-		t.Fatalf("billing/current success must pass validation: %v", err)
+		t.Fatalf("billing/balance success must pass validation: %v", err)
 	}
-	if currentHits != 1 || balanceHits != 0 {
-		t.Fatalf("validation endpoints: current=%d balance=%d", currentHits, balanceHits)
+	if balanceHits != 1 {
+		t.Fatalf("validation balance requests = %d, want 1", balanceHits)
 	}
 }
 
@@ -480,9 +475,9 @@ func TestZcodeValidateLoginRejectsUnauthorized(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer server.Close()
-	restoreCurrent := zcodeBillingCurrentURL
-	zcodeBillingCurrentURL = server.URL
-	t.Cleanup(func() { zcodeBillingCurrentURL = restoreCurrent })
+	restoreBalance := zcodeBillingBalanceURL
+	zcodeBillingBalanceURL = server.URL
+	t.Cleanup(func() { zcodeBillingBalanceURL = restoreBalance })
 	target := &Account{Credentials: `{"zcodejwttoken":"expired-token-1234567890123456"}`}
 	if err := zcodeValidateLogin(context.Background(), target); err == nil {
 		t.Fatal("401 must reject target login")
@@ -588,15 +583,11 @@ func TestZcodeImport(t *testing.T) {
 // --- quota API ----------------------------------------------------------------
 
 func TestZcodeQuotaBillingNormalize(t *testing.T) {
-	current := map[string]any{
+	balance := map[string]any{
 		"data": map[string]any{
 			"plans": []any{
 				map[string]any{"plan_id": "pro-monthly", "status": "active"},
 			},
-		},
-	}
-	balance := map[string]any{
-		"data": map[string]any{
 			"balances": []any{
 				map[string]any{"show_name": "GLM-4.6", "total_units": 1000000.0, "used_units": 950000.0,
 					"period_end": "2026-11-01T00:00:00Z"},
@@ -604,7 +595,7 @@ func TestZcodeQuotaBillingNormalize(t *testing.T) {
 			},
 		},
 	}
-	quota := normalizeZcodeQuota(current, balance)
+	quota := normalizeZcodeQuota(balance)
 	if quota.LevelName != "Pro" {
 		t.Fatalf("plan tier: %q", quota.LevelName)
 	}
@@ -623,9 +614,8 @@ func TestZcodeQuotaBillingNormalize(t *testing.T) {
 
 func TestZcodeQuotaAggregateFallback(t *testing.T) {
 	// No balances items: the flattened aggregate numbers still give one window.
-	current := map[string]any{"data": map[string]any{"plans": []any{}}}
-	balance := map[string]any{"data": map[string]any{"total": 500.0, "used": 499.0}}
-	quota := normalizeZcodeQuota(current, balance)
+	balance := map[string]any{"data": map[string]any{"plans": []any{}, "total": 500.0, "used": 499.0}}
+	quota := normalizeZcodeQuota(balance)
 	if len(quota.Limits) != 1 || quota.Limits[0].Used != 499 || quota.Limits[0].Limit != 500 {
 		t.Fatalf("aggregate window: %+v", quota.Limits)
 	}
@@ -737,6 +727,9 @@ func TestZcodeQueryQuotaFlow(t *testing.T) {
 		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/billing/current"):
+			t.Error("deprecated billing/current must not be requested")
+			w.WriteHeader(http.StatusNotFound)
+		case strings.HasSuffix(r.URL.Path, "/billing/balance"):
 			billingHits++
 			if r.Header.Get("authorization") != "Bearer good-token-1234567890123" {
 				w.WriteHeader(http.StatusUnauthorized)
@@ -746,12 +739,9 @@ func TestZcodeQueryQuotaFlow(t *testing.T) {
 			if v := r.URL.Query().Get("app_version"); v != zcodeClientAppVersion {
 				t.Errorf("app_version missing: %q", r.URL.RawQuery)
 			}
-			_, _ = w.Write([]byte(`{"data":{"plans":[{"plan_id":"max-monthly","status":"active"}]}}`))
-		case strings.HasSuffix(r.URL.Path, "/billing/balance"):
-			_, _ = w.Write([]byte(`{"data":{"balances":[{"show_name":"GLM","total_units":100,"used_units":10}]}}`))
+			_, _ = w.Write([]byte(`{"data":{"plans":[{"plan_id":"max-monthly","status":"active"}],"balances":[{"show_name":"GLM","total_units":100,"used_units":10}]}}`))
 		default:
 			monitorHits++
-			// The monitor endpoint takes the bare token, no Bearer prefix.
 			if r.Header.Get("authorization") == "Bearer good-token-1234567890123" {
 				t.Error("monitor must not get a Bearer prefix")
 			}
@@ -759,16 +749,13 @@ func TestZcodeQueryQuotaFlow(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
-	restoreMonitor := zcodeMonitorURLs
-	zcodeBillingCurrentURL = server.URL + "/api/v1/zcode-plan/billing/current"
+	restoreBalance, restoreMonitor := zcodeBillingBalanceURL, zcodeMonitorURLs
 	zcodeBillingBalanceURL = server.URL + "/api/v1/zcode-plan/billing/balance"
 	zcodeMonitorURLs = []string{server.URL + "/api/monitor/usage/quota/limit"}
 	t.Cleanup(func() {
-		zcodeBillingCurrentURL, zcodeBillingBalanceURL, zcodeMonitorURLs = restoreCurrent, restoreBalance, restoreMonitor
+		zcodeBillingBalanceURL, zcodeMonitorURLs = restoreBalance, restoreMonitor
 	})
 
-	// First token 401s, the second succeeds: no monitor fallback.
 	quota, err := queryZcodeQuota(context.Background(), []string{"bad-token-123456789012345", "good-token-1234567890123"})
 	if err != nil {
 		t.Fatal(err)
@@ -776,44 +763,54 @@ func TestZcodeQueryQuotaFlow(t *testing.T) {
 	if quota.LevelName != "Max" || len(quota.Limits) != 1 || quota.Limits[0].Limit != 100 {
 		t.Fatalf("quota: %+v", quota)
 	}
+	if billingHits != 2 {
+		t.Fatalf("balance requests = %d, want one per token", billingHits)
+	}
 	if monitorHits != 0 {
 		t.Fatalf("monitor must not fire when billing works: %d", monitorHits)
 	}
 }
 
 func TestZcodeQueryQuotaMonitorFallback(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "/monitor/") {
-			if r.Header.Get("authorization") != "bigmodel-key-1234567890123" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			if r.Header.Get("X-Device-Mid") != "" {
-				t.Error("monitor must not get the ZCode device header")
-			}
-			_, _ = w.Write([]byte(`{"code":200,"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","usage":100,"currentValue":97}]}}`))
-			return
-		}
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"message":"unknown key"}`))
-	}))
-	defer server.Close()
-	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
-	restoreMonitor := zcodeMonitorURLs
-	zcodeBillingCurrentURL = server.URL + "/billing/current"
-	zcodeBillingBalanceURL = server.URL + "/billing/balance"
-	zcodeMonitorURLs = []string{server.URL + "/monitor/quota"}
-	t.Cleanup(func() {
-		zcodeBillingCurrentURL, zcodeBillingBalanceURL, zcodeMonitorURLs = restoreCurrent, restoreBalance, restoreMonitor
-	})
+	for _, test := range []struct {
+		name            string
+		balanceResponse string
+	}{
+		{name: "business error", balanceResponse: `{"code":3001,"msg":"parameter error"}`},
+		{name: "empty balance", balanceResponse: `{"code":0,"data":{"plans":[],"balances":[]}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(r.URL.Path, "/monitor/") {
+					if r.Header.Get("authorization") != "bigmodel-key-1234567890123" {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					if r.Header.Get("X-Device-Mid") != "" {
+						t.Error("monitor must not get the ZCode device header")
+					}
+					_, _ = w.Write([]byte(`{"code":200,"data":{"level":"pro","limits":[{"type":"TOKENS_LIMIT","usage":100,"currentValue":97}]}}`))
+					return
+				}
+				_, _ = w.Write([]byte(test.balanceResponse))
+			}))
+			defer server.Close()
+			restoreBalance, restoreMonitor := zcodeBillingBalanceURL, zcodeMonitorURLs
+			zcodeBillingBalanceURL = server.URL + "/billing/balance"
+			zcodeMonitorURLs = []string{server.URL + "/monitor/quota"}
+			t.Cleanup(func() {
+				zcodeBillingBalanceURL, zcodeMonitorURLs = restoreBalance, restoreMonitor
+			})
 
-	quota, err := queryZcodeQuota(context.Background(), []string{"bigmodel-key-1234567890123"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if quota.LevelName != "Pro" || len(quota.Limits) != 1 || quota.Limits[0].Used != 97 {
-		t.Fatalf("monitor quota: %+v", quota)
+			quota, err := queryZcodeQuota(context.Background(), []string{"bigmodel-key-1234567890123"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if quota.LevelName != "Pro" || len(quota.Limits) != 1 || quota.Limits[0].Used != 97 {
+				t.Fatalf("monitor quota: %+v", quota)
+			}
+		})
 	}
 }
 
@@ -824,13 +821,11 @@ func TestZcodeRefreshQuotaMarksReauth(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"expired"}`))
 	}))
 	defer server.Close()
-	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
-	restoreMonitor := zcodeMonitorURLs
-	zcodeBillingCurrentURL = server.URL + "/billing/current"
+	restoreBalance, restoreMonitor := zcodeBillingBalanceURL, zcodeMonitorURLs
 	zcodeBillingBalanceURL = server.URL + "/billing/balance"
 	zcodeMonitorURLs = []string{server.URL + "/monitor/quota"}
 	t.Cleanup(func() {
-		zcodeBillingCurrentURL, zcodeBillingBalanceURL, zcodeMonitorURLs = restoreCurrent, restoreBalance, restoreMonitor
+		zcodeBillingBalanceURL, zcodeMonitorURLs = restoreBalance, restoreMonitor
 	})
 
 	acc, err := m.RefreshQuota(context.Background(), "zcode", targets[0].ID)
@@ -858,17 +853,12 @@ func TestZcodeRefreshQuotaSuccess(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, "/billing/current") {
-			_, _ = w.Write([]byte(`{"data":{"plans":[{"plan_id":"pro","status":"active"}]}}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"data":{"balances":[{"show_name":"GLM","total_units":100,"used_units":50}]}}`))
+		_, _ = w.Write([]byte(`{"data":{"plans":[{"plan_id":"pro","status":"active"}],"balances":[{"show_name":"GLM","total_units":100,"used_units":50}]}}`))
 	}))
 	defer server.Close()
-	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
-	zcodeBillingCurrentURL = server.URL + "/billing/current"
+	restoreBalance := zcodeBillingBalanceURL
 	zcodeBillingBalanceURL = server.URL + "/billing/balance"
-	t.Cleanup(func() { zcodeBillingCurrentURL, zcodeBillingBalanceURL = restoreCurrent, restoreBalance })
+	t.Cleanup(func() { zcodeBillingBalanceURL = restoreBalance })
 
 	acc, err := m.RefreshQuota(context.Background(), "zcode", targets[0].ID)
 	if err != nil {
@@ -901,13 +891,11 @@ func TestChooseTargetZcodeRequiresFreshQuota(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
-	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
-	restoreMonitor := zcodeMonitorURLs
-	zcodeBillingCurrentURL = server.URL + "/billing/current"
+	restoreBalance, restoreMonitor := zcodeBillingBalanceURL, zcodeMonitorURLs
 	zcodeBillingBalanceURL = server.URL + "/billing/balance"
 	zcodeMonitorURLs = []string{server.URL + "/monitor/quota"}
 	t.Cleanup(func() {
-		zcodeBillingCurrentURL, zcodeBillingBalanceURL, zcodeMonitorURLs = restoreCurrent, restoreBalance, restoreMonitor
+		zcodeBillingBalanceURL, zcodeMonitorURLs = restoreBalance, restoreMonitor
 	})
 
 	if target := m.ChooseTarget(context.Background(), "zcode", targets[0].ID, 0.95, defaultLongTermThreshold); target != nil {
@@ -1028,15 +1016,13 @@ func stubZcodeResetAPIAt(t *testing.T, cards, usedPercentage int) *atomic.Int32 
 		}
 	}))
 	t.Cleanup(server.Close)
-	restoreCurrent, restoreBalance := zcodeBillingCurrentURL, zcodeBillingBalanceURL
-	restoreMonitor := zcodeMonitorURLs
+	restoreBalance, restoreMonitor := zcodeBillingBalanceURL, zcodeMonitorURLs
 	restoreReset := zcodeResetBaseURL
-	zcodeBillingCurrentURL = server.URL + "/api/v1/zcode-plan/billing/current"
 	zcodeBillingBalanceURL = server.URL + "/api/v1/zcode-plan/billing/balance"
 	zcodeMonitorURLs = []string{server.URL + "/api/monitor/usage/quota/limit"}
 	zcodeResetBaseURL = server.URL + "/api/v1/coding-plan/reset"
 	t.Cleanup(func() {
-		zcodeBillingCurrentURL, zcodeBillingBalanceURL = restoreCurrent, restoreBalance
+		zcodeBillingBalanceURL = restoreBalance
 		zcodeMonitorURLs, zcodeResetBaseURL = restoreMonitor, restoreReset
 	})
 	return useHits

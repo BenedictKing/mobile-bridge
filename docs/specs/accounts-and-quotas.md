@@ -43,6 +43,8 @@
 
 ZCode 可优先使用官方重置卡原地恢复；无卡、恢复失败或不适合使用时才进入账号切换。辅助额度窗口不参与主 AI 额度耗尽判断。
 
+ZCode Start Plan 的套餐与额度统一通过一次 `GET /api/v1/zcode-plan/billing/balance` 查询，请求携带真实客户端 `app_version`、`Bearer zcodejwttoken` 和 `X-Device-Mid`；已废弃的 `billing/current` 不得作为额度查询、登录校验或登录后就绪轮询的前置依赖。同一次响应的 `data.plans` 用于套餐识别，`data.balances` 用于生成额度窗口。HTTP 2xx 但业务 `code` 非 0 或 `success=false` 仍属查询失败，不得归一化为成功的空额度；balance 没有返回额度窗口时继续尝试 monitor，避免空 Start Plan 响应遮住付费 Coding Plan 数据。普通付费 Coding Plan 仍使用 `/api/monitor/usage/quota/limit`，以不带 `Bearer` 的完整 API Key 查询。
+
 ZCode 计费额度查询必须读取本机 `v2/telemetry-state.json` 的 `deviceMid`，并通过 `X-Device-Mid` 请求头发送；设备标识只在本机读取，不进入账号快照或普通 API 响应。缺少该请求头导致的 `HTTP 400 / code 3001` 属于额度查询失败，不得标记为 Token 失效；BigModel 监控备用查询不发送此 ZCode 专用请求头。
 
 ## 4. 自动切换与续跑
