@@ -47,6 +47,10 @@ ZCode Start Plan 的套餐与额度统一通过一次 `GET /api/v1/zcode-plan/bi
 
 ZCode 计费额度查询必须读取本机 `v2/telemetry-state.json` 的 `deviceMid`，并通过 `X-Device-Mid` 请求头发送；设备标识只在本机读取，不进入账号快照或普通 API 响应。缺少该请求头导致的 `HTTP 400 / code 3001` 属于额度查询失败，不得标记为 Token 失效；BigModel 监控备用查询不发送此 ZCode 专用请求头。
 
+ZCode 新版凭据快照使用 `enc:v2:os` 或 `enc:v2:env` 时，额度查询必须先解密，不能把密文当作 token 发送。macOS 的系统密文使用服务名 `ZCode Credential Encryption`、账号名为 credentials 文件绝对路径 SHA-256 的系统钥匙串密钥，并核对密文内的密钥指纹；`enc:v2:env` 使用显式配置的凭据秘密派生密钥。无法解密时跳过该候选，不将其误判为明文。
+
+BigModel Coding Plan 使用长期 `<id>.<secret>` API Key 或短期 project access token 查询 monitor。快照中的 project access token 已过期或缺失、且存在匹配当前账号的 `project-key-location:v1` 时，使用该位置中的组织、项目和 Key ID，通过 `POST /api/biz/v1/organization/{org}/projects/{project}/api_keys/{key}/access_tokens` 重新签发；新 token 仅用于本次额度查询，不写回快照。monitor 返回业务成功但 `limits` 为空时继续尝试后续候选，全部为空才保留空额度结果，避免旧 Start Plan token 遮住有效 Coding Plan token。
+
 ## 4. 自动切换与续跑
 
 ### 4.1 触发与决策

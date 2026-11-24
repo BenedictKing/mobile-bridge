@@ -2,12 +2,17 @@ package accpool
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,6 +59,47 @@ func TestZcodeCryptoVector(t *testing.T) {
 	}
 	if back, err := zcodeDecrypt(sealed, zcodeCredentialSecret()); err != nil || back != "round-trip-凭证" {
 		t.Fatalf("round trip: %q %v", back, err)
+	}
+}
+
+func sealZcodeV2ForTest(t *testing.T, plain, source string, key []byte) string {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	sealed := gcm.Seal(nil, nonce, []byte(plain), nil)
+	tag := sealed[len(sealed)-gcm.Overhead():]
+	ciphertext := sealed[:len(sealed)-gcm.Overhead()]
+	fingerprint := sha256.Sum256(key)
+	return fmt.Sprintf("enc:v2:%s:%s:%s.%s.%s",
+		source, hex.EncodeToString(fingerprint[:])[:24], base64.RawURLEncoding.EncodeToString(nonce),
+		base64.RawURLEncoding.EncodeToString(tag), base64.RawURLEncoding.EncodeToString(ciphertext))
+}
+
+func TestZcodeDecryptV2(t *testing.T) {
+	stubZcodeSecret(t)
+	envValue := sealZcodeV2ForTest(t, "env-token-123456789012345", "env", zcodeDeriveKey(zcodeCredentialSecret()))
+	if plain, err := zcodeDecrypt(envValue, zcodeCredentialSecret()); err != nil || plain != "env-token-123456789012345" {
+		t.Fatalf("decrypt enc:v2:env: %q %v", plain, err)
+	}
+
+	key := []byte("0123456789abcdef0123456789abcdef")
+	osValue := sealZcodeV2ForTest(t, "os-token-1234567890123456", "os", key)
+	restoreReadKey := zcodeReadSystemKey
+	zcodeReadSystemKey = func() ([]byte, error) { return key, nil }
+	t.Cleanup(func() { zcodeReadSystemKey = restoreReadKey })
+	if plain, err := zcodeDecrypt(osValue, ""); err != nil || plain != "os-token-1234567890123456" {
+		t.Fatalf("decrypt enc:v2:os: %q %v", plain, err)
+	}
+	zcodeReadSystemKey = func() ([]byte, error) { return []byte("abcdef0123456789abcdef0123456789"), nil }
+	if tokens := zcodeCandidateTokens(map[string]any{"zcodejwttoken": osValue}, nil); len(tokens) != 0 {
+		t.Fatalf("wrong system key must not leak ciphertext as a token: %v", tokens)
 	}
 }
 
@@ -160,6 +206,78 @@ func TestZcodeCandidateTokens(t *testing.T) {
 	bad := map[string]any{"zcodejwttoken": "enc:v1:AAAA.BBBB.CCCC"}
 	if tokens := zcodeCandidateTokens(bad, nil); len(tokens) != 0 {
 		t.Fatalf("bad enc must be skipped: %v", tokens)
+	}
+}
+
+func TestZcodeProjectAccessTokenRefreshesExpiredV2Snapshot(t *testing.T) {
+	stubZcodeSecret(t)
+	const userID = "70831766492416465"
+	freshToken := makeJWT(map[string]any{
+		"token_use": "project_access", "exp": time.Now().Add(time.Hour).Unix(),
+	})
+	expiredToken := makeJWT(map[string]any{
+		"token_use": "project_access", "exp": time.Now().Add(-time.Hour).Unix(),
+	})
+	oauthToken := "oauth-token-123456789012345678"
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.Method != http.MethodPost || r.URL.Path != "/api/biz/v1/organization/org/projects/project/api_keys/key/access_tokens" {
+			t.Errorf("unexpected mint request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+oauthToken {
+			t.Errorf("mint authorization mismatch: %q", got)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode mint request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if payload["clientType"] != "zcode" || payload["clientVersion"] != zcodeClientAppVersion {
+			t.Fatalf("mint payload: %+v", payload)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0, "data": map[string]any{"data": map[string]any{"accessToken": freshToken}},
+		})
+	}))
+	defer server.Close()
+
+	key := zcodeDeriveKey(zcodeCredentialSecret())
+	header, _ := json.Marshal([]any{server.URL, "bigmodel", userID, nil, 1, "non-team"})
+	locationKey := "project-key-location:v1:" + url.QueryEscape(string(header))
+	credentials := map[string]any{
+		"oauth:bigmodel:access_token": sealZcodeV2ForTest(t, oauthToken, "env", key),
+		locationKey: sealZcodeV2ForTest(t,
+			`{"organizationId":"org","projectId":"project","apiKeyId":"key"}`, "env", key),
+	}
+	config := map[string]any{"provider": map[string]any{
+		"builtin:bigmodel-coding-plan": map[string]any{
+			"enabled": true, "options": map[string]any{"apiKey": expiredToken},
+		},
+	}}
+	oldToken := "old-token-123456789012345"
+	tokens := zcodeWithProjectAccessToken(context.Background(), credentials, config, userID, []string{oldToken})
+	if len(tokens) != 2 || tokens[0] != freshToken || tokens[1] != oldToken || hits != 1 {
+		t.Fatalf("fresh project token was not prepended: tokens=%d hits=%d", len(tokens), hits)
+	}
+	if got := zcodeProjectAccessToken(context.Background(), credentials, config, "another-user"); got != "" || hits != 1 {
+		t.Fatalf("another account must not mint: token=%q hits=%d", got, hits)
+	}
+
+	options := config["provider"].(map[string]any)["builtin:bigmodel-coding-plan"].(map[string]any)["options"].(map[string]any)
+	options["apiKey"] = freshToken
+	if got := zcodeProjectAccessToken(context.Background(), credentials, config, userID); got != freshToken || hits != 1 {
+		t.Fatalf("valid project token must be reused: token=%q hits=%d", got, hits)
+	}
+	options["apiKey"] = "api-key-id.secret"
+	if got := zcodeProjectAccessToken(context.Background(), credentials, config, userID); got != "" || hits != 1 {
+		t.Fatalf("long-term key must not mint: token=%q hits=%d", got, hits)
 	}
 }
 
@@ -811,6 +929,43 @@ func TestZcodeQueryQuotaMonitorFallback(t *testing.T) {
 				t.Fatalf("monitor quota: %+v", quota)
 			}
 		})
+	}
+}
+
+func TestZcodeQueryQuotaMonitorSkipsEmptyResponses(t *testing.T) {
+	monitorHits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if !strings.Contains(r.URL.Path, "/monitor/") {
+			_, _ = w.Write([]byte(`{"code":3001,"msg":"not a start plan"}`))
+			return
+		}
+		monitorHits++
+		switch r.Header.Get("authorization") {
+		case "old-start-token-1234567890":
+			_, _ = w.Write([]byte(`{"code":200,"data":{"level":"lite","limits":[]}}`))
+		case "fresh-project-token-123456":
+			_, _ = w.Write([]byte(`{"code":200,"data":{"level":"lite","limits":[{"type":"TOKENS_LIMIT","percentage":37}]}}`))
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer server.Close()
+	restoreBalance, restoreMonitor := zcodeBillingBalanceURL, zcodeMonitorURLs
+	zcodeBillingBalanceURL = server.URL + "/billing/balance"
+	zcodeMonitorURLs = []string{server.URL + "/monitor/quota"}
+	t.Cleanup(func() {
+		zcodeBillingBalanceURL, zcodeMonitorURLs = restoreBalance, restoreMonitor
+	})
+
+	quota, err := queryZcodeQuota(context.Background(), []string{
+		"old-start-token-1234567890", "fresh-project-token-123456",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quota.Limits) != 1 || quota.Limits[0].Used != 370 || monitorHits != 2 {
+		t.Fatalf("empty monitor response hid a usable token: quota=%+v hits=%d", quota, monitorHits)
 	}
 }
 

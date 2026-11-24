@@ -114,11 +114,14 @@ func writeZcodeSlot(slot *zcodeSlot) error {
 	return nil
 }
 
-// --- enc:v1 (zcodeCrypto.js) ------------------------------------------------
+// --- credential encryption (ZCode credential-security) -----------------------
 
-const zcodeEncPrefix = "enc:v1:"
+const (
+	zcodeEncPrefix       = "enc:v1:"
+	zcodeSystemEncPrefix = "enc:v2:"
+)
 
-func isZcodeEncrypted(value string) bool { return strings.HasPrefix(value, zcodeEncPrefix) }
+func isZcodeEncrypted(value string) bool { return strings.HasPrefix(value, "enc:") }
 
 // zcodeCredentialSecret mirrors zcodeCrypto.defaultCredentialSecret: the
 // env override wins, otherwise the machine-bound fallback
@@ -140,30 +143,40 @@ func zcodeDeriveKey(secret string) []byte {
 	return sum[:]
 }
 
-// zcodeDecrypt decodes `enc:v1:<nonce>.<tag>.<cipher>` (aes-256-gcm,
-// base64url unpadded, key = sha256(secret)). Plaintext passes through.
+// zcodeDecrypt decodes ZCode's legacy and system credential envelopes.
+// Plaintext passes through; unrecognized enc: values never become tokens.
 func zcodeDecrypt(value, secret string) (string, error) {
-	if !isZcodeEncrypted(value) {
+	if strings.HasPrefix(value, zcodeSystemEncPrefix) {
+		return zcodeDecryptV2(value, secret)
+	}
+	if !strings.HasPrefix(value, zcodeEncPrefix) {
+		if isZcodeEncrypted(value) {
+			return "", errors.New("不支持的凭据加密格式")
+		}
 		return value, nil
 	}
-	parts := strings.Split(strings.TrimPrefix(value, zcodeEncPrefix), ".")
+	return zcodeOpenCredential(strings.TrimPrefix(value, zcodeEncPrefix), zcodeDeriveKey(secret))
+}
+
+func zcodeOpenCredential(payload string, key []byte) (string, error) {
+	parts := strings.Split(payload, ".")
 	if len(parts) != 3 {
-		return "", errors.New("enc:v1 格式不正确")
+		return "", errors.New("凭据密文格式不正确")
 	}
 	decode := base64.RawURLEncoding.DecodeString
 	nonce, err := decode(parts[0])
 	if err != nil {
-		return "", fmt.Errorf("enc:v1 nonce 解码失败: %w", err)
+		return "", fmt.Errorf("凭据 nonce 解码失败: %w", err)
 	}
 	tag, err := decode(parts[1])
 	if err != nil {
-		return "", fmt.Errorf("enc:v1 authTag 解码失败: %w", err)
+		return "", fmt.Errorf("凭据 authTag 解码失败: %w", err)
 	}
 	ciphertext, err := decode(parts[2])
 	if err != nil {
-		return "", fmt.Errorf("enc:v1 密文解码失败: %w", err)
+		return "", fmt.Errorf("凭据密文解码失败: %w", err)
 	}
-	block, err := aes.NewCipher(zcodeDeriveKey(secret))
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}
@@ -173,9 +186,59 @@ func zcodeDecrypt(value, secret string) (string, error) {
 	}
 	plain, err := gcm.Open(nil, nonce, append(ciphertext, tag...), nil)
 	if err != nil {
-		return "", fmt.Errorf("enc:v1 解密失败（密钥不匹配？）: %w", err)
+		return "", fmt.Errorf("凭据解密失败（密钥不匹配？）: %w", err)
 	}
 	return string(plain), nil
+}
+
+func zcodeDecryptV2(value, secret string) (string, error) {
+	parts := strings.Split(strings.TrimPrefix(value, zcodeSystemEncPrefix), ":")
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+		return "", errors.New("enc:v2 格式不正确")
+	}
+	var key []byte
+	switch parts[0] {
+	case "env":
+		key = zcodeDeriveKey(secret)
+	case "os":
+		var err error
+		key, err = zcodeReadSystemKey()
+		if err != nil {
+			return "", err
+		}
+	default:
+		return "", errors.New("enc:v2 密钥来源不正确")
+	}
+	fingerprint := sha256.Sum256(key)
+	if parts[1] != hex.EncodeToString(fingerprint[:])[:24] {
+		return "", errors.New("enc:v2 密钥指纹不匹配")
+	}
+	return zcodeOpenCredential(parts[2], key)
+}
+
+var zcodeReadSystemKey = func() ([]byte, error) {
+	if runtime.GOOS != "darwin" {
+		return nil, errors.New("当前平台暂不支持 ZCode 系统凭据解密")
+	}
+	path, err := filepath.Abs(zcodeCredentialsPath())
+	if err != nil {
+		return nil, err
+	}
+	account := sha256.Sum256([]byte(path))
+	output, err := exec.Command(
+		"security", "find-generic-password",
+		"-s", "ZCode Credential Encryption",
+		"-a", hex.EncodeToString(account[:]),
+		"-w",
+	).Output()
+	if err != nil {
+		return nil, errors.New("读取 ZCode 系统钥匙串失败")
+	}
+	key, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(output)))
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("ZCode 系统钥匙串密钥格式不正确")
+	}
+	return key, nil
 }
 
 // zcodeEncrypt is the symmetric writer, used by tests and future tooling.
@@ -403,6 +466,152 @@ func zcodeCandidateTokens(credentials, config map[string]any) []string {
 	return tokens
 }
 
+type zcodeProjectKeyLocation struct {
+	Origin         string
+	OrganizationID string
+	ProjectID      string
+	APIKeyID       string
+}
+
+func zcodeLongTermAPIKey(value string) bool {
+	return value != "" && !strings.HasPrefix(value, "eyJ") &&
+		strings.Count(value, ".") == 1 && !strings.ContainsAny(value, " \t\r\n")
+}
+
+func zcodeProjectTokenValid(value string) bool {
+	payload := decodeJWTPayload(value)
+	if payload == nil || stringValue(payload, "token_use") != "project_access" {
+		return false
+	}
+	expiresAt, ok := toFloat(payload["exp"])
+	return ok && expiresAt > float64(time.Now().Unix())
+}
+
+// zcodeProjectAccessToken returns a fresh Coding Plan token without persisting
+// it. Long-lived API keys and still-valid project tokens need no mint request.
+func zcodeProjectAccessToken(ctx context.Context, credentials, config map[string]any, userID string) string {
+	providers, _ := config["provider"].(map[string]any)
+	provider, _ := providers["builtin:bigmodel-coding-plan"].(map[string]any)
+	if enabled, _ := provider["enabled"].(bool); !enabled || userID == "" {
+		return ""
+	}
+	options, _ := provider["options"].(map[string]any)
+	apiKey, _ := options["apiKey"].(string)
+	if zcodeLongTermAPIKey(apiKey) {
+		return ""
+	}
+	if zcodeProjectTokenValid(apiKey) {
+		return apiKey
+	}
+	location := findZcodeProjectKeyLocation(credentials, userID)
+	if location == nil {
+		return ""
+	}
+	oauthToken := zcodeDecryptSafe(stringValue(credentials, "oauth:bigmodel:access_token"))
+	if !looksLikeToken(oauthToken) {
+		return ""
+	}
+	token, err := mintZcodeProjectAccessToken(ctx, location, oauthToken)
+	if err != nil {
+		return ""
+	}
+	return token
+}
+
+func findZcodeProjectKeyLocation(credentials map[string]any, userID string) *zcodeProjectKeyLocation {
+	keys := make([]string, 0, len(credentials))
+	for key := range credentials {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !strings.HasPrefix(key, "project-key-location:v1:") {
+			continue
+		}
+		decoded, err := url.QueryUnescape(strings.TrimPrefix(key, "project-key-location:v1:"))
+		if err != nil {
+			continue
+		}
+		var header []any
+		if json.Unmarshal([]byte(decoded), &header) != nil || len(header) < 3 {
+			continue
+		}
+		origin, _ := header[0].(string)
+		family, _ := header[1].(string)
+		account, _ := header[2].(string)
+		if origin == "" || family != "bigmodel" || account != userID {
+			continue
+		}
+		encrypted, _ := credentials[key].(string)
+		body := parseJSONObject(zcodeDecryptSafe(encrypted))
+		location := &zcodeProjectKeyLocation{
+			Origin:         strings.TrimRight(origin, "/"),
+			OrganizationID: stringValue(body, "organizationId"),
+			ProjectID:      stringValue(body, "projectId"),
+			APIKeyID:       stringValue(body, "apiKeyId"),
+		}
+		if location.OrganizationID != "" && location.ProjectID != "" && location.APIKeyID != "" {
+			return location
+		}
+	}
+	return nil
+}
+
+func mintZcodeProjectAccessToken(ctx context.Context, location *zcodeProjectKeyLocation, oauthToken string) (string, error) {
+	endpoint := location.Origin +
+		"/api/biz/v1/organization/" + url.PathEscape(location.OrganizationID) +
+		"/projects/" + url.PathEscape(location.ProjectID) +
+		"/api_keys/" + url.PathEscape(location.APIKeyID) + "/access_tokens"
+	payload, err := json.Marshal(map[string]string{
+		"clientType": "zcode", "clientVersion": zcodeClientAppVersion,
+	})
+	if err != nil {
+		return "", err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+oauthToken)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("access_tokens HTTP %d", response.StatusCode)
+	}
+	decoded := parseJSONObject(string(body))
+	if decoded == nil || !zcodeBusinessCodeOK(decoded) {
+		return "", errors.New("access_tokens 响应业务失败")
+	}
+	token := stringValue(unwrapData(decoded), "accessToken", "access_token")
+	if !looksLikeToken(token) {
+		return "", errors.New("access_tokens 响应缺少 accessToken")
+	}
+	return token, nil
+}
+
+func zcodeWithProjectAccessToken(ctx context.Context, credentials, config map[string]any, userID string, tokens []string) []string {
+	token := zcodeProjectAccessToken(ctx, credentials, config, userID)
+	if token == "" {
+		return tokens
+	}
+	result := []string{token}
+	for _, candidate := range tokens {
+		if candidate != token {
+			result = append(result, candidate)
+		}
+	}
+	return result
+}
+
 func parseJSONObject(text string) map[string]any {
 	var out map[string]any
 	if text == "" || json.Unmarshal([]byte(text), &out) != nil {
@@ -616,6 +825,7 @@ func fetchZcodeMonitor(ctx context.Context, endpoint, token string) (map[string]
 
 func queryZcodeMonitor(ctx context.Context, tokens []string) (*Quota, error) {
 	var lastErr error
+	var emptyQuota *Quota
 	for _, token := range tokens {
 		for _, endpoint := range zcodeMonitorURLs {
 			body, err := fetchZcodeMonitor(ctx, endpoint, token)
@@ -623,8 +833,17 @@ func queryZcodeMonitor(ctx context.Context, tokens []string) (*Quota, error) {
 				lastErr = err
 				continue
 			}
-			return normalizeZcodeMonitor(body), nil
+			quota := normalizeZcodeMonitor(body)
+			if len(quota.Limits) > 0 {
+				return quota, nil
+			}
+			if emptyQuota == nil {
+				emptyQuota = quota
+			}
 		}
+	}
+	if emptyQuota != nil {
+		return emptyQuota, nil
 	}
 	return nil, lastErr
 }
@@ -1120,6 +1339,7 @@ func (m *Manager) refreshZcodeQuota(ctx context.Context, acc *Account) (*Account
 	credentials := parseJSONObject(acc.Credentials)
 	config := parseJSONObject(acc.Config)
 	tokens := zcodeCandidateTokens(credentials, config)
+	tokens = zcodeWithProjectAccessToken(ctx, credentials, config, acc.UserID, tokens)
 	quota, err := queryZcodeQuota(ctx, tokens)
 	if err != nil {
 		acc.QuotaError = err.Error()
