@@ -5,7 +5,8 @@
 - 修订意见此前到不了模型：Kimi 把 `plan_revise` 映射为 `{decision:rejected, selectedLabel:"Revise"}`，从不读取 `outcome.text`，模型只收到 "User requested revisions. Plan mode remains active."。现在仅对 Kimi 该形态请求，网关在回应送达后先取消这个会盲改的回合，再把意见（前端已格式化为编号批注+全局意见）作为下一条用户消息发出，意见因此可见于时间线。转交只在真正送达回应后执行，命令重放不重复发送；取消或发送失败时审批仍然生效，HTTP 返回 200 + `warning`，前端展示该提示而不重试。
 - 测试：`acpview` 覆盖 Kimi 形态投影、planId 稳定、相同正文不递增、修订带上一版、非计划请求与缺 `toolCall` 请求不误判；`httpd` 用复刻 Kimi 报文的伪 Agent 走完整 HTTP 链路，覆盖计划卡元数据、批注按服务端版本落盘、取消盲改回合、意见送达及重放不重复。
 - 验证：`go build ./...`、`go vet ./...`、`go test -count=1 ./...` 全量通过，`go test -race -count=1 ./...` 全量 42 个包通过，最后改动后对 acpview/acpruntime/httpd 复跑 race 亦通过；`npm run check:web` 类型检查及 427 项测试通过。全量单测首轮 `TestTeamIntegration2FirstSuccessEarlyStop` 等待超时，单独复跑与 httpd 全量复跑均通过，判定为并发时序抖动。
-- 未覆盖：真实 Kimi 端到端与真机未验收，需要重新构建并重启 8787 网关；重启前已存在的计划卡仍是普通权限卡。识别与转交依赖 Kimi 当前报文形态，Kimi 若改为读取 `outcome.text` 或更改报文，需要同步调整。
+- 真实验收（用户 07:16 重启后，ego-browser 操作真实 8787 网关，Kimi k3.1-pro 计划模式新会话）：v1 审批卡带 `Version 1 · 8a04c703…` 徽标、历史与批注面板；真实选区弹出带文字的“批注/建议删除”，添加 A1（“问题反馈”，要求写明插入位置）与 A2（建议删除“也不同步改动英文 README”），加全局意见后 Revise。原回合转为 `interrupted`，意见以完整编号格式作为 turn-12 用户消息送达，无转交失败日志。Kimi 返回 v2（同 planId `starfire-hawkgirl-lockjaw`，新哈希，带上一版）：插入位置改为明确章节、英文 README 句已删除，即两条批注都落实；但 Kimi 没有按编号输出文字说明，该行为取决于模型。v2 卡片 Diff +2 −2，“上一版批注”两条均标“原文已修改或移除”，历史懒加载列出两版，v1 下含完整批注与全局意见，`.local/acp-plans.json` 已落盘两版，提交后批注草稿清空。390×844 下无横向溢出。
+- 未覆盖：真机操作未做；本次验收会话的“批准后执行”未点（会真实修改 README），v2 审批仍挂起由用户决定；重启后历史再读由 Store 重开回归覆盖，未再做一次真实重启复核。识别与转交依赖 Kimi 当前报文形态，Kimi 若改为读取 `outcome.text` 或更改报文，需要同步调整。
 
 ## 压缩启动与账号切换等待优化（2026-11-25，本地验证）
 
