@@ -37,6 +37,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jev"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
+	"github.com/BenedictKing/mobile-bridge/internal/planstore"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/team"
@@ -88,6 +89,7 @@ type Server struct {
 	Activity         *activityStore
 	GoalCmds         *goalLedger
 	ACPGoals         *acpgoal.Store
+	Plans            *planstore.Store
 	Hidden           *hiddenSessions
 	HiddenProjects   *hiddenProjects
 	Forks            *forkLedger

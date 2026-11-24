@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/planstore"
 	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 )
 
@@ -36,6 +37,8 @@ type View struct {
 	toolIndex     map[string]*jsoncompat.Object
 	questionTools map[string]bool
 	planRevisions planRevisions
+	planStore     *planstore.Store
+	planAgent     string
 }
 
 func NewView(sessionID string, title, cwd any, now func() float64) *View {
@@ -316,11 +319,11 @@ func (v *View) AddPermission(requestID string, params *jsoncompat.Object) {
 		content, _ := planInput.MustGet("plan").(string)
 		entryParams.Set("planContent", content)
 		planID := requestPlanID(toolCall, planInput, requestID)
-		revision := v.planRevisions.track(planID, content)
+		revision := v.trackPlan(planID, content)
 		entryParams.Set("planId", planID)
 		entryParams.Set("planVersion", jsoncompat.Num(revision.Number))
 		entryParams.Set("planHash", revision.Hash)
-		if revision.Number > 1 {
+		if revision.HasPrevious {
 			entryParams.Set("previousPlanContent", revision.Previous)
 		}
 		if allowed, ok := planInput.Get("allowedPrompts"); ok {
@@ -715,7 +718,7 @@ func (v *View) apply(kind string, update *jsoncompat.Object) {
 			return
 		}
 		content, _ := payload.MustGet("content").(string)
-		v.planRevisions.track(planID, content)
+		v.trackPlan(planID, content)
 		turn := v.assistantTurn()
 		var plan *jsoncompat.Object
 		for _, item := range messages(turn).Items {

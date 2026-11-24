@@ -24,11 +24,11 @@ function loadApproval(){
   const elStart=source.indexOf('function el('),elEnd=source.indexOf('\n',elStart);
   const context={
     window:{BridgePendingCommands:new PendingCommands(new MemoryStorage())},uuid:()=> 'command-1',chatKey:(id,host)=>host+'|'+id,
-    currentId:'session',currentHost:'local',submittedRequestIds:new Set(),approvalBusy:0,
+    currentId:'session',currentHost:'local',state:{agent:'kimi'},submittedRequestIds:new Set(),approvalBusy:0,
     document:{createElement:tag=>new FakeNode(tag)},t:value=>value,
-    setLanguageBusy(){},sessionUrl:()=>'/respond',bumpRecency(){},riskBadge:()=>null,markRecommendation(){},
+    setLanguageBusy(){},sessionUrl:(id,action,host)=>'/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host),bumpRecency(){},riskBadge:()=>null,markRecommendation(){},
     renderMarkdown:(node,text)=>{node.renderedMarkdown=text;},
-    api:async(path,body)=>{calls.push({path,body});return {};},
+    api:async(path,body)=>{calls.push({path,body});if(body===undefined&&path.includes('/plans?'))return {planId:'plan-1',revisions:[{version:2,hash:'a'.repeat(64),content:'# 计划',createdAt:'2026-11-24T10:00:00Z'}]};return {};},
   };
   const replyStart=source.indexOf('async function respondToRequest('),replyEnd=source.indexOf('async function retryLocalSubmission(',replyStart);
   const planReview=readFileSync(require.resolve('../web/plan-review.js'),'utf8');
@@ -42,7 +42,7 @@ function loadCodexPlanApproval(){
   const elStart=source.indexOf('function el('),elEnd=source.indexOf('\n',elStart);
   const context={
     window:{BridgePendingCommands:new PendingCommands(new MemoryStorage())},uuid:()=> 'command-1',chatKey:(id,host)=>host+'|'+id,
-    currentId:'session',currentHost:'local',submittedRequestIds:new Set(),approvalBusy:0,
+    currentId:'session',currentHost:'local',state:{agent:'kimi'},submittedRequestIds:new Set(),approvalBusy:0,
     document:{createElement:tag=>new FakeNode(tag)},t:value=>value,
     setLanguageBusy(){},sessionUrl:()=>'/respond',bumpRecency(){},renderMarkdown:(node,text)=>{node.renderedMarkdown=text;},
     workModes:{selection:'plan',render(){}},sessionStorage:{setItem(){}},
@@ -113,6 +113,17 @@ test('ACP revision feedback includes the displayed plan version',async()=>{
   assert.ok(text.includes('Plan-Version: 2'));
   assert.ok(text.includes('Plan-SHA256: '+'a'.repeat(64)));
   assert.ok(text.endsWith('> 第一步\n\n补充错误处理'));
+});
+
+test('ACP plan history loads through the current session route',async()=>{
+  const {calls,render}=loadApproval(),value=request();
+  Object.assign(value.params,{planContent:'# 计划',planId:'plan-1',planVersion:2,planHash:'a'.repeat(64)});
+  const card=render(value),history=card.children.find(node=>node.className==='plan-history');
+  assert.ok(history);assert.equal(calls.length,0);
+  history.open=true;await history.ontoggle();
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].path,'/api/sessions/session/plans?host=local&planId=plan-1&agent=kimi');
+  assert.equal(history.children[2].children[0].children[0].textContent.startsWith('版本 2'),true);
 });
 
 test('Codex plan revision uses the same version-bound feedback',async()=>{

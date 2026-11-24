@@ -138,6 +138,11 @@
 .plan-revision-diff-view{max-height:50dvh}
 .plan-revision-context{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:3px 8px;background:var(--surface)}
 .plan-revision-context>summary{cursor:pointer;color:var(--muted);white-space:normal;padding:3px 0}
+.plan-history{margin:10px 0;font-size:12px}
+.plan-history>summary,.plan-history-version>summary{cursor:pointer;color:var(--muted);padding:6px 0;overflow-wrap:anywhere}
+.plan-history-list{border-top:1px solid var(--line)}
+.plan-history-version{border-bottom:1px solid var(--line);padding:0 8px}
+.plan-history-content{max-height:50dvh;overflow:auto;margin:4px 0 10px}
 
 .apk-download{flex:none;display:flex;align-items:center;gap:12px;margin:10px max(24px,calc((100% - 760px)/2)) 0;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--soft);color:var(--green);text-decoration:none}
 .apk-download-icon{display:grid;place-items:center;width:32px;height:32px;flex:none;border-radius:50%;background:var(--green);color:var(--page);font-size:20px}

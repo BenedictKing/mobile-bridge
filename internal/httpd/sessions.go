@@ -30,7 +30,7 @@ import (
 )
 
 var threadRoute = regexp.MustCompile(
-	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|execution|queue|catalog|settings|permissions|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input|read))?$`)
+	`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})(?:/(events|send|stop|history|respond|reconnect|execution|queue|catalog|settings|permissions|plans|poll|timeline|changes|detail|notifications|uploads|message-action|rename|migrate|delete|input|read))?$`)
 var uploadRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/uploads/([0-9a-f-]{36})/(preview|thumb)$`)
 var fileRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/files/([a-f0-9]{64})$`)
 var goalRoute = regexp.MustCompile(`^/api/sessions/([A-Za-z0-9][A-Za-z0-9._-]{4,127})/goal/(cancel|edit|status|continue|complete|review)$`)
@@ -359,6 +359,10 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 	// forces that agent (unknown kinds are rejected), otherwise the thread is
 	// routed by ownership — live sessions, cached list rows and lazy
 	// placeholders alike, no sess_ prefix requirement.
+	if !write && action == "plans" && queryValue(query, "agent", "") == "" {
+		h.fail(http.StatusBadRequest, errorBody("计划历史请求必须指定 Agent 类型"))
+		return true
+	}
 	acpKind, acpManager := "", (*acpruntime.Manager)(nil)
 	if agentParam := queryValue(query, "agent", ""); agentParam != "" {
 		if agentParam != "codex" {
@@ -748,6 +752,35 @@ func (h *handler) handleSessionRoutes(bridge SessionBridge, write bool, path str
 // events) return false here and flow through the same live-projection paths
 // codex uses, so cursors and SSE semantics stay uniform across agents.
 func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threadID, action string, write bool, query map[string][]string) bool {
+	if !write && action == "plans" {
+		if h.server.Plans == nil {
+			h.fail(http.StatusConflict, errorBody("当前网关未启用计划历史"))
+			return true
+		}
+		planID := queryValue(query, "planId", "")
+		if planID == "" || len(planID) > 512 {
+			h.fail(http.StatusBadRequest, errorBody("计划标识无效"))
+			return true
+		}
+		result := jsoncompat.NewObject()
+		result.Set("agent", kind)
+		result.Set("sessionId", threadID)
+		result.Set("planId", planID)
+		revisions := &jsoncompat.Array{}
+		if plan, ok := h.server.Plans.Get(kind, threadID, planID); ok {
+			for _, revision := range plan.Revisions {
+				entry := jsoncompat.NewObject()
+				entry.Set("version", jsoncompat.Num(revision.Version))
+				entry.Set("hash", revision.Hash)
+				entry.Set("content", revision.Content)
+				entry.Set("createdAt", revision.CreatedAt.Format(time.RFC3339Nano))
+				revisions.Items = append(revisions.Items, entry)
+			}
+		}
+		result.Set("revisions", revisions)
+		h.output(http.StatusOK, result, contentTypeJSON, "")
+		return true
+	}
 	if write && action == "reconnect" {
 		cwd := queryValue(query, "cwd", manager.CwdFor(threadID))
 		if cwd == "" {

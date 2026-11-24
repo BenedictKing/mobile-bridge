@@ -2,10 +2,12 @@ package acpview
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/planstore"
 )
 
 func nativeTestTurn(id, status, text string) *jsoncompat.Object {
@@ -275,6 +277,58 @@ func TestPlanRevisionsSurviveReplayAndExposePreviousContent(t *testing.T) {
 	replayed := approve("req-2")
 	if replayed.MustGet("planVersion").(json.Number).String() != "2" || replayed.MustGet("planHash") != params.MustGet("planHash") {
 		t.Fatalf("identical plan replay advanced revision: %s", jsoncompat.EncodeCompact(replayed))
+	}
+}
+
+func TestPlanRevisionsRestoreFromStore(t *testing.T) {
+	store, err := planstore.Open(filepath.Join(t.TempDir(), "acp-plans.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newStoredView := func(sessionID string) *View {
+		view := NewView(sessionID, "Demo", "/work", func() float64 { return 1 })
+		view.UsePlanStore(store, "kimi")
+		return view
+	}
+	update := func(view *View, content string) {
+		event := jsoncompat.NewObject()
+		event.Set("sessionUpdate", "plan_update")
+		plan := jsoncompat.NewObject()
+		plan.Set("planId", "plan-1")
+		plan.Set("content", content)
+		event.Set("plan", plan)
+		view.OnUpdate(event)
+	}
+	approve := func(view *View, content string) *jsoncompat.Object {
+		rawInput := jsoncompat.NewObject()
+		rawInput.Set("planId", "plan-1")
+		rawInput.Set("plan", content)
+		toolCall := jsoncompat.NewObject()
+		toolCall.Set("rawInput", rawInput)
+		params := jsoncompat.NewObject()
+		params.Set("toolCall", toolCall)
+		view.AddPermission("req-"+content, params)
+		requests := view.Snapshot().MustGet("requests").(*jsoncompat.Array)
+		return requests.Items[len(requests.Items)-1].(*jsoncompat.Object).MustGet("params").(*jsoncompat.Object)
+	}
+
+	view := newStoredView("session-1")
+	update(view, "first")
+	update(view, "second")
+	rebuilt := newStoredView("session-1")
+	update(rebuilt, "second")
+	params := approve(rebuilt, "second")
+	if params.MustGet("planVersion").(json.Number).String() != "2" || params.MustGet("previousPlanContent") != "first" {
+		t.Fatalf("restored replay changed the revision or lost its diff: %s", jsoncompat.EncodeCompact(params))
+	}
+	update(rebuilt, "third")
+	third := approve(rebuilt, "third")
+	if third.MustGet("planVersion").(json.Number).String() != "3" || third.MustGet("previousPlanContent") != "second" {
+		t.Fatalf("new content did not continue the persisted chain: %s", jsoncompat.EncodeCompact(third))
+	}
+	other := approve(newStoredView("session-2"), "second")
+	if other.MustGet("planVersion").(json.Number).String() != "1" {
+		t.Fatalf("plan history leaked across sessions: %s", jsoncompat.EncodeCompact(other))
 	}
 }
 

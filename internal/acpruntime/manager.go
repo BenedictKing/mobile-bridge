@@ -15,6 +15,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/acpview"
 	"github.com/BenedictKing/mobile-bridge/internal/command"
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
+	"github.com/BenedictKing/mobile-bridge/internal/planstore"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/textutil"
 	"github.com/google/uuid"
@@ -298,6 +299,9 @@ type Manager struct {
 	// every open, so the ledger is what keeps the phone's gauge populated
 	// across a gateway restart or the idle sweep. Nil disables the feature.
 	Usage *UsageStore
+	// Plans keeps the latest plan revision chain available when views are rebuilt.
+	// Nil disables history without changing the in-memory approval projection.
+	Plans *planstore.Store
 	// Created remembers the sessions this manager created through session/new
 	// (id → cwd/title). Agents only list a session after its first turn, so
 	// without the ledger a created-but-unused chat would vanish from the list
@@ -803,13 +807,19 @@ func (m *Manager) liveAliasLocked(key string) *Session {
 	return nil
 }
 
+func (m *Manager) newView(id string, title, cwd any) *acpview.View {
+	view := acpview.NewView(id, title, cwd, m.now)
+	view.UsePlanStore(m.Plans, m.Kind)
+	return view
+}
+
 func (m *Manager) openFresh(id, cwd string, timeout time.Duration) (*Session, error) {
 	process, err := m.start()
 	if err != nil {
 		return nil, err
 	}
 	session := &Session{ID: id, Cwd: cwd, Process: process,
-		View: acpview.NewView(id, nil, cwd, m.now), active: true, mediaDir: m.MediaDir, usage: m.Usage, kind: m.Kind, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: m.newView(id, nil, cwd), active: true, mediaDir: m.MediaDir, usage: m.Usage, kind: m.Kind, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
 	session.Commands = m.Commands
@@ -1000,7 +1010,7 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	}
 	createdAt := int64(m.now() * 1000)
 	session := &Session{ID: id, Cwd: cwd, Title: title, CreatedAtMs: createdAt, Process: process,
-		View: acpview.NewView(id, title, cwd, m.now), active: true, mediaDir: m.MediaDir, usage: m.Usage, kind: m.Kind, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
+		View: m.newView(id, title, cwd), active: true, mediaDir: m.MediaDir, usage: m.Usage, kind: m.Kind, pending: map[string]*jsoncompat.Object{}, pendingIDs: map[string]any{}, pendingKinds: map[string]string{}, changed: make(chan struct{}), touched: time.Now(), lastActivity: time.Now()}
 	session.interactionReady = true
 	session.autoApprove = m.AutoApprove
 	session.autoContinue = m.AutoContinue
@@ -2528,7 +2538,7 @@ func (m *Manager) openNativeHistory(id, cwd string) (*Session, error) {
 func (m *Manager) newNativeSession(id, cwd string, snapshot *acpview.NativeSnapshot) *Session {
 	session := &Session{
 		ID: id, Cwd: cwd, active: true, readOnly: true,
-		View:    acpview.NewView(id, nil, cwd, m.now),
+		View:    m.newView(id, nil, cwd),
 		changed: make(chan struct{}),
 		usage:   m.Usage,
 		kind:    m.Kind,

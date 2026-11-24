@@ -60,3 +60,47 @@ test('相同正文不产生修订差异入口',()=>{
   const value={...params(),previousPlanContent:params().planContent};
   assert.equal(review.diffDetails(value),null);
 });
+
+test('历史版本只在展开时加载并可与当前版本比较',async()=>{
+  global.window={};delete require.cache[require.resolve('../web/diff.js')];require('../web/diff.js');
+  global.document={createElement:tag=>new FakeNode(tag)};
+  let calls=0;
+  const details=review.historyDetails(params(),async()=>{calls++;return {planId:'plan-1',revisions:[
+    {version:1,hash:'b'.repeat(64),content:'# 旧版\n第一步',createdAt:'2026-11-24T10:00:00Z'},
+    {version:2,hash:'a'.repeat(64),content:params().planContent,createdAt:'2026-11-24T11:00:00Z'},
+  ]};},(node,text)=>{node.textContent=text;});
+  assert.equal(calls,0);
+  details.open=true;await details.ontoggle();
+  assert.equal(calls,1);
+  const list=details.children[2];
+  assert.equal(list.children.length,2);
+  assert.equal(list.children[0].children[0].textContent.startsWith('版本 2'),true);
+  const old=list.children[1];old.open=true;old.ontoggle();
+  assert.equal(old.children[1].textContent,'# 旧版\n第一步');
+  assert.equal(old.children[2].className,'plan-revision-diff');
+  await details.ontoggle();assert.equal(calls,1);
+});
+
+test('历史加载失败后可收起重试',async()=>{
+  global.window={};delete require.cache[require.resolve('../web/diff.js')];require('../web/diff.js');
+  global.document={createElement:tag=>new FakeNode(tag)};
+  let calls=0;
+  const details=review.historyDetails(params(),async()=>{calls++;if(calls===1)throw Error('网络中断');return {planId:'plan-1',revisions:[]};});
+  details.open=true;await details.ontoggle();
+  assert.equal(details.children[1].className,'error');
+  assert.match(details.children[1].textContent,/网络中断/);
+  details.open=false;details.open=true;await details.ontoggle();
+  assert.equal(calls,2);
+  assert.equal(details.children[1].textContent,'暂无历史版本');
+});
+
+test('历史响应必须匹配计划且版本字段完整',async()=>{
+  global.window={};delete require.cache[require.resolve('../web/diff.js')];require('../web/diff.js');
+  global.document={createElement:tag=>new FakeNode(tag)};
+  const wrong=review.historyDetails(params(),async()=>({planId:'other',revisions:[]}));
+  wrong.open=true;await wrong.ontoggle();
+  assert.match(wrong.children[1].textContent,/历史版本数据无效/);
+  const invalid=review.historyDetails(params(),async()=>({planId:'plan-1',revisions:[{version:1,hash:'bad',content:'x'}]}));
+  invalid.open=true;await invalid.ontoggle();
+  assert.match(invalid.children[1].textContent,/历史版本数据无效/);
+});

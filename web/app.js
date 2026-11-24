@@ -1278,6 +1278,7 @@ function renderAcpApproval(request){
   let planRoot=null;
   card.dataset.request=String(request.id);card.append(el('h3','',heading));
   const versionBadge=planText?window.BridgePlanReview?.versionBadge(params):null;if(versionBadge)card.append(versionBadge);
+  const history=planText?window.BridgePlanReview?.historyDetails(params,()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(params.planId)+'&agent='+encodeURIComponent(state?.agent||'')),(node,text)=>renderMarkdown(node,text,[],()=>null)):null;if(history)card.append(history);
   if(text&&text!==heading){const body=el('div','approval-markdown');renderMarkdown(body,text,[],()=>null);card.append(body);if(planText)planRoot=body;}
   if(planText&&planText!==text){const details=el('details','approval-plan'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');renderMarkdown(content,planText,[],()=>null);details.append(summary,content);card.append(details);planRoot=content;}
   if(Array.isArray(params.allowedPrompts)&&params.allowedPrompts.length){
@@ -1375,6 +1376,7 @@ function renderPlanApproval(request){
   const id=currentId,host=currentHost,key=chatKey(id,host),card=el('section','approval plan-approval');
   card.dataset.request=String(request.id);card.append(el('h3','',t('计划已就绪')));
   const versionBadge=window.BridgePlanReview?.versionBadge(request.params);if(versionBadge)card.append(versionBadge);
+  const history=window.BridgePlanReview?.historyDetails(request.params,()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(request.params.planId)+'&agent='+encodeURIComponent(state?.agent||'')),(node,text)=>renderMarkdown(node,text,[],()=>null));if(history)card.append(history);
   const details=el('details'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');
   renderMarkdown(content,request.params.planContent||'',[],()=>null);details.append(summary,content);card.append(details);
   const revisionDiff=window.BridgePlanReview?.diffDetails(request.params);if(revisionDiff)card.append(revisionDiff);

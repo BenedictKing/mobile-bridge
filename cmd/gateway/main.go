@@ -58,6 +58,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/mcode"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
 	"github.com/BenedictKing/mobile-bridge/internal/opencode"
+	"github.com/BenedictKing/mobile-bridge/internal/planstore"
 	"github.com/BenedictKing/mobile-bridge/internal/store"
 	"github.com/BenedictKing/mobile-bridge/internal/subagents"
 	"github.com/BenedictKing/mobile-bridge/internal/swarmeval"
@@ -525,6 +526,11 @@ func runGateway(args []string) {
 	} else {
 		server.ACPGoals = goalStore
 	}
+	if planStore, planErr := planstore.Open(filepath.Join(dataDir, "acp-plans.json")); planErr != nil {
+		log.Printf("ACP 计划历史不可用: %v", planErr)
+	} else {
+		server.Plans = planStore
+	}
 	server.Conventions = conventions.New(filepath.Join(dataDir, "conventions.json"))
 	var quickTunnel *tunnel.Quick
 	sshForwards := []*tunnel.SSHForward{}
@@ -906,6 +912,7 @@ func runGateway(args []string) {
 		for kind, manager := range server.ACPAgents {
 			if manager != nil {
 				manager.Usage = contextUsage
+				manager.Plans = server.Plans
 				manager.Created = createdSessions
 				manager.Kind = kind
 				managedKind := kind
