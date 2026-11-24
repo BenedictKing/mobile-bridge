@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -147,5 +148,111 @@ func TestStoreRetriesFailedSaveOnIdenticalReplay(t *testing.T) {
 	plan, ok := reopened.Get("kimi", "session-1", "plan-1")
 	if !ok || len(plan.Revisions) != 1 || plan.Revisions[0].Content != "first" {
 		t.Fatalf("recovered plan = %+v, %v", plan, ok)
+	}
+}
+
+func TestStoreRecordsFeedbackPerVersionOnce(t *testing.T) {
+	store := testStore(t)
+	record(t, store, "session-1", 1, "first")
+	record(t, store, "session-1", 2, "second")
+	feedback := Feedback{RequestID: "req-1", Text: "整体精简", Annotations: []Annotation{
+		{ID: "A1", Type: "comment", Quote: "first", Body: "改写"},
+		{ID: "A2", Type: "delete", Quote: "first"},
+	}}
+	if err := store.RecordFeedback("kimi", "session-1", "plan-1", 1, Hash("first"), feedback); err != nil {
+		t.Fatal(err)
+	}
+	// 命令重放携带同一请求 ID，只记一次。
+	if err := store.RecordFeedback("kimi", "session-1", "plan-1", 1, Hash("first"), feedback); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(store.RecordFeedback("kimi", "session-1", "plan-1", 2, Hash("first"), feedback), ErrConflict) {
+		t.Fatal("hash mismatch must conflict")
+	}
+	if store.RecordFeedback("kimi", "session-1", "plan-1", 3, Hash("third"), feedback) == nil {
+		t.Fatal("unknown version must not be invented")
+	}
+	if store.RecordFeedback("kimi", "session-2", "plan-1", 1, Hash("first"), feedback) == nil {
+		t.Fatal("feedback must not cross sessions")
+	}
+
+	reopened, err := Open(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := reopened.Get("kimi", "session-1", "plan-1")
+	got := plan.Revisions[0].Feedback
+	if len(got) != 1 || got[0].RequestID != "req-1" || got[0].CreatedAt.IsZero() || len(got[0].Annotations) != 2 || len(plan.Revisions[1].Feedback) != 0 {
+		t.Fatalf("persisted feedback=%+v", plan.Revisions)
+	}
+	// Get 返回深拷贝：修改调用方副本不影响库内数据。
+	got[0].Annotations[0].Body = "mutated"
+	again, _ := reopened.Get("kimi", "session-1", "plan-1")
+	if again.Revisions[0].Feedback[0].Annotations[0].Body != "改写" {
+		t.Fatal("Get leaked internal feedback slices")
+	}
+}
+
+func TestStoreCapsFeedbackPerRevisionAndPlanSize(t *testing.T) {
+	store := testStore(t)
+	record(t, store, "session-1", 1, "first")
+	for index := 0; index < MaxFeedbackPerRev+3; index++ {
+		feedback := Feedback{RequestID: "req-" + strings.Repeat("x", index+1), Text: "意见"}
+		if err := store.RecordFeedback("kimi", "session-1", "plan-1", 1, Hash("first"), feedback); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, _ := store.Get("kimi", "session-1", "plan-1")
+	if got := plan.Revisions[0].Feedback; len(got) != MaxFeedbackPerRev || got[0].RequestID != "req-xxxx" {
+		t.Fatalf("feedback cap kept %d, first=%s", len(got), got[0].RequestID)
+	}
+
+	big := strings.Repeat("a", MaxContentBytes)
+	if err := store.Record("kimi", "session-2", "plan-1", 1, Hash(big), big); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("意", MaxFeedbackRunes)
+	annotations := []Annotation{}
+	for index := 1; index <= MaxAnnotations; index++ {
+		annotations = append(annotations, Annotation{ID: "A" + strconv.Itoa(index), Type: "comment", Quote: "a", Body: body})
+	}
+	// 单个版本无法再裁剪：2 MiB 正文叠加多次约 3 MB 的批注终会越过 8 MiB，
+	// 越界那次必须拒绝，避免落盘后整个历史库无法加载。
+	rejected := false
+	for index := 0; index < 4 && !rejected; index++ {
+		feedback := Feedback{RequestID: "req-big-" + strconv.Itoa(index), Annotations: annotations}
+		rejected = store.RecordFeedback("kimi", "session-2", "plan-1", 1, Hash(big), feedback) != nil
+	}
+	single, _ := store.Get("kimi", "session-2", "plan-1")
+	if !rejected || planBytes(single) > MaxPlanBytes {
+		t.Fatalf("oversized feedback rejected=%v bytes=%d", rejected, planBytes(single))
+	}
+	if _, err := Open(store.path); err != nil {
+		t.Fatalf("store must stay loadable: %v", err)
+	}
+}
+
+func TestValidateFeedbackRejectsMalformedAnnotations(t *testing.T) {
+	valid := Annotation{ID: "A1", Type: "comment", Quote: "q", Body: "b"}
+	cases := map[string]Feedback{
+		"empty":         {RequestID: "r"},
+		"blank text":    {RequestID: "r", Text: "  "},
+		"no request":    {Text: "x"},
+		"bad id":        {RequestID: "r", Annotations: []Annotation{{ID: "B1", Type: "comment", Quote: "q", Body: "b"}}},
+		"zero id":       {RequestID: "r", Annotations: []Annotation{{ID: "A0", Type: "comment", Quote: "q", Body: "b"}}},
+		"duplicate id":  {RequestID: "r", Annotations: []Annotation{valid, valid}},
+		"bad type":      {RequestID: "r", Annotations: []Annotation{{ID: "A1", Type: "replace", Quote: "q", Body: "b"}}},
+		"empty quote":   {RequestID: "r", Annotations: []Annotation{{ID: "A1", Type: "delete", Quote: " "}}},
+		"comment blank": {RequestID: "r", Annotations: []Annotation{{ID: "A1", Type: "comment", Quote: "q", Body: " "}}},
+		"long quote":    {RequestID: "r", Annotations: []Annotation{{ID: "A1", Type: "delete", Quote: strings.Repeat("q", MaxQuoteRunes+1)}}},
+		"long text":     {RequestID: "r", Text: strings.Repeat("t", MaxFeedbackRunes+1)},
+	}
+	for name, feedback := range cases {
+		if ValidateFeedback(feedback) == nil {
+			t.Errorf("%s: expected rejection", name)
+		}
+	}
+	if err := ValidateFeedback(Feedback{RequestID: "r", Annotations: []Annotation{valid, {ID: "A2", Type: "delete", Quote: "q"}}}); err != nil {
+		t.Fatalf("valid feedback rejected: %v", err)
 	}
 }

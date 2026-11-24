@@ -1278,7 +1278,8 @@ function renderAcpApproval(request){
   let planRoot=null;
   card.dataset.request=String(request.id);card.append(el('h3','',heading));
   const versionBadge=planText?window.BridgePlanReview?.versionBadge(params):null;if(versionBadge)card.append(versionBadge);
-  const history=planText?window.BridgePlanReview?.historyDetails(params,()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(params.planId)+'&agent='+encodeURIComponent(state?.agent||'')),(node,text)=>renderMarkdown(node,text,[],()=>null)):null;if(history)card.append(history);
+  const loadHistory=planText&&window.BridgePlanReview?window.BridgePlanReview.memo(()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(params.planId)+'&agent='+encodeURIComponent(state?.agent||''))):null;
+  const history=loadHistory?window.BridgePlanReview.historyDetails(params,loadHistory,(node,text)=>renderMarkdown(node,text,[],()=>null)):null;if(history)card.append(history);
   if(text&&text!==heading){const body=el('div','approval-markdown');renderMarkdown(body,text,[],()=>null);card.append(body);if(planText)planRoot=body;}
   if(planText&&planText!==text){const details=el('details','approval-plan'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');renderMarkdown(content,planText,[],()=>null);details.append(summary,content);card.append(details);planRoot=content;}
   if(Array.isArray(params.allowedPrompts)&&params.allowedPrompts.length){
@@ -1291,16 +1292,19 @@ function renderAcpApproval(request){
     details.append(summary,list);card.append(details);
   }
   const revisionDiff=planText?window.BridgePlanReview?.diffDetails(params):null;if(revisionDiff)card.append(revisionDiff);
+  const previousFeedback=loadHistory?window.BridgePlanReview.previousFeedbackDetails(params,loadHistory,()=>planRoot?.textContent||planText):null;if(previousFeedback)card.append(previousFeedback);
   const badge=question?null:riskBadge(request,params);if(badge)card.append(badge);
   if(!question&&params.command&&!planText){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
   const options=params.options||[],actions=el('div','actions'),error=el('p','error');
   const feedback=options.some(option=>option.id==='plan_revise')?el('textarea'):null;
   if(feedback){const label=el('label','',t('修改意见（可选）'));feedback.rows=3;feedback.maxLength=20000;label.append(feedback);card.append(label);}
+  const review=planRoot&&feedback?window.BridgePlanReview?.reviewer({root:planRoot,textarea:feedback,params,storageKey:'plan-review:'+chatKey(id,host)+':'+request.id,notify:message=>toast(message)}):null;
+  if(review)card.append(review.element);
   card.append(actions,error);
   let busy=submittedRequestIds.has(request.id);
-  async function submit(response){
+  async function submit(response,extra){
     if(busy)return;busy=true;approvalBusy++;setLanguageBusy();actions.querySelectorAll('button').forEach(b=>b.disabled=true);error.textContent='';
-    try{await respondToRequest(id,host,request,response);bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
+    try{await respondToRequest(id,host,request,response,extra);review?.clear();bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
     catch(e){error.textContent=t(e.message);busy=false;actions.querySelectorAll('button').forEach(b=>b.disabled=false);}
     finally{approvalBusy--;setLanguageBusy();}
   }
@@ -1313,13 +1317,15 @@ function renderAcpApproval(request){
     markRecommendation(button,option.id,request.recommend);
     button.type='button';button.disabled=busy;button.onclick=()=>{
       if(option.id!=='plan_revise'){submit({optionId:option.id});return;}
-      const text=feedback.value;if(!text.trim()){error.textContent=t('请填写修改意见');feedback.focus();return;}
+      const text=feedback.value;
+      if(review){const problem=review.validate(text);if(problem){error.textContent=problem;return;}submit({optionId:option.id,text:review.format(text)},{planFeedback:review.payload(text)});return;}
+      if(!text.trim()){error.textContent=t('请填写修改意见');feedback.focus();return;}
       submit({optionId:option.id,text:window.BridgePlanReview?window.BridgePlanReview.formatFeedback(text,params):text});
     };actions.append(button);
   }
   const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.disabled=busy;cancel.onclick=()=>submit({cancel:true});actions.append(cancel);
   if(busy)card.append(el('p','muted',t('已发送，等待桌面确认…')));
-  if(planRoot&&feedback)card.planReviewDestroy=window.BridgePlanReview?.attachSelection(planRoot,feedback);
+  if(review)card.planReviewDestroy=review.destroy;
   return card;
 }
 function renderAcpInput(request){
@@ -1376,28 +1382,36 @@ function renderPlanApproval(request){
   const id=currentId,host=currentHost,key=chatKey(id,host),card=el('section','approval plan-approval');
   card.dataset.request=String(request.id);card.append(el('h3','',t('计划已就绪')));
   const versionBadge=window.BridgePlanReview?.versionBadge(request.params);if(versionBadge)card.append(versionBadge);
-  const history=window.BridgePlanReview?.historyDetails(request.params,()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(request.params.planId)+'&agent='+encodeURIComponent(state?.agent||'')),(node,text)=>renderMarkdown(node,text,[],()=>null));if(history)card.append(history);
+  const loadHistory=window.BridgePlanReview?.memo(()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(request.params.planId)+'&agent='+encodeURIComponent(state?.agent||'')));
+  const history=loadHistory?window.BridgePlanReview.historyDetails(request.params,loadHistory,(node,text)=>renderMarkdown(node,text,[],()=>null)):null;if(history)card.append(history);
   const details=el('details'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');
   renderMarkdown(content,request.params.planContent||'',[],()=>null);details.append(summary,content);card.append(details);
   const revisionDiff=window.BridgePlanReview?.diffDetails(request.params);if(revisionDiff)card.append(revisionDiff);
+  const previousFeedback=loadHistory?window.BridgePlanReview.previousFeedbackDetails(request.params,loadHistory,()=>content.textContent||request.params.planContent||''):null;if(previousFeedback)card.append(previousFeedback);
   const label=el('label','',t('修改意见（可选）')),input=el('textarea');input.rows=2;input.maxLength=20000;label.append(input);card.append(label);
+  const review=window.BridgePlanReview?.reviewer({root:content,textarea:input,params:request.params,storageKey:'plan-review:'+key+':'+request.id,notify:message=>toast(message),onChange:()=>updateActions()});
+  if(review)card.append(review.element);
   const actions=el('div','actions'),yes=el('button','primary',t('按照当前规划结果执行')),revise=el('button','secondary',t('按照修改意见继续规划')),error=el('p','error');
   yes.type=revise.type='button';actions.append(yes,revise);card.append(actions,error);
   let busy=submittedRequestIds.has(request.id);
   function updateActions(){
-    const hasFeedback=!!input.value.trim();
+    const hasFeedback=!!input.value.trim()||!!review?.count();
     yes.disabled=busy||hasFeedback;revise.disabled=busy||!hasFeedback;
     yes.className=hasFeedback?'secondary':'primary';revise.className=hasFeedback?'primary':'secondary';
   }
   input.oninput=updateActions;updateActions();
   async function submit(action){
     if(busy)return;
-    if(action==='implement'&&input.value.trim()){updateActions();return;}
-    if(action==='revise'&&!input.value.trim()){error.textContent=t('请填写修改意见');return;}
-    const response=action==='implement'?{action}:{action,text:window.BridgePlanReview?window.BridgePlanReview.formatFeedback(input.value,request.params):input.value};
+    if(action==='implement'&&(input.value.trim()||review?.count())){updateActions();return;}
+    if(action==='revise'){
+      const problem=review?review.validate(input.value):input.value.trim()?'':t('请填写修改意见');
+      if(problem){error.textContent=problem;return;}
+    }
+    const response=action==='implement'?{action}:{action,text:review?review.format(input.value):input.value};
     busy=true;approvalBusy++;setLanguageBusy();yes.disabled=revise.disabled=true;error.textContent='';
     try{
       const result=await respondToRequest(id,host,request,response);
+      if(result?.status!=='unknown')review?.clear();
       if(currentId!==id||currentHost!==host)return;
       bumpRecency(id,host);submittedRequestIds.add(request.id);
       if(result.status==='unknown'){error.textContent=t('发送结果尚未确认，请查看会话后再操作。');return;}
@@ -1407,7 +1421,7 @@ function renderPlanApproval(request){
     finally{approvalBusy--;setLanguageBusy();}
   }
   yes.onclick=()=>submit('implement');revise.onclick=()=>submit('revise');
-  card.planReviewDestroy=window.BridgePlanReview?.attachSelection(content,input);return card;
+  card.planReviewDestroy=review?.destroy;return card;
 }
 async function ignoreSubmission(value){
   const result=await api('/api/accounts/ignore-submission',value);
@@ -1682,10 +1696,10 @@ function openQueueEditor(row,target,host){
   dialog.showModal();dialog.querySelector('textarea').focus();
 }
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
-async function respondToRequest(id,host,request,response){
+async function respondToRequest(id,host,request,response,extra={}){
   const identity=JSON.stringify([request.method,request.params,request.turnId]);
   const key='reply:'+chatKey(id,host)+':'+request.id+':'+identity;
-  const payload=window.BridgePendingCommands.prepare(key,{commandId:uuid(),requestId:request.id,response});
+  const payload=window.BridgePendingCommands.prepare(key,{commandId:uuid(),requestId:request.id,response,...extra});
   try{
     const result=await api(sessionUrl(id,'respond',host),payload);
     window.BridgePendingCommands.remove(key,payload.commandId);

@@ -30,7 +30,7 @@
 | `submissions.json`、按主机分目录的同名文件 | 消息正文、提交去重、队列与派发结果；是发送恢复的重要依据 |
 | `creations.json` | 新建、团队成员、迁移目标的创建占用与源会话提示 |
 | `goal-commands.json`、`acp-goals.json` | 原生 Goal 操作与托管 Goal 两套独立状态，不可互相替代 |
-| `acp-plans.json` | ACP 计划按 Agent、会话和计划 ID 保存的辅助修订历史；保留最新 100 版且每计划正文合计最多 8 MiB，不是审批或幂等事实来源 |
+| `acp-plans.json` | ACP 计划按 Agent、会话和计划 ID 保存的辅助修订历史及各版本收到的修订反馈（全局意见与结构化批注）；保留最新 100 版、每版最多 20 次反馈，每计划正文与反馈合计最多 8 MiB，不是审批或幂等事实来源 |
 | `forks.json`、`hidden-projects.json` | 分支来源和项目入口显示状态 |
 | `team-journal.jsonl`、团队快照与输入账本 | 团队事实、可重建投影、输入路由与修订 |
 | `auth-sessions.json`、审批与通知账本 | 登录、外部回应幂等和通知对账 |

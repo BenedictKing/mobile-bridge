@@ -30,18 +30,27 @@ const BridgeSelection=(()=>{
     return node.nodeType===1?node:node.parentElement||null;
   }
 
-  function attach({root,textarea,notify,enabled,messageOnly=true}){
+  // 默认动作把选区引用进输入框；传入 actions + onPick 时改由调用方处理选区
+  // （计划卡片据此生成结构化批注），浮条只负责定位与选区校验。
+  const DEFAULT_ACTIONS=[{key:'comment',label:'评论',title:'引用选中的文字并评论'}];
+  function attach({root,textarea,notify,enabled,messageOnly=true,actions,onPick}){
     if(!root||!textarea)return null;
     const bar=document.createElement('div');
     bar.className='selection-bar';bar.hidden=true;bar.setAttribute('role','toolbar');
-    const comment=document.createElement('button');
-    comment.type='button';comment.className='selection-comment';
-    // data-i18n 让切换语言时 BridgeI18n.apply() 就地刷新，无需额外接线。
-    comment.dataset.i18n='评论';
-    comment.dataset.i18nAriaLabel='引用选中的文字并评论';
-    comment.dataset.i18nTitle='引用选中的文字并评论';
-    bar.append(comment);document.body.append(bar);
     const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+    const custom=typeof onPick==='function'&&Array.isArray(actions)&&actions.length;
+    const buttons=(custom?actions:DEFAULT_ACTIONS).map(action=>{
+      const button=document.createElement('button'),hint=action.title||action.label;
+      button.type='button';button.className='selection-comment';button.dataset.action=action.key;
+      // 计划卡片的浮条在页面首次 apply() 之后才创建，必须立即写入当前语言文案；
+      // data-i18n 让之后切换语言时 BridgeI18n.apply() 就地刷新。
+      button.textContent=t(action.label);button.setAttribute('aria-label',t(hint));button.title=t(hint);
+      button.dataset.i18n=action.label;
+      button.dataset.i18nAriaLabel=hint;
+      button.dataset.i18nTitle=hint;
+      bar.append(button);return button;
+    });
+    document.body.append(bar);
 
     let current=null,timer=0,armedUntil=0;
     const usable=()=>typeof enabled==='function'?!!enabled():true;
@@ -114,10 +123,14 @@ const BridgeSelection=(()=>{
     const onScroll=()=>{if(Date.now()>=armedUntil)hide();};
     const onBarPress=()=>{armedUntil=Date.now()+1200;};
     const onBarClick=event=>{
-      if(!comment.contains(event.target))return;
+      const button=buttons.find(item=>item.contains(event.target));
+      if(!button)return;
       const picked=current;
       armedUntil=0;hide();
-      if(picked)insert(picked);
+      if(!picked)return;
+      if(!custom){insert(picked);return;}
+      window.getSelection?.()?.removeAllRanges();
+      onPick(picked,button.dataset.action);
     };
     document.addEventListener('selectionchange',onSelectionChange);
     // 手机长按选词后 selectionchange 未必立刻跟上手指，touchend 再补一次定位。

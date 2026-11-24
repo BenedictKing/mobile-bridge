@@ -143,6 +143,20 @@
 .plan-history-list{border-top:1px solid var(--line)}
 .plan-history-version{border-bottom:1px solid var(--line);padding:0 8px}
 .plan-history-content{max-height:50dvh;overflow:auto;margin:4px 0 10px}
+.plan-annotations{margin:-8px 0 12px;font-size:12px}
+.plan-annotations-title,.plan-feedback-title{margin:0 0 6px;color:var(--muted);font-size:12px}
+.plan-annotation{border:1px solid var(--warning-line);border-radius:var(--r-sm);background:var(--raised);padding:8px 10px;margin:6px 0}
+.plan-annotation-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;font-weight:600;font-size:12px}
+.plan-annotation-head>span:first-child{flex:1;min-width:0}
+.approval .plan-annotation-remove{padding:4px 10px;font-size:12px;min-height:30px}
+.plan-annotation-quote{margin:6px 0;padding:2px 0 2px 10px;border-left:3px solid var(--warning-line);color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;max-height:7.5em;overflow:auto;line-height:1.5}
+.approval .plan-annotation textarea{margin-top:2px;padding:8px 10px;font-size:13px}
+.approval .plan-annotation-body,.approval .plan-feedback-global{margin:4px 0;font-size:12px}
+.plan-previous-feedback{margin:10px 0;font-size:12px}
+.plan-previous-feedback>summary{cursor:pointer;color:var(--muted);padding:6px 0}
+.plan-anchor-status{font-weight:500;font-size:11px;padding:2px 7px;border-radius:999px}
+.plan-anchor-status.present{color:var(--warning-text);background:var(--warning-bg)}
+.plan-anchor-status.stale{color:var(--muted);background:var(--soft)}
 
 .apk-download{flex:none;display:flex;align-items:center;gap:12px;margin:10px max(24px,calc((100% - 760px)/2)) 0;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--soft);color:var(--green);text-decoration:none}
 .apk-download-icon{display:grid;place-items:center;width:32px;height:32px;flex:none;border-radius:50%;background:var(--green);color:var(--page);font-size:20px}

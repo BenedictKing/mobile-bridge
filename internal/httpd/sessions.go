@@ -25,6 +25,7 @@ import (
 	"github.com/BenedictKing/mobile-bridge/internal/jsoncompat"
 	"github.com/BenedictKing/mobile-bridge/internal/model"
 	"github.com/BenedictKing/mobile-bridge/internal/notifications"
+	"github.com/BenedictKing/mobile-bridge/internal/planstore"
 	"github.com/BenedictKing/mobile-bridge/internal/uploads"
 	"github.com/google/uuid"
 )
@@ -762,22 +763,14 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 			h.fail(http.StatusBadRequest, errorBody("计划标识无效"))
 			return true
 		}
-		result := jsoncompat.NewObject()
-		result.Set("agent", kind)
-		result.Set("sessionId", threadID)
-		result.Set("planId", planID)
-		revisions := &jsoncompat.Array{}
-		if plan, ok := h.server.Plans.Get(kind, threadID, planID); ok {
-			for _, revision := range plan.Revisions {
-				entry := jsoncompat.NewObject()
-				entry.Set("version", jsoncompat.Num(revision.Version))
-				entry.Set("hash", revision.Hash)
-				entry.Set("content", revision.Content)
-				entry.Set("createdAt", revision.CreatedAt.Format(time.RFC3339Nano))
-				revisions.Items = append(revisions.Items, entry)
-			}
+		// 历史按 View 的会话 ID 归属；活跃会话可能以占位或规范 ID 被访问，
+		// Peek 只查已存在的句柄，不会启动 Agent。
+		historyKey := threadID
+		if live := manager.Peek(threadID); live != nil {
+			historyKey = live.ID
 		}
-		result.Set("revisions", revisions)
+		plan, found := h.server.Plans.Get(kind, historyKey, planID)
+		result := planHistoryJSON(kind, threadID, planID, plan, found)
 		h.output(http.StatusOK, result, contentTypeJSON, "")
 		return true
 	}
@@ -1087,9 +1080,23 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 		} else if raw, ok := object.MustGet("response").(*jsoncompat.Object); ok {
 			response = raw
 		}
+		var planFeedback *planstore.Feedback
+		var planParams *jsoncompat.Object
+		if action == "respond" {
+			var feedbackErr error
+			if planFeedback, feedbackErr = parsePlanFeedback(object, requestID); feedbackErr != nil {
+				h.fail(http.StatusBadRequest, errorBody(feedbackErr.Error()))
+				return true
+			}
+			if planFeedback != nil {
+				// 回应成功后请求即被移除，须先取服务端投影的计划版本。
+				planParams = session.RequestParams(requestID)
+			}
+		}
 		if callErr := session.Respond(requestID, response, stringField(object, "commandId")); callErr != nil {
 			h.failControl(callErr)
 		} else {
+			h.recordPlanFeedback(kind, session.ID, planParams, planFeedback)
 			// Respond re-arms a human action once; Goal reconciles current state.
 			if goal, ok := h.server.gatewayGoalFor(kind, threadID); ok && goal.Status == acpgoal.StatusWaitingInput {
 				go h.server.GoalSettleACP(kind, session)

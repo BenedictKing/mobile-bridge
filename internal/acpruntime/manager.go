@@ -1040,6 +1040,11 @@ func (m *Manager) Create(id, cwd, title string, timeout time.Duration) (*Session
 	if result, ok := value.(*jsoncompat.Object); ok {
 		if native, ok := result.MustGet("sessionId").(string); ok && native != "" && native != id {
 			session.ID = native
+			// View 的会话 ID 决定快照 id 与计划历史的归属键，须随原生 ID 一起切换，
+			// 否则历史记在占位 ID 下，按原生 ID 查询的手机端永远看不到。
+			session.mu.Lock()
+			session.View.SessionID = native
+			session.mu.Unlock()
 			m.mu.Lock()
 			delete(m.sessions, id)
 			m.sessions[native] = session
@@ -1766,6 +1771,21 @@ func (s *Session) cancelTurn(expected string, timeout time.Duration) error {
 		case <-promptDone:
 		case <-timer.C:
 			return errors.New("上一任务仍在停止，请稍后重试")
+		}
+	}
+	return nil
+}
+
+// RequestParams returns a clone of a pending card's projected params, or nil
+// once the request is answered or gone. Callers use it to read server-side
+// metadata (plan version/hash) instead of trusting values echoed by the phone.
+func (s *Session) RequestParams(requestID string) *jsoncompat.Object {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, request := range s.View.Requests {
+		if id, _ := request.MustGet("id").(string); id == requestID {
+			params, _ := jsoncompat.Clone(request.MustGet("params")).(*jsoncompat.Object)
+			return params
 		}
 	}
 	return nil

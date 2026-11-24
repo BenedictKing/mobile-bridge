@@ -42,7 +42,7 @@ function matches(node,sel){
 }
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
-function setup({sameRow=true,insideButton=false,readOnly=false,messageOnly=true,plainContent=false}={}){
+function setup({sameRow=true,insideButton=false,readOnly=false,messageOnly=true,plainContent=false,actions,onPick}={}){
   const body=new FakeElement('body');
   const messages=new FakeElement('div');
   const row=(key)=>{
@@ -87,7 +87,7 @@ function setup({sameRow=true,insideButton=false,readOnly=false,messageOnly=true,
   global.document=document;global.window=window;
   const textarea=new FakeElement('textarea');textarea.readOnly=readOnly;
   const notes=[];
-  BridgeSelection.attach({root:messages,textarea,enabled:()=>true,notify:message=>notes.push(message),messageOnly});
+  BridgeSelection.attach({root:messages,textarea,enabled:()=>true,notify:message=>notes.push(message),messageOnly,actions,onPick});
   const bar=body.children[body.children.length-1];
   const button=bar.children[0];
   return {document,selection,textarea,bar,button,notes,messages};
@@ -154,4 +154,19 @@ test('只读会话只提示，不往输入框里塞文字',async()=>{
   env.bar.fire('click',{target:env.button});
   assert.equal(env.textarea.value,'');
   assert.deepEqual(env.notes,['这条聊天当前只读，不能引用评论']);
+});
+
+test('计划卡片的自定义动作把选区交给调用方，不写输入框',async()=>{
+  const picks=[];
+  const env=setup({messageOnly:false,plainContent:true,actions:[{key:'comment',label:'批注'},{key:'delete',label:'建议删除'}],onPick:(picked,key)=>picks.push([picked.text,key])});
+  assert.deepEqual(env.bar.children.map(button=>button.dataset.i18n),['批注','建议删除']);
+  // 浮条晚于页面首次 apply() 创建：按钮文字必须在创建时就写好，不能是空白。
+  assert.deepEqual(env.bar.children.map(button=>button.textContent),['批注','建议删除']);
+  env.document.emit('selectionchange');
+  await sleep(220);
+  env.bar.fire('click',{target:env.bar.children[1]});
+  assert.deepEqual(picks,[['原文内容','delete']]);
+  assert.equal(env.textarea.value,'');
+  assert.equal(env.selection.isCollapsed,true);
+  assert.equal(env.bar.hidden,true);
 });
