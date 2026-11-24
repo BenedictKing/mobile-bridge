@@ -52,6 +52,44 @@ func projectCwds(list *jsoncompat.Object) []string {
 	return cwds
 }
 
+func TestMigrationProjectsQueryOnlyTargetAgent(t *testing.T) {
+	for _, target := range []string{"codex", "claude", "zcode"} {
+		t.Run(target, func(t *testing.T) {
+			server, _ := discoveryFixture(t)
+			calls := map[string]int{}
+			server.ACPAgents = map[string]*acpruntime.Manager{}
+			for _, kind := range []string{"claude", "zcode"} {
+				manager := acpruntime.New("")
+				manager.NativeListExclusive = true
+				manager.NativeList = func() []*jsoncompat.Object {
+					calls[kind]++
+					row := jsoncompat.NewObject()
+					row.Set("sessionId", kind+"-session")
+					row.Set("cwd", "/work")
+					return []*jsoncompat.Object{row}
+				}
+				server.ACPAgents[kind] = manager
+			}
+			projects := (&handler{server: server}).targetProjects(target)
+			if len(projects) != 1 || stringField(projects[0], "agent") != target {
+				t.Fatalf("target %s projects: %v", target, projects)
+			}
+			prefix := "acp:"
+			if target == "codex" {
+				prefix = "codex:"
+			}
+			if key := stringField(projects[0], "key"); key != prefix+hashProject("/work") {
+				t.Fatalf("target project key: %q", key)
+			}
+			for kind, count := range calls {
+				if kind != target && count != 0 {
+					t.Fatalf("queried unrelated agent %s %d times", kind, count)
+				}
+			}
+		})
+	}
+}
+
 func TestProjectsSortedByRecency(t *testing.T) {
 	server, db := discoveryFixture(t)
 	for _, row := range [][2]any{{"/b", 300}, {"/c", 200}} {

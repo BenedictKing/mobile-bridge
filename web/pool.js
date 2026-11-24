@@ -93,7 +93,7 @@ class PoolPanel {
   }
   async switchTo(row){
     const t=BridgeI18n.t;
-    if(!window.confirm(t('确认切换账号？进行中的回合会被拒绝，已打开的会话将以新账号重连。')+'\n'+(row.label||row.id)))return;
+    if(!window.confirm(t('确认切换账号？有回合进行中时无法切换；可写会话将以新账号重连，只读历史保持可读。')+'\n'+(row.label||row.id)))return;
     await this.perform('switch',{id:row.id,confirmed:true});
   }
   removeAccount(row){

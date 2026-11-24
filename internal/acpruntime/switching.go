@@ -2,9 +2,9 @@ package acpruntime
 
 import "time"
 
-// LiveSessions maps every open session id to its cwd. The account-pool
-// switcher re-attaches exactly these after swapping the agent's credentials;
-// sessions that are not open simply spawn fresh processes on next use.
+// LiveSessions maps open, controllable session ids to their cwd. The account-pool
+// switcher re-attaches these after swapping credentials. Read-only histories
+// hold no writable process and attach under the current account on next use.
 func (m *Manager) LiveSessions() map[string]string {
 	m.mu.Lock()
 	sessions := make(map[string]*Session, len(m.sessions))
@@ -14,7 +14,7 @@ func (m *Manager) LiveSessions() map[string]string {
 	m.mu.Unlock()
 	out := map[string]string{}
 	for id, session := range sessions {
-		if !session.IsClosed() {
+		if !session.IsClosed() && !session.ReadOnly() {
 			out[id] = session.Cwd
 		}
 	}

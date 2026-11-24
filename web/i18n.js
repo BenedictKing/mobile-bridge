@@ -1656,7 +1656,7 @@ const en={
   "暂无已保存的账号。": "No saved accounts.",
   "当前登录态捕获失败：": "Couldn't import the current login: ",
   "账号池为空。点击上方「捕获当前登录」导入本机已登录的账号。": "No accounts yet. Use Import current login above to add the account signed in on this computer.",
-  "确认切换账号？进行中的回合会被拒绝，已打开的会话将以新账号重连。": "Switch accounts? Running turns will be rejected and open chats reconnect with the new account.",
+  "确认切换账号？有回合进行中时无法切换；可写会话将以新账号重连，只读历史保持可读。": "Switch accounts? Finish running turns first. Writable chats reconnect with the new account; read-only history stays available.",
   "仅删除池中保存的账号快照，不影响本机当前的登录态。确认删除？": "This only deletes the saved account snapshot; the login on this computer is unaffected. Delete it?",
   "已导入当前登录账号：": "Imported current login: ",
   "已从当前登录态更新账号：": "Updated from current login: ",

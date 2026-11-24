@@ -27,6 +27,13 @@ func TestLiveSessionsAndBusyReasons(t *testing.T) {
 	closed := newStubSession("s-closed", "/tmp/d")
 	closed.closed = true
 	m.sessions["s-closed"] = closed
+	history := newStubSession("s-history", "/tmp/history")
+	history.readOnly = true
+	m.sessions[history.ID] = history
+	desktop := newStubSession("s-desktop", "/tmp/desktop")
+	desktop.readOnly = true
+	desktop.desktopOwned = true
+	m.sessions[desktop.ID] = desktop
 
 	live := m.LiveSessions()
 	if len(live) != 3 || live["s-idle"] != "/tmp/a" {
@@ -34,6 +41,9 @@ func TestLiveSessionsAndBusyReasons(t *testing.T) {
 	}
 	if _, ok := live["s-closed"]; ok {
 		t.Fatal("closed session must not be listed")
+	}
+	if history.IsClosed() || desktop.IsClosed() || m.Peek(history.ID) != history || m.Peek(desktop.ID) != desktop {
+		t.Fatal("account switch live set must preserve readable history handles")
 	}
 	reasons := m.BusyReasons()
 	if len(reasons) != 2 {

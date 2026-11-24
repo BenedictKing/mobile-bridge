@@ -1455,9 +1455,15 @@ func newProjectEntry(key, cwd, agent string, recency int64) *projectEntry {
 }
 
 func (h *handler) projectList(limit int) *jsoncompat.Object {
+	return h.projectListForAgent(limit, "")
+}
+
+// projectListForAgent keeps target resolution independent of unrelated agents'
+// startup, list timeouts and shared-directory deduplication.
+func (h *handler) projectListForAgent(limit int, agentKind string) *jsoncompat.Object {
 	entries := []*projectEntry{}
 	seen := map[string]bool{}
-	if h.server.Store != nil {
+	if h.server.Store != nil && (agentKind == "" || agentKind == "codex") {
 		if rows, err := h.server.Store.List("", 200, 0, false); err == nil {
 			for _, row := range rows {
 				cwd, _ := row.MustGet("cwd").(string)
@@ -1478,6 +1484,9 @@ func (h *handler) projectList(limit int) *jsoncompat.Object {
 		acpAgents = map[string]*acpruntime.Manager{"acp": h.server.ACP}
 	}
 	for kind, manager := range acpAgents {
+		if agentKind != "" && kind != agentKind {
+			continue
+		}
 		if rows, err := manager.List(15 * time.Second); err == nil {
 			for _, row := range rows {
 				cwd, _ := row.MustGet("cwd").(string)
@@ -1497,6 +1506,9 @@ func (h *handler) projectList(limit int) *jsoncompat.Object {
 	savedSeen := map[string]bool{}
 	localProjects := readLocalProjects(h.server.CodexHome)
 	for id, roots := range localProjects.roots {
+		if agentKind != "" && agentKind != "codex" {
+			continue
+		}
 		for _, cwd := range roots {
 			if cwd == "" {
 				continue
