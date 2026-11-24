@@ -218,6 +218,7 @@ type migrationTexts struct {
 	header, title, directory, truncated, sep, cont string
 	roles                                          map[string]string
 	latestHeader, latestContinue, instructions     string
+	pending, attachmentsOmitted                    string
 }
 
 var migrationTextsByLocale = map[string]migrationTexts{
@@ -226,18 +227,22 @@ var migrationTextsByLocale = map[string]migrationTexts{
 		truncated: "（转录过长，内容已截断）",
 		roles:     map[string]string{"user": "用户", "assistant": "助手", "activity": "操作", "error": "错误"},
 		sep:       "：", cont: "以上是从 %s 迁移过来的会话转录，请在此基础上继续。",
-		latestHeader:   "【来自 %s 的最新问答】",
-		latestContinue: "以上是 %s 中最近一次提问与回答，请在此基础上继续。",
-		instructions:   "【用户后续指示】",
+		latestHeader:       "【来自 %s 的最新问答】",
+		latestContinue:     "以上是 %s 中最近一次提问与回答，请在此基础上继续。",
+		instructions:       "【用户后续指示】",
+		pending:            "【原会话尚未发送的用户消息】",
+		attachmentsOmitted: "（附件未迁移，仅保留名称）：",
 	},
 	"en-US": {
 		header: "[Session migrated from %s]", title: "Title: ", directory: "Directory: ",
 		truncated: "(Transcript truncated to fit the selected scope.)",
 		roles:     map[string]string{"user": "User", "assistant": "Assistant", "activity": "Activity", "error": "Error"},
 		sep:       ": ", cont: "The transcript above was migrated from %s. Please continue from this context.",
-		latestHeader:   "[Latest exchange from %s]",
-		latestContinue: "The exchange above is the latest question and answer from %s. Please continue from this context.",
-		instructions:   "[User instructions for what to do next]",
+		latestHeader:       "[Latest exchange from %s]",
+		latestContinue:     "The exchange above is the latest question and answer from %s. Please continue from this context.",
+		instructions:       "[User instructions for what to do next]",
+		pending:            "[User message not yet sent in the original session]",
+		attachmentsOmitted: "(Attachments not migrated; names only): ",
 	},
 }
 
@@ -371,6 +376,15 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 			entries = entries[len(entries):]
 		} else {
 			entries = entries[lastUser:]
+		}
+	}
+	// Unsent compositions are separate from native history. Every scope keeps
+	// them after its selected exchange, including chats with no native turns.
+	if pending, ok := view.MustGet("migrationPendingMessages").(*jsoncompat.Array); ok {
+		for _, raw := range pending.Items {
+			if text, ok := raw.(string); ok && strings.TrimSpace(text) != "" {
+				entries = append(entries, migrationEntry{"user", text})
+			}
 		}
 	}
 	maxMessages, maxChars, entryChars := migrationBudgets[scope][0], migrationBudgets[scope][1], migrationBudgets[scope][2]
@@ -768,8 +782,10 @@ func (h *handler) handleMigrate(threadID string) {
 		return
 	}
 	ledger := h.server.Creations
+	var savedMigration *creationEntry
 	if ledger != nil {
 		if existing := ledger.lookup(requestID); existing != nil {
+			savedMigration = existing
 			if existing.Agent != targetKind || existing.Title != title ||
 				!migrationProjectMatches(existing, targetKind, projectKey, cwd) {
 				h.fail(http.StatusBadRequest, errorBody("同一创建请求不能用于不同内容"))
@@ -777,6 +793,13 @@ func (h *handler) handleMigrate(threadID string) {
 			}
 			projectKey = existing.Project
 			projectCreated = migrationProjectWasCreated(existing, targetKind, cwd)
+		}
+	}
+	if savedMigration == nil || !savedMigration.Sent {
+		view, err = h.server.migrationPendingView(threadID, view, uiLocale)
+		if err != nil {
+			h.fail(http.StatusConflict, errorBody(err.Error()))
+			return
 		}
 	}
 
@@ -903,6 +926,11 @@ func (h *handler) handleMigrate(threadID string) {
 	}
 
 	message := migrationMessage(sourceLabel, view, uiLocale, scope, instructions)
+	if savedMigration != nil && savedMigration.Message != "" {
+		// Deferred retries send the durable snapshot, even if the source queue
+		// was edited meanwhile. Successful replays do not rewrite its transcript.
+		message = savedMigration.Message
+	}
 	if ledger != nil {
 		notice := migrationSourceNotice(uiLocale, operation, targetLabel, title, createdID)
 		if err := ledger.setSourceNotice(requestID, threadID, notice, operation); err != nil {

@@ -55,6 +55,7 @@ class MigrateControl {
   }
   renderScopes(){
     this.root.append(this.node('p',this.text('选择复制范围'),'migrate-heading'));
+    this.root.append(this.node('p',this.text('排队中和明确发送失败的用户消息会一并复制；原会话队列保留，请在新会话继续。'),'hint'));
     const row=this.node('div',undefined,'migrate-scopes');
     for(const scope of MIGRATE_SCOPES){
       const button=this.node('button',this.text(scope.label));

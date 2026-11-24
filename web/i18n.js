@@ -1102,6 +1102,8 @@ const en={
   "跨 Agent 创建仅支持本机项目目录": "Cross-agent creation only supports project directories on this computer",
   "Agent": "Agent",
   "迁移到其他 Agent": "Migrate to another agent",
+  "排队中和明确发送失败的用户消息会一并复制；原会话队列保留，请在新会话继续。": "Queued and definitively failed user messages are copied too. The original queue is retained; continue in the new session.",
+  "有用户消息发送结果待确认，请先核实原会话后再迁移或压缩": "A user message has unconfirmed delivery. Check the original session before migrating or compacting.",
   "迁移到 ": "Migrate to ",
   "当前 Agent 压缩并新建会话": "Compact in the current agent and open a new session",
   "默认复制主要历史；可追加范围与后续指示": "Copies main history by default; add a scope and follow-up instructions",
