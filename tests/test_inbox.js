@@ -34,7 +34,9 @@ test('渲染分组、类型与版本，点击打开原聊天',()=>{
   assert.ok(text.includes('权限确认')&&text.includes('需在桌面处理'));
   assert.ok(text.includes('2 项待处理'));
   container.find(node=>node.className==='inbox-open').onclick();
-  assert.deepEqual(opened,[['km-1','local']]);
+  // 卡片视觉上是一个整体：点请求摘要也应打开同一聊天。
+  container.find(node=>node.className==='inbox-items').onclick();
+  assert.deepEqual(opened,[['km-1','local'],['km-1','local']]);
 });
 
 test('空列表显示空状态',()=>{

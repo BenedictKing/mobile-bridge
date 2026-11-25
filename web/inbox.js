@@ -41,8 +41,11 @@ const BridgeInbox=(()=>{
       const title=el('span','inbox-title',entry.title||t('未命名聊天'));
       const meta=el('span','inbox-meta',[agentName(entry.agent),entry.host&&entry.host!=='local'?entry.host:'',entry.items.length+' '+t('项待处理')].filter(Boolean).join(' · '));
       button.append(title,meta);
-      button.onclick=()=>open(entry.sessionId,entry.host);
+      // 标题按钮负责键盘与读屏入口；摘要列表不能放进 button，单独绑定同一动作，整张卡都可点。
+      const openChat=()=>open(entry.sessionId,entry.host);
+      button.onclick=openChat;
       const list=el('ul','inbox-items');
+      list.onclick=openChat;
       for(const item of entry.items)list.append(row(item));
       card.append(button,list);
       nodes.push(card);
