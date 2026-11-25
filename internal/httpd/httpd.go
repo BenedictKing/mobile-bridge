@@ -470,6 +470,7 @@ var staticRoutes = map[string]staticRoute{
 	"/timeline.js":                {"timeline.js", "text/javascript; charset=utf-8"},
 	"/selection.js":               {"selection.js", "text/javascript; charset=utf-8"},
 	"/plan-review.js":             {"plan-review.js", "text/javascript; charset=utf-8"},
+	"/inbox.js":                   {"inbox.js", "text/javascript; charset=utf-8"},
 	"/diff.js":                    {"diff.js", "text/javascript; charset=utf-8"},
 	"/transport.js":               {"transport.js", "text/javascript; charset=utf-8"},
 	"/connection.js":              {"connection.js", "text/javascript; charset=utf-8"},
@@ -730,6 +731,15 @@ func (h *handler) handleMethod(write bool) {
 			h.server.Codex.RegisterCLI(created, cwd)
 		}
 		h.output(http.StatusOK, h.createResponse(created, kind, title, cwd), contentTypeJSON, "")
+	case path == "/api/inbox":
+		if h.request.Method != http.MethodGet {
+			h.fail(http.StatusMethodNotAllowed, errorBody("待处理列表只支持读取"))
+			return
+		}
+		if h.session(false) == nil {
+			return
+		}
+		h.handleInbox()
 	case write && path == "/api/activity":
 		if h.session(write) == nil {
 			return
@@ -860,6 +870,8 @@ func (h *handler) handleMethod(write bool) {
 		}
 		result := jsoncompat.NewObject()
 		result.Set("sessions", rows)
+		// 侧栏“待处理”徽标与 Inbox 同源计数，覆盖列表分页外的已连接聊天。
+		result.Set("inboxCount", len(h.server.inboxItems().Items))
 		if discovery := h.server.discovery; discovery != nil {
 			discovery.touch()
 			result.Set("listRevision", discovery.Revision())

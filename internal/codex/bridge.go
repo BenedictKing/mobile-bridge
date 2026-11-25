@@ -218,6 +218,32 @@ func (b *Bridge) EnsureWatching(id string) {
 	}()
 }
 
+// PendingRequests 汇总已跟随会话的待处理请求（含标题），供跨会话 Inbox 使用。
+// 只读：不接管桌面会话、不开始跟随新会话，也不克隆整份时间线。
+func (b *Bridge) PendingRequests() []*jsoncompat.Object {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	rows := []*jsoncompat.Object{}
+	for id, session := range b.sessions {
+		state, _ := session.State.(*jsoncompat.Object)
+		if state == nil {
+			continue
+		}
+		requests, _ := state.MustGet("requests").(*jsoncompat.Array)
+		if requests == nil || len(requests.Items) == 0 {
+			continue
+		}
+		row := jsoncompat.NewObject()
+		row.Set("id", id)
+		row.Set("host", b.Host)
+		row.Set("title", state.MustGet("title"))
+		cloned, _ := jsoncompat.Clone(requests).(*jsoncompat.Array)
+		row.Set("requests", cloned)
+		rows = append(rows, row)
+	}
+	return rows
+}
+
 // Activity reports already-followed local sessions without activating a new
 // desktop owner. This keeps list polling cheap and avoids resurrecting chats
 // merely because they appear in saved history.

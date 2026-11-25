@@ -1776,6 +1776,30 @@ func (s *Session) cancelTurn(expected string, timeout time.Duration) error {
 	return nil
 }
 
+// Pending 是一次待处理聚合读取的结果：只克隆请求卡片，不复制整份时间线。
+type Pending struct {
+	Title    string
+	Requests []*jsoncompat.Object
+	Recency  int64
+}
+
+// PendingRequests 返回当前待处理请求的只读克隆，不启动 Agent、不改变会话状态。
+func (s *Session) PendingRequests() Pending {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	title, _ := s.View.Title.(string)
+	pending := Pending{Title: title}
+	if !s.lastInteraction.IsZero() {
+		pending.Recency = s.lastInteraction.UnixMilli()
+	}
+	for _, request := range s.View.Requests {
+		if cloned, ok := jsoncompat.Clone(request).(*jsoncompat.Object); ok {
+			pending.Requests = append(pending.Requests, cloned)
+		}
+	}
+	return pending
+}
+
 // RequestParams returns a clone of a pending card's projected params, or nil
 // once the request is answered or gone. Callers use it to read server-side
 // metadata (plan version/hash) instead of trusting values echoed by the phone.
@@ -2367,6 +2391,21 @@ func (m *Manager) Peek(id string) *Session {
 		session = m.liveAliasLocked(key)
 	}
 	return session
+}
+
+// Active 返回已加载的会话句柄（按句柄去重）。聚合视图据此读取，不为未加载会话启动 Agent。
+func (m *Manager) Active() []*Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	seen := make(map[*Session]bool, len(m.sessions))
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		if session != nil && !seen[session] {
+			seen[session] = true
+			sessions = append(sessions, session)
+		}
+	}
+	return sessions
 }
 
 // Get returns the live session for id (touching its idle clock), or nil.

@@ -149,7 +149,7 @@ async function refreshActivity(){
         if(listRevision===null)listRevision=result.listRevision;
         else if(result.listRevision!==listRevision){listRevision=result.listRevision;loadList(true).catch(e=>toast(e.message));}
       }
-      sessionActivity.update(result.sessions,visibleChat());for(const row of result.sessions)if(row.recency)bumpRecency(row.id,row.host,row.recency);renderActivity();
+      sessionActivity.update(result.sessions,visibleChat());for(const row of result.sessions)if(row.recency)bumpRecency(row.id,row.host,row.recency);renderActivity();renderInboxCount(Number(result.inboxCount)||0);
       for(const event of sessionActivity.localNotifications(result.sessions,visibleChat(),document.hidden)){
         const chat=listRows.find(row=>row.id===event.id&&row.host===event.host);
         window.localNotify?.notify({key:event.key,title:event.kind==='requests'?t('需要你的确认'):event.kind==='completed'?t('运行完毕'):t('运行已结束'),body:chat?.title||t('Mobile / Bridge'),host:event.host,id:event.id});
@@ -158,6 +158,11 @@ async function refreshActivity(){
   }catch{}finally{activityBusy=false;}
 }
 setInterval(refreshActivity,5000);
+// 跨 Agent 待处理：徽标随活动轮询更新；打开对话框时向网关取完整的最新汇总。
+function renderInboxCount(count){const badge=$('inbox-count');if(!badge)return;badge.hidden=!(count>0);badge.textContent=count>0?String(count):'';$('inbox-button')?.setAttribute('aria-label',t('待处理')+(count>0?' '+count:''));}
+const inbox=window.BridgeInbox&&$('inbox-content')?window.BridgeInbox.controller({container:$('inbox-content'),request:()=>api('/api/inbox'),open:(id,host)=>{$('inbox-dialog').close();openChat(id,host).catch(error=>toast(error.message));}}):null;
+if(inbox)$('inbox-button').onclick=()=>{$('inbox-dialog').showModal();inbox.refresh();};
+else $('inbox-button')?.setAttribute('hidden','');
 window.addEventListener('focus',refreshActivity);
 // 前台恢复三件套之一：回前台立即刷新当前会话与列表，不等下一个轮询周期
 // 或退避重连。focus 与 visibilitychange 常成对触发，1 秒内只执行一次。
