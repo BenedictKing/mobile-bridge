@@ -2,6 +2,8 @@
 
 ### Fixed
 
+- **web**：图片预览支持手势缩放与平移（`web/image-viewer.js`、`web/style.css`）。此前全屏灯箱里图片只能看适配尺寸，双指缩放会被浏览器吞掉或缩放整个页面。现在内容区接管指针事件（`touch-action:none`）：双指捏合以两指中点为锚缩放（1–6 倍），放大后单指拖动平移并限制在图片原始范围内，双击在 2.5 倍与适配尺寸间切换，桌面端滚轮 / 触控板捏合同样可缩放；拖动或捏合后手指落在空白处不再误触关闭，单击空白仍关闭；关闭或切换图片时复位。新增 3 例假 DOM 手势测试。
+
 ### Added
 
 - **agents**：接入自建 acp-agent 运行时，新增 `acpagent`（执行成员）与 `acpagent-review`（审核成员）两个类型，分别由 `ACP_AGENT_BIN`、`ACP_AGENT_REVIEW_BIN` 给出完整启动命令后才启用，`auto` 不探测。补充当前任务走 `_session/steering`，思考档位映射到 acp-agent 的 `off|minimal|low|medium|high|xhigh`。用法与 `--state-dir` 约束见 README「多 Agent」。
