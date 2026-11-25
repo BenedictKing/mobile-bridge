@@ -18,6 +18,11 @@
    依赖 BridgeConnection 选择传输与 CSRF，以及 app.js 的 showLogin（仅运行时引用）。 */
 
 const TEAM_ROLE_LABELS={lead:'负责人',member:'成员',reviewer:'评审'};
+const TEAM_COLLABORATION_PATTERN_LABELS={
+  'custom-dag':'自定义 DAG','single-agent':'单 Agent','classify-and-act':'分类执行',
+  'fan-out-and-synthesize':'并行汇总','adversarial-verification':'对抗验证',
+  'tournament':'多候选择优','loop-until-done':'循环改进',
+};
 /* 任务停靠分类（task_stopped/task_failed payload 的 outcome，§6.3 错误策略表）：
    quota/auth/not_configured 类停靠落 run waiting_input，处理后 resume 重派。 */
 const TEAM_TASK_OUTCOME_LABELS={rate_limited:'触发限流',quota:'额度不足',auth:'成员认证失败',not_configured:'成员未配置',context_overflow:'上下文超限',transient:'临时错误'};
@@ -51,24 +56,106 @@ const TEAM_FORWARD_SCOPES=[
    detail 即权威。 */
 const TEAM_ACTION_TYPE_LABELS={delegate:'委派任务',request_context:'请求上下文',summarize:'请求汇总'};
 const TEAM_ACTION_STATUS_BADGES={proposed:{cls:'planned',label:'待执行'},executed:{cls:'completed',label:'已执行'},rejected:{cls:'failed',label:'已拒绝'}};
+function teamMemberAgentLabel(member,agentFirst=false){
+  if(!member)return '';
+  const kind=String(member.agentKind||'').trim();
+  const agent=kind?BridgeI18n.agentLabel(kind):'';
+  const name=String(member.name||member.id||'').trim();
+  if(!name)return agent;
+  if(!agent)return name;
+  if(name.toLowerCase()===agent.toLowerCase()||name.toLowerCase()===kind.toLowerCase())return agent;
+  return agentFirst?agent+' · '+name:name+' · '+agent;
+}
 /* 客户端幂等键（Run 创建与成员转发）：crypto.randomUUID 不可用时降级；
    app.js 的 uuid() 属其模块内部，这里独立实现避免加载顺序耦合。 */
 function teamUUID(){
   if(typeof crypto!=='undefined'&&typeof crypto.randomUUID==='function')return crypto.randomUUID();
   return Date.now().toString(16)+'-'+Math.random().toString(16).slice(2)+'-'+Math.random().toString(16).slice(2,10);
 }
-const TEAM_RUN_STATUS_LABELS={created:'已创建',dispatching:'派发中',collecting:'收集中',reducing:'汇总中',completed:'已完成',waiting_input:'等待确认',paused:'已暂停',failed:'已失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'结果未知'};
+const TEAM_RUN_STATUS_LABELS={created:'已受理',dispatching:'执行中',collecting:'收集结果中',reducing:'收口中',completed:'执行结束',waiting_input:'等待处理',paused:'已暂停',failed:'执行失败',cancelled:'已取消',stopped:'已停止',outcome_unknown:'执行结果待核查'};
 const TEAM_TASK_STATUS_LABELS={planned:'已规划',ready:'就绪',dispatching:'派发中',running:'运行中',completed:'已完成',failed:'已失败',cancelled:'已取消',outcome_unknown:'结果未知',stopped:'已停止'};
 const TEAM_TERMINAL_RUN_STATUSES=new Set(['completed','failed','cancelled','stopped','outcome_unknown']);
-/* 事件类型 → 任务状态（服务端事件行不携带 status 字段，状态由 type 推导；
-   task_stopped 在用户取消 Run 时也用于 cancelled 任务——cancel 后的整页
-   重读会立即校正。task_cache_hit 是 amend 缓存命中：任务直接携带父 Run 结果
+/* 闭环契约（docs/team-dashboard-design.md §4）：Run 状态分组与轻量摘要派生。
+   currentOwner/lastUpdate/nextAction/delivery 全部由服务端投影（teams.go
+   teamRunSummary），前端只消费不猜测；服务端整句（下一步/回音摘要）按
+   teamRunStopReasonText 同款纪律：中文照原文，其他语言交给 t() 的原文回落。 */
+const TEAM_ACTIVE_RUN_STATUSES=new Set(['created','planning','dispatching','collecting','reducing']);
+const TEAM_ATTENTION_RUN_STATUSES=new Set(['waiting_input','paused','failed','outcome_unknown']);
+function teamRunGroup(status){
+  if(status&&typeof status==='object'){
+    const run=status;status=run.status;
+    if(status==='completed'&&run.outcome&&!run.outcome.closed&&run.outcome.status!=='satisfied')return 'attention';
+  }
+  if(TEAM_ATTENTION_RUN_STATUSES.has(status))return 'attention';
+  if(TEAM_ACTIVE_RUN_STATUSES.has(status))return 'active';
+  return TEAM_TERMINAL_RUN_STATUSES.has(status)?'terminal':'attention';
+}
+/* taskCounts → {total,completed}；缺 taskCounts 显示「进度待同步」，不猜 0。 */
+function teamRunProgress(run){
+  const counts=run&&run.taskCounts;
+  if(!counts||typeof counts!=='object')return null;
+  let total=0,completed=0;
+  for(const [status,value] of Object.entries(counts)){
+    const count=Number(value)||0;
+    total+=count;
+    if(status==='completed')completed=count;
+  }
+  return total>0?{total,completed}:null;
+}
+/* 活动行/团队卡的回音短句：负责人 · 最近回音 · 下一步。缺哪段跳哪段，
+   不编造；都没有时不输出（卡片显示进度即可）。 */
+function teamRunEchoLine(run){
+  const bits=[];
+  if(run&&run.currentOwner&&run.currentOwner.name){
+    const ownerState=teamRunGroup(run)==='active'?t_safe(' 执行中'):' · '+t_safe('负责人');
+    bits.push(run.currentOwner.name+ownerState);
+  }
+  if(run&&run.lastUpdate&&run.lastUpdate.summary)bits.push(t_safe(run.lastUpdate.summary));
+  if(run&&run.nextAction&&run.nextAction.label)bits.push(t_safe('下一步：')+t_safe(run.nextAction.label));
+  return bits.join(' · ');
+}
+/* 事件类型 → 任务状态；task_stopped 的 payload.status 区分 cancelled/stopped，
+   旧 journal 的取消原因由下方兼容。task_cache_hit 是 amend 缓存命中：任务直接携带父 Run 结果
    完成（§6.4.1）；action、question、invalid_action_block 事件的 payload.taskId
    指向来源任务、无任务状态语义，不进此表）。 */
 const TEAM_EVENT_TASK_STATUS={task_dispatching:'dispatching',task_running:'running',task_completed:'completed',task_failed:'failed',task_stopped:'stopped',task_outcome_unknown:'outcome_unknown',task_retry_scheduled:'ready',task_cache_hit:'completed'};
 
 function teamRunStatusLabel(status){return TEAM_RUN_STATUS_LABELS[status]||status;}
 function teamTaskStatusLabel(status){return TEAM_TASK_STATUS_LABELS[status]||status;}
+function teamTaskSessionId(task,detail,member){
+  if(!task)return member?.sessionId||'';
+  const thread=(detail?.threads||[]).find(row=>row.id===task.executionThreadId);
+  return task.result?.sessionId||task.dispatchSessionId||thread?.providerSessionId||member?.sessionId||'';
+}
+
+// Run 与事项共用的只读结果投影；补充需求统一由聊天入口归集。
+function renderTeamGoalReview(outcome,{executionStatus=outcome.executionStatus}={}){
+  const t=BridgeI18n.t,node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
+  const box=node('section',undefined,'team-goal-review');
+  const reviewable=!executionStatus||executionStatus==='completed';
+  if(!reviewable&&!outcome.result?.text){box.hidden=true;return box;}
+  if(reviewable||outcome.result?.text)box.append(node('h3',t(outcome.label||'目标结果')),node('p',outcome.reason||'','muted'));
+  if(outcome.result?.text){
+    const result=node('details',undefined,'team-goal-result');result.open=true;
+    result.append(node('summary',t(reviewable?'最终结果':'已有结果')));
+    const body=node('div',undefined,'message-body');
+    if(typeof renderMarkdown==='function')renderMarkdown(body,outcome.result.text,[],()=>'',{});
+    else body.textContent=outcome.result.text;
+    result.append(body);
+    if(outcome.result.truncated)result.append(node('p',t('结果摘要已截断，请在来源任务查看完整内容。'),'muted'));
+    if(outcome.result.includesShared)result.append(node('p',t('包含共享任务输出'),'muted'));
+    box.append(result);
+  }
+  if(outcome.workspaceChange){
+    const change=outcome.workspaceChange,confirmed=String(change.confirmedHead||'?').slice(0,12),current=String(change.currentHead||'?').slice(0,12);
+    box.append(node('p',t('工作区已变化，确认时的结论仍保留。')+' '+confirmed+' → '+current+(change.reason?' · '+change.reason:''),'muted'));
+  }
+  const labels={passed:'已通过',failed:'未通过',pending:'待执行',stale:'证据已过期',unknown:'未取得结论',not_configured:'未配置'};
+  const checks=[['验证',outcome.contract?.verify],['审查',outcome.contract?.review]].filter(([,check])=>check&&(check.requirement==='required'||check.status!=='not_configured'));
+  if(checks.length)box.append(node('p',checks.map(([label,check])=>t(label)+' · '+(check.requirement==='not_required'?t('本次不需要')+' · '+(check.reason||''):t(labels[check.status]||'未配置'))).join(' / '),'muted'));
+  if(!outcome.closed)box.append(node('p',t('补充需求请在团队聊天中发送，AI 会归集到对应工作流。'),'muted'));
+  return box;
+}
 // 状态徽标：label 同时写进 data-i18n，切语言时 BridgeI18n.apply 可热刷新。
 function teamStatusBadge(status,labels){
   const label=(labels&&labels[status])||status;
@@ -135,7 +222,7 @@ class TeamRunDialogHost{
     const head=document.createElement('div');head.className='picker-head';
     const heading=document.createElement('h2');heading.id='team-run-dialog-heading';
     const close=document.createElement('button');
-    close.type='button';close.className='icon-button';close.textContent='×';
+    close.type='button';close.className='icon-button';close.append(BridgeIcons.close());
     close.setAttribute('aria-label',t_safe('关闭'));
     close.setAttribute('data-i18n-aria-label','关闭');
     close.onclick=()=>{dialog.runState=null;dialog.close();};
@@ -297,7 +384,7 @@ class TeamRunDialogHost{
             const memberSelect=document.createElement('select');
             const members=(state.team.members||[]).filter(m=>m.enabled!==false);
             memberSelect.append(new Option(t('请选择成员…'),''));
-            for(const member of members)memberSelect.append(new Option((member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind),member.id));
+            for(const member of members)memberSelect.append(new Option((member.id===state.team.leadId?t('负责')+' · ':'')+teamMemberAgentLabel(member),member.id));
             memberSelect.value=row.memberId||'';
             memberSelect.onchange=()=>{row.memberId=memberSelect.value;};
             memberLabel.append(memberSelect);
@@ -327,7 +414,7 @@ class TeamRunDialogHost{
             const enabled=(state.team.members||[]).filter(m=>m.enabled!==false);
             if(!enabled.length)chips.append(this.node('span',t('没有可用成员'),'muted'));
             for(const member of enabled){
-              const name=(member.id===state.team.leadId?t('负责')+' · ':'')+(member.name||member.id)+' · '+BridgeI18n.agentLabel(member.agentKind);
+              const name=(member.id===state.team.leadId?t('负责')+' · ':'')+teamMemberAgentLabel(member);
               const chip=this.button((row.memberIds.has(member.id)?'✓ ':'')+name,'');
               chip.className='task-dep-chip'+(row.memberIds.has(member.id)?' on':'');
               chip.onclick=()=>{
@@ -520,31 +607,133 @@ class TeamRunDialogHost{
 const teamRunDialogHost=new TeamRunDialogHost();
 
 class TeamsPanel{
-  constructor({root,request,openRun,openChat,onChange}){
-    Object.assign(this,{root,request,openRun,openChat,onChange});
+  constructor({root,request,openRun,openChat,onChange,onRender,teamId=null}){
+    Object.assign(this,{root,request,openRun,openChat,onChange,onRender,teamId});
     this.teams=[];this.loading=false;this.busy=false;this.error='';this.notice='';
     this.create=null;       // 新建团队表单状态
     this.renaming=null;     // 重命名中的 teamId
     this.renameValue='';
     this.expanded=new Set(); // Run 列表展开的 teamId
     this.runs=new Map();    // teamId -> {loading,error,rows}
+    this.issues=new Map();  // teamId -> {loading,error,rows}
+    this.view='issues';     // issues=事项看板；records=执行记录；plans=显式计划
     this.scheduleOpen=new Set(); // 定时运行卡展开的 teamId
     this.schedules=new Map();    // teamId -> {loading,error,cfg,busy,notice}
     this.policyEdit=null;   // 预算策略编辑中的 teamId（§11.7，0=只统计）
     this.policyBudgetValue='';
     this.projects=null;     // 新建表单可用的项目空间（打开面板时快照）
     this.agents=[];         // 可创建团队成员会话的 ACP Agent
+    this.filter='all';      // 工作台筛选：all/active/attention（刷新不重置）
+    this.lastSynced='';     // 最近一次 Run 摘要同步时间（头部显示）
+    this.pollTimer=null;    // 打开期间 15s 轻量轮询（§5 刷新与实时性）
   }
   node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   button(text,fn){const n=this.node('button',text);n.type='button';n.onclick=fn;return n;}
   runBadge(status){return teamStatusBadge(status,TEAM_RUN_STATUS_LABELS);}
+  runBadges(run){
+    const badges=this.node('div',undefined,'team-run-badges');badges.append(this.runBadge(run.status));
+    if(run.outcome)badges.append(this.node('span',BridgeI18n.t(run.outcome.label||'尚未评估'),'team-badge '+(run.outcome.status==='satisfied'?'b-completed':'b-waiting_input')));
+    return badges;
+  }
   async refresh(){
     if(this.loading)return false;
     this.loading=true;this.error='';this.render();let succeeded=false;
-    try{const value=await this.request('/api/teams');this.teams=value.teams||[];this.onChange&&this.onChange(this.teams);succeeded=true;}
+    try{const value=await this.request('/api/teams');this.teams=(value.teams||[]).filter(team=>!this.teamId||team.id===this.teamId);this.onChange&&this.onChange(this.teams);succeeded=true;}
     catch(error){this.error=error.message;}
     finally{this.loading=false;this.render();}
     return succeeded;
+  }
+  /* 工作台打开入口（app.js teams-button）：团队 + 全部团队的 Run 摘要一次
+     拉齐；KPI、活动列表与团队卡都消费同一份轻量摘要（§3 并行读取）。 */
+  async refreshAll(){
+    if(await this.refresh())await Promise.all([this.loadAllRuns(),this.loadAllIssues()]);
+  }
+  /* 并行拉取所有团队的 Run 摘要：单个团队失败只影响该团队的 Run 区域
+     （entry.error 就地展示），不拖垮整页。 */
+  async loadAllRuns(){
+    if(this._runsLoading)return;
+    this._runsLoading=true;
+    const teams=this.teams.slice();
+    await Promise.allSettled(teams.map(async team=>{
+      const entry=this.runs.get(team.id)||{loading:false,error:'',rows:[]};
+      entry.loading=true;this.runs.set(team.id,entry);
+      try{
+        const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs?includeClassification=1');
+        entry.rows=result.runs||[];entry.error='';
+      }catch(error){entry.error=error.message;}
+      finally{entry.loading=false;}
+    }));
+    this._runsLoading=false;
+    this.lastSynced=new Date().toLocaleTimeString(BridgeI18n.locale());
+    this.render();
+  }
+  async loadAllIssues(){
+    if(this._issuesLoading)return;
+    this._issuesLoading=true;
+    const teams=this.teams.slice();
+    await Promise.allSettled(teams.map(async team=>{
+      const entry=this.issues.get(team.id)||{loading:false,error:'',rows:[]};
+      entry.loading=true;this.issues.set(team.id,entry);
+      try{
+        const result=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/issues');
+        entry.rows=result.issues||[];entry.error='';
+      }catch(error){entry.error=error.message;}
+      finally{entry.loading=false;}
+    }));
+    this._issuesLoading=false;
+    this.render();
+  }
+  startPolling(){
+    this.stopPolling();
+    this.pollTimer=setInterval(()=>{this.refreshAll();},15000);
+  }
+  stopPolling(){
+    if(this.pollTimer){clearInterval(this.pollTimer);this.pollTimer=null;}
+  }
+  teamRuns(teamId){return (this.runs.get(teamId)||{}).rows||[];}
+  teamIssues(teamId){return (this.issues.get(teamId)||{}).rows||[];}
+  explicitPlan(run){return run.autoPlan===false&&!run.scheduledFrom&&!run.classificationOnly;}
+  teamViewRuns(teamId){
+    const rows=this.teamRuns(teamId);
+    return this.view==='plans'?rows.filter(run=>this.explicitPlan(run)):rows;
+  }
+  /* 团队卡先展示需处理项，其次运行中项，最后才展示最近终态。 */
+  teamLatestRun(teamId){
+    const rows=this.teamViewRuns(teamId);
+    const latest=[...rows].reverse();
+    return latest.find(run=>teamRunGroup(run)==='attention')
+      ||latest.find(run=>teamRunGroup(run)==='active')
+      ||latest[0]
+      ||null;
+  }
+  runStats(){
+    const stats={teams:this.teams.length,members:0,active:0,attention:0,total:0};
+    for(const team of this.teams)stats.members+=(team.members||[]).length;
+    if(this.view==='issues'){
+      for(const entry of this.issues.values())for(const issue of entry.rows||[]){
+        stats.total++;
+        if(issue.status==='in_progress')stats.active++;
+        else if(issue.status==='waiting')stats.attention++;
+      }
+      return stats;
+    }
+    for(const team of this.teams)for(const run of this.teamViewRuns(team.id)){
+      stats.total++;
+      const group=teamRunGroup(run);
+      if(group==='attention')stats.attention++;
+      else if(group==='active')stats.active++;
+    }
+    return stats;
+  }
+  filteredTeams(){
+    if(this.view==='issues'){
+      if(this.filter==='active')return this.teams.filter(team=>this.teamIssues(team.id).some(issue=>issue.status==='in_progress'));
+      if(this.filter==='attention')return this.teams.filter(team=>this.teamIssues(team.id).some(issue=>issue.status==='waiting'));
+      return this.teams;
+    }
+    if(this.filter==='active')return this.teams.filter(team=>this.teamViewRuns(team.id).some(run=>teamRunGroup(run)==='active'));
+    if(this.filter==='attention')return this.teams.filter(team=>this.teamViewRuns(team.id).some(run=>teamRunGroup(run)==='attention'));
+    return this.teams;
   }
   async send(method,path,body){
     if(this.busy)return null;
@@ -570,27 +759,245 @@ class TeamsPanel{
   }
   render(){
     const t=BridgeI18n.t,root=this.root;
+    this.onRender&&this.onRender(this);
     root.replaceChildren();
     const toolbar=this.node('div',undefined,'team-toolbar');
-    const refresh=this.button(t('刷新'),async()=>{if(await this.refresh())globalThis.BridgeFeedback?.ok('团队列表已刷新');});
-    refresh.disabled=this.loading||this.busy;
+    if(this.lastSynced)toolbar.append(this.node('span',t('同步于')+' '+this.lastSynced,'team-synced muted'));
+    const refresh=this.button(t('刷新'),async()=>{await this.refreshAll();});
+    refresh.disabled=this.loading||this.busy||this._runsLoading;
+    refresh.classList.toggle('spinning',!!this._runsLoading);
     const create=this.button(this.create?t('收起新建'):t('新建团队'),()=>{
       this.create=this.create?null:{name:'',project:'',autoDispatch:true,error:'',requestId:teamUUID(),attempt:'',members:[{agent:'',role:'lead',name:''}]};
       if(this.create)this.loadProjects();
       this.render();
     });
     create.disabled=this.busy;
-    toolbar.append(refresh,create);
+    if(!this.teamId)toolbar.append(refresh,create);
     root.append(toolbar);
     if(this.error)root.append(this.node('p',this.error,'error'));
     if(this.notice){root.append(this.node('p',this.notice,'team-notice'));this.notice='';}
     if(this.loading&&!this.teams.length){root.append(this.node('p',t('正在读取团队…'),'muted'));return;}
     if(this.create)root.append(this.renderCreateForm());
-    if(this.teams.length){
-      for(const team of this.teams)root.append(this.renderTeam(team));
-    }else if(!this.create){
-      root.append(this.node('p',t('还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
+    if(!this.teams.length){
+      if(!this.create)root.append(this.node('p',t(this.teamId?'团队不存在或已删除':'还没有团队。点击「新建团队」，按项目空间添加成员。'),'muted'));
+      return;
     }
+    const stats=this.runStats();
+    root.append(this.renderKpis(stats));
+    root.append(this.renderFilters(stats));
+    root.append(this.renderViewTabs());
+    root.append(this.renderActivity());
+    if(this.teamId)return;
+    const teams=this.filteredTeams();
+    const grid=this.node('div',undefined,'team-grid');
+    if(teams.length){
+      for(const team of teams)grid.append(this.renderTeam(team));
+    }else{
+      const empty=this.node('div',undefined,'team-grid-empty');
+      empty.setAttribute('role','status');
+      empty.append(this.node('p',t('当前筛选没有匹配的团队。'),'muted'));
+      const clear=this.button(t('清除筛选'),()=>{this.filter='all';this.render();});
+      empty.append(clear);
+      grid.append(empty);
+    }
+    root.append(grid);
+  }
+  /* KPI 条（§3 状态 KPI）：四个数字一屏回答「现在有没有运行中、哪里需要
+     我处理」；运行中/需处理两格可点按切筛选。 */
+  renderKpis(stats){
+    const t=BridgeI18n.t,box=this.node('div',undefined,'team-kpis');
+    const cell=(value,label,filter)=>{
+      const item=this.button('');
+      item.className='team-kpi'+(filter&&this.filter===filter?' on':'');
+      item.append(this.node('strong',String(value)));
+      item.append(this.node('span',t(label)));
+      if(filter){
+        item.setAttribute('aria-pressed',String(this.filter===filter));
+        item.onclick=()=>{this.filter=this.filter===filter?'all':filter;this.render();};
+      }
+      return item;
+    };
+    box.append(cell(this.teamId?stats.total:stats.teams,this.teamId?(this.view==='issues'?'事项':'Run 记录'):'团队'),cell(stats.members,'成员'),
+      cell(stats.active,'运行中','active'),cell(stats.attention,'需处理','attention'));
+    return box;
+  }
+  renderFilters(stats){
+    const t=BridgeI18n.t,box=this.node('div',undefined,'team-filters');
+    box.setAttribute('role','group');
+    box.setAttribute('aria-label',t('运行筛选'));
+    const counts={all:stats.total,active:stats.active,attention:stats.attention};
+    const options=[['all',t('全部')],['active',t('运行中')],['attention',t('需处理')]];
+    for(const [key,label] of options){
+      const item=this.button(label+' '+counts[key]);
+      item.className='team-filter'+(this.filter===key?' on':'');
+      item.setAttribute('aria-pressed',String(this.filter===key));
+      item.onclick=()=>{this.filter=key;this.render();};
+      box.append(item);
+    }
+    return box;
+  }
+  renderViewTabs(){
+    const t=BridgeI18n.t,box=this.node('div',undefined,'team-view-tabs');
+    box.setAttribute('role','group');
+    const options=[['issues',t('事项')],['records',t('执行记录')],['plans',t('计划执行')]];
+    for(const [view,label] of options){
+      const button=this.button(label);button.className='team-view-tab'+(this.view===view?' on':'');
+      button.setAttribute('aria-pressed',String(this.view===view));
+      button.onclick=()=>{this.view=view;this.render();};
+      box.append(button);
+    }
+    return box;
+  }
+  /* 最近活动（§3）：全部团队聚合的轻量 Run 摘要，按 updatedAt 倒序 ≤6 条；
+     每行回答四个问题——谁负责/做到哪/下一步/结果在哪（点击即达）。 */
+  renderActivity(){
+    if(this.view==='issues')return this.renderIssueActivity();
+    const t=BridgeI18n.t,box=this.node('section',undefined,'team-activity');
+    box.append(this.node('h3',t(this.view==='plans'?'计划执行':'执行记录')));
+    const rows=[];
+    for(const team of this.teams){
+      for(const run of this.teamViewRuns(team.id)){
+        const at=run.updatedAt?new Date(run.updatedAt).getTime():0;
+        if(Number.isFinite(at))rows.push({team,run,at});
+      }
+    }
+    rows.sort((a,b)=>b.at-a.at);
+    if(rows.length){
+      const groupOf=run=>teamRunGroup(run);
+      const groups=this.filter==='all'
+        ?[['attention',t('需处理')],['active',t('运行中')],['terminal',t('最近结束')]]
+        :[[this.filter,this.filter==='attention'?t('需处理'):t('运行中')]];
+      let renderedGroup=false;
+      for(const [key,label] of groups){
+        const matching=rows.filter(({run})=>groupOf(run)===key);
+        if(!matching.length)continue;
+        renderedGroup=true;
+        const section=this.node('section',undefined,'team-activity-group');
+        const heading=this.node('h4',undefined,'team-activity-group-title');
+        heading.append(this.node('span',label));
+        heading.append(this.node('small',String(matching.length),'muted'));
+        section.append(heading);
+        const list=this.node('div',undefined,'team-activity-list');
+        for(const {team,run} of matching)list.append(this.renderActivityRow(team,run));
+        section.append(list);
+        box.append(section);
+      }
+      if(renderedGroup)return box;
+      const empty=this.node('p',t('当前筛选没有匹配的 Run。'),'muted');
+      empty.setAttribute('role','status');
+      box.append(empty);
+      return box;
+    }
+    // 没有 Run 数据：区分「还没拉到」与「确实没有」。
+    const loading=this.teams.some(team=>(this.runs.get(team.id)||{}).loading);
+    const failed=this.teams.some(team=>((this.runs.get(team.id)||{}).error));
+    const hint=loading?t('正在读取 Run 摘要…'):failed?t('部分团队的 Run 读取失败，可点击「刷新」重试。'):t(this.teamId?'还没有 Run。发送一条团队消息开始。':'还没有 Run。从团队卡片「新建 Run」开始。');
+    const line=this.node('p',hint,'muted');
+    line.setAttribute('role','status');
+    box.append(line);
+    return box;
+  }
+  renderIssueActivity(){
+    const t=BridgeI18n.t,box=this.node('section',undefined,'team-activity team-issue-activity');
+    box.append(this.node('h3',t('事项看板')));
+    const current=[],historical=[];
+    for(const team of this.teams){
+      for(const issue of this.teamIssues(team.id)){
+        const at=issue.updatedAt?new Date(issue.updatedAt).getTime():0;
+        (issue.historical?historical:current).push({team,issue,at:Number.isFinite(at)?at:0});
+      }
+    }
+    current.sort((a,b)=>b.at-a.at);historical.sort((a,b)=>b.at-a.at);
+    const stages=[['open',t('待处理')],['in_progress',t('处理中')],['waiting',t('等待处理')],['resolved',t('已解决')],['closed',t('已关闭')]].filter(([id])=>this.filter==='all'||this.filter===id);
+    const visibleCurrent=current.filter(({issue})=>this.filter==='all'||(issue.status||'waiting')===this.filter);
+    for(const [status,label] of stages){
+      const matching=visibleCurrent.filter(({issue})=>(issue.status||'waiting')===status);
+      if(matching.length)box.append(this.renderIssueSection(label,matching));
+    }
+    const visibleHistory=historical.filter(({issue})=>this.filter==='all'||(issue.status||'waiting')===this.filter);
+    if(visibleHistory.length){
+      const history=this.node('details',undefined,'team-activity-group team-issue-history');
+      const summary=this.node('summary',t('历史记录')+' · '+visibleHistory.length);
+      history.append(summary);
+      for(const row of visibleHistory)history.append(this.renderIssueRow(row.team,row.issue));
+      box.append(history);
+    }
+    if(!visibleCurrent.length&&!visibleHistory.length){
+      const loading=this.teams.some(team=>(this.issues.get(team.id)||{}).loading);
+      const failed=this.teams.some(team=>((this.issues.get(team.id)||{}).error));
+      const empty=this.filter!=='all'?t('当前筛选没有匹配的事项。'):loading?t('正在读取事项…'):failed?t('部分团队的事项读取失败，可点击「刷新」重试。'):t('还没有事项。');
+      box.append(this.node('p',empty,'muted'));
+    }
+    return box;
+  }
+  renderIssueSection(label,rows){
+    const section=this.node('section',undefined,'team-activity-group');
+    const heading=this.node('h4',undefined,'team-activity-group-title');
+    heading.append(this.node('span',label),this.node('small',String(rows.length),'muted'));
+    section.append(heading);
+    const list=this.node('div',undefined,'team-activity-list');
+    for(const {team,issue} of rows)list.append(this.renderIssueRow(team,issue));
+    section.append(list);
+    return section;
+  }
+  renderIssueRow(team,issue){
+    const t=BridgeI18n.t,labels={open:t('待处理'),in_progress:t('处理中'),waiting:t('等待处理'),resolved:t('已解决'),closed:t('已关闭')};
+    const details=this.node('details',undefined,'team-issue-row');
+    details.dataset.issueId=issue.id;
+    const summary=this.node('summary',undefined,'team-issue-summary');
+    summary.append(this.node('strong',issue.title||issue.id));
+    const progress=issue.progress||{},progressText=progress.known===false||!progress.total?t('进度待同步'):(progress.completed||0)+'/'+progress.total;
+    summary.append(this.node('small',team.name+' · '+(issue.scheduled?t('定时事项')+' · ':'')+(labels[issue.status]||labels.waiting)+' · '+progressText,'muted'));
+    details.append(summary);
+    if(issue.nextAction?.label)details.append(this.node('p',t('下一步')+' · '+issue.nextAction.label,'muted'));
+    const runs=[...(issue.runs||[])].reverse();
+    if(!runs.length)details.append(this.node('p',t('暂无关联 Run'),'muted'));
+    for(const run of runs){
+      const button=this.button('Run '+String(run.id||'').replace(/-/g,'').slice(0,8).toUpperCase()+' · '+t(teamRunStatusLabel(run.status))+' · '+(run.goal||run.id));
+      button.className='team-issue-run-link';button.onclick=()=>this.openRun&&this.openRun(team.id,run.id);
+      details.append(button);
+    }
+    return details;
+  }
+  runKindLabel(run){
+    const t=BridgeI18n.t;
+    if(run.classificationOnly)return t('归类');
+    if(run.scheduledFrom)return t('定时');
+    if(run.autoPlan===false)return t('显式计划');
+    return '';
+  }
+  renderActivityRow(team,run){
+    const t=BridgeI18n.t,row=this.button('');
+    row.className='team-activity-row';
+    row.dataset.group=teamRunGroup(run);
+    row.append(this.runBadges(run));
+    const main=this.node('div',undefined,'team-activity-main');
+    const title=this.node('span',run.goal||run.id,'team-activity-goal');
+    title.title=run.goal||run.id;
+    main.append(title);
+    const meta=this.node('small',undefined,'team-activity-meta muted');
+    const bits=[team.name],kind=this.runKindLabel(run);
+    if(kind)bits.push(kind);
+    bits.push((run.issueIds||[]).length?t('关联')+' '+run.issueIds.length+' '+t('个事项'):t('未分类执行'));
+    const progress=teamRunProgress(run);
+    bits.push(progress?progress.completed+'/'+progress.total:t('进度待同步'));
+    if(run.currentOwner&&run.currentOwner.name)bits.push(run.currentOwner.name+t(' · 负责人'));
+    meta.textContent=bits.join(' · ');
+    main.append(meta);
+    row.append(main);
+    const echo=this.node('div',undefined,'team-activity-echo');
+    const line=teamRunEchoLine(run);
+    if(line)echo.append(this.node('small',line,'muted'));
+    const at=teamTimeText(run.updatedAt);
+    if(at)echo.append(this.node('small',at,'team-activity-time'));
+    row.append(echo);
+    if(run.nextAction&&run.nextAction.label){
+      const next=this.node('span',t_safe(run.nextAction.label),'team-activity-next');
+      next.dataset.kind=run.nextAction.kind||'';
+      row.append(next);
+    }
+    row.onclick=()=>this.openRun&&this.openRun(team.id,run.id);
+    return row;
   }
   renderTeam(team){
     const t=BridgeI18n.t;
@@ -621,11 +1028,32 @@ class TeamsPanel{
     if(updated)parts.push(t('更新于 ')+updated);
     meta.textContent=parts.join(' · ');
     card.append(meta);
+    /* 卡片级状态行（闭环契约·有着落）：需处理 > 运行中 > 最近完成 的代表
+       Run，带负责人/最近回音/下一步，点击直达 Run 详情——卡片先回答「这个
+       团队现在谁在做什么、下一步是什么」。 */
+    const latest=this.teamLatestRun(team.id);
+    if(latest){
+      const runRow=this.button('');
+      runRow.className='team-card-run';
+      runRow.dataset.group=teamRunGroup(latest);
+      runRow.append(this.runBadges(latest));
+      const info=this.node('div',undefined,'team-card-run-info');
+      const goal=this.node('span',latest.goal||latest.id,'team-card-run-goal');
+      goal.title=latest.goal||latest.id;
+      info.append(goal);
+      const echo=teamRunEchoLine(latest);
+      if(echo)info.append(this.node('small',echo,'muted'));
+      runRow.append(info);
+      const open=this.node('span',t('打开 Run'),'team-card-run-open');
+      runRow.append(open);
+      runRow.onclick=()=>this.openRun&&this.openRun(team.id,latest.id);
+      card.append(runRow);
+    }
     const chips=this.node('div',undefined,'team-members');
     for(const m of members){
       const chip=this.node('span',undefined,'team-member'+(m.available===false?' unavailable':'')+(m.enabled===false?' disabled':''));
       const role=t(TEAM_ROLE_LABELS[m.role||'member']||m.role);
-      chip.textContent=(m.id===team.leadId?'★ ':'')+role+' · '+(m.name||m.id)+' · '+BridgeI18n.agentLabel(m.agentKind)
+      chip.textContent=(m.id===team.leadId?'★ ':'')+role+' · '+teamMemberAgentLabel(m)
         +(m.available===false?' · '+t('不可用'):'')+(m.enabled===false?' · '+t('已停用'):'');
       chip.title=t('会话：')+(m.sessionId||'');
       chips.append(chip);
@@ -638,7 +1066,7 @@ class TeamsPanel{
     // 预算策略编辑（§11.7/§9「修订预算」的手机入口）：PATCH policy.budgetUnits
     // 走既有 team PATCH 通道（version 冲突 409 的中文文案由服务端透出）。
     if(this.policyEdit===team.id)card.append(this.renderPolicyEdit(team));
-    const actions=this.node('div',undefined,'team-actions');
+    const actions=this.node('div',undefined,'team-actions team-primary-actions');
     const runsBtn=this.button(this.expanded.has(team.id)?t('收起 Run'):t('Run 记录'),()=>{
       if(this.expanded.has(team.id))this.expanded.delete(team.id);
       else{this.expanded.add(team.id);this.loadRuns(team.id);}
@@ -647,27 +1075,34 @@ class TeamsPanel{
     const createRun=this.button(t('新建 Run'),()=>this.openRunCreate(team));
     const openChat=this.button(t('打开团队聊天'),()=>this.openChat&&this.openChat(team));
     openChat.classList.add('primary');
-    actions.append(openChat,runsBtn,createRun);
-    actions.append(this.button(t('预算'),()=>{
+    actions.append(openChat,createRun);
+    const management=document.createElement('details');
+    management.className='team-management';
+    const manageLabel=this.node('summary',t('团队管理'));
+    management.append(manageLabel);
+    const manageActions=this.node('div',undefined,'team-actions team-management-actions');
+    manageActions.append(runsBtn);
+    manageActions.append(this.button(t('预算'),()=>{
       if(this.policyEdit===team.id)this.policyEdit=null;
       else{this.policyEdit=team.id;this.policyBudgetValue=typeof budget==='number'?String(budget):'0';}
       this.render();
     }));
-    actions.append(this.button(this.scheduleOpen.has(team.id)?t('收起定时'):t('定时运行'),()=>{
+    manageActions.append(this.button(this.scheduleOpen.has(team.id)?t('收起定时'):t('定时运行'),()=>{
       if(this.scheduleOpen.has(team.id))this.scheduleOpen.delete(team.id);
       else{this.scheduleOpen.add(team.id);this.loadSchedule(team.id);}
       this.render();
     }));
     if(this.renaming!==team.id){
-      actions.append(this.button(t('重命名'),()=>{this.renaming=team.id;this.renameValue=team.name;this.render();}));
+      manageActions.append(this.button(t('重命名'),()=>{this.renaming=team.id;this.renameValue=team.name;this.render();}));
     }
-    actions.append(this.button(t('删除'),async()=>{
+    manageActions.append(this.button(t('删除'),async()=>{
       if(!window.confirm(t('删除团队会移除它的 Run 记录；仍有未结束的 Run 时会被拒绝。确认删除？')+'\n'+team.name))return;
       const result=await this.send('DELETE','/api/teams/'+encodeURIComponent(team.id));
       if(result)await this.notify(t('团队已删除。'));
     }));
-    if(this.busy)actions.querySelectorAll('button').forEach(b=>b.disabled=true);
-    card.append(actions);
+    if(this.busy)manageActions.querySelectorAll('button').forEach(b=>b.disabled=true);
+    management.append(manageActions);
+    card.append(actions,management);
     if(this.expanded.has(team.id))card.append(this.renderRuns(team));
     if(this.scheduleOpen.has(team.id))card.append(this.renderSchedule(team));
     return card;
@@ -683,11 +1118,14 @@ class TeamsPanel{
     for(const run of [...entry.rows].reverse()){
       const row=this.button('');
       row.className='team-run-row';
-      row.append(this.runBadge(run.status));
+      row.append(this.runBadges(run));
       row.append(this.node('span',run.goal||run.id,'team-run-goal'));
+      const progress=teamRunProgress(run);
+      if(progress)row.append(this.node('small',progress.completed+'/'+progress.total,'team-run-progress muted'));
       const updated=teamTimeText(run.updatedAt);
       if(updated)row.append(this.node('small',updated,'muted'));
       if(run.stopReason)row.title=t(teamRunStatusLabel(run.status))+' · '+teamRunStopReasonText(run);
+      if(run.nextAction&&run.nextAction.label)row.title=(row.title?row.title+'\n':'')+t_safe('下一步：')+t_safe(run.nextAction.label);
       row.onclick=()=>this.openRun&&this.openRun(team.id,run.id);
       box.append(row);
     }
@@ -972,11 +1410,63 @@ class TeamsPanel{
   }
 }
 
+const TEAM_GRAPH_NODE_WIDTH=208;
+// Dagre 只计算布局；节点仍由 TeamRunScreen 渲染成可交互 DOM，连线由 SVG 绘制。
+// 布局库未加载时返回 null，调用方回退到原有的分层列表，不阻塞 Run 详情。
+function teamGraphLayout(nodes,direction='LR',heightFor=()=>76,verticalNodeWidth=180){
+  const dagre=globalThis.dagre;
+  if(!dagre?.graphlib?.Graph||!Array.isArray(nodes)||!nodes.length)return null;
+  const vertical=direction==='TB',nodeWidth=vertical?verticalNodeWidth:TEAM_GRAPH_NODE_WIDTH;
+  const graph=new dagre.graphlib.Graph().setGraph({
+    rankdir:direction,nodesep:vertical?12:26,ranksep:vertical?36:44,
+    marginx:vertical?8:16,marginy:16,
+  }).setDefaultEdgeLabel(()=>({}));
+  const ids=new Set(nodes.map(node=>node.id));
+  for(const node of nodes)graph.setNode(node.id,{width:nodeWidth,height:Math.max(64,heightFor(node))});
+  for(const node of nodes)for(const dep of node.dependsOn||[])if(ids.has(dep))graph.setEdge(dep,node.id);
+  dagre.layout(graph);
+  const positioned={};
+  for(const node of nodes){
+    const value=graph.node(node.id);
+    positioned[node.id]={x:value.x,y:value.y,width:value.width,height:value.height};
+  }
+  return{
+    width:graph.graph().width,height:graph.graph().height,nodes:positioned,
+    edges:graph.edges().map(edge=>({from:edge.v,to:edge.w,points:graph.edge(edge).points||[]})),
+  };
+}
+
+function teamGraphNodeHeight(node,expandedMemberCount=0){
+  return 104+(node.resultHead?48:0)+(expandedMemberCount?expandedMemberCount*22+12:0);
+}
+
+function appendTeamGraphNodeContent(card,node,{title,status,memberLabels=[],expandedMemberLabels=[]}){
+  const t=BridgeI18n.t,create=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
+  const head=create('div',undefined,'team-graph-node-head');
+  head.append(create('strong',title));
+  if(typeof node.runCount==='number'&&node.runCount>1)head.append(create('span','×'+node.runCount,'team-graph-runs'));
+  card.append(head);
+  const meta=create('div',undefined,'team-graph-node-meta'),chips=create('div',undefined,'team-graph-kinds');
+  for(const label of memberLabels.filter(Boolean))chips.append(create('span',label,'team-graph-kind'));
+  meta.append(chips,teamStatusBadge(status,TEAM_TASK_STATUS_LABELS));card.append(meta);
+  if(node.resultHead){
+    card.append(create('p',node.resultHead,'task-instructions'));
+    if(node.truncated)card.append(create('span',t('已截断'),'team-truncated'));
+  }
+  if(expandedMemberLabels.length){
+    const list=create('div',undefined,'team-graph-members');
+    for(const label of expandedMemberLabels)list.append(create('span',label,'team-graph-member'));
+    card.append(list);
+  }
+  return card;
+}
+
 class TeamRunScreen{
   constructor({root,request,openChat,onUnauthorized,onNavigateAway}){
     Object.assign(this,{root,request,openChat,onUnauthorized,onNavigateAway});
     this.teamId=null;this.runId=null;this.team=null;this.detail=null;this.meta=null;
-    this.epoch='';this.lastSeq=-1;this.generation=0;
+    this.swarmDrafts=new Map();
+    this.epoch='';this.lastSeq=-1;this.generation=0;this.refetchRequest=0;
     this.stopFn=null;this.refetchTimer=null;this.actionError='';
     this.actionBusy=false;     // Run 控制按钮的请求中状态（防连点重复 POST）
     this.refetchError='';      // 补读重试耗尽后的就地告警
@@ -1138,6 +1628,7 @@ class TeamRunScreen{
     if(TEAM_TERMINAL_RUN_STATUSES.has(status)){
       // 只在转入终态后补读一次完整 RunDetail；后续空帧不再重读。
       if(!this.terminalSynced){this.terminalSynced=true;this.scheduleRefetch(0);}
+      else if(rows.some(event=>event?.type==='goal_reviewed'||event?.type==='swarm_updated'))this.scheduleRefetch(0);
     }else{
       this.terminalSynced=false;
       if(rows.length)this.scheduleRefetch(400);
@@ -1161,7 +1652,12 @@ class TeamRunScreen{
     const tasks=this.detail.tasks||(this.detail.tasks=[]);
     const task=tasks.find(x=>x.id===taskID);
     if(!task)return; // 计划外/未知任务：交给整页重读兜底
-    const status=TEAM_EVENT_TASK_STATUS[event.type];
+    let status=TEAM_EVENT_TASK_STATUS[event.type];
+    if(event.type==='task_stopped'){
+      const reason=payload.stopReason;
+      const legacyCancelled=reason==='用户取消运行'||reason==='队列消息已被取消'||reason==='superseded_by_first_success';
+      status=payload.status==='cancelled'||payload.status!=='stopped'&&legacyCancelled?'cancelled':'stopped';
+    }
     if(status)task.status=status;
     if(payload.submissionId)task.submissionId=payload.submissionId;
     // 阶段二 payload 增量：停靠分类（错误策略表）与 worktree 基线（diff 入口）。
@@ -1182,11 +1678,14 @@ class TeamRunScreen{
     this.refetchTimer=setTimeout(()=>this.refetch(),delay);
   }
   async refetch(){
-    const generation=this.generation;
+    const generation=this.generation,request=++this.refetchRequest;
+    const epoch=this.epoch,sequence=this.lastSeq,metaJSON=this._lastMetaJSON;
     if(!this.teamId||!this.runId)return;
     try{
       const detail=await this.request(this.runUrl(''));
       if(generation!==this.generation)return;
+      if(request!==this.refetchRequest)return;
+      if(epoch!==this.epoch||sequence!==this.lastSeq||metaJSON!==this._lastMetaJSON){this.scheduleRefetch(0);return;}
       this.detail=detail;
       this.refetchFailures=0;this.refetchError='';
       // 拿到权威快照后解除 decision 卡的 busy：已作答的问题转灰态；仍 open 的
@@ -1196,7 +1695,7 @@ class TeamRunScreen{
     }catch{
       // 连接问题交给 transport 重连；此处有限重试，避免终态帧后的唯一一次
       // 补读失败把任务卡永远留在旧状态。
-      if(generation!==this.generation||!this.stopFn)return;
+      if(generation!==this.generation||request!==this.refetchRequest||!this.stopFn)return;
       if(++this.refetchFailures<=5){this.scheduleRefetch(1000);return;}
       // 重试耗尽：解除决策卡 busy 并就地报错，否则按钮会永久变灰且用户不知情。
       for(const entry of this.questionState.values())entry.busy=false;
@@ -1282,6 +1781,14 @@ class TeamRunScreen{
         box.append(grid);
       }
     }
+    const collaboration=data.collaboration;
+    if(collaboration&&typeof collaboration==='object'){
+      const bits=[collaboration.singleDelivery?t('单助手端到端闭环'):t('多成员协作')];
+      if(typeof collaboration.forwardCount==='number')bits.push(t('转交 ')+collaboration.forwardCount+t(' 次'));
+      if(typeof collaboration.failureTriageCount==='number')bits.push(t('失败分诊 ')+collaboration.failureTriageCount+t(' 次'));
+      if(typeof collaboration.contextTruncationCount==='number')bits.push(t('上下文截断 ')+collaboration.contextTruncationCount+t(' 次'));
+      box.append(this.node('p',bits.join(' · '),'muted'));
+    }
     const budget=data.budget;
     if(budget&&typeof budget==='object'){
       const line=this.node('p',undefined,'muted');
@@ -1297,13 +1804,89 @@ class TeamRunScreen{
     box.append(this.node('p',t('Token 按任务归因暂不支持。'),'muted'));
     return box;
   }
+  renderCollaboration(){
+    const data=this.detail&&this.detail.collaboration;
+    if(!data||data.schemaVersion!==1)return null;
+    const t=BridgeI18n.t,box=this.node('details',undefined,'team-collaboration');
+    const pattern=t(TEAM_COLLABORATION_PATTERN_LABELS[data.pattern]||data.pattern||'');
+    const revision=typeof data.revision==='number'?' · r'+data.revision:'';
+    const summary=this.node('summary',t('协作协议')+' · '+pattern+revision);
+    box.append(summary);
+    const patternNote=data.patternSource==='lead-declared'?t('Lead 声明的模式；实际依赖仍由 DAG 决定'):t('只读投影，不参与调度');
+    box.append(this.node('p',patternNote,'muted'));
+    const participants=[data.orchestrator,...(Array.isArray(data.members)?data.members:[])].filter(member=>member&&member.memberId);
+    const names=new Map(participants.map(member=>[member.memberId,member.name||member.memberId]));
+    const relations=ids=>(Array.isArray(ids)?ids:[]).map(id=>names.get(id)||id).join(t('、'))||t('无');
+    const list=this.node('div',undefined,'team-collaboration-members');
+    for(const member of participants){
+      const row=this.node('section',undefined,'team-collaboration-member');
+      const head=this.node('div',undefined,'team-collaboration-member-head');
+      head.append(this.node('strong',member.name||member.memberId));
+      head.append(this.node('span',t(TEAM_ROLE_LABELS[member.role]||member.role||'member'),'team-member'));
+      row.append(head);
+      row.append(this.node('p',t('接收自')+t('：')+relations(member.receiveFrom),'muted'));
+      row.append(this.node('p',t('汇报给')+t('：')+relations(member.reportTo),'muted'));
+      list.append(row);
+    }
+    if(!participants.length)list.append(this.node('p',t('当前 Run 还没有实际参与成员。'),'muted'));
+    box.append(list);
+    const source=this.node('details',undefined,'team-collaboration-source');
+    source.append(this.node('summary',t('协议原文')));
+    source.append(this.node('pre',String(data.rawMarkdown||'')));
+    box.append(source);
+    return box;
+  }
   renderGraph(){
     if(!this.graph||this.graph.loading||this.graph.error||!this.graph.data)return null;
     const nodes=Array.isArray(this.graph.data.nodes)?this.graph.data.nodes.filter(node=>node&&typeof node.id==='string'):[];
     if(!nodes.length)return null;
     const t=BridgeI18n.t;
     const box=this.node('section',undefined,'team-graph');
-    box.append(this.node('h3',t('阶段图')));
+    box.setAttribute('data-ui','');
+    const head=this.node('div',undefined,'team-graph-head');
+    head.append(this.node('h3',t('阶段图')));
+    head.append(this.node('span',nodes.length+' '+t('个任务'),'team-graph-count'));
+    box.append(head);
+    // Run 正文中央列约 760px：三节点链可横向完整展示，更长链改纵向；
+    // 手机使用全宽分层卡片，避免并行分支的 DAG 画布超出内容区。
+    const compact=typeof globalThis.matchMedia==='function'&&globalThis.matchMedia('(max-width:720px)').matches;
+    const direction=compact||nodes.length>3?'TB':'LR';
+    const heightFor=node=>{
+      const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
+      return teamGraphNodeHeight(node,aggregate&&this.graphOpen.has(node.id)?node.memberIds.length:0);
+    };
+    const layout=compact?null:teamGraphLayout(nodes,direction,heightFor,direction==='TB'?240:180);
+    if(layout){
+      const canvas=this.node('div',undefined,'team-graph-canvas');
+      const stage=this.node('div',undefined,'team-graph-stage');
+      stage.style.width=layout.width+'px';stage.style.height=layout.height+'px';
+      const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.setAttribute('class','team-graph-edges');svg.setAttribute('width',layout.width);svg.setAttribute('height',layout.height);
+      svg.setAttribute('viewBox','0 0 '+layout.width+' '+layout.height);svg.setAttribute('aria-hidden','true');
+      const defs=document.createElementNS('http://www.w3.org/2000/svg','defs');
+      const marker=document.createElementNS('http://www.w3.org/2000/svg','marker');
+      const markerID='team-graph-arrowhead-'+this.generation;
+      for(const [name,value] of Object.entries({id:markerID,markerWidth:8,markerHeight:8,refX:7,refY:4,orient:'auto',markerUnits:'strokeWidth'}))marker.setAttribute(name,value);
+      const arrowhead=document.createElementNS('http://www.w3.org/2000/svg','path');
+      arrowhead.setAttribute('d','M0,0 L8,4 L0,8 z');arrowhead.setAttribute('class','team-graph-arrowhead');
+      marker.append(arrowhead);defs.append(marker);svg.append(defs);
+      for(const edge of layout.edges){
+        if(edge.points.length<2)continue;
+        const path=document.createElementNS('http://www.w3.org/2000/svg','path');
+        path.setAttribute('class','team-graph-edge');
+        path.setAttribute('d',edge.points.map((point,index)=>(index?'L':'M')+point.x+','+point.y).join(' '));
+        path.setAttribute('marker-end','url(#'+markerID+')');svg.append(path);
+      }
+      for(const node of nodes){
+        const position=layout.nodes[node.id],card=this.renderGraphNode(node);
+        card.className+=' positioned';
+        card.style.left=(position.x-position.width/2)+'px';card.style.top=(position.y-position.height/2)+'px';
+        card.style.width=position.width+'px';card.style.height=position.height+'px';
+        stage.append(card);
+      }
+      stage.prepend(svg);canvas.append(stage);box.append(canvas);
+      return box;
+    }
     const layers=this.graphLayers(nodes);
     for(const [index,layer] of layers.entries()){
       if(index){
@@ -1343,7 +1926,6 @@ class TeamRunScreen{
     return layers;
   }
   renderGraphNode(node){
-    const t=BridgeI18n.t;
     const aggregate=Array.isArray(node.memberIds)&&node.memberIds.length>1;
     // 本地 detail 实时覆盖仅限单任务节点（非聚合且 runCount===1）：派生链/
     // 修复链聚合节点的 id=根任务 ID，findTask 命中的是根任务本人的陈旧终态，
@@ -1351,7 +1933,9 @@ class TeamRunScreen{
     //（根任务已终态、派生任务 running）会误显「已完成 ×N」而非「进行中」。
     const single=!aggregate&&!(typeof node.runCount==='number'&&node.runCount>1);
     const detailTask=single?this.findTask(node.id):null;
+    const status=detailTask?detailTask.status:node.status;
     const card=this.node('div',undefined,'team-graph-node'+(aggregate?' aggregate':''));
+    card.dataset.status=status;
     card.setAttribute('role','button');
     card.tabIndex=0;
     const activate=()=>{
@@ -1367,40 +1951,24 @@ class TeamRunScreen{
     card.onkeydown=event=>{
       if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}
     };
-    const head=this.node('div',undefined,'team-graph-node-head');
-    head.append(this.node('strong',node.label||node.id));
-    if(typeof node.runCount==='number'&&node.runCount>1)head.append(this.node('span','×'+node.runCount,'team-graph-runs'));
-    head.append(this.taskBadge(detailTask?detailTask.status:node.status));
-    card.append(head);
-    const kinds=Array.isArray(node.agentKinds)?node.agentKinds:[];
-    if(kinds.length){
-      const chips=this.node('div',undefined,'team-graph-kinds');
-      for(const kind of kinds)chips.append(this.node('span',BridgeI18n.agentLabel(kind),'team-graph-kind'));
-      card.append(chips);
-    }
-    if(Array.isArray(node.dependsOn)&&node.dependsOn.length){
-      card.append(this.node('p',t('依赖：')+node.dependsOn.join(t('、')),'muted team-graph-deps'));
-    }
-    if(node.resultHead){
-      card.append(this.node('p',node.resultHead,'task-instructions'));
-      if(node.truncated)card.append(this.node('span',t('已截断'),'team-truncated'));
-    }
-    if(aggregate&&this.graphOpen.has(node.id)){
-      const list=this.node('div',undefined,'team-graph-members');
-      for(const memberId of node.memberIds){
-        const member=this.teamMember(memberId);
-        list.append(this.node('span',(member?(member.name||member.id):memberId)
-          +(member?' · '+BridgeI18n.agentLabel(member.agentKind):''),'team-graph-member'));
-      }
-      card.append(list);
-    }
-    return card;
+    const title=detailTask&&typeof teamWorkflowTaskTitle==='function'?teamWorkflowTaskTitle(detailTask):node.label||node.id;
+    const kinds=Array.isArray(node.agentKinds)?node.agentKinds:[],memberIds=Array.isArray(node.memberIds)?node.memberIds:[];
+    const memberLabels=memberIds.length?memberIds.map(memberId=>{
+      const member=this.teamMember(memberId);
+      return typeof teamWorkflowMemberLabel==='function'?teamWorkflowMemberLabel(member,{memberId}):(member?(member.name||member.id):memberId);
+    }):kinds.map(kind=>BridgeI18n.agentLabel(kind));
+    const expandedMemberLabels=aggregate&&this.graphOpen.has(node.id)?memberIds.map(memberId=>{
+      const member=this.teamMember(memberId);
+      return(member?(member.name||member.id):memberId)+(member?' · '+BridgeI18n.agentLabel(member.agentKind):'');
+    }):[];
+    return appendTeamGraphNodeContent(card,node,{title,status,memberLabels,expandedMemberLabels});
   }
   leave(){
     this.close();
     this.onNavigateAway&&this.onNavigateAway();
   }
   close(){
+    this.generation++;
     clearTimeout(this.refetchTimer);this.refetchTimer=null;
     if(this.stopFn){this.stopFn();this.stopFn=null;}
   }
@@ -1423,11 +1991,11 @@ class TeamRunScreen{
     info.append(this.node('h1',detail.goal||detail.id));
     const statusLine=this.node('p',undefined,'team-run-status');
     statusLine.append(this.runBadge(detail.status));
+    if(detail.outcome&&detail.status==='completed')statusLine.append(this.node('span',t(detail.outcome.label),'team-badge '+(detail.outcome.status==='satisfied'?'b-completed':'b-waiting_input')));
     if(detail.scheduledFrom)statusLine.append(this.node('span',t('定时触发'),'team-badge b-ready'));
     if(detail.stopReason){const reason=this.node('span',teamRunStopReasonText(detail),'team-stop-reason');reason.title=detail.stopReason;statusLine.append(reason);}
     if(this.reconnecting){
-      // 断线提示 chip：transport 重试期间置位，成功帧到达自清（对照聊天页
-      // #status 的 offline 样式，但 Run 页 DOM 无 #status，就地展示）。
+      // 断线提示 chip：transport 重试期间置位，成功帧到达自清，Run 页就地展示。
       statusLine.append(this.node('span',t('连接中断，重连中…'),'status offline'));
     }
     const verifyBadge=this.renderVerifyBadge();
@@ -1437,6 +2005,10 @@ class TeamRunScreen{
     head.append(back,info,this.renderActions());
     root.append(head);
     const body=this.node('div',undefined,'team-run-body');
+    if(detail.swarm&&typeof TeamSwarmPanel!=='undefined')body.append(new TeamSwarmPanel({run:detail,teamId:this.teamId,request:this.request,drafts:this.swarmDrafts,onChange:()=>this.scheduleRefetch(0)}).render());
+    for(const outcome of detail.goalOutcomes||[]){
+      body.append(renderTeamGoalReview(outcome,{executionStatus:detail.status}));
+    }
     if(this.stalled){
       // stall 顶部提示条（§6.3「20 分钟无成功只通知不停止」）：事件到达展示，
       // 后续任何任务事件推进即由 applyFrame 撤下；sinceMs 为当时已停时长。
@@ -1464,8 +2036,6 @@ class TeamRunScreen{
     }
     // 交付证据（§8 阶段三）：完成的 Run 展示 Agent / 审查 / 验证各维度，不设验收。
     if(detail.status==='completed'&&detail.delivery)body.append(this.renderDelivery());
-    // 统计卡（阶段四）：进页拉一次，手动刷新按钮重拉；404（旧网关）整块不显示。
-    if(this.stats)body.append(this.renderStats());
     // 成员提问（§5.4，detail.pendingQuestions 是权威快照）：open 画应答卡，
     // answered/withdrawn 画灰态徽标——放在任务列表前，等待输入最先被看到。
     const questions=detail.pendingQuestions;
@@ -1481,9 +2051,13 @@ class TeamRunScreen{
     // 回退平铺列表——图是补充视图，缺省时任务卡照常渲染。
     const graphSection=this.renderGraph();
     if(graphSection)body.append(graphSection);
+    const collaboration=this.renderCollaboration();
+    if(collaboration)body.append(collaboration);
+    // 统计是次要信息，排在执行路径之后；404（旧网关）整块不显示。
+    if(this.stats)body.append(this.renderStats());
     const tasks=detail.tasks||[];
     if(!tasks.length)body.append(this.node('p',t('还没有任务。'),'muted'));
-    for(const task of tasks)body.append(this.renderTask(task));
+    if(tasks.length)body.append(this.renderTaskGroups(tasks));
     root.append(body);
     body.scrollTop=scrollTop;
   }
@@ -1560,6 +2134,10 @@ class TeamRunScreen{
     const box=this.node('div',undefined,'team-run-actions');
     const status=this.detail.status;
     const stopReason=this.detail.stopReason||'';
+    if((status==='outcome_unknown'||status==='waiting_input')&&(this.detail.tasks||[]).some(task=>task.status==='outcome_unknown')){
+      box.append(this.node('span',t('先打开原会话核查，再重新读取完成结果；不会重发任务。'),'muted team-resume-hint'));
+      box.append(this.button(t('核查原会话结果'),()=>this.postAction('recheck')));
+    }
     if(status==='waiting_input'){
       const hint=this.resumeHint();
       if(hint)box.append(this.node('span',hint,'muted team-resume-hint'));
@@ -1614,6 +2192,7 @@ class TeamRunScreen{
       if(teamId!==this.teamId||runId!==this.runId||generation!==this.generation)return;
       this.detail=detail;this.meta=null;
       this.actionNotice=({resume:BridgeI18n.t('已继续运行'),pause:BridgeI18n.t('已暂停运行'),cancel:BridgeI18n.t('已取消运行')})[action]||BridgeI18n.t('操作已完成');
+      if(action==='recheck')this.actionNotice=BridgeI18n.t((detail.tasks||[]).some(task=>task.status==='outcome_unknown')?'仍有任务缺少可确认的完成回合，请打开原会话核查或创建修订 Run。':'已核查原会话结果，请检查任务并继续运行。');
       // 暂停/继续/取消会改变图节点状态与统计口径：动作成功后补拉一次补充视图
       //（404 静默回退，旧网关不报错）。
       this.loadGraph();
@@ -1627,6 +2206,24 @@ class TeamRunScreen{
       this.actionBusy=false;this.render();
     }
   }
+  renderTaskGroups(tasks){
+    const t=BridgeI18n.t,groups=new Map();
+    for(const task of tasks){
+      const phase=task.phase||t('其他');
+      if(!groups.has(phase))groups.set(phase,[]);
+      groups.get(phase).push(task);
+    }
+    const box=this.node('div',undefined,'team-phases');
+    for(const [phase,items] of groups){
+      const completed=items.filter(task=>task.status==='completed').length;
+      const details=this.node('details',undefined,'team-phase');
+      details.dataset.phase=phase;details.open=true;
+      details.append(this.node('summary',phase+' · '+completed+'/'+items.length));
+      for(const task of items)details.append(this.renderTask(task));
+      box.append(details);
+    }
+    return box;
+  }
   renderTask(task){
     const t=BridgeI18n.t;
     const member=this.teamMember(task.memberId);
@@ -1634,7 +2231,7 @@ class TeamRunScreen{
     card.dataset.taskId=task.id; // 动作卡/问题卡的来源任务与派生任务跳转锚点
     const head=this.node('div',undefined,'task-head');
     head.append(this.node('strong',task.id));
-    head.append(this.node('span',(member?(member.name||member.id):task.memberId)+(member?' · '+BridgeI18n.agentLabel(member.agentKind):''),'task-member'));
+    head.append(this.node('span',member?teamMemberAgentLabel(member):task.memberId,'task-member'));
     head.append(this.taskBadge(task.status));
     card.append(head);
     if(task.instructionsHead)card.append(this.node('p',task.instructionsHead,'task-instructions'));
@@ -1645,6 +2242,7 @@ class TeamRunScreen{
     if(task.baseRevision)metaBits.push(t('基线：')+String(task.baseRevision).slice(0,12));
     if(task.cachedFrom)metaBits.push(t('缓存复用：')+task.cachedFrom);
     if(task.executionThreadId)metaBits.push(t('执行线程：')+task.executionThreadId);
+    if(task.reviewIndependence===false)metaBits.push(t('非独立审查'));
     if(this.detail.workspace?.writeLockHeldBy===task.id)metaBits.push(t('持有项目写锁'));
     if(metaBits.length)card.append(this.node('p',metaBits.join(' · '),'muted task-meta'));
     // 停靠类 outcome 已由下方「停靠原因」按结构化码本地化，服务端整句不再重复展示。
@@ -1673,18 +2271,14 @@ class TeamRunScreen{
       card.append(box);
     }
     const actions=this.node('div',undefined,'task-actions');
-    // 原会话跳转的兜底链：结果引用的会话 > 任务所属执行线程的绑定会话 >
-    // 成员绑定会话（阶段一执行线程契约：任务经线程派发，线程绑定是跳转的
-    // 权威来源；旧网关无线程投影时退回成员会话）。
-    const thread=(this.detail?.threads||[]).find(th=>th.id===task.executionThreadId);
-    const sessionId=result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null);
+    // 实时面板与完整 Run 共用会话解析，避免两处跳转口径漂移。
+    const sessionId=teamTaskSessionId(task,this.detail,member);
     if(sessionId){
       const open=this.button(t('打开原会话'),()=>{
-        // 直接衔接 openChat：openChat 自己会停订阅并隐藏 Run 区块。不走 leave()，
-        // 因为 leave() 会先把 Run 的历史条目退栈，紧接着的 openChat 再压入会话，
-        // 退回列表的那一步会落空。
+        // 不先 leave() 退栈；由会话入口记录来源 Run 和结果回合，提供准确的返回路径。
+        const source={teamId:this.teamId,runId:this.runId,taskId:task.id,...(result?.turnId?{turnId:result.turnId}:{})};
         this.close();
-        this.openChat&&this.openChat(sessionId);
+        this.openChat&&this.openChat(sessionId,source);
       });
       actions.append(open);
     }
@@ -2080,7 +2674,7 @@ class TeamRunScreen{
     const head=document.createElement('div');head.className='picker-head';
     const heading=document.createElement('h2');heading.id='team-forward-dialog-heading';
     const close=document.createElement('button');
-    close.type='button';close.className='icon-button';close.textContent='×';
+    close.type='button';close.className='icon-button';close.append(BridgeIcons.close());
     close.setAttribute('aria-label',t_safe('关闭'));
     close.setAttribute('data-i18n-aria-label','关闭');
     close.onclick=()=>{dialog.forwardState=null;dialog.close();};
@@ -2094,12 +2688,10 @@ class TeamRunScreen{
   openForwardDialog(task){
     const dialog=this.forwardDialog();
     const member=this.teamMember(task.memberId);
-    // 来源会话兜底链与任务卡的原会话跳转一致（阶段一执行线程契约）：
-    // 结果引用 > 执行线程绑定 > 成员绑定。
-    const thread=(this.detail?.threads||[]).find(th=>th.id===task.executionThreadId);
+    // 来源会话与任务卡、实时面板使用同一兜底链。
     dialog.forwardState={
       taskId:task.id,
-      sourceSessionId:task.result?.sessionId||(thread?thread.providerSessionId:null)||(member?member.sessionId:null),
+      sourceSessionId:teamTaskSessionId(task,this.detail,member),
       source:'task',scope:'main',
       target:'',note:'',
       busy:false,error:'',
@@ -2142,7 +2734,7 @@ class TeamRunScreen{
     const target=document.createElement('select');
     target.append(new Option(t('请选择成员…'),''));
     for(const m of (this.team?.members||[]).filter(m=>m.enabled!==false)){
-      target.append(new Option((m.id===(this.team?.leadId||'')?t('负责')+' · ':'')+(m.name||m.id)+' · '+BridgeI18n.agentLabel(m.agentKind),m.id));
+      target.append(new Option((m.id===(this.team?.leadId||'')?t('负责')+' · ':'')+teamMemberAgentLabel(m),m.id));
     }
     target.value=state.target;
     target.onchange=()=>{state.target=target.value;state.id=teamUUID();};
@@ -2198,4 +2790,4 @@ class TeamRunScreen{
     body.append(form);
   }
 }
-if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamRunStopReasonText};
+if(typeof module!=='undefined')module.exports={TeamsPanel,TeamRunScreen,TeamRunDialogHost,teamMemberAgentLabel,teamRunStopReasonText,teamRunEchoLine,teamGraphLayout,teamGraphNodeHeight,appendTeamGraphNodeContent,renderTeamGoalReview,teamRunGroup,teamTaskSessionId};

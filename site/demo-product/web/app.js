@@ -1,16 +1,57 @@
 'use strict';
 const $ = id => document.getElementById(id),t=BridgeI18n.t;
-let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false, autoQueueArmed=false;
+let csrf='', currentId=null, currentTeam=null, state=null, listOffset=0, listQuery='', approvalStamp='', sending=false;
+let openChatRequest=0;
 let currentHost='local', listRows=[], projectDirectory=[], listGeneration=0, listLoading=false, listHasMore=false;
 let chatTimeline=null;
 BridgeConnection.onchange=()=>{BridgeTransport.wake?.();chatTimeline?.refill?.();refreshActivity();};
 // Keep the tab title on the open chat; user content is never passed through t().
 function syncDocumentTitle(){
+  if(typeof teamRunScreen!=='undefined'&&!$('team-run').hidden&&teamRunScreen?.detail){
+    document.title=(teamRunScreen.detail.goal||teamRunScreen.detail.id)+' · '+t('Mobile / Bridge');return;
+  }
   const open=currentId&&!$('app').hidden&&$('app').classList.contains('chat-open'),title=currentTeam?.name||state?.title;
   document.title=open&&title&&!state?.loadingHistory?title+' · '+t('Mobile / Bridge'):t('Mobile / Bridge · 手机连接');
 }
 const submittedRequestIds=new Set();
 const sessionActivity=new SessionActivity();
+// 本设备系统通知：浏览器走 Notification API，安卓 App 走 MobileBridgeNative。
+// 页面或 App 进程存活期间才轮询提醒；关闭网页后的通知仍由 Bark/ntfy 通道负责。
+function renderLocalNotify(){
+  const status=window.localNotify?.state()||{supported:false,enabled:false,message:''};
+  $('local-notify').checked=status.enabled;
+  $('local-notify').disabled=!status.supported;
+  $('local-notify-note').textContent=status.message;
+}
+window.localNotify=new LocalNotify({t,onChange:renderLocalNotify});
+$('local-notify').onchange=async()=>{
+  const box=$('local-notify');
+  box.disabled=true;
+  const wanted=box.checked;
+  await window.localNotify.setEnabled(wanted);
+  box.disabled=!window.localNotify.state().supported;
+  renderLocalNotify();
+};
+// 点击安卓通知后由原生带回会话标识；浏览器点击走 local-notify 自己的 hash 跳转。
+// 未登录时不能消费原生暂存，否则冷启动派发会抢在登录前丢掉目标会话。
+function consumeNativeChat(fallback=null){
+  if($('app').hidden)return null;
+  try{
+    const native=window.MobileBridgeNative;
+    if(!native?.consumePendingChat)return fallback;
+    return JSON.parse(native.consumePendingChat()||'null')||fallback;
+  }catch{return fallback;}
+}
+window.addEventListener('mobilebridge-open-chat',event=>{
+  const pending=consumeNativeChat(event.detail||null);
+  if(pending?.id)openChat(pending.id,pending.host||'local').catch(error=>toast(error.message));
+});
+window.addEventListener('mobilebridge-notification-permission',()=>{
+  // 原生授权返回后同步权限标记，local-notify 的等待回调也会处理同一事件。
+  try{const native=window.MobileBridgeNative;if(native?.notifications)window.localNotify.permission=native.notificationPermission();}catch{}
+  renderLocalNotify();
+});
+renderLocalNotify();
 const recentInteractions=new Map();
 function bumpRecency(id,host,at=Date.now()){
   const key=chatKey(id,host);recentInteractions.set(key,Math.max(at,recentInteractions.get(key)||0));
@@ -35,14 +76,16 @@ async function goalAction(action,payload) {
   const id=currentId,host=currentHost;
   const result=await api(sessionUrl(id,'goal/'+action,host),payload);
   if(!result.confirmed)throw Error('目标操作结果尚未确认，请查看目标状态');
-  if(currentId===id&&currentHost===host){state={...state,goal:action==='cancel'?null:(result.result?.goal||result.result)};workModes.render(state,$('send-mode').value,false);}
-  toast(action==='cancel'?'目标已关闭':action==='edit'?'目标已修改，保持暂停':payload.status==='paused'?'目标已暂停':'目标已恢复');
+  if(currentId===id&&currentHost===host){state={...state,goal:result.goal||(action==='cancel'?null:(result.result?.goal||result.result))};workModes.render(state,$('send-mode').value,false);}
+  if(result.goal?.pendingControl){toast('控制请求已记录，等待派发结果确认');return;}
+  toast(action==='cancel'?'目标已关闭':action==='edit'?'目标已修改，保持暂停':action==='complete'?'目标已完成':action==='continue'?'已人工继续一轮':action==='review'?'已进入人工复核':payload.status==='paused'?'目标已暂停':'目标已恢复');
 }
-const workModes=new WorkModes({select:$('work-mode'),hint:$('mode-hint'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
-  onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload)});
-const accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
-$('account-details').ontoggle=()=>{if($('account-details').open)accountPanel.refresh();};
-const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),enabled:()=>compactAvailable()&&!compactChat.busy,
+const workModes=new WorkModes({select:$('work-mode'),control:$('work-mode-button'),goalRoot:$('goal-state'),goalToggle:$('goal-toggle'),newId:uuid,
+  onCancel:payload=>goalAction('cancel',payload),onStatus:payload=>goalAction('status',payload),onEdit:payload=>goalAction('edit',payload),
+  onContinue:payload=>goalAction('continue',payload),onComplete:payload=>goalAction('complete',payload),onReview:payload=>goalAction('review',payload)});
+let accountPanel=null,accountsPanel=null,poolTabSections=[],activePool=0,accountsLoading=false;
+$('account-details').ontoggle=()=>{if($('account-details').open)accountPanel?.refresh();};
+const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl({root:$('migrate-control'),enabled:()=>transcriptMaintenanceAvailable()&&!compactChat.busy,
   request:body=>api(sessionUrl(currentId,'migrate',currentHost),body),
   onBusy:()=>renderCompactState(),
   onMigrated:async(result,label,body,operation)=>{$('chat-details-dialog').close();
@@ -68,7 +111,7 @@ const migrateControl=typeof MigrateControl==='undefined'?null:new MigrateControl
     toast(result.sent?(operation==='compact'?t('网关转录压缩已完成，正在打开新会话'):t('已迁移到 ')+label+t('，正在打开新会话')):t('目标会话已创建，正在等待 ')+label+t(' 加载：')+(result.warning||''));
     if(currentId!==result.id)openChat(result.id,result.host||'local').catch(e=>toast(e.message));},
   onError:(error,operation)=>{if(operation==='compact')$('compact-error').textContent=t(error.message);else toast(error.message);}});
-$('chat-details-dialog').addEventListener('close',()=>migrateControl?.dismiss());
+$('chat-details-dialog').addEventListener('close',()=>{migrateControl?.dismiss();compactMethod='';compactScope='';$('compact-instructions').value='';renderCompactState();});
 window.addEventListener('focus',()=>{if(!$('app').hidden)accountsPanel?.refresh();});
 function chatKey(id=currentId,host=currentHost){return host+'|'+id;}
 function sessionUrl(id,action='',host=currentHost){return '/api/sessions/'+id+(action?'/'+action:'')+'?host='+encodeURIComponent(host);}
@@ -77,7 +120,7 @@ let catalogData={models:null,skills:null};let catalogResults={models:null,skills
 let skillSuggestionRows=[],skillSuggestionIndex=0,skillSuggestionRange=null,skillSuggestionQuery='';
 function el(tag,cls,text){const node=document.createElement(tag);if(cls)node.className=cls;if(text!==undefined)node.textContent=text;return node;}
 function toast(text){text=t(text);$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').hidden=true,4200);}
-async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await BridgeConnection.request(hostUrl(path),options);const data=await response.json().catch(()=>({}));if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus});}return data;}
+async function api(path,body,signal){const options={signal,credentials:'same-origin',cache:'no-store',headers:{}};if(body!==undefined){options.method='POST';options.headers={'Content-Type':'application/json','X-CSRF-Token':csrf};options.body=JSON.stringify(body);}const response=await BridgeConnection.request(hostUrl(path),options);const data=await response.json().catch(()=>({}));if(!response.ok){if(response.status===401)showLogin();throw Object.assign(Error(data.error||t('请求失败')),{loginStatus:data.loginStatus,code:data.code,status:response.status});}if((data.status==='accepted'||data.status==='queued')&&data.inputId&&data.teamId&&data.associationStatus)globalThis.BridgeTeamCanvas?.accepted(data);return data;}
 async function uploadAttachment(key,id,file){const separator=key.indexOf('|'),host=key.slice(0,separator),thread=key.slice(separator+1);const response=await BridgeConnection.request(sessionUrl(thread,'uploads',host)+'&id='+encodeURIComponent(id)+'&name='+encodeURIComponent(file.name),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-CSRF-Token':csrf},body:file});const result=await response.json();if(!response.ok){if(response.status===401)showLogin();const error=Error(result.error||t('附件上传失败，请重试'));error.retryable=response.status>=500||response.status===429;throw error;}return result;}
 async function uploadAttachmentWithRetry(key,id,file){let last;for(let attempt=0;attempt<3;attempt++){try{return await uploadAttachment(key,id,file);}catch(error){last=error;if(error.name==='AbortError'||error.retryable===false||attempt===2)throw error;await new Promise(resolve=>setTimeout(resolve,400*(attempt+1)));}}if(last instanceof TypeError)last.message=t('附件上传中断，请重试');throw last;}
 const attachments=new ChatAttachments({root:$('attachment-list'),button:$('attach-button'),input:$('attachment-input'),paste:$('message'),drop:$('chat'),preview:(key,id)=>{const at=key.indexOf('|'),host=key.slice(0,at),thread=key.slice(at+1);return BridgeConnection.url(hostUrl(sessionUrl(thread,'uploads/'+encodeURIComponent(id)+'/preview',host)));},onChange:()=>{if(currentId)syncSendButton();},thumbnail:async(key,id,file)=>{
@@ -94,7 +137,8 @@ function renderActivity(){for(const button of document.querySelectorAll('.sessio
   if(indicator){const dot=el('span','session-indicator '+indicator.kind);dot.title=t(indicator.label);dot.setAttribute('aria-hidden','true');const label=el('span','session-activity-label',t(indicator.label));button.querySelector('strong').prepend(label,dot);}
 }}
 async function refreshActivity(){
-  if(activityBusy||$('app').hidden||document.hidden)return;activityBusy=true;
+  // 后台标签页默认省流；本设备系统通知开启时仍需轮询才能发现待确认与完成。
+  if(activityBusy||$('app').hidden||(document.hidden&&!window.localNotify?.enabled))return;activityBusy=true;
   const hosts={};for(const row of listRows)(hosts[row.host]??=[]).push(row.id);
   try{const result=await api('/api/activity',{hosts,visible:visibleChat()});
     if(!$('app').hidden){
@@ -105,11 +149,20 @@ async function refreshActivity(){
         if(listRevision===null)listRevision=result.listRevision;
         else if(result.listRevision!==listRevision){listRevision=result.listRevision;loadList(true).catch(e=>toast(e.message));}
       }
-      sessionActivity.update(result.sessions,visibleChat());for(const row of result.sessions)if(row.recency)bumpRecency(row.id,row.host,row.recency);renderActivity();
+      sessionActivity.update(result.sessions,visibleChat());for(const row of result.sessions)if(row.recency)bumpRecency(row.id,row.host,row.recency);renderActivity();renderInboxCount(Number(result.inboxCount)||0);
+      for(const event of sessionActivity.localNotifications(result.sessions,visibleChat(),document.hidden)){
+        const chat=listRows.find(row=>row.id===event.id&&row.host===event.host);
+        window.localNotify?.notify({key:event.key,title:event.kind==='requests'?t('需要你的确认'):event.kind==='completed'?t('运行完毕'):t('运行已结束'),body:chat?.title||t('Mobile / Bridge'),host:event.host,id:event.id});
+      }
     }
   }catch{}finally{activityBusy=false;}
 }
 setInterval(refreshActivity,5000);
+// 跨 Agent 待处理：徽标随活动轮询更新；打开对话框时向网关取完整的最新汇总。
+function renderInboxCount(count){const badge=$('inbox-count');if(!badge)return;badge.hidden=!(count>0);badge.textContent=count>0?String(count):'';$('inbox-button')?.setAttribute('aria-label',t('待处理')+(count>0?' '+count:''));}
+const inbox=window.BridgeInbox&&$('inbox-content')?window.BridgeInbox.controller({container:$('inbox-content'),request:()=>api('/api/inbox'),open:(id,host)=>{$('inbox-dialog').close();openChat(id,host).catch(error=>toast(error.message));}}):null;
+if(inbox)$('inbox-button').onclick=()=>{$('inbox-dialog').showModal();inbox.refresh();};
+else $('inbox-button')?.setAttribute('hidden','');
 window.addEventListener('focus',refreshActivity);
 // 前台恢复三件套之一：回前台立即刷新当前会话与列表，不等下一个轮询周期
 // 或退避重连。focus 与 visibilitychange 常成对触发，1 秒内只执行一次。
@@ -138,24 +191,28 @@ function renderLoginStatus(status=loginStatus){
   $('login-attempts').textContent=loginStatus.blocked?t('此 IP 已被封禁，请在电脑网关 App 的“登录设备”中解除。'):failed?t('剩余尝试次数：')+loginStatus.attemptsRemaining+'/'+loginStatus.attemptLimit+t('；连续输错 5 次将封禁此 IP。'):'';
   $('login-button').disabled=loginStatus.blocked;
 }
-function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel.clear();chatTimeline?.dispose();chatTimeline=null;document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
+function showLogin(passwordless=false,status){BridgeConnection.unauthenticated();if(typeof accountsPanel!=='undefined')accountsPanel?.clear();accountPanel?.clear();chatTimeline?.dispose();chatTimeline=null;if(typeof teamDashboardPage!=='undefined'&&teamDashboardPage)teamDashboardPage.hidden=true;if(typeof teamsPanel!=='undefined')teamsPanel?.stopPolling();document.querySelectorAll('dialog[open]').forEach(d=>d.close());$('app').hidden=true;$('login').hidden=false;$('credentials').hidden=passwordless;$('noauth').hidden=!passwordless;$('username').required=!passwordless;$('password').required=!passwordless;$('password').value='';$('remember-login').parentElement.hidden=passwordless;$('login-attempts').hidden=passwordless;renderLoginStatus(status);}
 async function start(){
   const auth=await api('/api/auth');BridgeConnection.configure(auth);
   if(!auth.authenticated){showLogin(auth.passwordless,auth.loginStatus);return;}csrf=auth.csrf;BridgeConnection.authenticated(csrf);await enter();
 }
 async function enter(){
   $('login').hidden=true;$('app').hidden=false;accountsPanel?.refresh();
-  if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);}catch(error){toast(error.message);}
-  try{const value=await api('/api/projects');projectDirectory=value.projects||[];}catch(error){toast(error.message);}
-  const list=loadList(true).catch(e=>toast(e.message)),runRoute=typeof parseRunHash==='function'?parseRunHash():null,teamRoute=typeof parseTeamHash==='function'?parseTeamHash():null;
-  if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId);
+  if(teamChat)try{const value=await teamRequest('/api/teams');teamChat.setTeams(value.teams||[]);renderTeamSidebarTeams(value.teams||[]);}catch(error){toast(error.message);}
+  try{const value=await api('/api/projects');projectDirectory=value.projects||[];hiddenProjectCwds=new Set(value.hiddenCwds||[]);}catch(error){toast(error.message);}
+  const list=loadList(true).catch(e=>toast(e.message)),dashboardRoute=location.hash==='#teams',runRoute=typeof parseRunHash==='function'?parseRunHash():null,teamRoute=typeof parseTeamHash==='function'?parseTeamHash():null;
+  if(dashboardRoute)openTeamDashboard({fromRoute:true});
+  else if(runRoute)openTeamRun(runRoute.teamId,runRoute.runId,true);
   else if(teamRoute){const team=teamChat?.teamById(teamRoute.teamId);if(team)openTeamChat(team);else toast('团队不存在或已删除');}
   else{const [id,host='local']=location.hash.slice(1).split('~');if(/^[\w.-]{1,128}$/.test(id))await openChat(id,decodeURIComponent(host));}
+  // 冷启动点击安卓系统通知：原生把目标会话暂存到页面登录之后再交付。
+  const pending=consumeNativeChat();
+  if(pending?.id)await openChat(pending.id,pending.host||'local');
   await list;
 }
 $('login-form').addEventListener('submit',async event=>{event.preventDefault();if(loginStatus.blocked)return;$('login-button').disabled=true;$('login-error').textContent='';try{const result=await api('/api/login',{username:$('username').value,password:$('password').value,remember:$('remember-login').checked});renderLoginStatus({attemptsRemaining:5,attemptLimit:5,blocked:false});csrf=result.csrf;BridgeConnection.authenticated(csrf);$('password').value='';await enter();}catch(error){$('login-error').textContent=loginErrorText(error);renderLoginStatus(error.loginStatus);}finally{$('login-button').disabled=loginStatus.blocked;}});
 // 注销失败时不能静默当成成功：本地凭据已清但服务端会话可能仍然有效，必须在登录页明确告警。
-$('logout').onclick=async()=>{const button=$('logout'),label=button.querySelector('span');if(button.disabled)return;const original=label.textContent;button.disabled=true;label.textContent=t('正在退出…');let logoutFailed=false;try{logoutFailed=await BridgeConnection.logout();}catch(error){logoutFailed=true;}csrf='';state=null;currentId=null;currentTeam=null;teamChat?.close();listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();button.disabled=false;label.textContent=original;if(logoutFailed)$('login-error').textContent=t('本地已退出，但服务端注销失败；请重新登录后再退出一次，或关闭浏览器清除会话。');};
+$('logout').onclick=async()=>{const button=$('logout'),label=button.querySelector('span');if(button.disabled)return;const original=label.textContent;button.disabled=true;label.textContent=t('正在退出…');let logoutFailed=false;try{logoutFailed=await BridgeConnection.logout();}catch(error){logoutFailed=true;}csrf='';state=null;currentId=null;currentTeam=null;teamChat?.close();listRevision=null;$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('sessions').replaceChildren();$('message').value='';sessionStorage.clear();try{window.BridgePendingCommands.clear();}catch{}attachments.reset();sessionActivity.clear();recentInteractions.clear();showLogin();button.disabled=false;label.textContent=original;if(logoutFailed)$('login-error').textContent=t('本地已退出，但服务端注销失败；请重新登录后再退出一次，或关闭浏览器清除会话。');};
 function dateText(value){if(!value)return '';const date=new Date(value*1000),now=new Date();if(date.getFullYear()===now.getFullYear()&&date.getMonth()===now.getMonth()&&date.getDate()===now.getDate())return date.toLocaleTimeString(BridgeI18n.locale(),{hour:'2-digit',minute:'2-digit'});return date.toLocaleDateString(BridgeI18n.locale(),{month:'numeric',day:'numeric'});}
 let listMode=localStorage.getItem('list-mode')==='project'?'project':'recent';
 function renderListMode(){const label=listMode==='project'?'按项目':'最近交互';$('list-mode-label').textContent=t(label);$('list-mode-label').dataset.i18n=label;}
@@ -193,6 +250,25 @@ async function openDefaultTeam(project){
   }
   openTeamChat(team);
 }
+async function hideProject(project){
+  await teamRequest('/api/projects/'+encodeURIComponent(project.key)+'?cwd='+encodeURIComponent(project.cwd),{method:'DELETE'});
+  const cwd=projectCwdKey(project);
+  hiddenProjectCwds.add(cwd);
+  saveNewChatPins(newChatPins().filter(pin=>projectCwdKey(pin)!==cwd));
+  newChatProjects=newChatProjects.filter(item=>projectCwdKey(item)!==cwd);
+  projectDirectory=projectDirectory.filter(item=>projectCwdKey(item)!==cwd);
+  listRows=listRows.filter(row=>row.host!=='local'||chatProjectCwd(row)!==cwd);
+}
+async function removeProjectGroup(project,button,groupKey){
+  if(!window.confirm(t('将从聊天列表和新建聊天项目列表移除，不删除磁盘目录、历史会话或团队。确定移除？')))return;
+  button.disabled=true;
+  try{
+    await hideProject(project);
+    projectGroupLimits.delete(groupKey);renderList();toast(t('项目已从列表移除'));
+  }catch(error){toast(error.message);}
+  finally{button.disabled=false;}
+}
+function chatProjectCwd(chat){return projectCwdKey({cwd:chat.cwd||chat.projectKey.slice(chat.projectKey.indexOf('|')+1)});}
 function renderList(){
   const grouped=listMode==='project';
   $('sessions').replaceChildren();
@@ -202,27 +278,41 @@ function renderList(){
     const team=chat.host==='local'?teamChat?.teamForSession(chat.id):null;
     let parent=$('sessions');
     if(grouped){
-      const cwd=chat.projectKey.slice(chat.projectKey.indexOf('|')+1),project=chat.host==='local'?projectDirectory.find(row=>row.key===chat.projectKey||row.cwd===cwd):null;
-      if(!groups.has(chat.projectKey)){
+      // 分组身份用后端 groupKey：Codex 桌面项目与其根目录下其他 Agent 的
+      // 会话合为一个组；旧数据没有 groupKey 时退回 projectKey。
+      const groupKey=chat.groupKey||chat.projectKey, groupName=chat.groupName||chat.projectName;
+      // 团队入口只使用项目目录中的完整记录；移除则可直接按会话目录隐藏，
+      // 让超出最近项目窗口的本地会话组也能从列表移除。
+      const cwd=chat.cwd||chat.projectKey.slice(chat.projectKey.indexOf('|')+1),project=chat.host==='local'?projectDirectory.find(row=>row.key===chat.projectKey||row.cwd===cwd):null;
+      const removable=project||(chat.host==='local'&&cwd?{key:chat.projectKey,cwd}:null);
+      if(!groups.has(groupKey)){
         const details=el('details','project-group');
-        details.open=localStorage.getItem('group:'+chat.projectKey)!=='closed';
+        details.open=localStorage.getItem('group:'+groupKey)!=='closed';
         // 组头“＋”以组内最近会话预选项目打开新建聊天，省去在对话框里重新挑项目。
         const summary=el('summary');
-        summary.append(el('span','group-name',chat.projectName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
-        const add=el('button','group-add','＋');
+        summary.append(el('span','group-name',groupName+' · '+(chat.host==='local'?t('此电脑'):chat.hostLabel)));
+        if(removable){
+          const remove=el('button','group-action group-remove');
+          remove.type='button';remove.title=t('从列表移除项目');remove.setAttribute('aria-label',t('从列表移除项目'));
+          remove.append(BridgeIcons.close());
+          remove.onclick=event=>{event.preventDefault();event.stopPropagation();return removeProjectGroup(removable,remove,groupKey);};
+          summary.append(remove);
+        }
+        const add=el('button','group-action group-add');
         add.type='button';add.title=t('在此项目新建聊天');add.setAttribute('aria-label',t('在此项目新建聊天'));
+        add.append(BridgeIcons.plus());
         add.onclick=event=>{event.preventDefault();event.stopPropagation();openNewChat(chat);};
         summary.append(add);
         details.append(summary);
-        details.ontoggle=()=>localStorage.setItem('group:'+chat.projectKey,details.open?'open':'closed');
+        details.ontoggle=()=>localStorage.setItem('group:'+groupKey,details.open?'open':'closed');
         if(project)details.append(renderDefaultTeam(project));
-        groups.set(chat.projectKey,details);$('sessions').append(details);
+        groups.set(groupKey,details);$('sessions').append(details);
       }
-      parent=groups.get(chat.projectKey);
+      parent=groups.get(groupKey);
       if(project&&team&&teamChat?.teamForProject(project)?.id===team.id)continue;
-      totals.set(chat.projectKey,(totals.get(chat.projectKey)||0)+1);
-      if((shown.get(chat.projectKey)||0)>=(projectGroupLimits.get(chat.projectKey)||PROJECT_GROUP_PAGE))continue;
-      shown.set(chat.projectKey,(shown.get(chat.projectKey)||0)+1);
+      totals.set(groupKey,(totals.get(groupKey)||0)+1);
+      if((shown.get(groupKey)||0)>=(projectGroupLimits.get(groupKey)||PROJECT_GROUP_PAGE))continue;
+      shown.set(groupKey,(shown.get(groupKey)||0)+1);
     }else{
       const days=(now-(chat.recency||0))/864e5;
       const bucket=TIME_BUCKETS.find(b=>days<=b.days)||TIME_BUCKETS[TIME_BUCKETS.length-1];
@@ -295,7 +385,10 @@ async function loadList(reset=false){
     const result=await api('/api/sessions?q='+encodeURIComponent(listQuery)+'&offset='+listOffset+'&archived='+$('archived').checked);
     if(generation!==listGeneration)return;
     const rows=new Map(listRows.map(row=>[chatKey(row.id,row.host),row]));
-    for(const row of result.sessions){const key=chatKey(row.id,row.host);row.recency=Math.max(row.recency,recentInteractions.get(key)||0);rows.set(key,row);}
+    for(const row of result.sessions){
+      if(row.host==='local'&&hiddenProjectCwds.has(chatProjectCwd(row)))continue;
+      const key=chatKey(row.id,row.host);row.recency=Math.max(row.recency,recentInteractions.get(key)||0);rows.set(key,row);
+    }
     listRows=[...rows.values()];listRows.sort((a,b)=>b.recency-a.recency);
     listOffset+=result.sessions.length;listHasMore=result.sessions.length===100;
     $('host-errors').textContent=(result.unavailableHosts||[]).map(h=>h.label+'：'+h.error).join('\n');
@@ -310,7 +403,7 @@ function loadListOnScroll(){
 $('sessions').onscroll=loadListOnScroll;
 $('search').oninput=()=>{clearTimeout(loadList.timer);loadList.timer=setTimeout(()=>loadList(true).catch(e=>toast(e.message)),300);};$('refresh').onclick=()=>loadList(true).then(()=>toast(t('会话列表已刷新'))).catch(e=>toast(e.message));
 $('archived').onchange=()=>loadList(true).catch(e=>toast(e.message));
-let newChatProjects=[],newChatAgents=[],newChatHiddenCwds=new Set(),creatingChat=false,approvalBusy=0;
+let newChatProjects=[],newChatAgents=[],hiddenProjectCwds=new Set(),creatingChat=false,approvalBusy=0;
 function projectCwdKey(project){return String(project?.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'')||'/';}
 function projectLabel(project){const kind=project.agent||(project.key||'').split(':')[0];const tag=BridgeI18n.agentTag(kind);return (tag?tag+' · ':'')+project.name+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
 function dirLabel(project){const base=(project.cwd||'').replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||project.name;return base+' · '+(project.host==='local'?t('此电脑'):project.hostLabel);}
@@ -325,24 +418,28 @@ function newChatPins(){try{const pins=JSON.parse(localStorage.getItem('new-chat-
 function saveNewChatPins(pins){localStorage.setItem('new-chat-pins',JSON.stringify(pins.slice(0,20)));}
 function projectPinned(project){return newChatPins().some(pin=>pin.cwd===project.cwd&&pin.host===project.host);}
 function newChatOptionLabel(project){return newChatAgents.length>1?dirLabel(project):projectLabel(project);}
+const newChatCustomKey='__custom__';
+function newChatCustomSelected(){return $('new-chat-project').value===newChatCustomKey;}
 function renderNewChatProjects(){
   const select=$('new-chat-project'),previous=select.value,filter=$('new-chat-filter').value.trim().toLowerCase();
   select.replaceChildren();
   const pinned=[],rest=[];
   for(const project of newChatProjects){
-    if(newChatHiddenCwds.has(projectCwdKey(project)))continue;
+    if(hiddenProjectCwds.has(projectCwdKey(project)))continue;
     if(filter&&!(newChatOptionLabel(project)+' '+(project.cwd||'')).toLowerCase().includes(filter))continue;
     (projectPinned(project)?pinned:rest).push(project);
   }
   for(const project of pinned)select.append(new Option('★ '+newChatOptionLabel(project),project.key));
   for(const project of rest)select.append(new Option(newChatOptionLabel(project),project.key));
+  select.append(new Option(t('自定义项目目录…'),newChatCustomKey));
   if([...select.options].some(o=>o.value===previous))select.value=previous;
-  updateNewChatPin();
+  $('new-chat-project').onchange();
 }
 function updateNewChatPin(){
-  const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
+  const custom=newChatCustomSelected(),project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
   const pinned=!!project&&projectPinned(project);
-  $('new-chat-remove').hidden=!project;
+  $('new-chat-pin').hidden=custom;
+  $('new-chat-remove').hidden=custom||!project;
   $('new-chat-pin').classList.toggle('active',pinned);
   $('new-chat-pin').title=t(pinned?'取消置顶此项目':'置顶此项目');
 }
@@ -356,19 +453,16 @@ $('new-chat-pin').onclick=()=>{
 };
 $('new-chat-remove').onclick=async()=>{
   const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);if(!project)return;
-  if(!window.confirm(t('仅从新建聊天项目列表移除，不删除磁盘目录、历史会话或团队。确定移除？')))return;
-  const button=$('new-chat-remove'),cwd=projectCwdKey(project);button.disabled=true;
+  if(!window.confirm(t('将从聊天列表和新建聊天项目列表移除，不删除磁盘目录、历史会话或团队。确定移除？')))return;
+  const button=$('new-chat-remove');button.disabled=true;
   try{
-    await teamRequest('/api/projects/'+encodeURIComponent(project.key),{method:'DELETE'});
-    newChatHiddenCwds.add(cwd);
-    saveNewChatPins(newChatPins().filter(pin=>projectCwdKey(pin)!==cwd));
-    newChatProjects=newChatProjects.filter(item=>projectCwdKey(item)!==cwd);
-    renderNewChatProjects();$('new-chat-project').onchange();toast(t('项目已从列表移除'));
+    await hideProject(project);
+    renderNewChatProjects();$('new-chat-project').onchange();renderList();toast(t('项目已从列表移除'));
   }catch(error){toast(error.message);}
   finally{button.disabled=false;}
 };
-// Codex chats open in the desktop App; ACP agents are spawned by the gateway.
-function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'在电脑 App 的已有项目中创建空聊天，之后可在手机发送消息。电脑会打开这条聊天。':'在已有项目目录中创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
+// New Codex chats use the gateway runtime without taking over the desktop App.
+function updateNewChatDesc(){const kind=(newChatAgents.length>1?$('new-chat-agent').value:newChatAgents[0]?.kind)||'codex';$('new-chat-desc').textContent=t(kind==='codex'?'选择项目创建空聊天，由网关 Codex CLI 执行。发送消息后开始任务；Windows 使用桌面 App。':'选择已保存项目或输入自定义目录来创建空聊天，之后可在手机发送消息。网关会直接启动该 Agent 的会话。');}
 $('new-chat-title').value=t('新聊天');
 $('new-chat-title').oninput=()=>{$('new-chat-title').dataset.edited='true';};
 $('new-chat').onclick=()=>openNewChat();
@@ -382,8 +476,8 @@ async function openNewChat(preferred){
   $('new-chat-dialog').showModal();
   try{
     const data=await api('/api/projects');
-    newChatHiddenCwds=new Set(data.hiddenCwds||[]);
-    newChatProjects=(data.projects||[]).filter(project=>!newChatHiddenCwds.has(projectCwdKey(project)));newChatAgents=(data.agents||[]).filter(a=>a&&a.kind);
+    hiddenProjectCwds=new Set(data.hiddenCwds||[]);
+    newChatProjects=(data.projects||[]).filter(project=>!hiddenProjectCwds.has(projectCwdKey(project)));newChatAgents=(data.agents||[]).filter(a=>a&&a.kind);
     const multi=newChatAgents.length>1;
     $('new-chat-agent-row').hidden=!multi;
     const agentSelect=$('new-chat-agent');agentSelect.replaceChildren();
@@ -403,7 +497,7 @@ async function openNewChat(preferred){
     }
     if(ref?.projectKey&&ref?.cwd&&!options.some(p=>p.key===ref.projectKey||p.cwd===ref.cwd))
       options.unshift({key:ref.projectKey,cwd:ref.cwd,name:ref.projectName||(ref.cwd.replace(/\\/g,'/').replace(/\/+$/,'').split('/').pop()||''),host:ref.host,hostLabel:ref.hostLabel,agent:ref.agent});
-    const visibleOptions=options.filter(project=>!newChatHiddenCwds.has(projectCwdKey(project)));
+    const visibleOptions=options.filter(project=>!hiddenProjectCwds.has(projectCwdKey(project)));
     newChatProjects=visibleOptions;
     $('new-chat-filter').value='';renderNewChatProjects();
     if(multi){
@@ -416,30 +510,37 @@ async function openNewChat(preferred){
     $('new-chat-worktree').checked=localStorage.getItem('new-chat-worktree')==='1';
     $('new-chat-worktree-base').value=localStorage.getItem('new-chat-worktree-base')||'fresh';
     $('new-chat-project').onchange();updateNewChatDesc();
-    if(!visibleOptions.length)$('new-chat-error').textContent=t('请先在对应 Agent 的客户端添加一个项目。');
-    $('new-chat-submit').disabled=!visibleOptions.length;
+    $('new-chat-submit').disabled=false;
   }catch(e){$('new-chat-error').textContent=t(e.message);$('new-chat-path').textContent='';}
 };
 function updateWorktreeRow(){
   const project=newChatProjects.find(p=>p.key===$('new-chat-project').value);
-  const local=!!project&&project.host==='local';
+  const local=newChatCustomSelected()||!!project&&project.host==='local';
   $('new-chat-worktree-row').hidden=!local;
   if(!local)$('new-chat-worktree').checked=false;  // SSH 项目不支持 worktree，隐藏并取消勾选
   $('new-chat-worktree-base-row').hidden=!local||!$('new-chat-worktree').checked;
 }
-$('new-chat-project').onchange=()=>{$('new-chat-path').textContent=newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'';updateWorktreeRow();updateNewChatPin();};
+$('new-chat-project').onchange=()=>{
+  const custom=newChatCustomSelected();
+  $('new-chat-custom-row').hidden=!custom;
+  $('new-chat-path').textContent=custom?$('new-chat-custom-path').value.trim():(newChatProjects.find(p=>p.key===$('new-chat-project').value)?.cwd||'');
+  updateWorktreeRow();updateNewChatPin();
+};
+$('new-chat-custom-path').oninput=()=>{if(newChatCustomSelected())$('new-chat-path').textContent=$('new-chat-custom-path').value.trim();};
 $('new-chat-worktree').onchange=()=>{localStorage.setItem('new-chat-worktree',$('new-chat-worktree').checked?'1':'0');updateWorktreeRow();};
 $('new-chat-worktree-base').onchange=()=>localStorage.setItem('new-chat-worktree-base',$('new-chat-worktree-base').value);
 $('new-chat-agent').onchange=updateNewChatDesc;
 $('new-chat-dialog').addEventListener('cancel',event=>{if(creatingChat)event.preventDefault();});
 $('new-chat-form').onsubmit=async event=>{
   event.preventDefault();if(creatingChat)return;
-  const project=$('new-chat-project').value,title=$('new-chat-title').value.trim(),agent=newChatAgents.length>1?$('new-chat-agent').value:null;
+  const custom=newChatCustomSelected(),cwd=custom?$('new-chat-custom-path').value.trim():'';
+  const project=custom?cwd:$('new-chat-project').value,title=$('new-chat-title').value.trim(),agent=newChatAgents.length>1?$('new-chat-agent').value:null;
   const worktree=$('new-chat-worktree').checked&&!$('new-chat-worktree-row').hidden?{base:$('new-chat-worktree-base').value}:null;
-  if(!project||!title){$('new-chat-error').textContent=t('请选择项目并填写聊天名称。');return;}
+  if(!project||!title){$('new-chat-error').textContent=t(custom?'请输入项目目录和聊天名称。':'请选择项目并填写聊天名称。');return;}
+  if(custom&&!/^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(cwd)){$('new-chat-error').textContent=t('请输入电脑上已存在的目录绝对路径。');return;}
   let attempt;
   try{attempt=JSON.parse(sessionStorage.getItem('new-chat-attempt')||'null');}catch{}
-  if(!attempt||attempt.project!==project||attempt.title!==title||attempt.agent!==agent||JSON.stringify(attempt.worktree||null)!==JSON.stringify(worktree))attempt={id:uuid(),project,title,...(agent?{agent}:{}),...(worktree?{worktree}:{})};
+  if(!attempt||attempt.project!==project||(attempt.cwd||'')!==cwd||attempt.title!==title||attempt.agent!==agent||JSON.stringify(attempt.worktree||null)!==JSON.stringify(worktree))attempt={id:uuid(),project,title,...(custom?{cwd}:{}),...(agent?{agent}:{}),...(worktree?{worktree}:{})};
   sessionStorage.setItem('new-chat-attempt',JSON.stringify(attempt));
   creatingChat=true;setLanguageBusy();$('new-chat-error').textContent='';$('new-chat-submit').textContent=t('正在创建…');
   $('new-chat-form').querySelectorAll('input,select,button').forEach(n=>n.disabled=true);
@@ -468,20 +569,26 @@ $('fork-source').onclick=()=>{const source=state?.forkedFrom;if(source){$('chat-
    同样退不出聊天。因此从列表进详情压一条历史，详情内互跳（会话↔团队↔Run）
    仍只替换当前条目：返回一次必回列表，栈里也不会堆出中间层。 */
 let detailPushed=false; // 当前详情条目是否由本次从列表压入；popstate 退回后清零
+let teamDashboardPage=null,teamDashboardSummary=null,teamDashboardTitle=null;
+let teamDashboardNavigation=false,teamDashboardPushed=false,teamRunReturnsToDashboard=false;
 // 只有窄屏（与 style.css 的 max-width:720px 同一断点）才是「列表 与 详情 互相
 // 独占」的手机布局；桌面和平板是两栏并排，退回列表没有意义，仍沿用只替换
 // hash 的老办法，避免浏览器后退把并排的聊天面板状态拆掉。
 const compactLayout=()=>window.matchMedia('(max-width:720px)').matches;
 function showDetailRoute(hash){
+  if(teamDashboardNavigation){history.pushState(null,'',hash);detailPushed=true;teamDashboardNavigation=false;return;}
   // 只有“列表（hash 为空）→ 详情”这一次压栈；除此之外（详情内互跳、深链
   // 落 URL 后 enter() 补开）都替换当前条目，避免返回时多退一层。
-  if(!compactLayout()||location.hash||detailPushed)history.replaceState(null,'',hash);
+  const routeState=location.hash===hash&&history.state?.chatRunOrigin?history.state:null;
+  if(!compactLayout()||location.hash||detailPushed)history.replaceState(routeState,'',hash);
   else{history.pushState(null,'',hash);detailPushed=true;}
 }
+function invalidatePendingChatOpen(){openChatRequest++;}
 function closeDetailView(){
+  invalidatePendingChatOpen();
   if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();
   $('team-run').hidden=true;openRunRoute='';
-  $('app').classList.remove('chat-open');
+  $('app').classList.remove('chat-open','team-open');
   // 桌面端（无 chat-open 媒体查询）也走同一条退路：Run 页关闭后没有聊天面板
   // 可见时回欢迎页，避免主区留白。
   if($('chat').hidden)$('welcome').hidden=false;
@@ -492,28 +599,63 @@ function closeDetailView(){
 // 有本次压入的详情条目就交给历史栈退回，收尾统一在 popstate 里做；深链直接
 // 落在详情页时栈里没有列表条目，退栈会退出页面，只能就地关面板。
 function leaveDetail(){
+  if(history.state?.chatRunOrigin){history.back();return;}
   if(detailPushed&&location.hash){history.back();return;}
   closeDetailView();
+}
+function chatRunSource(id,host){
+  const source=history.state?.chatRunOrigin;
+  return host==='local'&&source?.sessionId===id?source:null;
+}
+function syncChatRunSource(id,host){
+  const source=chatRunSource(id,host);
+  $('chat-run-origin').hidden=!source;
+  $('chat-run-back').textContent=t(source?.returnTo==='canvas'?'返回画布':'返回 Run');
+  $('chat-run-task').textContent=source?.taskId||'';
+}
+$('chat-run-back').onclick=()=>{if(history.state?.chatRunOrigin)history.back();};
+async function openRunConversation(sessionId,source){
+  if(!source?.teamId||!source?.runId)return;
+  history.pushState({chatRunOrigin:{...source,sessionId}},'','#'+sessionId+'~local');
+  await openChat(sessionId,'local');
 }
 function saveDraft(){if(currentId)sessionStorage.setItem('draft:'+chatKey(),$('message').value);}
 $('message').oninput=()=>{saveDraft();syncSendButton();updateSkillSuggestions();};
 // 选中消息正文即可引用评论：只读会话不给这个入口，避免往禁用输入框里塞文字。
 const selectionQuote=BridgeSelection.attach({root:$('messages'),textarea:$('message'),enabled:()=>!!currentId&&!state?.readOnly,notify:toast});
 async function openChat(id,host="local",teamId=""){
-  currentTeam=host==='local'?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
+  const request=++openChatRequest;
+  const nextTeam=host==='local'&&!chatRunSource(id,host)?(teamId?teamChat?.teamById(teamId)||null:teamChat?.teamForSession(id)||null):null;
+  try{await BridgeLazy.load('markdown');}
+  catch(error){if(request===openChatRequest)toast(t('消息渲染组件加载失败，请重新打开聊天重试：')+error.message);return false;}
+  if(request!==openChatRequest)return false;
+  if(nextTeam)try{await ensureTeamCanvas();}
+  catch(error){if(request===openChatRequest)toast(t('团队画布加载失败，请重新打开团队聊天重试：')+error.message);return false;}
+  if(request!==openChatRequest)return false;
+  if(teamDashboardPage&&!teamDashboardPage.hidden)hideTeamDashboard({fromRoute:true});
+  currentTeam=nextTeam;
+  syncChatRunSource(id,host);
+  $('app').classList.remove('team-open');
+  syncWorkspaceNavigation();
   teamChat?.open(currentTeam);
+  if(currentTeam)$('send-mode').value=teamQueueModeEnabled(currentTeam.id)?'queue':'send';
 // Run 页与聊天互斥：任何 openChat 路径（含 messageActions pending 早退）都要先
 // 收起 Run 页（停订阅、隐藏区块），否则两块 height:100% 的 section 叠层破版
 // 且 Run 页在后台继续轮询。
-if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';
-if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;$('notify-button').textContent=t('提醒');try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('status').textContent=t('连接中');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();showDetailRoute('#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{text==='unauthorized'?showLogin():$('status').textContent=t(text);}});
+if(typeof teamRunScreen!=='undefined'&&teamRunScreen)teamRunScreen.close();$('team-run').hidden=true;openRunRoute='';syncWorkspaceNavigation();
+if(messageActions.pending&&messageActions.dialog.open)return;messageActions.dialog.close();saveDraft();closeSkillSuggestions();chatTimeline?.dispose();currentId=id;currentHost=host;state=null;renderAPKDownload([]);syncDocumentTitle();workModes.open(chatKey(id,host));attachments.open(chatKey(id,host));catalogData={models:null,skills:null};catalogResults={models:null,skills:null};catalogTasks={models:null,skills:null};skillIndex=new Map();skillTotal=0;skillPages=[];skillQuery={q:'',offset:0,limit:200};invalidSkills=new Set();skillRequest++;modelRequest++;modelTarget=null;fastModeControl.reset();$('model-dialog').close();notificationState={available:false,watching:false,notifyOnCompletion:false};notificationRequest++;$('notify-dialog').close();$('permission-dialog').close();permissionState={supported:false,options:[],current:null};renderPermissionState();$('rename-dialog').close();$('chat-details-dialog').close();compactMethod='';renderCompactState();$('notify-button').disabled=true;renderNotificationState();try{selectedSkills=new Set(JSON.parse(sessionStorage.getItem('skills:'+chatKey(id,host))||'[]'));}catch{selectedSkills=new Set();}renderSkillPills();approvalStamp='';submittedRequestIds.clear();$('messages').replaceChildren();$('approvals').replaceChildren();$('queued').replaceChildren();selectionQuote?.close();$('message').value=sessionStorage.getItem('draft:'+chatKey(id,host))||'';$('send-error').textContent='';$('chat-title').textContent=t('正在连接…');$('chat-meta').textContent='';$('chat-context').textContent='';$('chat-context').removeAttribute('title');$('welcome').hidden=true;$('chat').hidden=false;$('app').classList.add('chat-open');syncSendButton();showDetailRoute('#'+id+'~'+encodeURIComponent(host));document.querySelectorAll('.session').forEach(n=>n.classList.toggle('selected',n.dataset.teamId?currentTeam?.id===n.dataset.teamId:n.dataset.id===id&&n.dataset.host===host));const timeline=chatTimeline=new ChatTimeline({url:action=>sessionUrl(id,action,host),request:api,initialTurnId:chatRunSource(id,host)?.turnId,renderMeta:renderState,renderText:(node,text,files,fullText)=>renderMarkdown(node,text,files,file=>sessionUrl(id,'files/'+file.id,host),{fullText}),onAction:(action,row,timeline)=>{const pendingKey='fork-edit:'+host+'|'+id;let pending;try{pending=JSON.parse(sessionStorage.getItem(pendingKey));}catch{}if(pending&&pending.sourceTurnId===row.turnId&&action==='edit'){sessionStorage.setItem('message-edit:'+timeline.url('message-action')+':'+row.key,pending.text);sessionStorage.removeItem(pendingKey);}return messageActions.open(action,row,timeline);},status:text=>{if(text==='unauthorized')showLogin();}});
+teamCanvas?.open(currentTeam);
+if(currentTeam)chatTimeline?.setViewportLocked(true);
   window.BridgePresentation?.openChat();
+  $('execution-error').textContent='';
   startCatalog();
   const reading=timeline.start();
-  // Opening a chat activates its original owner while saved history paints.
-  api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
   await reading;
-  if(!timeline.abort.signal.aborted){loadNotificationState(id,host);loadPermissionSettings(id,host);}
+  if(request!==openChatRequest)return false;
+  // Codex history reads never reacquire a writer; ACP keeps its native load path.
+  if(state?.agent&&state.agent!=='codex')api(sessionUrl(id,'reconnect',host),{activate:true},timeline.abort.signal).catch(error=>{if(!timeline.abort.signal.aborted)toast(error.message);});
+  if(!timeline.abort.signal.aborted){teamCanvas?.afterHistoryRead();loadNotificationState(id,host);loadPermissionSettings(id,host);}
+  return true;
 }
 let permissionState={supported:false,options:[],current:null},permissionRequest=0;
 function renderPermissionState(){
@@ -521,9 +663,17 @@ function renderPermissionState(){
   button.hidden=!permissionState.supported;
   if(!permissionState.supported)return;
   const select=$('permission-select');select.replaceChildren();
-  for(const option of permissionState.options||[])select.append(new Option(option.name||option.value,option.value));
+  for(const option of permissionState.options||[])select.append(new Option(t(option.name||option.value),option.value));
   select.value=permissionState.current||'';
+  $('permission-plan-note').hidden=!permissionState.planActive;
+  renderPermissionDescription();
 }
+// 网关为各 Agent 维护的模式说明（区分 AI 审核与规则审核、失败时是拒绝还是询问）。
+function renderPermissionDescription(){
+  const value=$('permission-select').value,option=(permissionState.options||[]).find(item=>item.value===value);
+  $('permission-description').textContent=option?.description?t(option.description):'';
+}
+$('permission-select').onchange=renderPermissionDescription;
 async function loadPermissionSettings(id=currentId,host=currentHost){
   const target=id,targetHost=host;
   // 请求版本：迟到的旧响应不得覆盖新响应（权限面板可能在打开中被重复加载）。
@@ -548,7 +698,7 @@ $('permission-button').onclick=async()=>{
   const loaded=await loadPermissionSettings();
   if(!$('permission-dialog').open||key!==chatKey()||!loaded)return;
   $('permission-select').disabled=false;$('permission-save').disabled=false;
-  $('permission-select').value=permissionState.current||'';
+  $('permission-select').value=permissionState.current||'';renderPermissionDescription();
 };
 $('permission-form').onsubmit=async event=>{
   event.preventDefault();
@@ -556,12 +706,16 @@ $('permission-form').onsubmit=async event=>{
   $('permission-save').disabled=true;$('permission-error').textContent='';
   try{
     permissionState=await api(sessionUrl(id,'permissions',host),{mode});
-    renderPermissionState();$('permission-dialog').close();toast(t('权限已更新'));
+    renderPermissionState();$('permission-dialog').close();toast(t(permissionState.planActive?'权限将在退出计划后生效':'权限已更新'));
   }catch(error){$('permission-error').textContent=t(error.message);}
   finally{$('permission-save').disabled=false;}
 };
 let notificationState={available:false,watching:false,notifyOnCompletion:false},notificationRequest=0;
-function renderNotificationState(){$('notify-button').textContent=t(notificationState.watching?'提醒已开':'提醒');}
+function renderNotificationState(){
+  const button=$('notify-button'),active=!!notificationState.watching,label=t('聊天通知设置')+(active?' · '+t('提醒已开'):'');
+  button.classList.toggle('active',active);button.title=label;button.setAttribute('aria-label',label);
+  $('notify-dot').hidden=!active;
+}
 async function loadNotificationState(id=currentId,host=currentHost){
   const request=++notificationRequest;
   $('notify-button').disabled=true;
@@ -798,7 +952,7 @@ const COMPACT_PROMPTS={
   main:'/compact 保留主要历史、当前目标、关键决策和最新结果，重点压缩执行过程与工具输出。',
   latest:'/compact 只保留最新提问和结果，其余历史尽量压缩。'
 };
-let compactMethod='';
+let compactMethod='',compactScope='';
 function formatTokenCount(value){if(value<1000)return String(value);if(value<1000000)return (value/1000).toFixed(value<10000?1:0).replace(/\.0$/,'')+'k';return (value/1000000).toFixed(value<10000000?1:0).replace(/\.0$/,'')+'M';}
 function renderContextUsage(view){
   const node=$('context-usage'),used=Number(view.usage?.used),size=Number(view.usage?.size),valid=Number.isFinite(used)&&used>=0&&Number.isFinite(size)&&size>0;
@@ -811,14 +965,24 @@ function renderContextUsage(view){
   node.textContent='· '+(stale?'~':'')+formatTokenCount(used)+'/'+formatTokenCount(size);
   node.title=(stale?t('上次记录的上下文用量：'):t('上下文用量：'))+used.toLocaleString(locale)+' / '+size.toLocaleString(locale)+' tokens · '+percent+'%';
 }
-function compactAvailable(){return !!state?.connected&&state.status==='idle'&&!state.readOnly&&!(state.requests||[]).length;}
-function selectCompactMethod(method){if(!['native','gateway'].includes(method))return;compactMethod=method;$('compact-error').textContent='';renderCompactState();}
+// 转录迁移只读取源历史；原生压缩才需要源会话的写连接。
+// 只依赖「当前会话已有视图且历史不在加载」：view.id 是 Agent 原生会话 id，
+// Kimi 这类 Agent 首回合后会把占位 session_* 换成 sess_*，与列表 id 不同；
+// renderState 的两个来源（timeline meta、发送后刷新）都已绑定当前会话，
+// 额外比较 id 会把已就绪的历史误判成未就绪。
+function transcriptMaintenanceAvailable(){return !!currentId&&!!state&&!state.loadingHistory;}
+function compactAvailable(){return transcriptMaintenanceAvailable()&&state.connected&&!state.readOnly&&state.status==='idle'&&!(state.requests||[]).length;}
+function selectCompactMethod(method){if(!['native','gateway'].includes(method))return;if(compactMethod!==method){compactScope='';$('compact-instructions').value='';}compactMethod=method;$('compact-error').textContent='';renderCompactState();}
+function selectCompactScope(scope){if(!COMPACT_PROMPTS[scope]||!compactMethod)return;compactScope=scope;$('compact-error').textContent='';renderCompactState();}
 function renderCompactState(){
-  const disabled=compactChat.busy||migrateControl?.busy||!compactAvailable();
+  const busy=compactChat.busy||migrateControl?.busy,nativeDisabled=busy||!compactAvailable(),gatewayDisabled=busy||!transcriptMaintenanceAvailable();
+  $('compact-instructions-field').hidden=!compactScope;
+  $('compact-confirm').hidden=!compactScope;
+  $('compact-confirm').disabled=compactMethod==='gateway'?gatewayDisabled:nativeDisabled;
   $('compact-native-hint').hidden=compactMethod!=='native';$('compact-native-scopes').hidden=compactMethod!=='native';$('compact-gateway').hidden=compactMethod!=='gateway';
   document.querySelectorAll('[data-compact-method]').forEach(button=>button.classList.toggle('selected',button.dataset.compactMethod===compactMethod));
-  document.querySelectorAll('[data-compact]').forEach(button=>button.disabled=disabled||compactMethod!=='native');
-  document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.disabled=disabled||compactMethod!=='gateway');
+  document.querySelectorAll('[data-compact]').forEach(button=>{button.disabled=nativeDisabled||compactMethod!=='native';button.classList.toggle('selected',compactMethod==='native'&&button.dataset.compact===compactScope);});
+  document.querySelectorAll('[data-gateway-compact]').forEach(button=>{button.disabled=gatewayDisabled||compactMethod!=='gateway';button.classList.toggle('selected',compactMethod==='gateway'&&button.dataset.gatewayCompact===compactScope);});
   migrateControl?.render();
 }
 // leadContextAction 调用主控上下文管理端点（/new 换绑与网关压缩后的 rebind），
@@ -829,10 +993,35 @@ async function leadContextAction(team,action,expectedSessionId,extra={}){
   if(result.team){const teams=(teamChat?.teams||[]).filter(row=>row.id!==result.team.id);teams.push(result.team);teamChat?.setTeams(teams);}
   return result;
 }
-// 命令面板：输入 / 触发命令建议（与 Skill 建议共用列表、键盘流与 aria），
-// 选中把命令填入输入框，发送时由 composer 拦截执行。/compress（/compact
-// 等价写法）对所有会话可用；裸 /compress 执行设置里的默认档；/new 在团队
-// 模式换绑主控、普通会话按当前配置新建对话并切换过去。
+async function teamContextState(teamID){
+  const base='/api/teams/'+encodeURIComponent(teamID);
+  const [{runs=[]},inputs]=await Promise.all([teamRequest(base+'/runs'),teamRequest(base+'/inputs?limit=1')]);
+  return{runs,pendingInputs:Number(inputs.pendingCount||0)};
+}
+async function newTeamLeadContext(team,expectedSessionId){
+  const base='/api/teams/'+encodeURIComponent(team.id);
+  const {runs,pendingInputs}=await teamContextState(team.id);
+  if(pendingInputs>0)
+    throw Error(t('团队仍有待路由或等待处理的输入，请先处理后再重置主控会话'));
+  const active=runs.filter(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status));
+  if(active.length>1||active.length===1&&!['waiting_input','paused'].includes(active[0].status))
+    throw Error(t('团队 Run 仍在执行，请等待完成或在 Run 详情中取消后重试'));
+  const parked=active[0];
+  const prompt=parked
+    ?'当前 Run 已停靠。取消该 Run 并切换为空白主控？未完成任务将停止，原会话和 Run 历史会保留。'
+    :'主控将切换为空白会话，之后的团队任务不再携带当前对话上下文。原会话和历史 Run 会保留。';
+  if(!window.confirm(t(prompt)))return null;
+  if(parked){
+    await teamRequest(base+'/runs/'+encodeURIComponent(parked.id)+'/cancel-parked',{method:'POST',body:{version:parked.version}});
+    teamChat?.refreshRun(true);
+  }
+  try{
+    const result=await leadContextAction(team,'new',expectedSessionId);
+    teamChat?.resetWorkflow(team.id,runs);
+    return result;
+  }catch(error){if(parked)throw Error(t('旧 Run 已取消，但空白主控创建失败：')+error.message);throw error;}
+}
+// 命令面板只服务普通会话；团队输入始终交给 Lead 路由。
 const COMPACT_PREF_LABELS={bare:'原生 · 纯净',full:'原生 · 完整',main:'原生 · 主要',latest:'原生 · 最新',gateway:'网关 · 主要','gateway-full':'网关 · 完整','gateway-latest':'网关 · 最新'};
 function defaultCompactPreference(){
   const value=typeof window!=='undefined'&&window.BridgePresentation?.defaultCompact?window.BridgePresentation.defaultCompact():'';
@@ -846,9 +1035,10 @@ function resolveDefaultCompact(){
   return{kind:'native',scope:pref};
 }
 function composerCommandRows(query){
+  if(currentTeam)return[];
   const gatewayDescription=t(currentTeam?'网关创建压缩新会话并换绑主控':'网关创建压缩新会话并打开');
   const rows=[
-    {command:true,token:'/new',label:t(currentTeam?'更换空白主控':'新建会话'),description:t(currentTeam?'清空主控上下文；原会话与 Run 历史保留':'用当前配置新建对话并切换过去')},
+    {command:true,token:'/new',label:t(currentTeam?'更换空白主控':'新建会话'),description:t(currentTeam?'清空主控上下文；原会话与 Run 历史保留':'用当前配置新建对话并切换过去；可写 /new <agent> 指定 Agent')},
     {command:true,token:'/compress',label:t('默认压缩档'),description:t('当前：')+t(COMPACT_PREF_LABELS[defaultCompactPreference()])+t('；在设置中更改')},
     {command:true,token:'/compress bare',label:t('原生压缩 · 纯净'),description:t('不加说明，交给 Agent 自带的 /compact')},
     {command:true,token:'/compress full',label:t('原生压缩 · 完整'),description:t('保留完整关键历史、决策与结果')},
@@ -858,6 +1048,8 @@ function composerCommandRows(query){
     {command:true,token:'/compress gateway full',label:t('网关转录压缩 · 完整'),description:gatewayDescription},
     {command:true,token:'/compress gateway latest',label:t('网关转录压缩 · 最新'),description:gatewayDescription},
   ];
+  if(!currentTeam&&state?.goalRuntimeAvailable!==false&&(state?.capabilities||[]).includes('goals'))
+    rows.splice(1,0,{command:true,token:'/goal ',label:t('设定目标'),description:t('以目标模式发送，持续执行直到完成、暂停或取消')});
   const agents=typeof state==='undefined'?[]:(state?.agents||[]),migrationRows=[];
   for(const agent of agents){
     if(!agent?.kind)continue;
@@ -897,16 +1089,23 @@ function parseMigrateCommand(raw){
   if(!(state?.agents||[]).some(candidate=>candidate?.kind===agent))return null;
   return migrationCommand(agent,match[2],match[3]);
 }
-// parseTeamCommand 在团队模式额外识别 /new；迁移、压缩命令与普通会话共用。
+function parseGoalCommand(raw){
+  const match=/^\/goal(?:\s+([\s\S]+))?$/.exec(String(raw||'').trim());
+  return match?{kind:'goal',objective:String(match[1]||'').trim()}:null;
+}
+// Team chat treats all entered text as team input; maintenance lives in team settings.
 function parseTeamCommand(raw){
-  const text=String(raw||'').trim();
-  if(text==='/new')return{kind:'new'};
-  return parseCompactCommand(text)||parseMigrateCommand(text);
+  return null;
 }
 // parsePlainCommand 普通会话的 /new：按当前配置再起一个对话并切换过去。
 function parsePlainCommand(raw){
-  if(String(raw||'').trim()==='/new')return{kind:'newchat'};
-  return parseCompactCommand(raw)||parseMigrateCommand(raw);
+  const newChat=/^\/new(?:\s+([A-Za-z][A-Za-z0-9_-]*))?\s*$/.exec(String(raw||'').trim());
+  if(newChat){
+    // /new 可选带 Agent；未启用的名字不当命令，避免把普通文本误吃成新建。
+    if(newChat[1]&&!(state?.agents||[]).some(agent=>agent?.kind===newChat[1]))return null;
+    return{kind:'newchat',agent:newChat[1]||''};
+  }
+  return parseGoalCommand(raw)||parseCompactCommand(raw)||parseMigrateCommand(raw);
 }
 function compactInstructions(){return $('compact-instructions').value.trim();}
 function nativeCompactPrompt(scope,instructions){
@@ -918,34 +1117,49 @@ function nativeCompactPrompt(scope,instructions){
 // onError 缺省用 toast，详情页入口沿用 compact-error 展示。
 async function runNativeCompact(scope,onError,instructions=''){
   const text=nativeCompactPrompt(scope,instructions),target=currentId,targetHost=currentHost,targetKey=chatKey();
-  if(!text||!target)return;
+  if(!text||!target)return false;
   compactChat.busy=true;$('compact-error').textContent='';renderCompactState();
   try{
-    const result=await api(sessionUrl(target,'send',targetHost),{id:uuid(),text,mode:'send',skills:[],workMode:'default',attachments:[],uiLocale:BridgeI18n.locale(),...(currentTeam?{teamMode:'direct'}:{})});
+    const result=await api(sessionUrl(target,'send',targetHost),{id:uuid(),text,mode:'send',skills:[],workMode:'default',attachments:[],uiLocale:BridgeI18n.locale(),...(currentTeam?{teamMode:'direct',teamId:currentTeam.id,teamMaintenance:'compact'}:{})});
     if(result.status==='unknown')throw Error(t('压缩请求可能已送达，请检查聊天记录后再重试。'));
     bumpRecency(target,targetHost);
     if(currentId===target&&currentHost===targetHost)$('chat-details-dialog').close();
     toast('已发送上下文压缩请求');
-  }catch(error){(onError||(message=>toast(message)))(error.message);}
+    return true;
+  }catch(error){(onError||(message=>toast(message)))(error.message);return false;}
   finally{compactChat.busy=false;renderCompactState();}
 }
 async function runMigrateCommand(command){
   if(!command?.agent){toast('用法：/migrate <目标Agent> [full|main|latest] [后续指示]');return false;}
   const target=(state?.agents||[]).find(agent=>agent?.kind===command.agent);
   if(!target){toast('目标 Agent 未启用：'+command.agent);return false;}
-  if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再迁移');return false;}
+  if(!transcriptMaintenanceAvailable()){toast('会话历史尚未就绪，暂时无法迁移');return false;}
   const operation=command.agent===state?.agent?'compact':'migrate';
-  await migrateControl?.migrate(command.agent,command.scope,operation,{instructions:command.instructions});
-  return true;
+  return runTranscriptMaintenance(command.agent,command.scope,operation,{instructions:command.instructions});
+}
+// runTranscriptMaintenance 是斜杠命令入口：MigrateControl 在忙碌或视图未就绪时
+// 静默返回 undefined（防按钮连点），命令入口必须把「未执行」告诉用户。
+async function runTranscriptMaintenance(agent,scope,operation,options){
+  if(!migrateControl||migrateControl.busy||compactChat.busy){toast('已有迁移或压缩正在进行，请稍候');return false;}
+  const result=await migrateControl.migrate(agent,scope,operation,options);
+  if(result===undefined){toast('会话尚未加载完成，暂时无法迁移或压缩');return false;}
+  return result;
 }
 async function runGatewayCompact(scope,instructions=''){
-  if(!COMPACT_PROMPTS[scope]||!currentId||!compactAvailable())return false;
+  if(!COMPACT_PROMPTS[scope]||!currentId)return false;
+  if(!transcriptMaintenanceAvailable()){toast('会话历史尚未就绪，暂时无法压缩');return false;}
   $('compact-error').textContent='';
-  await migrateControl?.migrate(state.agent,scope,'compact',{instructions});
-  return true;
+  const options={instructions};
+  if(currentTeam){
+    const {runs,pendingInputs}=await teamContextState(currentTeam.id);
+    if(runs.some(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))){toast('团队仍有未结束的 Run，结束或取消后再压缩主控上下文');return false;}
+    if(pendingInputs>0){toast('团队仍有待路由或等待处理的输入，处理后再压缩主控上下文');return false;}
+    options.teamMaintenance='compact';options.teamId=currentTeam.id;
+  }
+  return runTranscriptMaintenance(state.agent,scope,'compact',options);
 }
 function compactGateway(scope){
-  if(!COMPACT_PROMPTS[scope]||compactMethod!=='gateway'||compactChat.busy||migrateControl?.busy||!currentId||!compactAvailable())return;
+  if(!COMPACT_PROMPTS[scope]||compactMethod!=='gateway'||compactChat.busy||migrateControl?.busy||!currentId||!transcriptMaintenanceAvailable())return;
   runGatewayCompact(scope,compactInstructions());
 }
 async function compactChat(scope){
@@ -953,17 +1167,24 @@ async function compactChat(scope){
   if(!COMPACT_PROMPTS[scope]||compactMethod!=='native'||compactChat.busy||!currentId||!compactAvailable())return;
   await runNativeCompact(scope,message=>{if(chatKey()===targetKey)$('compact-error').textContent=t(message);},compactInstructions());
 }
-function renderState(view){state=view;renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){if(sessionActivity.read(chatKey()))api(sessionUrl(currentId,'read',currentHost),{}).catch(()=>{});renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');$('status').textContent=!view.connected?(view.loadingHistory?t('读取历史中'):view.activating?(view.agent==='codex'?t('正在加载桌面聊天…'):t('正在加载会话…')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName):t('历史记录')):view.requests.length?t('等待回应'):view.status==='active'?t('运行中'):t('已连接');$('status').classList.toggle('offline',!view.connected);const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';if(retrying){const label=(retrying.statusCode===429?t('模型繁忙 · 重试'):t('请求失败 · 重试'))+retryCount;$('status').textContent=label;$('status').title=[label,retrying.errorMessage].filter(Boolean).join(' · ');}else $('status').removeAttribute('title');if(readOnly)$('status').textContent=t('只读');
-  // 一切正常时不占用标题栏写「已连接」：收成一个绿点，把宽度还给聊天标题。
-  const idle=$('status').textContent===t('已连接');
-  $('status').classList.toggle('idle',idle);
-  if(idle)$('status').title=t('已连接');
-$('notice').hidden=view.connected;$('notice-text').textContent=view.activating?(view.agent==='codex'?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(view.agent==='codex'?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||t('暂未连接，可先阅读历史或点击重新连接。');const workingSpan=$('working').querySelector('span');if(workingSpan){workingSpan.textContent=retrying?(retrying.statusCode===429?t('模型服务繁忙（429），正在自动重试'):t('模型请求失败，正在自动重试'))+retryCount+'…':agentName+t(' 正在工作…');workingSpan.title=retrying?.errorMessage||'';}$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected||readOnly;syncSendButton();const steerOption=$('send-mode').querySelector('[value=steer]');steerOption.hidden=!caps.has('steer');steerOption.disabled=!caps.has('steer')||view.status!=='active';if((!caps.has('steer')||view.status!=='active')&&$('send-mode').value==='steer')$('send-mode').value='send';
-  // Agents without steering only have queueing while busy: preselect it once
-  // per run so one tap on 发送 queues the message instead of erroring out.
-  if(view.status==='active'&&!caps.has('steer')&&$('send-mode').value==='send'&&!autoQueueArmed){autoQueueArmed=true;$('send-mode').value='queue';}
-  if(autoQueueArmed&&view.status!=='active'){autoQueueArmed=false;if($('send-mode').value==='queue')$('send-mode').value='send';}$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,$('send-mode').value,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t('此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('send-mode').hidden=readOnly;$('work-mode').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);updateSkillSuggestions();syncTeamComposer();syncDocumentTitle();}
-$('send-mode').onchange=()=>{autoQueueArmed=false;workModes.render(state,$('send-mode').value,sending);};
+async function runComposerMaintenance(command){
+  const target=currentId,targetHost=currentHost;
+  sending=true;syncSendButton();
+  try{
+    const accepted=command.kind==='migrate'?await runMigrateCommand(command):command.kind==='gateway'?await runGatewayCompact(command.scope,command.instructions):await runNativeCompact(command.scope,undefined,command.instructions);
+    if(accepted)clearComposerDraft(target,targetHost);
+  }finally{sending=false;syncSendButton();}
+}
+function usesDesktopRuntime(view){return view?.agent==='codex'&&(view.executionTarget||view.executionOwner)!=='cli';}
+function renderState(view){view=applyPendingQueueOrder(view);state=view;const desktopRuntime=usesDesktopRuntime(view);renderAPKDownload(view.files);renderContextUsage(view);const caps=new Set(view.capabilities||[]);const readOnly=!!view.readOnly;const agentName=BridgeI18n.agentLabel(view.agent);$('fork-source').hidden=!view.forkedFrom;$('fork-source').textContent=view.forkedFrom?t('来源会话：')+view.forkedFrom.title:'';if($('model-dialog').open&&modelTarget===chatKey())fastModeControl.sync(view);if(visibleChat()){if(sessionActivity.read(chatKey()))api(sessionUrl(currentId,'read',currentHost),{}).catch(()=>{});renderActivity();}$('execution-host').textContent=view.host==='local'?t('在本机运行'):t('在 ')+(view.hostLabel||t('SSH 主机'))+t(' 运行');$('chat-title').textContent=view.loadingHistory?t('正在读取聊天…'):view.title;$('details-title').textContent=$('chat-title').textContent;$('chat-meta').textContent=(BridgeI18n.agentTag(view.agent)?BridgeI18n.agentTag(view.agent)+' · ':'')+(view.host==='local'?t('此电脑'):view.hostLabel||t('SSH 主机'))+' · '+(view.cwd||t('电脑上的聊天'));$('chat-context').textContent=chatProjectLabel(view);$('chat-context').title=view.cwd||'';$('model-name').textContent=view.model||t('模型');$('model-current').textContent=view.model?t('当前模型：')+view.model:'';$('model-current').hidden=!view.model;$('model-effort').textContent=view.effort?'· '+view.effort:'';$('model-effort').hidden=!view.effort;$('model-button').title=[view.model||t('模型'),view.effort].filter(Boolean).join(' · ');$('provider').textContent=[view.model,view.provider].filter(Boolean).join(' · ');const retrying=view.connected&&view.status==='active'?view.retrying:null;const retryCount=retrying&&retrying.nextAttempt&&retrying.maxAttempts?' '+retrying.nextAttempt+'/'+retrying.maxAttempts:'';
+const migrationText=migrationNotice(view.migration);$('notice').hidden=view.connected&&!migrationText;$('notice-text').textContent=migrationText||(view.activating?(desktopRuntime?t('正在自动连接；必要时会在电脑 Codex 中打开此聊天。'):t('正在加载会话，请稍候。')):view.connecting?(desktopRuntime?t('连接桌面中'):t('正在连接 ')+agentName+t(' ，可先阅读历史记录。')):t(view.connectionError)||(view.writerReleased?t('会话已空闲释放，发送时会重新连接。'):t('暂未连接，可先阅读历史。')));const workingSpan=$('working').querySelector('span');if(workingSpan){workingSpan.textContent=retrying?(retrying.statusCode===429?t('模型服务繁忙（429），正在自动重试'):t('模型请求失败，正在自动重试'))+retryCount+'…':agentName+t(' 正在工作…');workingSpan.title=retrying?.errorMessage||'';}$('history').hidden=view.historyComplete||!view.connected;$('working').hidden=view.status!=='active';$('stop').hidden=view.status!=='active'||!view.connected||readOnly;
+  // 运行中统一排队；需要立即执行时在排队消息中操作。
+  renderExecutionState(view);
+  const sendMode=view.status==='active'?'queue':'send';$('send-mode').value=sendMode;syncTeamQueueMode($('send-mode').value);
+  syncSendButton();$('skills-button').hidden=!caps.has('skills')||readOnly;renderPermissionState();syncSendButton();$('rename-chat').hidden=!caps.has('rename');if(!caps.has('skills')&&selectedSkills.size){selectedSkills.clear();renderSkillPills();}workModes.render(view,sendMode,sending);$('message').readOnly=readOnly;$('readonly-hint').hidden=!readOnly;$('readonly-text').textContent=readOnly?t(view.readOnlyHint||'此会话正在桌面 App 中运行，手机端只读；可对消息点「从这里分支」在手机继续；「尝试接入」前请先关闭桌面端该会话'):'';$('readonly-upgrade').hidden=!!view.readOnlyHint;$('work-mode-button').hidden=readOnly;$('attach-button').hidden=readOnly;$('model-button').hidden=readOnly;$('readonly-upgrade').disabled=readOnly&&view.status==='active';$('readonly-upgrade').title=readOnly&&view.status==='active'?t('桌面端正在运行回合；结束后再试'):'';$('composer').classList.toggle('read-only',readOnly);migrateControl?.render(view);renderCompactState();renderApprovals(view.requests);renderQueue(view.submissions||[]);updateSkillSuggestions();syncTeamComposer();syncDocumentTitle();}
+function syncTeamQueueMode(mode){
+  if(currentTeam&&(mode==='send'||mode==='queue'))teamChat?.setQueueMode(mode==='queue');
+}
 function jsonPretty(value){return typeof value==='string'?value:JSON.stringify(value,null,2);}
 function approvalRisk(params){
   const command=String(params?.command||'').toLowerCase();
@@ -976,6 +1197,17 @@ function approvalRisk(params){
 function assessmentBadge(request){
   const a=request?.assessment;
   if(!a||a.source!=='jev')return null;
+  if(a.reason==='assess_failed'){
+    // The gateway keeps retrying with longer deadlines while the card waits;
+    // the user may answer at any time, whichever comes first wins.
+    const box=document.createDocumentFragment();
+    if(a.retrying){
+      box.append(el('p','approval-risk risk-low',t('Jev 评估超时，正在重试')),el('p','approval-context jev-reason',t('可直接手动确认，不必等待')));
+    }else{
+      box.append(el('p','approval-risk risk-elevated',t('Jev 评估失败')),el('p','approval-context jev-reason',t('未自动审核：已转人工确认')));
+    }
+    return box;
+  }
   const labels={routine:'常规操作',low:'低风险',elevated:'中风险',high:'高风险'};
   const label=labels[a.riskLabel];
   if(!label)return null;
@@ -1013,7 +1245,15 @@ function markRecommendation(button,value,recommend){
   button.title=t('Jev 建议此选项');
   button.prepend(document.createTextNode('★ '));
 }
-function renderApprovals(requests){const stamp=JSON.stringify(requests);if(stamp===approvalStamp)return;approvalStamp=stamp;$('approvals').replaceChildren();for(const request of requests){if(request.method==='acp/requestInput'&&request.supported){$('approvals').append(renderAcpInput(request));continue;}if(request.method==='acp/requestPermission'&&request.supported){$('approvals').append(renderAcpApproval(request));continue;}if(request.supported&&request.params?.computerUse){$('approvals').append(renderComputerApproval(request));continue;}if(request.method==='item/plan/requestImplementation'&&request.supported){$('approvals').append(renderPlanApproval(request));continue;}const card=el('section','approval');card.dataset.request=String(request.id);const params=request.params||{}, method=request.method;const heading=method.includes('requestUserInput')?t('Codex 需要你的回复'):method.includes('fileChange')?t('允许修改文件？'):method.includes('commandExecution')?t('允许运行此命令？'):method.includes('permissions')?t('允许本轮权限？'):t('待确认请求');card.append(el('h3','',heading));const controls={};if(!request.supported){card.append(el('p','',params.message||t('请在桌面 App 处理此请求')));$('approvals').append(card);continue;}const badge=riskBadge(request,params);if(badge)card.append(badge);if(params.reason)card.append(el('p','',params.reason));if(params.command){const command=el('pre','approval-command',jsonPretty(params.command));command.setAttribute('aria-label',t('具体命令'));card.append(command);}if(params.cwd){const cwd=el('p','approval-context');cwd.append(el('span','approval-context-label',t('工作目录：')),document.createTextNode(params.cwd));card.append(cwd);}for(const key of ['changes','grantRoot','permissions','networkApprovalContext'])if(params[key])card.append(el('pre','approval-details',jsonPretty(params[key])));const form=el('form');if(method.includes('requestUserInput')){for(const question of params.questions||[]){const label=el('label','',question.question||question.header||question.id);if(question.options?.length){const select=el('select');select.append(new Option(t('请选择…'),''));for(const option of question.options)select.append(new Option(option.label+(option.description?' — '+option.description:''),option.label));select.append(new Option(t('自行填写'),'__custom__'));label.append(select);const custom=el('textarea');custom.rows=2;custom.hidden=true;custom.placeholder=t('输入你的回复');select.onchange=()=>custom.hidden=select.value!=='__custom__';label.append(custom);controls[question.id]=()=>select.value==='__custom__'?custom.value:select.value;}else{const input=el('textarea');input.rows=2;input.required=true;label.append(input);controls[question.id]=()=>input.value;}form.append(label);}}else if(method==='mcpServer/elicitation/request'){if(params.message)form.append(el('p','',params.message));const schema=params.requestedSchema||{};for(const [key,field] of Object.entries(schema.properties||{})){const label=el('label','',field.title||key);let input;if(field.enum){input=el('select');input.append(new Option(t('请选择…'),''));for(const [i,value] of field.enum.entries())input.append(new Option(field.enumNames?.[i]||String(value),String(value)));}else{input=el('input');input.type=field.type==='boolean'?'checkbox':['number','integer'].includes(field.type)?'number':'text';if(input.type==='number')input.step=field.type==='integer'?'1':'any';}input.required=(schema.required||[]).includes(key)&&input.type!=='checkbox';if(field.description)label.append(el('p','muted',field.description));label.append(input);form.append(label);controls[key]=()=>input.type==='checkbox'?input.checked:input.value===''?undefined:['number','integer'].includes(field.type)?Number(input.value):input.value;}}const actions=el('div','actions'),error=el('p','error');async function submit(response){const id=currentId,host=currentHost;approvalBusy++;setLanguageBusy();const buttons=card.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);error.textContent='';try{await api(sessionUrl(id,'respond',host),{requestId:request.id,response});submittedRequestIds.add(request.id);bumpRecency(id,host);toast('已发送回应');card.append(el('p','muted',t('已发送，等待桌面确认…')));}catch(e){error.textContent=t(e.message);buttons.forEach(b=>b.disabled=false);}finally{approvalBusy--;setLanguageBusy();}}const isInput=method.includes('requestUserInput'),isMcp=method==='mcpServer/elicitation/request';const yes=el('button','primary',isInput?t('提交回复'):t('本次允许'));markRecommendation(yes,'accept',request.recommend);yes.type='submit';const available=params.availableDecisions;const canAccept=!available||available.includes('accept');if(isInput||isMcp||canAccept)actions.append(yes);if(!isInput){const no=el('button','secondary',t('拒绝'));markRecommendation(no,'decline',request.recommend);no.type='button';no.onclick=()=>submit(isMcp?{action:'decline'}:{decision:'decline'});if(!available||available.includes('decline'))actions.append(no);if(method.includes('commandExecution')||method.includes('fileChange')||isMcp){const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.onclick=()=>submit(isMcp?{action:'cancel'}:{decision:'cancel'});if(!available||available.includes('cancel'))actions.append(cancel);}}form.onsubmit=event=>{event.preventDefault();if(isInput){const answers={};for(const [key,get] of Object.entries(controls)){const value=get();if(!value.trim()){error.textContent=t('请回答所有问题');return;}answers[key]=[value];}submit({answers});}else if(isMcp){const content={};for(const [key,get] of Object.entries(controls)){const value=get();if(value!==undefined)content[key]=value;}submit({action:'accept',content});}else submit({decision:'accept'});};form.append(actions,error);card.append(form);if(submittedRequestIds.has(request.id)){card.querySelectorAll('button').forEach(button=>button.disabled=true);card.append(el('p','muted',t('已发送，等待桌面确认…')));}$('approvals').append(card);}}
+function approvalRiskRank(request){
+  const assessment=request?.assessment;
+  if(assessment?.source!=='jev')return 4;
+  return ({high:0,elevated:1,low:2,routine:3})[assessment.riskLabel]??4;
+}
+function orderedApprovals(requests){
+  return requests.map((request,index)=>({request,index})).sort((a,b)=>approvalRiskRank(a.request)-approvalRiskRank(b.request)||a.index-b.index).map(entry=>entry.request);
+}
+function renderApprovals(requests){const stamp=JSON.stringify(requests);if(stamp===approvalStamp)return;approvalStamp=stamp;for(const card of $('approvals').querySelectorAll('.approval'))card.planReviewDestroy?.();$('approvals').replaceChildren();for(const request of orderedApprovals(requests)){if(request.method==='acp/requestInput'&&request.supported){$('approvals').append(renderAcpInput(request));continue;}if(request.method==='acp/requestPermission'&&request.supported){$('approvals').append(renderAcpApproval(request));continue;}if(request.supported&&request.params?.computerUse){$('approvals').append(renderComputerApproval(request));continue;}if(request.method==='item/plan/requestImplementation'&&request.supported){$('approvals').append(renderPlanApproval(request));continue;}const card=el('section','approval');card.dataset.request=String(request.id);const params=request.params||{}, method=request.method;const heading=method.includes('requestUserInput')?t('Codex 需要你的回复'):method.includes('fileChange')?t('允许修改文件？'):method.includes('commandExecution')?t('允许运行此命令？'):method.includes('permissions')?t('允许本轮权限？'):t('待确认请求');card.append(el('h3','',heading));const controls={};if(!request.supported){card.append(el('p','',params.message||t('请在桌面 App 处理此请求')));$('approvals').append(card);continue;}const badge=riskBadge(request,params);if(badge)card.append(badge);if(params.reason)card.append(el('p','',params.reason));if(params.command){const command=el('pre','approval-command',jsonPretty(params.command));command.setAttribute('aria-label',t('具体命令'));card.append(command);}if(params.cwd){const cwd=el('p','approval-context');cwd.append(el('span','approval-context-label',t('工作目录：')),document.createTextNode(params.cwd));card.append(cwd);}for(const key of ['changes','grantRoot','permissions','networkApprovalContext'])if(params[key])card.append(el('pre','approval-details',jsonPretty(params[key])));const form=el('form');if(method.includes('requestUserInput')){for(const question of params.questions||[]){const label=el('label','',question.question||question.header||question.id);if(question.options?.length){const select=el('select');select.append(new Option(t('请选择…'),''));for(const option of question.options)select.append(new Option(option.label+(option.description?' — '+option.description:''),option.label));select.append(new Option(t('自行填写'),'__custom__'));label.append(select);const custom=el('textarea');custom.rows=2;custom.hidden=true;custom.placeholder=t('输入你的回复');select.onchange=()=>custom.hidden=select.value!=='__custom__';label.append(custom);controls[question.id]=()=>select.value==='__custom__'?custom.value:select.value;}else{const input=el('textarea');input.rows=2;input.required=true;label.append(input);controls[question.id]=()=>input.value;}form.append(label);}}else if(method==='mcpServer/elicitation/request'){if(params.message)form.append(el('p','',params.message));const schema=params.requestedSchema||{};for(const [key,field] of Object.entries(schema.properties||{})){const label=el('label','',field.title||key);let input;if(field.enum){input=el('select');input.append(new Option(t('请选择…'),''));for(const [i,value] of field.enum.entries())input.append(new Option(field.enumNames?.[i]||String(value),String(value)));}else{input=el('input');input.type=field.type==='boolean'?'checkbox':['number','integer'].includes(field.type)?'number':'text';if(input.type==='number')input.step=field.type==='integer'?'1':'any';}input.required=(schema.required||[]).includes(key)&&input.type!=='checkbox';if(field.description)label.append(el('p','muted',field.description));label.append(input);form.append(label);controls[key]=()=>input.type==='checkbox'?input.checked:input.value===''?undefined:['number','integer'].includes(field.type)?Number(input.value):input.value;}}const actions=el('div','actions'),error=el('p','error');async function submit(response){const id=currentId,host=currentHost;approvalBusy++;setLanguageBusy();const buttons=card.querySelectorAll('button');buttons.forEach(b=>b.disabled=true);error.textContent='';try{await respondToRequest(id,host,request,response);submittedRequestIds.add(request.id);bumpRecency(id,host);toast('已发送回应');card.append(el('p','muted',t('已发送，等待桌面确认…')));}catch(e){error.textContent=t(e.message);buttons.forEach(b=>b.disabled=false);}finally{approvalBusy--;setLanguageBusy();}}const isInput=method.includes('requestUserInput'),isMcp=method==='mcpServer/elicitation/request';const yes=el('button','primary',isInput?t('提交回复'):t('本次允许'));markRecommendation(yes,'accept',request.recommend);yes.type='submit';const available=params.availableDecisions;const canAccept=!available||available.includes('accept');if(isInput||isMcp||canAccept)actions.append(yes);if(!isInput){const no=el('button','secondary',t('拒绝'));markRecommendation(no,'decline',request.recommend);no.type='button';no.onclick=()=>submit(isMcp?{action:'decline'}:{decision:'decline'});if(!available||available.includes('decline'))actions.append(no);if(method.includes('commandExecution')||method.includes('fileChange')||isMcp){const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.onclick=()=>submit(isMcp?{action:'cancel'}:{decision:'cancel'});if(!available||available.includes('cancel'))actions.append(cancel);}}form.onsubmit=event=>{event.preventDefault();if(isInput){const answers={};for(const [key,get] of Object.entries(controls)){const value=get();if(!value.trim()){error.textContent=t('请回答所有问题');return;}answers[key]=[value];}submit({answers});}else if(isMcp){const content={};for(const [key,get] of Object.entries(controls)){const value=get();if(value!==undefined)content[key]=value;}submit({action:'accept',content});}else submit({decision:'accept'});};form.append(actions,error);card.append(form);if(submittedRequestIds.has(request.id)){card.querySelectorAll('button').forEach(button=>button.disabled=true);card.append(el('p','muted',t('已发送，等待桌面确认…')));}$('approvals').append(card);}}
 function renderComputerApproval(request){
   const id=currentId,host=currentHost,card=el('section','approval'),computer=request.params.computerUse;
   card.dataset.request=String(request.id);card.append(el('h3','',t('允许使用电脑应用？')),el('p','',computer.app));
@@ -1023,7 +1263,7 @@ function renderComputerApproval(request){
   let busy=submittedRequestIds.has(request.id);
   async function submit(response){
     if(busy)return;busy=true;approvalBusy++;setLanguageBusy();actions.querySelectorAll('button').forEach(b=>b.disabled=true);error.textContent='';
-    try{await api(sessionUrl(id,'respond',host),{requestId:request.id,response});bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
+    try{await respondToRequest(id,host,request,response);bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
     catch(e){error.textContent=t(e.message);busy=false;actions.querySelectorAll('button').forEach(b=>b.disabled=false);}
     finally{approvalBusy--;setLanguageBusy();}
   }
@@ -1039,10 +1279,14 @@ function renderAcpApproval(request){
   // kimi's AskUserQuestion arrives as a permission request whose options are
   // the answer choices: draw it as a question card, not a risk prompt.
   const question=!!params.question;
-  const planText=typeof params.planContent==='string'?params.planContent:'',text=params.text||planText||(params.title||'');
-  card.dataset.request=String(request.id);card.append(el('h3','',question?t('Agent 提问你'):t('权限请求')));
-  if(text&&text!==(question?t('Agent 提问你'):t('权限请求'))){const body=el('div','approval-markdown');renderMarkdown(body,text,[],()=>null);card.append(body);}
-  if(planText&&planText!==text){const details=el('details','approval-plan'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');renderMarkdown(content,planText,[],()=>null);details.append(summary,content);card.append(details);}
+  const heading=question?t('Agent 提问你'):t('权限请求'),planText=typeof params.planContent==='string'?params.planContent:'',text=params.text||planText||(params.title||'');
+  let planRoot=null;
+  card.dataset.request=String(request.id);card.append(el('h3','',heading));
+  const versionBadge=planText?window.BridgePlanReview?.versionBadge(params):null;if(versionBadge)card.append(versionBadge);
+  const loadHistory=planText&&window.BridgePlanReview?window.BridgePlanReview.memo(()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(params.planId)+'&agent='+encodeURIComponent(state?.agent||''))):null;
+  const history=loadHistory?window.BridgePlanReview.historyDetails(params,loadHistory,(node,text)=>renderMarkdown(node,text,[],()=>null)):null;if(history)card.append(history);
+  if(text&&text!==heading){const body=el('div','approval-markdown');renderMarkdown(body,text,[],()=>null);card.append(body);if(planText)planRoot=body;}
+  if(planText&&planText!==text){const details=el('details','approval-plan'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');renderMarkdown(content,planText,[],()=>null);details.append(summary,content);card.append(details);planRoot=content;}
   if(Array.isArray(params.allowedPrompts)&&params.allowedPrompts.length){
     const details=el('details','approval-plan-operations'),summary=el('summary','',t('请求允许的操作')+' ('+params.allowedPrompts.length+')'),list=el('ul');
     for(const value of params.allowedPrompts){
@@ -1052,16 +1296,20 @@ function renderAcpApproval(request){
     }
     details.append(summary,list);card.append(details);
   }
+  const revisionDiff=planText?window.BridgePlanReview?.diffDetails(params):null;if(revisionDiff)card.append(revisionDiff);
+  const previousFeedback=loadHistory?window.BridgePlanReview.previousFeedbackDetails(params,loadHistory,()=>planRoot?.textContent||planText):null;if(previousFeedback)card.append(previousFeedback);
   const badge=question?null:riskBadge(request,params);if(badge)card.append(badge);
   if(!question&&params.command&&!planText){const command=el('pre','approval-command',params.command);command.setAttribute('aria-label',t('具体命令'));card.append(command);}
   const options=params.options||[],actions=el('div','actions'),error=el('p','error');
   const feedback=options.some(option=>option.id==='plan_revise')?el('textarea'):null;
   if(feedback){const label=el('label','',t('修改意见（可选）'));feedback.rows=3;feedback.maxLength=20000;label.append(feedback);card.append(label);}
+  const review=planRoot&&feedback?window.BridgePlanReview?.reviewer({root:planRoot,textarea:feedback,params,storageKey:'plan-review:'+chatKey(id,host)+':'+request.id,notify:message=>toast(message)}):null;
+  if(review)card.append(review.element);
   card.append(actions,error);
   let busy=submittedRequestIds.has(request.id);
-  async function submit(response){
+  async function submit(response,extra){
     if(busy)return;busy=true;approvalBusy++;setLanguageBusy();actions.querySelectorAll('button').forEach(b=>b.disabled=true);error.textContent='';
-    try{await api(sessionUrl(id,'respond',host),{requestId:request.id,response});bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
+    try{const result=await respondToRequest(id,host,request,response,extra);review?.clear();bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));if(result?.warning)error.textContent=result.warning;}
     catch(e){error.textContent=t(e.message);busy=false;actions.querySelectorAll('button').forEach(b=>b.disabled=false);}
     finally{approvalBusy--;setLanguageBusy();}
   }
@@ -1074,12 +1322,15 @@ function renderAcpApproval(request){
     markRecommendation(button,option.id,request.recommend);
     button.type='button';button.disabled=busy;button.onclick=()=>{
       if(option.id!=='plan_revise'){submit({optionId:option.id});return;}
-      const text=feedback.value;if(!text.trim()){error.textContent=t('请填写修改意见');feedback.focus();return;}
-      submit({optionId:option.id,text});
+      const text=feedback.value;
+      if(review){const problem=review.validate(text);if(problem){error.textContent=problem;return;}submit({optionId:option.id,text:review.format(text)},{planFeedback:review.payload(text)});return;}
+      if(!text.trim()){error.textContent=t('请填写修改意见');feedback.focus();return;}
+      submit({optionId:option.id,text:window.BridgePlanReview?window.BridgePlanReview.formatFeedback(text,params):text});
     };actions.append(button);
   }
   const cancel=el('button','secondary',t('取消'));cancel.type='button';cancel.disabled=busy;cancel.onclick=()=>submit({cancel:true});actions.append(cancel);
   if(busy)card.append(el('p','muted',t('已发送，等待桌面确认…')));
+  if(review)card.planReviewDestroy=review.destroy;
   return card;
 }
 function renderAcpInput(request){
@@ -1119,7 +1370,7 @@ function renderAcpInput(request){
   let busy=submittedRequestIds.has(request.id);
   async function submit(response){
     if(busy)return;busy=true;approvalBusy++;setLanguageBusy();actions.querySelectorAll('button').forEach(b=>b.disabled=true);error.textContent='';
-    try{await api(sessionUrl(id,'respond',host),{requestId:request.id,response});bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
+    try{await respondToRequest(id,host,request,response);bumpRecency(id,host);if(id===currentId&&host===currentHost)submittedRequestIds.add(request.id);card.append(el('p','muted',t('已发送，等待桌面确认…')));}
     catch(e){error.textContent=t(e.message);busy=false;actions.querySelectorAll('button').forEach(b=>b.disabled=false);}
     finally{approvalBusy--;setLanguageBusy();}
   }
@@ -1135,26 +1386,37 @@ function renderAcpInput(request){
 function renderPlanApproval(request){
   const id=currentId,host=currentHost,key=chatKey(id,host),card=el('section','approval plan-approval');
   card.dataset.request=String(request.id);card.append(el('h3','',t('计划已就绪')));
+  const versionBadge=window.BridgePlanReview?.versionBadge(request.params);if(versionBadge)card.append(versionBadge);
+  const loadHistory=window.BridgePlanReview?.memo(()=>api(sessionUrl(id,'plans',host)+'&planId='+encodeURIComponent(request.params.planId)+'&agent='+encodeURIComponent(state?.agent||'')));
+  const history=loadHistory?window.BridgePlanReview.historyDetails(request.params,loadHistory,(node,text)=>renderMarkdown(node,text,[],()=>null)):null;if(history)card.append(history);
   const details=el('details'),summary=el('summary','',t('查看计划')),content=el('div','plan-content');
   renderMarkdown(content,request.params.planContent||'',[],()=>null);details.append(summary,content);card.append(details);
+  const revisionDiff=window.BridgePlanReview?.diffDetails(request.params);if(revisionDiff)card.append(revisionDiff);
+  const previousFeedback=loadHistory?window.BridgePlanReview.previousFeedbackDetails(request.params,loadHistory,()=>content.textContent||request.params.planContent||''):null;if(previousFeedback)card.append(previousFeedback);
   const label=el('label','',t('修改意见（可选）')),input=el('textarea');input.rows=2;input.maxLength=20000;label.append(input);card.append(label);
+  const review=window.BridgePlanReview?.reviewer({root:content,textarea:input,params:request.params,storageKey:'plan-review:'+key+':'+request.id,notify:message=>toast(message),onChange:()=>updateActions()});
+  if(review)card.append(review.element);
   const actions=el('div','actions'),yes=el('button','primary',t('按照当前规划结果执行')),revise=el('button','secondary',t('按照修改意见继续规划')),error=el('p','error');
   yes.type=revise.type='button';actions.append(yes,revise);card.append(actions,error);
   let busy=submittedRequestIds.has(request.id);
   function updateActions(){
-    const hasFeedback=!!input.value.trim();
+    const hasFeedback=!!input.value.trim()||!!review?.count();
     yes.disabled=busy||hasFeedback;revise.disabled=busy||!hasFeedback;
     yes.className=hasFeedback?'secondary':'primary';revise.className=hasFeedback?'primary':'secondary';
   }
   input.oninput=updateActions;updateActions();
   async function submit(action){
     if(busy)return;
-    if(action==='implement'&&input.value.trim()){updateActions();return;}
-    if(action==='revise'&&!input.value.trim()){error.textContent=t('请填写修改意见');return;}
-    const response=action==='implement'?{action}:{action,text:input.value};
+    if(action==='implement'&&(input.value.trim()||review?.count())){updateActions();return;}
+    if(action==='revise'){
+      const problem=review?review.validate(input.value):input.value.trim()?'':t('请填写修改意见');
+      if(problem){error.textContent=problem;return;}
+    }
+    const response=action==='implement'?{action}:{action,text:review?review.format(input.value):input.value};
     busy=true;approvalBusy++;setLanguageBusy();yes.disabled=revise.disabled=true;error.textContent='';
     try{
-      const result=await api(sessionUrl(id,'respond',host),{requestId:request.id,response});
+      const result=await respondToRequest(id,host,request,response);
+      if(result?.status!=='unknown')review?.clear();
       if(currentId!==id||currentHost!==host)return;
       bumpRecency(id,host);submittedRequestIds.add(request.id);
       if(result.status==='unknown'){error.textContent=t('发送结果尚未确认，请查看会话后再操作。');return;}
@@ -1163,11 +1425,13 @@ function renderPlanApproval(request){
     }catch(e){if(currentId===id&&currentHost===host){error.textContent=t(e.message);busy=false;updateActions();}}
     finally{approvalBusy--;setLanguageBusy();}
   }
-  yes.onclick=()=>submit('implement');revise.onclick=()=>submit('revise');return card;
+  yes.onclick=()=>submit('implement');revise.onclick=()=>submit('revise');
+  card.planReviewDestroy=review?.destroy;return card;
 }
 async function ignoreSubmission(value){
   const result=await api('/api/accounts/ignore-submission',value);
   const key='pending:'+chatKey(value.threadId,value.host);
+  window.BridgePendingCommands.remove(key,value.submissionId);
   try{if(JSON.parse(sessionStorage.getItem(key))?.id===value.submissionId)sessionStorage.removeItem(key);}catch{}
   if(currentId===value.threadId&&currentHost===value.host&&state){state.submissions=(state.submissions||[]).filter(row=>row.id!==value.submissionId);renderQueue(state.submissions);}
   return result;
@@ -1186,6 +1450,8 @@ function renderQueueAttachments(row,target,host){
   });
   return root;
 }
+let queueOrderSync=null;
+let queueOrderRequest=Promise.resolve();
 function uniqueQueueRows(rows){
   const seen=new Set();
   return rows.filter(row=>{if(seen.has(row.id))return false;seen.add(row.id);return true;});
@@ -1198,12 +1464,53 @@ function moveQueueRows(rows,id,beforeID){
   next.splice(at,0,moving);
   return next.every((row,index)=>row===rows[index])?rows:next;
 }
+function applyQueueOrder(rows,order){
+  const rank=new Map(order.filter(row=>row.status==='queued').map((row,index)=>[row.id,index]));
+  const queued=rows.map((row,index)=>({row,index})).filter(item=>item.row.status==='queued').sort((a,b)=>{
+    const ar=rank.has(a.row.id)?rank.get(a.row.id):rank.size+a.index,br=rank.has(b.row.id)?rank.get(b.row.id):rank.size+b.index;
+    return ar-br||a.index-b.index;
+  });
+  const next=[...rows];let index=0;
+  for(let at=0;at<next.length;at++)if(next[at].status==='queued')next[at]=queued[index++].row;
+  return next;
+}
+function queueOrderMatches(rows,order){
+  const actual=uniqueQueueRows(rows).filter(row=>row.status==='queued').map(row=>row.id),expected=uniqueQueueRows(order).filter(row=>row.status==='queued').map(row=>row.id);
+  const expectedSet=new Set(expected),actualSet=new Set(actual),actualExpected=actual.filter(id=>expectedSet.has(id)),expectedActual=expected.filter(id=>actualSet.has(id));
+  return actualExpected.length===expectedActual.length&&actualExpected.every((id,index)=>id===expectedActual[index]);
+}
+function applyPendingQueueOrder(view){
+  const pending=queueOrderSync;
+  if(!pending||currentId!==pending.target||currentHost!==pending.host)return view;
+  const rows=view.submissions||[];pending.serverRows=rows;
+  if(pending.synced&&queueOrderMatches(rows,pending.next)){queueOrderSync=null;return view;}
+  return {...view,submissions:applyQueueOrder(rows,pending.next)};
+}
 async function reorderQueuedMessage(id,beforeID,target,host){
   if(!state||currentId!==target||currentHost!==host)return;
   const previous=state.submissions||[],next=moveQueueRows(previous,id,beforeID);if(next===previous)return;
+  const prior=queueOrderSync,serverRows=prior?.target===target&&prior?.host===host?prior.serverRows:previous;
+  const pending={target,host,next,serverRows,synced:false};queueOrderSync=pending;
   state.submissions=next;renderQueue(next);
-  try{await api(sessionUrl(target,'queue',host),{id,action:'reorder',beforeId:beforeID});toast(t('排队顺序已更新'));}
-  catch(error){if(currentId===target&&currentHost===host&&state?.submissions===next){state.submissions=previous;renderQueue(previous);}toast(error.message);}
+  const request=queueOrderRequest.catch(()=>{}).then(()=>api(sessionUrl(target,'queue',host),{id,action:'reorder',beforeId:beforeID}));
+  queueOrderRequest=request;
+  try{
+    await request;
+    if(queueOrderSync===pending){
+      pending.synced=true;
+      if(queueOrderMatches(pending.serverRows,next)){
+        queueOrderSync=null;
+        if(currentId===target&&currentHost===host&&state){state.submissions=pending.serverRows;renderQueue(pending.serverRows);}
+      }
+    }
+    toast(t('排队顺序已更新'));
+  }catch(error){
+    if(queueOrderSync===pending){
+      queueOrderSync=null;
+      if(currentId===target&&currentHost===host&&state){state.submissions=pending.serverRows;renderQueue(pending.serverRows);}
+    }
+    toast(error.message);
+  }
 }
 function queueDropBeforeID(sourceID,clientY){
   const cards=[...$('queued').querySelectorAll('.queue-card[data-queue-id]')].filter(card=>card.dataset.queueId!==sourceID);
@@ -1241,7 +1548,12 @@ function bindQueueDrag(handle,card,row,target,host){
 function renderQueue(rows){
   $('queued').replaceChildren();
   const target=currentId,host=currentHost;
+  try{
+    const local=window.BridgePendingCommands.entries('pending:'+chatKey(target,host));
+    rows=[...rows,...local.map(payload=>({id:payload.id,text:payload.text,status:'unknown',localPending:true,attachmentIds:(payload.attachments||[]).map(item=>typeof item==='string'?item:item.id)}))];
+  }catch(error){$('send-error').textContent=t(error.message);}
   for(const row of uniqueQueueRows(rows)){
+    if(row.internalTask)continue;
     const card=el('div','queue-card');
     if(row.status==='waiting_input'&&row.input){
       renderWaitingInput(card,row,target,host);
@@ -1256,9 +1568,23 @@ function renderQueue(rows){
       const handle=el('button','queue-drag-handle','↕');handle.type='button';handle.title=t('拖拽排序（也可用上下方向键）');handle.setAttribute('aria-label',t('拖拽排序'));
       const heading=el('div','queue-card-heading');heading.append(handle,title);card.append(heading);bindQueueDrag(handle,card,row,target,host);
     }else card.append(title);
-    card.append(el('p','',reply?t('问题回复'):row.text));
+    const message=el('p','',reply?t('问题回复'):row.text);
+    if(row.status==='unknown'&&!reply){
+      const details=el('details','queue-message-details');
+      details.append(el('summary','',t('查看原文')),message);
+      card.append(details);
+    }else card.append(message);
     const attachments=renderQueueAttachments(row,target,host);if(attachments)card.append(attachments);
-    if(row.status==='queued'||failed){
+    if(row.localPending){
+      const actions=el('div','queue-actions'),retry=el('button','plain',t('重试发送')),remove=el('button','plain',t('移除本地记录'));
+      retry.onclick=()=>retryLocalSubmission(row,target,host);
+      remove.onclick=()=>{
+        if(!window.confirm(t('忽略只会移除未确认提示，不会撤回或重发消息。请先检查聊天记录。')))return;
+        window.BridgePendingCommands.remove('pending:'+chatKey(target,host),row.id);
+        if(currentId===target&&currentHost===host)renderQueue(state?.submissions||[]);
+      };
+      actions.append(retry,remove);card.append(actions);
+    }else if(row.status==='queued'||failed){
       const sendLabel=failed?t('重试发送'):t('立即发送');
       const actions=el('div','queue-actions');
       const sendNow=el('button','plain',sendLabel);
@@ -1345,7 +1671,7 @@ function openQueueEditor(row,target,host){
   if(!dialog){
     dialog=document.createElement('dialog');dialog.id='queue-edit-dialog';dialog.className='picker';
     dialog.setAttribute('aria-labelledby','queue-edit-heading');
-    dialog.innerHTML='<div class="picker-head"><h2 id="queue-edit-heading"></h2><button class="icon-button" type="button" aria-label="关闭"></button></div><div class="picker-body"><form><textarea rows="8" maxlength="100000" aria-label="排队消息"></textarea><p class="error" role="alert"></p><button class="primary" type="submit"></button></form></div>';
+    dialog.innerHTML='<div class="picker-head"><h2 id="queue-edit-heading"></h2><button class="icon-button" type="button" aria-label="关闭">×</button></div><div class="picker-body"><form><textarea rows="8" maxlength="100000" aria-label="排队消息"></textarea><p class="error" role="alert"></p><button class="primary" type="submit"></button></form></div>';
     document.body.append(dialog);
     dialog.querySelector('.icon-button').onclick=()=>dialog.close();
     dialog.querySelector('form').onsubmit=async event=>{
@@ -1375,8 +1701,54 @@ function openQueueEditor(row,target,host){
   dialog.showModal();dialog.querySelector('textarea').focus();
 }
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}
-function syncSendButton(){$('send').disabled=!!state?.readOnly||sending||!state||state.loadingHistory||state.activating||!attachments.ready()||(!$('message').value.trim()&&!attachments.ids().length);}
-$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;const text=$('message').value;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;if(!text.trim()&&!attachmentIds.length)return;const composerCommand=currentTeam?parseTeamCommand(text):parsePlainCommand(text);if(composerCommand){if(attachmentIds.length){toast(composerCommand.kind==='native'||composerCommand.kind==='gateway'?'请先移除附件后再压缩':composerCommand.kind==='migrate'?'请先移除附件后再迁移':'请先移除附件后再使用 /new');return;}if(composerCommand.kind==='new'){if(!window.confirm(t('主控将切换为空白会话，之后的团队任务不再携带当前对话上下文。原会话和历史 Run 会保留。')))return;const team=currentTeam,sourceId=currentId;sending=true;try{const result=await leadContextAction(team,'new',sourceId);$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));toast(t('主控已切换为空白会话'));if(currentId!==result.sessionId)await openChat(result.sessionId,'local',team.id);}catch(error){toast(error.message);}finally{sending=false;}return;}if(composerCommand.kind==='newchat'){const agent=state?.agent,cwd=state?.cwd,sourceId=currentId;if(!agent){toast('无法确定当前会话配置，请刷新后重试');return;}if(!cwd){toast('无法确定当前会话目录，请刷新后重试');return;}const title=Array.from((state?.title||'').trim()).slice(0,120).join('')||t('新建聊天');sending=true;try{const result=await api('/api/sessions',{id:uuid(),agent,cwd,title,inheritFrom:sourceId});$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));loadList(true).catch(e=>toast(e.message));if(currentId!==result.id)await openChat(result.id,result.host||'local');else toast(result.message||t('新会话已创建'));}catch(error){toast(error.message);}finally{sending=false;}return;}if(composerCommand.kind==='migrate'){await runMigrateCommand(composerCommand);return;}if(!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再压缩');return;}if(composerCommand.kind==='gateway'){await runGatewayCompact(composerCommand.scope,composerCommand.instructions);return;}await runNativeCompact(composerCommand.scope,undefined,composerCommand.instructions);return;}const mode=$('send-mode').value,workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort(),teamFields=currentTeam?teamSubmissionFields(currentTeam.id):{};if(currentTeam&&skills.length){toast('团队聊天暂不支持 Skill');return;}const key='pending:'+chatKey();let pending;try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}const pendingAttachmentIds=(pending?.attachments||[]).map(item=>typeof item==='string'?item:item?.id).filter(Boolean);if(!pending||pending.text!==text||pending.mode!==mode||pending.workMode!==workMode||JSON.stringify(pending.skills||[])!==JSON.stringify(skills)||JSON.stringify(pendingAttachmentIds)!==JSON.stringify(attachmentIds)||(pending.teamId||'')!==(teamFields.teamId||'')||(pending.teamMode||'')!==(teamFields.teamMode||''))pending={id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale(),...teamFields};sessionStorage.setItem(key,JSON.stringify(pending));sending=true;attachments.setLocked(true);workModes.render(state,mode,true);$('send').disabled=true;$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);if(result.runId)teamChat?.accepted(result);sessionStorage.removeItem(key);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
+async function respondToRequest(id,host,request,response,extra={}){
+  const identity=JSON.stringify([request.method,request.params,request.turnId]);
+  const key='reply:'+chatKey(id,host)+':'+request.id+':'+identity;
+  const payload=window.BridgePendingCommands.prepare(key,{commandId:uuid(),requestId:request.id,response,...extra});
+  try{
+    const result=await api(sessionUrl(id,'respond',host),payload);
+    window.BridgePendingCommands.remove(key,payload.commandId);
+    return result;
+  }catch(error){if(error.code==='command_rejected')window.BridgePendingCommands.remove(key,payload.commandId);throw error;}
+}
+async function retryLocalSubmission(row,target,host){
+  if(sending)return;
+  const key='pending:'+chatKey(target,host);
+  let payload;
+  try{payload=window.BridgePendingCommands.entries(key).find(item=>item.id===row.id);}catch(error){toast(error.message);return;}
+  if(!payload)return;
+  sending=true;syncSendButton();
+  try{
+    const result=await api(sessionUrl(target,'send',host),payload);
+    if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));
+    if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));
+    window.BridgePendingCommands.remove(key,payload.id);
+    bumpRecency(target,host);
+    if(currentId===target&&currentHost===host){
+      if($('message').value===payload.text)clearComposerDraft(target,host);
+      attachments.clear(chatKey(target,host),(payload.attachments||[]).map(item=>typeof item==='string'?item:item.id));
+      const view=await api(sessionUrl(target,'',host));renderState(view);
+    }
+    toast('已重试发送');
+  }catch(error){toast(error.message);}
+  finally{sending=false;syncSendButton();if(currentId===target&&currentHost===host)renderQueue(state?.submissions||[]);}
+}
+function syncSendButton(){
+  const unavailable=!!state?.readOnly||sending||!state||state.loadingHistory||state.activating;
+  const dispatch=$('team-dispatch-button');
+  if(dispatch){dispatch.hidden=!!currentTeam||!!state?.readOnly;dispatch.disabled=unavailable||!currentId;}
+  $('send').disabled=unavailable||!attachments.ready()||(!$('message').value.trim()&&!attachments.ids().length);
+  $('send').dataset.mode=state?.status==='active'?'queue':'send';
+  $('send').dataset.pending=String(sending);
+  $('send').setAttribute('aria-busy',String(sending));
+  $('send-label').textContent=t(sending?'正在提交…':'发送');
+}
+function clearComposerDraft(target,host){
+  sessionStorage.removeItem('draft:'+chatKey(target,host));
+  if(currentId!==target||currentHost!==host)return;
+  $('message').value='';window.BridgePresentation?.resizeMessage();updateSkillSuggestions();syncSendButton();
+}
+$('composer').onsubmit=async event=>{event.preventDefault();closeSkillSuggestions();if(sending||!currentId||state?.readOnly)return;const submittedText=$('message').value;let text=submittedText;if(!attachments.ready()){toast('请等待附件上传完成');return;}const attachmentIds=attachments.ids(),attachmentPayload=attachmentIds.map(id=>({id}));if(!text.trim()&&!attachmentIds.length)return;const composerCommand=currentTeam?parseTeamCommand(text):parsePlainCommand(text);if(composerCommand?.kind==='goal'){const option=$('work-mode').querySelector('[value=goal]');if(option?.disabled||option?.hidden){$('send-error').textContent=t(state?.status==='active'?'当前回复结束后可开启目标模式':'当前 Agent 不支持目标模式');return;}workModes.selection='goal';$('work-mode').value='goal';workModes.render(state,$('send-mode').value,sending);text=composerCommand.objective;if(!text){$('message').value='';saveDraft();syncSendButton();return;}}if(composerCommand&&composerCommand.kind!=='goal'){if(attachmentIds.length){toast(composerCommand.kind==='native'||composerCommand.kind==='gateway'?'请先移除附件后再压缩':composerCommand.kind==='migrate'?'请先移除附件后再迁移':false);return;}if(composerCommand.kind==='newchat'){const agent=composerCommand.agent||state?.agent,cwd=state?.cwd,sourceId=currentId;if(!agent){toast('无法确定当前会话配置，请刷新后重试');return;}if(!cwd){toast('无法确定当前会话目录，请刷新后重试');return;}const title=t('新聊天');sending=true;syncSendButton();try{const result=await api('/api/sessions',{id:uuid(),agent,cwd,title,inheritFrom:sourceId});$('message').value='';sessionStorage.removeItem('draft:'+chatKey(sourceId,currentHost));loadList(true).catch(e=>toast(e.message));if(currentId!==result.id)await openChat(result.id,result.host||'local');else toast(result.message||t('新会话已创建'));}catch(error){toast(error.message);}finally{sending=false;syncSendButton();}return;}if(composerCommand.kind==='migrate'){await runComposerMaintenance(composerCommand);return;}if(composerCommand.kind==='native'&&!compactAvailable()){toast('当前会话正在运行或有待处理请求，稍后再压缩');return;}await runComposerMaintenance(composerCommand);return;}const mode=state?.status==='active'?'queue':'send';$('send-mode').value=mode;const workMode=workModes.value(mode);if(workMode==='goal'&&attachmentIds.length){$('send-error').textContent=t('目标模式暂不支持附件');return;}if(invalidSkills.size){$('send-error').textContent=t('已选 Skill 已失效，请刷新列表后重新选择');return;}const skills=[...selectedSkills].sort(),teamFields=currentTeam?teamSubmissionFields(currentTeam.id):{};if(currentTeam&&skills.length){toast('团队聊天暂不支持 Skill');return;}const key='pending:'+chatKey();let pending;try{pending=window.BridgePendingCommands.prepare(key,{id:uuid(),text,mode,skills,workMode,attachments:attachmentPayload,uiLocale:BridgeI18n.locale(),...teamFields});}catch(error){$('send-error').textContent=t(error.message);renderQueue(state?.submissions||[]);return;}sending=true;attachments.setLocked(true);workModes.render(state,mode,true);syncSendButton();$('send-error').textContent='';const target=currentId,targetHost=currentHost;try{const result=await api(sessionUrl(target,'send',targetHost),pending);if(result.status==='ignored')throw Error(t('这条未确认记录已忽略，请刷新后重新编辑消息。'));if(result.status==='unknown')throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));bumpRecency(target,targetHost);if(result.runId)teamChat?.accepted(result);else if(result.queueStatus)teamChat?.refreshRun(true);window.BridgePendingCommands.remove(key,pending.id);workModes.submitted(chatKey(target,targetHost),workMode);attachments.clear(chatKey(target,targetHost),attachmentIds);if(sessionStorage.getItem('draft:'+chatKey(target,targetHost))===submittedText)sessionStorage.removeItem('draft:'+chatKey(target,targetHost));if(currentId===target&&currentHost===targetHost&&$('message').value===submittedText){$('message').value='';selectedSkills.clear();renderSkillPills();window.BridgePresentation?.resizeMessage();}if(result.status==='queued'&&currentId===target&&currentHost===targetHost&&state){state.submissions=[...(state.submissions||[]),{id:pending.id,text,mode:'queue',status:'queued'}];renderQueue(state.submissions);}
 toast(result.runId?t('团队已受理'):workMode==='goal'?(result.activation?.status==='queued'?t('目标已创建，启动已排队'):result.activation?t('目标已创建，正在启动'):t('已提交目标请求，等待桌面确认')):result.status==='queued'?t('已加入待发送队列'):t('已发送到会话'));}catch(error){if(currentId===target&&currentHost===targetHost){const busy=/^(.+) 正在执行。(.+)$/.exec(error.message);$('send-error').textContent=busy?busy[1]+t(' 正在执行。')+t(busy[2]):t(error.message);window.BridgePresentation?.showError();}}finally{sending=false;attachments.setLocked(false);workModes.render(state,$('send-mode').value,false);syncSendButton();}};
 $('message').onkeydown=event=>{
   if(handleSkillKeydown(event))return;
@@ -1385,11 +1757,59 @@ $('message').onkeydown=event=>{
   const enterSends=document.documentElement.dataset.enterMode==='send';
   if(event.metaKey||event.ctrlKey||event.shiftKey!==enterSends){event.preventDefault();$('composer').requestSubmit();}
 };
-$('stop').onclick=async()=>{const button=$('stop');if(button.disabled)return;button.disabled=true;try{await api('/api/sessions/'+currentId+'/stop',{});toast('已请求停止');}catch(e){toast(e.message);}finally{button.disabled=false;}};
+$('stop').onclick=async()=>{
+  const button=$('stop');if(button.disabled)return;
+  const id=currentId,host=currentHost,expectedTurnId=state?.activeTurnId||'',key='stop:'+chatKey(id,host)+':'+expectedTurnId;
+  button.disabled=true;
+  try{
+    const payload=window.BridgePendingCommands.prepare(key,{commandId:uuid(),expectedTurnId});
+    await api(sessionUrl(id,'stop',host),payload);
+    window.BridgePendingCommands.remove(key,payload.commandId);toast('已请求停止');
+  }catch(e){toast(e.message);}finally{button.disabled=false;}
+};
 document.querySelectorAll('[data-compact-method]').forEach(button=>button.onclick=()=>selectCompactMethod(button.dataset.compactMethod));
-document.querySelectorAll('[data-compact]').forEach(button=>button.onclick=()=>compactChat(button.dataset.compact));
-document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.onclick=()=>compactGateway(button.dataset.gatewayCompact));
+document.querySelectorAll('[data-compact]').forEach(button=>button.onclick=()=>selectCompactScope(button.dataset.compact));
+document.querySelectorAll('[data-gateway-compact]').forEach(button=>button.onclick=()=>selectCompactScope(button.dataset.gatewayCompact));
+$('compact-confirm').onclick=()=>{if(!compactScope)return;if(compactMethod==='native')compactChat(compactScope);else if(compactMethod==='gateway')compactGateway(compactScope);};
 $('history').onclick=async()=>{$('history').disabled=true;try{await api('/api/sessions/'+currentId+'/history',{});toast(t('已请求加载完整历史'));}catch(e){toast(e.message);}finally{$('history').disabled=false;}};
+let switchingExecution=false;
+function renderExecutionState(view){
+  const codex=view.agent==='codex',target=view.executionTarget||view.executionOwner||'desktop';
+  const label=t(target==='cli'?'网关 Codex CLI':'桌面 Codex App');
+  if(codex){
+    $('chat-context').textContent=chatProjectLabel(view)+' · '+label;
+    $('execution-host').textContent=t('执行方：')+label;
+    $('execution-status').textContent=t('执行方：')+label+' · '+t(view.executionOwner?'已连接':'未连接');
+  }
+  $('execution-control').hidden=!codex||view.host!=='local'||view.readOnly||!view.executionSwitchSupported;
+  const button=$('execution-switch');
+  button.textContent=t(target==='cli'?'交给桌面执行':'交给网关执行');
+  button.disabled=switchingExecution||sending||view.status==='active'||(view.requests||[]).length>0||(view.submissions||[]).some(row=>row.status==='queued'||row.status==='unknown');
+}
+$('execution-switch').onclick=async()=>{
+  if(switchingExecution||!currentId)return;
+  const id=currentId,host=currentHost,target=usesDesktopRuntime(state)?'cli':'desktop';
+  switchingExecution=true;renderExecutionState(state);$('execution-error').textContent='';
+  try{
+    await api(sessionUrl(id,'execution',host),{target});
+    if(currentId===id&&currentHost===host){
+      const view=await api(sessionUrl(id,'',host));
+      if(currentId===id&&currentHost===host)renderState(view);
+    }
+    toast(t(target==='cli'?'已交给网关执行，失败消息可另行重试':'已交给桌面，请在 App 中继续'));
+  }catch(error){
+    if(currentId===id&&currentHost===host){
+      $('execution-error').textContent=t(error.message);
+      try{
+        const view=await api(sessionUrl(id,'',host));
+        if(currentId===id&&currentHost===host)renderState(view);
+      }catch{}
+    }else toast(error.message);
+  }finally{
+    switchingExecution=false;
+    if(state)renderExecutionState(state);
+  }
+};
 $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});toast(t('会话已重新连接'));}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
 $('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话；请勿同时在桌面端继续此会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
@@ -1608,6 +2028,12 @@ startFromLink();
    打开）和 popstate（安卓返回手势、浏览器后退）。hash 变空即表示退回列表；
    popstate 之后浏览器还会补发一次 hashchange，靠各分支的可见性判断保持幂等。 */
 function routeFromLocation(){
+  teamRunReturnsToDashboard=!!history.state?.teamRunReturnToDashboard;
+  if(location.hash==='#teams'){
+    openTeamDashboard({fromRoute:true});
+    return;
+  }
+  if(teamDashboardPage&&!teamDashboardPage.hidden)hideTeamDashboard({fromRoute:true});
   if(typeof parseRunHash==='function'){
     const runRoute=parseRunHash();
     if(runRoute){
@@ -1635,6 +2061,7 @@ function routeFromLocation(){
   }
   // hash 为空：从详情退回列表。认不出的 hash 一律不动（沿用原行为）。
   if(!location.hash&&$('app').classList.contains('chat-open'))closeDetailView();
+  if(!location.hash&&$('chat').hidden&&$('team-run').hidden){$('welcome').hidden=false;$('app').classList.remove('team-open');syncWorkspaceNavigation();}
 }
 window.addEventListener('popstate',()=>{detailPushed=false;routeFromLocation();});
 window.addEventListener('hashchange',()=>{
@@ -1645,7 +2072,7 @@ $('phone-language').value=BridgeI18n.language();
 $('phone-language').onchange=()=>{
   if(approvalBusy||creatingChat)return;
   const replies=[...$('approvals').querySelectorAll('input,textarea,select')].map(node=>({value:node.value,checked:node.checked}));
-  BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();renderListMode();renderList();
+  BridgeI18n.setLanguage($('phone-language').value);BridgeI18n.apply();accountPanel?.render();if(typeof accountsPanel!=="undefined")accountsPanel?.render();teamCanvas?.render();renderListMode();renderList();
   if(!$('new-chat-title').dataset.edited)$('new-chat-title').value=t('新聊天');
   renderLoginStatus();
   for(const id of ['login-error','send-error','model-error','skills-error','new-chat-error','notify-error','rename-error','toast'])$(id).textContent=t($(id).textContent);
@@ -1654,7 +2081,8 @@ $('phone-language').onchange=()=>{
   if($('model-select').querySelector('[value=__custom__]'))$('model-select').querySelector('[value=__custom__]').textContent=t('自定义模型…');
   if(state){approvalStamp='';renderState(state);[...$('approvals').querySelectorAll('input,textarea,select')].forEach((node,i)=>{if(replies[i]){node.value=replies[i].value;node.checked=replies[i].checked;if(node.tagName==='SELECT')node.dispatchEvent(new Event('change'));}});}
   else syncDocumentTitle();
-  $('notify-button').textContent=t(notificationState.watching?'提醒已开':'提醒');
+  renderNotificationState();
+  renderLocalNotify();
   if(chatTimeline)chatTimeline.relabel();messageActions.relabel();
   window.BridgePresentation?.relabel();attachments.render();renderActivity();
   renderSkillPills();if(catalogData)renderSkills();updateSkillSuggestions();
@@ -1686,18 +2114,25 @@ $('rename-form').onsubmit=async event=>{
   finally{renameBusy=false;$('rename-save').disabled=false;}
 };
 
+function deleteChatConfirmation(native){
+  return native?t('将尝试从电脑 Codex 中永久删除这条聊天及其记录，无法撤销。若原生删除失败，会改为仅从列表移除，电脑端记录可能保留。确定删除？'):t('将从列表移除这条会话；Agent 侧的记录不会被删除。确定移除？');
+}
+function deleteChatMessage(result,native){
+  if(result.mode==='deleted')return t('会话已删除');
+  if(result.warning)return t('原生删除失败，已从列表移除；电脑端记录可能仍保留');
+  return native?t('已从列表移除；电脑端记录可能仍保留'):t('已从列表移除；Agent 侧记录仍保留');
+}
 let deleteChatBusy=false;
 $('delete-chat').onclick=async()=>{
   if(!currentId||deleteChatBusy)return;
   const target={id:currentId,host:currentHost};
   const native=target.host==='local'&&(state?.agent==='codex'||!state);
-  const confirmText=native?t('将从电脑 Codex 中永久删除这条聊天及其记录，无法撤销。确定删除？'):t('将从列表移除这条会话；Agent 侧的记录不会被删除。确定移除？');
-  if(!window.confirm(confirmText))return;
+  if(!window.confirm(deleteChatConfirmation(native)))return;
   deleteChatBusy=true;$('delete-chat').disabled=true;
   try{
     const result=await api(sessionUrl(target.id,'delete',target.host),{});
     $('chat-details-dialog').close();
-    toast(result.mode==='deleted'?t('会话已删除'):t('已从列表移除会话'));
+    toast(deleteChatMessage(result,native));
     listRevision=null;
     if(currentId===target.id&&currentHost===target.host){$('back').onclick();}
     else await loadList(true);
@@ -1705,21 +2140,32 @@ $('delete-chat').onclick=async()=>{
   finally{deleteChatBusy=false;$('delete-chat').disabled=false;}
 };
 
-const accountsPanel=typeof AccountsPanel==='undefined'?null:new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
-const poolPanels=typeof PoolPanel==='undefined'?[]:[
-  new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{}),readLogin:()=>api('/api/pool/kimi/login')}),
-  new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{}),readLogin:()=>api('/api/pool/zcode/login')}),
-  new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{}),readLogin:()=>api('/api/pool/minimax/login')}),
-  new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'CodeBuddy / WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
-];
-// 账号池 tab：Codex 标签就是上方的真实切换面板（原只读列表与它重复，已去掉），
-// 其余每个 ACP 池各一个标签；一次只显示、只刷新当前标签，并记住上次选的标签。
-const poolTabSections=[
-  ...(accountsPanel?[{key:'codex',label:'Codex',root:$('codex-access'),refresh:()=>accountsPanel.refresh()}]:[]),
-  ...poolPanels.map(panel=>({key:panel.kind,label:panel.label,root:panel.root,refresh:()=>panel.refresh()}))
-];
-let activePool=0;
-try{activePool=Math.max(0,poolTabSections.findIndex(section=>section.key===localStorage.getItem('bridge-pool-tab')));}catch{}
+function initializeAccounts(){
+  accountPanel=new AccountPanel({root:$('account-content'),button:$('account-button'),read:refresh=>api('/api/account'+(refresh?'':'?cached=1')),consume:body=>api('/api/account/reset',body),onHidden:()=>{$('account-details').open=false;},visible:()=>!$('app').hidden&&!document.hidden&&$('accounts-dialog').open&&$('account-details').open});
+  accountsPanel=new AccountsPanel({root:$('accounts-content'),read:()=>api('/api/accounts'),request:({action,...value})=>action==='ignoreSubmission'?ignoreSubmission(value):api(action==='details'?'/api/accounts/details':'/api/accounts/switch',value),onChanged:()=>accountPanel.clear(),onUpdate:value=>{accountPanel.schedule();const official=value.current?.kind==='chatgpt';$('account-button').hidden=!official;if(!official)$('account-details').open=false;const label=value.current?.kind==='api'?'API 接入':official?'账号与额度':'账号与接入';$('accounts-button').setAttribute('data-i18n',label);$('accounts-button').textContent=t(label);}});
+  const poolPanels=[
+    new PoolPanel({root:$('pool-content'),kind:'kimi',label:'Kimi',read:()=>api('/api/pool/kimi'),request:(action,payload)=>api('/api/pool/kimi/'+action,payload||{}),readLogin:()=>api('/api/pool/kimi/login')}),
+    new PoolPanel({root:$('pool-content-zcode'),kind:'zcode',label:'ZCode',read:()=>api('/api/pool/zcode'),request:(action,payload)=>api('/api/pool/zcode/'+action,payload||{}),readLogin:()=>api('/api/pool/zcode/login')}),
+    new PoolPanel({root:$('pool-content-minimax'),kind:'minimax',label:'MiniMax',read:()=>api('/api/pool/minimax'),request:(action,payload)=>api('/api/pool/minimax/'+action,payload||{}),readLogin:()=>api('/api/pool/minimax/login')}),
+    new PoolPanel({root:$('pool-content-workbuddy'),kind:'workbuddy',label:'CodeBuddy / WorkBuddy',read:()=>api('/api/pool/workbuddy'),request:(action,payload)=>api('/api/pool/workbuddy/'+action,payload||{}),readLogin:()=>api('/api/pool/workbuddy/login')}),
+  ];
+  // 账号池 tab：Codex 标签就是上方的真实切换面板，其余每个 ACP 池各一个标签。
+  poolTabSections=[
+    {key:'codex',label:'Codex',root:$('codex-access'),refresh:()=>accountsPanel.refresh()},
+    ...poolPanels.map(panel=>({key:panel.kind,label:panel.label,root:panel.root,refresh:()=>panel.refresh()})),
+  ];
+  try{activePool=Math.max(0,poolTabSections.findIndex(section=>section.key===localStorage.getItem('bridge-pool-tab')));}catch{}
+  const bar=$('pool-tabs');
+  for(const [index,section] of poolTabSections.entries()){
+    const button=document.createElement('button');
+    button.type='button';button.className='pool-tab';button.textContent=section.label;button.id='pool-tab-'+section.key;
+    button.setAttribute('role','tab');button.setAttribute('aria-controls',section.root.id);section.root.setAttribute('aria-labelledby',button.id);
+    button.onclick=()=>selectPoolTab(index);
+    button.onkeydown=event=>{const step={ArrowRight:1,ArrowLeft:-1}[event.key];if(!step)return;event.preventDefault();const next=(index+step+poolTabSections.length)%poolTabSections.length;selectPoolTab(next);poolTabSections[next].button.focus();};
+    bar.append(button);section.button=button;
+  }
+  selectPoolTab(activePool,false);
+}
 function selectPoolTab(index,refresh=true){
   activePool=index;
   for(const [other,section] of poolTabSections.entries()){
@@ -1729,35 +2175,66 @@ function selectPoolTab(index,refresh=true){
   try{localStorage.setItem('bridge-pool-tab',poolTabSections[index].key);}catch{}
   if(refresh)poolTabSections[index].refresh();
 }
-{
-  const bar=$('pool-tabs');
-  for(const [index,section] of poolTabSections.entries()){
-    const button=document.createElement('button');
-    button.type='button';
-    button.className='pool-tab';
-    button.textContent=section.label;
-    button.id='pool-tab-'+section.key;
-    button.setAttribute('role','tab');
-    button.setAttribute('aria-controls',section.root.id);
-    section.root.setAttribute('aria-labelledby',button.id);
-    button.onclick=()=>selectPoolTab(index);
-    button.onkeydown=event=>{const step={ArrowRight:1,ArrowLeft:-1}[event.key];if(!step)return;event.preventDefault();const next=(index+step+poolTabSections.length)%poolTabSections.length;selectPoolTab(next);poolTabSections[next].button.focus();};
-    bar.append(button);
-    section.button=button;
-  }
-  if(poolTabSections.length)selectPoolTab(activePool,false);
+async function openAccounts(){
+  if(accountsLoading)return;
+  accountsLoading=true;$('accounts-button').disabled=true;
+  try{
+    await BridgeLazy.load('accounts');
+    if(!accountsPanel)initializeAccounts();
+    $('accounts-dialog').showModal();poolTabSections[activePool]?.refresh();
+  }catch(error){toast(t('账号面板加载失败，请再次点击重试：')+error.message);}
+  finally{accountsLoading=false;$('accounts-button').disabled=false;}
 }
-if(accountsPanel)$('accounts-button').onclick=()=>{$('accounts-dialog').showModal();poolTabSections[activePool]?.refresh();};
+$('accounts-button').onclick=()=>openAccounts();
 
 // Team 编排：主控聊天复用 Lead 会话；独立 Run 页继续承载高级编排。
 const teamChat=typeof TeamChatController==='undefined'?null:new TeamChatController({root:$('team-workflow'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),onChange:team=>{
-  const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);openTeamChat(team);
+  const teams=(teamChat?.teams||[]).filter(row=>row.id!==team.id);teams.push(team);teamChat?.setTeams(teams);renderTeamSidebarTeams(teams);openTeamChat(team);
+},onCompactLead:async(team,closeSettings)=>{
+  if(currentTeam?.id!==team.id){toast('请先打开此团队的主控聊天');return;}
+  try{
+    const {runs,pendingInputs}=await teamContextState(team.id);
+    if(runs.some(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))){toast('团队仍有未结束的 Run，结束或取消后再压缩主控上下文');return;}
+    if(pendingInputs>0){toast('团队仍有待路由或等待处理的输入，处理后再压缩主控上下文');return;}
+    const fallback=resolveDefaultCompact();
+    compactMethod=fallback.kind;compactScope=fallback.scope;
+    $('compact-instructions').value='';$('compact-error').textContent='';renderCompactState();
+    closeSettings?.();$('chat-details-dialog').showModal();
+  }catch(error){toast(error.message);}
+},onResetLead:async(team,closeSettings)=>{
+  const lead=(team.members||[]).find(member=>member.id===team.leadId);
+  if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
+  closeSettings?.();
+  try{
+    const result=await newTeamLeadContext(team,lead.sessionId);
+    if(result&&currentTeam?.id===team.id&&currentId!==result.sessionId)await openChat(result.sessionId,'local',team.id);
+  }catch(error){toast(error.message);}
 }});
+let teamCanvas=null;
+globalThis.BridgeTeamCanvas=null;
+async function ensureTeamCanvas(){
+  await BridgeLazy.load('teamCanvas');
+  if(teamCanvas)return;
+  teamCanvas=new TeamCanvasController({root:$('team-canvas'),request:teamRequest,
+    openRun:(teamId,runId,options)=>openTeamRun(teamId,runId,false,options?.taskId),
+    openSession:(sessionId,source)=>openRunConversation(sessionId,{...source,returnTo:'canvas'}),notify:toast});
+  globalThis.BridgeTeamCanvas=teamCanvas;
+}
+function loadSwarmPanel(){
+  if(typeof TeamSwarmPanel!=='undefined')return;
+  BridgeLazy.load('swarm').then(()=>teamRunScreen?.render()).catch(error=>toast(t('Swarm 面板加载失败，Run 详情仍可使用；下次打开 Run 时重试：')+error.message));
+}
+function loadGraphLayout(){
+  if(globalThis.dagre)return;
+  BridgeLazy.load('graph').then(()=>{teamsPanel?.render();teamRunScreen?.render();teamChat?.render();}).catch(error=>toast(t('图布局加载失败，已使用列表；下次进入团队视图时重试：')+error.message));
+}
 async function openTeamChat(team){
   const lead=(team.members||[]).find(member=>member.id===team.leadId)||team.members?.[0];
   if(!lead?.sessionId){toast('团队缺少负责人会话');return;}
+  const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
+  if(fromDashboard){hideTeamDashboard({fromRoute:true});teamDashboardNavigation=true;teamRunReturnsToDashboard=false;}
   $('teams-dialog').close();
-  await openChat(lead.sessionId,'local',team.id);
+  if((await openChat(lead.sessionId,'local',team.id))===false)return;
   // 团队会话复用 Lead 会话：openChat 已按列表→详情压过栈，这里只把 hash 换成
   // #team=，转发/通知落 URL 时能还原成团队视图。
   showDetailRoute('#team='+encodeURIComponent(team.id));
@@ -1766,9 +2243,8 @@ function syncTeamComposer(){
   const enabled=!!currentTeam;
   // 团队消息统一进入 autoPlan，由 Lead 决定直接回答或委派成员。
   $('team-settings-button').hidden=!enabled;
-  $('team-lead-hint').hidden=!enabled;
   if(enabled)$('skills-button').hidden=true;
-  $('work-mode').hidden=enabled;
+  if(enabled)$('work-mode-button').hidden=true;
   $('send-mode').querySelector('option[value="steer"]').disabled=enabled;
   if(enabled){
     if($('send-mode').value==='steer')$('send-mode').value='send';
@@ -1780,8 +2256,174 @@ function syncTeamComposer(){
   teamChat?.refreshRun();
 }
 $('team-settings-button').onclick=()=>teamChat?.openSettings();
-const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();}});
-const teamRunScreen=typeof TeamRunScreen==='undefined'?null:new TeamRunScreen({root:$('team-run'),request:teamRequest,openChat:sessionId=>openChat(sessionId,'local'),onUnauthorized:()=>showLogin(),onNavigateAway:closeTeamRunView});
+let teamDispatchSource=null,teamDispatchTeams=[],teamDispatchBusy=false,teamDispatchRequest=0;
+function syncTeamDispatch(){
+  $('team-dispatch-submit').disabled=teamDispatchBusy||!teamDispatchTeams.length||!$('team-dispatch-text').value.trim();
+  $('team-dispatch-submit').textContent=t(teamDispatchBusy?'正在提交…':'发送任务');
+  for(const id of ['team-dispatch-team','team-dispatch-text','team-dispatch-close','team-dispatch-manage'])$(id).disabled=teamDispatchBusy;
+}
+function saveTeamDispatchDraft(){
+  if(teamDispatchSource)sessionStorage.setItem('team-dispatch-draft:'+chatKey(teamDispatchSource.id,teamDispatchSource.host),JSON.stringify({sourceText:teamDispatchSource.text,text:$('team-dispatch-text').value,teamId:$('team-dispatch-team').value}));
+  syncTeamDispatch();
+}
+async function openTeamDispatch(){
+  if(currentTeam||sending||!currentId||!state||state.readOnly||state.loadingHistory||state.activating)return;
+  if(!attachments.ready()||attachments.ids().length){toast('请先移除附件后再交给团队，或在团队对话中发送附件。');return;}
+  const request=++teamDispatchRequest,project={key:state.project,cwd:state.cwd};
+  teamDispatchSource={id:currentId,host:currentHost,text:$('message').value};teamDispatchTeams=[];
+  let draft;try{draft=JSON.parse(sessionStorage.getItem('team-dispatch-draft:'+chatKey()));}catch{}
+  if(draft?.sourceText!==teamDispatchSource.text)draft=null;
+  $('team-dispatch-text').value=draft?.text??teamDispatchSource.text;
+  $('team-dispatch-team').replaceChildren(new Option(t('正在加载团队…'),''));
+  $('team-dispatch-error').textContent='';$('team-dispatch-manage').hidden=true;
+  syncTeamDispatch();$('team-dispatch-dialog').showModal();
+  try{
+    const value=await teamRequest('/api/teams');
+    if(request!==teamDispatchRequest)return;
+    teamDispatchTeams=(value.teams||[]).filter(team=>(team.members||[]).some(member=>member.id===team.leadId&&member.sessionId));
+    teamChat?.setTeams(value.teams||[]);renderList();renderTeamSidebarTeams();
+    $('team-dispatch-team').replaceChildren(...teamDispatchTeams.map(team=>new Option(team.name,team.id)));
+    const preferred=teamChat?.teamById(draft?.teamId)||teamChat?.teamForProject(project);
+    if(preferred&&teamDispatchTeams.some(team=>team.id===preferred.id))$('team-dispatch-team').value=preferred.id;
+    if(!teamDispatchTeams.length){$('team-dispatch-error').textContent=t('还没有团队。');$('team-dispatch-manage').hidden=false;}
+  }catch(error){if(request===teamDispatchRequest)$('team-dispatch-error').textContent=t(error.message);}
+  finally{if(request===teamDispatchRequest)syncTeamDispatch();}
+}
+async function submitTeamDispatch(event){
+  event.preventDefault();
+  const source=teamDispatchSource,team=teamDispatchTeams.find(row=>row.id===$('team-dispatch-team').value),text=$('team-dispatch-text').value;
+  if(teamDispatchBusy||!source||!team)return;
+  if(!text.trim()||[...text].length>10000){$('team-dispatch-error').textContent=t('请输入 1–10000 字的任务。');return;}
+  saveTeamDispatchDraft();
+  // 独立幂等键：网络失败、关闭重开或刷新后重试，不重复向团队派单。
+  const key='team-dispatch:'+chatKey(source.id,source.host)+':'+team.id;let pending;
+  try{pending=JSON.parse(sessionStorage.getItem(key));}catch{}
+  if(!pending||pending.teamId!==team.id||pending.body?.text!==text){
+    const {teamIssueRoutingVersion,teamQueueVersion}=teamSubmissionFields(team.id);
+    const fields={teamIssueRoutingVersion};if(teamQueueVersion)fields.queueVersion=teamQueueVersion;
+    pending={teamId:team.id,body:{id:uuid(),text,intent:'task',mode:'send',workMode:'default',uiLocale:BridgeI18n.locale(),...fields}};
+  }
+  sessionStorage.setItem(key,JSON.stringify(pending));teamDispatchBusy=true;syncTeamDispatch();$('team-dispatch-error').textContent='';
+  try{
+    const result=await api('/api/teams/'+encodeURIComponent(team.id)+'/inputs',pending.body);
+    if(!['accepted','queued'].includes(result.status))throw Error(t('消息可能已送达，请检查聊天记录。再次点击不会重复提交。'));
+    sessionStorage.removeItem(key);
+    sessionStorage.removeItem('team-dispatch-draft:'+chatKey(source.id,source.host));
+    if(text===source.text){
+      const draftKey='draft:'+chatKey(source.id,source.host);
+      if(sessionStorage.getItem(draftKey)===source.text)sessionStorage.removeItem(draftKey);
+      if(currentId===source.id&&currentHost===source.host&&$('message').value===source.text)clearComposerDraft(source.id,source.host);
+    }
+    $('team-dispatch-dialog').close();toast(t('任务已交给团队：')+team.name);
+  }catch(error){if($('team-dispatch-dialog').open)$('team-dispatch-error').textContent=t(error.message);}
+  finally{teamDispatchBusy=false;syncTeamDispatch();syncSendButton();}
+}
+$('team-dispatch-button').onclick=()=>openTeamDispatch().catch(error=>toast(error.message));
+$('team-dispatch-form').onsubmit=submitTeamDispatch;
+$('team-dispatch-text').oninput=saveTeamDispatchDraft;
+$('team-dispatch-team').onchange=saveTeamDispatchDraft;
+$('team-dispatch-close').onclick=()=>{if(!teamDispatchBusy)$('team-dispatch-dialog').close();};
+$('team-dispatch-dialog').addEventListener('cancel',event=>{if(teamDispatchBusy)event.preventDefault();});
+$('team-dispatch-dialog').addEventListener('close',()=>{teamDispatchRequest++;teamDispatchSource=null;});
+$('team-dispatch-manage').onclick=()=>{$('team-dispatch-dialog').close();openTeamDashboard();};
+function createTeamDashboardShell(root){
+  const page=el('section','team-dashboard-page');page.id='team-dashboard-page';page.hidden=true;
+  const header=el('header','team-dashboard-header');
+  const heading=el('div','team-dashboard-heading');
+  teamDashboardTitle=el('h1','',t('团队运行'));
+  teamDashboardSummary=el('p','team-dashboard-summary muted');
+  heading.append(teamDashboardTitle,teamDashboardSummary);
+  const back=el('button','team-dashboard-back icon-button','‹');back.type='button';
+  back.setAttribute('aria-label',t('返回聊天列表'));back.setAttribute('data-i18n-aria-label','返回聊天列表');
+  back.onclick=leaveTeamDashboard;
+  header.append(back,heading);
+  const content=el('div','team-dashboard-body');content.append(root);
+  page.append(header,content);$('main').append(page);
+  return page;
+}
+function syncWorkspaceNavigation(){
+  const teamOpen=(!!teamDashboardPage&&!teamDashboardPage.hidden)
+    ||(!$('team-run').hidden&&!!openRunRoute);
+  const teamsButton=$('teams-button'),chatsButton=$('chats-button');
+  teamsButton?.classList.toggle('active',teamOpen);
+  chatsButton?.classList.toggle('active',!teamOpen);
+  teamsButton?.setAttribute('aria-current',teamOpen?'page':'false');
+  chatsButton?.setAttribute('aria-current',teamOpen?'false':'page');
+  const sidebarTitle=$('sidebar-title-text');
+  if(sidebarTitle)sidebarTitle.textContent=t(teamOpen?'团队':'聊天');
+  const show=(selector,visible)=>{const node=document.querySelector(selector);if(node)node.hidden=!visible;};
+  show('#new-chat',!teamOpen);show('#refresh',!teamOpen);show('#search',!teamOpen);
+  document.querySelector('.list-filters')?.toggleAttribute('hidden',teamOpen);
+  show('#sessions',!teamOpen);show('#team-sidebar-list',teamOpen);
+  if(teamOpen)renderTeamSidebarTeams();
+}
+function renderTeamSidebarTeams(teams=teamChat?.teams||[]){
+  const root=$('team-sidebar-list');if(!root)return;
+  root.replaceChildren();
+  for(const team of teams){
+    const item=el('button','team-sidebar-item');item.type='button';
+    item.setAttribute('aria-label',team.name+' · '+t('打开团队聊天'));
+    const latest=teamsPanel?.teamLatestRun(team.id);
+    const summary=latest
+      ?[t(TEAM_RUN_STATUS_LABELS[latest.status]||latest.status),latest.nextAction?.label].filter(Boolean).join(' · ')
+      :((team.members||[]).length+' '+t('名成员'));
+    item.append(el('strong','',team.name),el('small','',summary));
+    item.classList.toggle('selected',currentTeam?.id===team.id);
+    item.onclick=()=>openTeamChat(team).catch(error=>toast(error.message));
+    root.append(item);
+  }
+  if(!teams.length)root.append(el('p','team-sidebar-empty muted',t('还没有团队。')));
+}
+function renderTeamDashboardSummary(panel=teamsPanel){
+  if(!panel||!teamDashboardSummary)return;
+  const stats=panel.runStats();
+  const parts=[stats.teams+' '+t('团队'),stats.active+' '+t('运行中'),stats.attention+' '+t('需处理')];
+  if(panel.lastSynced)parts.push(t('同步于')+' '+panel.lastSynced);
+  teamDashboardSummary.textContent=parts.join(' · ');
+}
+function openTeamDashboard({fromRoute=false}={}){
+  if(!teamDashboardPage)return;
+  invalidatePendingChatOpen();
+  loadGraphLayout();
+  if(fromRoute)teamDashboardPushed=!!history.state?.teamDashboard;
+  else if(location.hash!=='#teams'){
+    history.pushState({teamDashboard:true},'','#teams');teamDashboardPushed=true;
+  }
+  const wasHidden=teamDashboardPage.hidden;
+  teamDashboardPage.hidden=false;
+  $('welcome').hidden=true;$('chat').hidden=true;$('team-run').hidden=true;
+  $('app').classList.remove('chat-open');$('app').classList.add('team-open');
+  syncWorkspaceNavigation();
+  renderTeamDashboardSummary();
+  if(wasHidden){teamRunScreen?.close();$('team-run').hidden=true;openRunRoute='';teamsPanel?.refreshAll();teamsPanel?.startPolling();}
+}
+function hideTeamDashboard({fromRoute=false}={}){
+  if(!teamDashboardPage||teamDashboardPage.hidden)return;
+  teamDashboardPage.hidden=true;teamsPanel?.stopPolling();$('app').classList.remove('team-open');syncWorkspaceNavigation();
+  if(fromRoute)teamDashboardPushed=!!history.state?.teamDashboard;
+}
+function leaveTeamDashboard(){
+  const canReturn=teamDashboardPushed;
+  hideTeamDashboard({fromRoute:true});
+  if(canReturn)history.back();
+  else{
+    if(location.hash==='#teams')history.replaceState(null,'',location.pathname+location.search);
+    if($('chat').hidden&&$('team-run').hidden)$('welcome').hidden=false;
+  }
+}
+function openChatWorkspace(){
+  teamDashboardPage.hidden=true;teamsPanel?.stopPolling();
+  teamRunScreen?.close();$('team-run').hidden=true;openRunRoute='';
+  teamRunReturnsToDashboard=false;teamDashboardPushed=false;detailPushed=false;
+  $('chat').hidden=true;$('welcome').hidden=false;
+  $('app').classList.remove('chat-open','team-open');
+  currentTeam=null;teamChat?.close();
+  history.replaceState(null,'',location.pathname+location.search);
+  syncWorkspaceNavigation();
+}
+teamDashboardPage=createTeamDashboardShell($('teams-content'));
+const teamsPanel=typeof TeamsPanel==='undefined'?null:new TeamsPanel({root:$('teams-content'),request:teamRequest,openRun:(teamId,runId)=>openTeamRun(teamId,runId),openChat:openTeamChat,onChange:teams=>{teamChat?.setTeams(teams);renderList();renderTeamSidebarTeams(teams);},onRender:panel=>{renderTeamDashboardSummary(panel);renderTeamSidebarTeams(panel.teams);}});
+const teamRunScreen=typeof TeamRunScreen==='undefined'?null:new TeamRunScreen({root:$('team-run'),request:teamRequest,openChat:openRunConversation,onUnauthorized:()=>showLogin(),onNavigateAway:closeTeamRunView});
 /* #run=teamId/runId 深链（阶段四通知 click 载荷契约）：与 #team=、#id~host 等
    前缀互斥，enter()/hashchange 统一按 run→聊天 的顺序分发；id 段与聊天
    深链同口径 [\w.-]{1,128}（team/run 均为 UUID）。 */
@@ -1798,26 +2440,46 @@ function parseRunHash(){
   const teamId=decodeURIComponent(rest.slice(0,slash)),runId=decodeURIComponent(rest.slice(slash+1));
   return /^[\w.-]{1,128}$/.test(teamId)&&/^[\w.-]{1,128}$/.test(runId)?{teamId,runId}:null;
 }
-// Run 页的返回按钮（TeamRunScreen 的 leave→onNavigateAway）：栈里有本次压入的
-// 详情条目时交给 history.back()，由 popstate 统一收尾，否则就地关面板。
+// Run 页的返回按钮始终回到所属团队会话，包括直接打开 #run= 深链的桌面场景；
+// 仅当团队已被删除、无法还原时才退回原来的列表/历史分支。
 function closeTeamRunView(){
+  const team=teamRunScreen?.team||teamChat?.teamById(teamRunScreen?.teamId);
+  teamRunScreen?.close();openRunRoute='';
+  if(teamRunReturnsToDashboard){teamRunReturnsToDashboard=false;history.back();return;}
+  if(team){openTeamChat(team).catch(error=>toast(error.message));return;}
   if(detailPushed&&location.hash){history.back();return;}
   $('team-run').hidden=true;
-  $('app').classList.remove('chat-open');
-  openRunRoute='';
+  $('app').classList.remove('chat-open','team-open');
   if(location.hash.startsWith('#run='))history.replaceState(null,'',location.pathname+location.search);
   // 没有打开中的聊天时回欢迎页；聊天仍打开的场景由 openChat 负责显隐。
   if($('chat').hidden)$('welcome').hidden=false;
+  syncWorkspaceNavigation();
 }
-function openTeamRun(teamId,runId){
+function openTeamRun(teamId,runId,fromRoute=false,taskId=''){
   if(!teamRunScreen)return;
+  invalidatePendingChatOpen();
+  loadGraphLayout();loadSwarmPanel();
+  const fromDashboard=!!teamDashboardPage&&!teamDashboardPage.hidden;
   openRunRoute='#run='+encodeURIComponent(teamId)+'/'+encodeURIComponent(runId);
-  // 从列表进 Run 页压一条历史（返回手势可退回列表），深链落 URL 时只替换；
+  if(fromRoute&&history.state?.teamRunReturnToDashboard)teamRunReturnsToDashboard=true;
+  if(fromDashboard){
+    hideTeamDashboard({fromRoute:true});
+    if(!fromRoute){history.pushState({teamRunReturnToDashboard:true},'',openRunRoute);teamRunReturnsToDashboard=true;}
+  }
+  // 从工作台进 Run 压一条历史；其余列表/会话内互跳沿用现有路由行为；
   // 分享/通知 click 落 URL 的场景由 enter()/hashchange 显式解析。
-  if(location.hash!==openRunRoute)showDetailRoute(openRunRoute);
+  else if(location.hash!==openRunRoute)showDetailRoute(openRunRoute);
   $('teams-dialog').close();
   $('welcome').hidden=true;$('chat').hidden=true;$('team-run').hidden=false;
-  $('app').classList.add('chat-open');
-  teamRunScreen.openRun(teamId,runId);
+  $('app').classList.remove('team-open');$('app').classList.add('chat-open');
+  syncWorkspaceNavigation();
+  teamRunScreen.openRun(teamId,runId).then(()=>{syncDocumentTitle();if(taskId)requestAnimationFrame(()=>teamRunScreen.revealTask(taskId));});
 }
-if(teamsPanel)$('teams-button').onclick=()=>{$('teams-dialog').showModal();teamsPanel.refresh();};
+/* 团队工作台独立使用 #teams 深链；Run 摘要只在工作台可见时 15s 轮询。 */
+if(teamsPanel){
+  $('teams-button').onclick=()=>openTeamDashboard();
+  $('chats-button').onclick=()=>{
+    if(teamDashboardPage&&!teamDashboardPage.hidden){leaveTeamDashboard();return;}
+    openChatWorkspace();
+  };
+}

@@ -30,18 +30,27 @@ const BridgeSelection=(()=>{
     return node.nodeType===1?node:node.parentElement||null;
   }
 
-  function attach({root,textarea,notify,enabled}){
+  // 默认动作把选区引用进输入框；传入 actions + onPick 时改由调用方处理选区
+  // （计划卡片据此生成结构化批注），浮条只负责定位与选区校验。
+  const DEFAULT_ACTIONS=[{key:'comment',label:'评论',title:'引用选中的文字并评论'}];
+  function attach({root,textarea,notify,enabled,messageOnly=true,actions,onPick}){
     if(!root||!textarea)return null;
     const bar=document.createElement('div');
     bar.className='selection-bar';bar.hidden=true;bar.setAttribute('role','toolbar');
-    const comment=document.createElement('button');
-    comment.type='button';comment.className='selection-comment';
-    // data-i18n 让切换语言时 BridgeI18n.apply() 就地刷新，无需额外接线。
-    comment.dataset.i18n='评论';
-    comment.dataset.i18nAriaLabel='引用选中的文字并评论';
-    comment.dataset.i18nTitle='引用选中的文字并评论';
-    bar.append(comment);document.body.append(bar);
     const t=source=>typeof BridgeI18n==='undefined'?source:BridgeI18n.t(source);
+    const custom=typeof onPick==='function'&&Array.isArray(actions)&&actions.length;
+    const buttons=(custom?actions:DEFAULT_ACTIONS).map(action=>{
+      const button=document.createElement('button'),hint=action.title||action.label;
+      button.type='button';button.className='selection-comment';button.dataset.action=action.key;
+      // 计划卡片的浮条在页面首次 apply() 之后才创建，必须立即写入当前语言文案；
+      // data-i18n 让之后切换语言时 BridgeI18n.apply() 就地刷新。
+      button.textContent=t(action.label);button.setAttribute('aria-label',t(hint));button.title=t(hint);
+      button.dataset.i18n=action.label;
+      button.dataset.i18nAriaLabel=hint;
+      button.dataset.i18nTitle=hint;
+      bar.append(button);return button;
+    });
+    document.body.append(bar);
 
     let current=null,timer=0,armedUntil=0;
     const usable=()=>typeof enabled==='function'?!!enabled():true;
@@ -56,9 +65,11 @@ const BridgeSelection=(()=>{
       if(!start||!end||!root.contains(start)||!root.contains(end))return null;
       if(start.closest('button')||end.closest('button'))return null;
       if(start.closest('.message-actions')||end.closest('.message-actions'))return null;
-      const row=start.closest('[data-key]');
-      if(!row||row!==end.closest('[data-key]'))return null;
-      if(!start.closest('.message-body,.activity-body'))return null;
+      if(messageOnly){
+        const row=start.closest('[data-key]');
+        if(!row||row!==end.closest('[data-key]'))return null;
+        if(!start.closest('.message-body,.activity-body'))return null;
+      }
       const {text,truncated}=clampText(selection.toString());
       if(!text)return null;
       const rect=range.getBoundingClientRect();
@@ -108,22 +119,40 @@ const BridgeSelection=(()=>{
       }
       schedule();
     };
+    const onPointerDown=event=>{if(!bar.contains(event.target))hide();};
+    const onScroll=()=>{if(Date.now()>=armedUntil)hide();};
+    const onBarPress=()=>{armedUntil=Date.now()+1200;};
+    const onBarClick=event=>{
+      const button=buttons.find(item=>item.contains(event.target));
+      if(!button)return;
+      const picked=current;
+      armedUntil=0;hide();
+      if(!picked)return;
+      if(!custom){insert(picked);return;}
+      window.getSelection?.()?.removeAllRanges();
+      onPick(picked,button.dataset.action);
+    };
     document.addEventListener('selectionchange',onSelectionChange);
     // 手机长按选词后 selectionchange 未必立刻跟上手指，touchend 再补一次定位。
     root.addEventListener('touchend',schedule,{passive:true});
-    document.addEventListener('pointerdown',event=>{if(!bar.contains(event.target))hide();},true);
-    document.addEventListener('scroll',()=>{if(Date.now()>=armedUntil)hide();},{capture:true,passive:true});
+    document.addEventListener('pointerdown',onPointerDown,true);
+    document.addEventListener('scroll',onScroll,{capture:true,passive:true});
     window.addEventListener('resize',hide,{passive:true});
     // 三种按下事件都记一次「刚点过浮条」：老 WebView 不一定派发 pointerdown。
-    for(const type of ['pointerdown','touchstart','mousedown'])bar.addEventListener(type,()=>{armedUntil=Date.now()+1200;},{passive:true});
-    bar.addEventListener('click',event=>{
-      if(!comment.contains(event.target))return;
-      const picked=current;
-      armedUntil=0;hide();
-      if(picked)insert(picked);
-    });
+    for(const type of ['pointerdown','touchstart','mousedown'])bar.addEventListener(type,onBarPress,{passive:true});
+    bar.addEventListener('click',onBarClick);
 
-    return {close:hide};
+    function destroy(){
+      clearTimeout(timer);hide();
+      document.removeEventListener?.('selectionchange',onSelectionChange);
+      document.removeEventListener?.('pointerdown',onPointerDown,true);
+      document.removeEventListener?.('scroll',onScroll,{capture:true});
+      window.removeEventListener?.('resize',hide);
+      root.removeEventListener?.('touchend',schedule);
+      for(const type of ['pointerdown','touchstart','mousedown'])bar.removeEventListener?.(type,onBarPress);
+      bar.removeEventListener?.('click',onBarClick);bar.remove?.();
+    }
+    return {close:hide,destroy};
   }
 
   return {attach,quoteBlock,appendQuote,clampText,MAX_CHARS};
