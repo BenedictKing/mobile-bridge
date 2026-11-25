@@ -1,3 +1,9 @@
+## 无需确认的弹窗点遮罩关闭（2026-11-25，8787 真实网关）
+
+- 重启后 8787 首页引用 `dialog-dismiss.0c73d8cf8244.js`，`diff`、`message-actions`、`team-chat` 的哈希资源均含 `BridgeDialog.closeOnBackdrop`；页面上 9 个 `data-backdrop-close` 弹窗全部完成绑定（`data-backdrop-bound=1`），与提交 `f187fa26` 一致。
+- 浏览器（真实网关、已登录、只开关弹窗不改设置）：390×844 下“待处理”（经真实按钮打开）与“账号与接入”均为点面板边缘留白不关、从面板内拖到遮罩松手不关、点遮罩关闭；“新建聊天”三种操作后仍保持打开。桌面宽度下“待处理”同样通过，点遮罩关闭后 `history.state` 由 `bridgeModal` 回到 `null`，返回手势占位同步撤销。
+- 未覆盖：真机触屏；其余 6 个可关闭弹窗只核对了绑定，未逐一点击（本地 8796 静态页已点过同一实现）。
+
 ## 跨 Agent 待处理列表（2026-11-25，本地验证）
 
 - 新增只读 `GET /api/inbox`：遍历各 ACP Manager 已加载会话与 Codex 已跟随会话，按会话最近活动排序，输出 Agent、会话、标题、请求 ID、类型（plan/question/input/permission）、单行摘要（最多 160 字）及计划版本；不含计划正文、命令详情或选项，不启动未加载 Agent，写方法返回 405。`/api/activity` 同时返回同源 `inboxCount`，侧栏“待处理”徽标随 5 秒活动轮询更新，不新增请求。
