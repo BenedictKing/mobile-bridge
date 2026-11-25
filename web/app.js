@@ -159,7 +159,7 @@ async function refreshActivity(){
 }
 setInterval(refreshActivity,5000);
 // 跨 Agent 待处理：徽标随活动轮询更新；打开对话框时向网关取完整的最新汇总。
-function renderInboxCount(count){const badge=$('inbox-count');if(!badge)return;badge.hidden=!(count>0);badge.textContent=count>0?String(count):'';$('inbox-button')?.setAttribute('aria-label',t('待处理')+(count>0?' '+count:''));}
+function renderInboxCount(count){const badge=$('inbox-count');if(!badge)return;badge.hidden=!(count>0);badge.textContent=count>99?'99+':count>0?String(count):'';$('inbox-button')?.setAttribute('aria-label',t('待处理')+(count>0?' '+count:''));}
 const inbox=window.BridgeInbox&&$('inbox-content')?window.BridgeInbox.controller({container:$('inbox-content'),request:()=>api('/api/inbox'),open:(id,host)=>{$('inbox-dialog').close();openChat(id,host).catch(error=>toast(error.message));}}):null;
 if(inbox)$('inbox-button').onclick=()=>{$('inbox-dialog').showModal();inbox.refresh();};
 else $('inbox-button')?.setAttribute('hidden','');

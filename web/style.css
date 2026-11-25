@@ -561,8 +561,9 @@
 .team-swarm-panel pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .team-swarm-panel{min-width:0;overflow-wrap:anywhere}
 /* 跨 Agent 待处理列表 */
-.sidebar-foot #inbox-button{display:inline-flex;align-items:center;gap:5px}
-.inbox-count{min-width:18px;padding:1px 6px;border-radius:999px;background:var(--warning-text);color:var(--page);font-size:10px;font-weight:600;line-height:16px;text-align:center}
+/* 徽标以角标悬浮在文字右上角、不占行宽，数字出现或变化都不会把底栏挤到换行。 */
+.sidebar-foot #inbox-button{position:relative}
+.inbox-count{position:absolute;top:0;left:calc(100% - 9px);min-width:15px;padding:0 4px;border-radius:999px;background:var(--warning-text);color:var(--page);font-size:9px;font-weight:600;line-height:15px;text-align:center;pointer-events:none}
 .inbox-empty{padding:18px 0;text-align:center}
 .inbox-group{border:1px solid var(--warning-line);background:var(--warning-bg);border-radius:var(--r-md);margin:10px 0;overflow:hidden}
 .inbox-open{display:flex;flex-direction:column;gap:4px;width:100%;padding:12px 14px;border:0;background:transparent;color:inherit;text-align:left}
