@@ -74,16 +74,7 @@ const BridgeInbox=(()=>{
     }
     return {refresh};
   }
-  // 点遮罩关闭：backdrop 点击落在 dialog 自身；.picker 有内边距，点内边距也是 dialog，
-  // 所以再按坐标排除面板矩形内的点击。列表只读，误触无损失。
-  function closeOnBackdrop(dialog){
-    dialog.addEventListener('click',event=>{
-      if(event.target!==dialog)return;
-      const box=dialog.getBoundingClientRect();
-      if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)dialog.close();
-    });
-  }
-  return {items,group,render,controller,closeOnBackdrop};
+  return {items,group,render,controller};
 })();
 if(typeof window!=='undefined')window.BridgeInbox=BridgeInbox;
 if(typeof module!=='undefined')module.exports=BridgeInbox;

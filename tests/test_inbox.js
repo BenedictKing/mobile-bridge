@@ -74,14 +74,3 @@ test('未传 onCount 时仍渲染结果（app.js 的接法）',async()=>{
   await controller.refresh();
   assert.ok(container.text().includes('计划会话'));
 });
-
-test('点面板外的遮罩关闭弹窗，点面板内边距或内容不关闭',()=>{
-  const listeners={};let closed=0;
-  const dialog={addEventListener:(type,fn)=>{listeners[type]=fn;},close:()=>{closed++;},getBoundingClientRect:()=>({left:10,top:300,right:380,bottom:800})};
-  inbox.closeOnBackdrop(dialog);
-  listeners.click({target:{},clientX:5,clientY:100});
-  listeners.click({target:dialog,clientX:20,clientY:310});
-  assert.equal(closed,0);
-  listeners.click({target:dialog,clientX:200,clientY:100});
-  assert.equal(closed,1);
-});

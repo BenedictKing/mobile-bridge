@@ -467,6 +467,7 @@ var staticRoutes = map[string]staticRoute{
 	"/markdown.js":                {"markdown.js", "text/javascript; charset=utf-8"},
 	"/image-viewer.js":            {"image-viewer.js", "text/javascript; charset=utf-8"},
 	"/modal-back.js":              {"modal-back.js", "text/javascript; charset=utf-8"},
+	"/dialog-dismiss.js":          {"dialog-dismiss.js", "text/javascript; charset=utf-8"},
 	"/message-actions.js":         {"message-actions.js", "text/javascript; charset=utf-8"},
 	"/timeline.js":                {"timeline.js", "text/javascript; charset=utf-8"},
 	"/selection.js":               {"selection.js", "text/javascript; charset=utf-8"},

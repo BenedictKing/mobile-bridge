@@ -547,7 +547,10 @@ class TeamLeadPicker{
     const head=this.node('div',undefined,'picker-head');
     head.append(this.node('h2',t_safe('选择主控 Agent')));
     const close=this.node('button',null,'icon-button');close.type='button';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));close.onclick=()=>dialog.close();head.append(close);
-    this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);this._dialog=dialog;return dialog;
+    this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);
+    // 首次主控选择：关闭即取消（close 事件 resolve(null)），点遮罩与「取消」等价。
+    globalThis.BridgeDialog?.closeOnBackdrop(dialog);
+    this._dialog=dialog;return dialog;
   }
   async open(project){
     const value=await this.request('/api/projects/'+encodeURIComponent(project.key)+'/agents'),agents=value.agents||[];

@@ -162,7 +162,6 @@ setInterval(refreshActivity,5000);
 function renderInboxCount(count){const badge=$('inbox-count');if(!badge)return;badge.hidden=!(count>0);badge.textContent=count>0?String(count):'';$('inbox-button')?.setAttribute('aria-label',t('待处理')+(count>0?' '+count:''));}
 const inbox=window.BridgeInbox&&$('inbox-content')?window.BridgeInbox.controller({container:$('inbox-content'),request:()=>api('/api/inbox'),open:(id,host)=>{$('inbox-dialog').close();openChat(id,host).catch(error=>toast(error.message));}}):null;
 if(inbox)$('inbox-button').onclick=()=>{$('inbox-dialog').showModal();inbox.refresh();};
-if(inbox)window.BridgeInbox.closeOnBackdrop($('inbox-dialog'));
 else $('inbox-button')?.setAttribute('hidden','');
 window.addEventListener('focus',refreshActivity);
 // 前台恢复三件套之一：回前台立即刷新当前会话与列表，不等下一个轮询周期
