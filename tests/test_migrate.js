@@ -326,3 +326,26 @@ test('slash migration reports why nothing happened instead of staying silent',as
     assert.equal(notices.length,1,kind+' 应给出一条说明');
   }
 });
+
+test('gateway maintenance reuses its request id only while the outcome is unknown',async()=>{
+  const outcomes=[];
+  const {control,requests}=loadControl({request:async body=>{requests.push(body);const next=outcomes.shift();if(next)throw next;return {sent:true};}});
+  let counter=0;control.newId=()=>'id-'+(++counter);
+  const lost=Error('network');
+  const gatewayTimeout=Object.assign(Error('bad gateway'),{status:502});
+  const rejected=Object.assign(Error('conflict'),{status:409});
+  outcomes.push(lost,gatewayTimeout);
+  assert.equal(await control.migrate('claude','main','compact',{instructions:'继续'}),false);
+  assert.equal(await control.migrate('claude','main','compact',{instructions:'继续'}),false);
+  assert.equal(await control.migrate('claude','main','compact',{instructions:'继续'}),true);
+  assert.deepEqual(requests.map(body=>body.id),['id-1','id-1','id-1']);
+  // A confirmed success or a definite rejection starts a fresh request.
+  outcomes.push(rejected);
+  assert.equal(await control.migrate('claude','main','compact',{instructions:'继续'}),false);
+  assert.equal(await control.migrate('claude','main','compact',{instructions:'继续'}),true);
+  // Different content never inherits an unknown request id.
+  outcomes.push(lost);
+  assert.equal(await control.migrate('claude','latest','compact'),false);
+  assert.equal(await control.migrate('claude','main','compact'),true);
+  assert.deepEqual(requests.slice(3).map(body=>body.id),['id-2','id-3','id-4','id-5']);
+});
