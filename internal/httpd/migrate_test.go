@@ -344,6 +344,40 @@ func TestMigrationTranscriptKeepsLongAssistantSummary(t *testing.T) {
 	}
 }
 
+func TestMigrationTranscriptPendingKeepsLatestQuestion(t *testing.T) {
+	for _, scope := range []string{"latest", "main", "full"} {
+		t.Run(scope, func(t *testing.T) {
+			message := func(role, text string) *jsoncompat.Object {
+				item := jsoncompat.NewObject()
+				item.Set("role", role)
+				item.Set("text", text)
+				return item
+			}
+			// The exchange alone exceeds latest's budget, so the question
+			// must shrink rather than vanish behind the queued message.
+			question := "最新问题：" + strings.Repeat("需求细节。", 6000)
+			turn := jsoncompat.NewObject()
+			turn.Set("messages", &jsoncompat.Array{Items: []any{
+				message("user", question),
+				message("assistant", "最终答复："+strings.Repeat("结论。", 5000)),
+			}})
+			view := jsoncompat.NewObject()
+			view.Set("turns", &jsoncompat.Array{Items: []any{turn}})
+			view.Set("migrationPendingMessages", &jsoncompat.Array{Items: []any{"排队中的补充说明"}})
+
+			entries, _ := migrationTranscript(view, scope)
+			roles := []string{}
+			for _, entry := range entries {
+				roles = append(roles, entry.role)
+			}
+			if len(entries) != 3 || strings.Join(roles, ",") != "user,assistant,user" ||
+				!strings.HasPrefix(entries[0].text, "最新问题：") || entries[2].text != "排队中的补充说明" {
+				t.Fatalf("%s 应保留最新提问、回答与排队消息，实际 roles=%v", scope, roles)
+			}
+		})
+	}
+}
+
 func TestMigrationTranscriptTailBudget(t *testing.T) {
 	view := transcriptView()
 	original := migrationBudgets["main"]

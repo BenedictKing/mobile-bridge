@@ -367,6 +367,7 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 	}
 	// Unsent compositions are separate from native history. Every scope keeps
 	// them after its selected exchange, including chats with no native turns.
+	native := len(entries)
 	if pending, ok := view.MustGet("migrationPendingMessages").(*jsoncompat.Array); ok {
 		for _, raw := range pending.Items {
 			if text, ok := raw.(string); ok && strings.TrimSpace(text) != "" {
@@ -409,8 +410,10 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 		bytesUsed += len(entry.text) + 32
 		return true
 	}
+	// Anchors come from native history only: a queued message is not the
+	// question the selected exchange answered, and must not demote it.
 	firstTask, lastUser, lastAssistant := -1, -1, -1
-	for index, entry := range capped {
+	for index, entry := range capped[:native] {
 		if entry.role == "user" {
 			lastUser = index
 			if firstTask < 0 && !strings.HasPrefix(strings.TrimSpace(entry.text), "/") {
@@ -425,17 +428,26 @@ func migrationTranscriptBounded(view *jsoncompat.Object, scope string, maxBytes 
 		// Keep the first actual task and the latest reasoning summaries alongside
 		// the recency-biased tail, so long tool-heavy sessions retain their intent.
 		if firstTask < 0 {
-			for index, entry := range capped {
+			for index, entry := range capped[:native] {
 				if entry.role == "user" {
 					firstTask = index
 					break
 				}
 			}
 		}
-		add(firstTask, 3)
 	}
-	add(lastAssistant, 2)
-	add(lastUser, 1)
+	// Each priority entry may shrink to share what is left with the ones
+	// after it; queued messages follow the native anchors in queue order.
+	priority := []int{lastAssistant, lastUser}
+	if scope != "latest" {
+		priority = append([]int{firstTask}, priority...)
+	}
+	for index := native; index < len(capped); index++ {
+		priority = append(priority, index)
+	}
+	for position, index := range priority {
+		add(index, len(priority)-position)
+	}
 	if scope != "latest" {
 		// User corrections and the final answer take priority over reasoning;
 		// otherwise a long chain of thoughts can consume every message slot.
