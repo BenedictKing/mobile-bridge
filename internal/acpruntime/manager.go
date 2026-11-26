@@ -2635,6 +2635,35 @@ func (m *Manager) openNativeHistory(id, cwd string) (*Session, error) {
 	return m.newNativeSession(id, cwd, snapshot), nil
 }
 
+// StaleCreated reports a chat this gateway created through session/new that
+// can never be opened again: nobody prompted it, so the agent wrote no
+// transcript and refuses session/load, and the creating handle is gone (idle
+// sweep or gateway restart). It reads the transcript, so callers use it to
+// classify an open failure, not as a list filter. The title lets the caller
+// recreate the chat under the same name.
+func (m *Manager) StaleCreated(id string) (title string, stale bool) {
+	if m == nil || m.NativeTranscript == nil || id == "" || m.openKey(id) != id {
+		return "", false
+	}
+	record, created := m.Created.Lookup(m.Kind, id)
+	if !created {
+		return "", false
+	}
+	m.mu.Lock()
+	live := m.sessions[id]
+	m.mu.Unlock()
+	if live != nil && !live.IsClosed() {
+		return "", false
+	}
+	// A nil snapshot also means "unchanged since the last read"; reset the
+	// cache so nil can only mean no transcript at all.
+	if m.NativeReset != nil {
+		m.NativeReset(id)
+	}
+	snapshot, err := m.NativeTranscript(id)
+	return record.Title, err == nil && snapshot == nil
+}
+
 func (m *Manager) newNativeSession(id, cwd string, snapshot *acpview.NativeSnapshot) *Session {
 	session := &Session{
 		ID: id, Cwd: cwd, active: true, readOnly: true,

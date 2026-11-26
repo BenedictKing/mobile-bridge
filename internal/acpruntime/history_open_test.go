@@ -127,3 +127,38 @@ func TestNativeExclusiveListNeverStartsAgent(t *testing.T) {
 	}
 	assertAgentNotStarted(t, marker)
 }
+
+func TestStaleCreatedOnlyForUnpromptedCreatedChats(t *testing.T) {
+	manager := NewCommand(nil)
+	t.Cleanup(manager.Close)
+	manager.Kind = "claude"
+	manager.Created = LoadCreated(filepath.Join(t.TempDir(), "created-sessions.json"))
+	manager.Created.Remember("claude", "sess-empty", "/work", "空聊天", 1)
+	manager.Created.Remember("claude", "sess-used", "/work", "用过", 1)
+	cached := map[string]bool{}
+	manager.NativeReset = func(id string) { delete(cached, id) }
+	manager.NativeTranscript = func(id string) (*acpview.NativeSnapshot, error) {
+		if id != "sess-used" || cached[id] {
+			return nil, nil
+		}
+		cached[id] = true
+		return historySnapshot(), nil
+	}
+	if title, stale := manager.StaleCreated("sess-empty"); !stale || title != "空聊天" {
+		t.Fatalf("empty created chat: title=%q stale=%v", title, stale)
+	}
+	// An unchanged-cache nil must not read as "no transcript".
+	cached["sess-used"] = true
+	if _, stale := manager.StaleCreated("sess-used"); stale {
+		t.Fatal("chat with a transcript reported stale")
+	}
+	if _, stale := manager.StaleCreated("sess-unknown"); stale {
+		t.Fatal("chat not created by the gateway reported stale")
+	}
+	manager.mu.Lock()
+	manager.sessions["sess-empty"] = &Session{ID: "sess-empty"}
+	manager.mu.Unlock()
+	if _, stale := manager.StaleCreated("sess-empty"); stale {
+		t.Fatal("live created chat reported stale")
+	}
+}

@@ -836,7 +836,17 @@ func (h *handler) handleACPRoute(kind string, manager *acpruntime.Manager, threa
 	}
 	if err != nil {
 		log.Printf("会话打开失败: agent=%s thread=%s: %v", kind, threadID, err)
-		h.fail(http.StatusConflict, errorBody(acpSessionMessage(err)))
+		body := errorBody(acpSessionMessage(err))
+		if title, stale := manager.StaleCreated(threadID); stale {
+			// 从未发过消息的空聊天：Agent 没留转录，永远打不开；带上重建所需字段，
+			// 手机端据此移除旧记录并在同一目录新建聊天，而不是无限重试读取。
+			body = errorBody("这条空聊天从未发送过消息，Agent 没有保留记录，无法继续使用")
+			body.Set("code", "stale_empty_chat")
+			body.Set("agent", kind)
+			body.Set("cwd", cwd)
+			body.Set("title", title)
+		}
+		h.fail(http.StatusConflict, body)
 		return true
 	}
 	if session.ReadOnly() && write {
