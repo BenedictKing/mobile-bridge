@@ -1945,7 +1945,9 @@ function updateSkillSuggestions(){
   rows.forEach((row,index)=>{
     const button=el('button','skill-suggestion'+(index===skillSuggestionIndex?' active':''));button.type='button';button.id='skill-suggestion-'+index;button.setAttribute('role','option');button.setAttribute('aria-selected',String(index===skillSuggestionIndex));
     button.append(el('strong','',row.command?row.token:(row.displayName||row.name)),el('small','',row.command?row.label+' · '+row.description:(row.description||'')));
-    button.onpointerdown=event=>{event.preventDefault();chooseSkillSuggestion(index);};panel.append(button);
+    // mousedown 阻止默认只为保住输入框焦点（软键盘不收起）；选中放到 click，
+    // 触摸拖动滚动列表时浏览器不会派发 click，不再误选按下的那一项。
+    button.onmousedown=event=>event.preventDefault();button.onclick=()=>chooseSkillSuggestion(index);panel.append(button);
   });
   panel.hidden=false;input.setAttribute('aria-expanded','true');
   if(rows.length)input.setAttribute('aria-activedescendant','skill-suggestion-'+skillSuggestionIndex);
