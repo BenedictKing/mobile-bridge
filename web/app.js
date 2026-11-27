@@ -1836,6 +1836,8 @@ $('execution-switch').onclick=async()=>{
 $('reconnect').onclick=async()=>{const id=currentId,host=currentHost;$('reconnect').disabled=true;try{await api(sessionUrl(id,'reconnect',host),{activate:true});toast(t('会话已重新连接'));}catch(e){toast(e.message);}finally{$('reconnect').disabled=false;}};
 $('readonly-upgrade').onclick=async()=>{const id=currentId,host=currentHost;if(!id)return;const button=$('readonly-upgrade');button.disabled=true;try{const result=await api(sessionUrl(id,'reconnect',host)+'&upgrade=1',{activate:true});if(result.readOnly){toast(t(result.hint||'桌面端仍在占用此会话'));return;}toast(t('已切换为可写会话；请勿同时在桌面端继续此会话'));if(currentId===id&&currentHost===host)openChat(id,host);}catch(e){toast(e.message);}finally{button.disabled=false;}};
 document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>$(button.dataset.close).close());
+// 搜索框清除：清空后派发 input 复用各自的过滤逻辑；按钮显隐由 CSS :placeholder-shown 控制。
+document.querySelectorAll('[data-clear]').forEach(button=>button.onclick=()=>{const input=$(button.dataset.clear);input.value='';input.dispatchEvent(new Event('input'));input.focus();});
 async function loadCatalogKind(kind,refresh=false){
   if(kind!=='models')throw Error(t('未知目录类型'));
   const target=currentId,targetHost=currentHost;
@@ -2377,7 +2379,7 @@ function syncWorkspaceNavigation(){
   const sidebarTitle=$('sidebar-title-text');
   if(sidebarTitle)sidebarTitle.textContent=t(teamOpen?'团队':'聊天');
   const show=(selector,visible)=>{const node=document.querySelector(selector);if(node)node.hidden=!visible;};
-  show('#new-chat',!teamOpen);show('#refresh',!teamOpen);show('#search',!teamOpen);
+  show('#new-chat',!teamOpen);show('#refresh',!teamOpen);show('#search-field',!teamOpen);
   document.querySelector('.list-filters')?.toggleAttribute('hidden',teamOpen);
   show('#sessions',!teamOpen);show('#team-sidebar-list',teamOpen);
   if(teamOpen)renderTeamSidebarTeams();
