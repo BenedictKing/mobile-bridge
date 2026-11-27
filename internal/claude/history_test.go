@@ -94,16 +94,22 @@ func TestTranscriptReaderSettlesInterruptedTail(t *testing.T) {
 	}
 }
 
-func TestTranscriptReaderSettlesLocalCommandOutputTail(t *testing.T) {
+func TestTranscriptReaderRendersLocalCompactCommand(t *testing.T) {
 	root := t.TempDir()
 	const id = "session-local-command"
 	path := filepath.Join(root, "project", id+".jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A native /compact ends with its stdout echo; a later harness write (an
-	// orphaned background-task notice on resume) keeps the file fresh.
-	content := `{"type":"user","cwd":"/work","message":{"role":"user","content":"<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>"}}
+	// Claude Code writes a native /compact as: boundary, summary, caveat,
+	// command echo, stdout echo. A later harness write (an orphaned
+	// background-task notice on resume) can keep the file fresh.
+	content := `{"type":"user","cwd":"/work","message":{"role":"user","content":"修复回补"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"已修复"}]}}
+{"type":"system","subtype":"compact_boundary","content":"Conversation compacted"}
+{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation."}}
+{"type":"user","isMeta":true,"message":{"role":"user","content":"<local-command-caveat>Caveat</local-command-caveat>"}}
+{"type":"user","message":{"role":"user","content":"<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>"}}
 {"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted PostCompact [callback] completed successfully</local-command-stdout>"}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -116,9 +122,55 @@ func TestTranscriptReaderSettlesLocalCommandOutputTail(t *testing.T) {
 	if nativeHistoryActive(snapshot) {
 		t.Fatal("local command output must not read as an active turn")
 	}
-	tip := snapshot.Turns[len(snapshot.Turns)-1]
+	if snapshot.Title != "修复回补" || len(snapshot.Turns) != 2 {
+		t.Fatalf("title=%q turns=%d", snapshot.Title, len(snapshot.Turns))
+	}
+	tip := snapshot.Turns[1]
 	if status, _ := tip.MustGet("status").(string); status != "completed" {
 		t.Fatalf("tip status=%q, want completed", status)
+	}
+	rows := tip.MustGet("messages").(*jsoncompat.Array).Items
+	want := [][3]string{
+		{"user", "userMessage", "/compact"},
+		{"activity", "contextCompaction", "This session is being continued from a previous conversation."},
+		{"activity", "localCommandOutput", "Compacted PostCompact [callback] completed successfully"},
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("rows=%s", jsoncompat.EncodeCompact(tip))
+	}
+	for index, row := range rows {
+		message := row.(*jsoncompat.Object)
+		got := [3]string{}
+		got[0], _ = message.MustGet("role").(string)
+		got[1], _ = message.MustGet("kind").(string)
+		got[2], _ = message.MustGet("text").(string)
+		if got != want[index] {
+			t.Fatalf("row %d=%v, want %v", index, got, want[index])
+		}
+	}
+}
+
+func TestTranscriptReaderKeepsAutoCompactionInRunningTurn(t *testing.T) {
+	root := t.TempDir()
+	const id = "session-auto-compact"
+	path := filepath.Join(root, "project", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"type":"user","cwd":"/work","message":{"role":"user","content":"跑测试"}}
+{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"Summary of earlier work."}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"继续"}]}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := TranscriptReader(root)(id)
+	if err != nil || snapshot == nil || len(snapshot.Turns) != 1 {
+		t.Fatalf("snapshot=%v err=%v", snapshot, err)
+	}
+	rows := snapshot.Turns[0].MustGet("messages").(*jsoncompat.Array).Items
+	if len(rows) != 3 || rows[1].(*jsoncompat.Object).MustGet("kind") != "contextCompaction" {
+		t.Fatalf("turn=%s", jsoncompat.EncodeCompact(snapshot.Turns[0]))
 	}
 }
 

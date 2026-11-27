@@ -1520,6 +1520,7 @@ const en={
   "开始压缩": "Start compaction",
   "已向进行中的对话补充指示": "Instructions added to the running conversation",
   "后台任务通知": "Background task notice",
+  "命令输出": "Command output",
   "后台任务": "Background task",
   "已截断": "truncated",
   "继续显示": "Show more",

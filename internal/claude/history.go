@@ -109,6 +109,11 @@ func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnaps
 	builder := acpview.NewNativeBuilder(sessionID)
 	backgroundTasks := map[string]string{}
 	cwd := ""
+	compactSummary := ""
+	flushCompaction := func() {
+		builder.Activity("contextCompaction", "contextCompaction", "completed", compactSummary)
+		compactSummary = ""
+	}
 	scanner := bufio.NewScanner(io.LimitReader(file, historyMaxBytes))
 	scanner.Buffer(make([]byte, 0, 64<<10), historyMaxLineBytes)
 	for scanner.Scan() {
@@ -136,6 +141,12 @@ func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnaps
 		}
 		content := message.MustGet("content")
 		agentmedia.PersistImages(content, mediaDir, sessionID)
+		if kind == "user" && jsoncompat.Truthy(event.MustGet("isCompactSummary")) {
+			// The compaction summary is written before the /compact command
+			// record; hold it so it renders inside that command's turn.
+			compactSummary = acpview.Text(content)
+			continue
+		}
 		titleText := ""
 		switch kind {
 		case "user":
@@ -149,8 +160,16 @@ func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnaps
 					continue
 				}
 			}
+			command := localCommandText(acpview.Text(content)) != ""
+			if !command {
+				flushCompaction()
+			}
 			titleText = applyClaudeUser(builder, content, backgroundTasks)
+			if command {
+				flushCompaction()
+			}
 		case "assistant":
+			flushCompaction()
 			applyClaudeAssistant(builder, message, content)
 		}
 		if builder.HasTurns() && builder.Title() == "" {
@@ -162,6 +181,7 @@ func readHistory(path string, stale bool, mediaDir string) (*acpview.NativeSnaps
 	if err := scanner.Err(); err != nil {
 		return nil, "", err
 	}
+	flushCompaction()
 	if stale {
 		for _, toolID := range backgroundTasks {
 			builder.BackgroundTask(toolID, "outcome_unknown", "后台任务长时间没有新记录，结果待确认；未自动重试。")
@@ -308,16 +328,57 @@ func foldUserText(builder *acpview.NativeBuilder, text string, attachments ...*j
 		builder.End("cancelled")
 		return ""
 	}
-	// Local CLI command output (/compact, /model, …) is persisted as a user
-	// record, but no model reply ever follows it; awaiting one would keep the
-	// chat "running" whenever a later write makes the transcript look fresh.
-	if strings.HasPrefix(text, "<local-command-stdout>") || strings.HasPrefix(text, "<local-command-stderr>") {
-		builder.User(text, attachments...)
+	// Local CLI commands (/compact, /model, …) are persisted as user records
+	// wrapped in protocol tags. Show the command as typed and its output as an
+	// activity row; no model reply follows the output, so the turn settles —
+	// awaiting one would keep the chat "running" whenever a later write makes
+	// the transcript look fresh.
+	if command := localCommandText(text); command != "" {
+		builder.User(command)
+		return ""
+	}
+	if output, failed, ok := localCommandOutput(text); ok {
+		status := "completed"
+		if failed {
+			status = "failed"
+		}
+		builder.Activity("localCommandOutput", "命令输出", status, output)
 		builder.End("end_turn")
 		return ""
 	}
 	builder.User(text, attachments...)
 	return text
+}
+
+// localCommandText renders a `<command-name>` record as the slash command the
+// user typed; "" when the text is not a local command record.
+func localCommandText(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "<command-name>") {
+		return ""
+	}
+	name := notificationTag(text, "command-name")
+	if name == "" {
+		return ""
+	}
+	if !strings.HasPrefix(name, "/") {
+		name = "/" + name
+	}
+	if args := notificationTag(text, "command-args"); args != "" {
+		return name + " " + args
+	}
+	return name
+}
+
+func localCommandOutput(text string) (string, bool, bool) {
+	text = strings.TrimSpace(text)
+	switch {
+	case strings.HasPrefix(text, "<local-command-stdout>"):
+		return notificationTag(text, "local-command-stdout"), false, true
+	case strings.HasPrefix(text, "<local-command-stderr>"):
+		return notificationTag(text, "local-command-stderr"), true, true
+	}
+	return "", false, false
 }
 
 func applyClaudeAssistant(builder *acpview.NativeBuilder, message *jsoncompat.Object, content any) {

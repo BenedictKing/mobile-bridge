@@ -129,6 +129,27 @@ func (b *NativeBuilder) BackgroundTask(id, status, summary string) {
 	b.view.OnUpdate(update)
 }
 
+// Activity appends a settled, non-tool activity row (context compaction, local
+// command output) to the current turn without changing whether a reply is due.
+func (b *NativeBuilder) Activity(kind, title, status, text string) {
+	if text == "" {
+		return
+	}
+	turn := b.view.currentTurn()
+	if turn == nil {
+		turn = b.view.newTurn(b.view.nextID("turn"), nil)
+	}
+	message := jsoncompat.NewObject()
+	message.Set("id", b.view.nextID("activity"))
+	message.Set("kind", kind)
+	message.Set("role", "activity")
+	message.Set("title", title)
+	message.Set("status", status)
+	message.Set("text", text)
+	messages(turn).Items = append(messages(turn).Items, message)
+	b.hasTurn = true
+}
+
 func (b *NativeBuilder) SetModel(model string) {
 	if model != "" {
 		b.view.Model = model

@@ -128,6 +128,7 @@ const rowLabel=(row,text=row.text)=>{
   if(steeredRow(row))return timelineText('已向进行中的对话补充指示');
   if(approvalReviewRow(row))return timelineText('自动审批审查')+(row.status?' · '+approvalReviewStatus(row.status):'');
   if(compactionRow(row))return timelineText('上下文压缩')+' · '+compactionStatusText(compactionContent(row,text).status);
+  if(row.kind==='localCommandOutput')return timelineText('命令输出');
   if(sleepRow(row))return timelineText('等待');
   if(reasoningRow(row))return timelineText('思考摘要');
   if(commandRow(row)){
