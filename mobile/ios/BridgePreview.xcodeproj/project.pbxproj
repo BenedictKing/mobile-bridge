@@ -32,6 +32,8 @@ C00000000000000000000002 = {isa = PBXBuildFile; fileRef = C000000000000000000000
 		DD1130000000000000000002 /* UURemote.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1130000000000000000001 /* UURemote.swift */; };
 		A00000000000000000000031 /* GatewayURL.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000021 /* GatewayURL.swift */; };
 		A03000000000000000000002 /* ChannelCookieMove.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03000000000000000000001 /* ChannelCookieMove.swift */; };
+		A03000000000000000000004 /* OfflineHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03000000000000000000003 /* OfflineHistory.swift */; };
+		A03000000000000000000006 /* OfflineHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03000000000000000000005 /* OfflineHistoryView.swift */; };
 		A00000000000000000000050 /* AppIcon60x60@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000040; };
 		A00000000000000000000051 /* AppIcon60x60@3x.png in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000041; };
 		A00000000000000000000052 /* AppIcon76x76.png in Resources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000042; };
@@ -75,6 +77,8 @@ C00000000000000000000001 = {isa = PBXFileReference; lastKnownFileType = sourceco
 		DD1130000000000000000001 /* UURemote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UURemote.swift; sourceTree = "<group>"; };
 		A00000000000000000000021 /* GatewayURL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayURL.swift; sourceTree = "<group>"; };
 		A03000000000000000000001 /* ChannelCookieMove.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChannelCookieMove.swift; sourceTree = "<group>"; };
+		A03000000000000000000003 /* OfflineHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineHistory.swift; sourceTree = "<group>"; };
+		A03000000000000000000005 /* OfflineHistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineHistoryView.swift; sourceTree = "<group>"; };
 		A00000000000000000000022 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A00000000000000000000040 /* AppIcon60x60@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "AppIcon60x60@2x.png"; sourceTree = "<group>"; };
 		A00000000000000000000041 /* AppIcon60x60@3x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "AppIcon60x60@3x.png"; sourceTree = "<group>"; };
@@ -141,6 +145,8 @@ C00000000000000000000001,
 B00000000000000000000001,B00000000000000000000002,
 				A00000000000000000000021 /* GatewayURL.swift */,
 				A03000000000000000000001 /* ChannelCookieMove.swift */,
+				A03000000000000000000003 /* OfflineHistory.swift */,
+				A03000000000000000000005 /* OfflineHistoryView.swift */,
 F30000000000000000000002, BEE000000000000000000001, BEE000000000000000000002, F40000000000000000000001, F40000000000000000000002,
 				A00000000000000000000022 /* Info.plist */,
 				A00000000000000000000044 /* AppIcon83x83@2x.png */,
@@ -251,6 +257,8 @@ C00000000000000000000002,
 B0000000000000000000000A,B0000000000000000000000B,
 				A00000000000000000000031 /* GatewayURL.swift in Sources */,
 				A03000000000000000000002 /* ChannelCookieMove.swift in Sources */,
+				A03000000000000000000004 /* OfflineHistory.swift in Sources */,
+				A03000000000000000000006 /* OfflineHistoryView.swift in Sources */,
 F30000000000000000000001, BEE000000000000000000003 /* BonjourDiscovery.swift in Sources */, BEE000000000000000000004 /* LocalRecoveryCoordinator.swift in Sources */, F4000000000000000000000A,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

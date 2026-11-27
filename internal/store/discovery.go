@@ -360,6 +360,18 @@ func (s *SessionStore) HistoryForAny(threadID string, turnLimit *int) (*jsoncomp
 }
 
 func (s *SessionStore) historyFor(threadID string, turnLimit *int, allowSubagent bool) (*jsoncompat.Object, error) {
+	meta, path, err := s.historySource(threadID, allowSubagent)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.New("找不到这个会话的历史记录")
+	}
+	return History(threadID, meta, raw, turnLimit), nil
+}
+
+func (s *SessionStore) historySource(threadID string, allowSubagent bool) (*jsoncompat.Object, string, error) {
 	var meta *jsoncompat.Object
 	var err error
 	if allowSubagent {
@@ -368,23 +380,23 @@ func (s *SessionStore) historyFor(threadID string, turnLimit *int, allowSubagent
 		meta, err = s.Get(threadID)
 	}
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	pathText, _ := meta.MustGet("rollout_path").(string)
 	if pathText == "" {
-		return nil, errors.New("找不到这个会话的历史记录")
+		return nil, "", errors.New("找不到这个会话的历史记录")
 	}
 	path, err := filepath.Abs(pathText)
 	if err != nil {
-		return nil, errors.New("会话记录路径无效")
+		return nil, "", errors.New("会话记录路径无效")
 	}
 	path, err = filepath.EvalSymlinks(path)
 	if err != nil {
-		return nil, errors.New("找不到这个会话的历史记录")
+		return nil, "", errors.New("找不到这个会话的历史记录")
 	}
 	home, err := filepath.Abs(s.Home)
 	if err != nil {
-		return nil, ErrUnavailable
+		return nil, "", ErrUnavailable
 	}
 	allowed := false
 	for _, rootName := range []string{"sessions", "archived_sessions"} {
@@ -395,13 +407,9 @@ func (s *SessionStore) historyFor(threadID string, turnLimit *int, allowSubagent
 		}
 	}
 	if !allowed {
-		return nil, errors.New("会话记录路径不在 Codex 数据目录中")
+		return nil, "", errors.New("会话记录路径不在 Codex 数据目录中")
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, errors.New("找不到这个会话的历史记录")
-	}
-	return History(threadID, meta, raw, turnLimit), nil
+	return meta, path, nil
 }
 
 func withinPath(root, path string) bool {

@@ -191,11 +191,15 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
     }
     private var lastChannelProbe: (key: String, time: TimeInterval)?
     private func clearChannels(_ address: String) {
+        if address == origin { cancelOfflineSave() }
         uu.remove(channelRecord(address)?["deviceId"] as? String ?? UURemote.device(cookieName(address)))
         defaults.removeObject(forKey:preferenceKey("disabled-channels",address));defaults.removeObject(forKey:preferenceKey("channel-mode",address))
         guard let id=channelRecord(address)?["deviceId"] as? String else { return }
         channelTicket += 1; lastChannelProbe=nil; cancelPendingPeer()
         localRecovery?.stop();localRecovery=nil;LocalRecoveryCoordinator.clear(deviceID:id)
+        if let root = DeviceBinding.load(GatewayChannels.vault(id)) {
+            offlineHistory.revoke(.init(device: id, binding: root.cookie))
+        }
         DeviceBinding.clear(GatewayChannels.vault(id));defaults.removeObject(forKey:"name:"+id)
         defaults.removeObject(forKey:"channel-anchor:"+id)
         let store=WKWebsiteDataStore.default().httpCookieStore
@@ -251,7 +255,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
             d["anchor"]=anchor;defaults.set(anchor,forKey:"channel-anchor:"+id)
             defaults.set(d,forKey:"channels:"+address)
             defaults.set(saved.filter{$0==address || gatewayIdentity($0) != id},forKey:"origins")
-            if replaced{manifestReads.removeValue(forKey:id);cancelSync()}
+            if replaced{
+                if let previous { offlineHistory.revoke(.init(device: id, binding: previous.cookie)) }
+                manifestReads.removeValue(forKey:id);cancelSync()
+            }
             web?.evaluateJavaScript("window.BridgeMobileChannels?.bound()",completionHandler:nil)
         }
     }
@@ -461,6 +468,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         subtitle.isHidden=true
         let container=UIView(),panel=column(),title=label(MobileStrings.text("正在连接 · ")+computerName(address),size:20,weight:.semibold)
         let rows=column(spacing:8);panel.addArrangedSubview(title);panel.addArrangedSubview(rows)
+        panel.addArrangedSubview(button(MobileStrings.text("离线历史"), symbol: "tray") { [weak self] in self?.openOfflineHistory() })
         entryProgress=container;page.addArrangedSubview(container);container.addSubview(panel);panel.translatesAutoresizingMaskIntoConstraints=false
         NSLayoutConstraint.activate([panel.centerYAnchor.constraint(equalTo:container.centerYAnchor),panel.leadingAnchor.constraint(equalTo:container.leadingAnchor,constant:24),panel.trailingAnchor.constraint(equalTo:container.trailingAnchor,constant:-24)])
         var labels=[String:UILabel]()
@@ -863,6 +871,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         gatewayMenu.accessibilityLabel = MobileStrings.text("电脑与通知")
         gatewayMenu.menu = UIMenu(children: [
             UIAction(title: MobileStrings.text("返回电脑列表"), image: UIImage(systemName: "desktopcomputer")) { [weak self] _ in self?.home() },
+            UIAction(title: MobileStrings.text("保存当前聊天供离线阅读"), image: UIImage(systemName: "arrow.down.to.line")) { [weak self] _ in self?.saveOfflineHistory() },
             UIAction(title: MobileStrings.text("账号与接入"), image: UIImage(systemName: "person.crop.circle")) { [weak self] _ in self?.openAccounts() },
             UIAction(title: MobileStrings.text("在灵动岛显示此聊天"), image: UIImage(systemName: "capsule")) { [weak self] _ in self?.startLiveActivity() },
             UIAction(title: MobileStrings.text("结束灵动岛显示"), image: UIImage(systemName: "xmark.circle")) { _ in if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.stop() } } },
@@ -887,7 +896,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let inbox = UIBarButtonItem(image: UIImage(systemName: "bell"), style: .plain, target: self, action: #selector(self.inbox)); inbox.accessibilityLabel = MobileStrings.text("通知")
         navigationItem.rightBarButtonItems = [settings, inbox]
     }
-    private func clear() { routeTraffic.removeAll();uu.scope = ""; hideEntryProgress();pageReady=false;cancelPendingPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; localRecovery?.stop(); localRecovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
+    private func clear() { cancelOfflineSave();routeTraffic.removeAll();uu.scope = ""; hideEntryProgress();pageReady=false;cancelPendingPeer();for child in Array(peerViews.keys){child.stopLoading();webViewDidClose(child)};cancelChannelJobs();connectionDeadline?.cancel(); connectionDeadline = nil; updateSystemBars(reset: true); connectionError = nil; pendingStorage = nil; nativeMainNavigation = nil; routeDiscovery?.cancel(); routeDiscovery = nil; localRecovery?.stop(); localRecovery = nil; cancelSync(); finishUpload(nil); if let folder = mediaUploadDirectory { try? FileManager.default.removeItem(at: folder); mediaUploadDirectory = nil }; stopComputerChecks(); computerStates.removeAll();addressLists.removeAll();computerTitles.removeAll();arrivingVia=nil;deferredRoute=nil; computerNotifications.removeAll(); gatewayMenuTop?.isActive = false; gatewayMenuTop = nil; generation += 1; web?.stopLoading(); web?.navigationDelegate = nil; web?.uiDelegate = nil; web = nil; for v in page.arrangedSubviews where v !== subtitle { page.removeArrangedSubview(v); v.removeFromSuperview() } }
     @objc func home() {
         clear(); navigation(home: true); subtitle.isHidden = true
         let container = UIView(); page.addArrangedSubview(container); let content = scrollContent(in: container)
@@ -897,6 +906,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let hint = label(MobileStrings.text("继续聊天、查看结果，让电脑替你运行。"), secondary: true); hint.textAlignment = .center; hero.addArrangedSubview(hint)
         hero.setCustomSpacing(24, after: visual); content.addArrangedSubview(hero)
         content.addArrangedSubview(card([button(MobileStrings.text("扫码连接电脑"), symbol: "qrcode.viewfinder", primary: true) { [weak self] in self?.scan() }, button(MobileStrings.text("输入网关地址"), symbol: "link") { [weak self] in self?.manualAddress() }, button("DSH Mobile", symbol: "link") { [weak self] in self?.manualDsh() }]))
+        content.addArrangedSubview(card([button(MobileStrings.text("离线历史"), symbol: "tray") { [weak self] in self?.openOfflineHistory() }]))
         let computersHeading = UIStackView(arrangedSubviews: [label(MobileStrings.text("我的电脑"), size: 19, weight: .semibold), button(MobileStrings.text("刷新状态"), symbol: "arrow.clockwise") { [weak self] in self?.checkComputers(); self?.sync() }])
         computersHeading.axis = .horizontal; computersHeading.alignment = .center; computersHeading.spacing = 8; content.addArrangedSubview(computersHeading)
         if saved.isEmpty && DshMobileStore.ids.isEmpty {
@@ -924,6 +934,117 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         let foot = label(MobileStrings.text("外出使用 HTTPS 地址；局域网地址需要连接同一网络。"), size: 13, secondary: true); foot.textAlignment = .center; content.addArrangedSubview(foot)
         checkComputers(); sync()
     }
+    private let offlineHistory = OfflineHistoryStore(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("OfflineHistory", isDirectory: true))
+    private var offlineSave: (id: UUID, task: Task<Void, Never>, alert: UIAlertController)?
+
+    private func offlineBinding(_ address: String) -> (scope: OfflineHistoryScope, credential: DeviceBinding.Credential)? {
+        guard saved.contains(address), let record = channelRecord(address),
+              let id = record["deviceId"] as? String, let anchor = record["anchor"] as? String,
+              let root = DeviceBinding.load(GatewayChannels.vault(id)), let credential = DeviceBinding.load(address),
+              root.name == credential.name, credential.token == GatewayChannels.token(root.token, anchor: anchor, target: address)
+        else { return nil }
+        return (.init(device: id, binding: root.cookie), credential)
+    }
+
+    private func invalidateOfflineBinding(_ address: String, cookie: String) {
+        guard let bound = offlineBinding(address), bound.credential.cookie == cookie else { return }
+        offlineHistory.revoke(bound.scope)
+    }
+
+    private func matchesOfflineCookie(_ address: String, scope: OfflineHistoryScope) async -> Bool {
+        let cookie: HTTPCookie? = await withCheckedContinuation { done in
+            binding(address) { done.resume(returning: $0) }
+        }
+        guard let cookie, let bound = offlineBinding(address), bound.scope == scope else { return false }
+        return bound.credential.cookie == cookie.name + "=" + cookie.value
+    }
+
+    private func openOfflineHistory() {
+        if web != nil || entryProgress != nil { home() }
+        let list = OfflineHistoryListController(store: offlineHistory) { [weak self] in
+            guard let self else { return [:] }
+            var scopes: [OfflineHistoryScope: String] = [:]
+            for address in self.saved {
+                if let binding = self.offlineBinding(address) { scopes[binding.scope] = self.computerName(address) }
+            }
+            return scopes
+        }
+        navigationController?.pushViewController(list, animated: true)
+    }
+
+    private func cancelOfflineSave(dismiss: Bool = true) {
+        guard let save = offlineSave else { return }
+        offlineSave = nil; save.task.cancel()
+        if dismiss, presentedViewController === save.alert { save.alert.dismiss(animated: true) }
+    }
+
+    private func saveOfflineHistory() {
+        guard offlineSave == nil, presentedViewController == nil else { return }
+        guard let web, pageReady, connectionError == nil, let pageURL = web.url, GatewayURL.same(pageURL, documentAddress) else {
+            info(MobileStrings.text("请先打开本机 Codex 聊天")); return
+        }
+        let address = origin, ticket = generation, revision = bindingRevision
+        guard let bound = offlineBinding(address) else { info(MobileStrings.text("请先扫码配对电脑")); return }
+        let operation = UUID()
+        let alert = UIAlertController(title: MobileStrings.text("正在保存离线历史…"),
+            message: MobileStrings.text("只保存已结束回合的文字和执行过程。"), preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: MobileStrings.text("取消"), style: .cancel) { [weak self] _ in self?.cancelOfflineSave(dismiss: false) })
+        let task = Task { [weak self, weak web] in
+            guard let self, let web else { return }
+            @MainActor func current() -> Bool {
+                self.offlineSave?.id == operation && !Task.isCancelled && self.generation == ticket &&
+                    self.bindingRevision == revision && self.web === web &&
+                    UIApplication.shared.applicationState == .active
+            }
+            let message: String
+            do {
+                let identity = try await web.evaluateJavaScript("""
+                    typeof currentId === 'string' && document.getElementById('chat')?.hidden === false
+                    ? { id: currentId, host: currentHost, agent: state?.agent || '' } : null
+                    """)
+                guard current() else { return }
+                guard let identity = identity as? [String: String], identity["host"] == "local",
+                      identity["agent"] == "codex", let id = identity["id"].flatMap(UUID.init(uuidString:)) else {
+                    throw OfflineHistoryError.unsupported
+                }
+                guard await self.matchesOfflineCookie(address, scope: bound.scope), current() else {
+                    throw OfflineHistoryError.authentication
+                }
+                let transfer = try await OfflineHistoryTransfer.fetch(address: address, cookie: bound.credential.cookie, scope: bound.scope, id: id)
+                guard current() else { return }
+                let active = self.origin
+                guard await self.matchesOfflineCookie(active, scope: bound.scope), current(),
+                      self.offlineBinding(self.origin)?.scope == bound.scope else { throw OfflineHistoryError.authentication }
+                try self.offlineHistory.save(transfer, to: bound.scope)
+                message = "已保存，可从电脑列表打开离线历史"
+            } catch {
+                guard current() else { return }
+                switch error as? OfflineHistoryError {
+                case .expired:
+                    if self.offlineBinding(address)?.credential.cookie == bound.credential.cookie {
+                        self.invalidateOfflineBinding(address, cookie: bound.credential.cookie)
+                        DeviceBinding.clear(address)
+                    }
+                    message = "登录已失效，请重新连接电脑"
+                case .authentication: message = "请先扫码配对电脑"
+                case .unsupported: message = "请先打开本机 Codex 聊天"
+                case .missing: message = "没有可保存的历史，或需要更新电脑网关"
+                case .changing: message = "历史尚未完整保存，请稍后重试"
+                case .tooLarge: message = "会话历史超过离线保存上限"
+                case .full: message = "离线历史已满，请先移除不需要的副本"
+                case .busy: message = "离线保存繁忙，请稍后重试"
+                default: message = "离线保存失败，请检查连接后重试"
+                }
+            }
+            guard current() else { return }
+            self.offlineSave = nil
+            alert.dismiss(animated: true) { [weak self] in self?.routeNotice(MobileStrings.text(message)) }
+        }
+        offlineSave = (operation, task, alert)
+        present(alert, animated: true)
+    }
+
     private var recentComputers: [String] {
         (Array(saved) + DshMobileStore.ids.map { "dsh:" + $0 }).sorted { a, b in
             let left = defaults.double(forKey: "last-opened:" + a), right = defaults.double(forKey: "last-opened:" + b)
@@ -1067,7 +1188,10 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                     if auth["authenticated"] as? Bool == true, auth["trustedDevice"] as? Bool == true,
                        (auth["cookieName"] as? String ?? "codex_mobile_session") == cookie.name {
                         DeviceBinding.save(address, .init(name: cookie.name, token: cookie.value))
-                    } else if auth["authenticated"] as? Bool == false { DeviceBinding.clear(address) }
+                    } else if auth["authenticated"] as? Bool == false {
+                        self.invalidateOfflineBinding(address, cookie: cookie.name + "=" + cookie.value)
+                        DeviceBinding.clear(address)
+                    }
                     if auth["authenticated"] as? Bool==true && self.arrivingVia==address {self.arrivingVia=nil;self.routeNotice(MobileStrings.text("已切换连接信道")+" · "+address)}
                     let platform = (auth["computer"] as? [String:Any])?["platform"] as? String ?? ""
                     self.uu.scope = auth["authenticated"] as? Bool == true && ["Darwin","Windows"].contains(platform)
@@ -1094,7 +1218,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
                 if current == true || current == nil { if ticket == generation && self.web === web { loadNative(web, URLRequest(url: url)) }; return }
             }
             let valid = await DeviceBinding.verify(address, backup)
-            if valid == false, DeviceBinding.load(address)?.cookie == backup.cookie { DeviceBinding.clear(address) }
+            if valid == false, DeviceBinding.load(address)?.cookie == backup.cookie {
+                invalidateOfflineBinding(address, cookie: backup.cookie); DeviceBinding.clear(address)
+            }
             guard ticket == generation, self.web === web, saved.contains(address) else { return }
             guard valid == true, DeviceBinding.load(address)?.cookie == backup.cookie,
                   let host = URL(string: address)?.host else { loadNative(web, URLRequest(url: url)); return }
@@ -1178,6 +1304,9 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         } else { finish() }
     }
     private func connect(_ url: URL, address: String) {
+        if navigationController?.topViewController !== self {
+            navigationController?.popToRootViewController(animated: false)
+        }
         if saved.contains(address),!channelEnabled(address){openComputer(address,url);return}
         let entering=web==nil ? entryProgress:nil
         routeAttempted = false; requestedRoute = url
@@ -1300,6 +1429,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         content.addArrangedSubview(card([button(MobileStrings.text("重试"), symbol: "arrow.clockwise", primary: true) { [weak self] in
             guard let self, ticket == self.generation, self.saved.contains(address) else { return }; self.openComputer(address,route)
         }, button(MobileStrings.text("管理这台电脑"),symbol:"slider.horizontal.3"){[weak self] in self?.manageComputer(address)
+        }, button(MobileStrings.text("离线历史"), symbol: "tray") { [weak self] in self?.openOfflineHistory()
         }, button(MobileStrings.text("返回电脑列表"), symbol: "desktopcomputer") { [weak self] in self?.home() }]))
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { if let peer=peerViews[webView]{finishPeer(peer,accepted:false);return};if nativeMainNavigation?.web === webView { nativeMainNavigation = nil }; guard webView === web else { return }; recoverConnection() }
@@ -1655,7 +1785,7 @@ final class BridgeController: UIViewController, WKNavigationDelegate, WKUIDelega
         }
     } }
     @objc private func active() { watchChannels(); startLocalRecovery(origin); computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); checkComputers(); foregroundBaselines.removeAll();sync(); activityTimer?.invalidate(); activityTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.syncLiveActivity() }; syncLiveActivity(); timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.sync() } }
-    @objc private func inactive() { cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1;cancelPendingPeer(); channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; localRecovery?.stop(); localRecovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
+    @objc private func inactive() { cancelOfflineSave();cancelChannelJobs();lastChannelProbe=nil;channelSignature="";channelTicket += 1;cancelPendingPeer(); channelMonitor?.cancel(); channelMonitor = nil;channelCatalogTimer?.invalidate();channelCatalogTimer=nil; routeDiscovery?.cancel(); routeDiscovery = nil; localRecovery?.stop(); localRecovery = nil; routeAttempted = false; computerNotifications.values.forEach { $0.alpha = 0.5 }; cancelSync(); downloads.pause(); stopComputerChecks(); timer?.invalidate(); timer = nil; activityTimer?.invalidate(); activityTimer = nil; if #available(iOS 16.2, *) { Task { await LiveActivityController.shared.pause() } } }
     private func cancelSync() {
         pollGeneration += 1; pollTasks.values.forEach { $0.cancel() }; pollTasks.removeAll(); polling.removeAll()
     }
@@ -2032,6 +2162,29 @@ enum ComputerNotificationSummary {
 
 enum MobileStrings {
     static let values: [String: String] = [
+        "离线历史": "Offline history",
+        "保存当前聊天供离线阅读": "Save current chat for offline reading",
+        "请先打开本机 Codex 聊天": "Open a local Codex chat first",
+        "请先扫码配对电脑": "Pair the computer with its QR code first",
+        "正在保存离线历史…": "Saving offline history…",
+        "只保存已结束回合的文字和执行过程。": "Saves text and activity from finished turns.",
+        "已保存，可从电脑列表打开离线历史": "Saved. Open Offline history from the computer list.",
+        "没有可保存的历史，或需要更新电脑网关": "No history is available, or the gateway needs an update.",
+        "历史尚未完整保存，请稍后重试": "The saved history is incomplete. Try again later.",
+        "会话历史超过离线保存上限": "This chat exceeds the offline history limit.",
+        "离线历史已满，请先移除不需要的副本": "Offline history is full. Remove some saved copies.",
+        "离线保存繁忙，请稍后重试": "Offline saving is busy. Try again later.",
+        "离线保存失败，请检查连接后重试": "Couldn't save offline history. Check your connection and try again.",
+        "正在读取离线历史…": "Reading offline history…",
+        "暂无离线历史。请先在已配对电脑的菜单中保存聊天。": "No offline history yet. Save a chat from a paired computer's menu.",
+        "Codex 聊天": "Codex chat",
+        "无法读取的离线历史": "Unable to read saved history",
+        "移除副本": "Remove copy",
+        "无法移除离线历史": "Couldn't remove offline history",
+        "已保存的只读副本": "Saved, read-only copy",
+        "截止回合": "Through turn",
+        "你": "You",
+        "执行过程": "Activity",
         "UU 请求正在处理中": "A UU request is already in progress",
         "请安装或更新 UU 远程至 4.42.0 及以上版本": "Install or update UU Remote to version 4.42.0 or later",
         "无法打开 UU 远程": "Could not open UU Remote",

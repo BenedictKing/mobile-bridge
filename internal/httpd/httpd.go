@@ -539,6 +539,8 @@ func (h *handler) handleMethod(write bool) {
 		h.handleConnectionProve()
 	case path == "/api/connection/routes":
 		h.handleConnectionRoutes(write)
+	case path == "/api/mobile/offline-history":
+		h.handleOfflineHistory()
 	case !write && path == "/api/mobile/events":
 		if h.sessionValue(false) == nil {
 			return

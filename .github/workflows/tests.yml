@@ -27,6 +27,13 @@ jobs:
             mobile/ios/BridgePreview/ChannelCookieMove.swift mobile/ios/tests/ChannelCookieMoveTests.swift \
             -o "$RUNNER_TEMP/bridge-cookie-tests"
           "$RUNNER_TEMP/bridge-cookie-tests"
+      - name: iOS offline history
+        if: runner.os == 'macOS'
+        run: |
+          xcrun swiftc -swift-version 5 -module-cache-path "$RUNNER_TEMP/bridge-swift-cache" \
+            mobile/ios/BridgePreview/GatewayURL.swift mobile/ios/BridgePreview/OfflineHistory.swift \
+            mobile/ios/tests/OfflineHistoryTests.swift -o "$RUNNER_TEMP/bridge-offline-tests"
+          "$RUNNER_TEMP/bridge-offline-tests"
 
   web:
     runs-on: ubuntu-latest

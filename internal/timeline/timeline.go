@@ -832,6 +832,36 @@ func (t *Timeline) Detail(cursor string, offset int, version any) (*jsoncompat.O
 	return result, nil
 }
 
+// OfflineRow is the text-only projection of one saved row. It deliberately
+// carries no attachments, request state, actions, or live capabilities.
+type OfflineRow struct {
+	Key     string `json:"key"`
+	Version string `json:"version"`
+	TurnID  string `json:"turnId"`
+	Role    string `json:"role"`
+	Text    string `json:"text"`
+}
+
+// OfflineRows reads untruncated text from a caller-owned snapshot. The budget
+// is checked before encoding the payload; callers also cap its encoded size.
+func (t *Timeline) OfflineRows(maxRows, maxBytes, maxRowBytes int) ([]OfflineRow, bool) {
+	rows := make([]OfflineRow, 0, min(maxRows, len(t.rows)))
+	total := 0
+	for _, record := range t.rows {
+		if record.text == "" {
+			continue
+		}
+		total += len(record.text)
+		if len(rows) == maxRows || total > maxBytes || len(record.text) > maxRowBytes {
+			return nil, false
+		}
+		role, _ := record.obj.MustGet("role").(string)
+		turnID, _ := record.obj.MustGet("turnId").(string)
+		rows = append(rows, OfflineRow{Key: record.key, Version: record.version, TurnID: turnID, Role: role, Text: record.text})
+	}
+	return rows, true
+}
+
 // State exposes internals used by the conformance scenarios only.
 type State struct {
 	Epoch    string
