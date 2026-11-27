@@ -21,6 +21,7 @@ make build-ios
 - 保存、重命名、切换和移除多台电脑网关。
 - 使用 Keychain 保存设备绑定，不把网关密码写入手机。
 - 局域网/公网入口探测、延迟展示和自动信道恢复。`NWBrowser` 浏览 `_mobile-bridge._tcp`，稳定 `DeviceID` 过滤服务，历史 LAN origin 与 DNS-SD 候选一起进入现有 proof/route renewal；缓存不包含 Cookie。
+- 切换时先暂存并回读目标 Cookie，已打开的工作台还须完成新信道握手。失败时保留原信道，只回滚本次写入且仍未被更新的 Cookie；退出登录后不会恢复旧绑定。流程见[连接特性文档](specs/connections-clients-notifications.md#ios-信道切换)。
 - 文件下载断点恢复、文件选择、通知服务扩展和按电脑选择通知来源。
 - iOS 16.2 及以上的执行状态 Live Activity；系统能力或推送未配置时会回退到前台同步。
 - 共享剪贴板、主题、系统栏、页面导航与 HTML/图片预览隔离。

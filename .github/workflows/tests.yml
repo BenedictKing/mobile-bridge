@@ -20,6 +20,13 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
+      - name: iOS channel Cookie transactions
+        if: runner.os == 'macOS'
+        run: |
+          xcrun swiftc -swift-version 5 -module-cache-path "$RUNNER_TEMP/bridge-swift-cache" \
+            mobile/ios/BridgePreview/ChannelCookieMove.swift mobile/ios/tests/ChannelCookieMoveTests.swift \
+            -o "$RUNNER_TEMP/bridge-cookie-tests"
+          "$RUNNER_TEMP/bridge-cookie-tests"
 
   web:
     runs-on: ubuntu-latest
