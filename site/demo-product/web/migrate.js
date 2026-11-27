@@ -15,7 +15,7 @@ class MigrateControl {
     Object.assign(this,{root,request,onMigrated,onError,onBusy,enabled});
     this.view=null;this.busy=false;this.picked=null;
     this.prepared=null;this.choice={model:'',effort:''};  // Settings step: {id,kind,scope,catalog}.
-    this.instructions='';this.epoch=0;this.confirming=false;
+    this.instructions='';this.epoch=0;this.confirming=false;this.uncertain=null;
   }
   text(value){return typeof BridgeI18n==='undefined'?value:BridgeI18n.t(value);}
   locale(){return typeof BridgeI18n==='undefined'?'zh-CN':BridgeI18n.locale();}
@@ -178,8 +178,15 @@ class MigrateControl {
       const extra=options.model?{model:options.model,effort:options.effort||''}:{};
       const instructions=String(options.instructions||'').trim();if(instructions)extra.instructions=instructions;
       if(options.teamMaintenance==='compact'&&options.teamId){extra.teamMaintenance='compact';extra.teamId=options.teamId;}
-      const body=this.body(kind,scope,options.id||this.newId(),extra);
-      const result=await this.request(body);
+      // 无预备步骤的请求（网关压缩、斜杠命令）在结果未知时复用同一 id 重试，
+      // 由网关幂等账本去重，避免响应丢失后重复创建会话并重发转录。
+      const key=JSON.stringify([this.view.id,kind,scope,extra]);
+      if(!options.id&&this.uncertain?.key!==key)this.uncertain={key,id:this.newId()};
+      const body=this.body(kind,scope,options.id||this.uncertain.id,extra);
+      let result;
+      try{result=await this.request(body);}
+      catch(error){if(!options.id&&error?.status&&error.status<500)this.uncertain=null;throw error;}
+      if(!options.id)this.uncertain=null;
       this.prepared=null;  // The target session is now a real migration.
       await this.onMigrated(result,label,body,operation);
       return true;
