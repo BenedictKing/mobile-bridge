@@ -385,7 +385,7 @@ class TeamChatController{
       const listed=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs');
       const excluded=this.excludedRuns.get(team.id);
       const rows=(listed.runs||[]).filter(run=>!excluded?.has(run.id));
-      const latest=[...rows].reverse().find(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))||rows[rows.length-1];
+      const latest=rows.findLast(run=>!TEAM_TERMINAL_RUN_STATUSES.has(run.status))||rows[rows.length-1];
       if(!latest){if(generation===this.generation){this.run=null;this.refreshError='';this.render();}return;}
       const detail=await this.request('/api/teams/'+encodeURIComponent(team.id)+'/runs/'+encodeURIComponent(latest.id));
       if(generation===this.generation&&this.current?.id===team.id){this.team=team;this.run=detail;this.refreshError='';this.render();}
