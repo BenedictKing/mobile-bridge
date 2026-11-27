@@ -278,7 +278,7 @@
 // Only a proven route for this gateway receives this checkpoint. Never execute a saved write.
 (() => {
   const key = 'bridge-channel-reading';
-  const localKey = name => name.startsWith('composer-v1:') || name === 'bridge-client' || name === 'bridge-appearance' || name.startsWith('navigation:');
+  const localKey = name => name.startsWith('composer-v1:') || name.startsWith('draft-v2:') || name === 'bridge-client' || name === 'bridge-appearance' || name.startsWith('navigation:');
   const temporaryKey = name => /^(pending:|draft:|skills:|work-mode:|message-edit:|new-chat-attempt$)/.test(name);
   const pairs = (store, keep) => Object.fromEntries(Object.entries(store).filter(([name]) => keep(name)));
   function viewport() {

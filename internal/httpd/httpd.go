@@ -442,6 +442,8 @@ type staticRoute struct {
 // included: the pre-login shell needs every one of these without a session.
 var staticRoutes = map[string]staticRoute{
 	"/":                           {"index.html", "text/html; charset=utf-8"},
+	"/bootstrap.js":               {"bootstrap.js", "text/javascript; charset=utf-8"},
+	"/drafts.js":                  {"drafts.js", "text/javascript; charset=utf-8"},
 	"/i18n.js":                    {"i18n.js", "text/javascript; charset=utf-8"},
 	"/icons.js":                   {"icons.js", "text/javascript; charset=utf-8"},
 	"/app.js":                     {"app.js", "text/javascript; charset=utf-8"},

@@ -13,9 +13,10 @@ function setLanguage(value,persist=false){
   for(const item of imageSources)item.node.setAttribute('src',item[language]);
   languageButtons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.language===language)));
   document.querySelectorAll('[data-doc-link]').forEach(link=>link.href=language==='en'?repo+'/blob/main/README_EN.md':repo);
+  document.querySelectorAll('[data-agent-doc]').forEach(link=>link.href=language==='en'?repo+'/blob/main/README_EN.md#multiple-agents-source-runs':repo+'/blob/main/README.md#multi-agent');
   document.querySelectorAll('[data-setup-link]').forEach(link=>{const url=new URL(link.href);url.searchParams.set('lang',language);link.href=url;});
   const title=language==='en'?'Mobile / Bridge | Your multi-agent workspace, across screens':'Mobile / Bridge｜随身接力你的多 Agent 工作台';
-  const description=language==='en'?'Continue Codex, Kimi, Claude and other agent work from mobile Web, Android, iOS and desktop browsers: chat, team runs, approvals, account pools and migration.':'从手机 Web、Android、iOS 和电脑浏览器继续 Codex、Kimi、Claude 等多 Agent 的工作：聊天、团队编排、审批、账号池与迁移。';
+  const description=language==='en'?'Continue Codex, Kimi, MiniMax, Claude, DeepSeek, ZCode, OpenCode, WorkBuddy and custom ACP agents from mobile Web, Android, iOS and desktop browsers: chat, team runs, approvals, account pools and migration.':'从手机 Web、Android、iOS 和电脑浏览器继续 Codex、Kimi、MiniMax、Claude、DeepSeek、ZCode、OpenCode、WorkBuddy 与自定义 ACP Agent：聊天、团队编排、审批、账号池与迁移。';
   document.title=title;document.querySelector('meta[name=description]').content=description;document.querySelector('meta[property="og:title"]').content=title;document.querySelector('meta[property="og:description"]').content=description;
   const canonical='https://BenedictKing.github.io/mobile-bridge/'+(language==='en'?'?lang=en':'');
   document.querySelector('link[rel=canonical]').href=canonical;document.querySelector('meta[property="og:url"]').content=canonical;
@@ -89,7 +90,7 @@ selectDevice('ios');
 
 document.documentElement.classList.add('js');
 if(!matchMedia('(prefers-reduced-motion: reduce)').matches&&'IntersectionObserver'in window){
- const groups=[['.section-head','rise'],['.v2-feature','rise'],['.mobile-feature-grid article','rise'],['.preview-install-grid article','rise'],['.capability','rise'],['.faq details','rise'],['.support>*','rise'],['.media-shell','settle'],['.account-gallery figure','settle'],['.steps li','slide'],['.download','slide']];
+ const groups=[['.section-head','rise'],['.v2-feature','rise'],['.agent-card','rise'],['.mobile-feature-grid article','rise'],['.preview-install-grid article','rise'],['.capability','rise'],['.faq details','rise'],['.support>*','rise'],['.media-shell','settle'],['.account-gallery figure','settle'],['.steps li','slide'],['.download','slide']];
  const items=[];
  for(const [selector,mode]of groups)document.querySelectorAll(selector).forEach((node,i)=>{if(node.dataset.reveal)return;node.dataset.reveal=mode;node.style.setProperty('--delay',(i%4)*70+'ms');items.push(node);});
  const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){entry.target.classList.add('is-in');observer.unobserve(entry.target);}},{rootMargin:'0px 0px -10% 0px',threshold:.08});

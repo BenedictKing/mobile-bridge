@@ -1,10 +1,10 @@
 'use strict';
 
 class WorkModes {
-  constructor({select,control,goalRoot,goalToggle,storage=sessionStorage,onCancel,onStatus,onEdit,onContinue,onComplete,onReview,newId=()=>crypto.randomUUID()}) {
-    this.select=select;this.control=control;this.items=[...control.querySelectorAll('[data-work-mode]')];this.goalRoot=goalRoot;this.goalToggle=goalToggle;this.storage=storage;this.onCancel=onCancel;this.onStatus=onStatus;this.onEdit=onEdit;this.onContinue=onContinue;this.onComplete=onComplete;this.onReview=onReview;this.newId=newId;this.sending=false;this.editing=false;this.editText="";
+  constructor({select,control,goalRoot,goalToggle,storage=sessionStorage,onChange,onCancel,onStatus,onEdit,onContinue,onComplete,onReview,newId=()=>crypto.randomUUID()}) {
+    this.select=select;this.control=control;this.items=[...control.querySelectorAll('[data-work-mode]')];this.goalRoot=goalRoot;this.goalToggle=goalToggle;this.storage=storage;this.onChange=onChange;this.onCancel=onCancel;this.onStatus=onStatus;this.onEdit=onEdit;this.onContinue=onContinue;this.onComplete=onComplete;this.onReview=onReview;this.newId=newId;this.sending=false;this.editing=false;this.editText="";
     this.key=null;this.selection=null;this.view=null;this.cancelBusy=false;this.statusBusy=null;this.actionError='';
-    select.onchange=()=>{this.selection=select.value;this.storage.setItem('work-mode:'+this.key,this.selection);this.actionError='';this.render();};
+    select.onchange=()=>{this.selection=select.value;this.storage.setItem('work-mode:'+this.key,this.selection);this.actionError='';this.render();this.onChange?.(this.selection);};
     goalToggle.onclick=()=>{this.storage.removeItem('hidden-goal:'+this.key);this.render();this.goalRoot.querySelector('.goal-close')?.focus();};
     for(const item of this.items)item.onclick=()=>{if(item.disabled||this.select.disabled)return;this.select.value=item.dataset.workMode;this.select.onchange();};
   }

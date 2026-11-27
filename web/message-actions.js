@@ -116,7 +116,7 @@ class MessageActions {
           sessionStorage.setItem('fork-edit:'+result.host+'|'+result.id,JSON.stringify(pending));
           this.notify('分支已创建，修改尚未发送。请连接后编辑最后一条消息。');
         }else this.notify(action==='fork'?'已创建分支':'已在分支中重新发送');
-        await this.openChat(result.id,result.host);
+        await this.openChat(result.id,result.host,'',true);
       }else this.notify('已重新发送');
     }catch(error){if(this.dialog.open)this.error.textContent=actionText(error.message);else this.notify(error.message);}
     finally{

@@ -16,6 +16,24 @@
 
 > 社区项目，与 OpenAI 无隶属关系。网关支持 macOS、Windows 与 Linux；Codex 会话可通过 Codex CLI（Unix）或 Codex App 内部 IPC 接入，其他 Agent 经 ACP 运行时接入。各平台的实测范围见 [验证记录](VERIFICATION.md)。App 与各 Agent CLI 更新后可能需要适配。
 
+### 支持的 Agent 与 ACP 接入
+
+内置支持 **Codex、Kimi、MiniMax mcode、Claude Code、DeepSeek Harness、ZCode、OpenCode、WorkBuddy（CodeBuddy）**，也可显式配置自定义 **acp-agent**。八类内置 Agent 共用会话列表、历史、发送、审批、中断、排队和通知界面；差异能力按下表展示，完整协议约束以 [ARCHITECTURE 能力矩阵](ARCHITECTURE.md#能力矩阵)为准。
+
+| Agent | 接入方式 | 差异化能力 | 重要边界 |
+| --- | --- | --- | --- |
+| Codex | 原生 App / CLI | 模型与档位、原生 Skill、Plan、原生 Goal、Fast、编辑与原生分支 | App 会话由原桌面 owner 持有 |
+| Kimi | ACP | Plan、斜杠命令 Skill、托管 Goal、账号池 | 不支持 steer；Skill 每次一条 |
+| MiniMax mcode | ACP | 动态模型档位、Plan、扩展 steer / Goal、账号池 | 不提供 Skill 选择 |
+| Claude Code | ACP 包装层 | 模型与 effort、Plan、steer、托管 Goal | 不提供 Skill 选择和账号池 |
+| DeepSeek Harness | ACP 包装层 | 模型与 effort、权限、Plan、steer、托管 Goal | 不提供 Skill 选择和账号池 |
+| ZCode | ACP 包装层 | 动态模型档位、Plan、托管 Goal、账号池与重置卡 | 不支持 steer 和 Skill 选择 |
+| OpenCode | CLI 自带 ACP | 模型变体、Plan、斜杠命令 Skill、托管 Goal | 不支持 steer / Fast；Skill 每次一条 |
+| WorkBuddy（CodeBuddy） | `codebuddy --acp` | 新建会话、托管 Goal、账号池 | 模型、Plan、分支等部分能力尚未验证 |
+| 自定义 acp-agent | 显式 `ACP_AGENT_BIN` / `ACP_AGENT_REVIEW_BIN` | 独立执行成员与审核成员 | 不参与 auto 探测；角色使用独立状态目录，不建议担任团队 Lead |
+
+安装、登录、环境变量、Agent Host 和账号池操作见[多 Agent 使用说明](#multi-agent)。“已接入”不等于所有客户端都具有原生桌面控制或相同能力；未验证项目不会按已支持宣传。
+
 网关整体结构与关键状态见 [项目级运行图册](docs/system-runtime-diagrams.md)；团队编排的执行/恢复流程与状态转换见 [团队编排运行图册](docs/team-runtime-diagrams.md)。各功能域的现行行为、异常边界与验收标准见 [特性文档总索引](docs/specs/README.md)。
 
 ## 消息编辑、分支与复制
@@ -55,6 +73,7 @@ iOS 原生容器复用同一套网关网页，已接入上游的多电脑、Keyc
 
 - 对话页收拢顶部导航，点击标题可查看完整名称、项目、运行设备和模型信息。
 - 点击模型、提醒、Skill 右侧的箭头，可收起或展开下方输入框与发送/停止栏。收起保留草稿，发送成功不会自动收起；失败时展开错误提示。
+- 草稿仅保存在当前浏览器的 `localStorage`，包含正文、光标、工作模式和 Skill，不包含可复用的本地文件句柄；重新打开页面或同会话时间线后恢复。发送成功只清除未被再次编辑的草稿版本，退出登录会清理本网关草稿。共享设备使用后请退出，不要把敏感内容长期留在草稿中。
 - 在右上角 **“··· → 显示设置”** 独立开关 **思考摘要**、**执行过程**。执行过程包含命令、工具调用、文件变更与中途进度说明；关闭两项可专注阅读回复。用户消息、错误和待确认卡片仍保留；缺少阶段标记的旧回复也会显示。
 - 可选浅色、深色或跟随系统，自定义强调色、正文字号、代码字号和阅读间距。设置即时生效并保存在当前浏览器；电脑网页同样可用。
 

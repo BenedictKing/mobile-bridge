@@ -38,6 +38,7 @@ function loadNav({compact=true}={}){
     $:id=>nodes[id]||new FakeNode(),
     loadList:async()=>{calls.push(['list']);},
     syncDocumentTitle(){},
+    rememberChatPosition(){},
     toast(){},
     window:{addEventListener(){},matchMedia:()=>({matches:compact})},
     openRunRoute:'',

@@ -3,18 +3,20 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const {readFileSync}=require('node:fs');
 const vm=require('node:vm');
+const {ComposerDrafts}=require('../web/drafts.js');
 
 function loadRecreate(overrides={}){
   const source=readFileSync(require.resolve('../web/app.js'),'utf8');
   const start=source.indexOf('let staleRecreating=null;'),end=source.indexOf('return staleRecreating;\n}',start)+'return staleRecreating;\n}'.length;
   assert.ok(start>0&&end>start);
-  const storage=new Map(),calls=[],toasts=[],opened=[];
+  const storage=new Map(),calls=[],toasts=[],opened=[],session={getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)};
   const context={
     t:value=>value,uuid:()=>'req-1',currentId:'old',currentHost:'local',currentTeam:null,listRevision:'r1',
     sessionUrl:(id,action)=>'/api/sessions/'+id+'/'+action,
     chatKey:(id,host)=>host+'|'+id,
-    sessionStorage:{getItem:key=>storage.get(key)??null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
-    saveDraft:()=>storage.set('draft:local|'+context.currentId,'草稿'),
+    sessionStorage:session,composerDrafts:new ComposerDrafts(session,'instance'),
+    saveDraft:()=>context.composerDrafts.save(context.currentId,'local',{text:'草稿'}),
+    loadComposerDraft:(id,host)=>context.composerDrafts.load(id,host),
     attachments:{ids:()=>[]},
     api:async(path,body)=>{calls.push([path,body]);return path==='/api/sessions'?{id:'new',host:'local'}:{};},
     loadList:async()=>{},
@@ -31,7 +33,8 @@ test('stale empty chat is recreated in the same agent and cwd with its draft',as
   await context.recreateStaleChat('old','local',{agent:'claude',cwd:'/w',title:'旧标题'});
   assert.deepEqual(JSON.parse(JSON.stringify(calls[0])),['/api/sessions',{id:'req-1',agent:'claude',cwd:'/w',title:'旧标题'}]);
   assert.deepEqual(JSON.parse(JSON.stringify(calls[1])),['/api/sessions/old/delete',{}]);
-  assert.equal(storage.get('draft:local|new'),'草稿');
+  assert.equal(JSON.parse(storage.get('draft-v2:'+JSON.stringify(['instance','local','new']))).text,'草稿');
+  assert.equal(storage.has('draft-v2:'+JSON.stringify(['instance','local','old'])),false);
   assert.deepEqual(opened,[['new','local']]);
   assert.deepEqual(toasts,['原空聊天已失效，已重新创建']);
 });

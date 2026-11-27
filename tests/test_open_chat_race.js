@@ -12,10 +12,12 @@ function loadOpenChat({historyRead=()=>Promise.resolve(),sessionRows=[]}={}){
   const node=new Proxy({value:'',hidden:false,classList:{add(){},remove(){},contains(){return false;}},replaceChildren(){},removeAttribute(){},close(){},dataset:{}},{get:(target,key)=>key in target?target[key]:()=>{}});
   const noop=()=>{};
   class Timeline{
-    constructor({url}){this.url=url;this.abort=new AbortController();}
+    constructor(options){this.options=options;this.url=options.url;this.abort=new AbortController();this.nodes=new Map();this.loads=[];this.restores=[];}
     setViewportLocked(){}
     dispose(){this.abort.abort();}
     start(){return historyRead(this.url('changes'));}
+    async loadUntilKey(key){this.loads.push(key);return 0;}
+    restore(anchor,following){this.restores.push([anchor,following]);}
   }
   const routes=[];
   const context={
@@ -25,7 +27,8 @@ function loadOpenChat({historyRead=()=>Promise.resolve(),sessionRows=[]}={}){
     teamChat:{teamForSession:id=>id==='team-session'?{id:'team'}:null,teamById:id=>id==='team'?{id:'team'}:null,open:noop},
     BridgeLazy:{load:()=>Promise.resolve()},chatRunSource:()=>null,syncChatRunSource:noop,syncWorkspaceNavigation:noop,
     teamQueueModeEnabled:()=>false,$:()=>node,document:{querySelectorAll:()=>sessionRows},messageActions:{pending:false,dialog:node},
-    saveDraft:noop,closeSkillSuggestions:noop,renderAPKDownload:noop,syncDocumentTitle:noop,
+    saveDraft:noop,closeSkillSuggestions:noop,renderAPKDownload:noop,syncDocumentTitle:noop,rememberChatPosition:noop,
+    loadComposerDraft:()=>null,chatReadPositions:new Map(),chatOpenPending:null,setChatStatus:noop,syncChatStatus:noop,
     workModes:{open:noop},attachments:{open:noop},renderPermissionState:noop,renderCompactState:noop,renderNotificationState:noop,
     sessionStorage:{getItem:()=>null},renderSkillPills:noop,submittedRequestIds:new Set(),selectionQuote:null,
     t:value=>value,syncSendButton:noop,showDetailRoute:route=>routes.push(route),ChatTimeline:Timeline,api:()=>Promise.resolve(),
@@ -118,4 +121,42 @@ test('a stale team open cannot publish its route after history finishes',async()
   assert.equal(teamRoute,'');
   assert.equal(context.currentId,'newer-chat');
   assert.equal(routes.at(-1),'#newer-chat~local');
+});
+
+test('reopening the visible same chat reuses its live timeline',async()=>{
+  const {context}=loadOpenChat(),Timeline=context.ChatTimeline;
+  context.currentId='chat';context.currentHost='local';context.state={};context.chatTimeline=new Timeline({url:()=>'chat/changes'});
+  context.$('app').classList.contains=()=>true;context.$('chat').hidden=false;
+  let loads=0,created=0;context.BridgeLazy.load=()=>{loads++;return Promise.resolve();};
+  const Original=context.ChatTimeline;context.ChatTimeline=class extends Original{constructor(options){super(options);created++;}};
+  const timeline=context.chatTimeline;
+  assert.equal(await context.openChat('chat','local'),true);
+  assert.equal(context.chatTimeline,timeline);assert.equal(loads,0);assert.equal(created,0);assert.equal(timeline.abort.signal.aborted,false);
+});
+
+test('an explicit Run turn still replaces an otherwise reusable timeline',async()=>{
+  const {context}=loadOpenChat(),Timeline=context.ChatTimeline;
+  context.currentId='chat';context.currentHost='local';context.state={};context.chatTimeline=new Timeline({url:()=>'chat/changes'});
+  context.$('app').classList.contains=()=>true;context.$('chat').hidden=false;context.chatRunSource=()=>({turnId:'turn-2'});
+  const Original=context.ChatTimeline;context.ChatTimeline=class extends Original{};
+  const old=context.chatTimeline;
+  await context.openChat('chat','local');
+  assert.notEqual(context.chatTimeline,old);assert.equal(old.abort.signal.aborted,true);assert.equal(context.chatTimeline.options.initialTurnId,'turn-2');
+});
+
+test('an explicit refresh replaces a visible timeline even without a new turn',async()=>{
+  const {context}=loadOpenChat(),Timeline=context.ChatTimeline;
+  context.currentId='chat';context.currentHost='local';context.state={};context.chatTimeline=new Timeline({url:()=>'chat/changes'});
+  context.$('app').classList.contains=()=>true;context.$('chat').hidden=false;
+  const old=context.chatTimeline;
+  await context.openChat('chat','local','',true);
+  assert.notEqual(context.chatTimeline,old);assert.equal(old.abort.signal.aborted,true);
+});
+
+test('returning to a chat restores its saved anchor through bounded history loading',async()=>{
+  const {context}=loadOpenChat();
+  context.chatReadPositions.set('local|chat',{anchor:{key:'older-message',offset:18},following:false});
+  await context.openChat('chat','local');
+  assert.deepEqual(context.chatTimeline.loads,['older-message']);
+  assert.deepEqual(context.chatTimeline.restores,[[{key:'older-message',offset:18},false]]);
 });

@@ -65,7 +65,7 @@ test('plain /new creates a fresh title and inherits settings only',async()=>{
     $:id=>nodes[id],t:value=>value,currentId:'old-chat',currentHost:'local',currentTeam:null,sending:false,
     state:{agent:'kimi',cwd:'/work',title:'旧对话标题'},closeSkillSuggestions(){},syncSendButton(){},
     attachments:{ready:()=>true,ids:()=>[]},uuid:()=> 'request-1',chatKey:(id,host)=>host+'|'+id,
-    sessionStorage:{removeItem(){}},loadList:async()=>{},openChat:async(...args)=>opened.push(args),toast(){},
+    sessionStorage:{removeItem(){}},composerDrafts:{clear(){}},loadList:async()=>{},openChat:async(...args)=>opened.push(args),toast(){},
     api:async(path,body)=>{calls.push({path,body});return{id:'fresh-chat',host:'local'};},
   };
   vm.runInNewContext(source.slice(parseStart,parseEnd)+'\n'+source.slice(submitStart,submitEnd),context);

@@ -23,7 +23,7 @@ function setup({text='检查登录流程',directory=teams,request,send,queue=fal
   $('message').value=text;storage.set('draft:local|source-chat',text);
   const teamChat=new TeamChatController({root:{}});
   const context={
-    $,t:value=>value,currentId:'source-chat',currentHost:'local',currentTeam:null,sending:false,
+    $,t:value=>value,currentId:'source-chat',currentHost:'local',currentTeam:null,sending:false,composerDrafts:{clear(){}},
     state:{cwd:'/work',project:'kimi:work'},teamChat,teamSubmissionFields:()=>({teamIssueRoutingVersion:'1',...(queue?{teamQueueVersion:'2'}:{})}),
     attachments:{ready:()=>true,ids:()=>[]},Option:class{constructor(text,value){this.textContent=text;this.value=value;}},
     sessionStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},

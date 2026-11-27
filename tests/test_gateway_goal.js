@@ -5,6 +5,7 @@ const {readFileSync}=require('node:fs');
 const vm=require('node:vm');
 const {WorkModes}=require('../web/modes.js');
 const {PendingCommands,MemoryStorage}=require('./helpers/pending_commands.js');
+const {ComposerDrafts}=require('../web/drafts.js');
 
 class Node {
   constructor(tag='div') {this.tag=tag;this.children=[];this.hidden=false;this.disabled=false;this.value='';this.textContent='';this.open=false;this.dataset={};this.attributes={};this.classList={toggle(){}};}
@@ -112,7 +113,7 @@ function goalComposer({active=false,host='local'}={}){
   const submitStart=source.indexOf("$('composer').onsubmit="),submitEnd=source.indexOf("$('message').onkeydown",submitStart);
   const nodes={composer:new Node('form'),message:new Node('textarea'),'work-mode':new Node('select'),'send-mode':new Node('select'),send:new Node('button'),'send-error':new Node()};
   nodes['work-mode'].option=Object.assign(new Node('option'),{disabled:active,hidden:false});nodes['send-mode'].value='send';
-  const values=new Map(),calls=[];
+  const values=new Map(),calls=[],drafts=new ComposerDrafts(new MemoryStorage(),'instance');
   const context={
     $:id=>nodes[id],t:value=>value,BridgeI18n:{locale:()=> 'zh-CN'},window:{BridgePresentation:{resizeMessage(){}}},
     sending:false,currentId:'chat',currentHost:host,currentTeam:null,state:{host,status:active?'active':'idle',capabilities:['goals'],goalRuntimeAvailable:true},
@@ -120,7 +121,9 @@ function goalComposer({active=false,host='local'}={}){
     invalidSkills:new Set(),selectedSkills:new Set(),sessionStorage:{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},
     workModes:{selection:null,value:()=>nodes['work-mode'].value,render(){},submitted(){}},
     chatKey:()=> host+'|chat',sessionUrl:()=> '/api/sessions/chat/send?host='+host,uuid:()=> 'request-1',
-    api:async(path,body)=>{calls.push({path,body});return{status:'accepted'};},bumpRecency(){},renderSkillPills(){},renderQueue(){},toast(){},saveDraft(){},syncSendButton(){},
+    composerDrafts:drafts,
+    saveDraft(){return drafts.save('chat',host,{text:nodes.message.value,selectionStart:0,selectionEnd:0,workMode:nodes['work-mode'].value,skills:[]});},
+    api:async(path,body)=>{calls.push({path,body});return{status:'accepted'};},bumpRecency(){},renderSkillPills(){},renderQueue(){},toast(){},syncSendButton(){},
   };
   context.window.BridgePendingCommands=new PendingCommands(new MemoryStorage(),context.sessionStorage);
   vm.runInNewContext(source.slice(goalStart,goalEnd)+'\n'+source.slice(submitStart,submitEnd),context);
@@ -144,10 +147,11 @@ test('an accepted send keeps a newer draft typed while its ACK was pending',asyn
   context.api=()=>new Promise(resolve=>{acknowledge=resolve;});
   nodes.message.value='原消息';
   const submission=context.$('composer').onsubmit({preventDefault(){}});
-  nodes.message.value='后来输入';context.sessionStorage.setItem('draft:local|chat','后来输入');
+  nodes.message.value='后来输入';context.saveDraft();
   acknowledge({status:'accepted'});await submission;
   assert.equal(nodes.message.value,'后来输入');
-  assert.equal(context.sessionStorage.getItem('draft:local|chat'),'后来输入');
+  assert.equal(context.composerDrafts.load('chat','local').text,'后来输入');
+  assert.equal(context.composerDrafts.load('chat','local').revision,2);
 });
 
 test('/goal submits on remote hosts when the gateway advertises Goal fallback',async()=>{
@@ -215,7 +219,7 @@ function maintenanceComposer(command,run){
   const context={
     $:id=>nodes[id],t:value=>value,window:{BridgePresentation:{resizeMessage(){}}},sending:false,currentId:'chat',currentHost:'local',currentTeam:null,
     state:{agent:'kimi',status:'idle',connected:true,agents:[{kind:'kimi'}]},attachments:{ready:()=>true,ids:()=>[]},toast:message=>toasts.push(message),
-    closeSkillSuggestions(){},parsePlainCommand:()=>command,parseTeamCommand:()=>null,compactAvailable:()=>true,chatKey:()=> 'local|chat',
+    closeSkillSuggestions(){},parsePlainCommand:()=>command,parseTeamCommand:()=>null,compactAvailable:()=>true,chatKey:()=> 'local|chat',composerDrafts:new ComposerDrafts(new MemoryStorage(),'instance'),
     sessionStorage:{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)},
     runMigrateCommand:run,runGatewayCompact:run,runNativeCompact:run,updateSkillSuggestions(){},
   };

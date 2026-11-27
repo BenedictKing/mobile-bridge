@@ -16,6 +16,24 @@ The phone and desktop use the same chat. Read replies, send messages, choose mod
 
 > Community project, not affiliated with OpenAI. The gateway runs on macOS, Windows and Linux. Codex sessions are reached through the Codex CLI (Unix) or internal Codex App IPC; other agents join through the ACP runtime. See [verification records](VERIFICATION.md) for what was actually tested. App and agent CLI updates may require compatibility changes.
 
+### Supported agents and ACP runtimes
+
+Built-in support covers **Codex, Kimi, MiniMax mcode, Claude Code, DeepSeek Harness, ZCode, OpenCode and WorkBuddy (CodeBuddy)**; a custom **acp-agent** runtime can also be configured explicitly. All eight built-in agents share the chat list, history, sending, approvals, interruption, queues and notifications. Their differences are shown below; the authoritative protocol details remain in the [ARCHITECTURE capability matrix](ARCHITECTURE.md#能力矩阵).
+
+| Agent | Connection | Distinctive capabilities | Important boundary |
+| --- | --- | --- | --- |
+| Codex | Native App / CLI | Model and effort, native Skills, Plan, native Goal, Fast, editing and native branches | App chats retain their original desktop owner |
+| Kimi | ACP | Plan, slash-command Skills, managed Goal, account pool | No steering; one Skill per message |
+| MiniMax mcode | ACP | Dynamic model options, Plan, extension steering / Goal, account pool | No Skill picker |
+| Claude Code | ACP wrapper | Model and effort, Plan, steering, managed Goal | No Skill picker or account pool |
+| DeepSeek Harness | ACP wrapper | Model and effort, permissions, Plan, steering, managed Goal | No Skill picker or account pool |
+| ZCode | ACP wrapper | Dynamic model options, Plan, managed Goal, account pool and reset credits | No steering or Skill picker |
+| OpenCode | Native CLI ACP | Model variants, Plan, slash-command Skills, managed Goal | No steering / Fast; one Skill per message |
+| WorkBuddy (CodeBuddy) | `codebuddy --acp` | New chats, managed Goal, account pool | Some model, Plan and branch capabilities remain unverified |
+| Custom acp-agent | Explicit `ACP_AGENT_BIN` / `ACP_AGENT_REVIEW_BIN` | Separate execution and review members | Excluded from auto-discovery; roles need separate state directories and are not recommended as team leads |
+
+See [Multiple agents](#multiple-agents-source-runs) for installation, sign-in, environment variables, Agent Host and account-pool operations. Integration does not imply native desktop control or identical capabilities; unverified features are not presented as supported.
+
 ## Edit, branch and copy messages
 
 - Copy user messages from their action row. Choose **Edit and resend** on the latest user message, or **Edit in new branch** on an older message to keep the original conversation.
@@ -51,6 +69,7 @@ For access outside your LAN, configure a temporary HTTPS tunnel, an own-server c
 
 - Compact chat navigation leaves more room for replies. Tap the title for the full name, project, device and model details.
 - Use the arrow beside Model, Notifications and Skill to hide or show the composer and send/stop controls. Drafts are retained; a successful send does not collapse the composer automatically, and a failed send reopens it to show the error.
+- Drafts stay in this browser's `localStorage` and include text, caret, work mode and Skills, but never reusable local file handles. They return after reopening the page or rebuilding the same chat timeline. A successful send clears only the unedited draft revision; logging out clears this gateway's drafts. Sign out on shared devices and do not leave sensitive content in drafts indefinitely.
 - Open **“··· → Display settings”** to independently toggle **Reasoning summaries** and **Execution activity**. Activity includes commands, tools, file changes and intermediate progress updates. Turn both off to focus on replies; user messages, errors and pending requests remain visible. Older replies without phase metadata are also retained.
 - Choose light, dark or system theme, an accent color, text and code sizes, and reading spacing. Settings apply immediately and are saved in the current browser; they also work on desktop browsers.
 
