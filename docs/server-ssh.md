@@ -4,13 +4,13 @@
 
 **手机 → 服务器 HTTPS → 服务器 `127.0.0.1:18787` → SSH 隧道 → 电脑网关 `127.0.0.1:8787` → Codex App**
 
-本文使用普通用户 `try2love` 和 `https://codex.try2love.com` 举例，仅用于配置演示，不代表可访问的演示站点。请替换为自己的账号和域名；示例端口也须与网关配置一致。
+本文使用普通用户 `your-user` 和 `https://codex.example.com` 举例，仅用于配置演示，不代表可访问的演示站点。请替换为自己的账号和域名；示例端口也须与网关配置一致。
 
 **管理员操作由你或服务器管理员手动完成。网关不接收 sudo 密码，不安装服务器软件，不修改服务器配置或防火墙。** 网关负责 SSH 登录检查并维持转发连接。准备服务器只需首次完成，日常连接不需要 sudo。
 
 ## 1. 手动准备域名与公网入口
 
-在域名 DNS 管理中，将 `codex.try2love.com` 的 A 记录指向服务器公网 IPv4。只有服务器具备可用的公网 IPv6 时才设置 AAAA 记录。使用下方 Caddy 默认自动 HTTPS 方案时，先使用直接指向服务器的 DNS 记录。
+在域名 DNS 管理中，将 `codex.example.com` 的 A 记录指向服务器公网 IPv4。只有服务器具备可用的公网 IPv6 时才设置 AAAA 记录。使用下方 Caddy 默认自动 HTTPS 方案时，先使用直接指向服务器的 DNS 记录。
 
 在服务器防火墙和云平台安全组中配置：
 
@@ -24,12 +24,12 @@
 
 ## 2. 手动准备普通 SSH 用户与转发权限
 
-选择一个普通 SSH 用户，例如 `try2love`，使用该用户的密码、私钥或 SSH Agent。在终端确认这个账号能够登录。无需为日常隧道授予 sudo 权限，也无需让普通账号加入 Docker 管理组。
+选择一个普通 SSH 用户，例如 `your-user`，使用该用户的密码、私钥或 SSH Agent。在终端确认这个账号能够登录。无需为日常隧道授予 sudo 权限，也无需让普通账号加入 Docker 管理组。
 
 若 SSH 转发被禁用，请让管理员核对 SSH 服务端配置。可以参考以下针对普通用户的配置片段；管理员须结合现有规则放到适当位置，不能直接覆盖整个配置文件：
 
 ```text
-Match User try2love
+Match User your-user
     AllowTcpForwarding remote
     GatewayPorts no
     PermitListen 127.0.0.1:18787
@@ -65,7 +65,7 @@ sudoedit /etc/caddy/Caddyfile
 保留已有站点，添加这个独立站点块：
 
 ```caddyfile
-codex.try2love.com {
+codex.example.com {
     reverse_proxy 127.0.0.1:18787 {
         header_up Host {http.request.host}
         flush_interval -1
@@ -90,7 +90,7 @@ sudo systemctl reload caddy
 
 在“网络与登录”添加“固定域名 · 自有服务器 + SSH”，填写：
 
-- 手机访问地址：自己的完整 HTTPS 地址，例如 `https://codex.try2love.com`。
+- 手机访问地址：自己的完整 HTTPS 地址，例如 `https://codex.example.com`。
 - SSH 认证方式：账号密码、本地私钥、SSH Agent 或已有 SSH 别名。
 - 服务器地址、SSH 端口与普通用户名：使用前面已确认可登录的账号。
 - 服务器回环端口：默认为 `18787`，须与反向代理及转发权限设置一致。

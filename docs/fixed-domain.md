@@ -4,11 +4,11 @@
 
 访问链路：**手机 → 自己的域名 → Cloudflare → 电脑上的隧道 → 本地网关 → Codex App**。
 
-本文中的用户名 `try2love`、域名 `try2love.com` 和地址 `https://codex.try2love.com` 仅用于配置演示，不代表可访问的演示站点。请替换为自己的用户名和域名。网关以 Tunnel Token 方式驱动已安装的 `cloudflared`（安装方法见 README），无需 Python、Node.js 或另一个 Cloudflare 客户端，也不需要服务器 SSH 账号。
+本文中的用户名 `your-user`、域名 `example.com` 和地址 `https://codex.example.com` 仅用于配置演示，不代表可访问的演示站点。请替换为自己的用户名和域名。网关以 Tunnel Token 方式驱动已安装的 `cloudflared`（安装方法见 README），无需 Python、Node.js 或另一个 Cloudflare 客户端，也不需要服务器 SSH 账号。
 
 ## 1. 把域名添加到 Cloudflare
 
-登录 [Cloudflare 控制台](https://dash.cloudflare.com)，添加根域名 `try2love.com`，按需要选择套餐。已有网站或邮箱时，先核对导入的 DNS 记录，保留原有站点和邮件记录。
+登录 [Cloudflare 控制台](https://dash.cloudflare.com)，添加根域名 `example.com`，按需要选择套餐。已有网站或邮箱时，先核对导入的 DNS 记录，保留原有站点和邮件记录。
 
 Cloudflare 会分配两条名称服务器（Nameservers / NS）地址。复制自己账号中显示的值，每个域名可能不同。
 
@@ -31,7 +31,7 @@ Token 相当于这条隧道的连接凭据，只填在自己的网关配置中�
 ## 4. 在网关配置中填写并启动
 
 1. 打开“网络与登录”，添加 **固定域名 · Cloudflare Tunnel**。
-2. 手机访问地址填写 `https://codex.try2love.com`，不带额外路径。
+2. 手机访问地址填写 `https://codex.example.com`，不带额外路径。
 3. 填写上一步的 **Cloudflare Tunnel Token**，保留账号密码登录保护。
 4. 启用该连接，保存配置，再点击“启动网关”。局域网连接可同时保留。
 
@@ -44,7 +44,7 @@ Token 相当于这条隧道的连接凭据，只填在自己的网关配置中�
 | 字段 | 示例填写 |
 | --- | --- |
 | Subdomain / 子域名 | `codex` |
-| Domain / 域名 | `try2love.com` |
+| Domain / 域名 | `example.com` |
 | Path / 路径 | 留空 |
 | Service Type / 服务类型 | `HTTP` |
 | Service URL / 服务地址 | `localhost:8787` |
@@ -63,16 +63,16 @@ Token 相当于这条隧道的连接凭据，只填在自己的网关配置中�
 
 在 Cloudflare 的该域名页面，进入 **规则 → 概述 → 创建规则 → 重定向规则**：
 
-1. 选择“自定义筛选表达式”，填写 `(http.request.full_uri wildcard r"http://codex.try2love.com/*")`，将示例域名替换成自己的网关子域名。
-2. URL 重定向选择“动态”，目标表达式填写 `concat("https://codex.try2love.com", http.request.uri.path)`，同样替换域名。
+1. 选择“自定义筛选表达式”，填写 `(http.request.full_uri wildcard r"http://codex.example.com/*")`，将示例域名替换成自己的网关子域名。
+2. URL 重定向选择“动态”，目标表达式填写 `concat("https://codex.example.com", http.request.uri.path)`，同样替换域名。
 3. 状态代码选择 **301**，勾选“保留查询字符串”，然后部署。
 
-这条规则只升级指定子域名的 HTTP 请求，保留路径和查询参数。重新打开 `http://codex.try2love.com`，确认地址自动变为 `https://codex.try2love.com` 后再输入密码。已经打开的 HTTP 登录页需要刷新或重新打开；不要把 HTTP 地址加入网关允许来源来绕过检查。
+这条规则只升级指定子域名的 HTTP 请求，保留路径和查询参数。重新打开 `http://codex.example.com`，确认地址自动变为 `https://codex.example.com` 后再输入密码。已经打开的 HTTP 登录页需要刷新或重新打开；不要把 HTTP 地址加入网关允许来源来绕过检查。
 
 ## 6. 分别验证电脑和手机
 
 1. 用手机蜂窝网络打开域名，确认连接到当前网关。
-2. 在电脑浏览器打开 `https://codex.try2love.com`，确认可以看到登录页并登录。
+2. 在电脑浏览器打开 `https://codex.example.com`，确认可以看到登录页并登录。
 3. 手机关闭 Wi-Fi，使用蜂窝网络访问同一地址，验证登录、读取聊天、发送消息和回复同步。
 4. 可在“手机通知”中配置并测试入口通知，方便再次找到地址。
 
@@ -80,13 +80,13 @@ Token 相当于这条隧道的连接凭据，只填在自己的网关配置中�
 
 ## 7. 可选：局域网内自动直连，外出自动回退
 
-浏览器不允许 Cloudflare 的 HTTPS 页面直接请求 `http://192.168.x.x`，因此局域网加速需要一个受浏览器信任的 HTTPS 端点。配置后仍从 `https://codex.try2love.com` 打开页面，地址栏和分享链接不变；登录后的 API、附件和实时同步会在局域网可用时自动直连，离开局域网或直连失败时自动回到 Cloudflare。无需再次登录。
+浏览器不允许 Cloudflare 的 HTTPS 页面直接请求 `http://192.168.x.x`，因此局域网加速需要一个受浏览器信任的 HTTPS 端点。配置后仍从 `https://codex.example.com` 打开页面，地址栏和分享链接不变；登录后的 API、附件和实时同步会在局域网可用时自动直连，离开局域网或直连失败时自动回到 Cloudflare。无需再次登录。
 
 ### 一次性准备
 
 1. 给电脑设置固定局域网 IP，或在路由器配置 DHCP 地址保留，例如 `192.168.1.20`。
 2. 在 Cloudflare DNS 添加 `lan.codex` 的 A 记录，值为 `192.168.1.20`，设为 **仅 DNS / DNS only**，不要开启橙色云代理。该记录只在局域网内指向电脑；外出时它不可达，浏览器会自动回退。
-3. 为 `lan.codex.try2love.com` 获取浏览器信任的证书。证书名称必须覆盖这个完整主机名，不能只覆盖 `codex.try2love.com`。可使用受信任 CA 的 DNS-01 验证签发，无需把 8788 端口暴露到公网。
+3. 为 `lan.codex.example.com` 获取浏览器信任的证书。证书名称必须覆盖这个完整主机名，不能只覆盖 `codex.example.com`。可使用受信任 CA 的 DNS-01 验证签发，无需把 8788 端口暴露到公网。
 4. 把完整证书链和私钥放到网关数据目录，例如 `.local/direct/lan-chain.pem` 与 `.local/direct/lan-key.pem`，私钥权限设为仅当前用户可读写。
 5. 在数据目录 `desktop.json` 的顶层加入 `direct`，保留已有配置项：
 
@@ -94,8 +94,8 @@ Token 相当于这条隧道的连接凭据，只填在自己的网关配置中�
 {
   "lan": true,
   "direct": {
-    "publicUrl": "https://codex.try2love.com",
-    "url": "https://lan.codex.try2love.com:8788",
+    "publicUrl": "https://codex.example.com",
+    "url": "https://lan.codex.example.com:8788",
     "certFile": "direct/lan-chain.pem",
     "keyFile": "direct/lan-key.pem"
   }
@@ -130,7 +130,7 @@ Cloudflare Tunnel Token 不能充当 TLS 私钥；Cloudflare Origin CA 证书用
 
 ## 自有服务器 + SSH 可以不用 root 吗？
 
-可以。**日常建立 SSH 隧道不要求 root，也不会自动执行 sudo。** 例如普通用户 `try2love`，只要能登录服务器，并被允许建立到 `127.0.0.1:18787` 的远程端口转发，就可以使用。
+可以。**日常建立 SSH 隧道不要求 root，也不会自动执行 sudo。** 例如普通用户 `your-user`，只要能登录服务器，并被允许建立到 `127.0.0.1:18787` 的远程端口转发，就可以使用。
 
 | 操作 | 所需权限 |
 | --- | --- |

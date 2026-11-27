@@ -91,11 +91,11 @@ Connections are configured in the `connections` array of `.local/config.json`; e
 
 LAN, a temporary Cloudflare tunnel and multiple fixed entries can run together. Only one temporary tunnel is needed per gateway. Profiles targeting the same SSH server need different loopback ports. Different SSH aliases pointing to the same server can still conflict; choose their ports accordingly.
 
-All entries reach the same gateway and share the same gateway login. The username `try2love` and URL `https://codex.try2love.com` are configuration examples, not a live demo site. Replace them with your own settings.
+All entries reach the same gateway and share the same gateway login. The username `your-user` and URL `https://codex.example.com` are configuration examples, not a live demo site. Replace them with your own settings.
 
 #### Private domain without a server
 
-Choose **Fixed domain · Cloudflare Tunnel**. Use Cloudflare DNS for the domain (keep your registrar), create a tunnel, and publish a hostname such as `codex.try2love.com` pointing to `http://localhost:8787`. Save the hostname and tunnel token in the configuration, then start the gateway. The token runs the existing tunnel; it does not create DNS records. No public server or inbound computer port is needed. Use a dedicated hostname, not a `/codex/` path. Keep the computer, Codex App and gateway online.
+Choose **Fixed domain · Cloudflare Tunnel**. Use Cloudflare DNS for the domain (keep your registrar), create a tunnel, and publish a hostname such as `codex.example.com` pointing to `http://localhost:8787`. Save the hostname and tunnel token in the configuration, then start the gateway. The token runs the existing tunnel; it does not create DNS records. No public server or inbound computer port is needed. Use a dedicated hostname, not a `/codex/` path. Keep the computer, Codex App and gateway online.
 
 See the [complete fixed-domain walkthrough (Chinese)](docs/fixed-domain.md); it covers nameservers, the tunnel token, the hostname route and verification over phone mobile data.
 
@@ -109,7 +109,7 @@ The computer initiates SSH, so the server does not need direct access to the com
 
 The server must allow remote forwarding and keep the listening socket on loopback (`GatewayPorts no` or `clientspecified`, not `yes`). For the generated Caddy configuration, DNS must point to the server and public TCP 80/443 must be reachable and free. Caddy obtains and renews certificates. Its generated Docker service uses host networking on Linux Docker Engine, on the same host as SSH; it is not a Mac/Windows Docker Desktop deployment.
 
-Everyday SSH forwarding can use a regular user such as `try2love`, without root or sudo. Follow the [server SSH walkthrough (Chinese)](docs/server-ssh.md): manually prepare DNS, HTTPS and forwarding permissions; save the settings and check SSH sign-in; start the connection, then verify over phone mobile data.
+Everyday SSH forwarding can use a regular user such as `your-user`, without root or sudo. Follow the [server SSH walkthrough (Chinese)](docs/server-ssh.md): manually prepare DNS, HTTPS and forwarding permissions; save the settings and check SSH sign-in; start the connection, then verify over phone mobile data.
 
 Server software installation, firewall rules and SSH permissions must be configured manually by you or your administrator. The gateway does not accept sudo passwords or run remote installation commands. Preserve existing sites and use their reverse proxy. SSH sign-in success does not verify forwarding or public HTTPS access. Any administrative commands must be run by the user.
 
@@ -133,7 +133,7 @@ The gateway listens on `127.0.0.1` and all non-link-local IPv4 addresses by defa
 
 ### What are “Additional HTTPS addresses”?
 
-This is the gateway's **address allowlist**. Add a URL only when its HTTPS reverse proxy or tunnel is already configured elsewhere and you need another domain to reach the gateway. Enter one origin per line, such as `https://codex.try2love.com`, without a path.
+This is the gateway's **address allowlist**. Add a URL only when its HTTPS reverse proxy or tunnel is already configured elsewhere and you need another domain to reach the gateway. Enter one origin per line, such as `https://codex.example.com`, without a path.
 
 Adding a URL does **not** create a tunnel, configure DNS or obtain a certificate. The proxy must reach the gateway and preserve the public Host header. Leave this empty when using only LAN or temporary Cloudflare.
 

@@ -172,7 +172,7 @@
 <div class="map-node">
 <span class="map-index">1</span>
 <strong data-en="Phone browser" >手机浏览器</strong>
-<small data-en="https://codex.try2love.com" >https://codex.try2love.com</small>
+<small data-en="https://codex.example.com" >https://codex.example.com</small>
 </div>
 <span class="map-arrow" aria-hidden="true">→</span>
 <div class="map-node">
@@ -189,7 +189,7 @@
 </div>
 <figcaption data-en="localhost refers to the computer running the connector. Public requests reach it through the tunnel; the phone need not share the LAN." >localhost 是连接器所在电脑的地址。公网请求经隧道到达它，不要求手机在同一局域网。</figcaption>
 </figure>
-<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; try2love.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；try2love.com 不是本教程提供的可访问演示服务。</p>
+<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; example.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；example.com 不是本教程提供的可访问演示服务。</p>
 <article class="guide-step" id="cloudflare-dns">
 <div class="step-head">
 <span class="step-number">01</span>
@@ -243,7 +243,7 @@
 </tr>
 <tr>
 <td data-en="Phone URL" >手机访问地址</td>
-<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+<td data-en="https://codex.example.com" >https://codex.example.com</td>
 </tr>
 <tr>
 <td data-en="Tunnel Token" >Tunnel Token</td>
@@ -281,7 +281,7 @@
 </tr>
 <tr>
 <td data-en="Domain" >域名 / Domain</td>
-<td data-en="try2love.com" >try2love.com</td>
+<td data-en="example.com" >example.com</td>
 </tr>
 <tr>
 <td data-en="Path" >路径 / Path</td>
@@ -315,17 +315,17 @@
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="text">(http.request.full_uri wildcard r&quot;http://codex.try2love.com/*&quot;)</code>
+<code data-code-kind="text">(http.request.full_uri wildcard r&quot;http://codex.example.com/*&quot;)</code>
 </pre>
 </div>
 <p data-en="Choose a dynamic URL redirect with the expression below, status 301 and Preserve query string. Deploy after validation succeeds." >URL 重定向类型选“动态”，目标表达式如下；状态码选 301，勾选“保留查询字符串”，校验通过后部署。</p>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="text">concat(&quot;https://codex.try2love.com&quot;, http.request.uri.path)</code>
+<code data-code-kind="text">concat(&quot;https://codex.example.com&quot;, http.request.uri.path)</code>
 </pre>
 </div>
-<p data-en="Check: Opening http://codex.try2love.com upgrades to HTTPS before showing sign-in. Reopen any old HTTP sign-in page." class="checkpoint">确认结果：打开 http://codex.try2love.com 会自动变为 HTTPS，再显示登录页。已经打开的 HTTP 登录页需重新打开。</p>
+<p data-en="Check: Opening http://codex.example.com upgrades to HTTPS before showing sign-in. Reopen any old HTTP sign-in page." class="checkpoint">确认结果：打开 http://codex.example.com 会自动变为 HTTPS，再显示登录页。已经打开的 HTTP 登录页需重新打开。</p>
 </div>
 </article>
 <article class="guide-step" id="cloudflare-verify">
@@ -371,7 +371,7 @@
 <figcaption data-en="Arrows show the request path. The work computer initiates SSH to the server; the work computer needs no public IP." >图中箭头表示访问请求。SSH 连接由工作电脑主动发起到服务器，工作电脑无需公网 IP。</figcaption>
 </figure>
 <p data-en="The server handles HTTPS and forwarding. Codex and the gateway run on your work computer. Prepare the server once, then start the computer gateway for everyday use." class="callout">服务器负责 HTTPS 入口和转发；Codex 和网关运行在工作电脑。先完成一次服务器配置，之后日常只需启动电脑网关。</p>
-<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; try2love.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；try2love.com 不是本教程提供的可访问演示服务。</p>
+<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; example.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；example.com 不是本教程提供的可访问演示服务。</p>
 <div class="table-wrap">
 <table>
 <thead>
@@ -389,12 +389,12 @@
 </tr>
 <tr>
 <td data-en="Fixed URL" >固定访问地址</td>
-<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+<td data-en="https://codex.example.com" >https://codex.example.com</td>
 <td data-en="Phone browser" >手机浏览器</td>
 </tr>
 <tr>
 <td data-en="Regular SSH user" >普通 SSH 用户</td>
-<td data-en="try2love" >try2love</td>
+<td data-en="your-user" >your-user</td>
 <td data-en="Daily tunnel, no sudo required" >日常隧道，不需要 sudo</td>
 </tr>
 <tr>
@@ -490,7 +490,7 @@ command -v nginx</code>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="sh">nslookup codex.try2love.com</code>
+<code data-code-kind="sh">nslookup codex.example.com</code>
 </pre>
 </div>
 <p data-en="Check: Run nslookup on the work computer; it should return the server public IP. Cached DNS results may take time to update." class="checkpoint">确认结果：在工作电脑运行 nslookup，结果是服务器公网 IP。DNS 生效可能需要等待缓存更新。</p>
@@ -572,7 +572,7 @@ sudo ufw allow 443/tcp</code>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="sh">ssh -p 22 try2love@203.0.113.10</code>
+<code data-code-kind="sh">ssh -p 22 your-user@203.0.113.10</code>
 </pre>
 </div>
 <details class="scenario">
@@ -581,7 +581,7 @@ sudo ufw allow 443/tcp</code>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="sh">sudo adduser try2love</code>
+<code data-code-kind="sh">sudo adduser your-user</code>
 </pre>
 </div>
 <p data-en="If password sign-in is already allowed, verify this regular account. For key-only servers, install a public key as described next. On other systems, use the OS-specific account management process." >服务器已允许密码登录时，先验证该普通用户能正常登录。服务器仅允许密钥时，按下一项安装公钥。其他系统请由管理员使用该系统的用户管理方式创建账号。</p>
@@ -595,14 +595,14 @@ sudo ufw allow 443/tcp</code>
 <code data-code-kind="sh">ssh-keygen -t ed25519</code>
 </pre>
 </div>
-<p data-en="Give the generated .pub public key to the administrator to append to the user’s ~/.ssh/authorized_keys. Keep the private key on the work computer. The example below assumes the default /home/try2love home on Ubuntu / Debian; append to existing files, do not overwrite." >将生成的 .pub 公钥交给管理员追加到该用户的 ~/.ssh/authorized_keys。私钥保留在工作电脑。以下是 Ubuntu / Debian 默认 /home/try2love 家目录的示例；已有文件只追加，不覆盖。</p>
+<p data-en="Give the generated .pub public key to the administrator to append to the user’s ~/.ssh/authorized_keys. Keep the private key on the work computer. The example below assumes the default /home/your-user home on Ubuntu / Debian; append to existing files, do not overwrite." >将生成的 .pub 公钥交给管理员追加到该用户的 ~/.ssh/authorized_keys。私钥保留在工作电脑。以下是 Ubuntu / Debian 默认 /home/your-user 家目录的示例；已有文件只追加，不覆盖。</p>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="sh">sudo install -d -m 700 -o try2love -g try2love /home/try2love/.ssh
-sudoedit /home/try2love/.ssh/authorized_keys
-sudo chown try2love:try2love /home/try2love/.ssh/authorized_keys
-sudo chmod 600 /home/try2love/.ssh/authorized_keys</code>
+<code data-code-kind="sh">sudo install -d -m 700 -o your-user -g your-user /home/your-user/.ssh
+sudoedit /home/your-user/.ssh/authorized_keys
+sudo chown your-user:your-user /home/your-user/.ssh/authorized_keys
+sudo chmod 600 /home/your-user/.ssh/authorized_keys</code>
 </pre>
 </div>
 <p data-en="In the configuration, choose a local private key: the file without the .pub suffix. Enter its passphrase if set. Keep private keys and passwords out of public configuration and screenshots." >在配置中选择“本地私钥”，指定没有 .pub 后缀的私钥文件；设置过口令时同时填写口令。不要把私钥或密码放到公开配置和截图中。</p>
@@ -623,7 +623,7 @@ sudo chmod 600 /home/try2love/.ssh/authorized_keys</code>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="sshd">Match User try2love
+<code data-code-kind="sshd">Match User your-user
     AllowTcpForwarding remote
     GatewayPorts no
     PermitListen 127.0.0.1:18787
@@ -685,7 +685,7 @@ sudoedit /etc/caddy/Caddyfile</code>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="caddy">codex.try2love.com {
+<code data-code-kind="caddy">codex.example.com {
     reverse_proxy 127.0.0.1:18787 {
         header_up Host {http.request.host}
         flush_interval -1
@@ -712,7 +712,7 @@ systemctl is-active caddy</code>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="caddy">codex.try2love.com {
+<code data-code-kind="caddy">codex.example.com {
     reverse_proxy 127.0.0.1:18787 {
         header_up Host {http.request.host}
         flush_interval -1
@@ -767,7 +767,7 @@ sudo systemctl reload nginx</code>
 <tbody>
 <tr>
 <td data-en="Hostname" >域名</td>
-<td data-en="codex.try2love.com" >codex.try2love.com</td>
+<td data-en="codex.example.com" >codex.example.com</td>
 </tr>
 <tr>
 <td data-en="Upstream protocol and address" >上游协议与地址</td>
@@ -775,7 +775,7 @@ sudo systemctl reload nginx</code>
 </tr>
 <tr>
 <td data-en="Upstream Host header" >发送给上游的 Host</td>
-<td data-en="Original public hostname codex.try2love.com" >原始访问域名 codex.try2love.com</td>
+<td data-en="Original public hostname codex.example.com" >原始访问域名 codex.example.com</td>
 </tr>
 <tr>
 <td data-en="SSL / HTTPS" >SSL / HTTPS</td>
@@ -824,7 +824,7 @@ sudo systemctl reload nginx</code>
 </tr>
 <tr>
 <td data-en="Phone URL" >手机访问地址</td>
-<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+<td data-en="https://codex.example.com" >https://codex.example.com</td>
 </tr>
 <tr>
 <td data-en="Server address" >服务器地址</td>
@@ -836,7 +836,7 @@ sudo systemctl reload nginx</code>
 </tr>
 <tr>
 <td data-en="SSH username" >SSH 用户名</td>
-<td data-en="try2love" >try2love</td>
+<td data-en="your-user" >your-user</td>
 </tr>
 <tr>
 <td data-en="Authentication" >认证方式</td>
@@ -867,7 +867,7 @@ sudo systemctl reload nginx</code>
 <div class="code-block">
 <button data-en="Copy" type="button" data-copy>复制</button>
 <pre>
-<code data-code-kind="sh">curl --max-time 10 -H &#x27;Host: codex.try2love.com&#x27; http://127.0.0.1:18787/api/auth</code>
+<code data-code-kind="sh">curl --max-time 10 -H &#x27;Host: codex.example.com&#x27; http://127.0.0.1:18787/api/auth</code>
 </pre>
 </div>
 <p data-en="Expect JSON containing authenticated and other fields. Then compare the public HTTPS instance with the local gateway. Finally verify sign-in, chat loading and sending over phone mobile data." >应返回包含 authenticated 等字段的 JSON。然后比较固定 HTTPS 地址与本机网关实例。最后用手机蜂窝网络验证登录、聊天读取和发送。</p>
@@ -901,7 +901,7 @@ sudo systemctl reload nginx</code>
 </div>
 <figcaption data-en="The NAS must be able to reach the work computer. A domain alone cannot connect a home NAS to a computer on another network." >NAS 必须能访问工作电脑；它在家、电脑在公司时，不能仅凭一个域名打通两个网络。</figcaption>
 </figure>
-<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; try2love.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；try2love.com 不是本教程提供的可访问演示服务。</p>
+<p data-en="All domains, IPs and usernames are examples. Replace them with your own values; example.com is not a hosted demo." class="example-note">所有域名、IP、账号都是演示值。请替换为自己的信息；example.com 不是本教程提供的可访问演示服务。</p>
 <article class="guide-step" id="nas-network">
 <div class="step-head">
 <span class="step-number">01</span>
@@ -957,7 +957,7 @@ sudo systemctl reload nginx</code>
 <tr>
 <td data-en="NAS proxy" >NAS 反代</td>
 <td data-en="Source" >来源</td>
-<td data-en="HTTPS · codex.try2love.com · 443" >HTTPS · codex.try2love.com · 443</td>
+<td data-en="HTTPS · codex.example.com · 443" >HTTPS · codex.example.com · 443</td>
 </tr>
 <tr>
 <td data-en="NAS proxy" >NAS 反代</td>
@@ -977,7 +977,7 @@ sudo systemctl reload nginx</code>
 <tr>
 <td data-en="Work computer" >电脑</td>
 <td data-en="Phone URL" >手机访问地址</td>
-<td data-en="https://codex.try2love.com" >https://codex.try2love.com</td>
+<td data-en="https://codex.example.com" >https://codex.example.com</td>
 </tr>
 <tr>
 <td data-en="Work computer" >电脑</td>
