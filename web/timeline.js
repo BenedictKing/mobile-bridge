@@ -193,7 +193,7 @@ class ChatTimeline {
     if(this.hideInternalTeamMessages&&internalTeamProtocolRow(row))return false;
     if(row.backgroundTask)return true;
     if(row.role==='user'||row.role==='error'||maintenanceRow(row))return true;
-    if(reasoningRow(row))return this.showReasoning;
+    if(reasoningRow(row))return this.showReasoning&&(row.truncated===true||!!row.text?.trim());
     if(row.role==='activity'||row.phase==='commentary')return this.showProcess;
     return true;
   }

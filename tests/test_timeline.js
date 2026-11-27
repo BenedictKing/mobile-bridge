@@ -618,6 +618,27 @@ test('reasoning uses the Markdown renderer while command output stays literal',(
   timeline.dispose();
 });
 
+test('empty reasoning rows stay hidden until a live update adds readable text',()=>{
+  const{timeline,ids}=setupRecovery();
+  const reasoning={key:'empty',role:'activity',kind:'reasoning',text:'',version:'v1',order:1};
+  const streamed={...reasoning,key:'streamed',kind:'agentThought',text:' \n\t',order:2};
+  const command={...reasoning,key:'command',kind:'commandExecution',status:'completed',exitCode:0,order:3};
+  const truncated={...reasoning,key:'truncated',text:'\n',truncated:true,order:4};
+  const visible=()=>ids.messages.children.filter(node=>!node.hidden).map(node=>node.dataset.key);
+  timeline.apply({epoch:'e',sequence:1,meta:{},rows:[reasoning,streamed,command,truncated]},true);
+  assert.deepEqual(visible(),['command','truncated']);
+  assert.equal(timeline.nodes.get('truncated').node.children[2].hidden,false);
+
+  timeline.applyDelta({epoch:'e',sequence:2,rows:[{key:'streamed',prevVersion:'v1',version:'v2',append:'准备检查。'}]});
+  assert.deepEqual(visible(),['streamed','command','truncated']);
+
+  timeline.setVisibility({showReasoning:false,showProcess:true});
+  assert.deepEqual(visible(),['command']);
+  timeline.setVisibility({showReasoning:true,showProcess:true});
+  assert.deepEqual(visible(),['streamed','command','truncated']);
+  timeline.dispose();
+});
+
 test('automatic approval reviews have readable labels and keep untrusted content literal',()=>{
   const{timeline}=setup();
   const node=timeline.renderRow({key:'approval',role:'activity',kind:'automaticApprovalReview',title:'automaticApprovalReview',
