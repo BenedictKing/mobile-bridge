@@ -308,6 +308,14 @@ func foldUserText(builder *acpview.NativeBuilder, text string, attachments ...*j
 		builder.End("cancelled")
 		return ""
 	}
+	// Local CLI command output (/compact, /model, …) is persisted as a user
+	// record, but no model reply ever follows it; awaiting one would keep the
+	// chat "running" whenever a later write makes the transcript look fresh.
+	if strings.HasPrefix(text, "<local-command-stdout>") || strings.HasPrefix(text, "<local-command-stderr>") {
+		builder.User(text, attachments...)
+		builder.End("end_turn")
+		return ""
+	}
 	builder.User(text, attachments...)
 	return text
 }

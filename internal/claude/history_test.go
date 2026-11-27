@@ -94,6 +94,34 @@ func TestTranscriptReaderSettlesInterruptedTail(t *testing.T) {
 	}
 }
 
+func TestTranscriptReaderSettlesLocalCommandOutputTail(t *testing.T) {
+	root := t.TempDir()
+	const id = "session-local-command"
+	path := filepath.Join(root, "project", id+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A native /compact ends with its stdout echo; a later harness write (an
+	// orphaned background-task notice on resume) keeps the file fresh.
+	content := `{"type":"user","cwd":"/work","message":{"role":"user","content":"<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>"}}
+{"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted PostCompact [callback] completed successfully</local-command-stdout>"}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := TranscriptReader(root)(id)
+	if err != nil || snapshot == nil {
+		t.Fatalf("snapshot=%v err=%v", snapshot, err)
+	}
+	if nativeHistoryActive(snapshot) {
+		t.Fatal("local command output must not read as an active turn")
+	}
+	tip := snapshot.Turns[len(snapshot.Turns)-1]
+	if status, _ := tip.MustGet("status").(string); status != "completed" {
+		t.Fatalf("tip status=%q, want completed", status)
+	}
+}
+
 func TestTranscriptReaderProjectsBackgroundTaskLifecycle(t *testing.T) {
 	root := t.TempDir()
 	const id = "session-background-task"
