@@ -23,7 +23,7 @@ function loadList(listMode,overrides={}){
   const context={
     listMode,listRows:[{id:'chat-1',host:'local',recency:Date.now(),title:'最近聊天',projectKey:'codex|/work',projectName:'work',agent:'codex'}],
     projectDirectory:[{key:'codex|/work',cwd:'/work',name:'work',agent:'codex'}],
-    listQuery:'',currentId:null,currentHost:'local',currentTeam:null,teamChat:null,
+    listQuery:'',currentId:null,currentHost:'local',currentTeam:null,teamChat:null,state:null,
     $:id=>{assert.equal(id,'sessions');return sessions;},
     document:{createElement:tag=>new FakeNode(tag)},localStorage:{getItem:()=>null,setItem(){}},
     BridgeIcons:{close:()=>new FakeNode('svg'),plus:()=>new FakeNode('svg')},
@@ -43,6 +43,30 @@ test('recent activity does not pin default project teams above time buckets',()=
   assert.equal(find(sessions,'default-team').length,0);
   assert.equal(find(sessions,'project-group').length,1);
   assert.equal(find(sessions,'session').length,1);
+});
+
+test('current chat title replaces the list content fallback',()=>{
+  const row={id:'chat-1',host:'local',recency:Date.now(),title:'Last login: Fri Nov 27 19:41:11 on ttys009',projectKey:'claude|/work',projectName:'work',agent:'claude'};
+  const sessions=loadList('recent',{listRows:[row],currentId:'chat-1',state:{title:'Modern Web Guidance legacy-scan',loadingHistory:false}});
+  assert.equal(row.title,'Modern Web Guidance legacy-scan');
+  assert.equal(find(sessions,'session')[0].children[0].textContent,'Modern Web Guidance legacy-scan');
+});
+
+test('loading and empty titles keep the list content fallback',()=>{
+  for(const state of [{title:'正式标题',loadingHistory:true},{title:'  ',loadingHistory:false},null]){
+    const row={id:'chat-1',host:'local',recency:Date.now(),title:'首条消息兜底',projectKey:'claude|/work',projectName:'work',agent:'claude'};
+    const sessions=loadList('recent',{listRows:[row],currentId:'chat-1',state});
+    assert.equal(row.title,'首条消息兜底');
+    assert.equal(find(sessions,'session')[0].children[0].textContent,'首条消息兜底');
+  }
+});
+
+test('current chat title sync preserves the team display name',()=>{
+  const row={id:'chat-1',host:'local',recency:Date.now(),title:'首条消息兜底',projectKey:'claude|/work',projectName:'work',agent:'claude'};
+  const team={id:'team-1',name:'产品团队'};
+  const sessions=loadList('recent',{listRows:[row],currentId:'chat-1',state:{title:'Lead 会话正式标题',loadingHistory:false},teamChat:{teamForSession:()=>team}});
+  assert.equal(row.title,'Lead 会话正式标题');
+  assert.equal(find(sessions,'session')[0].children[0].textContent,'产品团队');
 });
 
 test('project groups retain their default team entry',()=>{
