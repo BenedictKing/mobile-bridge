@@ -26,8 +26,7 @@ languageButtons.forEach(button=>button.onclick=()=>setLanguage(button.dataset.la
 const lightbox=document.getElementById('lightbox');let zoomSource=null;
 function showImage(source){const image=document.getElementById('large-image');image.src=source.src;image.alt=source.alt;document.getElementById('image-caption').textContent=source.alt;}
 document.querySelectorAll('[data-zoom]').forEach(button=>button.onclick=()=>{zoomSource=button.querySelector('img');showImage(zoomSource);lightbox.showModal();});
-document.getElementById('close-lightbox').onclick=()=>lightbox.close();
-lightbox.addEventListener('click',event=>{if(event.target===lightbox){const rect=lightbox.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)lightbox.close();}});
+if(!('closedBy' in HTMLDialogElement.prototype))lightbox.addEventListener('click',event=>{if(event.target===lightbox){const rect=lightbox.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)lightbox.close();}});
 const routeButtons=[...document.querySelectorAll('[data-route]')];
 function selectRoute(key,focus=false){routeButtons.forEach(button=>{const active=button.dataset.route===key;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;document.getElementById(button.getAttribute('aria-controls')).hidden=!active;if(active&&focus)button.focus();});}
 routeButtons.forEach((button,i)=>{

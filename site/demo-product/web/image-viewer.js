@@ -91,12 +91,12 @@
     dialog = document.createElement('dialog'); dialog.id = 'image-preview-dialog'; dialog.className = 'image-preview';
     dialog.setAttribute('aria-labelledby', 'image-preview-title');
     const toolbar = document.createElement('div'); toolbar.className = 'image-preview-toolbar';
-    close = document.createElement('button'); close.id = 'image-preview-close'; close.type = 'button'; close.autofocus = true;
-    close.onclick = () => dialog.close();
+    close = document.createElement('button'); close.id = 'image-preview-close'; close.type = 'submit'; close.autofocus = true;
     title = document.createElement('span'); title.id = 'image-preview-title';
     external = document.createElement('button'); external.id = 'image-preview-external'; external.type = 'button';
     external.onclick = () => { if (href) window.open(href, '_blank', 'noopener'); };
-    toolbar.append(close, title, external);
+    const closeForm = document.createElement('form'); closeForm.method = 'dialog'; closeForm.append(close);
+    toolbar.append(closeForm, title, external);
     content = document.createElement('div'); content.className = 'image-preview-content';
     status = document.createElement('p'); status.id = 'image-preview-status'; status.setAttribute('role', 'status');
     dialog.append(toolbar, content, status); document.body.append(dialog);

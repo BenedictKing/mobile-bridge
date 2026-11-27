@@ -270,8 +270,8 @@ class TeamChatController{
     const dialog=document.createElement('dialog');dialog.className='picker team-queue-edit';
     const head=this.node('div',undefined,'picker-head');
     head.append(this.node('h2',t_safe('编辑排队输入')));
-    const close=this.node('button',null,'icon-button');close.type='button';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));
-    close.onclick=()=>dialog.close();head.append(close);
+    const close=this.node('button',null,'icon-button');close.type='submit';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));
+    const closeForm=this.node('form');closeForm.method='dialog';closeForm.append(close);head.append(closeForm);
     const body=this.node('div',undefined,'picker-body');
     const editor=document.createElement('textarea');editor.value=input.text||'';editor.rows=6;
     editor.setAttribute('aria-label',t_safe('输入内容'));
@@ -287,8 +287,9 @@ class TeamChatController{
         await this.refreshQueue();
       }catch(error){errorLine.textContent=error.message;save.disabled=false;}
     });
-    const cancel=this.button(t_safe('取消'),()=>dialog.close());cancel.className='plain';
-    body.append(editor,errorLine,save,cancel);
+    const cancel=this.node('button',t_safe('取消'),'plain');cancel.type='submit';
+    const cancelForm=this.node('form');cancelForm.method='dialog';cancelForm.append(cancel);
+    body.append(editor,errorLine,save,cancelForm);
     dialog.append(head,body);document.body.append(dialog);
     dialog.addEventListener('close',()=>dialog.remove(),{once:true});
     dialog.showModal();
@@ -546,7 +547,8 @@ class TeamLeadPicker{
     const dialog=document.createElement('dialog');dialog.className='picker team-lead-picker';
     const head=this.node('div',undefined,'picker-head');
     head.append(this.node('h2',t_safe('选择主控 Agent')));
-    const close=this.node('button',null,'icon-button');close.type='button';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));close.onclick=()=>dialog.close();head.append(close);
+    const close=this.node('button',null,'icon-button');close.type='submit';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));
+    const closeForm=this.node('form');closeForm.method='dialog';closeForm.append(close);head.append(closeForm);
     this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);
     // 首次主控选择：关闭即取消（close 事件 resolve(null)），点遮罩与「取消」等价。
     globalThis.BridgeDialog?.closeOnBackdrop(dialog);
@@ -562,7 +564,8 @@ class TeamLeadPicker{
         const button=this.node('button',agent.agent,'team-lead-choice');
         button.type='button';button.onclick=()=>{resolve(agent.agent);dialog.close();};this.body.append(button);
       }
-      const cancel=this.node('button',t_safe('取消'),'plain');cancel.type='button';cancel.onclick=()=>dialog.close();this.body.append(cancel);
+      const cancel=this.node('button',t_safe('取消'),'plain');cancel.type='submit';
+      const cancelForm=this.node('form');cancelForm.method='dialog';cancelForm.append(cancel);this.body.append(cancelForm);
       dialog.addEventListener('close',()=>resolve(null),{once:true});dialog.showModal();
     });
   }
@@ -585,8 +588,9 @@ class TeamSettingsDialog{
   dialog(){
     if(this._dialog)return this._dialog;
     const dialog=document.createElement('dialog');dialog.className='picker team-settings-dialog';
-    const head=this.node('div','', 'picker-head'),title=this.node('h2',t_safe('团队设置')),close=this.button(null,()=>dialog.close());
-    close.className='icon-button';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));head.append(title,close);
+    const head=this.node('div','', 'picker-head'),title=this.node('h2',t_safe('团队设置')),close=this.node('button',null,'icon-button');
+    close.type='submit';close.append(BridgeIcons.close());close.setAttribute('aria-label',t_safe('关闭'));
+    const closeForm=this.node('form');closeForm.method='dialog';closeForm.append(close);head.append(title,closeForm);
     this.body=this.node('div',undefined,'picker-body');dialog.append(head,this.body);document.body.append(dialog);this._dialog=dialog;return dialog;
   }
   async open(team){

@@ -18,6 +18,7 @@ class FakeNode{
   setAttribute(name,value){this.attributes[name]=value;}
   addEventListener(type,listener){(this.listeners[type]||(this.listeners[type]=[])).push(listener);}
   showModal(){this.open=true;}
+  requestSubmit(){if(this.method!=='dialog')return;let dialog=this._parent;while(dialog&&dialog.tag!=='dialog')dialog=dialog._parent;dialog?.close();}
   close(){this.open=false;for(const listener of this.listeners.close||[])listener();}
   get classList(){
     const node=this;
@@ -459,7 +460,8 @@ test('cancelling first team lead picker returns null without creating a team',as
     return{agents:[{agent:'kimi',title:'Kimi'}]};
   }});
   const selected=picker.open({key:'acp:project',name:'项目'});await flush();
-  find(picker.body,'plain')[0].onclick();
+  const cancel=find(picker.body,'plain')[0];
+  cancel._parent.requestSubmit();
   assert.equal(await selected,null);
   assert.equal(calls.filter(call=>call.options.method==='PUT').length,0);
 });

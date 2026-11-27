@@ -1703,15 +1703,14 @@ function openQueueEditor(row,target,host){
   if(!dialog){
     dialog=document.createElement('dialog');dialog.id='queue-edit-dialog';dialog.className='picker';
     dialog.setAttribute('aria-labelledby','queue-edit-heading');
-    dialog.innerHTML='<div class="picker-head"><h2 id="queue-edit-heading"></h2><button class="icon-button" type="button" aria-label="关闭">×</button></div><div class="picker-body"><form><textarea rows="8" maxlength="100000" aria-label="排队消息"></textarea><p class="error" role="alert"></p><button class="primary" type="submit"></button></form></div>';
+    dialog.innerHTML='<div class="picker-head"><h2 id="queue-edit-heading"></h2><form method="dialog"><button class="icon-button" type="submit" aria-label="关闭">×</button></form></div><div class="picker-body"><form><textarea rows="8" maxlength="100000" aria-label="排队消息"></textarea><p class="error" role="alert"></p><button class="primary" type="submit"></button></form></div>';
     document.body.append(dialog);
-    dialog.querySelector('.icon-button').onclick=()=>dialog.close();
-    dialog.querySelector('form').onsubmit=async event=>{
+    dialog.querySelector('.picker-body form').onsubmit=async event=>{
       event.preventDefault();
       const targetInfo=dialog.queueTarget;if(!targetInfo)return;
       const text=dialog.querySelector('textarea').value;
       if(!text.trim()){dialog.querySelector('.error').textContent=t('请输入消息');return;}
-      const submit=dialog.querySelector('button[type=submit]');submit.disabled=true;dialog.querySelector('.error').textContent='';
+      const submit=dialog.querySelector('.picker-body button[type=submit]');submit.disabled=true;dialog.querySelector('.error').textContent='';
       try{
         const result=await api(sessionUrl(targetInfo.thread,'queue',targetInfo.host),{id:targetInfo.id,action:'edit',text});
         if(currentId===targetInfo.thread&&currentHost===targetInfo.host&&state){
@@ -1728,8 +1727,8 @@ function openQueueEditor(row,target,host){
   dialog.querySelector('.icon-button').setAttribute('aria-label',t('关闭'));
   dialog.querySelector('textarea').setAttribute('aria-label',t('排队消息'));
   dialog.querySelector('textarea').value=row.text;
-  dialog.querySelector('button[type=submit]').textContent=t('保存');
-  dialog.querySelector('.error').textContent='';dialog.querySelector('button[type=submit]').disabled=false;
+  dialog.querySelector('.picker-body button[type=submit]').textContent=t('保存');
+  dialog.querySelector('.error').textContent='';dialog.querySelector('.picker-body button[type=submit]').disabled=false;
   dialog.showModal();dialog.querySelector('textarea').focus();
 }
 function uuid(){const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const h=[...bytes].map(x=>x.toString(16).padStart(2,'0')).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);}

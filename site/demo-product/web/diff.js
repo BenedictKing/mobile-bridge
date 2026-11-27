@@ -172,12 +172,14 @@ window.BridgeDiff = (() => {
     titleNode = document.createElement('h2');
     titleNode.className = 'diff-review-title';
     const close = document.createElement('button');
-    close.type = 'button';
+    close.type = 'submit';
     close.className = 'icon-button';
     close.append(BridgeIcons.close());
     close.setAttribute('aria-label', t('关闭'));
-    close.onclick = () => dialog.close();
-    head.append(titleNode, close);
+    const closeForm = document.createElement('form');
+    closeForm.method = 'dialog';
+    closeForm.append(close);
+    head.append(titleNode, closeForm);
     body = document.createElement('div');
     body.className = 'picker-body diff-review-body';
     dialog.append(head, body);
