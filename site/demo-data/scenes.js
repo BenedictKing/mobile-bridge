@@ -37,7 +37,12 @@ window.demoScene=async scene=>{
   await openChat(window.demoIds[chatId],'local');
   if(revision!==sceneRevision)return;
   closeDialogs();
-  if(scene==='team'&&window.demoTeam)openTeamChat(window.demoTeam);
+  if(scene==='team'&&window.demoTeam){
+    // 画布需要真实的事项/气泡关联，看板与 Run 详情在夹具里也是空的；演示停留在
+    // 默认视图，Workflow 阶段条照常展示四个阶段与执行者。
+    await openTeamChat(window.demoTeam);
+    if(revision!==sceneRevision)return;
+  }
   if(scene==='migrate')dialog('chat-details-button')?.click();
   // Screenshot helper: ?scroll=top opens a chat at its first message.
   const top=new URLSearchParams(location.search).get('scroll')==='top';

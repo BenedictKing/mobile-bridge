@@ -43,6 +43,8 @@ On macOS with a source checkout, `make start` runs the gateway under launchd (`m
 2. Connect the phone to the same LAN, open `http://<computer IP>:8787` in the browser, and sign in with the credentials from `首次登录.txt`.
 3. Select an existing chat or create a new one in the phone browser. Keep the computer awake with Codex App and the gateway running.
 
+Native shells are optional: the same web workbench runs in any modern browser. [Releases](https://github.com/BenedictKing/mobile-bridge/releases) also ship `mobile-bridge-android-debug.apk` (debug-signed) and an unsigned `mobile-bridge-<version>-iOS-unsigned.ipa` that you must sign with your own Apple account; checksums are in `SHA256SUMS-mobile.txt` on the same release. See [docs/android.md](docs/android.md) and [docs/ios.md](docs/ios.md) for install, LAN discovery and known limits, or build them yourself with `make android-build` / `make build-ios`.
+
 For access outside your LAN, configure a temporary HTTPS tunnel, an own-server connection or a NAS reverse proxy (`cloudflared` must be installed separately). See [Parallel connections](#parallel-connections). For custom deployment or help from an Agent, see the optional [Deployment Agent instructions](#deployment-agent-instructions). The gateway keeps probing Cloudflare tunnel health and rebuilds a connector left half-dead by sleep/wake or a network change; a rebuilt Quick Tunnel gets a new URL and sends an entry-change notification.
 
 ### Phone reading and display settings

@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Changed / Fixed
+
+- **site**：修复线上交互演示打不开聊天/团队/审批等场景的问题。`web/lazy.js` 在运行时按 `/vendor/markdown-it.min.js`、`/vendor/katex/*`、`/team-canvas.js` 等绝对路径懒加载资源，构建脚本只相对化了 HTML 里的引用，Pages 把站点挂在 `/mobile-bridge/` 下后这些请求打到域根 404，`openChat` 在 `BridgeLazy.load('markdown')` 处早退（toast「消息渲染组件加载失败」），场景按钮看似无反应。`scripts/build-site-demo.py` 现在从 `lazy.js` 抽出全部资源路径，写进生成页面的 `#bridge-assets` 清单（`lazy.js` 原生支持的 URL 重写入口），产品代码不改动；同步重新镜像当前 `web/`。另补 `/api/teams/{id}/inputs` 夹具，团队场景不再提示「输入队列读取失败」；团队场景改为等待 `openTeamChat` 完成并保留默认视图（看板与 Run 详情需要画布事项数据，夹具未提供）。本地已验证六个场景与四种设备切换、英文演示均无资源加载失败。
+- **site**：官网介绍与当前 v0.2.0 正式版对齐。版本号与页脚从 v0.1.0 / v2.0.0-preview.2 更新为 v0.2.0（2026-11-27）；手机下载区不再指向上游旧仓库的 2.0-preview.2 包，改为本仓库 v0.2.0 Release 的 `mobile-bridge-android-debug.apk` 与 `mobile-bridge-0.2.0-iOS-unsigned.ipa`，并补 Android / iOS 使用与签名说明链接、debug 签名与未签名 IPA 的安装边界、App 包 SHA-256 校验文件说明；下载卡改为等高等宽网格，按钮底对齐。同时修正与多 Agent 现状矛盾的文案：上手第一步改为准备所需 Agent（Codex App 或已登录的 CLI），「关闭电脑后还能继续吗」「哪些请求仍需桌面处理」等 FAQ 与功能脚注不再声称仅适配 Codex App，改为说明 ACP 接入、能力随 Agent 支持情况、停止网关会中断 ACP 回合但保留历史。
+- **docs / release**：v0.2.0 Release 新增手机安装包资产（debug APK、未签名 IPA）及 `SHA256SUMS-mobile.txt`；`docs/android.md`、`docs/ios.md` 增加 Release 下载与校验入口，`README.md` / `README_EN.md` 快速开始补充 App 获取方式，中文 README 开头补上多 Agent 说明与 `#multi-agent` 锚点。
+
 ### Fixed
 
 - **web**：返回手势先关弹窗（`web/modal-back.js` 新文件 + `web/index.html` 首个加载 + `internal/httpd` 静态路由）。此前图片预览和各类对话框不占历史栈，安卓返回手势、iOS 侧滑或浏览器后退会直接退出聊天页甚至整个 App。现在用户打开模态弹窗时压一条同 URL 的历史记录，返回只关闭最上层弹窗（嵌套弹窗逐层关闭），并在 app.js 路由之前截停这次 popstate；经按钮、Esc 或点背景关闭时退掉这条记录，历史栈不增长。弹窗忙碌（拒绝 `cancel`）时保持打开并补回记录；从弹窗直接进入聊天留下的失效记录在返回时自动跳过；非用户触发打开的弹窗不压栈，避免 Chrome 跳过记录导致关弹窗与页面后退同时发生。新增 6 例假历史栈测试。

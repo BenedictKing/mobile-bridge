@@ -2,10 +2,16 @@
 
 Android App 复用现有 Mobile Bridge 网页、Cloudflare 登录和会话。普通浏览器行为不变；App 通过原生网络层在同一可信热点内加速读取，无需证书、固定 IP 或修改路由器 DNS。
 
+## 安装
+
+- 直接使用已发布的安装包：在 [Releases](https://github.com/BenedictKing/mobile-bridge/releases) 下载与网关同版本的 `mobile-bridge-android-debug.apk`（例如 [v0.2.0](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.2.0/mobile-bridge-android-debug.apk)），校验值见同一 Release 的 `SHA256SUMS-mobile.txt`。这是 debug 签名包，仅用于自托管体验，不要分发来源不明的副本。
+- 或从源码构建：在仓库根目录执行 `make android-build`（需要 Android SDK 与 JDK），产物复制到 `dist/mobile-bridge-android-debug.apk`。
+- 与网关版本配套使用；覆盖安装要求签名一致，签名不同的旧包需先卸载（会清除 App 内保存的电脑与登录状态）。
+
 ## 使用
 
 1. 电脑启动 Mobile Bridge 网关并保留局域网访问，记下已配置的 Cloudflare HTTPS 地址。需要自动发现时，在 `desktop.json` 设置 `"lanDiscovery": true`，或设置 `GATEWAY_LAN_DISCOVERY=1`；默认不广播，修改后由用户重启网关。
-2. 构建并安装 `dist/mobile-bridge-android-debug.apk`。首次安装 debug APK 时，需要允许系统“安装未知应用”。
+2. 安装 `mobile-bridge-android-debug.apk`（Release 下载或自行构建，见上节）。首次安装 debug APK 时，需要允许系统“安装未知应用”。
 3. 打开 App，输入不带路径的 Cloudflare 地址，例如 `https://codex.example.com`，点击“连接”并正常登录。
 4. 登录后，标题栏右上角的电脑图标就是网关入口：查看当前地址、修改网关地址、重新连接。地址只在首次连接或改地址时需要填写，不再藏进设置页。
 5. App 保存稳定 `DeviceID` 和最多 8 个最近 LAN origin，并浏览 `_mobile-bridge._tcp`。公网域名失败时，历史地址与 DNS-SD 会并行恢复同一网关；热点阻断组播但地址未变时仍可直连，地址已变且组播也不可用时会有界失败，不扫描网段。

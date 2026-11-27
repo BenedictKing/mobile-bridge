@@ -8,9 +8,9 @@
 
 **[双语介绍与使用演示 ↗](https://BenedictKing.github.io/mobile-bridge/?lang=zh)** · **[获取网关](https://github.com/BenedictKing/mobile-bridge/releases)**
 
-在手机浏览器里，继续电脑 **Codex App 已有的聊天**，或在已保存项目及自定义本机目录中新建聊天。
+在手机浏览器里，继续电脑 **Codex App 已有的聊天**，或在已保存项目及自定义本机目录中新建聊天。除 Codex 外，也可通过 ACP 运行时接入 Kimi、Claude Code、MiniMax、DeepSeek、ZCode、OpenCode、WorkBuddy 等 Agent，并支持团队编排、账号池与会话迁移，详见[多 Agent](#multi-agent)一节。
 
-手机与电脑打开同一个会话，查看回复、发送消息、选择模型与 Skill、回应待确认操作。本地任务继续在原电脑执行；模型请求沿用该会话的提供商与认证配置。桌面 App 已保存的 SSH 远程会话目前只能在手机查看列表与历史，发送等操作尚未接入。
+手机与电脑打开同一个会话，查看回复、发送消息、选择模型与 Skill、回应待确认操作。本地任务继续在原电脑执行；模型请求沿用该会话的提供商与认证配置。Codex 会话由 Codex App 持有，其他 ACP Agent 由网关子进程执行；桌面 App 已保存的 SSH 远程会话目前只能在手机查看列表与历史，发送等操作尚未接入。
 
 **不要求手机登录与电脑相同的 OpenAI 账号。** 网关提供独立的账号密码登录，也支持显式开启免密访问。可以通过局域网、临时 HTTPS 隧道或自己的反向代理连接。
 
@@ -45,9 +45,9 @@ macOS 检出源码后也可 `make start` 以 launchd 常驻托管（`make stop` 
 2. 手机连接同一局域网，浏览器打开 `http://<电脑 IP>:8787`，用 `首次登录.txt` 中的凭据登录。
 3. 在手机网页选择已有聊天或新建聊天，即可继续交互。使用期间保持电脑唤醒、Codex App 和网关运行。
 
-Android 原生容器支持热点网络下自动发现局域网网关并加速读取，无需证书或修改 DNS；构建与安装见 [Android 使用说明](docs/android.md)。
+Android 原生容器支持热点网络下自动发现局域网网关并加速读取，无需证书或修改 DNS；可直接从 [Releases](https://github.com/BenedictKing/mobile-bridge/releases) 下载 `mobile-bridge-android-debug.apk`（debug 签名），或 `make android-build` 自行构建，详见 [Android 使用说明](docs/android.md)。
 
-iOS 原生容器复用同一套网关网页，已接入上游的多电脑、Keychain、信道、通知、下载和 Live Activity 壳；当前网关端到端支持范围与待补 API 见 [iOS 使用说明](docs/ios.md)。构建与签名也见该文档。
+iOS 原生容器复用同一套网关网页，已接入上游的多电脑、Keychain、信道、通知、下载和 Live Activity 壳；Releases 提供未签名 `mobile-bridge-<version>-iOS-unsigned.ipa`，需自行签名安装，当前网关端到端支持范围与待补 API 见 [iOS 使用说明](docs/ios.md)。构建与签名也见该文档。
 
 需要外网访问时，可配置临时 HTTPS 隧道、自有服务器或 NAS 反向代理（`cloudflared` 需自行安装），详见[连接方式说明](#connections)。自定义部署或需要 Agent 协助时，使用后面的[部署 Agent 执行说明](#agent-deployment)。
 
@@ -272,6 +272,8 @@ launchd 始终运行固定文件 `~/.local/bin/mobile-bridge-gateway`：macOS �
 网关默认同时监听 `127.0.0.1` 和所有已启用网卡的非链路本地地址；命令行没有 `--lan` 开关，监听范围读取数据目录 `desktop.json` 中的 `lan`（`false` 时仅监听 `127.0.0.1`）、`lanAddresses`（指定后只监听所列地址）与 `localAccess`（`false` 时不监听本机回环）。`serve` 只接受 `--data-dir`、`--port`、`--codex-home`、`--ipc-path`、`--codex-bin`，其他参数会报错退出。前台运行按 `Ctrl+C` 停止；`make start` 的 launchd 服务用 `make stop` 停止。
 
 launchd 托管（`make start`）开机自启、崩溃自动拉活；登录会话持久化在数据目录，重启网关后手机不掉线。
+
+<a id="multi-agent"></a>
 
 ### 多 Agent（源码运行）
 

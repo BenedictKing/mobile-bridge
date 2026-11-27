@@ -84,6 +84,7 @@ window.fetch=async(input,options={})=>{
  if(p==='/api/teams/'+teamId)return response(team);
  if(p==='/api/teams/'+teamId+'/runs')return response({runs:[{id:run.id,status:run.status,createdAt:run.createdAt}]});
  if(p==='/api/teams/'+teamId+'/runs/'+run.id)return response(run);
+ if(p==='/api/teams/'+teamId+'/inputs')return response({inputs:[]});
  if(p==='/api/teams/workspaces')return response({workspaces:[]});
  if(p==='/api/accounts')return response(await window.fixtureAccountRequest({action:'list'}));
  if(p==='/api/accounts/details')return response(await window.fixtureAccountRequest({action:'details',...body}));

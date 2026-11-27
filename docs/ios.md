@@ -2,9 +2,11 @@
 
 当前 iOS 目标位于 `mobile/ios/BridgePreview.xcodeproj`，包含主 App、Live Activity 扩展和通知服务扩展。业务聊天仍由根目录 `web/` 提供；`mobile/shared/web/` 只放两端共用的原生适配脚本。
 
-## 构建
+## 获取与构建
 
-需要 macOS、Xcode 和 iOS SDK。在仓库根目录运行：
+已发布的未签名包：在 [Releases](https://github.com/BenedictKing/mobile-bridge/releases) 下载 `mobile-bridge-<version>-iOS-unsigned.ipa`（例如 [v0.2.0](https://github.com/BenedictKing/mobile-bridge/releases/download/v0.2.0/mobile-bridge-0.2.0-iOS-unsigned.ipa)），校验值见同一 Release 的 `SHA256SUMS-mobile.txt`。未签名 IPA 不能直接安装，需先用自己的 Apple 账号签名（AltStore、SideStore、Sideloadly 等工具均可），签名与重签名风险由使用者自行评估。
+
+自行构建需要 macOS、Xcode 和 iOS SDK。在仓库根目录运行：
 
 ```bash
 make build-ios

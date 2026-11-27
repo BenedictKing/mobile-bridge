@@ -6,7 +6,7 @@ script. The copy stays byte-identical apart from index.html, which drops the
 product CSP, rewrites absolute asset paths and loads the demo fixtures.
 Never copy native credentials or data.
 """
-import argparse, re, shutil, subprocess
+import argparse, json, re, shutil, subprocess
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
@@ -34,6 +34,14 @@ s = s.replace('<head>', '<head><meta http-equiv="Content-Security-Policy" conten
               '<script src="../../demo-data/web.js"></script>')
 s = re.sub(r'(src|href)="/(?!/)', r'\1="./', s)
 s = s.replace('<link rel="manifest" href="./manifest.webmanifest">', '')
+# lazy.js 在运行时按绝对路径加载 /vendor/*.js、/team-canvas.js 等资源，HTML 的
+# 相对化覆盖不到它们；Pages 把站点挂在 /mobile-bridge/ 下，绝对路径会请求到域
+# 根而 404，openChat 因此整体早退。利用 lazy.js 自带的 #bridge-assets 清单把这些
+# 路径改写成相对当前页面的地址，产品代码保持不变。
+lazy = (source / 'web' / 'lazy.js').read_text()
+assets = {path: '.' + path for path in sorted(set(re.findall(r"'(/[^']+)'", lazy)))}
+s = re.sub(r'(<script id="bridge-assets" type="application/json">).*?(</script>)',
+           lambda m: m.group(1) + json.dumps(assets, ensure_ascii=False) + m.group(2), s)
 s = s.replace('</body>', '<script src="../../demo-data/scenes.js"></script></body>')
 p.write_text(s)
 
